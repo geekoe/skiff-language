@@ -3,6 +3,9 @@
 状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01/F01/D02/F02已收敛，
 P5-R01 在 `c168b1dc` / tree `961998ac` 独立复验 PASS，Wave 2 consumer已解锁
 
+2026-07-28修正：I7真实组合assembly暴露旧Host全局selector设计错误。D0先冻结service-scoped ingress，
+K及后续consumer再实现并重验；旧T03/F03B ingress证据不再有效。
+
 ## 输入
 
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 和完整 InProcessBoundary 生产路径。
@@ -18,9 +21,11 @@ P5-R01 在 `c168b1dc` / tree `961998ac` 独立复验 PASS，Wave 2 consumer已�
 - contract 可先于implementation发布；package只依赖已发布ServiceContract独立编译；deployment
   只用typed artifacts校验；assembly解析完整闭包并原子activation。
 - router、runtime、CLI/watch/dev sync、test-runner、package-test 与fixtures全部切到active
-  RuntimeAssembly；request path不读artifact，不按service/version/build/display name选择旧路径。
-- 外部ingress只使用canonical `(protocol, host, method, path)`；每个service有唯一Host。旧
-  `X-Skiff-Service` / `X-Skiff-Version` 和 `?service=&version=` 不再有选择语义。
+  RuntimeAssembly；request path不读artifact，不按build/display name、query、rewrite或HTTP Host选择
+  deployment。
+- 外部ingress按Host等平台规则注入可信`x-skiff-service`/`x-skiff-version`。Router严格解析这两个header，
+  先选active assembly中的唯一精确deployment，再在该deployment内按canonical
+  `(protocol, method?, path)`选择entry；不同service可共享相同method/path，同service重复失败。
 - 多个runtime replica加载同一完整assembly identity，每replica有独立heap/lifecycle，按
   deployment配置共享外部数据层；不承诺service级隔离或独立扩缩。
 - `skiff-packages` 和 `internals` 的registry/platform、packages、contracts、deployments、actual
@@ -44,7 +49,8 @@ P5-R01 在 `c168b1dc` / tree `961998ac` 独立复验 PASS，Wave 2 consumer已�
   dual path、request-time artifact load或runtime fallback。
 - 平台真实支持contract-first publish、package independent compile、deployment validation、
   complete assembly activation、prepare/commit/abort CAS、stale generation fail-closed和pre-commit reject rollback。
-- 两个runtime replica注册相同assembly，Host ingress经router到provider得到业务结果；加载失败
+- 两个runtime replica注册相同assembly；ingress注入精确service/version header，Router选deployment后
+  按method/path到provider得到业务结果；加载失败
   不替换旧active generation。
 - Skiff、`skiff-packages`、`internals` 的production legacy 命中归零；fixture有replacement或删除证明。
 - 完整non-live verify、隔离multi-replica动态probe和独立阶段验收在main merge前锚定同一

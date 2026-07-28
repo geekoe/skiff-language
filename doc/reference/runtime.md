@@ -22,7 +22,7 @@ Skiff runtime 是一组边界职责，不是用户源码可访问的全局对象
 
 Gateway adapter 负责外部协议适配：接收 HTTP、HTTP stream / SSE、WebSocket 等入口，维护外部连接，执行协议层 decode / encode，把外部入口转换成 router 可路由的 typed dispatch，并把 unary response、stream chunk、stream end 或 error 编码回外部协议。Gateway 不执行用户 Skiff 代码，不拥有 Skiff call stack 或 request heap。
 
-Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、internal stop hint / drain路由、负载和流量切换。Router core 不解释业务 host、path、cookie、session、应用 WebSocket eventName 或业务 requestId。专用WebSocket request broker拥有编码无关的transport request identity与pending state；第一版JSON-RPC 2.0 text adapter解释其控制字段，但不能把transport `id`投影成业务字段或据此选择用户handler。
+Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、internal stop hint / drain路由、负载和流量切换。Router core 不使用HTTP Host、cookie、session、应用 WebSocket eventName或业务requestId选择service。它先严格解析ingress注入的`x-skiff-service`/`x-skiff-version`选择唯一精确deployment，再只在该deployment内解释已声明的method/path。专用WebSocket request broker拥有编码无关的transport request identity与pending state；第一版JSON-RPC 2.0 text adapter解释其控制字段，但不能把transport `id`投影成业务字段或据此选择用户handler。
 
 Service runtime 是执行用户 Skiff 代码的边界。它加载已发布 artifact，构造 service revision singleton，为每次 dispatch 创建 request frame，解码 payload，调用 implementation method 或 entry handler，执行表达式、函数、collection mutation、`concurrent`、`timeout(...)`、`emit` 和 cleanup，并编码 response / chunk / error。
 
@@ -56,6 +56,20 @@ Request 结束后，request heap、call frames、slot values、lane state、exce
 Runtime 内部transport分别表达service operation dispatch与typed gateway entry dispatch，不把raw
 socket、raw WebSocket frame、raw SSE event或宿主语言HTTP object暴露给service runtime。External ingress
 使用`GatewayEntryIdentity`和精确handler target，不伪造`ContractOperationId`。
+
+HTTP与WebSocket external ingress使用两阶段路由。Router外部ingress可以按Host等平台规则注入可信
+`x-skiff-service`与`x-skiff-version`；Router严格解析后，从active RuntimeAssembly选择唯一精确
+`ServiceDeploymentRef`，再在该deployment内按HTTP `(protocol, method, path)`或WebSocket
+`(protocol, path)`选择gateway entry。Host仍保留在HTTP request envelope供业务检查，但不参与Router
+lookup。直接向Router提供这两个header是Skiff production boundary；Skiff不在Router内重做Host映射。
+
+Router到Runtime的request frame必须携带精确deployment、assembly identity/generation与gateway entry。
+Runtime只接受当前admitted activation中逐项匹配的tuple，不从Host、path、latest pointer或ambient
+registration重新推断。不同service可以共享相同method/path；同一service重复selector、缺失/非法/
+歧义header、同一service/version多revision和跨deployment substitution都fail closed。
+
+该路由模型以ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、RuntimeAssembly v3和
+runtime frame v2一次硬切；旧Host-bearing route、裸全局ingress和旧frame不兼容读取。
 
 Unary dispatch 最多产生一个 final response：成功时 response end 携带 payload，失败时 response error 携带 runtime error envelope；unary dispatch 不能产生 stream chunk。
 
@@ -243,9 +257,10 @@ HTTP entry 是gateway-selected external HTTP dispatch，不是service-to-service
 浏览器、移动端或CLI客户端，也可以是支付回调等第三方服务器；反向代理和上游HTTP/SSE转发同样属于该入口。
 Skiff service之间的调用始终使用ServiceContract，不通过HTTP entry伪装。
 
-Router根据trusted selector、deployment/activation和loaded gateway entry metadata调用HTTP handler。该
+Router根据trusted service/version header先选择精确deployment/activation，再按该deployment内的
+method/path和loaded gateway entry metadata调用HTTP handler。该
 handler由`http.yml`选择，不要求进入`api.yml`或ServiceContract。Router不按display/source path猜target，
-也不根据content-type自行解释业务类型。
+也不根据HTTP Host、content-type或业务payload自行解释或选择target。
 
 外部 HTTP request 在 dispatch 前打包为标准 HTTP request envelope；method、url、path、query、headers 和 body 保持为业务可检查的数据。Query 和 headers 使用数组保留重复项和顺序。
 
@@ -257,21 +272,25 @@ server stream，适合在不聚合完整body的情况下转发上游HTTP/SSE；e
 连接中断处理。Client disconnect表示response consumer已经消失；Router可以向runtime发送内部
 best-effort stop hint，但不产生公开cancel response，也不承诺撤销handler已经提交的副作用。
 
-Typed HTTP route 是 compiler-generated unary wrapper，不是 router framework。Router 仍只选择 service/version/route 并发起 HTTP dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。`typedJson` handler不能返回任意`Stream<T>`；需要保留原始request bytes/headers做签名校验、控制status/response headers、转发binary body或按到达顺序转发body chunk时必须声明`rawHttp`。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
+Typed HTTP route 是 compiler-generated unary wrapper，不是 router framework。Router 先按严格
+service/version header选择exact deployment，再在该deployment内按method/path选择route并发起HTTP
+dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。`typedJson` handler不能返回任意`Stream<T>`；需要保留原始request bytes/headers做签名校验、控制status/response headers、转发binary body或按到达顺序转发body chunk时必须声明`rawHttp`。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
 
 HTTP status code本身不是throw；业务代码必须检查status。HTTP entry的可观测target id是gateway entry
 target。Router作为external connection owner生成request deadline；其budget是平台HTTP request上限与
 deployment `policy.timeoutMs` override中更早者。Host按已admit activation的deployment policy再次收紧并
-执行deadline，wire缺失、放宽或伪造不能绕过该上限。Host/path/handler mapping变化是deployment/ingress
-配置变化，不改变service protocol identity。
+执行deadline，wire缺失、放宽或伪造不能绕过该上限。Method/path/handler mapping变化是
+deployment/ingress配置变化，不改变service protocol identity；HTTP Host映射属于Router外部ingress，
+不进入service route或deployment identity。
 
 ## 11. WebSocket entry
 
 WebSocket entry主要属于客户端直连的API层service。下游业务service不拥有Connection，也不把WebSocket
 当作service-to-service transport。
 
-WebSocket物理连接由gateway/hub维护。Connection拥有connection id、service id、状态、
-business identity、entry identity、deployment/activation generation和物理socket；它不需要一个
+WebSocket物理连接由gateway/hub维护。Upgrade先按严格service/version header选择精确deployment，并在
+该deployment内按path选择entry。Connection拥有connection id、service id、状态、
+business identity、entry identity、精确deployment/activation generation和物理socket；它不需要一个
 service-call protocol operation identity。
 
 Connect operation是一次request frame，用于连接验证和connection policy初始化。连接建立后，service可

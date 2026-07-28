@@ -3,7 +3,7 @@
 This package is the TypeScript Router for the current RuntimeAssembly stack. It owns:
 
 - the public HTTP listener and WebSocket upgrades selected from the active
-  RuntimeAssembly `globalIngress`;
+  RuntimeAssembly by exact deployment and service-scoped ingress;
 - the control listener used for RuntimeAssembly activation, health, and Runtime
   WebSocket connections;
 - exact dispatch to a Runtime replica using the active assembly generation,
@@ -33,7 +33,7 @@ The checked-in example uses this shape:
 ```yaml
 profile: dev
 environment: dev
-host: 127.0.0.1
+host: 127.0.0.1 # listener bind address; not the request Host route selector
 artifactsPath: ../var/skiff-artifacts
 serviceDb:
   mongoUrl: mongodb://127.0.0.1:27017/?replicaSet=rs0
@@ -50,8 +50,9 @@ runtime:
 `environment`, `artifactsPath`, and `serviceDb.mongoUrl` are required for
 RuntimeAssembly routing. The Router reads immutable records below
 `artifactsPath`, while activation state and audit are stored transactionally in
-MongoDB. `globalIngress` in the active RuntimeAssembly is the only public
-selector; rewrite-to-service configuration is rejected.
+MongoDB. Public ingress is keyed by `(ServiceDeploymentRef, IngressSelector)`;
+there is no bare assembly-global route selector. Rewrite-to-service,
+query-based service selection, and HTTP Host route selection are rejected.
 
 The public HTTP listener defaults to port `4000`. The Runtime and control
 listener defaults to port `4001`, with Runtime connections at `/runtime`.
@@ -65,7 +66,6 @@ A service can declare either or both external surfaces:
 ```yaml
 # http.yml
 createUser:
-  host: api.example.com
   method: POST
   path: /users
   kind: typedJson
@@ -95,9 +95,37 @@ jsonRpc:
 ```
 
 The compiler projects each source entry to an ingress selector and a resolved
-gateway entry. The Router consumes those facts from the active RuntimeAssembly;
-it does not infer ingress from handler names, service configuration, or incoming
-business payloads.
+gateway entry. The selector is service-local: HTTP uses protocol/method/path and
+WebSocket upgrade uses protocol/path. The Router consumes those facts from the
+active RuntimeAssembly; it does not infer ingress from handler names, request
+Host, business payloads, or display names.
+
+An ingress in front of the Router may map HTTP Host or other platform rules to
+the trusted request headers:
+
+```text
+x-skiff-service: <service-id>
+x-skiff-version: <contract-version>
+```
+
+The Router strictly parses both headers, selects the active assembly's unique
+exact `ServiceDeploymentRef`, and only then resolves method/path inside that
+deployment. Missing, conflicting, invalid, unknown, or ambiguous selectors fail
+closed. The raw HTTP Host remains request metadata for the service but cannot
+change the selected deployment or handler. Host-to-header mapping is outside
+Skiff Router ownership; a direct Router request carrying these headers is the
+Skiff production boundary.
+
+Different services may therefore both expose `GET /v1/models`. For example,
+Relay and AIHub use different service/version headers and each resolve their own
+handler on the same Router listener. A duplicate method/path inside one service
+still fails during projection/assembly validation.
+
+Router-to-Runtime request frames carry the exact deployment, assembly
+generation, and gateway entry. Runtime admission rejects a frame that
+substitutes another service or deployment revision. WebSocket upgrade performs
+the same service selection and pins the exact deployment and generation for the
+socket lifetime.
 
 ## WebSocket Semantics
 
@@ -143,15 +171,22 @@ The current `std.websocket` source names are:
 
 `std/websocket.skiff` is the source of truth for this API.
 
-## Current Artifact and Wire Identities
+## Target Artifact and Wire Identities
 
-The current stack accepts these generations:
+The service-scoped ingress cutover requires these generations:
 
 - GatewayEntry v2: `skiff-gateway-entry-v2`
 - ServiceProtocol v5: `skiff-service-protocol-v5`
-- DeploymentArtifact v3: `skiff-deployment-artifact-v3`
-- RuntimeAssembly v2: `skiff-runtime-assembly-v2`
+- ServiceDeploymentInput v5: `skiff-service-deployment-input-v5`
+- ServiceDeployment v4: `skiff-service-deployment-v4`
+- DeploymentArtifact v4: `skiff-deployment-artifact-v4`
+- RuntimeAssembly v3: `skiff-runtime-assembly-v3`
+- Runtime frame v2: `skiff-runtime-frame-v2`
 
 Runtime registration and request dispatch bind exact current identities. The
 Router fails closed when the active assembly, ingress binding, deployment,
 gateway entry, service protocol, or Runtime replica does not match.
+
+These versions describe the service-scoped ingress target state. Production
+code must hard-cut to them as one checkpoint; the old Host-bearing route,
+assembly-global ingress, and v1 frame are not compatibility inputs.
