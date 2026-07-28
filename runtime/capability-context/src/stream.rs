@@ -18,7 +18,7 @@ use skiff_runtime_model::{
     type_plan::RuntimeTypePlan,
 };
 
-use crate::{CancellationToken, ExecutionControl};
+use crate::{CancellationToken, ExecutionControl, OwnedExecutionControl};
 
 pub type StreamRuntimeResult<T> = Result<T, StreamRuntimeError>;
 
@@ -840,8 +840,23 @@ impl fmt::Debug for StreamRuntime {
 
 #[derive(Clone)]
 pub struct HttpResponseStreamCapabilityContext<'execution> {
-    execution: ExecutionControl<'execution>,
+    execution: HttpResponseStreamExecution<'execution>,
     stream_context: StreamCapabilityContext,
+}
+
+#[derive(Clone)]
+enum HttpResponseStreamExecution<'execution> {
+    Borrowed(ExecutionControl<'execution>),
+    Owned(OwnedExecutionControl),
+}
+
+impl HttpResponseStreamExecution<'_> {
+    fn cancellation_token(&self) -> CancellationToken {
+        match self {
+            Self::Borrowed(execution) => execution.cancellation_token(),
+            Self::Owned(execution) => execution.cancellation_token(),
+        }
+    }
 }
 
 impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
@@ -850,7 +865,7 @@ impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
         stream_context: StreamCapabilityContext,
     ) -> Self {
         Self {
-            execution,
+            execution: HttpResponseStreamExecution::Borrowed(execution),
             stream_context,
         }
     }
@@ -882,5 +897,17 @@ impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
                     "{target} used outside a raw HTTP streaming response context"
                 ))
             })
+    }
+}
+
+impl HttpResponseStreamCapabilityContext<'static> {
+    pub fn from_owned_execution(
+        execution: OwnedExecutionControl,
+        stream_context: StreamCapabilityContext,
+    ) -> Self {
+        Self {
+            execution: HttpResponseStreamExecution::Owned(execution),
+            stream_context,
+        }
     }
 }
