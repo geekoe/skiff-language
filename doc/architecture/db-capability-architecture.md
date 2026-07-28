@@ -21,7 +21,8 @@ DB 架构目标：
 source AST
   -> DB attachment semantic model
   -> File IR DB operation
-  -> service unit DB metadata
+  -> package symbolic target
+  -> exact provider File IR DB metadata
   -> runtime linked program image
   -> service DB command
   -> storage adapter
@@ -67,7 +68,7 @@ Full reads/writes use the attached nominal type. Projected reads generate anonym
 File IR DB operation carries:
 
 - operation kind;
-- target type metadata;
+- a local target or an external `PackageSymbolRef`;
 - selector or query;
 - projection as DB execution plan data;
 - body or change;
@@ -77,20 +78,69 @@ File IR DB operation carries:
 
 Projection remains useful as DB execution data. Runtime store needs it to ask storage for selected fields. That is separate from result type.
 
-### Service Unit DB Metadata
+For an external target, consumer File IR reuses the canonical package symbol shape:
 
-Service unit DB metadata is the runtime storage contract. It includes:
+```text
+PackageSymbolRef {
+  package: Dependency(alias),
+  symbolPath,
+  abiExpectation
+}
+```
 
-- module path and source role;
-- object kind;
-- attached type reference;
-- canonical type name;
-- collection name;
-- key metadata;
-- stored field metadata;
-- retention and indexes.
+The consumer must not copy the provider's collection, key, field, lease, index,
+retention or recoverable metadata into its own File IR. `typeName` can be kept
+for diagnostics, but it is never a lookup key.
 
-Package DB metadata must be merged into service unit DB metadata before runtime linking. Runtime packages do not own service databases independently at execution time.
+### Package Link And Provider Metadata
+
+The consumer's `PackageRequirement.expectedPackageBuild` constrains a test-only
+`access: topLevel` edge to one immutable implementation artifact. Assembly
+resolution produces a `PackageBinding`; linker resolution then follows one
+fail-closed chain:
+
+```text
+consumer DbTargetIr.PackageSymbol
+  -> PackageRequirement(alias, expectedPackageBuild)
+  -> PackageBinding
+  -> exact PackageArtifactRef
+  -> PackageArtifact.implementation_links.types[symbolPath]
+  -> provider FileIrRef + typeIndex
+  -> provider File IR declarations.types
+  -> provider File IR declarations.db
+```
+
+The type export, provider type declaration and DB attachment must identify the
+same File IR type. Missing links, missing files, missing types, missing DB
+attachments, ABI/build mismatch and cross-artifact substitution are artifact
+errors. There is no search by module suffix, type name or discovery order.
+
+Provider File IR is the single owner of DB storage metadata: object kind,
+collection, key, stored fields, retention, leases, indexes and recoverable
+plans are read from the resolved declaration exactly once. Consumer File IR,
+PackageArtifact and linked executable must not duplicate those facts.
+
+Two dependencies may contain the same module path and type name. Their exact
+PackageArtifactRef keeps their DB target identities distinct; name collision is
+not a link error. Physical collection projection remains service-owned and is
+validated separately through each dependency edge's collection-name mapping.
+
+### Linked DB Target Identity
+
+After linking, every DB target has the canonical identity:
+
+```text
+DbObjectTargetId {
+  packageArtifactRef,
+  fileIrRef,
+  typeIndex
+}
+```
+
+This identity is used by DB operation dispatch, `DbQuery`, lease claim, lease
+state read and lease write guards. `typeName` is diagnostic text only and must
+not select metadata. A transaction has no target identity of its own; each DB
+operation inside it carries its linked target.
 
 ### Runtime Linked Program
 
@@ -98,12 +148,16 @@ Runtime linked program owns dispatch maps, linked File IR, linked type descripto
 
 When executing a DB operation, runtime:
 
-1. evaluates query/body/change expressions into wire JSON values;
-2. sends a typed command to the service DB store;
-3. receives business JSON from the store;
-4. decodes it through the already-normalized ordinary result plan.
+1. resolves the linked `DbObjectTargetId` to the already-admitted provider File IR declaration;
+2. evaluates query/body/change expressions into wire JSON values;
+3. sends a typed command to the service DB store;
+4. receives business JSON from the store;
+5. decodes it through the already-normalized ordinary result plan.
 
-If runtime sees an unsupported type descriptor, that is an artifact error. `readRecord` should never be a possible label.
+If runtime sees an unsupported type descriptor, a target whose exact provider
+artifact/file/type is not admitted, or a metadata lookup that would require
+`typeName`, that is an artifact error. `readRecord` should never be a possible
+label.
 
 ### Service DB Store
 
@@ -131,7 +185,12 @@ Tests belong at the lowest layer that can prove the contract:
 
 - Parser tests: DB block grammar, especially `fields { where, name }`.
 - Compiler tests: full DB result normalization to nominal type refs, projection normalization to anonymous record result types and readonly diagnostics.
+- Compiler/linker tests: test-only top-level external DB targets, exact
+  PackageBinding/type-link resolution, same-name targets in two packages and
+  fail-closed missing/mismatched/cross-artifact cases.
 - Runtime non-Mongo tests: ordinary record result plans decode DB business JSON.
+- Runtime target tests: all DB operations, `DbQuery`, lease claim/read/guard use
+  `DbObjectTargetId` and provider metadata without consumer copies.
 - Service DB adapter tests: Mongo mapping, projection document, transaction and BSON coercion.
 - Test-runner / service tests: end-to-end DB behavior using dev router config or explicit test config.
 
@@ -142,6 +201,7 @@ Core runtime tests should not depend on a user service example. User service exa
 This architecture does not add:
 
 - cross-service DB access;
+- top-level DB visibility for ordinary package dependencies or production services;
 - relation / load semantics;
 - cursor / continuation semantics;
 - schema migration workflow;

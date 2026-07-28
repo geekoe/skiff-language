@@ -210,6 +210,17 @@ Production build 的当前 source set 只包含 production source files。`*.tes
 
 外部 package 仍必须通过 import alias 访问其 published public API。`root.*` 不穿透 dependency 的 private 符号；如果某段共享代码需要被别的 package 使用，应进入该 package 的 public API，而不是依赖当前 package 的内部 root path。
 
+唯一例外是`kind: test` service中显式声明`access: topLevel`的dependency。它按
+`<dependency-alias>/<source-module-path>.<top-level-name>`解析精确implementation symbol，不先查
+public API，也不回退public path。该模式覆盖同一文件顶层type及附着到它的`db object`，因此
+`db require subject/model.User(id)`中的target与`subject/model.User`类型引用选择同一个精确provider
+type。普通dependency、dependency的transitive dependencies和production service都不能使用该例外。
+
+跨package DB target的符号约束与其它topLevel symbol相同：consumer保留dependency alias、完整
+symbol path和ABI expectation；dependency requirement另行约束精确provider build。Linker必须把两者
+解析到同一PackageArtifact及同一File IR type，且该File IR存在附着到该type的DB declaration。任何
+缺失、ABI/build不匹配或用另一个artifact的同名type替换都fail closed。
+
 当前禁止 import cycle。顶层 `const` 初始化按源码顺序检查，只能引用已声明的本模块顶层 `const` 或 import 进来的顶层符号。
 
 顶层 `const` 初始化必须是纯的、不可变的、请求无关常量表达式。不得保存请求上下文、用户、trace、事务、临时缓存或随 request 改变的值。
