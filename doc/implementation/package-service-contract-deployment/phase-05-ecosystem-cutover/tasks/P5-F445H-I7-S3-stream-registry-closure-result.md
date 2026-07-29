@@ -23,6 +23,7 @@ M5 中 AIHub case 28、29 的 `unknown Stream value` 在 M6 精确复跑中均�
 | Internals baseline | `9c3bdc` |
 | G2 production candidate commit/tree | `04f50abd5aaf0bcd962129c5824121e87a959545` / `37044f0155d8f8f43323b11811362aacd7a253c4` |
 | M6 production integration commit/tree | `51487de4` / `b18fa9e7357d723a7fff2de3ac3401fa769e01ff` |
+| M6 clean result commit/tree | `b7381168bac7abd1968f4c6dd415fcacc8d1f42c` / `2379dfdb4cd1cc83d61a7fe820447faba2a54078` |
 | branch | `codex/p5-f445h-i7-s3-stream-registry-closure` |
 | integration owner | `/root/phase05_integration_steward` |
 
