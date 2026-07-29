@@ -56,7 +56,7 @@ event并验证终止语义；consumer break验证provider ancestor停止。
 ## 3. Evidence
 
 M6精确账本是四条同类失败的RED，不重复运行旧完整矩阵。迁移后在精确Internals candidate +
-T+S1 Skiff candidate运行一次GREEN：
+保留T证据、S1 diagnostic并已集成S2/S3最终GREEN结果的Skiff candidate运行一次GREEN：
 
 ```text
 SKIFF_ROOT=<P8-Skiff-worktree> \
@@ -64,9 +64,10 @@ SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
 node scripts/test-isolated-service.mjs agine.ai/aihub
 ```
 
-`<P8-Skiff-worktree>`在执行时替换为T与S1均通过的精确Skiff candidate绝对路径。脚本必须继续使用owned
-temp artifact/Cargo root与isolated runner，不得访问stable 4000/4001、外网、真实API key或live test。
-允许用户已授权的临时managed Mongo，但必须动态端口/临时目录并清理。
+`<P8-Skiff-worktree>`在执行时替换为S2/S3均完成且已集成后的精确Skiff candidate绝对路径；该candidate
+保留T与S1 diagnostic证据，但S1不改写为PASS。脚本必须继续使用owned temp artifact/Cargo root与
+isolated runner，不得访问stable 4000/4001、外网、真实API key或live test。允许用户已授权的临时managed
+Mongo，但必须动态端口/临时目录并清理。
 
 负例：没有显式test `http.yml`时失败；直接handler调用不再冒充route coverage；默认发现仍为51且
 Gemini `defaultRun false`不执行。
