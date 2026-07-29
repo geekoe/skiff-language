@@ -200,7 +200,7 @@ fn is_package_schema_descriptor(
                         TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty()
                     ) || is_package_schema_ref(receiver, definitions, source_to_public, visiting)
                 })
-                && method.params.iter().all(|param| {
+                && callback_method_parameters(method).iter().all(|param| {
                     is_package_schema_ref(&param.ty, definitions, source_to_public, visiting)
                 })
                 && is_package_schema_ref(
@@ -383,8 +383,7 @@ impl SchemaBuilder<'_> {
                         Ok((
                             method.name.clone(),
                             BoundaryCallbackOperation {
-                                parameters: method
-                                    .params
+                                parameters: callback_method_parameters(method)
                                     .iter()
                                     .map(|param| self.project_ref(&param.ty))
                                     .collect::<Result<_, _>>()?,
@@ -538,7 +537,7 @@ impl SchemaBuilder<'_> {
                 let child = self.build(&path)?;
                 ContractTypeRef::package_schema(self.package_id, path, child.package_schema_type_id)
             }
-            TypeRefIr::PackageSymbol { symbol } => self.project_dependency_ref(symbol)?,
+            TypeRefIr::PackageSymbol { symbol } => self.project_package_ref(symbol)?,
             _ => {
                 return Err(message(format!(
                     "unsupported package schema reference {ty:?}"
@@ -585,6 +584,68 @@ impl SchemaBuilder<'_> {
             &record.stable_schema_key,
             type_id.clone(),
         ))
+    }
+
+    fn project_package_ref(
+        &mut self,
+        symbol: &PackageSymbolRef,
+    ) -> Result<ContractTypeRef, ProjectionError> {
+        if matches!(
+            &symbol.package,
+            skiff_artifact_model::PackageRefIr::PackageId { package_id }
+                if package_id == self.package_id
+        ) {
+            let mut public_paths = self
+                .source_to_public
+                .iter()
+                .filter_map(|((module_path, source_symbol), public_path)| {
+                    (format!("{module_path}.{source_symbol}") == symbol.symbol_path)
+                        .then_some(public_path.clone())
+                })
+                .collect::<BTreeSet<_>>();
+            if self.definitions.contains_key(&symbol.symbol_path) {
+                public_paths.insert(symbol.symbol_path.clone());
+            }
+            let mut public_paths = public_paths.into_iter();
+            let public_path = public_paths.next().ok_or_else(|| {
+                message(format!(
+                    "package {} symbol {} is not explicitly public in api.yml",
+                    self.package_id, symbol.symbol_path
+                ))
+            })?;
+            if public_paths.next().is_some() {
+                return Err(message(format!(
+                    "package {} symbol {} has multiple public schema paths",
+                    self.package_id, symbol.symbol_path
+                )));
+            }
+            let child = self.build(&public_path)?;
+            return Ok(ContractTypeRef::package_schema(
+                self.package_id,
+                public_path,
+                child.package_schema_type_id,
+            ));
+        }
+        self.project_dependency_ref(symbol)
+    }
+}
+
+fn callback_method_parameters(
+    method: &InterfaceMethodSignature,
+) -> &[skiff_artifact_model::FunctionTypeParamIr] {
+    let has_explicit_self = method.implicit_self.is_none()
+        && !method.is_static
+        && method.params.first().is_some_and(|parameter| {
+            parameter.name == "self"
+                && matches!(
+                    &parameter.ty,
+                    TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty()
+                )
+        });
+    if has_explicit_self {
+        &method.params[1..]
+    } else {
+        &method.params
     }
 }
 
@@ -692,6 +753,45 @@ mod tests {
                 parameters: vec![ContractTypeRef::builtin("string")],
                 return_type: ContractTypeRef::builtin("string"),
             }
+        );
+    }
+
+    #[test]
+    fn explicit_source_self_is_not_a_callback_payload_parameter() {
+        let mut interface = exports(TypeDescriptorIr::Interface);
+        let export = interface.exports.types.get_mut("example.pkg/User").unwrap();
+        export.is_interface = true;
+        export.interface_methods = vec![InterfaceMethodSignature {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: vec![
+                skiff_artifact_model::FunctionTypeParamIr {
+                    name: "self".to_string(),
+                    ty: TypeRefIr::builtin("Self"),
+                },
+                skiff_artifact_model::FunctionTypeParamIr {
+                    name: "key".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                },
+            ],
+            return_type: TypeRefIr::builtin("string"),
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: None,
+        }];
+
+        let projected = project_package_schema("example.pkg", &interface, &[]).unwrap();
+        let entry = &projected.index.types["User"];
+        let record = &projected.records[&entry.package_schema_type_id];
+        let ContractTypeDescriptor::CallbackInterface { operations } =
+            &record.canonical_descriptor.descriptor
+        else {
+            panic!("interface must retain callback-interface schema kind");
+        };
+        assert_eq!(
+            operations["read"].parameters,
+            vec![ContractTypeRef::builtin("string")]
         );
     }
 

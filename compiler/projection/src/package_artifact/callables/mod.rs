@@ -55,6 +55,7 @@ pub(super) fn project_package_callable_surface(
             &mut callable.signature,
             file_ir_units,
             package_schema_refs,
+            resolved_package_schemas,
         )
         .map_err(|message| {
             projection_error(

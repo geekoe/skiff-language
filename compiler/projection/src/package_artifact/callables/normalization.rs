@@ -7,6 +7,7 @@ use skiff_artifact_model::{
     PackageCallableSignature, PackageRefIr, PackageSymbolRef, PackageTypeRef, ServiceSymbolRef,
     TypeDescriptorIr, TypeRefIr, ValueProjectionStep, ValueProvenance,
 };
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 
 use crate::package_artifact::boundary::ordering::escape_lane_rank;
 
@@ -35,16 +36,23 @@ pub(super) fn normalize_public_signature(
     signature: &mut PackageCallableSignature,
     file_ir_units: &[FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<(), String> {
     for parameter in &mut signature.parameters {
-        parameter.ty =
-            normalize_package_type(owner_module, &parameter.ty, file_ir_units, public_type_ids)?;
+        parameter.ty = normalize_package_type(
+            owner_module,
+            &parameter.ty,
+            file_ir_units,
+            public_type_ids,
+            resolved_package_schemas,
+        )?;
     }
     signature.return_type = normalize_package_type(
         owner_module,
         &signature.return_type,
         file_ir_units,
         public_type_ids,
+        resolved_package_schemas,
     )?;
     Ok(())
 }
@@ -352,19 +360,31 @@ fn normalize_package_type(
     ty: &PackageTypeRef,
     file_ir_units: &[FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<PackageTypeRef, String> {
     Ok(match ty {
         PackageTypeRef::Local { local_type } => {
-            let local_type =
-                normalize_local_type(owner_module, local_type, file_ir_units, public_type_ids)?;
-            lift_local_type(local_type)
+            let local_type = normalize_local_type(
+                owner_module,
+                local_type,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )?;
+            lift_local_type(local_type)?
         }
         PackageTypeRef::Container { name, arguments } => PackageTypeRef::Container {
             name: name.clone(),
             arguments: arguments
                 .iter()
                 .map(|argument| {
-                    normalize_package_type(owner_module, argument, file_ir_units, public_type_ids)
+                    normalize_package_type(
+                        owner_module,
+                        argument,
+                        file_ir_units,
+                        public_type_ids,
+                        resolved_package_schemas,
+                    )
                 })
                 .collect::<Result<_, _>>()?,
         },
@@ -374,6 +394,7 @@ fn normalize_package_type(
                 inner,
                 file_ir_units,
                 public_type_ids,
+                resolved_package_schemas,
             )?),
         },
         PackageTypeRef::AnyInterface {
@@ -385,11 +406,18 @@ fn normalize_package_type(
                 interface,
                 file_ir_units,
                 public_type_ids,
+                resolved_package_schemas,
             )?),
             arguments: arguments
                 .iter()
                 .map(|argument| {
-                    normalize_package_type(owner_module, argument, file_ir_units, public_type_ids)
+                    normalize_package_type(
+                        owner_module,
+                        argument,
+                        file_ir_units,
+                        public_type_ids,
+                        resolved_package_schemas,
+                    )
                 })
                 .collect::<Result<_, _>>()?,
         },
@@ -402,6 +430,7 @@ fn normalize_local_type(
     ty: &TypeRefIr,
     file_ir_units: &[FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<TypeRefIr, String> {
     if let Some((module_path, type_index)) = nominal_source(owner_module, ty) {
         let symbol = exact_type_symbol(file_ir_units, module_path, type_index)?;
@@ -421,8 +450,15 @@ fn normalize_local_type(
             symbol: exact_public_type_symbol(file_ir_units, module_path, type_index)?,
         });
     }
-    let recurse =
-        |ty: &TypeRefIr| normalize_local_type(owner_module, ty, file_ir_units, public_type_ids);
+    let recurse = |ty: &TypeRefIr| {
+        normalize_local_type(
+            owner_module,
+            ty,
+            file_ir_units,
+            public_type_ids,
+            resolved_package_schemas,
+        )
+    };
     Ok(match ty {
         TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
@@ -475,9 +511,14 @@ fn normalize_local_type(
                 .collect::<Result<_, String>>()?,
             return_type: Box::new(recurse(return_type)?),
         },
-        TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
+        TypeRefIr::ServiceSymbol { symbol } => public_type_ids
+            .get(&(symbol.module_path.clone(), symbol.symbol.clone()))
+            .and_then(contract_schema_type)
+            .unwrap_or_else(|| ty.clone()),
+        TypeRefIr::PackageSymbol { symbol } => {
+            normalize_package_symbol(symbol, resolved_package_schemas).unwrap_or_else(|| ty.clone())
+        }
+        TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
@@ -508,8 +549,46 @@ fn normalize_public_nominal_base(
     })
 }
 
-fn lift_local_type(ty: TypeRefIr) -> PackageTypeRef {
-    match ty {
+fn contract_schema_type(ty: &ContractTypeRef) -> Option<TypeRefIr> {
+    let ContractTypeRef::PackageSchema {
+        package_id,
+        stable_schema_key,
+        package_schema_type_id,
+    } = ty
+    else {
+        return None;
+    };
+    Some(TypeRefIr::PackageSchema {
+        package_id: package_id.clone(),
+        stable_schema_key: stable_schema_key.clone(),
+        package_schema_type_id: package_schema_type_id.clone(),
+    })
+}
+
+fn normalize_package_symbol(
+    symbol: &PackageSymbolRef,
+    resolved_package_schemas: &[ResolvedPackageSchema],
+) -> Option<TypeRefIr> {
+    let mut matches = resolved_package_schemas
+        .iter()
+        .filter(|schema| match &symbol.package {
+            PackageRefIr::Dependency { dependency_ref } => schema.alias() == dependency_ref,
+            PackageRefIr::PackageId { package_id } => schema.package_id() == package_id,
+        });
+    let schema = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let (package_schema_type_id, record) = schema.public_type(&symbol.symbol_path)?;
+    Some(TypeRefIr::PackageSchema {
+        package_id: record.package_id.clone(),
+        stable_schema_key: record.stable_schema_key.clone(),
+        package_schema_type_id: package_schema_type_id.clone(),
+    })
+}
+
+fn lift_local_type(ty: TypeRefIr) -> Result<PackageTypeRef, String> {
+    Ok(match ty {
         TypeRefIr::PackageSchema {
             package_id,
             stable_schema_key,
@@ -521,13 +600,30 @@ fn lift_local_type(ty: TypeRefIr) -> PackageTypeRef {
         },
         TypeRefIr::Builtin { name, args } if !args.is_empty() => PackageTypeRef::Container {
             name,
-            arguments: args.into_iter().map(lift_local_type).collect(),
+            arguments: args
+                .into_iter()
+                .map(lift_local_type)
+                .collect::<Result<_, _>>()?,
         },
         TypeRefIr::Nullable { inner } => PackageTypeRef::Nullable {
-            inner: Box::new(lift_local_type(*inner)),
+            inner: Box::new(lift_local_type(*inner)?),
         },
+        TypeRefIr::AnyInterface { interface } => {
+            let interface_type = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map_err(|error| {
+                    format!("public signature any-interface identity is invalid: {error}")
+                })?;
+            PackageTypeRef::AnyInterface {
+                interface: Box::new(lift_local_type(interface_type)?),
+                arguments: interface
+                    .canonical_type_args
+                    .into_iter()
+                    .map(lift_local_type)
+                    .collect::<Result<_, _>>()?,
+            }
+        }
         local_type => PackageTypeRef::Local { local_type },
-    }
+    })
 }
 
 fn nominal_source<'a>(owner_module: &'a str, ty: &'a TypeRefIr) -> Option<(&'a str, u32)> {
@@ -707,7 +803,7 @@ mod tests {
             may_suspend: false,
         };
 
-        normalize_public_signature("api", &mut signature, &units, &refs).unwrap();
+        normalize_public_signature("api", &mut signature, &units, &refs, &[]).unwrap();
 
         let exact = PackageTypeRef::PackageSchema {
             package_id: "example.pkg".into(),
@@ -732,7 +828,7 @@ mod tests {
         let private = PackageTypeRef::Local {
             local_type: TypeRefIr::LocalType { type_index: 2 },
         };
-        let error = normalize_package_type("api", &private, &units, &refs).unwrap_err();
+        let error = normalize_package_type("api", &private, &units, &refs, &[]).unwrap_err();
         assert!(
             error.contains("PrivateDetail") && error.contains("private or nonexported"),
             "{error}"
@@ -751,6 +847,7 @@ mod tests {
                 },
                 &units,
                 &refs,
+                &[],
             )
             .unwrap(),
             PackageTypeRef::PackageSchema {
@@ -772,7 +869,7 @@ mod tests {
         };
 
         assert_eq!(
-            normalize_package_type("api", &applied, &units, &refs).unwrap(),
+            normalize_package_type("api", &applied, &units, &refs, &[]).unwrap(),
             PackageTypeRef::Local {
                 local_type: TypeRefIr::AppliedNominal {
                     base: NominalTypeRefBaseIr::ServiceSymbol {
@@ -876,7 +973,7 @@ mod tests {
             may_suspend: false,
         };
 
-        normalize_public_signature("api", &mut signature, &units, &refs).unwrap();
+        normalize_public_signature("api", &mut signature, &units, &refs, &[]).unwrap();
 
         let value = serde_json::to_value(&signature).unwrap();
         assert_eq!(count_json_kind(&value, "localType"), 0);
@@ -956,6 +1053,7 @@ mod tests {
                 },
                 &units,
                 &refs,
+                &[],
             )
             .unwrap(),
             PackageTypeRef::Local {
@@ -980,6 +1078,7 @@ mod tests {
                 },
                 &units,
                 &refs,
+                &[],
             )
             .unwrap(),
             PackageTypeRef::Local {
@@ -1004,6 +1103,7 @@ mod tests {
                 },
                 units,
                 &refs,
+                &[],
             )
             .unwrap_err()
         };

@@ -42,6 +42,11 @@ impl<'a> ServiceLinkableContractPlan<'a> {
                 ..
             } => {
                 validate_schema_closure(ty, package_schema_records)?;
+                if !contract_type_is_callback_interface(ty, package_schema_records)? {
+                    return Err(ServiceLinkableMaterializationError::InvalidContractPlan {
+                        message: "callback capability requires an exact non-generic any interface contract".to_string(),
+                    });
+                }
                 None
             }
             BoundaryValuePlan::Unsupported { .. } => {
@@ -128,13 +133,7 @@ impl<'a> ServiceLinkableContractPlan<'a> {
                     package_schema_records: self.package_schema_records,
                     lifetime: *lifetime,
                 };
-                let is_callback =
-                    contract_type_is_callback_interface(self.ty, self.package_schema_records)?;
-                let projection = if is_callback {
-                    hooks.project_callback_capability(request)?
-                } else {
-                    hooks.project_native_adapter_capability(request)?
-                };
+                let projection = hooks.project_callback_capability(request)?;
                 validate_projected_capability(projection.capability(), *lifetime)?;
                 if projection.receiver_interface_abi_id().is_empty() {
                     return Err(ServiceLinkableMaterializationError::InvalidProjectedCapability);

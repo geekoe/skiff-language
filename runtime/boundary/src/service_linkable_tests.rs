@@ -42,7 +42,11 @@ fn callback_schema() -> (
     BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 ) {
     let id = PackageSchemaTypeId::new("contract:reader");
-    let ty = ContractTypeRef::package_schema("test.callback", "Reader", id.clone());
+    let interface = ContractTypeRef::package_schema("test.callback", "Reader", id.clone());
+    let ty = ContractTypeRef::AnyInterface {
+        interface: Box::new(interface),
+        arguments: Vec::new(),
+    };
     let schema = BTreeMap::from([(
         id.clone(),
         Arc::new(PackageSchemaTypeRecord {
@@ -183,6 +187,118 @@ fn service_linkable_plan_rejects_unsupported_missing_schema_and_invalid_pair() {
         ServiceLinkableContractPlan::new(&ContractTypeRef::builtin("string"), &schema, &invalid),
         Err(ServiceLinkableMaterializationError::InvalidPlan { .. })
     ));
+}
+
+#[test]
+fn callback_plan_requires_exact_non_generic_any_interface_and_never_uses_native_fallback() {
+    let (callback_ty, callback_schema) = callback_schema();
+    let ContractTypeRef::AnyInterface { interface, .. } = &callback_ty else {
+        unreachable!("callback fixture must be an exact any interface");
+    };
+    let direct = interface.as_ref().clone();
+    let nested = ContractTypeRef::Builtin {
+        name: "Array".to_string(),
+        arguments: vec![callback_ty.clone()],
+    };
+    let generic = ContractTypeRef::AnyInterface {
+        interface: interface.clone(),
+        arguments: vec![ContractTypeRef::builtin("string")],
+    };
+    let plan = callback_plan(BoundaryValueLifetime::Request);
+
+    for invalid in [direct, nested, generic] {
+        assert!(matches!(
+            ServiceLinkableContractPlan::new(&invalid, &callback_schema, &plan),
+            Err(ServiceLinkableMaterializationError::InvalidContractPlan { .. })
+        ));
+    }
+
+    let hooks = RecordingCapabilityHooks::default();
+    for lifetime in [
+        BoundaryValueLifetime::Request,
+        BoundaryValueLifetime::Stream,
+    ] {
+        let plan = callback_plan(lifetime);
+        let exact = ServiceLinkableContractPlan::new(&callback_ty, &callback_schema, &plan)
+            .expect("exact callback existential should build");
+        assert!(matches!(
+            exact.materialize(
+                &RuntimeValue::Null,
+                &RequestHeap::default(),
+                &mut RequestHeap::default(),
+                ServiceLinkableMaterializationScope {
+                    owner: BoundaryValueOwner::CapabilityOwner,
+                    lifetime,
+                },
+                &hooks,
+            ),
+            Ok(RuntimeValue::Heap(_))
+        ));
+    }
+    assert_eq!(hooks.callback_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(hooks.native_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn callback_plan_resolves_alias_and_representation_closure_to_callback_interface() {
+    let callback_id = PackageSchemaTypeId::new("contract:reader-callback");
+    let representation_id = PackageSchemaTypeId::new("contract:reader-representation");
+    let alias_id = PackageSchemaTypeId::new("contract:reader-alias");
+    let package_ref = |key: &str, id: PackageSchemaTypeId| {
+        ContractTypeRef::package_schema("test.callback", key, id)
+    };
+    let schema = BTreeMap::from([
+        (
+            callback_id.clone(),
+            Arc::new(PackageSchemaTypeRecord {
+                package_id: "test.callback".to_string(),
+                package_schema_type_id: callback_id.clone(),
+                stable_schema_key: "ReaderCallback".to_string(),
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::CallbackInterface {
+                        operations: BTreeMap::new(),
+                    },
+                },
+            }),
+        ),
+        (
+            representation_id.clone(),
+            Arc::new(PackageSchemaTypeRecord {
+                package_id: "test.callback".to_string(),
+                package_schema_type_id: representation_id.clone(),
+                stable_schema_key: "ReaderRepresentation".to_string(),
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::Representation {
+                        target: package_ref("ReaderCallback", callback_id),
+                    },
+                },
+            }),
+        ),
+        (
+            alias_id.clone(),
+            Arc::new(PackageSchemaTypeRecord {
+                package_id: "test.callback".to_string(),
+                package_schema_type_id: alias_id.clone(),
+                stable_schema_key: "ReaderAlias".to_string(),
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::Alias {
+                        target: package_ref("ReaderRepresentation", representation_id),
+                    },
+                },
+            }),
+        ),
+    ]);
+    let ty = ContractTypeRef::AnyInterface {
+        interface: Box::new(package_ref("ReaderAlias", alias_id)),
+        arguments: Vec::new(),
+    };
+    ServiceLinkableContractPlan::new(&ty, &schema, &callback_plan(BoundaryValueLifetime::Request))
+        .expect(
+            "exact callback existential may resolve through a closed alias/representation chain",
+        );
 }
 
 #[test]
@@ -453,7 +569,7 @@ fn callback_capability_rollback_covers_validation_and_destination_allocation_fai
 }
 
 #[test]
-fn service_linkable_callback_and_native_materialization_only_use_explicit_hooks() {
+fn service_linkable_callback_materialization_only_uses_the_explicit_callback_hook() {
     let (callback_ty, callback_schema) = callback_schema();
     let callback_value_plan = callback_plan(BoundaryValueLifetime::Request);
     let callback_contract_plan =
@@ -495,23 +611,12 @@ fn service_linkable_callback_and_native_materialization_only_use_explicit_hooks(
     let native_ty = ContractTypeRef::builtin("string");
     let native_value_plan = callback_plan(BoundaryValueLifetime::Request);
     let native_schema = BTreeMap::new();
-    let native_plan =
-        ServiceLinkableContractPlan::new(&native_ty, &native_schema, &native_value_plan)
-            .expect("native adapter plan should build");
-    native_plan
-        .materialize(
-            &RuntimeValue::String("native-handle".to_string()),
-            &source,
-            &mut destination,
-            ServiceLinkableMaterializationScope {
-                owner: BoundaryValueOwner::CapabilityOwner,
-                lifetime: BoundaryValueLifetime::Request,
-            },
-            &hooks,
-        )
-        .expect("explicit native hook should project opaque capability");
+    assert!(matches!(
+        ServiceLinkableContractPlan::new(&native_ty, &native_schema, &native_value_plan),
+        Err(ServiceLinkableMaterializationError::InvalidContractPlan { .. })
+    ));
     assert_eq!(hooks.callback_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(hooks.native_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(hooks.native_calls.load(Ordering::SeqCst), 0);
     assert_eq!(hooks.rollback_calls.load(Ordering::SeqCst), 0);
 
     assert!(matches!(
