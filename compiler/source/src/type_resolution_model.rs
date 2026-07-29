@@ -1571,8 +1571,7 @@ impl TypeResolutionModel {
     }
 
     pub(crate) fn is_top_level_package_dependency_ref(&self, dependency_ref: &str) -> bool {
-        self.package_dependency_views.get(dependency_ref)
-            == Some(&PackageDependencyView::TopLevel)
+        self.package_dependency_views.get(dependency_ref) == Some(&PackageDependencyView::TopLevel)
     }
 
     pub fn package_receiver_method_resolution(
@@ -1601,12 +1600,14 @@ impl TypeResolutionModel {
         {
             return None;
         }
+        let source_symbol_path =
+            self.package_receiver_source_symbol_path(dependency_ref, &symbol.symbol_path);
         let key = PackageSymbolKey {
             dependency_ref: dependency_ref.clone(),
-            symbol_path: symbol.symbol_path.clone(),
+            symbol_path: source_symbol_path.clone(),
         };
         let receiver_type = self.package_types.get(&key)?;
-        if receiver_type.public_path.as_deref() != Some(symbol.symbol_path.as_str())
+        if receiver_type.public_path.as_deref() != Some(source_symbol_path.as_str())
             || self.package_interfaces.contains_key(&key)
             || receiver_type.type_params.len() != arguments.len()
             || arguments.iter().any(type_contains_unresolved_param)
@@ -1620,7 +1621,7 @@ impl TypeResolutionModel {
                 .to_string(),
             expected_local_abi: expected_local_abi.clone(),
             expected_package_build: expected_build.clone(),
-            source_method_path: format!("{}.{}", symbol.symbol_path, method_name),
+            source_method_path: format!("{source_symbol_path}.{method_name}"),
             receiver_type_params: receiver_type.type_params.clone(),
             receiver_type_arguments: arguments,
         })
@@ -2881,9 +2882,16 @@ impl TypeResolutionModel {
                 TypeRefIr::PackageSymbol {
                     symbol: PackageSymbolRef {
                         package: PackageRefIr::Dependency {
-                            dependency_ref: self
-                                .canonical_package_dependency_ref(&package_symbol.dependency_ref)
-                                .to_string(),
+                            dependency_ref: if self
+                                .is_top_level_package_dependency_ref(&package_symbol.dependency_ref)
+                            {
+                                package_symbol.dependency_ref.clone()
+                            } else {
+                                self.canonical_package_dependency_ref(
+                                    &package_symbol.dependency_ref,
+                                )
+                                .to_string()
+                            },
                         },
                         symbol_path: package_symbol.symbol_path,
                         abi_expectation,
@@ -3102,6 +3110,28 @@ impl TypeResolutionModel {
                     .filter(|(_, candidate)| candidate.as_str() == canonical)
                     .find_map(|(alias, _)| self.package_type_source_paths.get(&key(alias)))
             })
+    }
+
+    fn package_receiver_source_symbol_path(
+        &self,
+        dependency_ref: &str,
+        selected_path: &str,
+    ) -> String {
+        let canonical_dependency_ref = self.canonical_package_dependency_ref(dependency_ref);
+        let mut matches = self.package_type_source_paths.iter().filter_map(
+            |((candidate_dependency_ref, module_path, source_symbol), candidate_selected_path)| {
+                (candidate_dependency_ref == canonical_dependency_ref
+                    && candidate_selected_path == selected_path)
+                    .then(|| source_path(module_path, source_symbol))
+            },
+        );
+        let Some(first) = matches.next() else {
+            return selected_path.to_string();
+        };
+        if matches.next().is_some() {
+            return selected_path.to_string();
+        }
+        first
     }
 
     /// Resolve a package type by its symbol path alone, searching every indexed
@@ -7109,7 +7139,12 @@ mod tests {
         let top_level = model
             .resolve_type_text("providerImpl/Bindings", &context())
             .expect("top-level alias should resolve implementation symbols");
-        assert_eq!(public.ir, top_level.ir);
+        assert_ne!(
+            public.ir, top_level.ir,
+            "source typing must retain which permission view produced the value"
+        );
+        assert!(model.assignable_in_context(&public, &top_level, &context()));
+        assert!(model.assignable_in_context(&top_level, &public, &context()));
         assert!(matches!(
             top_level.ir,
             TypeRefIr::PackageSymbol {
@@ -7117,7 +7152,7 @@ mod tests {
                     package: PackageRefIr::Dependency { ref dependency_ref },
                     ..
                 },
-            } if dependency_ref == "provider"
+            } if dependency_ref == "providerImpl"
         ));
         assert!(
             model
@@ -7136,6 +7171,144 @@ mod tests {
             BTreeMap::from([("provider".to_string(), "provider-abi".to_string())]),
             "lowering must see one canonical dependency ref"
         );
+    }
+
+    #[test]
+    fn package_receiver_resolution_requires_exact_top_level_owner_and_closed_generics() {
+        initialize_test_prelude();
+        let parsed_sources = parsed_sources("function noop() -> void {}");
+        let mut dependency = PackageDependency::id("example.com/provider");
+        dependency.alias = Some("provider".to_string());
+        dependency.top_level_alias = Some("providerImpl".to_string());
+        let mut artifact = signature_rehydration_artifact();
+        let descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        };
+        artifact.package_local_abi.implementation_symbols.insert(
+            "internal.Box".to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: "type:example.com/provider:top-level:internal.Box".to_string(),
+                descriptor: descriptor.clone(),
+                is_alias: false,
+                is_interface: false,
+                type_params: vec!["T".to_string()],
+                interface_methods: Vec::new(),
+            },
+        );
+        artifact.implementation_links.types.insert(
+            "internal.Box".to_string(),
+            skiff_artifact_model::TypeExport {
+                file: artifact.files[0].clone(),
+                type_index: 2,
+                symbol: "Box".to_string(),
+                is_interface: false,
+                descriptor: Some(descriptor),
+                type_params: vec!["T".to_string()],
+                interface_methods: Vec::new(),
+            },
+        );
+        let model = TypeResolutionModel::build(
+            &parsed_sources,
+            &BTreeMap::from([
+                ("provider".to_string(), vec![String::new()]),
+                ("providerImpl".to_string(), Vec::new()),
+            ]),
+            &[dependency],
+            None,
+            Some(std::slice::from_ref(&artifact)),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("exact package receiver fixture should build");
+        let symbol = |dependency_ref: &str, abi_expectation: Option<&str>| PackageSymbolRef {
+            package: PackageRefIr::Dependency {
+                dependency_ref: dependency_ref.to_string(),
+            },
+            symbol_path: "internal.Box".to_string(),
+            abi_expectation: abi_expectation.map(str::to_string),
+        };
+        let applied =
+            |symbol: PackageSymbolRef, arguments: Vec<TypeRefIr>| TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            };
+
+        let exact = applied(
+            symbol("providerImpl", Some("provider-abi")),
+            vec![TypeRefIr::builtin("string")],
+        );
+        let resolved = model
+            .package_receiver_method_resolution(&exact, "read")
+            .expect("direct top-level applied nominal should authorize its exact method");
+        assert_eq!(resolved.dependency_ref, "providerImpl");
+        assert_eq!(resolved.canonical_dependency_ref, "provider");
+        assert_eq!(resolved.expected_local_abi.as_str(), "provider-abi");
+        assert_eq!(resolved.expected_package_build.as_str(), "provider-build");
+        assert_eq!(resolved.source_method_path, "internal.Box.read");
+        assert_eq!(
+            resolved.receiver_type_arguments,
+            vec![TypeRefIr::builtin("string")]
+        );
+
+        for rejected in [
+            applied(
+                symbol("provider", Some("provider-abi")),
+                vec![TypeRefIr::builtin("string")],
+            ),
+            applied(
+                symbol("providerImpl", Some("wrong-abi")),
+                vec![TypeRefIr::builtin("string")],
+            ),
+            applied(symbol("providerImpl", Some("provider-abi")), Vec::new()),
+            applied(
+                symbol("providerImpl", Some("provider-abi")),
+                vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+            ),
+            applied(
+                symbol("providerImpl", Some("provider-abi")),
+                vec![TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                }],
+            ),
+            applied(
+                PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: "providerImpl".to_string(),
+                    },
+                    symbol_path: "internal.Other".to_string(),
+                    abi_expectation: Some("provider-abi".to_string()),
+                },
+                vec![TypeRefIr::builtin("string")],
+            ),
+            applied(
+                PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: "example.com/provider".to_string(),
+                    },
+                    symbol_path: "internal.Box".to_string(),
+                    abi_expectation: Some("provider-abi".to_string()),
+                },
+                vec![TypeRefIr::builtin("string")],
+            ),
+            TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: "provider".to_string(),
+                    symbol: "Box".to_string(),
+                },
+            },
+            TypeRefIr::AnyInterface {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id: "interface:provider:Box".to_string(),
+                    canonical_type_args: vec![TypeRefIr::builtin("string")],
+                },
+            },
+        ] {
+            assert!(
+                model
+                    .package_receiver_method_resolution(&rejected, "read")
+                    .is_none(),
+                "receiver discovery must fail closed for {rejected:?}"
+            );
+        }
     }
 
     #[test]

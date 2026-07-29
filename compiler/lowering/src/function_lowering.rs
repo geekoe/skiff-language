@@ -1528,11 +1528,7 @@ impl<'a> FunctionLowerer<'a> {
                 )
             }))
             .collect::<Result<Vec<_>>>()?;
-        let mut type_args = lowered_type_arguments
-            .into_iter()
-            .enumerate()
-            .map(|(index, ty)| (format!("T{index}"), ty))
-            .collect::<BTreeMap<_, _>>();
+        let mut type_args = positional_type_arguments(lowered_type_arguments);
         self.infer_native_call_type_args(&target, &mut type_args, args)?;
         let metadata = match &target {
             CallTargetIr::Builtin { op } if is_db_builtin_op(op) => self.lower_db_call_metadata(
@@ -1655,6 +1651,15 @@ impl<'a> FunctionLowerer<'a> {
         object: &Expr,
         method_name: &str,
     ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+        let Some((_, receiver_ty)) = self.receiver_type_for_call_object(object)? else {
+            return Ok(None);
+        };
+        let Some(receiver) = self
+            .type_resolution
+            .package_receiver_method_resolution(&receiver_ty, method_name)
+        else {
+            return Ok(None);
+        };
         let Some(ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias,
             compiler_owned,
@@ -1663,26 +1668,16 @@ impl<'a> FunctionLowerer<'a> {
             exact_signature,
         }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
         else {
-            return Ok(None);
+            return Err(unsupported(format!(
+                "package receiver method `{}/{}` has no exact callable implementation member",
+                receiver.dependency_ref, receiver.source_method_path
+            )));
         };
         if *compiler_owned {
             return Err(unsupported(
                 "compiler-owned package call cannot use a top-level receiver",
             ));
         }
-        let (_, receiver_ty) = self.receiver_type_for_call_object(object)?.ok_or_else(|| {
-            unsupported(format!(
-                "package receiver method `{method_name}` has no statically known receiver type at ExpressionKey {expression_key:?}"
-            ))
-        })?;
-        let receiver = self
-            .type_resolution
-            .package_receiver_method_resolution(&receiver_ty, method_name)
-            .ok_or_else(|| {
-                unsupported(format!(
-                    "typed package receiver target `{package_callable_id}` is not authorized by an exact topLevelAlias receiver"
-                ))
-            })?;
         if receiver.canonical_dependency_ref != *package_requirement_alias
             || receiver.expected_local_abi != *expected_local_abi
             || !self.package_aliases.contains_key(package_requirement_alias)
@@ -1696,7 +1691,11 @@ impl<'a> FunctionLowerer<'a> {
                 "typed package receiver target `{package_callable_id}` has no exact signature"
             ))
         })?;
-        if signature.parameters.first().map(|parameter| parameter.name.as_str()) != Some("self")
+        if signature
+            .parameters
+            .first()
+            .map(|parameter| parameter.name.as_str())
+            != Some("self")
             || signature.type_params.len() < receiver.receiver_type_arguments.len()
         {
             return Err(unsupported(format!(
@@ -2312,14 +2311,7 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     fn is_receiver_call(&self, object: &Expr) -> bool {
-        match object {
-            Expr::Identifier(name) => self.bindings.contains_key(name),
-            Expr::Field { .. } => expr_path(object)
-                .and_then(|path| path.split('.').next().map(str::to_string))
-                .is_some_and(|root| self.bindings.contains_key(&root)),
-            Expr::Call { .. } => expr_path(object).is_none(),
-            _ => true,
-        }
+        is_receiver_call_object(object, &|name| self.bindings.contains_key(name))
     }
 
     fn lower_object_literal_key(&mut self, key: &ObjectLiteralKey) -> Result<String> {
@@ -2818,5 +2810,54 @@ fn lower_binary_op(op: BinaryOp) -> BinaryOpIr {
         BinaryOp::Ge => BinaryOpIr::GreaterThanOrEqual,
         BinaryOp::And => BinaryOpIr::And,
         BinaryOp::Or => BinaryOpIr::Or,
+    }
+}
+
+fn positional_type_arguments(
+    arguments: impl IntoIterator<Item = TypeRefIr>,
+) -> BTreeMap<String, TypeRefIr> {
+    arguments
+        .into_iter()
+        .enumerate()
+        .map(|(index, ty)| (format!("T{index}"), ty))
+        .collect()
+}
+
+fn is_receiver_call_object(object: &Expr, is_local_binding: &impl Fn(&str) -> bool) -> bool {
+    match object {
+        Expr::Identifier(name) => is_local_binding(name),
+        Expr::DependencySourceAddress(_) => false,
+        Expr::Field { .. } => expr_path(object)
+            .and_then(|path| path.split('.').next().map(str::to_string))
+            .is_some_and(|root| is_local_binding(&root)),
+        Expr::Call { .. } => expr_path(object).is_none(),
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_receiver_type_arguments_precede_explicit_method_arguments() {
+        let arguments =
+            positional_type_arguments([TypeRefIr::builtin("string"), TypeRefIr::builtin("number")]);
+        assert_eq!(arguments["T0"], TypeRefIr::builtin("string"));
+        assert_eq!(arguments["T1"], TypeRefIr::builtin("number"));
+    }
+
+    #[test]
+    fn package_receiver_classification_keeps_static_dependency_addresses_out() {
+        let static_dependency =
+            Expr::DependencySourceAddress(skiff_syntax::ast::DependencySourceAddress {
+                dependency_ref: "subjectImpl".to_string(),
+                public_path: "internal.makeBox".to_string(),
+            });
+        assert!(!is_receiver_call_object(&static_dependency, &|_| false));
+
+        let local = Expr::Identifier("box".to_string());
+        assert!(is_receiver_call_object(&local, &|name| name == "box"));
+        assert!(!is_receiver_call_object(&local, &|_| false));
     }
 }

@@ -2989,6 +2989,10 @@ impl<'a> OwnerChecker<'a> {
                 ))
             });
             if let Some((dependency_ref, signature)) = signature {
+                let canonical_dependency_ref = self
+                    .type_resolution
+                    .canonical_package_dependency_ref(&dependency_ref)
+                    .to_string();
                 // Resolve each parameter independently: an owner/slot diagnostic
                 // must fail the compile without erasing an exact return fact.
                 let expected = signature
@@ -2999,14 +3003,21 @@ impl<'a> OwnerChecker<'a> {
                             parameter.name.clone(),
                             self.type_resolution
                                 .rehydrate_package_signature_type_for_dependency(
-                                    &dependency_ref,
+                                    &canonical_dependency_ref,
                                     &parameter.ty,
                                 )
+                                .or_else(|_| {
+                                    self.type_resolution
+                                        .rehydrate_package_signature_type_for_dependency(
+                                            &dependency_ref,
+                                            &parameter.ty,
+                                        )
+                                })
                                 .map(|exact| {
                                     let ordinary =
                                         self.type_resolution.bind_package_type_refs_to_dependency(
                                             &resolved_package_type_ref(&exact),
-                                            &dependency_ref,
+                                            &canonical_dependency_ref,
                                         );
                                     (ordinary, exact)
                                 }),
@@ -3037,8 +3048,15 @@ impl<'a> OwnerChecker<'a> {
                     &resolved_package_type_ref(&exact_projection),
                     &dependency_ref,
                 );
+                let projected_return = self
+                    .type_resolution
+                    .rehydrate_package_signature_type_for_dependency(
+                        &canonical_dependency_ref,
+                        &signature.return_type,
+                    )
+                    .unwrap_or_else(|_| exact_projection.clone());
                 self.contract_projection
-                    .record_expression_type(key.clone(), exact_projection);
+                    .record_expression_type(key.clone(), projected_return);
                 return Some(resolved_return);
             }
         }
@@ -4005,9 +4023,17 @@ impl<'a> OwnerChecker<'a> {
             "{}/{}",
             receiver_method.dependency_ref, receiver_method.source_method_path
         );
-        let (canonical_dependency_ref, callable) = self
-            .dependency_analysis?
-            .package_callable_by_source_path(&source_path)?;
+        let dependency_analysis = self.dependency_analysis?;
+        let Some((canonical_dependency_ref, callable)) =
+            dependency_analysis.package_callable_by_source_path(&source_path)
+        else {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` has no exact callable implementation member at {}",
+                self.module_path,
+                self.expression_span_label(key)
+            ));
+            return None;
+        };
         if canonical_dependency_ref != receiver_method.canonical_dependency_ref {
             self.diagnostics.push(format!(
                 "{}: package receiver method `{source_path}` resolves to dependency `{canonical_dependency_ref}` instead of `{}`",
@@ -4017,7 +4043,11 @@ impl<'a> OwnerChecker<'a> {
         }
         let signature = callable.signature()?.clone();
         let receiver_param_count = receiver_method.receiver_type_params.len();
-        if signature.parameters.first().map(|parameter| parameter.name.as_str()) != Some("self")
+        if signature
+            .parameters
+            .first()
+            .map(|parameter| parameter.name.as_str())
+            != Some("self")
             || signature.type_params.len() < receiver_param_count
             || signature.type_params.len() - receiver_param_count != type_args.len()
         {

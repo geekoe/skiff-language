@@ -55,8 +55,8 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         artifact.package_local_abi.public_symbols["VERSION"],
         PackageLocalAbiSymbol::Constant { .. }
     ));
-    assert_eq!(artifact.callable_links.len(), 3);
-    assert_eq!(artifact.callable_semantic_facts.len(), 3);
+    assert_eq!(artifact.callable_links.len(), 4);
+    assert_eq!(artifact.callable_semantic_facts.len(), 4);
     assert_eq!(artifact.boundary_projections.len(), 3);
     assert_eq!(artifact.package_requirements.len(), 1);
     assert_eq!(artifact.contract_requirements.len(), 1);
