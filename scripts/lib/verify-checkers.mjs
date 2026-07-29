@@ -66,6 +66,11 @@ export const CHECKER_REGISTRY = Object.freeze([
   checker('scripts/check-runtime-execution-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [
       invocation(
+        'implementation:runtime:execution-boundaries:self-test',
+        'runtime-execution-boundaries',
+        ['--self-test'],
+      ),
+      invocation(
         'implementation:runtime:execution-boundaries',
         'runtime-execution-boundaries',
       ),
@@ -73,6 +78,11 @@ export const CHECKER_REGISTRY = Object.freeze([
   }),
   checker('scripts/check-runtime-eval-error-boundary.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [
+      invocation(
+        'implementation:runtime:eval-error-boundary:self-test',
+        'runtime-eval-error-boundary',
+        ['--self-test'],
+      ),
       invocation(
         'implementation:runtime:eval-error-boundary',
         'runtime-eval-error-boundary',
