@@ -2260,7 +2260,6 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-input-model",
  "skiff-compiler-projection-input",
- "skiff-deployment",
  "thiserror",
 ]
 

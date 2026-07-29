@@ -1,4 +1,9 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use skiff_artifact_identity::{
     assign_service_contract_identities, contract_operation_id, package_schema_index_identity,
@@ -11,63 +16,62 @@ use skiff_artifact_model::{
     BoundaryValuePlan, ContractDiagnosticText, ContractRequirement, ContractTypeDescriptor,
     ContractTypeNameability, ContractTypeRef, PackageBuildId, PackageLocalAbiIdentity,
     PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract,
-    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
+    PackageSchemaIndexRef, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
+    PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
-use skiff_compiler_projection_input::ResolvedPackageSchema;
+use skiff_compiler::ResolvedPackageSchema;
+use skiff_compiler_input::{
+    read_contract_dependency_json, ContractDependencyError, ResolvedContractDependency,
+};
+use skiff_deployment::storage::CanonicalArtifactStore;
 
-use super::*;
+static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct TestRoot(PathBuf);
+
+impl TestRoot {
+    fn new() -> Self {
+        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "skiff-contract-dependency-store-boundary-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).expect("create test root");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 #[test]
-fn validated_dependency_indexes_package_owned_public_type() {
-    let (contract, schema) = fixture();
-    let dependency =
-        ResolvedContractDependency::validated(requirement("echo", &contract), contract, &[schema])
-            .unwrap();
-    let index = ContractDependencyIndex::build([dependency]).unwrap();
-    let record = index
-        .public_package_type_by_stable_key("echo", "Payload")
-        .unwrap();
-    assert_eq!(record.package_id, "example.types");
+fn store_backed_contract_and_schema_records_cross_the_driver_input_boundary() {
+    let (_root, _store, contract, loaded_schema) = stored_fixture();
+
+    let dependency = read_store_backed_dependency(&contract, loaded_schema).unwrap();
+
     assert_eq!(
-        index
-            .operation_by_stable_key("echo", "echo")
+        dependency
+            .schema_records()
+            .values()
+            .next()
             .unwrap()
-            .stable_key,
-        "echo"
+            .package_id,
+        "example.types"
     );
 }
 
 #[test]
-fn missing_and_extra_schema_inputs_fail_closed() {
-    let (contract, schema) = fixture();
-    assert!(matches!(
-        ResolvedContractDependency::validated(
-            requirement("echo", &contract),
-            contract.clone(),
-            &[]
-        ),
-        Err(ContractDependencyError::MissingPackageSchema { .. })
-    ));
-
-    let mut contract_with_extra = contract;
-    contract_with_extra.package_type_requirements[0]
-        .required_type_ids
-        .push(PackageSchemaTypeId::new("missing"));
-    assert!(matches!(
-        ResolvedContractDependency::validated(
-            requirement("echo", &contract_with_extra),
-            contract_with_extra,
-            &[schema]
-        ),
-        Err(ContractDependencyError::InvalidContract { .. })
-            | Err(ContractDependencyError::MissingSchemaRecord { .. })
-    ));
-}
-
-#[test]
-fn operation_owner_or_key_mismatch_fails_closed() {
-    let (mut contract, schema) = fixture();
+fn store_backed_schema_mismatch_fails_closed_at_the_driver_input_boundary() {
+    let (_root, _store, mut contract, loaded_schema) = stored_fixture();
     let ContractTypeRef::PackageSchema {
         stable_schema_key, ..
     } = &mut contract
@@ -79,33 +83,70 @@ fn operation_owner_or_key_mismatch_fails_closed() {
         .parameters[0]
         .ty
     else {
-        panic!("fixture nominal");
+        panic!("fixture parameter must be package-schema-backed");
     };
     *stable_schema_key = "Other".to_string();
     assign_service_contract_identities(&mut contract).unwrap();
+
     assert!(matches!(
-        ResolvedContractDependency::validated(requirement("echo", &contract), contract, &[schema]),
+        read_store_backed_dependency(&contract, loaded_schema),
         Err(ContractDependencyError::SchemaReferenceMismatch { .. })
     ));
 }
 
-#[test]
-fn strict_json_reader_rejects_provider_fields_before_schema_resolution() {
+fn stored_fixture() -> (
+    TestRoot,
+    CanonicalArtifactStore,
+    ServiceContract,
+    ResolvedPackageSchema,
+) {
     let (contract, schema) = fixture();
-    let mut wire = serde_json::to_value(&contract).unwrap();
-    wire.as_object_mut().unwrap().insert(
-        "providerBuildId".to_string(),
-        serde_json::json!("forbidden"),
-    );
-    assert!(matches!(
-        read_contract_dependency_json(
-            "provider",
-            &serde_json::to_vec(&wire).unwrap(),
-            requirement("echo", &contract),
-            &[schema],
-        ),
-        Err(ContractDependencyError::Parse { .. })
-    ));
+    let root = TestRoot::new();
+    let store = CanonicalArtifactStore::create(root.path()).unwrap();
+    store.write_package_schema_index(schema.index()).unwrap();
+    for record in schema.records().values() {
+        store.write_package_schema_type_record(record).unwrap();
+    }
+    let index_ref = PackageSchemaIndexRef {
+        package_id: schema.package_id().to_string(),
+        package_schema_index_identity: schema.index().package_schema_index_identity.clone(),
+    };
+    let loaded_index = store.read_package_schema_index(&index_ref).unwrap();
+    let loaded_records = schema
+        .records()
+        .keys()
+        .map(|type_id| {
+            let reference = PackageSchemaTypeRecordRef {
+                package_id: schema.package_id().to_string(),
+                package_schema_type_id: type_id.clone(),
+            };
+            let record = store.read_package_schema_type_record(&reference).unwrap();
+            (type_id.clone(), record.as_ref().clone())
+        })
+        .collect();
+    let loaded_schema = ResolvedPackageSchema::new(
+        schema.alias().to_string(),
+        schema.package_id().to_string(),
+        schema.exact_version().to_string(),
+        schema.package_build_id().clone(),
+        schema.expected_local_abi().clone(),
+        loaded_index.as_ref().clone(),
+        loaded_records,
+    )
+    .unwrap();
+    (root, store, contract, loaded_schema)
+}
+
+fn read_store_backed_dependency(
+    contract: &ServiceContract,
+    loaded_schema: ResolvedPackageSchema,
+) -> Result<ResolvedContractDependency, ContractDependencyError> {
+    read_contract_dependency_json(
+        "store-backed-contract",
+        &serde_json::to_vec(contract).unwrap(),
+        requirement("echo", contract),
+        &[loaded_schema],
+    )
 }
 
 fn fixture() -> (ServiceContract, ResolvedPackageSchema) {

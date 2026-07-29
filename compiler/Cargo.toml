@@ -27,6 +27,10 @@ name = "connect_mongo_package"
 path = "tests/connect_mongo_package.rs"
 
 [[test]]
+name = "contract_dependency_store_boundary"
+path = "tests/contract_dependency_store_boundary.rs"
+
+[[test]]
 name = "db_process_metadata"
 path = "tests/db_process_metadata.rs"
 
