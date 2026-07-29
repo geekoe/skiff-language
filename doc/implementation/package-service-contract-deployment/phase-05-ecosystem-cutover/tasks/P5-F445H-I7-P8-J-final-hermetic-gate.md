@@ -3,14 +3,15 @@
 状态：
 
 ```text
-BLOCKED_BY = X_PASS
+BLOCKED_BY = X_PASS + A1_PASS
 GATE_OWNER_UNIQUE = YES
 ```
 
 ## 1. Inputs and freeze
 
 - 直接父节点：
-  `P5-F445H-I7-P8-X-independent-http-entry-acceptance.md`
+  - stream lane：`P5-F445H-I7-P8-X-independent-http-entry-acceptance.md`
+  - Agine compiler lane：`P5-F445H-I7-P8-A1-top-level-alias-instance-method-closure.md`
 - ancestry floors：
   - Skiff `3a87d37f81a04c249f308b311bd91dcfdf3a8aa3` /
     `eafc29e952f6b5170e4f5faca4e5d181b3ace9f6`
@@ -25,7 +26,10 @@ GATE_OWNER_UNIQUE = YES
 
 1. P8 T真实HTTP entry combined probe；
 2. AIHub默认51个non-live tests：目标`51 pass / 0 fail / 0 skip`；
-3. Agine默认non-live tests（当前基线目标170，实际发现数必须记录且不能静默下降）；
+3. Agine默认non-live tests（当前源码声明基线目标170，实际发现数必须记录且不能静默下降）。Early
+   diagnostic在Skiff `2bcb40e61ee6b922eeca913651e2cc344a38b50e`上得到`170 declared /
+   0 discovered`，阻塞是A1拥有的`topLevelAlias`精确package receiver method编译缺口；A1合流前不能把
+   零发现写成stream、runner或Agine业务失败，A1 PASS也不能替代本项最终170个测试；
 4. Codex Relay全部default isolated tests；gate前只读发现当前默认test files/cases并冻结数量，最终实际
    发现数不得下降，使用canonical `scripts/test-isolated-service.mjs agine.ai/codex-relay`入口；
 5. official `skiff-packages`全部default offline tests；先用
@@ -60,6 +64,16 @@ gate边修边重跑。
 pre-acceptance candidate上并行运行Codex Relay、official packages或其它尚未覆盖的独立矩阵。该轮只用于
 提前发现和归类blocker，必须记录精确commit/tree，不能成为J PASS证据，也不能由gate分片边跑边修。
 
-所有diagnostic blocker批量闭合、S1/I合流、X PASS且没有在途写入后，才冻结final candidate并执行本文件
-第2节的最终验收。任何影响这些consumer的后续代码、配置、依赖或环境变化都会使早期诊断证据失效；最终
-candidate仍须由J唯一owner建立一次对应的验收结果。
+当前early diagnostic已经把Agine blocker固化到
+`P5-F445H-I7-P8-D2-agine-top-level-receiver-authority-result.md`，其实现子节点A1只修改Compiler
+projection/source/lowering，不属于P8 stream根因或S1/I修复面。两条lane可以独立推进：
+
+```text
+P8 stream lane:   S1 -> I -> X -------------------+
+                                                   +-> J final gate
+Agine compiler:   D2 -> A1 -> Agine 170 resume ---+
+```
+
+所有diagnostic blocker批量闭合、S1/I合流、X PASS、A1 PASS且没有在途写入后，才冻结final candidate并
+执行本文件第2节的最终验收。任何影响这些consumer的后续代码、配置、依赖或环境变化都会使早期诊断证据
+失效；最终candidate仍须由J唯一owner建立一次对应的验收结果。
