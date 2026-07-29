@@ -57,6 +57,8 @@ pub enum ArtifactIdentityError {
     SerializePackageArtifactLocalAbiIdentity(serde_json::Error),
     #[error("failed to serialize PackageArtifact build identity payload: {0}")]
     SerializePackageArtifactBuildIdentity(serde_json::Error),
+    #[error("failed to serialize validated PackageArtifact admission payload: {0}")]
+    SerializeValidatedPackageArtifact(serde_json::Error),
     #[error("PackageArtifact is invalid: {message}")]
     InvalidPackageArtifact { message: String },
     #[error(

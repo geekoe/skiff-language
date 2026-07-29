@@ -7,8 +7,8 @@ use skiff_artifact_model::{
     WebSocketGatewayDocumentAuthoring,
 };
 use skiff_compiler::{
-    generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
-    ServiceApiProjection,
+    generate_service_deployment, generate_service_deployment_with_validated_packages,
+    GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput, ServiceApiProjection,
 };
 use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::assembly::resolve_runtime_assembly;
@@ -68,6 +68,41 @@ fn generates_exact_operations_and_profile_bindings() {
     .unwrap();
     assert!(explicit_empty.gateway_entries.is_empty());
     assert!(explicit_empty.ingress.is_empty());
+}
+
+#[test]
+fn validated_package_admission_cannot_be_reused_for_different_input() {
+    let (project, service_api) = compile_fixture("generated-validated-package-mismatch", "\"ok\"");
+    let admitted =
+        skiff_artifact_identity::ValidatedPackageArtifact::admit_clone(&project.package.artifact)
+            .unwrap();
+    let mut different = project.package.artifact.clone();
+    different.package_id = "example.com/different-package".to_string();
+    let service = manifest();
+    let profile = profile();
+
+    let error = generate_service_deployment_with_validated_packages(
+        GeneratedServiceDeploymentInput {
+            service: &service,
+            http: None,
+            websocket: None,
+            profile_name: "prod",
+            profile: &profile,
+            service_api: &service_api,
+            implementation: &different,
+            package_closure: &[],
+            package_schema_records: &project.package.resolved_package_schema_type_records,
+        },
+        &admitted,
+        &[],
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        GeneratedServiceDeploymentError::InvalidInput(message)
+            if message.contains("validated implementation PackageArtifact")
+    ));
 }
 
 #[test]

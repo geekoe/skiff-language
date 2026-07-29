@@ -1,5 +1,8 @@
+use skiff_artifact_identity::ValidatedPackageArtifact;
 use skiff_artifact_model::{ServiceContract, ServiceDeployment};
-use skiff_compiler::{generate_service_deployment, GeneratedServiceDeploymentInput};
+use skiff_compiler::{
+    generate_service_deployment_with_validated_packages, GeneratedServiceDeploymentInput,
+};
 
 use crate::{canonical_fixture::CanonicalFixtureError, canonical_package::CanonicalPackageProject};
 
@@ -9,6 +12,8 @@ pub(super) fn project(
     project: &CanonicalPackageProject,
     contract: &ServiceContract,
     runner_ingress: Option<&str>,
+    implementation: &ValidatedPackageArtifact,
+    package_closure: &[ValidatedPackageArtifact],
 ) -> Result<ServiceDeployment, CanonicalFixtureError> {
     let Some(test_service) = &project.test_service_profile else {
         return Err(CanonicalFixtureError::InvalidInput(
@@ -52,17 +57,21 @@ pub(super) fn project(
             serde_json::Value::String(ingress_url.to_string()),
         );
     }
-    let generated = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &service,
-        http: test_service.service_root.http.as_ref(),
-        websocket: test_service.service_root.websocket.as_ref(),
-        profile_name: &test_service.profile_name,
-        profile: &profile,
-        service_api: &service_api,
-        implementation: &project.package.artifact,
-        package_closure: &project.dependency_packages,
-        package_schema_records: &project.package.resolved_package_schema_type_records,
-    })
+    let generated = generate_service_deployment_with_validated_packages(
+        GeneratedServiceDeploymentInput {
+            service: &service,
+            http: test_service.service_root.http.as_ref(),
+            websocket: test_service.service_root.websocket.as_ref(),
+            profile_name: &test_service.profile_name,
+            profile: &profile,
+            service_api: &service_api,
+            implementation: &project.package.artifact,
+            package_closure: &project.dependency_packages,
+            package_schema_records: &project.package.resolved_package_schema_type_records,
+        },
+        implementation,
+        package_closure,
+    )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     Ok(generated)
 }

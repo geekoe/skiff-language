@@ -10,6 +10,7 @@ mod requirements;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::ValidatedPackageArtifact;
 use skiff_artifact_model::{
     validate_package_boundary_projections, DeploymentArtifactIdentity, PackageArtifact,
     PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract, ServiceDeployment,
@@ -36,6 +37,33 @@ pub fn project_service_deployment(
             }
         })?;
     }
+    project_service_deployment_after_package_validation(input, contract, closure)
+}
+
+/// Projects from opaque, exact PackageArtifact admissions.
+///
+/// The raw slice is retained only to preserve the existing projection model;
+/// every element must exactly match the corresponding private admission.
+pub fn project_service_deployment_with_validated_packages(
+    input: ServiceDeploymentInput,
+    contract: &ServiceContract,
+    package_artifacts: &[PackageArtifact],
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    validated_packages: &[ValidatedPackageArtifact],
+) -> ProjectionResult<ServiceDeployment> {
+    validate_exact_package_admissions(package_artifacts, validated_packages)?;
+    validate_contract_ref(&input, contract)?;
+    validate_package_schema_records(contract, package_schema_records)?;
+    let closure =
+        package_closure::PackageClosure::resolve_after_validation(&input, package_artifacts)?;
+    project_service_deployment_after_package_validation(input, contract, closure)
+}
+
+fn project_service_deployment_after_package_validation(
+    input: ServiceDeploymentInput,
+    contract: &ServiceContract,
+    closure: package_closure::PackageClosure<'_>,
+) -> ProjectionResult<ServiceDeployment> {
     let operations =
         operations::project_operation_bindings(&input, contract, closure.implementation(&input))?;
     requirements::validate_requirement_bindings(&input, &closure, &operations.selected)?;
@@ -69,6 +97,21 @@ pub fn project_service_deployment(
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)?;
     skiff_artifact_identity::validate_service_deployment_identity(&deployment)?;
     Ok(deployment)
+}
+
+fn validate_exact_package_admissions(
+    package_artifacts: &[PackageArtifact],
+    validated_packages: &[ValidatedPackageArtifact],
+) -> ProjectionResult<()> {
+    if package_artifacts.len() != validated_packages.len()
+        || package_artifacts
+            .iter()
+            .zip(validated_packages)
+            .any(|(artifact, validated)| !validated.exactly_matches(artifact))
+    {
+        return Err(ProjectionError::ValidatedPackageAdmissionMismatch);
+    }
+    Ok(())
 }
 
 fn validate_package_schema_records(

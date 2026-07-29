@@ -8,7 +8,8 @@ pub(crate) mod source_compile;
 mod websocket_gateway_projection;
 
 pub use generated_deployment::{
-    generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
+    generate_service_deployment, generate_service_deployment_with_validated_packages,
+    GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
 };
 pub use input::{
     CompilerPlatformSources, CompilerPlatformSourcesError, ManifestOwner, ManifestProvenance,
