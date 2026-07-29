@@ -53,6 +53,17 @@ fn package_schema_type(
     )
 }
 
+fn callback_contract_type(interface: &PackageSchemaTypeRef) -> ContractTypeRef {
+    ContractTypeRef::AnyInterface {
+        interface: Box::new(ContractTypeRef::package_schema(
+            interface.package_id.clone(),
+            interface.stable_schema_key.clone(),
+            interface.package_schema_type_id.clone(),
+        )),
+        arguments: Vec::new(),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ProviderBehavior {
     ReturnTrue,
@@ -199,17 +210,13 @@ impl TypedExecutionContract {
         let mut provider_operation = unary_contract();
         provider_operation.parameters = vec![BoundaryParameter {
             name: "callback".to_string(),
-            ty: ContractTypeRef::package_schema(
-                callback_type.package_id.clone(),
-                callback_type.stable_schema_key.clone(),
-                callback_type.package_schema_type_id.clone(),
-            ),
+            ty: callback_contract_type(&callback_type),
             value_plan: callback_plan,
         }];
         provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
             interface_types: vec![callback_type],
             lifetime: BoundaryCallbackLifetime::TopLevelRequest,
-            expiration_error: BoundaryCallbackExpirationError::CapabilityUnavailable,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
         };
         let provider_schema_records = BTreeMap::from([(
             callback_record.package_schema_type_id.clone(),
@@ -320,11 +327,7 @@ impl TypedExecutionContract {
         else {
             panic!("callback stream fixture must remain a server stream")
         };
-        *item_type = ContractTypeRef::package_schema(
-            callback_type.package_id.clone(),
-            callback_type.stable_schema_key.clone(),
-            callback_type.package_schema_type_id.clone(),
-        );
+        *item_type = callback_contract_type(&callback_type);
         let BoundaryCallbackContract::RequestScoped {
             interface_types, ..
         } = &mut fixture.provider_operation.callbacks
@@ -356,12 +359,9 @@ impl TypedExecutionContract {
             lifetime: BoundaryValueLifetime::Stream,
         };
         let mut provider_operation = unary_contract();
+        provider_operation.return_value.ty = ContractTypeRef::builtin("void");
         provider_operation.stream = BoundaryStreamContract::ServerStream {
-            item_type: ContractTypeRef::package_schema(
-                callback_type.package_id.clone(),
-                callback_type.stable_schema_key.clone(),
-                callback_type.package_schema_type_id.clone(),
-            ),
+            item_type: callback_contract_type(&callback_type),
             item_value_plan: callback_plan,
         };
         provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
@@ -450,6 +450,7 @@ impl ProjectedFixture {
         let provider_file = implementation_file(
             IMPLEMENTATION_MODULE_PATH,
             "provide",
+            &provider_operation_contract,
             provider_may_suspend,
             callback_owner_may_suspend,
             ImplementationRole::Provider(provider_behavior),
@@ -482,6 +483,7 @@ impl ProjectedFixture {
         let consumer_file = implementation_file(
             IMPLEMENTATION_MODULE_PATH,
             "consume",
+            &consumer_operation_contract,
             consumer_may_suspend,
             callback_owner_may_suspend,
             ImplementationRole::Consumer {
@@ -710,19 +712,21 @@ fn service_contract(
 fn implementation_file(
     module_path: &str,
     symbol: &str,
+    operation_contract: &BoundaryOperationContract,
     may_suspend: bool,
     callback_owner_may_suspend: bool,
     role: ImplementationRole,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
+    let signature = executable_signature_from_operation(operation_contract, may_suspend);
     let mut entry = ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: symbol.to_string(),
         type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: TypeRefIr::builtin("bool"),
+        params: signature.params,
+        return_type: signature.return_type,
         self_type: None,
-        slots: SlotLayout::default(),
+        slots: parameter_slots(operation_contract),
         may_suspend,
         body: ExecutableBody {
             blocks: Vec::new(),
@@ -763,6 +767,108 @@ fn implementation_file(
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
         .expect("fixture File IR should receive a canonical identity");
     file
+}
+
+fn executable_signature_from_operation(
+    operation: &BoundaryOperationContract,
+    may_suspend: bool,
+) -> ExecutableSignatureIr {
+    ExecutableSignatureIr {
+        params: operation
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| ParamIr {
+                name: parameter.name.clone(),
+                slot: u32::try_from(index).expect("fixture parameter count must fit u32"),
+                ty: file_type_from_contract(&parameter.ty),
+            })
+            .collect(),
+        return_type: operation_return_file_type(operation),
+        self_type: None,
+        may_suspend,
+    }
+}
+
+fn parameter_slots(operation: &BoundaryOperationContract) -> SlotLayout {
+    SlotLayout {
+        slots: operation
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| SlotIr {
+                index: u32::try_from(index).expect("fixture parameter count must fit u32"),
+                name: parameter.name.clone(),
+                kind: SlotKind::Param,
+            })
+            .collect(),
+        frame_size: u32::try_from(operation.parameters.len())
+            .expect("fixture parameter count must fit u32"),
+    }
+}
+
+fn operation_return_file_type(operation: &BoundaryOperationContract) -> TypeRefIr {
+    match &operation.stream {
+        BoundaryStreamContract::Unary => file_type_from_contract(&operation.return_value.ty),
+        BoundaryStreamContract::ServerStream { item_type, .. } => TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![file_type_from_contract(item_type)],
+        },
+        BoundaryStreamContract::Unsupported { .. } => {
+            panic!("available fixture operation cannot contain an unsupported stream")
+        }
+    }
+}
+
+fn file_type_from_contract(ty: &ContractTypeRef) -> TypeRefIr {
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments.iter().map(file_type_from_contract).collect(),
+        },
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            assert!(
+                arguments.is_empty()
+                    && matches!(interface.as_ref(), ContractTypeRef::PackageSchema { .. }),
+                "callback fixture requires an exact non-generic any-interface contract"
+            );
+            TypeRefIr::AnyInterface {
+                interface: callback_interface_ref(),
+            }
+        }
+        ContractTypeRef::TypeParam { name } => TypeRefIr::TypeParam { name: name.clone() },
+        ContractTypeRef::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), file_type_from_contract(ty)))
+                .collect(),
+        },
+        ContractTypeRef::StructuralUnion { variants } => TypeRefIr::Union {
+            items: variants.iter().map(file_type_from_contract).collect(),
+        },
+        ContractTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(file_type_from_contract(inner)),
+        },
+        ContractTypeRef::Literal { value } => TypeRefIr::Literal {
+            value: match value {
+                ContractLiteral::String { value } => LiteralIr::String {
+                    value: value.clone(),
+                },
+            },
+        },
+    }
 }
 
 fn configure_provider_entry(
@@ -1272,21 +1378,17 @@ fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
     );
-    entry.params.push(ParamIr {
-        name: "callback".to_string(),
-        slot: 0,
-        ty: TypeRefIr::AnyInterface {
-            interface: callback_interface.clone(),
-        },
-    });
-    entry.slots = SlotLayout {
-        slots: vec![SlotIr {
-            index: 0,
+    assert_eq!(
+        entry.params,
+        vec![ParamIr {
             name: "callback".to_string(),
-            kind: SlotKind::Param,
+            slot: 0,
+            ty: TypeRefIr::AnyInterface {
+                interface: callback_interface.clone(),
+            },
         }],
-        frame_size: 1,
-    };
+        "callback provider File IR signature must be derived from its operation"
+    );
     entry.body = ExecutableBody {
         blocks: vec![BlockIr {
             label: "entry".to_string(),
@@ -1590,6 +1692,8 @@ fn implementation_package(
         .first()
         .expect("fixture implementation must expose its entry executable");
     let may_suspend = entry.may_suspend;
+    let package_signature =
+        package_signature_from_operation(&operation_contract, &entry.type_params, may_suspend);
     let effects = no_effects(may_suspend);
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
@@ -1689,14 +1793,7 @@ fn implementation_package(
                 public_path.to_string(),
                 PackageLocalAbiSymbol::Callable {
                     callable_id: callable_id.clone(),
-                    signature: PackageCallableSignature {
-                        type_params: entry.type_params.clone(),
-                        parameters: Vec::new(),
-                        return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::builtin("bool"),
-                        },
-                        may_suspend,
-                    },
+                    signature: package_signature,
                 },
             )]),
             implementation_symbols: BTreeMap::new(),
@@ -1789,6 +1886,69 @@ fn implementation_package(
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)
         .expect("fixture package should receive canonical identities");
     package
+}
+
+fn package_signature_from_operation(
+    operation: &BoundaryOperationContract,
+    type_params: &[String],
+    may_suspend: bool,
+) -> PackageCallableSignature {
+    PackageCallableSignature {
+        type_params: type_params.to_vec(),
+        parameters: operation
+            .parameters
+            .iter()
+            .map(|parameter| PackageCallableParameter {
+                name: parameter.name.clone(),
+                ty: package_type_from_contract(&parameter.ty),
+            })
+            .collect(),
+        return_type: match &operation.stream {
+            BoundaryStreamContract::Unary => package_type_from_contract(&operation.return_value.ty),
+            BoundaryStreamContract::ServerStream { item_type, .. } => PackageTypeRef::Container {
+                name: "Stream".to_string(),
+                arguments: vec![package_type_from_contract(item_type)],
+            },
+            BoundaryStreamContract::Unsupported { .. } => {
+                panic!("available fixture operation cannot contain an unsupported stream")
+            }
+        },
+        may_suspend,
+    }
+}
+
+fn package_type_from_contract(ty: &ContractTypeRef) -> PackageTypeRef {
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => PackageTypeRef::Container {
+            name: name.clone(),
+            arguments: arguments.iter().map(package_type_from_contract).collect(),
+        },
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => PackageTypeRef::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => PackageTypeRef::AnyInterface {
+            interface: Box::new(package_type_from_contract(interface)),
+            arguments: arguments.iter().map(package_type_from_contract).collect(),
+        },
+        ContractTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+            inner: Box::new(package_type_from_contract(inner)),
+        },
+        ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Record { .. }
+        | ContractTypeRef::StructuralUnion { .. }
+        | ContractTypeRef::Literal { .. } => PackageTypeRef::Local {
+            local_type: file_type_from_contract(ty),
+        },
+    }
 }
 
 fn unary_contract() -> BoundaryOperationContract {
