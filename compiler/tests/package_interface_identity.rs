@@ -14,9 +14,9 @@ use skiff_compiler_source::{
 const DIRECT_PROVIDER_ID: &str = "example.com/interface-provider";
 const DIRECT_PROVIDER_VERSION: &str = "1.0.0";
 const DIRECT_PROVIDER_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:565fb88eb39f0933491952ab7d44d447735b7102424050b899394857da835bb8";
+    "skiff-package-build-v10:sha256:9feb3471ebeea53781aef7e58b59665f1b36887036eb2d735053eed3d50b6f08";
 const DIRECT_PROVIDER_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:2b6b70c8b858a3ee88df957eb0488a98224fd928669c84021f15aecf7de464e6";
+    "skiff-package-local-abi-v7:sha256:82ea616167b1673ed2a21aed42e51d0bbc214c9995375d2a0cd487c17c509261";
 
 const INTERFACE_BASE_ID: &str = "example.com/interface-base";
 const INTERFACE_FACADE_ID: &str = "example.com/interface-facade";
@@ -186,17 +186,11 @@ function generic(handler: any interfaces.GenericHandler<string>) -> string {
         } if arguments.is_empty()
             && matches!(
                 interface.as_ref(),
-                skiff_artifact_model::PackageTypeRef::Local {
-                    local_type:
-                        TypeRefIr::PackageSymbol {
-                            symbol:
-                                PackageSymbolRef {
-                                    package: PackageRefIr::PackageId { package_id },
-                                    symbol_path,
-                                    abi_expectation: Some(_),
-                                },
-                        },
-                } if package_id == INTERFACE_BASE_ID && symbol_path == "Handler"
+                skiff_artifact_model::PackageTypeRef::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    ..
+                } if package_id == INTERFACE_BASE_ID && stable_schema_key == "Handler"
             )
     ));
 }

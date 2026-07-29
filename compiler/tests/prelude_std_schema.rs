@@ -1,7 +1,9 @@
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryStreamContract, BoundaryUnavailableReason,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
-    PackageLocalAbiSymbol, PackageRefIr, TypeDescriptorIr, TypeRefIr,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
+    BoundaryCallbackLifetime, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValueCarrier, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractTypeRef, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeDescriptorIr,
+    TypeRefIr,
 };
 
 mod common;
@@ -202,6 +204,79 @@ fn callback_type_is_explicitly_boundary_unavailable() {
         projection,
         BoundaryCallableProjection::Unavailable { reasons }
             if reasons.contains(&BoundaryUnavailableReason::CallbackAdapterUnavailable)
+    ));
+}
+
+#[test]
+fn exact_any_interface_projects_request_scoped_callback_from_real_source() {
+    let temp = TestDir::new("skiff-compiler", "any-interface-callback-boundary-package");
+    temp.write(
+        "package.yml",
+        "id: example.com/any-interface-callbacks\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "Handler: callback.Handler\nrun: callback.run\n");
+    temp.write(
+        "callback.skiff",
+        r#"interface Handler {
+  function handle(self: Self, value: string) -> string
+}
+
+function run(callback: any Handler) -> string {
+  return "accepted"
+}
+"#,
+    );
+
+    let project =
+        compile_package_project(temp.path()).expect("exact any-interface callback should compile");
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &project.package.artifact.package_local_abi.public_symbols["run"]
+    else {
+        panic!("run must remain a public callable")
+    };
+    assert!(
+        matches!(
+            &signature.parameters[0].ty,
+            PackageTypeRef::AnyInterface {
+                interface,
+                arguments,
+            } if arguments.is_empty() && matches!(
+                interface.as_ref(),
+                PackageTypeRef::PackageSchema { package_id, stable_schema_key, .. }
+                    if package_id == "example.com/any-interface-callbacks"
+                        && stable_schema_key == "Handler"
+            )
+        ),
+        "normalized callback signature: {signature:?}; schema={:?}",
+        (
+            &project.package.package_schema_index,
+            &project.package.artifact.package_local_abi.public_symbols["Handler"]
+        )
+    );
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = &project.package.artifact.boundary_projections[callable_id]
+    else {
+        panic!("exact any-interface callback must be boundary available")
+    };
+    assert!(matches!(
+        operation_contract.parameters[0].value_plan,
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Request,
+            ..
+        }
+    ));
+    assert!(matches!(
+        operation_contract.callbacks,
+        BoundaryCallbackContract::RequestScoped {
+            lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+            ..
+        }
     ));
 }
 
