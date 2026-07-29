@@ -11,6 +11,12 @@ pub enum ProjectionError {
         artifact: &'static str,
         identity_error: skiff_artifact_identity::ArtifactIdentityError,
     },
+    #[error("package build {build_id} has invalid boundary projections: {source}")]
+    InvalidPackageBoundaryProjections {
+        build_id: PackageBuildId,
+        #[source]
+        source: skiff_artifact_model::BoundaryProjectionValidationError,
+    },
     #[error("deployment contract reference {field} mismatch: expected {expected}, got {actual}")]
     ContractReferenceMismatch {
         field: &'static str,
@@ -72,11 +78,6 @@ pub enum ProjectionError {
     OperationContractMismatch {
         operation_id: ContractOperationId,
         callable_id: PackageCallableId,
-    },
-    #[error("callable {callable_id} fails independent boundary eligibility: {reasons:?}")]
-    BoundaryEligibilityViolation {
-        callable_id: PackageCallableId,
-        reasons: Vec<BoundaryUnavailableReason>,
     },
     #[error(
         "callable {callable_id} semantic facts conflict with its boundary projection: {message}"

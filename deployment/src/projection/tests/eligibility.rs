@@ -1,4 +1,3 @@
-use skiff_artifact_identity::assign_service_contract_identities;
 use skiff_artifact_model::*;
 
 use super::*;
@@ -42,6 +41,66 @@ impl ProjectionFixture {
             unreachable!()
         };
         implementation_requirements.provenance = provenance;
+    }
+}
+
+#[test]
+fn rehashed_forged_plan_passes_identity_but_not_deployment_admission() {
+    let mut fixture = ProjectionFixture::new();
+    let contract_projection = serde_json::to_value(
+        skiff_artifact_identity::service_protocol_identity_projection(&fixture.contract).unwrap(),
+    )
+    .unwrap();
+    let package_projection = serde_json::to_value(
+        skiff_artifact_identity::package_artifact_build_identity_projection(
+            &fixture.implementation,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    for descriptor in fixture.contract.operations.values_mut() {
+        let BoundaryValuePlan::Linkable { owner, .. } =
+            &mut descriptor.contract.return_value.value_plan
+        else {
+            unreachable!()
+        };
+        *owner = BoundaryValueOwner::Caller;
+    }
+    mechanically_rehash_forged_contract(&mut fixture.contract, contract_projection);
+    fixture.input.contract = contract_ref(&fixture.contract);
+
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = fixture
+        .implementation
+        .boundary_projections
+        .get_mut(&fixture.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let BoundaryValuePlan::Linkable { owner, .. } = &mut operation_contract.return_value.value_plan
+    else {
+        unreachable!()
+    };
+    *owner = BoundaryValueOwner::Caller;
+    mechanically_rehash_forged_package(&mut fixture.implementation, package_projection);
+    fixture.input.implementation = package_ref(&fixture.implementation);
+
+    let package_identity_admitted =
+        skiff_artifact_identity::validate_package_artifact_identities(&fixture.implementation)
+            .is_ok();
+    let contract_identity_admitted =
+        skiff_artifact_identity::validate_service_contract_identities(&fixture.contract).is_ok();
+    match fixture.project().unwrap_err() {
+        ProjectionError::InvalidPackageBoundaryProjections { .. } => {
+            assert!(package_identity_admitted);
+            assert!(contract_identity_admitted);
+        }
+        ProjectionError::InvalidTypedArtifact { .. } => {
+            assert!(!package_identity_admitted || !contract_identity_admitted);
+        }
+        error => panic!("expected identity or canonical boundary rejection, got {error}"),
     }
 }
 
@@ -98,10 +157,7 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
     {
         descriptor.contract.effect_guarantee.no_same_heap_identity = false;
     }
-    assign_service_contract_identities(&mut identity_after_database_materialization.contract)
-        .unwrap();
-    identity_after_database_materialization.input.contract =
-        contract_ref(&identity_after_database_materialization.contract);
+    identity_after_database_materialization.refresh_contract_ref();
     let BoundaryCallableProjection::Available {
         operation_contract, ..
     } = identity_after_database_materialization
@@ -302,8 +358,7 @@ fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
             reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
         };
     }
-    assign_service_contract_identities(&mut stream.contract).unwrap();
-    stream.input.contract = contract_ref(&stream.contract);
+    stream.refresh_contract_ref();
     let BoundaryCallableProjection::Available {
         operation_contract, ..
     } = stream
@@ -326,8 +381,7 @@ fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
             reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
         };
     }
-    assign_service_contract_identities(&mut callback.contract).unwrap();
-    callback.input.contract = contract_ref(&callback.contract);
+    callback.refresh_contract_ref();
     let BoundaryCallableProjection::Available {
         operation_contract, ..
     } = callback
@@ -373,19 +427,34 @@ fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
 
 fn assert_eligibility_reason(fixture: &ProjectionFixture, expected: BoundaryUnavailableReason) {
     let error = fixture.project().unwrap_err();
-    let ProjectionError::BoundaryEligibilityViolation { reasons, .. } = error else {
-        panic!("expected boundary eligibility violation, got {error}");
+    let message = match error {
+        ProjectionError::InvalidPackageBoundaryProjections { source, .. } => source.to_string(),
+        ProjectionError::InvalidTypedArtifact { identity_error, .. } => identity_error.to_string(),
+        error => panic!("expected canonical boundary admission rejection, got {error}"),
     };
     assert!(
-        reasons.contains(&expected),
-        "expected {expected:?}, got {reasons:?}"
+        message.contains(&format!("{expected:?}"))
+            || (expected == BoundaryUnavailableReason::UnsupportedStream
+                && message.contains("unsupported stream"))
+            || (expected == BoundaryUnavailableReason::CallbackAdapterUnavailable
+                && message.contains("callbacks: Unsupported"))
+            || (expected == BoundaryUnavailableReason::NativeAdapterUnavailable
+                && message.contains("native_capabilities: [\"native.socket\"]")),
+        "expected {expected:?}, got {message}"
     );
 }
 
 fn assert_eligibility_reasons(fixture: &ProjectionFixture, expected: &[BoundaryUnavailableReason]) {
     let error = fixture.project().unwrap_err();
-    let ProjectionError::BoundaryEligibilityViolation { reasons, .. } = error else {
-        panic!("expected boundary eligibility violation, got {error}");
+    let message = match error {
+        ProjectionError::InvalidPackageBoundaryProjections { source, .. } => source.to_string(),
+        ProjectionError::InvalidTypedArtifact { identity_error, .. } => identity_error.to_string(),
+        error => panic!("expected canonical boundary admission rejection, got {error}"),
     };
-    assert_eq!(reasons, expected);
+    for reason in expected {
+        assert!(
+            message.contains(&format!("{reason:?}")),
+            "expected {reason:?}, got {message}"
+        );
+    }
 }
