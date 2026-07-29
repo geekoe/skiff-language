@@ -7,7 +7,9 @@ use crate::file_ir::{
     TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
-use skiff_artifact_model::{InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr};
+use skiff_artifact_model::{
+    InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageSymbolRef,
+};
 use skiff_compiler_source::TypeResolutionModel;
 
 use super::external_refs::rebuild_external_refs_for_file_ir_unit;
@@ -22,6 +24,7 @@ struct PublicationTypeRefLocation {
 struct PublicationLocalRefIndex<'a> {
     current_package_id: Option<String>,
     package_dependency_abi_expectations: BTreeMap<String, String>,
+    package_dependency_abi_expectations_by_package_id: BTreeMap<String, String>,
     types_by_module_symbol: BTreeMap<(String, String), PublicationTypeRefLocation>,
     type_resolution: Option<&'a TypeResolutionModel>,
     alias_expansion_error: RefCell<Option<String>>,
@@ -33,10 +36,13 @@ impl<'a> PublicationLocalRefIndex<'a> {
         current_package_id: Option<&str>,
         type_resolution: Option<&'a TypeResolutionModel>,
         package_dependency_abi_expectations: &BTreeMap<String, String>,
+        package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
     ) -> Self {
         let mut index = Self {
             current_package_id: current_package_id.map(str::to_string),
             package_dependency_abi_expectations: package_dependency_abi_expectations.clone(),
+            package_dependency_abi_expectations_by_package_id:
+                package_dependency_abi_expectations_by_package_id.clone(),
             type_resolution,
             alias_expansion_error: RefCell::new(None),
             ..Self::default()
@@ -86,12 +92,14 @@ pub(super) fn rewrite_publication_local_refs(
     current_package_id: Option<&str>,
     type_resolution: Option<&TypeResolutionModel>,
     package_dependency_abi_expectations: &BTreeMap<String, String>,
+    package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let index = PublicationLocalRefIndex::build(
         units,
         current_package_id,
         type_resolution,
         package_dependency_abi_expectations,
+        package_dependency_abi_expectations_by_package_id,
     );
     for unit in units {
         let module_path = unit.module_path.clone();
@@ -574,21 +582,8 @@ fn rewrite_type_ref(
                 index.current_package_type_location(&symbol.package, &symbol.symbol_path)
             {
                 rewrite_type_ref_to_publication_location(module_path, ty, location)
-            } else if let PackageRefIr::Dependency { dependency_ref } = &mut symbol.package {
-                let mut changed = canonicalize_dependency_ref(index, dependency_ref);
-                let Some(abi_expectation) = index
-                    .package_dependency_abi_expectations
-                    .get(dependency_ref)
-                else {
-                    return changed;
-                };
-                if symbol.abi_expectation.as_ref() != Some(abi_expectation) {
-                    symbol.abi_expectation = Some(abi_expectation.clone());
-                    changed = true;
-                }
-                changed
             } else {
-                false
+                rewrite_external_package_symbol(index, symbol)
             }
         }
         TypeRefIr::Builtin { args, .. } => {
@@ -681,26 +676,47 @@ fn rewrite_applied_nominal_base(
                     }
                 };
                 true
-            } else if let PackageRefIr::Dependency { dependency_ref } = &mut symbol.package {
-                let mut changed = canonicalize_dependency_ref(index, dependency_ref);
-                let Some(abi_expectation) = index
-                    .package_dependency_abi_expectations
-                    .get(dependency_ref)
-                else {
-                    return changed;
-                };
-                if symbol.abi_expectation.as_ref() != Some(abi_expectation) {
-                    symbol.abi_expectation = Some(abi_expectation.clone());
-                    changed = true;
-                }
-                changed
             } else {
-                false
+                rewrite_external_package_symbol(index, symbol)
             }
         }
         NominalTypeRefBaseIr::LocalType { .. }
         | NominalTypeRefBaseIr::PublicationType { .. }
         | NominalTypeRefBaseIr::PackageSchema { .. } => false,
+    }
+}
+
+fn rewrite_external_package_symbol(
+    index: &PublicationLocalRefIndex<'_>,
+    symbol: &mut PackageSymbolRef,
+) -> bool {
+    let mut changed = false;
+    let abi_expectation = match &mut symbol.package {
+        PackageRefIr::Dependency { dependency_ref } => {
+            changed = canonicalize_dependency_ref(index, dependency_ref);
+            let Some(abi_expectation) = index
+                .package_dependency_abi_expectations
+                .get(dependency_ref)
+            else {
+                return changed;
+            };
+            abi_expectation
+        }
+        PackageRefIr::PackageId { package_id } => {
+            let Some(abi_expectation) = index
+                .package_dependency_abi_expectations_by_package_id
+                .get(package_id)
+            else {
+                return false;
+            };
+            abi_expectation
+        }
+    };
+    if symbol.abi_expectation.as_ref() == Some(abi_expectation) {
+        changed
+    } else {
+        symbol.abi_expectation = Some(abi_expectation.clone());
+        true
     }
 }
 
@@ -744,7 +760,7 @@ mod tests {
         CallIr, ContractOperationId, ExecutableBody, ServiceCallRef, ServiceCallRefIndex,
         ServiceProtocolIdentity,
     };
-    use skiff_artifact_model::{LiteralIr, PackageSymbolRef, TypeDeclIr, TypeDeclarationIr};
+    use skiff_artifact_model::{LiteralIr, TypeDeclIr, TypeDeclarationIr};
 
     fn current_package_duration_ref(package_id: &str) -> TypeRefIr {
         TypeRefIr::PackageSymbol {
@@ -763,6 +779,7 @@ mod tests {
         let index = PublicationLocalRefIndex {
             current_package_id: Some("skiff.run/std".to_string()),
             package_dependency_abi_expectations: BTreeMap::new(),
+            package_dependency_abi_expectations_by_package_id: BTreeMap::new(),
             types_by_module_symbol: BTreeMap::from([(
                 ("std.time".to_string(), "Duration".to_string()),
                 PublicationTypeRefLocation {
@@ -802,6 +819,51 @@ mod tests {
     }
 
     #[test]
+    fn package_id_interface_identity_receives_exact_dependency_abi() {
+        let package_id = "example.com/interfaces";
+        let index = PublicationLocalRefIndex {
+            current_package_id: Some("example.com/consumer".to_string()),
+            package_dependency_abi_expectations: BTreeMap::new(),
+            package_dependency_abi_expectations_by_package_id: BTreeMap::from([(
+                package_id.to_string(),
+                "local-abi:interfaces".to_string(),
+            )]),
+            types_by_module_symbol: BTreeMap::new(),
+            type_resolution: None,
+            alias_expansion_error: RefCell::new(None),
+        };
+        let interface_identity = TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: "tools.ToolProvider".to_string(),
+                abi_expectation: None,
+            },
+        };
+        let mut ty = TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&interface_identity).unwrap(),
+                canonical_type_args: Vec::new(),
+            },
+        };
+
+        assert!(rewrite_type_ref(&index, "consumer.main", &mut ty));
+        let TypeRefIr::AnyInterface { interface } = ty else {
+            panic!("any interface")
+        };
+        let TypeRefIr::PackageSymbol { symbol } =
+            serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).unwrap()
+        else {
+            panic!("package interface identity")
+        };
+        assert_eq!(
+            symbol.abi_expectation.as_deref(),
+            Some("local-abi:interfaces")
+        );
+    }
+
+    #[test]
     fn service_call_target_and_ref_survive_publication_local_rewrite() {
         let call_ref = ServiceCallRef {
             service_requirement_slot: 2,
@@ -836,6 +898,7 @@ mod tests {
             std::slice::from_mut(&mut unit),
             None,
             None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .unwrap();
@@ -945,8 +1008,14 @@ mod tests {
         });
         let mut units = vec![model, consumer];
 
-        rewrite_publication_local_refs(&mut units, Some(package_id), None, &BTreeMap::new())
-            .unwrap();
+        rewrite_publication_local_refs(
+            &mut units,
+            Some(package_id),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         let expressions = &units[1].constants[0].body.expressions;
         assert!(matches!(

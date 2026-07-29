@@ -600,6 +600,27 @@ impl TypeResolutionModel {
             .collect()
     }
 
+    /// Returns the exact artifact ABI selected for each package id in this
+    /// compilation. File IR occasionally carries a canonical package id rather
+    /// than a source dependency alias (notably package-owned interface
+    /// identities projected from schema types), but those executable refs still
+    /// need the same exact ABI fence as ordinary dependency refs.
+    pub fn package_dependency_abi_expectations_by_package_id(&self) -> BTreeMap<String, String> {
+        self.package_dependencies
+            .iter()
+            .filter_map(|(dependency_ref, package_id)| {
+                let canonical_ref = self.canonical_package_dependency_ref(dependency_ref);
+                (canonical_ref == dependency_ref)
+                    .then(|| {
+                        self.package_artifact_identities
+                            .get(canonical_ref)
+                            .map(|(abi, _)| (package_id.clone(), abi.as_str().to_string()))
+                    })
+                    .flatten()
+            })
+            .collect()
+    }
+
     /// Adds the published service APIs to the same external nominal-type model
     /// used by ordinary package dependencies. Service operation lowering keeps
     /// its own call target; only public type shapes are shared here.
@@ -7223,6 +7244,14 @@ mod tests {
             model.package_dependency_abi_expectations(),
             BTreeMap::from([("provider".to_string(), "provider-abi".to_string())]),
             "lowering must see one canonical dependency ref"
+        );
+        assert_eq!(
+            model.package_dependency_abi_expectations_by_package_id(),
+            BTreeMap::from([(
+                "example.com/provider".to_string(),
+                "provider-abi".to_string()
+            )]),
+            "canonical package-id refs must retain the selected exact ABI"
         );
     }
 

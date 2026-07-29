@@ -136,11 +136,15 @@ impl LoweredPackage {
         let package_dependency_abi_expectations = model
             .type_resolution()
             .package_dependency_abi_expectations();
+        let package_dependency_abi_expectations_by_package_id = model
+            .type_resolution()
+            .package_dependency_abi_expectations_by_package_id();
         rewrite_publication_local_refs(
             &mut file_ir_units,
             Some(model.policy().package_id()),
             Some(model.type_resolution()),
             &package_dependency_abi_expectations,
+            &package_dependency_abi_expectations_by_package_id,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("File IR type finalization failed: {error}"),
