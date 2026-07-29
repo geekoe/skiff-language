@@ -4,7 +4,7 @@
 #![allow(clippy::too_many_lines)]
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -55,9 +55,9 @@ use skiff_test_runner::{
 // source. Production code derives these identities from the F27A authoring
 // receipt rather than these test pins.
 const EXPECTED_PRELUDE_IDENTITY: &str =
-    "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
+    "skiff-prelude-v1:sha256:8ec6c2b3f4411b159d8b1b8dd2d55d036713a2533dd3aba043eb3d7fb020c76e";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:0dec996a2d6388245539fb000a0284a1561dc21ac3cc6e88ed3fbe0eadfe3d43";
+    "skiff-package-build-v10:sha256:c95be59b499a8e16b93bbe1af2a4b113e3c50b3515c60cd745878e0d9a3ca59b";
 const EXPECTED_RAW_HTTP_UNARY_GATEWAY_IDENTITY: &str =
     "skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2";
 const EXPECTED_RAW_HTTP_STREAM_GATEWAY_IDENTITY: &str =
@@ -1764,14 +1764,14 @@ fn assert_current_scope_source_artifact_receipt(repository: &Path) {
         identity_tuple,
         (
             "skiff-file-ir-v9:sha256:9e0b0915efe308c05081320012f282ef81e37e9536c02f16af0a770a021f60f6",
-            "skiff-package-build-v10:sha256:9b03476e93f5ccb66dc69ff899f4a8fb9c68593e70c5aeda94d4e865aab688ad",
+            "skiff-package-build-v10:sha256:e5cdb4eec5f5ea84f35f200dd8b35ef99dedf4bbd2cb4c2a902589124508dece",
             "skiff-package-local-abi-v7:sha256:605b18a2b130957f4b1feec499583334601b3788514ea851530b6623a017aed4",
             "skiff-service-protocol-v5:sha256:9ea7ac440bd594ef31632c1c1914b40f2e92957e7fb0f73f587f4cb4d8563fa5",
-            "skiff-deployment-artifact-v4:sha256:bfa01d12d90d7a9e5af9da153b63862270a52eaffe59383a4563cff2a0dde2a4",
+            "skiff-deployment-artifact-v4:sha256:7dc7eb39a0bbaa4ff2c693d0863baadc7e353fccd3834b921e54775317e6c231",
             "skiff-gateway-entry-v2:sha256:0fd289d7eec4e03b01e9e8f5633aedd7e1cc64158fa7932f99a9686e559c02f2",
             "skiff-gateway-entry-v2:sha256:1aef41f397b7c817110cb0cc74a7b472ba9732c5ac6bcfe6e219e3ac51ab6bd0",
             "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d",
-            "skiff-runtime-assembly-v3:sha256:ce8c979de4c6786ee9c2fbf2ad01fbfa2271b33a074682e2e66f5a77654f6688",
+            "skiff-runtime-assembly-v3:sha256:c85e32a68052e107eab2f93934ea77ca96f20c868df2a7278bc60c5306525e83",
         ),
         "checked-in current-scope source must retain its exact artifact identity tuple"
     );
@@ -3351,8 +3351,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return marker()",
             "skiff-package-build-v10:sha256:8b2040cc626b711035fb1981698af641960a1a61eba8e4a788a1da22cc0c0c32",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v4:sha256:66c3b0dec0b771edf36d6f5a51e800989d2d46449722723beff128843da516e9",
-            "skiff-runtime-assembly-v3:sha256:8b2d4a7f67ac024598fca0c7e8cd8f7a06a7cb05eaf88db8509be822ecc2bbfa",
+            "skiff-deployment-artifact-v4:sha256:c1de3e5d7a871745b4c5fe76155f3fad90ca094385bf112a5622d2e2186ecd02",
+            "skiff-runtime-assembly-v3:sha256:68d03b9db1f8b6ff58dff5036b1b1d0dccf26f51e3f2885856445f8ae38456aa",
         ),
         (
             "package-service-websocket-generation-a",
@@ -3361,8 +3361,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return marker()",
             "skiff-package-build-v10:sha256:edd5d2e760040d3a63ea776e461de1c62d38fe013467f9c417945d1f2a94d472",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v4:sha256:cdca3dc670c0099ca89d94f45d2a879f8b660147a87db222cd91eb7b3b361605",
-            "skiff-runtime-assembly-v3:sha256:5f92066b34ff1eb13ada3fcf18506b9a1a622927397456ac2561dbf52c043a84",
+            "skiff-deployment-artifact-v4:sha256:9c854c702f4a36705fafa321fe082584d91979191b05d10dbe96316fc5a4d0e9",
+            "skiff-runtime-assembly-v3:sha256:fc1eb897821b528c9077a9f192267dcc3f5bb03ba05fdd2348d4ea17101145d8",
         ),
         (
             "package-service-websocket-generation-b",
@@ -3371,8 +3371,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return marker()",
             "skiff-package-build-v10:sha256:1e75d027d0703be8296f8525c7d7fed60543d57c76852036e5427dbb2acc62cb",
             "skiff-package-local-abi-v7:sha256:d5627a25f7edd95d81505910f4d86f89434f2eff3837475ebf9e2b31f257b9ba",
-            "skiff-deployment-artifact-v4:sha256:a2fef6e0bdbb22873797b80cf81e711ed50faaa219d09d1b48d81d6bed3e9057",
-            "skiff-runtime-assembly-v3:sha256:8ba30a03d659f95ee0c6a20a1f5bccfaf3fd25068592a62fc175c4080e6174c9",
+            "skiff-deployment-artifact-v4:sha256:bf4415cdc1101802ff0139bd453d574cc4b6c83a5a42b6207c1f8f312be08d56",
+            "skiff-runtime-assembly-v3:sha256:ef49ea18a98cc411782ccbe83a295ed938cd4bb7eaf7094b98860d805555e411",
         ),
         (
             "package-service-i02-spawn-submit",
@@ -3381,8 +3381,8 @@ fn ecosystem_http_private_wrappers_compile_for_all_owned_source_fixtures() {
             "return submitSpawnReceipt()",
             "skiff-package-build-v10:sha256:66c1d911eedb821c27e4c8433189d432652ea875999ccb245dee55a20595d08d",
             "skiff-package-local-abi-v7:sha256:3db7056f815676834489b34a069b5016f05973b3be9379eb55736a545d7dcdf9",
-            "skiff-deployment-artifact-v4:sha256:8041663d03286a3819d7d87ddff8d83f80dc8e5bbfc82ea61cf243ec05aa3690",
-            "skiff-runtime-assembly-v3:sha256:d85a50a47063508f1e90548a6b6373e49cf129ac20118a50d679c9b382548998",
+            "skiff-deployment-artifact-v4:sha256:cea45f2d4ba8d4e1cd89f547298077381a5dd4ef57a8d86749c958c97dbb60bf",
+            "skiff-runtime-assembly-v3:sha256:f5eb11fcdc766fcb1eb7aa7942a98c2e37c4488a9afcc489e39907f3cbe05fc2",
         ),
     ] {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3731,22 +3731,30 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
         .unwrap()
         .read_service_contract(&receipt.payments_contract)
         .unwrap();
-    let operation_paths = payments_contract
-        .diagnostic_text
+    let operation_receipt = payments_contract
         .operations
-        .values()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
+        .iter()
+        .map(|(operation_id, operation)| {
+            (
+                operation.stable_key.as_str(),
+                payments_contract
+                    .diagnostic_text
+                    .operations
+                    .get(operation_id)
+                    .map(String::as_str),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     assert_eq!(
-        operation_paths,
-        BTreeSet::from([
-            "echo",
-            "left.events",
-            "left.label",
-            "right.events",
-            "right.label",
+        operation_receipt,
+        BTreeMap::from([
+            ("echo", Some("echo")),
+            ("left.events", Some("left.events")),
+            ("left.label", Some("left.label")),
+            ("right.events", Some("right.events")),
+            ("right.label", Some("right.label")),
         ]),
-        "the direct provider fixture must publish its ordinary callable and both methods for both public instances"
+        "the direct provider fixture must publish exact stable keys and diagnostic paths for its ordinary callable and both public instances"
     );
     let base = CanonicalBaseAssembly::load(
         &artifacts,

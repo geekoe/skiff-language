@@ -1,14 +1,14 @@
 use super::*;
-use crate::shared::parser::parse_source_with_bodies_tolerant;
+use crate::shared::parser::parse_source;
 
 #[test]
 fn collects_local_and_pattern_reserved_root_bindings() {
-    let ast = parse_source_with_bodies_tolerant(
+    let ast = parse_source(
         r#"
                 function demo(value: Payload, items: Payload) -> string {
                     let std = value
                     for connect in items {
-                        match value {
+                        match (value) {
                             Payload { root, nested: Payload { config } } => {
                                 return "ok"
                             }
