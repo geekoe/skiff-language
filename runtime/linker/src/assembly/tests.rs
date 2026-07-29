@@ -290,7 +290,7 @@ fn production_assembly_linker_accepts_storageful_files_with_pathless_nested_targ
         .artifact_path
         .is_none());
     assert_eq!(candidate.shared_image().code_slots().len(), 2);
-    assert_eq!(candidate.execution_image().code_slots().len(), 2);
+    assert_eq!(candidate.execution_image().execution_packages().len(), 2);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn assembly_execution_image_keeps_code_shared_and_call_kinds_distinct() {
     let shared_by_build = Arc::clone(image.code_by_build(&fixture.shared_build).unwrap());
     let shared_by_slot = Arc::clone(
         image
-            .code_slots()
+            .execution_packages()
             .get(shared_by_build.code_slot().index())
             .unwrap(),
     );
@@ -550,7 +550,7 @@ fn relink_cycle_execution_files(
     let candidate = link_runtime_assembly(hydrated)?;
     let mut files = candidate
         .execution_image()
-        .code_slots()
+        .execution_packages()
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
@@ -579,7 +579,7 @@ fn assembly_linker_attaches_exact_identity_to_local_db_target() {
     })
     .unwrap();
     let code = image
-        .code_slots()
+        .execution_packages()
         .iter()
         .find(|code| {
             code.files()
@@ -646,7 +646,7 @@ fn assembly_linker_projects_exact_package_db_target_into_every_execution_carrier
     let candidate = link_runtime_assembly(hydrated).unwrap();
     let image = candidate.execution_image();
     let (helper_slot, helper_code) = image
-        .code_slots()
+        .execution_packages()
         .iter()
         .enumerate()
         .find(|(_, code)| code.package_build_id() == &fixture.helper_build)
@@ -658,7 +658,7 @@ fn assembly_linker_projects_exact_package_db_target_into_every_execution_carrier
         .find(|(_, file)| file.module_path == "helper.main")
         .unwrap();
     let shared_file = image
-        .code_slots()
+        .execution_packages()
         .iter()
         .flat_map(|code| code.files())
         .find(|file| file.module_path == "shared.main")
@@ -692,7 +692,7 @@ fn assembly_linker_projects_exact_package_db_target_into_every_execution_carrier
         .take(4)
         .map(|expression| match expression {
             LinkedExprIr::DbOperation { operation } => &operation.target,
-            LinkedExprIr::DbQuery { target, .. } => target,
+            LinkedExprIr::DbQuery { target, .. } => &target,
             LinkedExprIr::DbLeaseClaim { claim } => &claim.target,
             LinkedExprIr::DbLeaseRead { read } => &read.target,
             other => panic!("unexpected DB carrier: {other:?}"),
@@ -755,7 +755,7 @@ fn assembly_code_linker_rejects_db_target_id_address_mismatch() {
     let candidate = link_runtime_assembly(hydrated).unwrap();
     let mut files = candidate
         .execution_image()
-        .code_slots()
+        .execution_packages()
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
@@ -1010,7 +1010,7 @@ fn assembly_code_linker_links_required_catch_applied_nominal_exactly() {
     .expect("required catch type should link");
 
     let (code_slot, file_index, file) = image
-        .code_slots()
+        .execution_packages()
         .iter()
         .enumerate()
         .flat_map(|(code_slot, code)| {
@@ -1039,7 +1039,7 @@ fn assembly_code_linker_links_required_catch_applied_nominal_exactly() {
     };
     assert_eq!(
         catch_type,
-        &LinkedTypeRef::AppliedNominal {
+        LinkedTypeRef::AppliedNominal {
             base: LinkedNominalTypeRefBase::Address { addr: generic_addr },
             arguments: vec![LinkedTypeRef::Address {
                 addr: argument_addr,
@@ -1203,7 +1203,7 @@ fn assembly_execution_links_actor_registry_call_to_declaration_owner() {
         );
     })
     .expect("canonical Actor registry call should link");
-    let code = image.code_slots()[0].as_ref();
+    let code = image.execution_packages()[0].as_ref();
     let file = code.files()[0].as_ref();
     let LinkedExprIr::Call { call } = file.executables[0]
         .body
@@ -1258,7 +1258,7 @@ fn assembly_execution_defers_actor_metadata_for_generic_native_declaration() {
         );
     })
     .expect("generic Actor native declaration should defer concrete owner resolution");
-    let LinkedExprIr::Call { call } = image.code_slots()[0].files()[0].executables[0]
+    let LinkedExprIr::Call { call } = image.execution_packages()[0].files()[0].executables[0]
         .body
         .expressions
         .last()
@@ -1706,7 +1706,7 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
 
     let mut files = candidate
         .execution_image()
-        .code_slots()
+        .execution_packages()
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
@@ -1869,7 +1869,7 @@ fn relink_helper_local_interface_with_artifact_mutation(
         canonical_type_args: Vec::new(),
     };
     let mut files = execution
-        .code_slots()
+        .execution_packages()
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
@@ -2073,7 +2073,7 @@ fn relink_cycle_package_interface_call(
     };
     let mut files = candidate
         .execution_image()
-        .code_slots()
+        .execution_packages()
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();

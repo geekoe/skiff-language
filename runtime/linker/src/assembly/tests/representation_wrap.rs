@@ -55,7 +55,7 @@ fn relink(
     let candidate = crate::assembly::link_runtime_assembly(hydrated)?;
     let mut files = candidate
         .execution_image()
-        .code_slots()
+        .execution_packages()
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
