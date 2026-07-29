@@ -66,6 +66,7 @@ async fn connection_request_response_demux_uses_exact_router_session() {
 }
 
 mod connection_lifecycle;
+mod control_response_lifecycle;
 mod foreign_db_exact_identity;
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;

@@ -957,7 +957,7 @@ fn dispatch_spawn_claim_response(
 ) -> Result<()> {
     let payload = spawn_claim_response_control_payload(header, &payload)
         .map_err(super::transport_error_into_runtime_error)?;
-    if let Some(sender) = host.outbound_requests.sender(rpc_id) {
+    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
         let _ = sender.send(OutboundResponse::End { payload });
     } else {
         warn!(
@@ -982,7 +982,7 @@ fn dispatch_control_response<THeader: Serialize>(
         )));
     }
     let response = serde_json::to_vec(header).map_err(RuntimeError::from)?;
-    if let Some(sender) = host.outbound_requests.sender(rpc_id) {
+    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
         let _ = sender.send(OutboundResponse::End { payload: response });
     } else {
         warn!(
@@ -1006,7 +1006,7 @@ fn dispatch_control_error(
             "{envelope_type} binary frame payload must be empty"
         )));
     }
-    if let Some(sender) = host.outbound_requests.sender(rpc_id) {
+    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
         let _ = sender.send(OutboundResponse::Error(response_error_from_frame(error)));
     } else {
         warn!(
