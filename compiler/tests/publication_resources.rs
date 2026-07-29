@@ -1,11 +1,7 @@
 use std::fs;
 
 mod common;
-use common::{
-    artifacts::{resource_blob, write_resource_blobs},
-    package_project::compile_package_project,
-    TestDir,
-};
+use common::{artifacts::write_resource_blobs, package_project::compile_package_project, TestDir};
 
 #[test]
 fn package_static_resources_emit_refs_and_raw_blobs() {
@@ -21,17 +17,21 @@ fn package_static_resources_emit_refs_and_raw_blobs() {
         .artifact_path
         .as_deref()
         .expect("materialized resource should carry an artifact path");
+    assert!(artifact_path.starts_with("records/package-artifacts/"));
+    let blob = project
+        .package
+        .resource_blobs
+        .iter()
+        .find(|blob| blob.sha256 == resource.sha256 && blob.byte_len == resource.byte_len)
+        .expect("resource blob by canonical content identity");
 
     assert_eq!(resource.path, "prompts/pkg.md");
-    assert_eq!(
-        resource_blob(&project.package, artifact_path).bytes,
-        b"package prompt\n"
-    );
+    assert_eq!(blob.bytes, b"package prompt\n");
 
     let artifact_root = temp.path().join("artifact-root");
     write_resource_blobs(&artifact_root, &project.package);
     assert_eq!(
-        fs::read(artifact_root.join(artifact_path)).unwrap(),
+        fs::read(artifact_root.join(&blob.artifact_path)).unwrap(),
         b"package prompt\n"
     );
 }

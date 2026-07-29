@@ -1,6 +1,7 @@
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryUnavailableReason, ContractTypeRef, PackageLocalAbiSymbol,
-    PackageRefIr, TypeDescriptorIr, TypeRefIr,
+    BoundaryCallableProjection, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
+    PackageLocalAbiSymbol, PackageRefIr, TypeDescriptorIr, TypeRefIr,
 };
 
 mod common;
@@ -205,7 +206,7 @@ fn callback_type_is_explicitly_boundary_unavailable() {
 }
 
 #[test]
-fn stream_type_is_explicitly_boundary_unavailable() {
+fn stream_type_projects_an_explicit_server_stream_boundary() {
     let temp = TestDir::new("skiff-compiler", "stream-boundary-package");
     temp.write("package.yml", "id: example.com/stream\nversion: 1.0.0\n");
     temp.write("api.yml", "events: stream.events\n");
@@ -224,8 +225,20 @@ fn stream_type_is_explicitly_boundary_unavailable() {
         .expect("exported stream callable should have a projection");
     assert!(matches!(
         projection,
-        BoundaryCallableProjection::Unavailable { reasons }
-            if reasons.contains(&BoundaryUnavailableReason::UnsupportedStream)
+        BoundaryCallableProjection::Available {
+            operation_contract,
+            ..
+        } if matches!(
+            &operation_contract.stream,
+            BoundaryStreamContract::ServerStream {
+                item_type,
+                item_value_plan: BoundaryValuePlan::Linkable {
+                    owner: BoundaryValueOwner::Provider,
+                    lifetime: BoundaryValueLifetime::Stream,
+                    ..
+                },
+            } if item_type == &ContractTypeRef::builtin("string")
+        )
     ));
 }
 

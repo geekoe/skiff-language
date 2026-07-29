@@ -109,13 +109,13 @@ fn platform_source_context_pins_current_prelude_identity() {
         registry.schema_identity(),
         // The schema identity includes the ordinary public
         // std.service.InternalError record.
-        "skiff-prelude-schema-v1:sha256:e367ab2f539d012a9b44f08c96c233afc80bc1e402b94bd1c237815f1a5a5bec"
+        "skiff-prelude-schema-v1:sha256:9fdff61def1678189b88cf3a983ab8b83d9d12d7bbaf8e2d90e3fd802873b40e"
     );
     assert_eq!(
         registry.native_identity(),
         // Native identity also commits to the validated marker-free source and
         // manifest fingerprints.
-        "skiff-prelude-native-v1:sha256:0f968fa5e1228f34e0756196a531995eecefc60117ca42d74a81924e08c0375c"
+        "skiff-prelude-native-v1:sha256:e4c62eb7addae8d4c7af090e7af353e699139366414ed6bb1e0a356898193cd4"
     );
     assert_eq!(registry.schema_identity(), prelude_schema_identity());
     assert_eq!(
@@ -126,7 +126,7 @@ fn platform_source_context_pins_current_prelude_identity() {
         prelude_identity(),
         // The full identity includes the marker-free std/prelude sources and
         // ordinary std.service.InternalError public surface.
-        "skiff-prelude-v1:sha256:754c676620527a48006935d3b325b69c6114ed2c5c2fa93bd74edb7e70ef819e"
+        "skiff-prelude-v1:sha256:8ec6c2b3f4411b159d8b1b8dd2d55d036713a2533dd3aba043eb3d7fb020c76e"
     );
 }
 
