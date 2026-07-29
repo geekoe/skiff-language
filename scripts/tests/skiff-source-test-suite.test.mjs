@@ -32,6 +32,11 @@ test('F270 legacy overlay smoke debt remains an exact closed inventory', async (
     'alias-return-catch-once-tests/main.test.skiff',
     'package-service-host/consumer-tests/main.test.skiff',
   ];
+  const currentTerminal = [
+    'http-entry-test-service/active/active.test.skiff',
+    'http-entry-test-service/happy/entry.test.skiff',
+    'package-direct-http-stream-registry/argument-tests/entry.test.skiff',
+  ];
   const f270Owned = [
     'actor-full-chain-acceptance/main.test.skiff',
     'package-service-i02-spawn-submit/main.test.skiff',
@@ -39,7 +44,10 @@ test('F270 legacy overlay smoke debt remains an exact closed inventory', async (
     'package-service-websocket-generation-b/main.test.skiff',
     'package-service-websocket-smoke/main.test.skiff',
   ];
-  assert.deepEqual(discovered, [...migrated, ...f270Owned].sort());
+  assert.deepEqual(
+    discovered,
+    [...migrated, ...currentTerminal, ...f270Owned].sort(),
+  );
 
   const rootPrivateReferences = [];
   for (const relativePath of discovered) {
@@ -52,7 +60,7 @@ test('F270 legacy overlay smoke debt remains an exact closed inventory', async (
     'package-service-websocket-smoke/main.test.skiff',
   ]);
 
-  for (const relativePath of migrated) {
+  for (const relativePath of [...migrated, ...currentTerminal]) {
     const service = await readFile(
       join(fixtureRoot, relativePath, '..', 'service.yml'),
       'utf8',
