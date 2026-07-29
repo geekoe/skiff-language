@@ -227,6 +227,10 @@ DNS、连接失败、TLS、payload decode 或协议错误抛标准平台错误�
 
 `std.http.request` 返回完整 response body bytes。`std.http.stream` 返回一次性 HTTP stream handle，`status` / `headers` 同步可读，`body` 是 `Stream<bytes>`。`std.http.sse` 返回一次性 SSE event stream。
 
+HTTP entry测试继续复用这些普通client API及其既有类型；标准库不提供测试专用HTTP入口、request/response
+类型或特殊URL。隔离runner如何提供动态ingress并选择当前case属于testing与runner契约，不改变本节签名、
+File IR target或effect identity。
+
 `std.http.json<T>` / `std.http.jsonWithHeaders<T>` 构造 JSON `std.http.HttpResponse`；`std.http.decodeJson<T>` 从 `std.http.HttpRequest.body` 做 schema-directed JSON decode。typed HTTP route wrapper 使用这些 helper，把 handler 正常返回统一编码为 HTTP 200 JSON。
 
 `std.http.header` / `std.http.headers` 按大小写不敏感 header name 读取入口 request headers；`std.http.query` 按精确 query name 读取第一个 query value；`std.http.cookie` 从 `Cookie` header 中按精确 cookie name 读取值。

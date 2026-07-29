@@ -46,9 +46,23 @@ runtime，也不能指向 stable developer instance 或固定 `4000` / `4001` �
 service identity，并由 test-runner 清理精确的临时 artifact、activation、double registry、
 config 和数据库状态；一个 registry entry 的可变测试状态不得泄漏到下一个 entry。
 
+隔离stack同时向runner提供动态business HTTP ingress URL。runner把它作为保留resolved config
+`skiff.test.ingressUrl`注入test service，并拒绝authored同名binding；它不写secret文件，也不允许
+固定端口fallback。每个case的synthetic service id和contract version是self-ingress selector的唯一
+来源。测试源码只传普通绝对HTTP URL；测试执行适配在URL origin精确命中该动态ingress时自动加入现有
+service/version selector，用户headers不能覆盖selector、Host、body framing或hop-by-hop headers。
+
+Router对此不增加test route、token、session header或控制面旁路，只按普通business HTTP路径分发。
+Runtime在隔离单runtime内按精确case deployment与activation generation把该子请求附着到仍active的
+父test execution：共享inline-effect registry，子请求不finalize，父case结束时唯一finalize。首版每个
+case只允许一个active self-ingress；stream在EOF、失败或consumer drop/break后才释放active slot，并
+沿普通HTTP disconnect/backpressure链收束。
+
 Node host 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
-`SKIFF_DEV_HOME`。live 与非 live runtime path 都在任何 health/reload 网络请求前验证 reload
-URL 和 artifact root 同时存在；CLI options 高于环境变量，缺任一都 fail closed。两种模式都
+`SKIFF_DEV_HOME`，并向Rust runner显式传入当前隔离stack的business ingress URL。live 与非 live
+runtime path 都在任何 health/reload 网络请求前验证 reload URL 和 artifact root 同时存在；需要
+self-ingress的non-live path还必须在case activation前验证business ingress URL。CLI options高于
+环境变量，缺任一都 fail closed。两种模式都
 不能 fallback 到 `127.0.0.1:4001`，也不能从 health 返回值推断可写 artifact root。reload
 target 只接受带显式端口的 IPv4/DNS `http://` URL，以及空 path、`/` 或精确
 `/__skiff/reload-artifacts`；HTTPS、默认端口、IPv6、userinfo、其它 path、query 和 fragment

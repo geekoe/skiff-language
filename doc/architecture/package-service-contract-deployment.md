@@ -873,6 +873,36 @@ envelope和stream item不得保留只为模拟旧WebSocket req/res而存在的`r
 Agine普通HTTP RPC、Host主动发起的HTTP上行和AIHub HTTP event stream；它不删除上述平台拥有、并在
 `jsonrpc-2.0-text` wire中表示为`id`的transport request identity。
 
+### 6.5 Test service HTTP ingress
+
+`kind: test` service通过现有HTTP client与真实external ingress测试HTTP entry，不定义第二套协议：
+
+- test service显式提供自己的`http.yml`，entry引用该test service `*.test.skiff`中的wrapper；
+  runner不自动复制或推断被测package/service的production ingress；
+- 测试源码调用普通`std.http.request`或`std.http.stream`，并传普通绝对`http`/`https` URL；
+  不新增标准库入口、特殊URL、语言关键字或测试metadata；
+- 非live runner拥有隔离Router的动态business ingress URL，并通过现有resolved config view只读提供
+  `skiff.test.ingressUrl`。同一次runner invocation中的cases共享该URL；authored config不能覆盖该
+  保留path，这不是per-case config override；
+- runner已为每个case生成唯一service id和对应contract version。测试执行适配只对origin精确等于上述
+  动态ingress URL的调用，在inline effect匹配前识别为self-ingress，并自动加入现有
+  `x-skiff-service`与`x-skiff-version` selector；其它URL仍按普通outbound HTTP double与network
+  policy处理；
+- Router只执行普通`service + version + method + path`选择，Host不参与路由。本能力不增加Router
+  test route、session header、token、签名、control-plane业务转发、runtime wire字段或schema版本；
+- runner拥有隔离Router和单一Runtime。Runtime/test execution按精确case deployment使self-ingress
+  子请求复用父case的inline-effect registry；子请求不另行setup或finalize，父case是唯一finalization
+  owner；
+- 第一版同一case最多有一个active self-ingress子请求。`request`在完整response结束后释放；
+  `stream`在EOF、失败或consumer drop/break后释放。已有active子请求时再发起一个应使case失败；
+- stream复用普通HTTP client stream、Router backpressure和disconnect取消链，不新增显式cancel API。
+  测试断言完整response body或解码后的协议frame；TCP/HTTP chunk边界不是业务合同，SSE按完整event断言。
+
+测试代码提供的headers不能覆盖大小写不敏感的`x-skiff-service`、`x-skiff-version`、`Host`、
+`Content-Length`、`Transfer-Encoding`或hop-by-hop headers；冲突在发送前使case失败。Host来自实际
+隔离Router连接且不参与路由。普通production execution、live target和非self-ingress URL不获得这些
+适配。
+
 ## 7. Linkable、Recoverable 与 Callback Capability
 
 即时service call使用lane-scoped linkable plan：

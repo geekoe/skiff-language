@@ -167,6 +167,48 @@ test-only source file 输入：
 - runtime 进程复用不扩大可变状态生命周期。每个 case 的 double registry、临时 artifact、
   service activation 和测试状态仍按 runner isolation contract 清理。
 
+### 5.1 HTTP entry tests
+
+测试真实HTTP entry时，test service显式声明自己的`http.yml`，entry引用`*.test.skiff` wrapper。
+wrapper可以通过普通alias或`topLevelAlias`调用被测代码；runner不会自动投影被测对象的
+production `http.yml`。
+
+测试源码使用现有HTTP client：
+
+```skiff
+const baseUrl = config.require<string>("skiff.test.ingressUrl")
+const response = std.http.request(std.http.HttpClientRequest {
+  method: "POST",
+  url: baseUrl.concat("/chat/events"),
+  headers: headers,
+  body: body,
+  timeoutMs: null,
+})
+```
+
+`skiff.test.ingressUrl`是non-live runner通过普通resolved config view注入的保留只读path；authored
+配置不得声明或覆盖它。它是普通绝对`http` URL，不是特殊scheme，也不能从环境变量或固定端口猜测。
+`std.http.request`返回普通`HttpClientResponse`；`std.http.stream`返回普通
+`HttpClientStreamHandle`。没有测试专用HTTP API或类型。
+
+当且仅当case运行于runner拥有的隔离test execution，且request URL的canonical origin精确等于该
+ingress URL时，该调用是self-ingress：
+
+- 在inline effect匹配前识别，因此父调用本身不消费`std.http.request`/`std.http.stream` double；
+- 测试执行适配自动使用当前case唯一service id和contract version，测试代码不能提供或覆盖selector；
+- Router按普通HTTP ingress规则路由，Host不参与选择；
+- entry内部的outbound effects继续使用父case同一个inline-effect registry；
+- 同一case第一版禁止两个active self-ingress请求。stream EOF、失败或consumer drop/break才释放
+  active状态。
+
+其它origin仍是普通outbound HTTP，必须遵守non-live double/network policy。用户headers若包含
+`x-skiff-service`、`x-skiff-version`、`Host`、`Content-Length`、`Transfer-Encoding`或任一
+hop-by-hop header，发送前失败；header name按大小写不敏感比较。
+
+流式测试按完整body或应用协议frame断言，不按传输chunk断言。SSE必须先把连续bytes解析成完整event；
+consumer `break`或drop沿普通HTTP client disconnect链取消Router/runtime中的子请求。子请求不独立
+执行setup/finalization；父case始终是唯一effect检查和资源finalization owner。
+
 Live smoke：
 
 - 同样在真实 runtime 进程中执行，但 target 由调用者显式提供和拥有，并允许显式授权的外部
@@ -284,6 +326,7 @@ event 表使用 effect DSL 的 `[item, ...]`，不是 Skiff 通用 array literal
 - setup 成功后才执行 test body；setup 失败时 body 不执行；
 - case finalization 是 runtime-owned teardown phase。无论 body 成功、assert 失败、throw、
   timeout 或 cancel，都必须检查未消费 double、销毁 registry 并释放 case 资源；
+- self-ingress HTTP子请求复用同一个registry且不触发finalization；只有父case执行上述phase；
 - 当前没有用户可写的 teardown 语法。未来若增加 teardown，它是同一 case execution 中位于
   body 之后、runtime finalization 之前的独立 phase，不改变现有 `effects` surface；
 - effect declaration 只属于当前 case，case 完成后 registry 销毁；
