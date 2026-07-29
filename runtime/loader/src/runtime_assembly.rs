@@ -326,14 +326,36 @@ impl HydratedRuntimeAssembly {
 
 pub struct RuntimeAssemblyLoader<'a, R: ?Sized> {
     resolver: &'a R,
+    file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
 }
+
+fn validate_file_ir_identity(file: &FileIrUnit) -> anyhow::Result<()> {
+    skiff_artifact_identity::validate_file_ir_identity(file).map_err(anyhow::Error::from)
+}
+
+static FILE_IR_IDENTITY_VALIDATOR: fn(&FileIrUnit) -> anyhow::Result<()> =
+    validate_file_ir_identity;
 
 impl<'a, R> RuntimeAssemblyLoader<'a, R>
 where
     R: RuntimeAssemblyContentResolver + ?Sized,
 {
     pub fn new(resolver: &'a R) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            file_ir_identity_validator: &FILE_IR_IDENTITY_VALIDATOR,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_file_ir_identity_validator(
+        resolver: &'a R,
+        file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
+    ) -> Self {
+        Self {
+            resolver,
+            file_ir_identity_validator,
+        }
     }
 
     /// Resolve and hydrate one exact immutable assembly reference.
@@ -524,7 +546,13 @@ where
             validate_package_ref(&reference, &artifact)?;
             let schema_index = self.load_package_schema_index(&artifact)?;
             let (files, file_slots) = self.load_files(&reference, &artifact, &mut shared_files)?;
-            validate_package_file_targets(&reference, &artifact, &files, &file_slots)?;
+            validate_package_file_targets(
+                &reference,
+                &artifact,
+                &files,
+                &file_slots,
+                self.file_ir_identity_validator,
+            )?;
             let (resources, resource_slots) = self.load_resources(&reference, &artifact)?;
             let schema_records =
                 self.load_package_schema_closure(&artifact, &schema_index, shared_schema_records)?;
@@ -751,7 +779,12 @@ where
             }
 
             let file = if let Some(file) = shared_files.get(&reference.file_ir_identity) {
-                validate_file_ref(package_ref, &reference, file)?;
+                validate_file_ref(
+                    package_ref,
+                    &reference,
+                    file,
+                    self.file_ir_identity_validator,
+                )?;
                 Arc::clone(file)
             } else {
                 let file = self
@@ -763,7 +796,12 @@ where
                             reference.file_ir_identity, package_ref.package_build_id
                         )
                     })?;
-                validate_file_ref(package_ref, &reference, &file)?;
+                validate_file_ref(
+                    package_ref,
+                    &reference,
+                    &file,
+                    self.file_ir_identity_validator,
+                )?;
                 shared_files.insert(reference.file_ir_identity.clone(), Arc::clone(&file));
                 file
             };

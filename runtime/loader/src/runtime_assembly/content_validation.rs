@@ -73,19 +73,21 @@ pub(super) fn validate_file_ref_path(
     Ok(())
 }
 
-pub(super) fn validate_file_ref(
+pub(super) fn validate_file_ref<V>(
     package: &PackageArtifactRef,
     reference: &FileIrRef,
     file: &FileIrUnit,
-) -> anyhow::Result<()> {
-    skiff_artifact_identity::validate_file_ir_identity(file)
-        .map_err(anyhow::Error::from)
-        .with_context(|| {
-            format!(
-                "File IR content is invalid for {} in package {}",
-                reference.file_ir_identity, package.package_build_id
-            )
-        })?;
+    validate_identity: &V,
+) -> anyhow::Result<()>
+where
+    V: Fn(&FileIrUnit) -> anyhow::Result<()> + ?Sized,
+{
+    validate_identity(file).with_context(|| {
+        format!(
+            "File IR content is invalid for {} in package {}",
+            reference.file_ir_identity, package.package_build_id
+        )
+    })?;
     if file.file_ir_identity != reference.file_ir_identity
         || file.module_path != reference.module_path
         || reference
@@ -169,6 +171,7 @@ pub(super) fn validate_package_file_targets(
     artifact: &PackageArtifact,
     files: &[Arc<FileIrUnit>],
     file_slots: &BTreeMap<String, usize>,
+    validate_identity: &(impl Fn(&FileIrUnit) -> anyhow::Result<()> + ?Sized),
 ) -> anyhow::Result<()> {
     let resolve = |reference: &FileIrRef, label: &str| -> anyhow::Result<&FileIrUnit> {
         validate_file_ref_path(package_ref, reference)?;
@@ -189,7 +192,7 @@ pub(super) fn validate_package_file_targets(
                 reference.file_ir_identity
             );
         }
-        validate_file_ref(package_ref, reference, file)?;
+        validate_file_ref(package_ref, reference, file, validate_identity)?;
         Ok(file)
     };
 
