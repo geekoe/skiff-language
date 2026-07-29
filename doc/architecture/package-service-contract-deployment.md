@@ -1067,6 +1067,19 @@ collection projection。Consumer File IR中的外部DB target复用
 `PackageSymbolRef { package: Dependency(alias), symbolPath, abiExpectation }`，不另造DB专用package
 reference，也不复制provider的DB metadata。
 
+该test-only implementation view还包含精确implementation type现有的impl method namespace。Projection
+把这些method以既有`PackageCallableId`、exact signature及`callableLinks`登记到
+`PackageArtifact.packageLocalAbi.implementationSymbols`；不新增artifact字段。Source只在receiver为
+该direct top-level view产生的精确
+`PackageSymbolRef { package: Dependency(alias), symbolPath, abiExpectation }`，或以它为base的完整
+generic applied nominal时，将method解析成现有package callable target。Lowering继续生成普通
+`PackageCallable`调用，并把receiver作为第一项执行参数。
+
+普通public alias、service boundary对象和interface receiver不获得这项implementation method view。
+public alias仍只有API graph公开的public instance methods；service boundary只按ServiceContract
+operation/schema materialize；interface receiver只按interface slot dispatch。Compiler不得按显示名、
+短名或同名method回退，也不得因这一规则新增语法、schema、ABI代际或运行时动态lookup。
+
 top-level权限不传递。Subject public ABI可以正常闭合其dependency public types，但test consumer不能因此
 直接使用transitive dependency top-level；确需访问时必须在test manifest中为该provider声明direct
 dependency并设置该entry的`topLevelAlias`。普通package edge和production service没有implementation

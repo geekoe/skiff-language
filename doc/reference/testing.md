@@ -81,7 +81,14 @@ packages:
   manifest中任何package/service `alias`或其它`topLevelAlias`冲突；
 - public alias与top-level alias没有public-first、top-level-first、fallback或precedence；
 - 可访问的顶层名字包括同一文件中的type、function、const、interface和附着到type的`db object`；
-  DB attachment不需要、也不会因为测试访问而进入`api.yml`。
+  DB attachment不需要、也不会因为测试访问而进入`api.yml`；
+- 通过`topLevelAlias`取得的精确implementation type值可以调用该type在同一精确artifact中已有的
+  impl methods。method仍属于receiver的method namespace，不能写成新的顶层路径；generic receiver
+  保留完整type arguments。
+
+这项test-only能力不会扩大普通`alias`或service boundary。普通`alias`返回的public/local-closure-only
+type值仍只能使用API公开的public instance methods；不能借返回值发现任意package-local impl method。
+service call返回的对象也不会获得provider package-local method namespace。
 
 旧`access: topLevel`字段和“以普通alias替换public解析面”的语义均已删除；出现旧字段必须在manifest
 读取时失败，不能兼容、忽略或改写。

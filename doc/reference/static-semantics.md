@@ -227,6 +227,22 @@ exact implementation expectation；lowering时package reference canonicalize回�
 `alias`，绑定同一个`expectedPackageBuild`，不得生成第二个`PackageRequirement`、code slot或collection
 projection。
 
+当表达式的静态receiver type来自该direct `topLevelAlias`视图时，精确implementation type还开放同一
+artifact中该type现有的impl method namespace。解析必须同时满足：
+
+- receiver为带完整`abiExpectation`的精确`PackageSymbol`，或以它为base并保留完整substitution的
+  `AppliedNominal`；
+- dependency是当前test service的direct edge，且调用点来自该entry的top-level view；
+- method唯一解析为该精确PackageArtifact中的`PackageCallable`，其Local ABI/build expectation与
+  receiver一致。
+
+源码调用的显式参数arity与类型检查不计receiver；lowering沿用普通receiver-call形状，把receiver作为
+执行参数的第一项，再追加源码中的显式参数。此规则不新增路径语法、调用关键字或动态method lookup。
+普通public alias只开放API公开的public instance method，不能因为返回值保留名义类型就访问任意impl
+method；service boundary对象不能获得provider package-local method；interface receiver仍只按interface
+slot dispatch，不回退到concrete package method。任何view、ABI/build、generic substitution或method
+identity不精确的情况都fail closed。
+
 跨package DB target的符号约束与其它topLevel symbol相同：consumer保留dependency alias、完整
 symbol path和ABI expectation；dependency requirement另行约束精确provider build。Linker必须把两者
 解析到同一PackageArtifact及同一File IR type，且该File IR存在附着到该type的DB declaration。任何

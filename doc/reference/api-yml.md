@@ -189,6 +189,12 @@ receiver type 必须显式 implements 一个或多个 interface。public instanc
 interfaces；普通 public const 不会自动成为 public instance。instance 自身不等于 operation；它公开的
 interface methods 才能 projection 成 public instance method operations。
 
+公开type本身不会把它的任意impl method加入public namespace。普通package `alias`取得的值即使保留该
+public type或local-closure-only type的精确名义身份，也只可调用API graph显式公开的public instance
+methods；不能由concrete receiver自动发现package-local impl methods。`kind: test` service的
+`topLevelAlias`对精确implementation type开放现有impl method namespace，是独立的test-only
+implementation view，不改变`api.yml` graph或Package Local ABI的公开面。
+
 `public_instance_key` 是完整 API graph public path。dependency lookup、binding target、
 Package Local ABI 的 method source-call key，以及由该 method 生成的 service operation stable key，都使用
 该完整 path，而不是 leaf/display name。
@@ -254,6 +260,11 @@ serviceCalls:
   ServiceDeployment再把该 id 精确绑定到 implementation `PackageCallableId`。
 - `ServiceProtocolIdentity` 使用 operation ids/descriptors 与实际可达的
   `PackageSchemaTypeId` closure，不包含 handler、route、deployment 或 implementation build。
+
+service operation返回的对象只携带ServiceContract声明的schema/type身份，不携带provider的
+implementation view；consumer不能在该对象上解析provider package-local impl methods。若contract
+返回的是interface能力，其调用仍只按contract/interface operation dispatch，不因provider concrete type
+存在同名method而改变。
 
 `service.yml.serviceCalls`是第一版唯一service-call选择机制。它只引用callable public paths，不重复source
 selector、参数、返回或签名引用的types；compiler从这些roots递归计算ServiceContract的PackageSchema
