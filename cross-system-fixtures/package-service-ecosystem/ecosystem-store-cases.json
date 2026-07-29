@@ -1,7 +1,7 @@
 {
   "argv": ["__ecosystem-store", "--artifact-root", "<artifact-root>"],
   "emptyAssembly": {
-    "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+    "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
   },
   "workflow": [
     {
@@ -19,7 +19,7 @@
       "expectedGeneration": 0,
       "candidateGeneration": 1,
       "assembly": {
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
       },
       "participantReplicaIds": ["runtime-a", "runtime-b"]
     },
@@ -36,7 +36,7 @@
       "expectedGeneration": 0,
       "candidateGeneration": 1,
       "assembly": {
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
       },
       "participantReplicaIds": ["runtime-a", "runtime-b"]
     },
@@ -47,7 +47,7 @@
       "expectedGeneration": 0,
       "candidateGeneration": 1,
       "assembly": {
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
       },
       "connectedReplicaIds": ["runtime-a", "runtime-b"],
       "preparedReplicaIds": ["runtime-a", "runtime-b"]
@@ -59,7 +59,7 @@
     {
       "operation": "readRouterSnapshot",
       "assembly": {
-        "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
       }
     }
   ],
@@ -84,7 +84,7 @@
       "request": {
         "operation": "readRouterSnapshot",
         "assembly": {
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
         },
         "path": "records/runtime-assemblies/latest.json"
       }
@@ -98,7 +98,7 @@
         "expectedGeneration": 99,
         "candidateGeneration": 100,
         "assembly": {
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
         },
         "participantReplicaIds": ["runtime-a"]
       }
@@ -112,7 +112,7 @@
         "expectedGeneration": 0,
         "candidateGeneration": 1,
         "assembly": {
-          "assemblyIdentity": "skiff-runtime-assembly-v2:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
         },
         "participantReplicaIds": []
       }

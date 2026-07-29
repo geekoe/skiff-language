@@ -233,7 +233,7 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-const assemblyIdentity = `skiff-runtime-assembly-v2:sha256:${'3'.repeat(64)}`;
+const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'3'.repeat(64)}`;
 const dummyContractRef = {
   serviceId: 'example.com/health',
   contractVersion: '1.0.0',

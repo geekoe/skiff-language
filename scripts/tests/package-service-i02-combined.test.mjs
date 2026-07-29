@@ -403,7 +403,7 @@ async function createOwnedStack() {
 
 function assemblyRecord(fixture, bootstrap) {
   return {
-    schemaVersion: 'skiff-runtime-assembly-v2',
+    schemaVersion: 'skiff-runtime-assembly-v3',
     assemblyIdentity: fixture.candidate.assembly.assemblyIdentity,
     roots: [],
     resolvedDeployments: [],

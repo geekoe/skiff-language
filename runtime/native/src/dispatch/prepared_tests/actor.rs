@@ -57,7 +57,7 @@ impl NativeActorCapability for TestActorCapability {
 fn actor_activation() -> ActivationIdentityControl {
     ActivationIdentityControl {
         assembly_identity: AssemblyIdentity::new(
-            "skiff-runtime-assembly-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
         generation: 1,
         runtime_replica_id: "runtime-test".to_string(),

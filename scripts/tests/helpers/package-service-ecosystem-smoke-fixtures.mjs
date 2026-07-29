@@ -1,8 +1,8 @@
 const identity = (prefix, character) => `${prefix}:${character.repeat(64)}`;
 
 export const smokeFixtureIdentities = Object.freeze({
-  assembly: identity('skiff-runtime-assembly-v2:sha256', 'a'),
-  bootstrapAssembly: identity('skiff-runtime-assembly-v2:sha256', '0'),
+  assembly: identity('skiff-runtime-assembly-v3:sha256', 'a'),
+  bootstrapAssembly: identity('skiff-runtime-assembly-v3:sha256', '0'),
   productionBuild: identity('skiff-package-build-v10:sha256', '1'),
   productionAbi: identity('skiff-package-local-abi-v7:sha256', '2'),
   overlayBuild: identity('skiff-package-build-v10:sha256', '3'),

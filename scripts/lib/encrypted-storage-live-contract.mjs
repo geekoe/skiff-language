@@ -7,7 +7,7 @@ export const repoRoot = resolve(scriptDir, '..', '..');
 export const ENCRYPTED_STORAGE_TARGET_ENVIRONMENT = 'dev';
 
 const RUNTIME_ASSEMBLY_IDENTITY =
-  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
 const REQUIRED_PACKAGE_COORDINATES = new Set([
   'example.com/encrypted-live-default@0.1.0',
   'example.com/encrypted-live-mapped@0.1.0',
