@@ -225,6 +225,15 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                 callable_id,
                 signature,
             } => {
+                let expected_callable_id = format!(
+                    "pkg-callable:{}:top-level:{source_path}",
+                    artifact.package_id
+                );
+                if callable_id.as_str() != expected_callable_id {
+                    return invalid_artifact(format!(
+                        "implementation callable {source_path} has non-canonical callable id {callable_id}, expected {expected_callable_id}"
+                    ));
+                }
                 if public_callables.contains(callable_id)
                     || !implementation_callables.insert(callable_id.clone())
                 {
@@ -364,7 +373,7 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             "callableSemanticFacts keys must exactly match public and implementation callable ids; expected {all_callables:?}, got {semantic_fact_keys:?}"
         ));
     }
-    validate_public_callable_link_kinds(artifact, &public_callables)?;
+    validate_public_callable_link_kinds(artifact, &public_callables, &implementation_callables)?;
     validate_implementation_link_type_refs(artifact)?;
     Ok(())
 }
@@ -434,6 +443,7 @@ fn executable_coordinate(file: &FileIrRef, executable_index: u32) -> ExecutableC
 fn validate_public_callable_link_kinds(
     artifact: &PackageArtifact,
     public_callables: &BTreeSet<skiff_artifact_model::PackageCallableId>,
+    implementation_callables: &BTreeSet<skiff_artifact_model::PackageCallableId>,
 ) -> Result<()> {
     let function_targets = artifact
         .implementation_links
@@ -473,14 +483,46 @@ fn validate_public_callable_link_kinds(
             }
         }
     }
+    let mut implementation_method_targets = BTreeSet::new();
+    for callable_id in implementation_callables {
+        let target = &artifact.callable_links[callable_id].target;
+        let coordinate = executable_coordinate(&target.file_ref, target.executable_index);
+        match target.callable_kind {
+            OperationCallableKind::ImplMethod => {
+                if !method_targets.contains(&coordinate) {
+                    return invalid_artifact(format!(
+                        "implementation callable {callable_id} targets an implementation method outside implementationLinks.implMethods"
+                    ));
+                }
+                implementation_method_targets.insert(coordinate);
+            }
+            OperationCallableKind::InternalFunction => {
+                if function_targets.contains(&coordinate) || method_targets.contains(&coordinate) {
+                    return invalid_artifact(format!(
+                        "implementation callable {callable_id} uses InternalFunction for an exported implementation target"
+                    ));
+                }
+            }
+            OperationCallableKind::PublicFunction | OperationCallableKind::ReceiverMethod => {
+                return invalid_artifact(format!(
+                    "implementation callable {callable_id} has unsupported callable kind {:?}",
+                    target.callable_kind
+                ));
+            }
+        }
+    }
     if public_function_targets != function_targets {
         return invalid_artifact(format!(
             "public function callable targets must exactly match implementation function links; expected {function_targets:?}, got {public_function_targets:?}"
         ));
     }
-    if public_method_targets != method_targets {
+    let callable_method_targets = public_method_targets
+        .union(&implementation_method_targets)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if callable_method_targets != method_targets {
         return invalid_artifact(format!(
-            "public method callable targets must exactly match implementation method links; expected {method_targets:?}, got {public_method_targets:?}"
+            "public and implementation method callable targets must exactly match implementation method links; expected {method_targets:?}, got {callable_method_targets:?}"
         ));
     }
     Ok(())
@@ -508,70 +550,118 @@ fn validate_implementation_link_type_refs(artifact: &PackageArtifact) -> Result<
             &format!("implementation link constant {path}"),
         )?;
     }
-    for (path, export) in artifact
+    for (path, export, callable_kind) in artifact
         .implementation_links
         .functions
         .iter()
-        .chain(&artifact.implementation_links.impl_methods)
+        .map(|(path, export)| (path, export, OperationCallableKind::PublicFunction))
+        .chain(
+            artifact
+                .implementation_links
+                .impl_methods
+                .iter()
+                .map(|(path, export)| (path, export, OperationCallableKind::ImplMethod)),
+        )
     {
         let location = format!("implementation link executable {path}");
-        let scope = implementation_link_callable_scope(
+        let scopes = implementation_link_callable_scopes(
             artifact,
             &export.file,
             export.executable_index,
+            callable_kind,
             &location,
         )?;
-        validate_executable_signature(&export.signature, scope, &location)?;
+        for scope in scopes {
+            validate_executable_signature(&export.signature, scope, &location)?;
+        }
     }
     Ok(())
 }
 
-fn implementation_link_callable_scope<'a>(
+fn implementation_link_callable_scopes<'a>(
     artifact: &'a PackageArtifact,
     file: &FileIrRef,
     executable_index: u32,
+    callable_kind: OperationCallableKind,
     location: &str,
-) -> Result<&'a [String]> {
-    let mut scope = None;
+) -> Result<Vec<&'a [String]>> {
+    let mut scopes = Vec::new();
     for (callable_id, link) in &artifact.callable_links {
         if link.target.file_ref != *file
             || link.target.executable_index != executable_index
-            || !matches!(
-                link.target.callable_kind,
-                OperationCallableKind::PublicFunction | OperationCallableKind::ImplMethod
-            )
+            || link.target.callable_kind != callable_kind
         {
             continue;
         }
-        let signature = artifact
-            .package_local_abi
-            .public_symbols
-            .values()
-            .find_map(|symbol| match symbol {
-                PackageLocalAbiSymbol::Callable {
-                    callable_id: symbol_id,
-                    signature,
-                } if symbol_id == callable_id => Some(signature),
-                _ => None,
-            })
-            .ok_or_else(|| crate::ArtifactIdentityError::InvalidPackageArtifact {
-                message: format!(
-                    "{location} targets public callable {callable_id} without a Local ABI signature"
-                ),
-            })?;
-        if let Some(existing) = scope {
-            if existing != signature.type_params.as_slice() {
-                return invalid_artifact(format!(
-                    "{location} has public aliases with different callable type parameter scopes"
-                ));
-            }
-        } else {
-            scope = Some(signature.type_params.as_slice());
-        }
+        let signature = exact_callable_signature(artifact, callable_id, location)?;
+        scopes.push(signature.type_params.as_slice());
     }
-    scope.ok_or_else(|| crate::ArtifactIdentityError::InvalidPackageArtifact {
-        message: format!("{location} has no matching public callable"),
-    })
+    if scopes.is_empty() {
+        return invalid_artifact(format!(
+            "{location} has no matching {callable_kind:?} callable"
+        ));
+    }
+    Ok(scopes)
+}
+
+fn exact_callable_signature<'a>(
+    artifact: &'a PackageArtifact,
+    callable_id: &skiff_artifact_model::PackageCallableId,
+    location: &str,
+) -> Result<&'a PackageCallableSignature> {
+    let public = exact_surface_callable_signature(
+        &artifact.package_local_abi.public_symbols,
+        callable_id,
+        |path| format!("pkg-callable:{}:{path}", artifact.package_id),
+        "public",
+        location,
+    )?;
+    let implementation = exact_surface_callable_signature(
+        &artifact.package_local_abi.implementation_symbols,
+        callable_id,
+        |path| format!("pkg-callable:{}:top-level:{path}", artifact.package_id),
+        "implementation",
+        location,
+    )?;
+    match (public, implementation) {
+        (Some(signature), None) | (None, Some(signature)) => Ok(signature),
+        (None, None) => invalid_artifact(format!(
+            "{location} targets callable {callable_id} without an exact Local ABI signature"
+        )),
+        (Some(_), Some(_)) => invalid_artifact(format!(
+            "{location} targets callable {callable_id} owned by both public and implementation surfaces"
+        )),
+    }
+}
+
+fn exact_surface_callable_signature<'a>(
+    symbols: &'a BTreeMap<String, PackageLocalAbiSymbol>,
+    callable_id: &skiff_artifact_model::PackageCallableId,
+    expected_id: impl Fn(&str) -> String,
+    surface: &str,
+    location: &str,
+) -> Result<Option<&'a PackageCallableSignature>> {
+    let Some((path, symbol)) = symbols
+        .iter()
+        .find(|(path, _)| expected_id(path) == callable_id.as_str())
+    else {
+        return Ok(None);
+    };
+    let PackageLocalAbiSymbol::Callable {
+        callable_id: symbol_id,
+        signature,
+    } = symbol
+    else {
+        return invalid_artifact(format!(
+            "{location} targets callable {callable_id}, but exact {surface} surface path {path} is not callable"
+        ));
+    };
+    if symbol_id != callable_id {
+        return invalid_artifact(format!(
+            "{location} targets callable {callable_id}, but exact {surface} surface path {path} binds {symbol_id}"
+        ));
+    }
+    Ok(Some(signature))
 }
 
 fn validate_executable_signature(
