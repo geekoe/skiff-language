@@ -132,12 +132,39 @@ export async function runRuntimeArtifactBoundarySelfTest() {
       ),
     ),
     mutation(
-      'display and source target inference',
+      'source_path string target inference',
       'display-or-source-linking',
       async (root) => append(
         root,
         'runtime/linked-program/src/shared_image.rs',
         '\nfn resolve_target_from_source_path(source_path: &str) { let _ = source_path; }\n',
+      ),
+    ),
+    mutation(
+      'symbol_path string target inference',
+      'display-or-source-linking',
+      async (root) => append(
+        root,
+        'runtime/linked-program/src/shared_image.rs',
+        '\nfn resolve_db_target_from_symbol_path(symbol_path: &str) { let _ = symbol_path; }\n',
+      ),
+    ),
+    mutation(
+      'by_name string target inference',
+      'display-or-source-linking',
+      async (root) => append(
+        root,
+        'runtime/linked-program/src/shared_image.rs',
+        '\nfn infer_db_target_by_name(by_name: &str) { let _ = by_name; }\n',
+      ),
+    ),
+    mutation(
+      'display string target inference',
+      'display-or-source-linking',
+      async (root) => append(
+        root,
+        'runtime/linked-program/src/shared_image.rs',
+        '\nfn select_db_target_from_display(display: &str) { let _ = display; }\n',
       ),
     ),
     mutation(
@@ -171,7 +198,10 @@ export async function runRuntimeArtifactBoundarySelfTest() {
 
   await withFixture(async (root) => {
     const baseline = await collectRuntimeArtifactBoundaryViolations(root);
-    assertNoViolations('baseline with a genuine #[cfg(test)] external module', baseline);
+    assertNoViolations(
+      'baseline with canonical typed DB target resolution and a genuine #[cfg(test)] external module',
+      baseline,
+    );
   });
 
   for (const entry of matrix) {
@@ -243,7 +273,17 @@ async function writeSafeFixture(root) {
     write(
       root,
       'runtime/linker/src/assembly/candidate.rs',
-      'pub fn typed_candidate() {}\n',
+      [
+        'pub fn typed_candidate() {}',
+        '',
+        'fn resolve_typed_db_target(',
+        '    package_symbol: &PackageSymbolRef,',
+        '    service_symbol: &ServiceSymbolRef,',
+        ') -> (DbObjectTargetId, Address) {',
+        '    todo!()',
+        '}',
+        '',
+      ].join('\n'),
     ),
     write(
       root,
