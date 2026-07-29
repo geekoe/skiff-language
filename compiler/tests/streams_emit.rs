@@ -4,6 +4,8 @@ use std::fs;
 
 use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
 use serde_json::Value;
+use skiff_artifact_model::PackageLocalAbiSymbol;
+use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 
 fn find_json_node<'a>(
     value: &'a Value,
@@ -24,7 +26,7 @@ fn find_json_node<'a>(
 }
 
 #[test]
-fn stream_file_ir_contains_for_emit_and_native_sse_call() {
+fn stream_file_ir_contains_for_emit_and_std_sse_package_call() {
     let temp = TestDir::new("skiff-compiler", "stream-file-ir");
     fs::write(
         temp.path().join("package.yml"),
@@ -49,14 +51,29 @@ function events(request: std.http.HttpClientRequest) -> Stream<std.http.HttpSseE
 
     let project = compile_package_project(temp.path()).expect("stream package should compile");
     let value = module_artifact(&project.package, "stream").value();
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the canonical dependency closure");
+    let Some(PackageLocalAbiSymbol::Callable {
+        callable_id: sse_callable_id,
+        ..
+    }) = std
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get("std.http.sse")
+    else {
+        panic!("std should expose std.http.sse");
+    };
 
     assert!(find_json_node(&value, |node| node["kind"] == "forIn").is_some());
     assert!(find_json_node(&value, |node| node["kind"] == "emit").is_some());
     assert!(find_json_node(&value, |node| {
         node["kind"] == "call"
-            && node["call"]["target"]["kind"] == "native"
-            && node["call"]["target"]["target"]["namespace"] == "std.http"
-            && node["call"]["target"]["target"]["symbol"] == "sse"
+            && node["call"]["target"]["kind"] == "packageCallable"
+            && node["call"]["target"]["packageRef"]["kind"] == "dependency"
+            && node["call"]["target"]["packageRef"]["dependencyRef"] == "std"
+            && node["call"]["target"]["packageCallableId"] == sse_callable_id.as_str()
     })
     .is_some());
 }

@@ -11,7 +11,7 @@ use skiff_artifact_model::{
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
 use common::{
-    artifacts::{module_artifact, resource_blob},
+    artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
     package_project::{
         compile_package_project, compile_package_project_with_contract_dependencies,
@@ -85,10 +85,14 @@ fn config_db_resource_lane_exposes_package_artifact_projection() {
         .artifact_path
         .as_deref()
         .expect("materialized resource should carry its artifact path");
-    assert_eq!(
-        resource_blob(&project.package, blob_path).bytes,
-        b"probe resource\n"
-    );
+    assert!(blob_path.starts_with("records/package-artifacts/"));
+    let blob = project
+        .package
+        .resource_blobs
+        .iter()
+        .find(|blob| blob.sha256 == resource_ref.sha256 && blob.byte_len == resource_ref.byte_len)
+        .expect("resource blob by canonical content identity");
+    assert_eq!(blob.bytes, b"probe resource\n");
 }
 
 #[test]
@@ -163,6 +167,9 @@ fn write_representative_package_project(temp: &TestDir) {
         "package.yml",
         r#"id: example.com/probe-app
 version: 1.0.0
+state:
+  database:
+    kind: database
 packages:
   - id: example.com/probe-dependency
     version: 1.0.0

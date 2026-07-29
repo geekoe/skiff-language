@@ -28,6 +28,7 @@ fn user_packages_reject_native_declarations() {
             "package.yml",
             format!("id: example.com/{name}\nversion: 1.0.0\n"),
         );
+        temp.write("api.yml", "{}\n");
         temp.write("main.skiff", declaration);
 
         let error = compile_package_project(temp.path())
@@ -264,7 +265,7 @@ type Marker { request: std.http.HttpRequest }
         CallableEffectSummary::Analyzed { .. }
     ));
 
-    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 91);
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 93);
     for public_path in [
         "std.bytes.DecodeError",
         "std.crypto.sha256",

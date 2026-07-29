@@ -1490,6 +1490,13 @@ impl<'a> FunctionLowerer<'a> {
                 lowered_args.push(self.lower_expr(object)?);
                 receiver_type_arguments = type_arguments;
                 target
+            } else if let Some((target, type_arguments)) =
+                self.resolved_local_impl_receiver_call_target(expression_key, object, field)?
+            {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                receiver_type_arguments = type_arguments;
+                target
             } else if let Some(target) = self.actor_method_call_target(expression_key)? {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
@@ -1711,6 +1718,66 @@ impl<'a> FunctionLowerer<'a> {
             },
             receiver.receiver_type_arguments,
         )))
+    }
+
+    fn resolved_local_impl_receiver_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        object: &Expr,
+        method_name: &str,
+    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+        let Some((_, receiver_ty)) = self.receiver_type_for_call_object(object)? else {
+            return Ok(None);
+        };
+        let receiver_context = TypeResolutionContext::with_type_params(
+            self.module_path,
+            self.type_param_scope.clone(),
+        );
+        let Some(receiver) = self.type_resolution.local_receiver_method_resolution(
+            &receiver_ty,
+            method_name,
+            &receiver_context,
+        ) else {
+            return Ok(None);
+        };
+        let Some(ResolvedCallTarget::LocalImplMethod {
+            source_callable,
+            receiver_type_arguments,
+        }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Err(unsupported(format!(
+                "local receiver method `{}` has no exact typed source target",
+                receiver.source_callable
+            )));
+        };
+        if source_callable != &receiver.source_callable
+            || receiver_type_arguments != &receiver.receiver_type_arguments
+        {
+            return Err(unsupported(format!(
+                "typed local receiver target `{source_callable}` does not match exact receiver method `{}`",
+                receiver.source_callable
+            )));
+        }
+        let target = if source_callable.module_path() == self.module_path {
+            let executable_index = self
+                .executable_indices
+                .get(source_callable.symbol())
+                .copied()
+                .ok_or_else(|| {
+                    unsupported(format!(
+                        "typed local receiver target `{source_callable}` has no local executable"
+                    ))
+                })?;
+            CallTargetIr::LocalExecutable { executable_index }
+        } else {
+            CallTargetIr::ExternalServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: source_callable.module_path().to_string(),
+                    symbol: source_callable.symbol().to_string(),
+                },
+            }
+        };
+        Ok(Some((target, receiver_type_arguments.clone())))
     }
 
     fn resolved_receiver_builtin_call_target(

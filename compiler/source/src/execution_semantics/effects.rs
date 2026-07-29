@@ -266,7 +266,9 @@ impl EffectCollector<'_> {
             ResolvedCallTarget::ConfigIntrinsic { .. }
             | ResolvedCallTarget::ReceiverBuiltin { .. } => {}
             ResolvedCallTarget::LocalFunction { source_callable }
-            | ResolvedCallTarget::LocalImplMethod { source_callable } => {
+            | ResolvedCallTarget::LocalImplMethod {
+                source_callable, ..
+            } => {
                 if let Some(profile) = self.callable_profiles.get(source_callable) {
                     self.profile.join(profile);
                 } else {

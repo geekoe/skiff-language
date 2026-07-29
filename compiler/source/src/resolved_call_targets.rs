@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     ActorMethodIdentity, BoundaryOperationDescriptor, BuiltinReceiverOp, ContractOperationId,
     ContractRequirement, InterfaceInstantiationRef, PackageCallableId, PackageCallableSignature,
-    PackageLocalAbiIdentity,
+    PackageLocalAbiIdentity, TypeRefIr,
 };
 
 use crate::{ExpressionKey, SourceSymbolKey};
@@ -30,6 +30,7 @@ pub enum ResolvedCallTarget {
     },
     LocalImplMethod {
         source_callable: SourceSymbolKey,
+        receiver_type_arguments: Vec<TypeRefIr>,
     },
     ActorMethod {
         actor: SourceSymbolKey,
@@ -78,7 +79,9 @@ impl ResolvedCallTarget {
     pub fn source_callable_key(&self) -> Option<SourceSymbolKey> {
         match self {
             Self::LocalFunction { source_callable }
-            | Self::LocalImplMethod { source_callable }
+            | Self::LocalImplMethod {
+                source_callable, ..
+            }
             | Self::ActorMethod {
                 source_callable, ..
             } => Some(source_callable.clone()),
@@ -213,6 +216,7 @@ mod tests {
 
         let local_impl_method = ResolvedCallTarget::LocalImplMethod {
             source_callable: SourceSymbolKey::new("api", "Worker.handle"),
+            receiver_type_arguments: Vec::new(),
         };
         assert_target_wire(
             local_impl_method,
@@ -221,7 +225,8 @@ mod tests {
                 "sourceCallable": {
                     "modulePath": "api",
                     "symbol": "Worker.handle"
-                }
+                },
+                "receiverTypeArguments": []
             }),
         );
 
@@ -347,6 +352,13 @@ mod tests {
                 "typeName": "Worker"
             }),
             json!({
+                "kind": "localImplMethod",
+                "sourceCallable": {
+                    "modulePath": "api",
+                    "symbol": "Worker.handle"
+                }
+            }),
+            json!({
                 "kind": "actorMethod",
                 "actor": {
                     "modulePath": "api",
@@ -397,6 +409,7 @@ mod tests {
 
         let method = ResolvedCallTarget::LocalImplMethod {
             source_callable: SourceSymbolKey::new("workers", "Worker<Job>.handle"),
+            receiver_type_arguments: vec![TypeRefIr::builtin("string")],
         };
         assert_eq!(
             method.source_callable_key(),

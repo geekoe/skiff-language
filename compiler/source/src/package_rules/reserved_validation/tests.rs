@@ -5,10 +5,10 @@ use crate::shared::parser::parse_source;
 fn collects_local_and_pattern_reserved_root_bindings() {
     let ast = parse_source(
         r#"
-                function demo(value: Payload, items: Payload) -> string {
-                    let std = value
+                function demo(payload: Payload, items: Payload) -> string {
+                    let std = payload
                     for connect in items {
-                        match (value) {
+                        match payload {
                             Payload { root, nested: Payload { config } } => {
                                 return "ok"
                             }

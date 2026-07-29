@@ -716,7 +716,39 @@ fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
             target,
             ResolvedCallTarget::LocalImplMethod {
                 source_callable,
+                ..
             } if source_callable == &SourceSymbolKey::new("api", "ExactProvider.read")
+        )
+    }));
+}
+
+#[test]
+fn generic_local_receiver_call_target_carries_exact_receiver_instantiation() {
+    let model = analyze(
+        r#"
+            type Box<T> { value: T }
+
+            impl Box<T> {
+              function unwrap() -> T {
+                return self.value
+              }
+            }
+
+            function wrapper(box: Box<string>) -> string {
+              return box.unwrap()
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::LocalImplMethod {
+                source_callable,
+                receiver_type_arguments,
+            } if source_callable == &SourceSymbolKey::new("api", "Box<T>.unwrap")
+                && receiver_type_arguments == &vec![TypeRefIr::builtin("string")]
         )
     }));
 }
@@ -811,6 +843,7 @@ fn ordinary_receiver_call_does_not_use_actor_method_target() {
             target,
             ResolvedCallTarget::LocalImplMethod {
                 source_callable,
+                ..
             } if source_callable == &SourceSymbolKey::new("api", "Worker.handle")
         )
     }));

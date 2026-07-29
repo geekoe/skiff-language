@@ -100,7 +100,9 @@ impl OwnerAnalyzer<'_> {
 
         let source_callable = match resolved_target.as_ref() {
             Some(ResolvedCallTarget::LocalFunction { source_callable })
-            | Some(ResolvedCallTarget::LocalImplMethod { source_callable }) => source_callable,
+            | Some(ResolvedCallTarget::LocalImplMethod {
+                source_callable, ..
+            }) => source_callable,
             _ => return,
         };
         let writes_caller_reachable = match self.callable_effects.operations().get(source_callable)

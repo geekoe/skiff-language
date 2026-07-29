@@ -55,7 +55,7 @@ fn root_path_resolves_attached_db_object_type_in_file_ir() {
     fs::create_dir_all(temp.path().join("internal")).unwrap();
     fs::write(
         temp.path().join("package.yml"),
-        "id: example.com/root-db-reference\nversion: 1.0.0\n",
+        "id: example.com/root-db-reference\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
     )
     .unwrap();
     fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
