@@ -86,7 +86,7 @@ function reservedHeaderRejected(name: string) -> boolean {
   )
   if rejected.tag == "err" {
     return rejected.exception.error.message
-      == "self-ingress request cannot set runtime-owned header `".concat(name).concat("`")
+      == "self-ingress HTTP request must not set runtime-owned header ".concat(name)
   }
   return false
 }

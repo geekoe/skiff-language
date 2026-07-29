@@ -16,8 +16,8 @@ PRODUCTION_WRITE = NO
   （tree `eafc29e952f6b5170e4f5faca4e5d181b3ace9f6`）
 - dispatch前必须把K/H/R已集成后的精确Skiff commit/tree写入本任务result；未冻结时不可创建WT。
 - 冻结candidate：
-  `9fd0fc003b8edd0bdb8fdd7626cfa5c7f6b1de22`
-  （tree `97a524b867b02ebeec2495243ad5f34518556e63`）。
+  `a5e484910b68784778c6de22ac0ca2a1fd893db2`
+  （tree `0621766aefec0f91b42893380a1884ed88ea7f82`）。
 - DAG：`K + H + R -> T -> I`
 - integration owner：`/root/phase05_integration_steward`
 
