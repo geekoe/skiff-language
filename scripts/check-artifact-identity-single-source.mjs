@@ -678,7 +678,10 @@ const adapterRequirements = [
   {
     relPath: 'compiler/driver/source_compile/canonical_dependencies.rs',
     helper: 'canonical package dependency identity validation',
-    regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
+    rustUse: Object.freeze({
+      modulePath: 'skiff_artifact_identity',
+      symbol: 'validate_package_artifact_identities',
+    }),
   },
   {
     relPath: 'compiler/driver/pipeline/mod.rs',
@@ -759,7 +762,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'IngressSelector',
-    requiredFields: Object.freeze(['protocol', 'host', 'method', 'path']),
+    requiredFields: Object.freeze(['protocol', 'method', 'path']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -1049,13 +1052,72 @@ function collectAdapterRequirementFailures(requirements, textByPath) {
       continue;
     }
     const productionText = stripInlineTestModules(text);
-    if (!requirement.regexp.test(productionText)) {
+    const delegates = requirement.rustUse === undefined
+      ? requirement.regexp.test(productionText)
+      : rustUseImportsSymbol(
+        productionText,
+        requirement.rustUse.modulePath,
+        requirement.rustUse.symbol,
+      );
+    if (!delegates) {
       failures.push(
         `${requirement.relPath} must delegate ${requirement.helper} to skiff_artifact_identity`,
       );
     }
   }
   return failures;
+}
+
+function rustUseImportsSymbol(text, modulePath, symbol) {
+  const canonicalModulePath = modulePath.replace(/\s/g, '');
+  const canonicalSymbol = symbol.replace(/\s/g, '');
+  const source = stripRustComments(text);
+  for (const match of source.matchAll(/\buse\s+([^;]+);/gs)) {
+    const useTree = match[1].replace(/\s/g, '');
+    const direct = new RegExp(
+      `^${escapeRegExp(canonicalModulePath)}::${escapeRegExp(canonicalSymbol)}(?:as\\w+)?$`,
+    );
+    if (direct.test(useTree)) {
+      return true;
+    }
+    const groupedPrefix = `${canonicalModulePath}::{`;
+    if (!useTree.startsWith(groupedPrefix) || !useTree.endsWith('}')) {
+      continue;
+    }
+    const members = splitTopLevelUseTreeMembers(
+      useTree.slice(groupedPrefix.length, -1),
+    );
+    if (
+      members.some((member) => new RegExp(
+        `^${escapeRegExp(canonicalSymbol)}(?:as\\w+)?$`,
+      ).test(member))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function splitTopLevelUseTreeMembers(text) {
+  const members = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '{') {
+      depth += 1;
+    } else if (text[index] === '}') {
+      depth -= 1;
+    } else if (text[index] === ',' && depth === 0) {
+      members.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  members.push(text.slice(start));
+  return members.filter((member) => member.length > 0);
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function collectOwnedDefinitionViolations(files) {
@@ -1889,7 +1951,7 @@ pub struct DeploymentOperationBinding {
 pub enum IngressProtocol { Http, WebSocket, }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IngressSelector {
-  pub protocol: Protocol, pub host: String, pub method: Option<String>, pub path: String,
+  pub protocol: Protocol, pub method: Option<String>, pub path: String,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentIngressBinding {
@@ -2015,6 +2077,26 @@ pub struct ActivationTemplate {
       }),
       expectedFailures: 2,
     },
+    {
+      name: 'rejects host regression in deployment ingress selector',
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          'pub protocol: Protocol, pub method:',
+          'pub protocol: Protocol, pub host: String, pub method:',
+        ),
+      }),
+      expectedFailures: 1,
+    },
+    ...['protocol', 'method', 'path'].map((field) => ({
+      name: `rejects missing canonical deployment ingress selector ${field}`,
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          new RegExp(`\\s*pub ${field}: [^,]+,`),
+          '',
+        ),
+      }),
+      expectedFailures: 1,
+    })),
     {
       name: 'rejects renamed canonical package link-plan leaf',
       files: canonicalDeploymentAssemblyFiles({
@@ -2402,6 +2484,60 @@ mod tests {
     failures.push(
       `allows production adapter delegation: expected 0 failures, got ${productionAdapterFailures.length}`,
     );
+  }
+
+  const canonicalDependencyAdapterRequirement = [{
+    relPath: 'compiler/driver/source_compile/canonical_dependencies.rs',
+    helper: 'canonical package dependency identity validation',
+    rustUse: {
+      modulePath: 'skiff_artifact_identity',
+      symbol: 'validate_package_artifact_identities',
+    },
+  }];
+  const canonicalDependencyImportCases = [
+    {
+      name: 'allows grouped canonical dependency identity import',
+      text: `use skiff_artifact_identity::{
+  package_artifact_ref,
+  validate_package_artifact_identities,
+};
+`,
+      expectedFailures: 0,
+    },
+    {
+      name: 'allows split canonical dependency identity import',
+      text: `use skiff_artifact_identity::package_artifact_ref;
+use skiff_artifact_identity::validate_package_artifact_identities;
+`,
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects grouped import without canonical dependency identity symbol',
+      text: `use skiff_artifact_identity::{package_artifact_ref, validate_service_deployment_identity};
+`,
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects split import from a noncanonical identity module',
+      text: `use skiff_artifact_identity::package_artifact_ref;
+use local_identity::validate_package_artifact_identities;
+`,
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalDependencyImportCases) {
+    const importFailures = collectAdapterRequirementFailures(
+      canonicalDependencyAdapterRequirement,
+      new Map([[
+        canonicalDependencyAdapterRequirement[0].relPath,
+        testCase.text,
+      ]]),
+    );
+    if (importFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} adapter failure(s), got ${importFailures.length}`,
+      );
+    }
   }
 
   if (failures.length > 0) {

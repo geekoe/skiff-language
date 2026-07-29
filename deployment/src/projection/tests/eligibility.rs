@@ -351,7 +351,7 @@ fn unknown_typed_facts_and_targets_cannot_forge_available() {
 }
 
 #[test]
-fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
+fn unsupported_stream_and_native_claims_and_orphan_callback_declaration_cannot_forge_available() {
     let mut stream = ProjectionFixture::new();
     for descriptor in stream.contract.operations.values_mut() {
         descriptor.contract.stream = BoundaryStreamContract::Unsupported {
@@ -396,9 +396,13 @@ fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
         reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
     };
     callback.refresh_implementation_ref();
-    assert_eligibility_reason(
+    // CallbackCapability is canonical only for an exact, non-generic `any I`
+    // value position. This fixture has no callback position, so its exact
+    // callback declaration remains `None`; an orphan `Unsupported` claim is a
+    // malformed operation contract rather than an availability reason.
+    assert_projection_rejection_contains(
         &callback,
-        BoundaryUnavailableReason::CallbackAdapterUnavailable,
+        "callback declaration is not canonical for operation value positions; expected=None",
     );
 
     let mut native = ProjectionFixture::new();
@@ -425,6 +429,19 @@ fn unsupported_stream_callback_and_native_claims_cannot_forge_available() {
     assert_eligibility_reason(&native, BoundaryUnavailableReason::NativeAdapterUnavailable);
 }
 
+fn assert_projection_rejection_contains(fixture: &ProjectionFixture, expected: &str) {
+    let error = fixture.project().unwrap_err();
+    let message = match error {
+        ProjectionError::InvalidPackageBoundaryProjections { source, .. } => source.to_string(),
+        ProjectionError::InvalidTypedArtifact { identity_error, .. } => identity_error.to_string(),
+        error => panic!("expected canonical boundary admission rejection, got {error}"),
+    };
+    assert!(
+        message.contains(expected),
+        "expected {expected:?}, got {message}"
+    );
+}
+
 fn assert_eligibility_reason(fixture: &ProjectionFixture, expected: BoundaryUnavailableReason) {
     let error = fixture.project().unwrap_err();
     let message = match error {
@@ -436,8 +453,6 @@ fn assert_eligibility_reason(fixture: &ProjectionFixture, expected: BoundaryUnav
         message.contains(&format!("{expected:?}"))
             || (expected == BoundaryUnavailableReason::UnsupportedStream
                 && message.contains("unsupported stream"))
-            || (expected == BoundaryUnavailableReason::CallbackAdapterUnavailable
-                && message.contains("callbacks: Unsupported"))
             || (expected == BoundaryUnavailableReason::NativeAdapterUnavailable
                 && message.contains("native_capabilities: [\"native.socket\"]")),
         "expected {expected:?}, got {message}"
