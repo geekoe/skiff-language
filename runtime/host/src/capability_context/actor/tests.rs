@@ -127,7 +127,7 @@ async fn f445h_i6_actor_scope_control_committed_response_beats_ready_scope_deadl
     let rpc_id = next_control_request(&mut router_receiver, &mut find, "actor.find").await;
 
     outbound_requests
-        .complete_for_test(&rpc_id)
+        .take_terminal_sender(&rpc_id)
         .expect("find response should still be pending")
         .send(typed_response(json!({
             "schemaVersion": "skiff-runtime-frame-v1",
@@ -211,7 +211,7 @@ async fn assert_scoped_control_cancel<T, F>(
     assert_eq!(outbound_requests.pending_count(), 0);
     assert_eq!(outbound_requests.active_lease_count(), 0);
     assert!(
-        outbound_requests.complete_for_test(&rpc_id).is_none(),
+        outbound_requests.take_terminal_sender(&rpc_id).is_none(),
         "late and duplicate responses must be fenced"
     );
 }
@@ -339,7 +339,7 @@ async fn submit_with_response(
         }
     };
     outbound_requests
-        .complete_for_test(&sent_request.rpc_id)
+        .take_terminal_sender(&sent_request.rpc_id)
         .expect("spawn submit response should be pending")
         .send(response(&sent_request.rpc_id))
         .expect("spawn submit response should be delivered");

@@ -901,7 +901,7 @@ mod tests {
             status: "submitted".to_string(),
         };
         outbound_requests
-            .complete_for_test(&rpc_id)
+            .take_terminal_sender(&rpc_id)
             .expect("spawn submit response should be pending")
             .send(skiff_runtime_request::OutboundResponse::End {
                 payload: serde_json::to_vec(&response).expect("response should serialize"),
@@ -966,7 +966,7 @@ mod tests {
             status: "queued".to_string(),
         };
         outbound_requests
-            .complete_for_test(&rpc_id)
+            .take_terminal_sender(&rpc_id)
             .expect("spawn submit response should be pending")
             .send(skiff_runtime_request::OutboundResponse::End {
                 payload: serde_json::to_vec(&response).expect("response should serialize"),
@@ -1054,7 +1054,7 @@ mod tests {
             capability_contract::ExecutionScopeLifecycleSnapshot::default()
         );
         assert!(
-            outbound_requests.complete_for_test(&rpc_id).is_none(),
+            outbound_requests.take_terminal_sender(&rpc_id).is_none(),
             "late spawn receipt must be fenced after scope terminal"
         );
         assert!(

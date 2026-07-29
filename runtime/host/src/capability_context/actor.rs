@@ -265,7 +265,7 @@ impl<'a> ActorClient<'a> {
         }
         let (response_rx, lease) = self.context.open_outbound_response_lease(rpc_id)?;
         if let Err(error) = self.context.send_outbound_request(rpc_id, command) {
-            lease.cancel("runtime_disconnect");
+            let _ = lease.cancel("runtime_disconnect");
             return Err(error);
         }
 
@@ -472,13 +472,20 @@ async fn await_control_response(
     lease: OutboundRequestLease,
     mut receiver: OutboundResponseReceiver,
 ) -> Result<Vec<u8>> {
+    let response_committed = lease.terminal_signal();
     tokio::select! {
-        result = receiver.recv() => {
-            finish_control_response(target, &lease, result)
+        biased;
+        _ = response_committed.wait_terminal() => {
+            finish_control_response(target, &lease, receiver.recv().await)
         }
         _ = wait_request_cancelled(context) => {
-            lease.cancel("caller_cancel");
-            Err(RuntimeError::cancelled())
+            let (result, _) = cancel_control_response_or_receive(
+                target,
+                &lease,
+                &mut receiver,
+                "caller_cancel",
+            ).await;
+            result
         }
     }
 }
@@ -503,13 +510,45 @@ async fn await_control_response_in_scope(
             let ExecutionScopeLeaseTerminal::Control(terminal) = terminal else {
                 unreachable!("scope completion is owned by the response branch")
             };
-            lease.cancel(scope_cancel_reason(&terminal));
-            Err(RuntimeError::cancelled())
+            let (result, response_won) = cancel_control_response_or_receive(
+                target,
+                &lease,
+                &mut receiver,
+                scope_cancel_reason(&terminal),
+            ).await;
+            if response_won {
+                let _ = scope_completion.complete();
+            }
+            result
         }
         _ = wait_request_cancelled(context) => {
-            lease.cancel("caller_cancel");
-            Err(RuntimeError::cancelled())
+            let (result, response_won) = cancel_control_response_or_receive(
+                target,
+                &lease,
+                &mut receiver,
+                "caller_cancel",
+            ).await;
+            if response_won {
+                let _ = scope_completion.complete();
+            }
+            result
         }
+    }
+}
+
+async fn cancel_control_response_or_receive(
+    target: &str,
+    lease: &OutboundRequestLease,
+    receiver: &mut OutboundResponseReceiver,
+    reason: &str,
+) -> (Result<Vec<u8>>, bool) {
+    if lease.cancel(reason) {
+        (Err(RuntimeError::cancelled()), false)
+    } else {
+        (
+            finish_control_response(target, lease, receiver.recv().await),
+            true,
+        )
     }
 }
 
@@ -531,14 +570,14 @@ fn finish_control_response(
             })
         }
         Some(other) => {
-            lease.cancel("unexpected_control_response");
+            let _ = lease.cancel("unexpected_control_response");
             Err(RuntimeError::ProviderUnavailable {
                 target: target.to_string(),
                 reason: format!("control RPC received {}", other.kind()),
             })
         }
         None => {
-            lease.cancel("response_channel_closed");
+            let _ = lease.cancel("response_channel_closed");
             Err(RuntimeError::ProviderUnavailable {
                 target: target.to_string(),
                 reason: "control response channel closed".to_string(),
