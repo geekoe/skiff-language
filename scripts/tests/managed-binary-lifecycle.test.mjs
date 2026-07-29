@@ -239,10 +239,6 @@ setInterval(() => {}, 60_000);
   const output = join(outputDir, process.platform === 'win32' ? 'runtime.exe' : 'runtime');
   writeFileSync(output, program);
   chmodSync(output, 0o755);
-} else if (bin === 'skiff-artifact-identity') {
-  const output = join(outputDir, process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity');
-  writeFileSync(output, '#!/usr/bin/env node\\n');
-  chmodSync(output, 0o755);
 } else if (bin === 'skiff-compiler') {
   if (manifest !== join(process.cwd(), 'compiler', 'Cargo.toml')) {
     throw new Error('compiler must be built from the current checkout');

@@ -21,7 +21,6 @@ pub mod compile_identity;
 pub mod compile_requirements;
 pub mod config;
 pub mod contract_types;
-pub mod cross_package_identity;
 pub mod deployment;
 pub mod ecosystem_authoring;
 pub mod effects;
@@ -33,7 +32,6 @@ pub mod http_boundary;
 pub mod metadata;
 pub mod native_signature;
 pub mod package_artifact;
-pub mod package_test;
 pub mod package_unit;
 pub mod publication_abi;
 pub mod recoverable;
@@ -123,11 +121,9 @@ pub use deployment::{
 };
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
-    parse_service_contract_definition_yml, parse_service_deployment_yml, EcosystemAuthoringError,
     HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring, ServiceAuthoringKind,
-    ServiceConfigProfileAuthoring, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring, ServiceManifestAuthoring,
-    WebSocketConnectAuthoring, WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
+    ServiceConfigProfileAuthoring, ServiceManifestAuthoring, WebSocketConnectAuthoring,
+    WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
     DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
     DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };
@@ -164,24 +160,18 @@ pub use package_artifact::{
     PackageArtifact, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
     PackageLocalAbi, PackageLocalAbiSymbol,
 };
-pub use package_test::{
-    PackageDependencyPublicLinkScope, PackageProductionLinkScope, PackageTestAssembly,
-    PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
-    PackageTestExecutableRef, PackageTestFileIrRef, PackageTestFileLinkScope,
-    PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageTestRuntimeExpectedError,
-};
 pub use package_unit::{
     ConfigAndEffectMetadata, ConstExport, ExecutableExport, InterfaceMethodSignature,
     PackageAbiExpectation, PackageDependencyConstraint, PackageExportIndex,
-    PackageImplementationLinks, PackageOperationTarget, PackageUnit, PackageUsedSymbol,
-    PackageUsedSymbolKind, TypeExport,
+    PackageImplementationLinks, PackageOperationTarget, PackageUsedSymbol, PackageUsedSymbolKind,
+    TypeExport,
 };
 pub use publication_abi::{
     CanonicalPublicCallableSignature, InterfaceInstantiationRef, OperationAbiRef,
-    PublicationAbiUnit, PublicationApiBinding, PublicationApiSymbolKind,
-    PublicationConformanceFact, PublicationOperationAbi, PublicationOperationKind,
-    PublicationPublicInstanceExport, PublicationSchemaType, PublicationSchemaTypeNameability,
-    SourceCallMethodIndexEntry, SourceCallOperationIndexEntry,
+    PublicationApiBinding, PublicationApiSymbolKind, PublicationConformanceFact,
+    PublicationOperationAbi, PublicationOperationKind, PublicationPublicInstanceExport,
+    PublicationSchemaType, PublicationSchemaTypeNameability, SourceCallMethodIndexEntry,
+    SourceCallOperationIndexEntry,
 };
 pub use recoverable::{
     recoverable_expected_type_plans_compatible, validate_recoverable_artifact_metadata,
@@ -206,23 +196,17 @@ pub use runtime_assembly::{
     ServiceIngressKey,
 };
 pub use schema::{
-    ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION,
     FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, PACKAGE_ASSEMBLY_KIND, PACKAGE_TEST_ASSEMBLY_KIND,
-    PACKAGE_TEST_ASSEMBLY_SCHEMA_VERSION, PACKAGE_TEST_ENTRYPOINT_KIND,
-    PACKAGE_UNIT_SCHEMA_VERSION, PUBLICATION_ABI_UNIT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
-    SERVICE_UNIT_SCHEMA_VERSION,
 };
 pub use service_contract::{ContractDiagnosticText, ServiceContract};
 pub use service_unit::{
     ActorMetadataIr, ActorMethodMetadataIr, DbMetadataIndexIr, DbMetadataIr, GatewayConfig,
     GatewayRoute, OperationIngressKind, OperationMode, OperationParam, OperationRouteBinding,
-    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceDependencyOperationRef, ServiceMeta,
-    ServiceOperation, ServiceOperationTarget, ServiceReceiverOperationTarget, ServiceTimeoutConfig,
-    ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
+    ServiceConfigMetadata, ServiceMeta, ServiceOperation, ServiceOperationTarget,
+    ServiceReceiverOperationTarget, ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
 };
 pub use symbols::{
     PackageCallableRef, PackageRefIr, PackageSymbolRef, ServiceDependencySymbolRef,

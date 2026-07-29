@@ -4,71 +4,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    abi_identity::AbiIdentityFacts,
     config::ConfigMetadataFacts,
     effects::CallableEffectFacts,
     executable::ExecutableSignatureIr,
     executable_target::{
         LocalReceiverExecutableRef, OperationCallableKind, OperationTargetRef, PublicInstanceExport,
     },
-    publication_abi::{OperationAbiRef, PublicationAbiUnit},
-    recoverable::RecoverableArtifactMetadata,
+    publication_abi::OperationAbiRef,
     refs::FileIrRef,
-    resources::PublicationResourceRef,
-    schema::PACKAGE_UNIT_SCHEMA_VERSION,
     types::{FunctionTypeParamIr, TypeDescriptorIr, TypeRefIr},
 };
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageUnit {
-    pub schema_version: String,
-    pub package_id: String,
-    pub version: String,
-    pub build_identity: String,
-    pub abi_identity: String,
-    #[serde(default, skip_serializing_if = "AbiIdentityFacts::is_empty")]
-    pub abi_identity_projection: AbiIdentityFacts,
-    pub publication_abi: PublicationAbiUnit,
-    pub files: Vec<FileIrRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resources: Vec<PublicationResourceRef>,
-    #[serde(default, skip_serializing_if = "PackageImplementationLinks::is_empty")]
-    pub implementation_links: PackageImplementationLinks,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dependencies: Vec<PackageDependencyConstraint>,
-    #[serde(default, skip_serializing_if = "RecoverableArtifactMetadata::is_empty")]
-    pub recoverable_metadata: RecoverableArtifactMetadata,
-    pub config_and_effect_metadata: ConfigAndEffectMetadata,
-}
-
-impl PackageUnit {
-    pub fn empty(
-        package_id: impl Into<String>,
-        version: impl Into<String>,
-        build_identity: impl Into<String>,
-        abi_identity: impl Into<String>,
-    ) -> Self {
-        let package_id = package_id.into();
-        let version = version.into();
-        let abi_identity = abi_identity.into();
-        Self {
-            schema_version: PACKAGE_UNIT_SCHEMA_VERSION.to_string(),
-            package_id: package_id.clone(),
-            version: version.clone(),
-            build_identity: build_identity.into(),
-            abi_identity: abi_identity.clone(),
-            abi_identity_projection: AbiIdentityFacts::default(),
-            publication_abi: PublicationAbiUnit::empty(package_id, version, abi_identity),
-            files: Vec::new(),
-            resources: Vec::new(),
-            implementation_links: PackageImplementationLinks::default(),
-            dependencies: Vec::new(),
-            recoverable_metadata: RecoverableArtifactMetadata::default(),
-            config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -8,12 +8,12 @@ use skiff_artifact_model::{
     TypeDescriptorIr, TypeExport, TypeRefIr,
 };
 
-use super::{canonical_sort, FileIrOwnerIdentityProjection};
-use crate::Result;
+use super::FileIrOwnerIdentityProjection;
+use crate::{framing::canonical_ir_bytes, ArtifactIdentityError, Result};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PackageImplementationLinksIdentityProjection {
+pub(super) struct PackageImplementationLinksIdentityProjection {
     types: BTreeMap<String, TypeImplementationLinkIdentityProjection>,
     constants: BTreeMap<String, ConstImplementationLinkIdentityProjection>,
     functions: BTreeMap<String, ExecutableImplementationLinkIdentityProjection>,
@@ -22,7 +22,7 @@ pub(crate) struct PackageImplementationLinksIdentityProjection {
 }
 
 impl PackageImplementationLinksIdentityProjection {
-    pub(crate) fn from_links(links: &PackageImplementationLinks) -> Result<Self> {
+    pub(super) fn from_links(links: &PackageImplementationLinks) -> Result<Self> {
         Ok(Self {
             types: links
                 .types
@@ -180,7 +180,7 @@ impl PackageOperationTargetIdentityProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OperationTargetIdentityProjection {
+pub(super) struct OperationTargetIdentityProjection {
     file: FileIrOwnerIdentityProjection,
     executable_index: u32,
     callable_abi_id: String,
@@ -188,7 +188,7 @@ pub(crate) struct OperationTargetIdentityProjection {
 }
 
 impl OperationTargetIdentityProjection {
-    pub(crate) fn from_ref(target: &OperationTargetRef) -> Self {
+    pub(super) fn from_ref(target: &OperationTargetRef) -> Self {
         Self {
             file: FileIrOwnerIdentityProjection::from_ref(&target.file_ref),
             executable_index: target.executable_index,
@@ -238,4 +238,17 @@ impl LocalReceiverExecutableIdentityProjection {
             receiver_call_abi: target.receiver_call_abi,
         }
     }
+}
+
+fn canonical_sort<T: Serialize>(values: Vec<T>) -> Result<Vec<T>> {
+    let mut keyed = Vec::with_capacity(values.len());
+    for value in values {
+        let key = canonical_ir_bytes(
+            &value,
+            ArtifactIdentityError::SerializePackageArtifactBuildIdentity,
+        )?;
+        keyed.push((key, value));
+    }
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(keyed.into_iter().map(|(_, value)| value).collect())
 }

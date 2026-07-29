@@ -170,13 +170,6 @@ try {
     );
   }
 
-  if (deploySelection.has('artifact-identity')) {
-    await uploadBinary(
-      await binaryPathFor('artifact-identity'),
-      `${remoteSkiff}/bin/skiff-artifact-identity`,
-    );
-  }
-
   if (deploySelection.has('compiler')) {
     await uploadBinary(
       await binaryPathFor('compiler'),
@@ -361,7 +354,6 @@ async function writeRouterConfig(file, remoteSkiff, options) {
     environment: 'prod',
     artifactsPath: `${remoteSkiff}/artifacts`,
     ecosystemStoreCliPath: `${remoteSkiff}/bin/skiff-compiler`,
-    identityCliPath: `${remoteSkiff}/bin/skiff-artifact-identity`,
     releaseMode: true,
     devReload: false,
     requestTimeoutMs: 20000,
@@ -545,17 +537,16 @@ function selectedDeployTargetsFrom(rawOnly) {
 function expandDeploySelector(rawOnly) {
   switch (rawOnly) {
     case 'all':
-      return ['telemetry', 'router', 'runtime', 'artifact-identity', 'compiler'];
+      return ['telemetry', 'router', 'runtime', 'compiler'];
     case 'runtime':
-      return ['runtime', 'artifact-identity'];
+      return ['runtime'];
     case 'router':
-      return ['router', 'artifact-identity', 'compiler'];
-    case 'artifact-identity':
+      return ['router', 'compiler'];
     case 'telemetry':
       return [rawOnly];
     default:
       throw new Error(
-        `invalid --only ${rawOnly}; deploy supports all, runtime, router, artifact-identity, or telemetry. compiler is a build-only unit.`,
+        `invalid --only ${rawOnly}; deploy supports all, runtime, router, or telemetry. compiler is a build-only unit.`,
       );
   }
 }

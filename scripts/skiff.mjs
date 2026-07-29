@@ -343,7 +343,6 @@ async function devInit(rawArgs) {
   writes.push(await writeDevInitFile(join(devHome, 'router.yml'), routerDevConfig({
     artifactRoot,
     ecosystemStoreCliPath: runtimePaths.ecosystemStoreCli,
-    identityCliPath: runtimePaths.identityCli,
     serviceDbMongoUrl,
     httpMaxRequestBytes,
     httpMaxResponseBytes,
@@ -385,7 +384,6 @@ async function devPaths(rawArgs) {
     runtimeBinDir: paths.runtimeBinDir,
     runtimeBinary: paths.runtimeBinary,
     ecosystemStoreCli: paths.ecosystemStoreCli,
-    identityCli: paths.identityCli,
     cargoTargetDir: cargoTargetDir(skiffRoot),
   };
   if (args.flags.has('--json')) {
@@ -711,7 +709,6 @@ function routerDevConfig(options) {
     environment: 'dev',
     artifactsPath: options.artifactRoot,
     ecosystemStoreCliPath: options.ecosystemStoreCliPath,
-    identityCliPath: options.identityCliPath,
     devReload: true,
     requestTimeoutMs: 20000,
     activationPrepareTimeoutMs: options.activationPrepareTimeoutMs,

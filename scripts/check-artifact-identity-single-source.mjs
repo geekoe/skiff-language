@@ -17,6 +17,14 @@ const skippedRustScanDirectories = new Set([
   'target',
 ]);
 const artifactIdentityFacadePath = 'artifact-identity/src/lib.rs';
+const terminalLegacyArtifactTypeNames = Object.freeze([
+  'PackageUnit',
+  'ServiceUnit',
+  'PublicationAbiUnit',
+  'PackageTestAssembly',
+  'ServiceDependencyConstraint',
+  'ServiceDependencyOperationRef',
+]);
 const canonicalFileIrCallValidatorRegistry = Object.freeze([
   Object.freeze({
     name: 'service-call',
@@ -132,51 +140,6 @@ const ownerRequirements = [
     regexp: /\bpub\s+struct\s+ServiceCallRefIndex\s*\(\s*u32\s*\)\s*;/,
   },
   ...canonicalFileIrCallValidatorRegistry.map(({ owner }) => owner),
-  {
-    name: 'ServiceUnitStorageIdentityPayload',
-    relPath: 'artifact-identity/src/legacy_service.rs',
-    regexp: /\bstruct\s+ServiceUnitStorageIdentityPayload\b/,
-  },
-  {
-    name: 'service_unit_identity',
-    relPath: 'artifact-identity/src/legacy_service.rs',
-    regexp: /\bpub\s+fn\s+service_unit_identity\s*\(/,
-  },
-  {
-    name: 'service_unit_identity_bytes',
-    relPath: 'artifact-identity/src/legacy_service.rs',
-    regexp: /\bpub\s+fn\s+service_unit_identity_bytes\s*\(/,
-  },
-  {
-    name: 'PackageLocalAbiIdentityProjection',
-    relPath: 'artifact-identity/src/package/projection.rs',
-    regexp: /\bpub\s+struct\s+PackageLocalAbiIdentityProjection\b/,
-  },
-  {
-    name: 'PackageBuildIdentityProjection',
-    relPath: 'artifact-identity/src/package/projection.rs',
-    regexp: /\bpub\s+struct\s+PackageBuildIdentityProjection\b/,
-  },
-  {
-    name: 'package_build_identity',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_build_identity\s*\(/,
-  },
-  {
-    name: 'package_local_abi_identity',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_local_abi_identity\s*\(/,
-  },
-  {
-    name: 'package_implementation_links_identity',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_implementation_links_identity\s*\(/,
-  },
-  {
-    name: 'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
-    relPath: 'artifact-identity/src/constants.rs',
-    regexp: /\bpub\s+const\s+PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX\b/,
-  },
   {
     name: 'ServiceProtocolIdentityProjection',
     relPath: 'artifact-identity/src/contract.rs',
@@ -343,46 +306,6 @@ const ownerRequirements = [
     regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
-    name: 'PublicationAbiIdentityProjection',
-    relPath: 'artifact-identity/src/publication.rs',
-    regexp: /\bstruct\s+PublicationAbiIdentityProjection\b/,
-  },
-  {
-    name: 'publication_abi_identity',
-    relPath: 'artifact-identity/src/publication.rs',
-    regexp: /\bpub\s+fn\s+publication_abi_identity\s*\(/,
-  },
-  {
-    name: 'publication_abi_identity_bytes',
-    relPath: 'artifact-identity/src/publication.rs',
-    regexp: /\bpub\s+fn\s+publication_abi_identity_bytes\s*\(/,
-  },
-  {
-    name: 'OperationAbiIdentityInput',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+struct\s+OperationAbiIdentityInput\b/,
-  },
-  {
-    name: 'operation_abi_hash',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+operation_abi_hash\s*\(/,
-  },
-  {
-    name: 'operation_abi_identity',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+operation_abi_identity\s*\(/,
-  },
-  {
-    name: 'public_function_operation_abi_id',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+public_function_operation_abi_id\s*\(/,
-  },
-  {
-    name: 'public_instance_method_operation_abi_id',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+public_instance_method_operation_abi_id\s*\(/,
-  },
-  {
     name: 'abi_type_id_from_source_anchor',
     relPath: 'artifact-identity/src/semantic.rs',
     regexp: /\bpub\s+fn\s+abi_type_id_from_source_anchor\s*\(/,
@@ -443,74 +366,9 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+canonical_interface_instantiation_key\s*\(/,
   },
   {
-    name: 'validate_publication_abi_surface',
-    relPath: 'artifact-identity/src/publication_validation.rs',
-    regexp: /\bpub\s+fn\s+validate_publication_abi_surface\s*\(/,
-  },
-  {
-    name: 'validate_publication_abi_identity',
-    relPath: 'artifact-identity/src/publication_validation.rs',
-    regexp: /\bpub\s+fn\s+validate_publication_abi_identity\s*\(/,
-  },
-  {
-    name: 'PackageTestBuildIdentityPayload',
-    relPath: 'artifact-identity/src/package_test.rs',
-    regexp: /\bstruct\s+PackageTestBuildIdentityPayload\b/,
-  },
-  {
-    name: 'RuntimeProgramServiceUnitIdentityPayload',
-    relPath: 'artifact-identity/src/runtime_program.rs',
-    regexp: /\bstruct\s+RuntimeProgramServiceUnitIdentityPayload\b/,
-  },
-  {
     name: 'ArtifactRelativePath',
     relPath: 'artifact-identity/src/artifact_path.rs',
     regexp: /\bpub\s+struct\s+ArtifactRelativePath\b/,
-  },
-  {
-    name: 'ServiceAssemblyArtifactRef',
-    relPath: 'artifact-identity/src/artifact_reference.rs',
-    regexp: /\bpub\s+struct\s+ServiceAssemblyArtifactRef\b/,
-  },
-  {
-    name: 'ServiceUnitArtifactRef',
-    relPath: 'artifact-identity/src/artifact_reference.rs',
-    regexp: /\bpub\s+struct\s+ServiceUnitArtifactRef\b/,
-  },
-  {
-    name: 'PackageUnitArtifactRef',
-    relPath: 'artifact-identity/src/artifact_reference.rs',
-    regexp: /\bpub\s+struct\s+PackageUnitArtifactRef\b/,
-  },
-  {
-    name: 'service_assembly_identity_projection',
-    relPath: 'artifact-identity/src/service_assembly_identity.rs',
-    regexp: /\bpub\s+fn\s+service_assembly_identity_projection\s*\(/,
-  },
-  {
-    name: 'service_assembly_hash',
-    relPath: 'artifact-identity/src/service_assembly_identity.rs',
-    regexp: /\bpub\s+fn\s+service_assembly_hash\s*\(/,
-  },
-  {
-    name: 'service_assembly_identity',
-    relPath: 'artifact-identity/src/service_assembly_identity.rs',
-    regexp: /\bpub\s+fn\s+service_assembly_identity\s*\(/,
-  },
-  {
-    name: 'package_unit_content_hash',
-    relPath: 'artifact-identity/src/artifact_coordinates.rs',
-    regexp: /\bpub\s+fn\s+package_unit_content_hash\s*\(/,
-  },
-  {
-    name: 'validate_package_unit_artifact_path',
-    relPath: 'artifact-identity/src/artifact_coordinates.rs',
-    regexp: /\bpub\s+fn\s+validate_package_unit_artifact_path\s*\(/,
-  },
-  {
-    name: 'validate_service_artifact_closure',
-    relPath: 'artifact-identity/src/service_artifact_closure.rs',
-    regexp: /\bpub\s+fn\s+validate_service_artifact_closure\s*\(/,
   },
   {
     name: 'canonical_json_value',
@@ -534,12 +392,6 @@ const exclusiveDefinitionNames = new Set([
   'FileIrIdentityPayload',
   'ServiceCallRefIndex',
   ...canonicalFileIrCallValidatorRegistry.map(({ owner }) => owner.name),
-  'ServiceUnitStorageIdentityPayload',
-  'PackageLocalAbiIdentityProjection',
-  'PackageBuildIdentityProjection',
-  'package_local_abi_identity',
-  'package_implementation_links_identity',
-  'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
   'ServiceProtocolIdentityProjection',
   'DeploymentArtifactIdentityProjection',
   'service_deployment_identity',
@@ -570,24 +422,8 @@ const exclusiveDefinitionNames = new Set([
   'PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER',
   'PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX',
   'PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER',
-  'PublicationAbiIdentityProjection',
-  'OperationAbiIdentityInput',
-  'PackageTestBuildIdentityPayload',
-  'RuntimeProgramServiceUnitIdentityPayload',
   'ArtifactRelativePath',
-  'ServiceAssemblyArtifactRef',
-  'ServiceUnitArtifactRef',
-  'PackageUnitArtifactRef',
-  'service_assembly_identity_projection',
-  'service_assembly_hash',
-  'service_assembly_identity',
-  'package_unit_content_hash',
-  'validate_package_unit_artifact_path',
-  'validate_service_artifact_closure',
   'canonical_file_ir_identity_bytes',
-  'service_unit_identity_bytes',
-  'publication_abi_identity_bytes',
-  'operation_abi_identity',
   'abi_type_id_from_source_anchor',
   'abi_alias_id_from_source_anchor',
   'abi_interface_id_from_source_anchor',
@@ -600,8 +436,6 @@ const exclusiveDefinitionNames = new Set([
   'canonical_interface_method_abi_id',
   'canonical_interface_method_abi_id_from_parts',
   'canonical_interface_instantiation_key',
-  'validate_publication_abi_surface',
-  'validate_publication_abi_identity',
   'canonical_json_value',
   'canonical_json_number',
   'canonical_json_bytes',
@@ -619,25 +453,15 @@ const ownedDefinitionRegexp = new RegExp(
 const facadeModules = [
   'artifact_coordinates',
   'artifact_path',
-  'artifact_reference',
   'constants',
   'contract',
   'deployment',
   'error',
   'file_ir',
   'framing',
-  'legacy_service',
-  'operation',
-  'package',
   'package_artifact',
-  'package_test',
-  'publication',
-  'publication_validation',
-  'runtime_program',
   'runtime_assembly',
   'semantic',
-  'service_artifact_closure',
-  'service_assembly_identity',
 ];
 
 const canonicalDelegationRequirements = [
@@ -954,7 +778,6 @@ if (options.help) {
 async function runCheck() {
   const failures = [];
   const files = await collectCandidateRustFiles(root);
-  const scriptFiles = await collectIdentityScriptFiles();
   const rustTextByPath = new Map(files.map(({ relPath, text }) => [relPath, text]));
   failures.push(...collectOwnerRequirementFailures(ownerRequirements, rustTextByPath));
 
@@ -988,19 +811,11 @@ async function runCheck() {
     );
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
+  failures.push(...collectTerminalLegacyArtifactTypeFailures(files));
   failures.push(...collectCanonicalCompileModelFailures(files));
   failures.push(...collectCanonicalDeploymentAssemblyModelFailures(files));
   failures.push(...collectCanonicalBoundaryContractFailures(files));
   failures.push(...collectCanonicalFileIrCallValidatorFailures(files));
-  for (const violation of collectPackageImplementationLinksIdentityViolations([
-    ...files,
-    ...scriptFiles,
-  ])) {
-    failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
-  }
-  for (const violation of collectServiceAssemblyIdentityViolations([...files, ...scriptFiles])) {
-    failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
-  }
 
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -1144,6 +959,23 @@ function collectOwnedDefinitionViolations(files) {
   }
 
   return violations;
+}
+
+function collectTerminalLegacyArtifactTypeFailures(files) {
+  const failures = [];
+  const legacyTypeRegexp = new RegExp(
+    `\\b(${terminalLegacyArtifactTypeNames.join('|')})\\b`,
+    'g',
+  );
+  for (const file of files) {
+    const identifierView = rustIdentifierView(file.text);
+    for (const match of identifierView.matchAll(legacyTypeRegexp)) {
+      failures.push(
+        `${file.relPath}:${lineNumberAt(identifierView, match.index ?? 0)} contains terminal legacy artifact type ${match[1]}`,
+      );
+    }
+  }
+  return failures;
 }
 
 function collectCanonicalCompileModelFailures(files) {
@@ -1383,134 +1215,6 @@ function collectCanonicalFileIrCallValidatorFailures(
   return failures;
 }
 
-function collectPackageImplementationLinksIdentityViolations(files) {
-  const restrictions = [
-    {
-      regexp: /skiff-package-implementation-links-v2:sha256/g,
-      message: 'package implementation links identity prefix is owned by artifact-identity',
-    },
-    {
-      regexp: /\b(?:fn|function)\s+(?:(?:package_)?implementation_links_identity|packageImplementationLinksIdentity)\s*\(/g,
-      message: 'package implementation links identity helper is owned by artifact-identity',
-    },
-  ];
-  const violations = [];
-  for (const file of files) {
-    if (
-      file.relPath === 'artifact-identity/src/package.rs'
-      || file.relPath === 'artifact-identity/src/constants.rs'
-      || file.relPath === 'scripts/check-artifact-identity-single-source.mjs'
-      || !isProductionIdentitySource(file.relPath)
-    ) {
-      continue;
-    }
-    const text = file.relPath.endsWith('.rs')
-      ? stripInlineTestModules(file.text)
-      : file.text;
-    for (const restriction of restrictions) {
-      restriction.regexp.lastIndex = 0;
-      for (const match of text.matchAll(restriction.regexp)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, match.index ?? 0),
-          message: restriction.message,
-        });
-      }
-    }
-  }
-  return violations;
-}
-
-function collectServiceAssemblyIdentityViolations(files) {
-  const definitionPatterns = [
-    /\b(?:fn|function)\s+service_assembly_identity_projection\s*\(/g,
-    /\b(?:fn|function)\s+service_assembly_hash\s*\(/g,
-    /\b(?:fn|function)\s+service_assembly_identity\s*\(/g,
-    /\bfunction\s+serviceAssemblyHashInput\s*\(/g,
-    /\bfunction\s+serviceAssemblyIdentityProjection\s*\(/g,
-    /\bfunction\s+serviceAssemblyHash\s*\(/g,
-    /\bfunction\s+serviceAssemblyIdentity\s*\(/g,
-  ];
-  const violations = [];
-  for (const file of files) {
-    if (
-      file.relPath === 'artifact-identity/src/service_assembly_identity.rs'
-      || file.relPath === 'scripts/check-artifact-identity-single-source.mjs'
-      || (file.relPath.endsWith('.rs') && !isProductionRustFile(file.relPath))
-    ) {
-      continue;
-    }
-    const text = file.relPath.endsWith('.rs')
-      ? stripInlineTestModules(file.text)
-      : file.text;
-    for (const regexp of definitionPatterns) {
-      regexp.lastIndex = 0;
-      for (const match of text.matchAll(regexp)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, match.index ?? 0),
-          message: 'service assembly identity projection/hash is owned by artifact-identity',
-        });
-      }
-    }
-    for (const prefixMatch of text.matchAll(/skiff-service-assembly-v1/g)) {
-      const index = prefixMatch.index ?? 0;
-      const nearbyImplementation = text.slice(
-        Math.max(0, index - 400),
-        Math.min(text.length, index + prefixMatch[0].length + 400),
-      );
-      if (/\b(?:createHash|Sha256|value_sha256|stableStringify|canonical_json_(?:value|bytes))\b/.test(nearbyImplementation)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, index),
-          message: 'service assembly identity prefix and hashing must not be combined outside artifact-identity',
-        });
-      }
-    }
-  }
-  return violations;
-}
-
-async function collectIdentityScriptFiles() {
-  const files = [];
-  await collectIdentitySourceFiles(join(root, 'router', 'src'), files);
-  await collectIdentitySourceFiles(join(root, 'scripts'), files);
-  return files;
-}
-
-async function collectIdentitySourceFiles(directory, files) {
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return;
-    }
-    throw error;
-  }
-  for (const entry of entries) {
-    const absPath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === 'tests') {
-        continue;
-      }
-      await collectIdentitySourceFiles(absPath, files);
-      continue;
-    }
-    if (
-      !entry.isFile()
-      || (!entry.name.endsWith('.ts') && !entry.name.endsWith('.mjs'))
-      || entry.name.includes('.test.')
-    ) {
-      continue;
-    }
-    files.push({
-      absPath,
-      relPath: normalizePath(relative(root, absPath)),
-      text: await readFile(absPath, 'utf8'),
-    });
-  }
-}
 
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
@@ -1560,18 +1264,6 @@ function isProductionRustFile(relPath) {
   return relPath.endsWith('.rs');
 }
 
-function isProductionIdentitySource(relPath) {
-  if (relPath.endsWith('.rs')) {
-    return isProductionRustFile(relPath);
-  }
-  return (
-    (relPath.startsWith('router/src/') || relPath.startsWith('scripts/'))
-    && (relPath.endsWith('.ts') || relPath.endsWith('.mjs'))
-    && !relPath.includes('.test.')
-    && !relPath.split('/').includes('tests')
-  );
-}
-
 function canonicalFileIrCallValidatorFixture(entry) {
   const textByPath = new Map();
   for (const requirement of [entry.owner, ...entry.shapeRequirements, ...entry.consumers]) {
@@ -1599,6 +1291,50 @@ function collectFileIrCallValidatorGraphDiagnostics(entry, files) {
 }
 
 function runSelfTest() {
+  const terminalLegacyCases = [
+    {
+      name: 'accepts current artifact types',
+      files: [{
+        relPath: 'artifact-model/src/current.rs',
+        text: 'pub struct PackageArtifact;\n',
+      }],
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects terminal legacy type in production code',
+      files: [{
+        relPath: 'runtime/model/src/legacy.rs',
+        text: 'pub struct PublicationAbiUnit;\n',
+      }],
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects terminal legacy type in test code',
+      files: [{
+        relPath: 'artifact-model/src/tests.rs',
+        text: '#[test]\nfn legacy() { let _: Option<ServiceDependencyConstraint> = None; }\n',
+      }],
+      expectedFailures: 1,
+    },
+    {
+      name: 'ignores terminal legacy names in comments and strings',
+      files: [{
+        relPath: 'artifact-model/src/current.rs',
+        text: '// PackageUnit\nconst NOTE: &str = "ServiceUnit";\nconst RAW: &str = r#"PublicationAbiUnit"#;\nconst BYTES: &[u8] = b"PackageTestAssembly";\n',
+      }],
+      expectedFailures: 0,
+    },
+  ];
+  const failures = [];
+  for (const testCase of terminalLegacyCases) {
+    const legacyFailures = collectTerminalLegacyArtifactTypeFailures(testCase.files);
+    if (legacyFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} terminal legacy failure(s), got ${legacyFailures.length}`,
+      );
+    }
+  }
+
   const cases = [
     {
       name: 'allows definitions in their declared owner modules',
@@ -1608,25 +1344,11 @@ function runSelfTest() {
           text: 'pub fn framed_identity() {}\n',
         },
         {
-          relPath: 'artifact-identity/src/operation.rs',
-          text: 'pub struct OperationAbiIdentityInput;\npub fn operation_abi_identity() {}\n',
-        },
-        {
           relPath: 'canonical-json/src/lib.rs',
           text: 'pub fn canonical_json_value() {}\n',
         },
       ],
       expectedViolations: 0,
-    },
-    {
-      name: 'rejects compiler operation identity duplicate struct',
-      files: [
-        {
-          relPath: 'compiler/driver/shared/operation_abi_identity.rs',
-          text: 'struct OperationAbiIdentityInput;\n',
-        },
-      ],
-      expectedViolations: 1,
     },
     {
       name: 'rejects lowering File IR payload duplicate',
@@ -1644,16 +1366,6 @@ function runSelfTest() {
         {
           relPath: 'compiler/lowering/src/service_call_validation.rs',
           text: 'fn validate_file_ir_service_calls() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-    },
-    {
-      name: 'rejects package build identity duplicate in terminal projection',
-      files: [
-        {
-          relPath: 'compiler/projection/src/package_artifact/projection.rs',
-          text: 'struct PackageBuildIdentityProjection;\n',
         },
       ],
       expectedViolations: 1,
@@ -1689,26 +1401,6 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects publication ABI byte projection duplicate',
-      files: [
-        {
-          relPath: 'compiler/publication-abi/src/identity.rs',
-          text: 'fn publication_abi_identity_bytes() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-    },
-    {
-      name: 'rejects an identity definition in the wrong artifact-identity module',
-      files: [
-        {
-          relPath: 'artifact-identity/src/other.rs',
-          text: 'fn operation_abi_identity() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-    },
-    {
       name: 'rejects framed_identity implementation in terminal package emission',
       files: [
         {
@@ -1728,90 +1420,13 @@ function runSelfTest() {
       ],
       expectedViolations: 1,
     },
-    {
-      name: 'ignores compiler test files',
-      files: [
-        {
-          relPath: 'compiler/tests/operation_identity.rs',
-          text: 'struct OperationAbiIdentityInput;\nfn operation_abi_identity() {}\n',
-        },
-      ],
-      expectedViolations: 0,
-    },
-    {
-      name: 'ignores cfg test modules',
-      files: [
-        {
-          relPath: 'compiler/driver/shared/operation_abi_identity.rs',
-          text: '#[cfg(test)]\nmod tests { struct OperationAbiIdentityInput; }\n',
-        },
-      ],
-      expectedViolations: 0,
-    },
-    {
-      name: 'rejects compiler package implementation links identity prefix',
-      files: [
-        {
-          relPath: 'compiler/emission/src/package_test.rs',
-          text: 'const PREFIX: &str = "skiff-package-implementation-links-v2:sha256";\n',
-        },
-      ],
-      expectedViolations: 0,
-      expectedPackageImplementationLinksViolations: 1,
-    },
-    {
-      name: 'rejects compiler package implementation links identity helper',
-      files: [
-        {
-          relPath: 'compiler/emission/src/package_test.rs',
-          text: 'fn implementation_links_identity() {}\n',
-        },
-      ],
-      expectedViolations: 0,
-      expectedPackageImplementationLinksViolations: 1,
-    },
-    {
-      name: 'rejects runtime package implementation links duplicate owner',
-      files: [
-        {
-          relPath: 'runtime/package-test/src/lib.rs',
-          text: 'const PREFIX: &str = "skiff-package-implementation-links-v2:sha256";\nfn package_implementation_links_identity() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-      expectedPackageImplementationLinksViolations: 2,
-    },
-    {
-      name: 'rejects script package implementation links duplicate owner',
-      files: [
-        {
-          relPath: 'scripts/local-package-identity.mjs',
-          text: 'const prefix = "skiff-package-implementation-links-v2:sha256";\nfunction packageImplementationLinksIdentity() {}\n',
-        },
-      ],
-      expectedViolations: 0,
-      expectedPackageImplementationLinksViolations: 2,
-    },
   ];
 
-  const failures = [];
   for (const testCase of cases) {
     const violations = collectOwnedDefinitionViolations(testCase.files);
     if (violations.length !== testCase.expectedViolations) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,
-      );
-    }
-    const packageImplementationLinksViolations =
-      collectPackageImplementationLinksIdentityViolations(testCase.files);
-    const expectedPackageImplementationLinksViolations =
-      testCase.expectedPackageImplementationLinksViolations ?? 0;
-    if (
-      packageImplementationLinksViolations.length
-      !== expectedPackageImplementationLinksViolations
-    ) {
-      failures.push(
-        `${testCase.name}: expected ${expectedPackageImplementationLinksViolations} package implementation links violation(s), got ${packageImplementationLinksViolations.length}`,
       );
     }
   }
@@ -2403,41 +2018,6 @@ pub struct ServiceDeploymentOperationInput {
     { shapeFailures: 1 },
   );
 
-  const serviceAssemblyDuplicateCases = [
-    {
-      name: 'rejects router service assembly hash implementation',
-      files: [{
-        relPath: 'router/src/artifacts/identity.ts',
-        text: 'function serviceAssemblyHashInput(value: unknown) { return value; }\n',
-      }],
-      expectedViolations: 1,
-    },
-    {
-      name: 'rejects renamed prefix plus hash implementation',
-      files: [{
-        relPath: 'scripts/local-identity.mjs',
-        text: 'const prefix = "skiff-service-assembly-v1"; createHash("sha256");\n',
-      }],
-      expectedViolations: 1,
-    },
-    {
-      name: 'allows CLI-only script adapters',
-      files: [{
-        relPath: 'scripts/lib/artifact-identity-validation.mjs',
-        text: 'spawn(path, ["runtime-program-build-id"]);\n',
-      }],
-      expectedViolations: 0,
-    },
-  ];
-  for (const testCase of serviceAssemblyDuplicateCases) {
-    const violations = collectServiceAssemblyIdentityViolations(testCase.files);
-    if (violations.length !== testCase.expectedViolations) {
-      failures.push(
-        `${testCase.name}: expected ${testCase.expectedViolations} service assembly violation(s), got ${violations.length}`,
-      );
-    }
-  }
-
   failures.push(...deprecatedPackageAbiRustSymbolSelfTestFailures());
 
   const adapterFixtureRequirement = [
@@ -2575,6 +2155,74 @@ function stripRustComments(text) {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/[^\n]*/g, '');
+}
+
+function rustIdentifierView(text) {
+  const output = text.split('');
+  const mask = (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      if (output[index] !== '\n') {
+        output[index] = ' ';
+      }
+    }
+  };
+  let index = 0;
+  while (index < text.length) {
+    if (text.startsWith('//', index)) {
+      const end = text.indexOf('\n', index + 2);
+      const stop = end === -1 ? text.length : end;
+      mask(index, stop);
+      index = stop;
+      continue;
+    }
+    if (text.startsWith('/*', index)) {
+      let depth = 1;
+      let cursor = index + 2;
+      while (cursor < text.length && depth > 0) {
+        if (text.startsWith('/*', cursor)) {
+          depth += 1;
+          cursor += 2;
+        } else if (text.startsWith('*/', cursor)) {
+          depth -= 1;
+          cursor += 2;
+        } else {
+          cursor += 1;
+        }
+      }
+      mask(index, cursor);
+      index = cursor;
+      continue;
+    }
+    const rawString = /^(?:br|r)(#{0,16})"/.exec(text.slice(index));
+    if (rawString !== null) {
+      const terminator = `"${rawString[1]}`;
+      const contentStart = index + rawString[0].length;
+      const close = text.indexOf(terminator, contentStart);
+      const end = close === -1 ? text.length : close + terminator.length;
+      mask(index, end);
+      index = end;
+      continue;
+    }
+    const quoteOffset = text[index] === 'b' && text[index + 1] === '"' ? 1 : 0;
+    if (text[index + quoteOffset] === '"') {
+      let cursor = index + quoteOffset + 1;
+      while (cursor < text.length) {
+        if (text[cursor] === '\\') {
+          cursor += 2;
+        } else if (text[cursor] === '"') {
+          cursor += 1;
+          break;
+        } else {
+          cursor += 1;
+        }
+      }
+      mask(index, cursor);
+      index = cursor;
+      continue;
+    }
+    index += 1;
+  }
+  return output.join('');
 }
 
 function cfgTestItemRange(text, attrIndex) {

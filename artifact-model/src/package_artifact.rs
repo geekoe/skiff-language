@@ -91,8 +91,8 @@ pub struct PackageCallableLinkFact {
     pub target: OperationTargetRef,
 }
 
-/// Canonical user-code artifact. No PublicationAbiUnit, PackageUnit or
-/// ServiceUnit is embedded; the legacy DTOs remain separate runtime adapters.
+/// Canonical user-code artifact. No publication or service aggregate is
+/// embedded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageArtifact {

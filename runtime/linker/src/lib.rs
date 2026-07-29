@@ -34,11 +34,10 @@ pub use program::{
     PackageAbiExpectation, PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint,
     PackageExportIndex, PackageRefIr, PackageSlot, PackageSymbolKey, PackageSymbolRef,
     PackageUsedSymbol, PackageUsedSymbolKind, ParamIr, PatternIr, ReceiverCallAbi,
-    RuntimeProgramIdentity, RuntimeTypeContext, ServiceConfigMetadata, ServiceDependencyConstraint,
-    ServiceDependencyOperationRef, ServiceDependencySymbolRef, ServiceMeta, ServiceOperation,
-    ServiceSymbolKey, ServiceSymbolRef, ServiceTimeoutConfig, SlotBindingIr, SlotIr, SlotLayoutIr,
-    SourceAstHash, SourceMapDto, SpawnTargetIr, SpawnTargetKindIr, StmtRefIr, TypeAddr, TypeDeclIr,
-    TypeExport, TypeIndex, UnaryOpIr, UnitAddr,
+    RuntimeProgramIdentity, RuntimeTypeContext, ServiceConfigMetadata, ServiceDependencySymbolRef,
+    ServiceMeta, ServiceOperation, ServiceSymbolKey, ServiceSymbolRef, ServiceTimeoutConfig,
+    SlotBindingIr, SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, SpawnTargetIr,
+    SpawnTargetKindIr, StmtRefIr, TypeAddr, TypeDeclIr, TypeExport, TypeIndex, UnaryOpIr, UnitAddr,
 };
 pub use resolver::{
     LinkedProgramImageResolverExt, ProgramError, ProgramResult, ResolvedLinkedExecutable,

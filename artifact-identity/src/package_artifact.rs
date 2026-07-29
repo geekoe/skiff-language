@@ -3,22 +3,18 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, PackageArtifact, PackageArtifactRef,
-    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
+    BoundaryCallableProjection, CallableSemanticFacts, FileIrRef, PackageArtifact,
+    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
     PackageSchemaTypeRecordRef, ServiceCallRef,
 };
 
-use crate::{
-    package::projection::{
-        implementation_links::{
-            OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
-        },
-        FileIrOwnerIdentityProjection,
-    },
-    ArtifactIdentityError, Result,
+use self::implementation_links::{
+    OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
 };
+use crate::{ArtifactIdentityError, Result};
 
+mod implementation_links;
 mod projection;
 mod validation;
 
@@ -55,6 +51,22 @@ pub struct PackageArtifactBuildIdentityProjection {
     callable_semantic_facts: BTreeMap<PackageCallableId, CallableSemanticFacts>,
     boundary_projections: BTreeMap<PackageCallableId, BoundaryCallableProjection>,
     service_call_refs: Vec<ServiceCallRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileIrOwnerIdentityProjection {
+    file_ir_identity: String,
+    module_path: String,
+}
+
+impl FileIrOwnerIdentityProjection {
+    fn from_ref(file: &FileIrRef) -> Self {
+        Self {
+            file_ir_identity: file.file_ir_identity.clone(),
+            module_path: file.module_path.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

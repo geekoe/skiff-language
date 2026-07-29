@@ -116,11 +116,9 @@ async function unitSpec(unitName) {
         inputs: ['runtime', 'artifact-identity', 'artifact-model'],
       });
     case 'artifact-identity':
-      return rsUnit({
+      return rsVerificationUnit({
         unitName,
         manifest: 'artifact-identity/Cargo.toml',
-        cargoBin: 'skiff-artifact-identity',
-        outputName: 'skiff-artifact-identity',
         inputs: ['artifact-identity', 'artifact-model'],
       });
     case 'router':

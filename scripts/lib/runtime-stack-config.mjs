@@ -6,7 +6,6 @@ export function renderRouterConfig({
   environment,
   artifactsPath,
   ecosystemStoreCliPath,
-  identityCliPath,
   devReload,
   releaseMode,
   requestTimeoutMs = 20000,
@@ -48,7 +47,6 @@ export function renderRouterConfig({
     `environment: ${quoteYamlString(environment)}`,
     `artifactsPath: ${quoteYamlString(artifactsPath)}`,
     `ecosystemStoreCliPath: ${quoteYamlString(ecosystemStoreCliPath)}`,
-    `identityCliPath: ${quoteYamlString(identityCliPath)}`,
   ];
   if (releaseMode !== undefined) {
     lines.push(`releaseMode: ${releaseMode ? 'true' : 'false'}`);

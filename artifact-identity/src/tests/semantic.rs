@@ -1,7 +1,7 @@
 use super::*;
 use skiff_artifact_model::{
     AbiContractRevision, AbiDeclarationKind, AbiSourceDeclarationAnchor, DescriptorHash,
-    NominalTypeRefBaseIr, SchemaRevision,
+    NominalTypeRefBaseIr, SchemaRevision, TypeRefIr,
 };
 
 fn anchor(

@@ -31,16 +31,10 @@ if (!cli.noRefresh) {
 const targetDir = cargoTargetDir(skiffRoot);
 const runtimeManifest = path.join(skiffRoot, 'runtime', 'Cargo.toml');
 const compilerManifest = path.join(skiffRoot, 'compiler', 'Cargo.toml');
-const identityManifest = path.join(skiffRoot, 'artifact-identity', 'Cargo.toml');
 const cargoRuntimeBinary = path.join(
   targetDir,
   'debug',
   process.platform === 'win32' ? 'runtime.exe' : 'runtime',
-);
-const cargoIdentityCli = path.join(
-  targetDir,
-  'debug',
-  process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity',
 );
 const cargoEcosystemStoreCli = path.join(
   targetDir,
@@ -62,23 +56,9 @@ await run(
     CARGO_TARGET_DIR: targetDir,
   },
 );
-await run(
-  'cargo',
-  ['build', '--manifest-path', identityManifest, '--bin', 'skiff-artifact-identity'],
-  skiffRoot,
-  {
-    ...cargoBuildEnv(skiffRoot),
-    CARGO_TARGET_DIR: targetDir,
-  },
-);
-
 const binary = await stat(cargoRuntimeBinary);
 if (!binary.isFile()) {
   throw new Error(`runtime binary was not produced at ${cargoRuntimeBinary}`);
-}
-const identityCliBinary = await stat(cargoIdentityCli);
-if (!identityCliBinary.isFile()) {
-  throw new Error(`artifact identity CLI was not produced at ${cargoIdentityCli}`);
 }
 const ecosystemStoreCliBinary = await stat(cargoEcosystemStoreCli);
 if (!ecosystemStoreCliBinary.isFile()) {
@@ -88,15 +68,10 @@ if (!ecosystemStoreCliBinary.isFile()) {
 await mkdir(paths.runtimeBinDir, { recursive: true });
 await installManagedBinary(cargoRuntimeBinary, paths.runtimeBinary);
 await installManagedBinary(cargoEcosystemStoreCli, paths.ecosystemStoreCli);
-await installManagedBinary(cargoIdentityCli, paths.identityCli);
 
 const installed = await stat(paths.runtimeBinary);
 if (!installed.isFile()) {
   throw new Error(`runtime binary was not installed at ${paths.runtimeBinary}`);
-}
-const installedIdentityCli = await stat(paths.identityCli);
-if (!installedIdentityCli.isFile()) {
-  throw new Error(`artifact identity CLI was not installed at ${paths.identityCli}`);
 }
 const installedEcosystemStoreCli = await stat(paths.ecosystemStoreCli);
 if (!installedEcosystemStoreCli.isFile()) {
@@ -126,12 +101,10 @@ console.log(JSON.stringify({
   devHome: paths.devHome,
   runtimeBinary: paths.runtimeBinary,
   ecosystemStoreCli: paths.ecosystemStoreCli,
-  identityCli: paths.identityCli,
   runtimeConfig: paths.runtimeConfig,
   runtimeHome: paths.runtimeHome,
   cargoRuntimeBinary,
   cargoEcosystemStoreCli,
-  cargoIdentityCli,
   cargoTargetDir: targetDir,
   refresh,
 }, null, 2));

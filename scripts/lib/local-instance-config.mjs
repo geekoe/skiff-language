@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 import {
   ecosystemStoreCliBinaryName,
-  identityCliBinaryName,
   runtimeBinaryName,
 } from './dev-runtime-paths.mjs';
 import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activation-timeout.mjs';
@@ -125,7 +124,6 @@ export function instanceSummary(config) {
     binDir: config.paths.binDir,
     runtimeBinary: config.paths.runtimeBinary,
     ecosystemStoreCli: config.paths.ecosystemStoreCli,
-    identityCli: config.paths.identityCli,
     routerConfig: config.paths.routerConfig,
     telemetryConfig: config.paths.telemetryConfig,
     serviceDbPath: config.paths.serviceDbPath,
@@ -192,7 +190,6 @@ function normalizeInstanceConfig(raw, context) {
       binDir,
       runtimeBinary: join(binDir, runtimeBinaryName()),
       ecosystemStoreCli: join(binDir, ecosystemStoreCliBinaryName()),
-      identityCli: join(binDir, identityCliBinaryName()),
       routerConfig: join(devHome, 'router.yml'),
       telemetryConfig: join(devHome, 'telemetry.yml'),
       serviceDbPath: mongo.dbPath,

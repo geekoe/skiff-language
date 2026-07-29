@@ -239,7 +239,6 @@ async function runDeploy({
     commit: 'test-commit',
     units: {
       runtime: rustBuildUnit(binaryPath),
-      'artifact-identity': rustBuildUnit(binaryPath),
       ...(omitCompiler ? {} : { compiler: rustBuildUnit(binaryPath) }),
       router: {
         kind: 'ts',

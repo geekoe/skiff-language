@@ -1194,7 +1194,6 @@ mod tests {
             service_files: Vec::new(),
             packages: Vec::new(),
             service_resources: Default::default(),
-            service_dependencies: Vec::new(),
             timeout: Default::default(),
             operation_route_bindings: Vec::new(),
             routes: Default::default(),

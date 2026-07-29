@@ -20,7 +20,6 @@ const routerConfig = {
   environment: 'f04-host-test',
   artifactsPath: '/tmp/skiff/artifacts',
   ecosystemStoreCliPath: '/tmp/skiff/bin/skiff-compiler',
-  identityCliPath: '/tmp/skiff/bin/artifact-identity',
   devReload: true,
   releaseMode: false,
   activationPrepareTimeoutMs: 120000,

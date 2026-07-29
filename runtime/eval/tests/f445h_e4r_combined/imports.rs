@@ -76,9 +76,8 @@ pub(super) use skiff_runtime_linked_program::{
     LinkedConcurrentLaneIr, LinkedConcurrentPlanIr, LinkedExecutable, LinkedExecutableBody,
     LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr, LinkedTypeDescriptor,
     LinkedTypeRef, LiteralIr, NativeTarget, PackageCodeSlotIndex, PackageSymbolKey,
-    PublicationResourceTable, RuntimeExecutionPackage, RuntimeTypeContext,
-    ServiceDependencyConstraint, ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr,
-    TypeAddr, UnitAddr,
+    PublicationResourceTable, RuntimeExecutionPackage, RuntimeTypeContext, ServiceMeta, SlotIr,
+    SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr, UnitAddr,
 };
 pub(super) use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},

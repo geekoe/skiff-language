@@ -11,8 +11,7 @@ use skiff_artifact_model::{
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, GatewayConfig, LinkOverlay, LinkedFileUnit, LinkedProgramImage,
     OperationRouteBinding, PackageCodeSlotIndex, PublicationResourceTable, RuntimeExecutionPackage,
-    RuntimeProgramIdentity, RuntimeTypeContext, ServiceDependencyConstraint, ServiceMeta,
-    ServiceTimeoutConfig,
+    RuntimeProgramIdentity, RuntimeTypeContext, ServiceMeta, ServiceTimeoutConfig,
 };
 
 use crate::EvalRuntimeProgramSource;
@@ -182,7 +181,6 @@ pub struct RuntimeProgram {
     pub service_files: Vec<Arc<LinkedFileUnit>>,
     pub packages: Vec<Arc<RuntimeExecutionPackage>>,
     pub service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-    pub service_dependencies: Vec<ServiceDependencyConstraint>,
     pub timeout: ServiceTimeoutConfig,
     pub operation_route_bindings: Vec<OperationRouteBinding>,
     pub routes: HashMap<String, ExecutableAddr>,

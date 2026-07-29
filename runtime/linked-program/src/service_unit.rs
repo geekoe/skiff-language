@@ -1,9 +1,8 @@
 pub use skiff_artifact_model::{
     ActorMetadataIr, GatewayConfig, OperationConstReceiverRef, OperationIngressKind, OperationMode,
     OperationRouteBinding, OperationTargetRef, PackageAbiExpectation, PackageUsedSymbol,
-    PackageUsedSymbolKind, ServiceConfigMetadata, ServiceDependencyConstraint,
-    ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
-    ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
+    PackageUsedSymbolKind, ServiceConfigMetadata, ServiceMeta, ServiceOperation,
+    ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
 };
 
 use super::addr::ExecutableIndex;

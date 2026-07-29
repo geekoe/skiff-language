@@ -65,9 +65,8 @@ pub use service_error_index::{
 pub use service_unit::{
     GatewayConfig, OperationConstReceiverRef, OperationIngressKind, OperationMode,
     OperationRouteBinding, OperationTargetRef, OperationTargetRefRuntimeExt, PackageAbiExpectation,
-    PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceDependencyConstraint,
-    ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
-    ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
+    PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceMeta, ServiceOperation,
+    ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
 };
 pub use shared_image::{
     ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageCallableTarget,

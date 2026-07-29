@@ -5,20 +5,18 @@ use skiff_artifact_model::{
 
 use crate::{
     framing::{canonical_ir_bytes, framed_identity, sha256_hex},
-    package::projection::{
-        implementation_links::{
-            OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
-        },
-        FileIrOwnerIdentityProjection,
-    },
     ArtifactIdentityError, Result, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
 };
 
 use super::{
-    CallableLinkIdentityProjection, PackageArtifactBuildIdentityProjection,
-    PackageArtifactLocalAbiIdentityProjection, ResourceIdentityProjection,
+    implementation_links::{
+        OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
+    },
+    CallableLinkIdentityProjection, FileIrOwnerIdentityProjection,
+    PackageArtifactBuildIdentityProjection, PackageArtifactLocalAbiIdentityProjection,
+    ResourceIdentityProjection,
 };
 
 pub(super) fn local_abi_projection(
