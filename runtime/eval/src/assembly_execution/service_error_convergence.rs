@@ -3,9 +3,7 @@ use std::sync::Arc;
 use skiff_artifact_model::{
     ContractOperationId, PackageBuildId, PackageCallableId, ServiceProtocolIdentity,
 };
-use skiff_runtime_capability_context::{
-    OutboundResponse, RequestPayloadContext, StreamRuntimeError,
-};
+use skiff_runtime_capability_context::{RequestPayloadContext, StreamRuntimeError};
 use skiff_runtime_linked_program::{LinkedCallTarget, LinkedExprIr};
 use skiff_runtime_model::{
     request_heap::RequestHeap,
@@ -257,19 +255,6 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
             .encoded_bytes(),
         ordinary_fixed.encoded_bytes()
     );
-
-    let response = OutboundResponse::fixed_service_failure(async_fixed);
-    let OutboundResponse::FixedServiceFailure(response) = response else {
-        unreachable!("typed response constructor returned the wrong branch");
-    };
-    assert_eq!(
-        response.error().encoded_bytes(),
-        ordinary_fixed.encoded_bytes()
-    );
-    assert!(matches!(
-        response.error().envelope(),
-        ServiceErrorEnvelope::PublicTypedError { .. }
-    ));
 }
 
 #[tokio::test]

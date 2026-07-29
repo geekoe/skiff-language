@@ -1758,7 +1758,6 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
         packages: Vec::new(),
         service_resources: Default::default(),
         package_configs: Vec::new(),
-        service_dependencies: Vec::new(),
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
         routes: Default::default(),

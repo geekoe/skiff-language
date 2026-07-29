@@ -185,9 +185,49 @@ fn validate_boundary_callable_projection(
     if projection == &expected {
         return Ok(());
     }
+    if let (
+        BoundaryCallableProjection::Unavailable {
+            reasons: expected_reasons,
+        },
+        BoundaryCallableProjection::Unavailable {
+            reasons: actual_reasons,
+        },
+    ) = (&expected, projection)
+    {
+        let mut canonical_actual = actual_reasons.clone();
+        normalize_reasons(&mut canonical_actual);
+        let contains_expected = expected_reasons
+            .iter()
+            .all(|reason| actual_reasons.contains(reason));
+        let only_type_closure_saturation = actual_reasons.iter().all(|reason| {
+            expected_reasons.contains(reason) || is_type_closure_unavailable_reason(reason)
+        });
+        if !actual_reasons.is_empty()
+            && canonical_actual == *actual_reasons
+            && contains_expected
+            && only_type_closure_saturation
+        {
+            return Ok(());
+        }
+    }
     Err(BoundaryProjectionValidationError::new(format!(
         "boundary projection {callable_id} is not canonical for its signature, semantic facts, and runtime requirements; expected={expected:?}, actual={projection:?}"
     )))
+}
+
+/// Compiler projection can saturate transitive type-closure reasons from File
+/// IR bodies. PackageArtifact retains only File IR refs, so this validator can
+/// require every locally derivable reason but cannot reconstruct those extra
+/// closure facts. Keep this whitelist aligned with compiler boundary type
+/// projection; semantic/effect reasons must remain exactly derivable here.
+fn is_type_closure_unavailable_reason(reason: &BoundaryUnavailableReason) -> bool {
+    matches!(
+        reason,
+        BoundaryUnavailableReason::CallbackAdapterUnavailable
+            | BoundaryUnavailableReason::NativeAdapterUnavailable
+            | BoundaryUnavailableReason::UnsupportedBoundaryType
+            | BoundaryUnavailableReason::UnsupportedStream
+    )
 }
 
 /// Canonical classification for one exact contract value position.
@@ -1520,6 +1560,56 @@ mod tests {
                     BoundaryUnavailableReason::UnknownCallTarget,
                     BoundaryUnavailableReason::UnknownCallTarget,
                     BoundaryUnavailableReason::WritesCallerReachable,
+                    BoundaryUnavailableReason::UnsupportedBoundaryType,
+                ],
+            },
+        ] {
+            assert!(validate_boundary_callable_projection(
+                &callable_id,
+                &signature,
+                &facts,
+                &runtime,
+                &invalid,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn unavailable_projection_accepts_only_canonical_type_closure_saturation() {
+        let mut signature = unary_signature();
+        signature.parameters[0].ty = PackageTypeRef::Local {
+            local_type: TypeRefIr::LocalType { type_index: 7 },
+        };
+        let facts = safe_facts();
+        let runtime = empty_runtime_requirements();
+        let callable_id = PackageCallableId::new("pkg-callable:example.pkg:private");
+
+        let saturated = BoundaryCallableProjection::Unavailable {
+            reasons: vec![
+                BoundaryUnavailableReason::UnsupportedBoundaryType,
+                BoundaryUnavailableReason::UnsupportedStream,
+            ],
+        };
+        assert!(validate_boundary_callable_projection(
+            &callable_id,
+            &signature,
+            &facts,
+            &runtime,
+            &saturated,
+        )
+        .is_ok());
+
+        for invalid in [
+            BoundaryCallableProjection::Unavailable {
+                reasons: vec![
+                    BoundaryUnavailableReason::UnsupportedStream,
+                    BoundaryUnavailableReason::UnsupportedBoundaryType,
+                ],
+            },
+            BoundaryCallableProjection::Unavailable {
+                reasons: vec![
+                    BoundaryUnavailableReason::UnknownEffect,
                     BoundaryUnavailableReason::UnsupportedBoundaryType,
                 ],
             },
