@@ -3,7 +3,7 @@
 状态：
 
 ```text
-BLOCKED_BY = K,H,R
+IN_PROGRESS
 PRODUCTION_WRITE = NO
 ```
 
@@ -15,6 +15,9 @@ PRODUCTION_WRITE = NO
   `3a87d37f81a04c249f308b311bd91dcfdf3a8aa3`
   （tree `eafc29e952f6b5170e4f5faca4e5d181b3ace9f6`）
 - dispatch前必须把K/H/R已集成后的精确Skiff commit/tree写入本任务result；未冻结时不可创建WT。
+- 冻结candidate：
+  `9fd0fc003b8edd0bdb8fdd7626cfa5c7f6b1de22`
+  （tree `97a524b867b02ebeec2495243ad5f34518556e63`）。
 - DAG：`K + H + R -> T -> I`
 - integration owner：`/root/phase05_integration_steward`
 
@@ -36,9 +39,14 @@ T只增加一个hermetic `kind: test` fixture和跨层probe，不修改productio
 ```text
 test-runner/fixtures/http-entry-test-service/**
 test-runner/tests/http_entry_test_service.rs
+test-runner/Cargo.toml
+doc/.../P5-F445H-I7-P8-T-http-entry-combined-probe-result.md
 ```
 
 不得修改K/H/R生产文件；发现缺口时按owner返回，不在probe中加shim。
+
+`test-runner/Cargo.toml`只注册因`autotests = false`不会自动发现的新integration test，不改变
+production依赖或行为。
 
 ## 3. RED / GREEN
 
@@ -52,3 +60,20 @@ git diff --check
 
 probe必须经过真实isolated Router business port；直接调用handler、伪造response sink或mock Router不算
 GREEN。完成后记录精确candidate、进程/端口清理和未运行的昂贵gate。
+
+## 4. Zero-worktree preflight correction
+
+现有唯一真实isolated Router/Runtime owner是
+`scripts/lib/isolated-test-runtime.mjs`；它使用动态端口、临时目录和受管临时Mongo保存Router
+activation state。最初dispatch文字中的无条件“No Mongo”与“复用现有真实isolated owner”冲突。
+
+主Agent依据用户已授权的hermetic default测试临时Mongo，明确修正为：
+
+- 只允许上述owner启动的动态端口、临时目录、loopback managed Mongo；
+- 禁止stable/shared `.skiff-instance` Mongo、外网和secret；
+- 必须验证mongod、Router、Runtime、端口lease和临时目录全部清理；
+- 不新增Memory activation store或第二套no-Mongo Router lifecycle。
+
+预检确认fixture可只用现有普通HTTP client、显式test `http.yml`和K/H/R能力闭合，不需要production
+修改。integration probe以fixture-owned Node orchestration复用该isolated owner；Rust test只负责启动
+orchestration并核对可观察证据。
