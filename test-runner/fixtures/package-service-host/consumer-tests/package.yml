@@ -8,6 +8,9 @@ packages:
   - id: example.com/helper
     version: 1.0.0
     alias: helper
+  - id: example.com/payments
+    version: 1.0.0
+    alias: paymentsPackage
 services:
   - id: example.com/payments
     version: 1.0.0

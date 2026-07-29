@@ -4,7 +4,7 @@
 #![allow(clippy::too_many_lines)]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -3068,7 +3068,11 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
     let test_project =
         compile_package_project_for_test(&platform_sources(), &test_service, &artifacts).unwrap();
     let cases = discover_package_test_cases(&test_service, &test_service, false).unwrap();
-    assert_eq!(cases.len(), 4);
+    assert_eq!(
+        cases.len(),
+        9,
+        "the host fixture must discover all receiver-path, ordinary-call, and inline-effect cases"
+    );
     let overlay = compile_package_test_overlay(
         &platform_sources(),
         &test_service,
@@ -3727,23 +3731,22 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
         .unwrap()
         .read_service_contract(&receipt.payments_contract)
         .unwrap();
-    assert_eq!(
-        payments_contract.operations.len(),
-        1,
-        "the direct provider fixture must publish exactly one contract operation"
-    );
-    let operation_id = payments_contract
+    let operation_paths = payments_contract
+        .diagnostic_text
         .operations
-        .keys()
-        .next()
-        .expect("the exact echo contract operation");
+        .values()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        payments_contract
-            .diagnostic_text
-            .operations
-            .get(operation_id)
-            .map(String::as_str),
-        Some("echo")
+        operation_paths,
+        BTreeSet::from([
+            "echo",
+            "left.events",
+            "left.label",
+            "right.events",
+            "right.label",
+        ]),
+        "the direct provider fixture must publish its ordinary callable and both methods for both public instances"
     );
     let base = CanonicalBaseAssembly::load(
         &artifacts,

@@ -1,12 +1,42 @@
 import subjectImpl
+import paymentsPackage
 
 test "provider observes helper mutation" {
   assert subjectImpl/main.run() == "provider-observed-helper-mutated"
 }
 
-test "service public instances preserve their exact receiver const" {
+test "package-direct unary public instances preserve their exact receiver const" {
+  assert paymentsPackage/left.label() == "left"
+  assert paymentsPackage/right.label() == "right"
+}
+
+test "package-direct server-stream public instances preserve their exact receiver const" {
+  let leftOutput = ""
+  for event in paymentsPackage/left.events() {
+    leftOutput = leftOutput.concat(event)
+  }
+  assert leftOutput == "leftleft-done"
+
+  let rightOutput = ""
+  for event in paymentsPackage/right.events() {
+    rightOutput = rightOutput.concat(event)
+  }
+  assert rightOutput == "rightright-done"
+}
+
+test "service unary public instances preserve their exact receiver const" {
   assert subjectImpl/main.leftLabel() == "left"
   assert subjectImpl/main.rightLabel() == "right"
+}
+
+test "service server-stream public instances preserve their exact receiver const" {
+  assert subjectImpl/main.leftEvents() == "leftleft-done"
+  assert subjectImpl/main.rightEvents() == "rightright-done"
+}
+
+test "ordinary callables receive only their declared arguments" {
+  assert paymentsPackage/echo("plain") == "provider-rejected-unmutated"
+  assert subjectImpl/main.serviceEffect("plain") == "provider-rejected-unmutated"
 }
 
 test "inline package effect sequence uses typed setup and request subset" effects {
