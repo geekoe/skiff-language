@@ -1,6 +1,6 @@
 use skiff_runtime_request_contract::{
     FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, OrdinaryResponseErrorSource,
-    OutboundResponse, ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
+    ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
         encode_binary_frame, validate_response_error_frame, ResponseChunkFrameHeader,
         ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
         ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader,
-        RuntimeHttpResponseFrameHeader, ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeHttpResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
         encode_runtime_assembly_websocket_jsonrpc_response_end_frame,
@@ -156,16 +156,6 @@ pub fn response_stream_event_into_frame(
     }
 }
 
-pub fn response_end_to_outbound(
-    header: &ResponseEndFrameHeader,
-    payload: Vec<u8>,
-) -> OutboundResponse {
-    if let Err(error) = validate_response_end_frame(header, &payload, ResponseEndPhase::Payload) {
-        return invalid_response_end(&error.to_string());
-    }
-    OutboundResponse::End { payload }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseEndPhase {
     Payload,
@@ -200,37 +190,6 @@ pub fn validate_response_end_frame(
     Ok(())
 }
 
-pub fn response_start_to_outbound(header: &ResponseStartFrameHeader) -> OutboundResponse {
-    OutboundResponse::Start {
-        http_response: request_http_response_metadata(header.http_response.clone()),
-    }
-}
-
-pub fn response_chunk_to_outbound(
-    header: &ResponseChunkFrameHeader,
-    payload: Vec<u8>,
-) -> OutboundResponse {
-    OutboundResponse::Chunk {
-        seq: header.seq,
-        payload,
-    }
-}
-
-pub fn response_error_to_outbound(
-    header: &ResponseErrorFrameHeader,
-    payload: Vec<u8>,
-) -> OutboundResponse {
-    match validate_response_error_frame(header, payload) {
-        Ok(ValidatedResponseErrorFrame::FixedService(error)) => {
-            OutboundResponse::fixed_service_failure(error)
-        }
-        Ok(ValidatedResponseErrorFrame::Control(error)) => {
-            OutboundResponse::Error(request_response_error(error))
-        }
-        Err(error) => invalid_response_error(&error.to_string()),
-    }
-}
-
 fn encode_response_frame<THeader: serde::Serialize>(
     header: &THeader,
     payload: &[u8],
@@ -258,35 +217,6 @@ fn protocol_http_name_value(item: HttpNameValue) -> RuntimeHttpNameValueFrameHea
     }
 }
 
-fn request_http_response_metadata(
-    response: RuntimeHttpResponseFrameHeader,
-) -> HttpResponseMetadata {
-    HttpResponseMetadata {
-        status: response.status,
-        headers: response
-            .headers
-            .into_iter()
-            .map(request_http_name_value)
-            .collect(),
-    }
-}
-
-fn request_http_name_value(item: RuntimeHttpNameValueFrameHeader) -> HttpNameValue {
-    HttpNameValue {
-        name: item.name,
-        value: item.value,
-    }
-}
-
-fn request_response_error(error: RuntimeErrorFramePayload) -> ResponseError {
-    ResponseError {
-        code: error.code,
-        message: error.message,
-        status: error.status,
-        details: error.details,
-    }
-}
-
 fn response_end_frame_parts(
     response: ResponseEnd,
 ) -> (Vec<u8>, bool, ResponseEndFrameMetadata, ResponseEndPhase) {
@@ -310,24 +240,6 @@ fn response_end_frame_parts(
             )
         }
     }
-}
-
-fn invalid_response_end(message: &str) -> OutboundResponse {
-    OutboundResponse::Error(ResponseError {
-        code: "RuntimeProtocolViolation".to_string(),
-        message: message.to_string(),
-        status: None,
-        details: None,
-    })
-}
-
-fn invalid_response_error(message: &str) -> OutboundResponse {
-    OutboundResponse::Error(ResponseError {
-        code: "RuntimeProtocolViolation".to_string(),
-        message: message.to_string(),
-        status: None,
-        details: None,
-    })
 }
 
 #[cfg(test)]

@@ -8,7 +8,6 @@ pub(crate) mod actor_method_outbound;
 mod effect_context;
 mod http;
 mod native_projection;
-mod outbound_service;
 mod request_payload;
 mod response;
 mod store;
@@ -40,11 +39,6 @@ pub use native_projection::{
     RuntimeNativeFileCapabilityContext, RuntimeNativeHttpClientCapabilityContext,
     RuntimeNativeHttpResponseStreamCapabilityContext, RuntimeNativeTelemetryCapabilityContext,
     RuntimeNativeTimeCapabilityContext,
-};
-#[allow(unused_imports)]
-pub use outbound_service::{
-    OutboundCallerDeadline, OutboundServiceContext, OutboundServiceContextInput,
-    OutboundServiceRequestStart, OutboundTraceMetadata, ServiceDispatchContext,
 };
 pub use request_payload::ConfigCapabilityContext;
 pub use response::response_error_from_runtime_error;

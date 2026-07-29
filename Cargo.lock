@@ -2352,8 +2352,6 @@ dependencies = [
 name = "skiff-runtime-activation"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "skiff-artifact-model",
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",

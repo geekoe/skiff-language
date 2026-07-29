@@ -20,16 +20,14 @@ use skiff_runtime_host::{
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, ExceptionStackFrame, OpaqueServiceError,
 };
-use skiff_runtime_request::{OutboundResponse, RequestError};
+use skiff_runtime_request::RequestError;
 use skiff_runtime_transport::{
     protocol::{
         decode_response_error_frame, encode_binary_frame, ResponseErrorFrameHeader,
         RuntimeErrorFramePayload, TelemetryEvent, TelemetrySource, TelemetryTopic,
         TelemetryVisibility, ValidatedResponseErrorFrame,
     },
-    response_mapper::{
-        response_error_to_outbound, response_event_into_frame, OrdinaryResponseEvent,
-    },
+    response_mapper::{response_event_into_frame, OrdinaryResponseEvent},
 };
 
 #[derive(Debug, Clone)]
@@ -304,7 +302,7 @@ fn restricted_projection_is_covered_by_secret_redaction_and_event_budget() {
 }
 
 #[test]
-fn request_to_wire_and_reverse_session_seam_preserve_three_fixed_payloads() {
+fn request_to_wire_preserves_three_fixed_payloads() {
     let fixtures = [
         br#"{"kind":"publicTypedError","packageId":"example.com/errors","stableSchemaKey":"not-found","packageSchemaTypeId":"type:not-found","encodedPayload":[123,125],"traceId":"trace-public","errorId":"error-public"}"#
             .as_slice(),
@@ -333,18 +331,12 @@ fn request_to_wire_and_reverse_session_seam_preserve_three_fixed_payloads() {
         let frame = response_event_into_frame(format!("request-{index}"), event)
             .expect("fixed response frame");
 
-        let (header, validated) =
+        let (_header, validated) =
             decode_response_error_frame(&frame).expect("dedicated response.error decode");
         let ValidatedResponseErrorFrame::FixedService(decoded) = validated else {
             panic!("fixed frame must remain fixed")
         };
         assert_eq!(decoded.encoded_bytes(), encoded);
-        let outbound = response_error_to_outbound(&header, decoded.into_encoded_bytes());
-        assert!(matches!(
-            outbound,
-            OutboundResponse::FixedServiceFailure(failure)
-                if failure.error().encoded_bytes() == encoded
-        ));
     }
 }
 
@@ -363,20 +355,13 @@ fn matching_generic_control_stays_generic_and_payload_rules_fail_closed() {
             .expect("generic control failure is ordinary"),
     )
     .expect("generic control frame");
-    let (header, validated) = decode_response_error_frame(&frame).expect("control decode");
+    let (_header, validated) = decode_response_error_frame(&frame).expect("control decode");
     assert!(matches!(
         validated,
         ValidatedResponseErrorFrame::Control(ref error)
             if error.code == "InternalError"
                 && error.message == "canonical service failure"
     ));
-    assert!(matches!(
-        response_error_to_outbound(&header, Vec::new()),
-        OutboundResponse::Error(error)
-            if error.code == "InternalError"
-                && error.message == "canonical service failure"
-    ));
-
     let fixed_empty = encode_binary_frame(
         &ResponseErrorFrameHeader::fixed_service("request-fixed-empty".to_string()),
         &[],

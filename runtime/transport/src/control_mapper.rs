@@ -3,8 +3,7 @@ use skiff_runtime_request_contract::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
-    OutboundControlMessage, RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
-    RuntimeCallerControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
+    OutboundControlMessage, RequestCancelControl, RuntimeDeadlineControl,
     SpawnSubmitControlRequest,
 };
 
@@ -19,9 +18,7 @@ use crate::{
         encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
         ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
         ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
-        RequestStartFrameHeader, RequestTestEffectDouble, RuntimeCallerFrameHeader,
-        RuntimeDeadlineFrameHeader, RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeDeadlineFrameHeader, SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -46,9 +43,6 @@ pub fn encode_outbound_control_message(
         }
         OutboundControlMessage::SpawnSubmit { request, payload } => {
             spawn_submit_request_frame(spawn_submit_request_frame_header(request)?, &payload)
-        }
-        OutboundControlMessage::RequestStart { request, payload } => {
-            request_start_frame(request_start_frame_header(request), &payload)
         }
         OutboundControlMessage::RequestCancel { request } => {
             request_cancel_frame(request_cancel_frame_header(request), &[])
@@ -104,13 +98,6 @@ pub fn actor_remove_request_frame(
 
 pub fn spawn_submit_request_frame(
     header: SpawnSubmitRequestFrameHeader,
-    payload: &[u8],
-) -> TransportResult<Vec<u8>> {
-    encode_control_frame(&header, payload)
-}
-
-pub fn request_start_frame(
-    header: RequestStartFrameHeader,
     payload: &[u8],
 ) -> TransportResult<Vec<u8>> {
     encode_control_frame(&header, payload)
@@ -232,75 +219,10 @@ fn spawn_submit_request_frame_header(
     })
 }
 
-fn request_start_frame_header(request: RequestStartControl) -> RequestStartFrameHeader {
-    RequestStartFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "request.start".to_string(),
-        request_id: request.request_id,
-        mode: request.mode,
-        caller: runtime_caller_frame_header(request.caller),
-        target: request.target,
-        operation_abi_id: request.operation_abi_id,
-        selector: request.selector,
-        service_id: request.service_id,
-        version: request.version,
-        build_id: request.build_id,
-        service_protocol_identity: request.service_protocol_identity,
-        activation_identity: request.activation_identity,
-        gateway_entry_identity: request.gateway_entry_identity,
-        client_session: request.client_session,
-        deadline: request.deadline.map(runtime_deadline_frame_header),
-        trace: runtime_trace_context_frame_header(request.trace),
-        http_request: None,
-        http_adapter: None,
-        test_effects_enabled: request.test_effects_enabled,
-        test_effect_doubles: request
-            .test_effect_doubles
-            .into_iter()
-            .map(|(target, sequence)| {
-                (
-                    target,
-                    sequence
-                        .into_iter()
-                        .map(request_test_effect_double_frame_header)
-                        .collect(),
-                )
-            })
-            .collect(),
-    }
-}
-
-fn runtime_caller_frame_header(caller: RuntimeCallerControl) -> RuntimeCallerFrameHeader {
-    RuntimeCallerFrameHeader {
-        kind: caller.kind,
-        target: caller.target,
-    }
-}
-
 fn runtime_deadline_frame_header(deadline: RuntimeDeadlineControl) -> RuntimeDeadlineFrameHeader {
     RuntimeDeadlineFrameHeader {
         timeout_ms: deadline.timeout_ms,
         expires_at: deadline.expires_at,
-    }
-}
-
-fn runtime_trace_context_frame_header(
-    trace: RuntimeTraceContextControl,
-) -> RuntimeTraceContextFrameHeader {
-    RuntimeTraceContextFrameHeader {
-        trace_id: trace.trace_id,
-        span_id: trace.span_id,
-        parent_span_id: trace.parent_span_id,
-        sampled: trace.sampled,
-    }
-}
-
-fn request_test_effect_double_frame_header(
-    double: RequestEffectDoubleControl,
-) -> RequestTestEffectDouble {
-    RequestTestEffectDouble {
-        expect_request: double.expect_request,
-        response: double.response,
     }
 }
 
@@ -373,25 +295,20 @@ mod tests {
     use super::{
         actor_find_request_frame, actor_get_or_create_request_frame, actor_remove_request_frame,
         actor_replace_request_frame, connection_send_frame, encode_outbound_control_message,
-        request_cancel_frame, request_start_frame, spawn_submit_request_frame,
+        request_cancel_frame, spawn_submit_request_frame,
     };
     use crate::protocol::{
         decode_typed_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
         ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
         ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
-        RequestStartFrameHeader, RuntimeCallerFrameHeader, RuntimeTraceContextFrameHeader,
         SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     };
-    use serde_json::json;
     use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
     use skiff_runtime_request_contract::{
         ActivationIdentityControl, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
         ActorReplaceControlRequest, OutboundControlMessage, RequestCancelControl,
-        RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl,
-        RuntimeClientSessionControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
         SpawnSubmitControlRequest,
     };
-    use std::collections::HashMap;
 
     #[test]
     fn connection_send_frame_maps_header_and_opaque_payload() {
@@ -594,49 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn request_start_frame_maps_header_and_opaque_payload() {
-        let header = RequestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "request.start".to_string(),
-            request_id: "request-1".to_string(),
-            mode: "unary".to_string(),
-            caller: RuntimeCallerFrameHeader {
-                kind: "service".to_string(),
-                target: "Caller.run".to_string(),
-            },
-            target: "Worker.run".to_string(),
-            operation_abi_id: Some("operation-worker-run".to_string()),
-            selector: Some("operation:operation-worker-run".to_string()),
-            service_id: Some("example.com/worker".to_string()),
-            version: Some("1.0.0".to_string()),
-            build_id: "build-1".to_string(),
-            service_protocol_identity: "service-protocol-1".to_string(),
-            activation_identity: Some("activation-1".to_string()),
-            gateway_entry_identity: None,
-            client_session: None,
-            deadline: None,
-            trace: RuntimeTraceContextFrameHeader {
-                trace_id: "trace-1".to_string(),
-                span_id: "span-1".to_string(),
-                parent_span_id: Some("parent-span-1".to_string()),
-                sampled: Some(true),
-            },
-            http_request: None,
-            http_adapter: None,
-            test_effects_enabled: false,
-            test_effect_doubles: HashMap::new(),
-        };
-        let payload = b"opaque service request bytes".to_vec();
-
-        let frame = request_start_frame(header.clone(), &payload).expect("start frame encodes");
-        let (decoded, decoded_payload): (RequestStartFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("start frame decodes");
-
-        assert_eq!(decoded, header);
-        assert_eq!(decoded_payload, payload);
-    }
-
-    #[test]
     fn request_cancel_frame_maps_header_and_empty_payload() {
         let header = RequestCancelFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -685,80 +559,6 @@ mod tests {
             decode_typed_binary_frame(&frame).expect("cancel frame decodes");
 
         assert_eq!(decoded.reason, "protocol_error");
-    }
-
-    #[test]
-    fn outbound_request_start_control_encodes_binary_frame() {
-        let mut test_effect_doubles = HashMap::new();
-        test_effect_doubles.insert(
-            "Worker.run".to_string(),
-            vec![RequestEffectDoubleControl {
-                expect_request: Some(json!({ "name": "Ada" })),
-                response: json!({ "ok": true }),
-            }],
-        );
-        let payload = br#"{"name":"Ada"}"#.to_vec();
-
-        let frame = encode_outbound_control_message(OutboundControlMessage::RequestStart {
-            request: RequestStartControl {
-                request_id: "request-start-1".to_string(),
-                mode: "unary".to_string(),
-                caller: RuntimeCallerControl {
-                    kind: "service".to_string(),
-                    target: "Caller.run".to_string(),
-                },
-                target: "Worker.run".to_string(),
-                operation_abi_id: Some("operation-worker-run".to_string()),
-                selector: Some("operation:operation-worker-run".to_string()),
-                service_id: Some("example.com/worker".to_string()),
-                version: Some("1.0.0".to_string()),
-                build_id: "build-1".to_string(),
-                service_protocol_identity: "service-protocol-1".to_string(),
-                activation_identity: Some("activation-1".to_string()),
-                gateway_entry_identity: Some("gateway-1".to_string()),
-                client_session: Some(RuntimeClientSessionControl {
-                    id: "client-1".to_string(),
-                }),
-                deadline: Some(RuntimeDeadlineControl {
-                    timeout_ms: 5000,
-                    expires_at: "2026-07-01T00:00:05Z".to_string(),
-                }),
-                trace: RuntimeTraceContextControl {
-                    trace_id: "trace-1".to_string(),
-                    span_id: "span-1".to_string(),
-                    parent_span_id: Some("parent-span-1".to_string()),
-                    sampled: Some(true),
-                },
-                test_effects_enabled: true,
-                test_effect_doubles,
-            },
-            payload: payload.clone(),
-        })
-        .expect("outbound start encodes");
-        let (decoded, decoded_payload): (RequestStartFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("start frame decodes");
-
-        assert_eq!(decoded.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(decoded.envelope_type, "request.start");
-        assert_eq!(decoded.request_id, "request-start-1");
-        assert_eq!(decoded.caller.kind, "service");
-        assert_eq!(decoded.caller.target, "Caller.run");
-        assert_eq!(decoded.target, "Worker.run");
-        assert_eq!(decoded.deadline.expect("deadline maps").timeout_ms, 5000);
-        assert_eq!(decoded.trace.trace_id, "trace-1");
-        assert_eq!(decoded.trace.sampled, Some(true));
-        assert!(decoded.http_request.is_none());
-        assert!(decoded.http_adapter.is_none());
-        assert!(decoded.test_effects_enabled);
-        assert_eq!(
-            decoded.test_effect_doubles["Worker.run"][0].expect_request,
-            Some(json!({ "name": "Ada" }))
-        );
-        assert_eq!(
-            decoded.test_effect_doubles["Worker.run"][0].response,
-            json!({ "ok": true })
-        );
-        assert_eq!(decoded_payload, payload);
     }
 
     #[test]

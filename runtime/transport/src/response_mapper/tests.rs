@@ -1,14 +1,13 @@
 use serde_json::{json, Value};
 
 use super::{
-    response_end_to_outbound, response_error_to_outbound, response_event_into_frame,
-    runtime_assembly_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
-    OrdinaryResponseEvent, ResponseEndPhase,
+    response_event_into_frame, runtime_assembly_websocket_jsonrpc_response_into_frame,
+    validate_response_end_frame, OrdinaryResponseEvent, ResponseEndPhase,
 };
 use crate::protocol::{
     decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
-    ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
-    ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
+    ResponseEndFrameHeader, ResponseErrorFrameHeader, ValidatedResponseErrorFrame,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use crate::runtime_assembly_request::{
     decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
@@ -17,8 +16,8 @@ use crate::runtime_assembly_request::{
 };
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::{
-    FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource,
-    OutboundResponse, ResponseEnd, ResponseError, ResponseEvent,
+    FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseEnd,
+    ResponseError, ResponseEvent,
 };
 
 struct TestOrdinaryError(ResponseError);
@@ -56,21 +55,6 @@ fn response_boundary_rejects_http_and_payload_phase_confusion() {
         decode_typed_binary_frame(&http).expect("HTTP response.end must decode");
     assert!(validate_response_end_frame(&header, &payload, ResponseEndPhase::Http).is_ok());
     assert!(validate_response_end_frame(&header, &payload, ResponseEndPhase::Payload).is_err());
-
-    let inbound = response_end_to_outbound(
-        &ResponseEndFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.end".to_string(),
-            request_id: "request-payload-mismatch".to_string(),
-            payload_present: false,
-            metadata: ResponseEndFrameMetadata::None,
-        },
-        vec![1],
-    );
-    assert!(matches!(
-        inbound,
-        OutboundResponse::Error(error) if error.code == "RuntimeProtocolViolation"
-    ));
 }
 
 #[test]
@@ -110,14 +94,6 @@ fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
 
         let raw = decode_binary_frame(&encoded).expect("fixed service binary frame");
         assert_eq!(raw.payload_bytes, payload);
-        let typed_header: ResponseErrorFrameHeader =
-            serde_json::from_value(raw.header).expect("fixed service header");
-        let outbound = response_error_to_outbound(&typed_header, raw.payload_bytes);
-        assert!(matches!(
-            outbound,
-            OutboundResponse::FixedServiceFailure(failure)
-                if failure.error().encoded_bytes() == payload
-        ));
         assert!(matches!(
             header,
             ResponseErrorFrameHeader::FixedService { .. }
@@ -137,20 +113,12 @@ fn service_error_response_v2_mapper_keeps_matching_generic_control_untyped() {
         }),
     )
     .expect("control response must encode");
-    let (header, decoded_body) =
+    let (_header, decoded_body) =
         decode_response_error_frame(&encoded).expect("control response must decode");
     assert!(matches!(
         decoded_body,
         ValidatedResponseErrorFrame::Control(ref error)
             if error.code == "InternalError"
-    ));
-
-    let outbound = response_error_to_outbound(&header, Vec::new());
-    assert!(matches!(
-        outbound,
-        OutboundResponse::Error(error)
-            if error.code == "InternalError"
-                && error.message == "The service could not complete the request."
     ));
 }
 

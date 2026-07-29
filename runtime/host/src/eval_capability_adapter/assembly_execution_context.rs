@@ -1,6 +1,5 @@
-use skiff_runtime_activation::{ActivationContext, RuntimeActivation};
+use skiff_runtime_activation::ActivationContext;
 use skiff_runtime_eval::program_execution::{ProgramExecutionContext, ProgramExecutionInput};
-use skiff_runtime_linked_program::{GatewayConfig, ServiceMeta};
 use skiff_runtime_request::{RequestEnvelope, RuntimeOperation};
 
 use super::*;
@@ -43,7 +42,6 @@ pub(super) struct RuntimeAssemblyExecutionContext {
     activation_identity: ActivationIdentityControl,
     config: crate::config_view::RuntimeConfigView,
     package_configs: Vec<crate::config_view::RuntimeConfigView>,
-    runtime_activation: Arc<RuntimeActivation>,
     db_source: concrete::DbCapabilitySource,
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
@@ -75,24 +73,6 @@ impl RuntimeAssemblyExecutionContext {
         )?;
         let deployment = &input.activation.identity().deployment;
         let activation_identity = activation_identity_control(input.activation.as_ref());
-        let runtime_activation = Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: deployment.service_id.clone(),
-                display_name: None,
-                metadata: Default::default(),
-            },
-            version: deployment.contract_version.clone(),
-            package_configs: package_configs
-                .iter()
-                .map(|config| config.resolved_config_value().clone())
-                .collect(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: GatewayConfig::default(),
-        });
         let mut extra = serde_json::Map::new();
         extra.insert("caller".to_string(), metadata.caller);
         if let Some(client_session) = metadata.client_session {
@@ -140,7 +120,6 @@ impl RuntimeAssemblyExecutionContext {
             activation_identity,
             config,
             package_configs,
-            runtime_activation,
             db_source: input.db_source,
             file_source: input.file_source,
             http_options: input.http_options,
@@ -244,10 +223,8 @@ impl RuntimeAssemblyExecutionContext {
                 test_effect_doubles.clone(),
             ),
             test_effect_doubles,
-            runtime_activation: Arc::clone(&self.runtime_activation),
             actor: actor.clone(),
             spawn: actor,
-            outbound: retired_assembly_outbound(cancellation, request_heap_limits.clone()),
             request_heap_limits,
         })
         .with_websocket_capability_rebinder(websocket_rebinder_for_runtime_request(

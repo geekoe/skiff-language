@@ -34,22 +34,6 @@ pub fn effects(
     eval_capabilities::EffectDispatchContext::new(RuntimeEffectDispatchContext(context))
 }
 
-pub fn outbound(
-    context: concrete::OutboundServiceContext,
-) -> eval_capabilities::OutboundServiceContext {
-    eval_capabilities::OutboundServiceContext::new(RuntimeOutboundServiceContext(context))
-}
-
-pub(crate) fn retired_assembly_outbound(
-    cancellation: CancellationToken,
-    request_heap_limits: RequestHeapLimits,
-) -> eval_capabilities::OutboundServiceContext {
-    eval_capabilities::OutboundServiceContext::new(RetiredAssemblyOutboundServiceContext::new(
-        cancellation,
-        request_heap_limits,
-    ))
-}
-
 pub fn websocket<'a>(
     context: concrete::WebsocketCapabilityContext<'a>,
     owned: RuntimeOwnedWebsocketParts,
