@@ -19,7 +19,7 @@ import {
   skiffSourceSubjectPublishArgs,
 } from '../lib/skiff-source-test-suite.mjs';
 
-const assemblyIdentity = `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 
 test('F270 legacy overlay smoke debt remains an exact closed inventory', async () => {
   const fixtureRoot = fileURLToPath(
@@ -385,6 +385,13 @@ test('package-service host receipt has one strict schema and canonical assembly 
       [(value) => { value.schemaVersion = 'legacy'; }, /schemaVersion/],
       [(value) => { value.environment = 'other'; }, /environment/],
       [(value) => { value.baseAssembly.assemblyIdentity = 'not-canonical'; }, /must be canonical/],
+      [
+        (value) => {
+          value.baseAssembly.assemblyIdentity =
+            `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+        },
+        /must be canonical/,
+      ],
       [(value) => { delete value.packages.helper.packageBuildId; }, /helper package must contain exactly/],
     ]) {
       const invalid = structuredClone(valid);
