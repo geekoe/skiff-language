@@ -148,8 +148,7 @@ fn lookup_resource<'a>(
     path: &PublicationResourcePath,
 ) -> Result<Option<&'a LoadedPublicationResource>> {
     resource_context
-        .resources()
-        .lookup(invocation.resource_owner()?, path.as_str())
+        .lookup_resource(invocation.resource_owner()?, path.as_str())
         .map_err(resource_lookup_error)
 }
 
@@ -223,3 +222,6 @@ fn resource_json_decode_error(path: &str, error: RuntimeError) -> RuntimeError {
         other => other,
     }
 }
+
+#[cfg(test)]
+mod tests;

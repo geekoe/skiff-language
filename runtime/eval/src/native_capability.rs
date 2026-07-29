@@ -14,6 +14,9 @@ use skiff_runtime_capability_context::{
     project_native_capability_context, NativeCapabilityContexts, NativeCapabilityProjectionSource,
     SupervisedStreamConsumptionChild,
 };
+use skiff_runtime_model::{
+    addr::UnitAddr, LoadedPublicationResource, RuntimeProgramResourceLookupError,
+};
 use skiff_runtime_native_contract::NativeRequiredContext;
 
 type RuntimeNativeCapabilityContexts<'context, 'execution> = NativeCapabilityContexts<
@@ -78,8 +81,13 @@ impl<'a> RuntimeNativeResourceCapabilityContext<'a> {
 impl skiff_runtime_native::capability::NativeResourceCapability
     for RuntimeNativeResourceCapabilityContext<'_>
 {
-    fn resources(&self) -> skiff_runtime_linked_program::RuntimeExecutionResourceView<'_> {
-        self.projection.resource_view()
+    fn lookup_resource<'a>(
+        &'a self,
+        owner: &UnitAddr,
+        path: &str,
+    ) -> std::result::Result<Option<&'a LoadedPublicationResource>, RuntimeProgramResourceLookupError>
+    {
+        self.projection.resource_view().lookup(owner, path)
     }
 }
 

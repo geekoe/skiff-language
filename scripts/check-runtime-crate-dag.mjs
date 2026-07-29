@@ -691,6 +691,23 @@ function runSelfTests() {
       },
     },
     {
+      name: 'native cannot depend on linked-program execution internals',
+      run: () => {
+        const metadata = metadataFromRuntimeDag();
+        const nativePackage = metadata.packages.find((pkg) => pkg.name === 'skiff-runtime-native');
+        nativePackage.dependencies.push(runtimeDependency('skiff-runtime-linked-program'));
+        const result = checkRuntimeDag(metadata);
+        assert(
+          result.violations.some(
+            (violation) =>
+              violation.packageName === 'skiff-runtime-native'
+              && violation.message.includes('skiff-runtime-linked-program is not allowed'),
+          ),
+          'expected skiff-runtime-native -> skiff-runtime-linked-program to be rejected',
+        );
+      },
+    },
+    {
       name: 'current DAG ignores dev-only runtime edges',
       run: () => {
         const metadata = metadataFromRuntimeDag();

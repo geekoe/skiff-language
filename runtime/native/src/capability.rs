@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, sync::OnceLock};
+use std::{future::Future, pin::Pin};
 
 use bytes::Bytes;
 use serde_json::Value;
@@ -9,9 +9,10 @@ use skiff_runtime_capability_context::{
     FileCapabilityFuture, FileChunkFuture, FileChunkSource, OwnedExecutionControl,
     StreamConsumerCleanup,
 };
-use skiff_runtime_linked_program::RuntimeExecutionResourceView;
-use skiff_runtime_model::addr::ExecutableAddr;
-use skiff_runtime_model::PublicationResourceTable;
+use skiff_runtime_model::{
+    addr::{ExecutableAddr, UnitAddr},
+    LoadedPublicationResource, RuntimeProgramResourceLookupError,
+};
 
 use crate::error::Result;
 use crate::runtime_value_facade::{
@@ -198,12 +199,28 @@ pub trait NativeTelemetryCapability {
 }
 
 pub trait NativeResourceCapability {
-    fn resources(&self) -> RuntimeExecutionResourceView<'_>;
+    fn lookup_resource<'a>(
+        &'a self,
+        owner: &UnitAddr,
+        path: &str,
+    ) -> std::result::Result<Option<&'a LoadedPublicationResource>, RuntimeProgramResourceLookupError>;
 }
 
 impl NativeResourceCapability for () {
-    fn resources(&self) -> RuntimeExecutionResourceView<'_> {
-        static EMPTY: OnceLock<PublicationResourceTable> = OnceLock::new();
-        RuntimeExecutionResourceView::new(EMPTY.get_or_init(PublicationResourceTable::default), &[])
+    fn lookup_resource<'a>(
+        &'a self,
+        owner: &UnitAddr,
+        _path: &str,
+    ) -> std::result::Result<Option<&'a LoadedPublicationResource>, RuntimeProgramResourceLookupError>
+    {
+        match owner {
+            UnitAddr::Service => Ok(None),
+            UnitAddr::Package(slot) => {
+                Err(RuntimeProgramResourceLookupError::PackageSlotOutOfBounds {
+                    slot: *slot,
+                    package_count: 0,
+                })
+            }
+        }
     }
 }

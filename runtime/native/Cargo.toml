@@ -18,7 +18,6 @@ skiff-artifact-model = { path = "../../artifact-model" }
 skiff-canonical-json = { path = "../../canonical-json" }
 skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }
-skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 thiserror = "2.0"
