@@ -2470,6 +2470,14 @@ fn explicit_test_service_http_entries_are_projected_per_case_without_subject_ing
         fixture.records.contracts[0].service_id, fixture.records.contracts[1].service_id,
         "every case must retain its unique synthetic service id"
     );
+    assert_eq!(
+        fixture.records.contracts[0].service_id,
+        "test.skiff/example.com/http-entry-tests/case-0"
+    );
+    assert_eq!(
+        fixture.records.contracts[1].service_id,
+        "test.skiff/example.com/http-entry-tests/case-1"
+    );
     for deployment in &fixture.records.deployments {
         assert_eq!(deployment.gateway_entries.len(), 2);
         assert_eq!(deployment.ingress.len(), 2);

@@ -214,7 +214,7 @@ fn compile_package_test_contract(
 ) -> Result<ServiceContract, CanonicalFixtureError> {
     canonical_zero_operation_contract(
         format!(
-            "test.skiff/package/{}/case-{index}",
+            "test.skiff/{}/case-{index}",
             safe_coordinate(&overlay.production.package_id),
         ),
         overlay.production.package_version.clone(),

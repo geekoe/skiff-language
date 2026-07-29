@@ -437,7 +437,7 @@ function validI02SpawnSubmitFixtureReceipt(environment) {
   fixture.candidate.overlayRecordPath = fixture.candidate.overlayRecordPath
     .replace('package-service-websocket-smoke', 'package-service-i02-spawn-submit');
   fixture.candidate.entrypoints[0].deployment.serviceId =
-    `test.skiff/package/${packageId}/case-0`;
+    `test.skiff/${packageId}/case-0`;
   return fixture;
 }
 
