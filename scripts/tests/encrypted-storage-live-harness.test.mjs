@@ -15,7 +15,7 @@ import {
 } from '../lib/encrypted-storage-live-harness.mjs';
 
 const productionAssembly =
-  `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ownerFiles = [
   'encrypted-storage-live-contract.mjs',
   'encrypted-storage-live-mongo-probe.mjs',
@@ -217,6 +217,10 @@ test('encrypted-storage production assembly comes only from a complete real rece
     }],
     ['assembly identity is not canonical', (receipt) => {
       receipt.runtimeAssemblyReceipt.assembly.assemblyIdentity = 'assembly-latest';
+    }],
+    ['assembly identity is not canonical', (receipt) => {
+      receipt.runtimeAssemblyReceipt.assembly.assemblyIdentity =
+        `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
     }],
     ['required package roots are incomplete', (receipt) => {
       receipt.packageArtifactReceipts.pop();

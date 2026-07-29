@@ -131,7 +131,7 @@ test('merged compiler and test transports share one absolute platform root', asy
           testFile: '/tmp/encrypted.live.test.skiff',
           artifactRoot,
           baseAssembly:
-            `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`,
+            `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`,
           activationUrl:
             'http://router.test:4101/__skiff/activate-assembly',
           ingressUrl: 'http://router.test:4100',

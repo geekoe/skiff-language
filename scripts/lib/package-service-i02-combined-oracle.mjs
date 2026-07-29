@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 const ASSEMBLY_IDENTITY =
-  /^skiff-runtime-assembly-v2:sha256:[0-9a-f]{64}$/;
+  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
 const PACKAGE_BUILD_IDENTITY =
   /^skiff-package-build-v10:sha256:[0-9a-f]{64}$/;
 const I02_SPAWN_SUBMIT_BUSINESS_RESULT =

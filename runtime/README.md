@@ -65,7 +65,7 @@ The current identity generations are:
 - GatewayEntry v2: `skiff-gateway-entry-v2`
 - ServiceProtocol v5: `skiff-service-protocol-v5`
 - DeploymentArtifact v3: `skiff-deployment-artifact-v3`
-- RuntimeAssembly v2: `skiff-runtime-assembly-v2`
+- RuntimeAssembly v3: `skiff-runtime-assembly-v3`
 
 Runtime admission and dispatch require exact current identities. The linked
 Runtime program owns executable addresses, callable targets, functions, impl

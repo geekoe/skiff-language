@@ -251,7 +251,7 @@ test('activation request construction rejects values outside the frozen T01 wire
     expectedGeneration: 0,
     environment: 'dev',
     assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'1'.repeat(64)}`,
+      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
     },
   };
   let requests = 0;
@@ -265,6 +265,12 @@ test('activation request construction rejects values outside the frozen T01 wire
     { activationId: 'not visible ascii space' },
     { environment: 'x'.repeat(201) },
     { assembly: { ...base.assembly, buildId: 'legacy' } },
+    {
+      assembly: {
+        assemblyIdentity:
+          `skiff-runtime-assembly-v2:sha256:${'1'.repeat(64)}`,
+      },
+    },
   ]) {
     await assert.rejects(
       requestAssemblyActivation({ ...base, ...override, fetchImpl }),
@@ -283,7 +289,7 @@ test('activation request transports its AbortSignal and preserves the abort reas
     expectedGeneration: 0,
     environment: 'dev',
     assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v2:sha256:${'1'.repeat(64)}`,
+      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
     },
     signal: controller.signal,
     fetchImpl: async (_url, options) => {
