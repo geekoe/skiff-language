@@ -3,9 +3,12 @@
 状态：
 
 ```text
-IN_PROGRESS
+PASS
 PRODUCTION_WRITE = NO
 ```
+
+执行结果：
+`P5-F445H-I7-P8-T-http-entry-combined-probe-result.md`。
 
 ## 1. Parent and candidate gate
 
