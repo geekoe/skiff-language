@@ -3,8 +3,9 @@
 状态：
 
 ```text
-PAUSED_BY = S3
-RECOVERABLE_CHECKPOINT = bdf7bd4adc59cd32d615e4f5498d3e764df4384e
+PASS
+INTERNALS_INTEGRATED = YES
+DEFAULT_TESTS = 51/51
 ```
 
 ## 1. Parent and baseline
@@ -14,18 +15,21 @@ RECOVERABLE_CHECKPOINT = bdf7bd4adc59cd32d615e4f5498d3e764df4384e
 - Internals baseline：
   `9c3bdc82c4a43e575ea627357c05f54dbc0400a8`
   （tree `c3f159a397cd3c2b316a502ce945d8a935a9c2c3`）
-- 当前可恢复Internals checkpoint：
-  `bdf7bd4adc59cd32d615e4f5498d3e764df4384e`
-  （tree `324fe69f3ea58786b297e412da436c03b05d9656`）；该提交尚未集成，不是最终candidate。
-- dispatch前记录T、S1 diagnostic、S2与S3合流后的精确Skiff commit/tree。
+- 最终Internals leaf：
+  `698e272a86b74434d508102bf3bb7e624c45cedc`
+  （tree `3ef3edf2dbe39928565226764f84b7d48a66a578`）
+- 最终Internals integration：
+  `14d3d2d0a7171a57fde6c5dd19b8d7eb4903ccca`
+  （tree `d58b732d45354f0b01efc24285a20ec3464f1b72`）
+- 最终GREEN使用的Skiff candidate：
+  `8e30f514caa3f219f4a77452684359d4a5ddbdd5`
+  （tree `d34517add43505cf1d6e9f38e34fef6ffa110128`）
 - Internals integration owner：`/root/phase05_internals_integration_steward`
-- DAG：`T -> S1 diagnostic -> S2 -> S3 -> I resume -> X`
+- DAG：`T -> S1 diagnostic -> S2 -> S3 -> I -> X`
 
-当前checkpoint中的四条迁移已通过真实isolated Router/Runtime到达raw HTTP entry，但都观察到
-`unknown Stream value`。S1已经证明普通wrapper→PackageDirect return stream GREEN，不能解除I，也不能
-解释该RED。后续只读差分只把最小结构缩小为“PackageDirect stream producer接收另一个stream producer
-返回值作为参数”；S2/S3必须用真实fixture依次闭合argument transport与existing response sink，不能把
-差分直接当作根因。
+S2/S3闭合stream argument transport与existing response sink后，四条迁移经真实isolated
+Router/Runtime全部GREEN。完成结果：
+`P5-F445H-I7-P8-I-aihub-http-entry-migration-result.md`。
 
 ## 2. Scope
 
@@ -64,13 +68,18 @@ SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
 node scripts/test-isolated-service.mjs agine.ai/aihub
 ```
 
-`<P8-Skiff-worktree>`在执行时替换为S2/S3均完成且已集成后的精确Skiff candidate绝对路径；该candidate
-保留T与S1 diagnostic证据，但S1不改写为PASS。脚本必须继续使用owned temp artifact/Cargo root与
-isolated runner，不得访问stable 4000/4001、外网、真实API key或live test。允许用户已授权的临时managed
-Mongo，但必须动态端口/临时目录并清理。
+最终以`/Users/geek/workspace/skiff-phase-05-integration`的
+`8e30f514caa3f219f4a77452684359d4a5ddbdd5`运行该命令，结果为默认测试
+`51 passed; 0 failed; 0 skipped`。脚本使用owned temp artifact/Cargo root与isolated runner，未访问
+stable 4000/4001、外网、真实API key或live test；临时managed Mongo、Router、Runtime、supervisor、
+动态端口、lease与临时目录均已清理。
 
 负例：没有显式test `http.yml`时失败；直接handler调用不再冒充route coverage；默认发现仍为51且
 Gemini `defaultRun false`不执行。
+
+完整执行证据：
+`/Users/geek/workspace/P5-F445H-I7-P8-I-red.log`
+（SHA-256 `b930ea549fcaed6690cd1a7bf2b3086367c02fab4d92e31776669bb425f9ffe6`）。
 
 ## 4. Stop conditions
 
