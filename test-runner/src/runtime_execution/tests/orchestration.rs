@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::*;
 
@@ -159,32 +159,34 @@ fn business_success_is_sent_exactly_once() {
         calls.set(calls.get() + 1);
         Ok(http::HttpResponse {
             status: 200,
-            body: "ok".to_string(),
+            body: valid_business_success_response(),
         })
     });
 
-    assert_eq!(result, (true, None));
+    assert_eq!(result.unwrap(), DispatchOutcome::Passed);
     assert_eq!(calls.get(), 1);
 }
 
 #[test]
-fn business_503_is_sent_exactly_once() {
+fn typed_business_failure_is_sent_exactly_once() {
     let calls = Cell::new(0);
     let result = execute_business_request_once(|| {
         calls.set(calls.get() + 1);
         Ok(http::HttpResponse {
-            status: 503,
-            body: "runtime unavailable".to_string(),
+            status: 200,
+            body: business_failure_response("UnhandledServiceError", "assertion failed"),
         })
     });
 
-    assert!(!result.0);
-    assert!(result.1.unwrap().contains("HTTP 503"));
+    assert_eq!(
+        result.unwrap(),
+        DispatchOutcome::Failed("UnhandledServiceError: assertion failed".to_string())
+    );
     assert_eq!(calls.get(), 1);
 }
 
 #[test]
-fn business_timeout_and_transport_errors_are_each_sent_exactly_once() {
+fn transport_errors_are_returned_to_the_suite_exactly_once() {
     for kind in [
         std::io::ErrorKind::TimedOut,
         std::io::ErrorKind::ConnectionReset,
@@ -198,9 +200,182 @@ fn business_timeout_and_transport_errors_are_each_sent_exactly_once() {
             })
         });
 
-        assert!(!result.0);
+        assert!(result.is_err());
         assert_eq!(calls.get(), 1);
     }
+}
+
+#[test]
+fn harness_failure_stops_remaining_entrypoints_and_preserves_completed_ledger() {
+    let entrypoints = three_entrypoints();
+    let calls = RefCell::new(Vec::new());
+    let error = execute_entrypoints_with(entrypoints, |entrypoint| {
+        calls.borrow_mut().push(entrypoint.case.name.clone());
+        match entrypoint.case.name.as_str() {
+            "case 1" => Ok(DispatchOutcome::Passed),
+            "case 2" => Err(CanonicalFixtureError::InvalidInput(
+                "primary harness failure".to_string(),
+            )),
+            _ => panic!("entrypoint after a harness failure was dispatched"),
+        }
+    })
+    .unwrap_err();
+
+    assert_eq!(&*calls.borrow(), &["case 1", "case 2"]);
+    let CanonicalFixtureError::SuiteExecution {
+        completed,
+        module_path,
+        name,
+        source,
+    } = error
+    else {
+        panic!("harness failure did not become a suite-level error");
+    };
+    assert_eq!(completed.len(), 1);
+    assert!(completed[0].passed);
+    assert_eq!(module_path, "main");
+    assert_eq!(name, "case 2");
+    assert!(matches!(
+        *source,
+        CanonicalFixtureError::InvalidInput(ref message) if message == "primary harness failure"
+    ));
+}
+
+#[test]
+fn first_runtime_loss_prevents_the_other_two_entrypoints_from_dispatching() {
+    let entrypoints = three_entrypoints();
+    let calls = Cell::new(0);
+    let error = execute_entrypoints_with(entrypoints, |_| {
+        calls.set(calls.get() + 1);
+        Err(CanonicalFixtureError::RemoteControl {
+            status: 503,
+            code: "AssemblyParticipantsUnavailable".to_string(),
+            message: "runtime participant disconnected".to_string(),
+        })
+    })
+    .unwrap_err();
+
+    assert_eq!(calls.get(), 1);
+    let CanonicalFixtureError::SuiteExecution {
+        completed, source, ..
+    } = error
+    else {
+        panic!("runtime loss did not become a suite-level error");
+    };
+    assert!(completed.is_empty());
+    assert!(matches!(
+        *source,
+        CanonicalFixtureError::RemoteControl {
+            status: 503,
+            ref code,
+            ..
+        } if code == "AssemblyParticipantsUnavailable"
+    ));
+}
+
+#[test]
+fn business_failure_records_fail_and_continues_all_entrypoints() {
+    let entrypoints = three_entrypoints();
+    let calls = RefCell::new(Vec::new());
+    let summary = execute_entrypoints_with(entrypoints, |entrypoint| {
+        calls.borrow_mut().push(entrypoint.case.name.clone());
+        match entrypoint.case.name.as_str() {
+            "case 1" => Ok(DispatchOutcome::Failed("assertion failed".to_string())),
+            _ => Ok(DispatchOutcome::Passed),
+        }
+    })
+    .unwrap();
+
+    assert_eq!(&*calls.borrow(), &["case 1", "case 2", "case 3"]);
+    assert_eq!((summary.passed, summary.failed), (2, 1));
+    assert_eq!(summary.results.len(), 3);
+    assert_eq!(
+        summary.results[0].message.as_deref(),
+        Some("assertion failed")
+    );
+}
+
+#[test]
+fn non_success_control_response_requires_and_preserves_typed_error_identity() {
+    let unavailable = execute_business_request_once(|| {
+        Ok(http::HttpResponse {
+            status: 503,
+            body: serde_json::json!({
+                "error": {
+                    "code": "AssemblyParticipantsUnavailable",
+                    "message": "No healthy RuntimeAssembly participant is connected",
+                },
+            })
+            .to_string(),
+        })
+    })
+    .unwrap_err();
+    assert!(matches!(
+        unavailable,
+        CanonicalFixtureError::RemoteControl {
+            status: 503,
+            ref code,
+            ..
+        } if code == "AssemblyParticipantsUnavailable"
+    ));
+
+    let malformed = execute_business_request_once(|| {
+        Ok(http::HttpResponse {
+            status: 503,
+            body: "runtime unavailable".to_string(),
+        })
+    })
+    .unwrap_err();
+    assert!(matches!(malformed, CanonicalFixtureError::Wire { .. }));
+}
+
+fn three_entrypoints() -> Vec<CanonicalPackageTestEntrypoint> {
+    (1..=3)
+        .map(|index| {
+            let mut entrypoint = package_test_entrypoint();
+            entrypoint.case.name = format!("case {index}");
+            entrypoint
+        })
+        .collect()
+}
+
+fn business_failure_response(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": "skiff-runtime-frame-v2",
+            "type": "response.error",
+            "requestId": "package-test-failure",
+            "errorKind": "control",
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        },
+        "payloadBase64": "",
+    })
+    .to_string()
+}
+
+fn valid_business_success_response() -> String {
+    serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": "skiff-runtime-frame-v2",
+            "type": "response.end",
+            "requestId": "package-test-success",
+            "payloadPresent": true,
+            "httpResponse": {
+                "status": 200,
+                "headers": [{
+                    "name": "content-type",
+                    "value": "application/json; charset=utf-8",
+                }],
+            },
+        },
+        "payloadBase64": "bnVsbA==",
+    })
+    .to_string()
 }
 
 fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {

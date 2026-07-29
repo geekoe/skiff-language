@@ -33,6 +33,7 @@ path = "tests/http_entry_test_service.rs"
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.10"
@@ -45,3 +46,4 @@ skiff-deployment = { path = "../deployment" }
 skiff-artifact-model = { path = "../artifact-model" }
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-syntax = { path = "../syntax" }
+skiff-runtime-model = { path = "../runtime/model" }

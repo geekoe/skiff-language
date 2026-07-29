@@ -92,10 +92,12 @@ where
         }
         let response = fetch(deadline)?;
         if !(200..300).contains(&response.status) {
-            return Err(readiness_error(format!(
-                "router health returned HTTP {}: {}",
-                response.status, response.body
-            )));
+            let error = wire::decode_control_error_response(&response.body)?;
+            return Err(CanonicalFixtureError::RemoteControl {
+                status: response.status,
+                code: error.code,
+                message: error.message,
+            });
         }
         let snapshot = wire::decode_health_snapshot(&response.body)?;
         let status = classify(&snapshot, target)?;

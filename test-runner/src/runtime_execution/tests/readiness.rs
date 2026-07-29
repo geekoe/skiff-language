@@ -205,7 +205,13 @@ fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
             "non-2xx",
             Ok(HttpResponse {
                 status: 503,
-                body: "not ready".to_string(),
+                body: serde_json::json!({
+                    "error": {
+                        "code": "AssemblyParticipantsUnavailable",
+                        "message": "not ready",
+                    },
+                })
+                .to_string(),
             }),
         ),
         (
