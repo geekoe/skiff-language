@@ -279,7 +279,6 @@ fn activation_context_websocket_entry_is_typed_optional_and_matches_all_exact_fa
     };
     let selector = IngressSelector {
         protocol: IngressProtocol::WebSocket,
-        host: "websocket.test".to_string(),
         method: None,
         path: "/connect".to_string(),
     };
