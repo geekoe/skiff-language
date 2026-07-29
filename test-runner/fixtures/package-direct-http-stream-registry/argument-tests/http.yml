@@ -1,0 +1,24 @@
+normal:
+  method: POST
+  path: /package-direct/stream-argument/normal
+  kind: rawHttp
+  handler: entry.__test.entry
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+producerError:
+  method: POST
+  path: /package-direct/stream-argument/producer-error
+  kind: rawHttp
+  handler: entry.__test.producerErrorEntry
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+consumerCancel:
+  method: POST
+  path: /package-direct/stream-argument/consumer-cancel
+  kind: rawHttp
+  handler: entry.__test.consumerCancelEntry
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

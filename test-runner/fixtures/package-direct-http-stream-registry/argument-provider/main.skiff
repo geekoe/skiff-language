@@ -1,0 +1,12 @@
+import std
+
+function wrap(
+  input: Stream<string>
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(200, Array.empty<std.http.HttpHeader>()))
+  for value in input {
+    emit(std.http.streamChunk(bytes.fromUtf8(value)))
+  }
+  emit(std.http.streamEnd())
+  return null
+}
