@@ -1,16 +1,21 @@
 use std::{cell::Cell, collections::BTreeMap, fs, path::PathBuf};
 
 use serde_json::json;
-use skiff_artifact_identity::package_schema_index_identity;
-use skiff_artifact_model::{PackageArtifact, PackageLocalAbiIdentity, PackageRequirement};
+use skiff_artifact_identity::{package_schema_index_identity, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX};
+use skiff_artifact_model::{
+    DeploymentArtifactIdentity, DeploymentRevision, PackageArtifact, PackageLocalAbiIdentity,
+    PackageRequirement, ServiceDeploymentRef,
+};
 use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
     prelude_registry, PreludeRegistryInitializationError,
 };
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 use super::{
-    build_authoring_object, reject_top_level_aliases_outside_test_service,
-    resolve_reachable_package_closure, run_after_platform_context_guard, AuthoringObject,
+    build_authoring_object, project_runtime_assembly,
+    reject_top_level_aliases_outside_test_service, resolve_reachable_package_closure,
+    run_after_platform_context_guard, AuthoringObject,
 };
 
 #[test]
@@ -168,6 +173,79 @@ fn ordinary_package_authoring_rejects_top_level_alias_before_dependency_resoluti
         "{error}"
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_assembly_projection_rejects_operation_input_before_store_reads() {
+    let root = unique_temp_root("runtime-assembly-operation-validation");
+    let store = CanonicalArtifactStore::create(&root).unwrap();
+    let reference = exact_deployment_ref("provider");
+
+    let invalid_environment =
+        project_runtime_assembly(&store, "../dev", std::slice::from_ref(&reference), false)
+            .unwrap_err()
+            .to_string();
+    assert!(invalid_environment.contains("assembly release"));
+
+    let empty = project_runtime_assembly(&store, "dev", &[], false)
+        .unwrap_err()
+        .to_string();
+    assert!(empty.contains("root deployment set must not be empty"));
+
+    let duplicate = project_runtime_assembly(
+        &store,
+        "dev",
+        &[reference.clone(), reference.clone()],
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(duplicate.contains("duplicate exact reference"));
+
+    let mut malformed = reference;
+    malformed.deployment_artifact_identity = DeploymentArtifactIdentity::new("not-an-identity");
+    let malformed = project_runtime_assembly(&store, "dev", &[malformed], false)
+        .unwrap_err()
+        .to_string();
+    assert!(malformed.contains("deploymentArtifactIdentity"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_assembly_projection_never_expands_missing_deployment_refs_through_pointers() {
+    let root = unique_temp_root("runtime-assembly-no-pointer-expansion");
+    let store = CanonicalArtifactStore::create(&root).unwrap();
+    let missing = exact_deployment_ref("missing");
+    let error = project_runtime_assembly(&store, "dev", &[missing], false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("records/service-deployments"), "{error}");
+    assert!(!error.contains("pointers/service-deployments"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn exact_deployment_ref(revision: &str) -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: "example.com/provider".to_string(),
+        contract_version: "1.0.0".to_string(),
+        deployment_revision: DeploymentRevision::new(revision),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+            "{DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX}:{}",
+            "a".repeat(64)
+        )),
+    }
+}
+
+fn unique_temp_root(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "skiff-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
 }
 
 fn package(
