@@ -1,21 +1,31 @@
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransportError {
-    message: String,
+pub enum TransportError {
+    Decode { message: String },
+    InvalidOutboundServiceId { envelope_type: &'static str },
 }
 
 impl TransportError {
     pub(crate) fn decode(message: impl Into<String>) -> Self {
-        Self {
+        Self::Decode {
             message: message.into(),
         }
+    }
+
+    pub(crate) fn invalid_outbound_service_id(envelope_type: &'static str) -> Self {
+        Self::InvalidOutboundServiceId { envelope_type }
     }
 }
 
 impl fmt::Display for TransportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        match self {
+            Self::Decode { message } => formatter.write_str(message),
+            Self::InvalidOutboundServiceId { envelope_type } => {
+                write!(formatter, "{envelope_type} contains an invalid service ID")
+            }
+        }
     }
 }
 

@@ -45,7 +45,7 @@ pub fn encode_outbound_control_message(
             actor_remove_request_frame(actor_remove_request_frame_header(request), &[])
         }
         OutboundControlMessage::SpawnSubmit { request, payload } => {
-            spawn_submit_request_frame(spawn_submit_request_frame_header(request), &payload)
+            spawn_submit_request_frame(spawn_submit_request_frame_header(request)?, &payload)
         }
         OutboundControlMessage::RequestStart { request, payload } => {
             request_start_frame(request_start_frame_header(request), &payload)
@@ -205,8 +205,14 @@ fn activation_identity_frame_metadata(
 
 fn spawn_submit_request_frame_header(
     request: SpawnSubmitControlRequest,
-) -> SpawnSubmitRequestFrameHeader {
-    SpawnSubmitRequestFrameHeader {
+) -> TransportResult<SpawnSubmitRequestFrameHeader> {
+    // The shared strict parser is still exposed through the historical publication storage
+    // projection. Reuse that grammar without retaining its projected component; this boundary
+    // owns a service ID, not a storage path or package ID.
+    skiff_artifact_identity::publication_storage_segment(&request.service_id, "service ID")
+        .map_err(|_| crate::TransportError::invalid_outbound_service_id("spawn.submit.request"))?;
+
+    Ok(SpawnSubmitRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "spawn.submit.request".to_string(),
         rpc_id: request.rpc_id,
@@ -223,7 +229,7 @@ fn spawn_submit_request_frame_header(
         trace_id: request.trace_id,
         caller_target: request.caller_target,
         max_queue_wait_ms: request.max_queue_wait_ms,
-    }
+    })
 }
 
 fn request_start_frame_header(request: RequestStartControl) -> RequestStartFrameHeader {
@@ -383,6 +389,7 @@ mod tests {
         ActorReplaceControlRequest, OutboundControlMessage, RequestCancelControl,
         RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl,
         RuntimeClientSessionControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
+        SpawnSubmitControlRequest,
     };
     use std::collections::HashMap;
 
@@ -519,6 +526,71 @@ mod tests {
 
         assert_eq!(decoded, header);
         assert_eq!(decoded_payload, payload);
+    }
+
+    #[test]
+    fn outbound_spawn_submit_rejects_package_id_embedded_in_service_id() {
+        let error = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+            request: spawn_submit_control_request("test.skiff/agine.ai/api-tests/case-23"),
+            payload: b"opaque spawn args".to_vec(),
+        })
+        .expect_err("non-canonical service ID must fail before frame encoding");
+
+        assert!(matches!(
+            &error,
+            crate::TransportError::InvalidOutboundServiceId {
+                envelope_type: "spawn.submit.request",
+                ..
+            }
+        ));
+        assert!(
+            error.to_string().contains("service ID"),
+            "mapping error must identify the service ID boundary: {error}"
+        );
+    }
+
+    #[test]
+    fn outbound_spawn_submit_accepts_existing_and_generated_service_ids() {
+        for service_id in [
+            "example.com/worker",
+            "test.skiff/p-0123456789abcdef0123456789abcdef/case-23",
+        ] {
+            let frame = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+                request: spawn_submit_control_request(service_id),
+                payload: b"opaque spawn args".to_vec(),
+            })
+            .expect("canonical service ID should encode");
+            let (header, payload): (SpawnSubmitRequestFrameHeader, Vec<u8>) =
+                decode_typed_binary_frame(&frame).expect("spawn.submit.request should decode");
+
+            assert_eq!(header.service_id, service_id);
+            assert_eq!(payload, b"opaque spawn args");
+        }
+    }
+
+    #[test]
+    fn outbound_spawn_submit_rejects_invalid_service_id_forms() {
+        let overlong = format!("example.com/{}", "a".repeat(64));
+        for service_id in [
+            "",
+            overlong.as_str(),
+            "Example.com/worker",
+            "example.com/bad!",
+        ] {
+            let error = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+                request: spawn_submit_control_request(service_id),
+                payload: b"opaque spawn args".to_vec(),
+            })
+            .expect_err("invalid service ID must fail before frame encoding");
+
+            assert!(matches!(
+                &error,
+                crate::TransportError::InvalidOutboundServiceId {
+                    envelope_type: "spawn.submit.request",
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]
@@ -777,6 +849,25 @@ mod tests {
             actor_id_encoding_version: "v1".to_string(),
             canonical_actor_id_key_bytes_base64: "YWN0b3Ita2V5".to_string(),
             actor_id_hash: Some("actor-hash-1".to_string()),
+        }
+    }
+
+    fn spawn_submit_control_request(service_id: &str) -> SpawnSubmitControlRequest {
+        SpawnSubmitControlRequest {
+            rpc_id: "rpc-spawn".to_string(),
+            runtime_id: "runtime-1".to_string(),
+            target_kind: "operation".to_string(),
+            service_id: service_id.to_string(),
+            service_version: "1.0.0".to_string(),
+            service_protocol_identity: "service-protocol-1".to_string(),
+            target: "Worker.run".to_string(),
+            spawn_id: Some("spawn-1".to_string()),
+            build_id: Some("build-1".to_string()),
+            activation_identity: activation_identity_control(),
+            caller_request_id: Some("request-1".to_string()),
+            trace_id: Some("trace-1".to_string()),
+            caller_target: Some("Caller.start".to_string()),
+            max_queue_wait_ms: Some(250.0),
         }
     }
 }

@@ -158,6 +158,94 @@ fn writer_encodes_outbound_control_command_as_binary_frame() {
     assert!(payload.is_empty());
 }
 
+#[tokio::test]
+async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
+    use std::{
+        pin::Pin,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll},
+    };
+
+    struct CountingSocket(Arc<AtomicUsize>);
+
+    impl futures_util::Sink<tokio_tungstenite::tungstenite::Message> for CountingSocket {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(
+            self: Pin<&mut Self>,
+            _message: tokio_tungstenite::tungstenite::Message,
+        ) -> std::result::Result<(), Self::Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let encoded_frames = Arc::new(AtomicUsize::new(0));
+    let (sender, receiver) = mpsc::unbounded_channel();
+    sender
+        .send(super::super::RouterWriterMessage::Control(
+            skiff_runtime_request::OutboundControlMessage::SpawnSubmit {
+                request: skiff_runtime_request::SpawnSubmitControlRequest {
+                    rpc_id: "rpc-spawn".to_string(),
+                    runtime_id: "runtime-1".to_string(),
+                    target_kind: "operation".to_string(),
+                    service_id: "test.skiff/agine.ai/api-tests/case-23".to_string(),
+                    service_version: "1.0.0".to_string(),
+                    service_protocol_identity: "service-protocol-1".to_string(),
+                    target: "Worker.run".to_string(),
+                    spawn_id: Some("spawn-1".to_string()),
+                    build_id: Some("build-1".to_string()),
+                    activation_identity:
+                        skiff_runtime_request::ActivationIdentityControl {
+                            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
+                                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            ),
+                            generation: 7,
+                            runtime_replica_id: "runtime-replica-7".to_string(),
+                            deployment_revision: skiff_artifact_model::DeploymentRevision::new(
+                                "deployment-revision-7",
+                            ),
+                        },
+                    caller_request_id: Some("request-1".to_string()),
+                    trace_id: Some("trace-1".to_string()),
+                    caller_target: Some("Caller.start".to_string()),
+                    max_queue_wait_ms: Some(250.0),
+                },
+                payload: b"opaque spawn args".to_vec(),
+            },
+        ))
+        .expect("writer input should enqueue");
+    drop(sender);
+
+    run_writer_loop(CountingSocket(Arc::clone(&encoded_frames)), receiver).await;
+
+    assert_eq!(encoded_frames.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
     let artifact_path = std::env::temp_dir().join(format!(
