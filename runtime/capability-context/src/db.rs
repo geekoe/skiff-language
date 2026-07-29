@@ -258,9 +258,31 @@ pub struct DbProviderConfig {
     value: Value,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MongoDbProviderConfig {
+    mongo_url: String,
+}
+
 impl DbProviderConfig {
     pub fn opaque(value: Value) -> Self {
         Self { value }
+    }
+
+    /// Builds the provider-owned opaque shape for an already-admitted Mongo URL.
+    pub fn mongo(mongo_url: impl Into<String>) -> DbCapabilityResult<Self> {
+        let mongo_url = mongo_url.into();
+        if mongo_url.trim().is_empty() {
+            return Err(DbCapabilityError::decode(
+                "serviceDb provider config field mongoUrl must be a non-empty string",
+            ));
+        }
+        let value = serde_json::to_value(MongoDbProviderConfig { mongo_url }).map_err(|error| {
+            DbCapabilityError::decode(format!(
+                "failed to encode typed Mongo serviceDb provider config: {error}"
+            ))
+        })?;
+        Ok(Self::opaque(value))
     }
 
     pub fn as_value(&self) -> &Value {
@@ -269,6 +291,37 @@ impl DbProviderConfig {
 
     pub fn into_value(self) -> Value {
         self.value
+    }
+}
+
+#[cfg(test)]
+mod db_provider_config_tests {
+    use serde_json::json;
+
+    use super::{DbCapabilityError, DbProviderConfig};
+
+    #[test]
+    fn mongo_provider_config_owns_opaque_shape() {
+        let config = DbProviderConfig::mongo("mongodb://127.0.0.1:27017")
+            .expect("non-empty Mongo URL should produce provider config");
+
+        assert_eq!(
+            config.into_value(),
+            json!({ "mongoUrl": "mongodb://127.0.0.1:27017" })
+        );
+    }
+
+    #[test]
+    fn mongo_provider_config_rejects_empty_url() {
+        let error = DbProviderConfig::mongo(" \n")
+            .expect_err("empty Mongo URL must fail closed at the config owner");
+
+        assert!(matches!(
+            error,
+            DbCapabilityError::Decode(message)
+                if message
+                    == "serviceDb provider config field mongoUrl must be a non-empty string"
+        ));
     }
 }
 

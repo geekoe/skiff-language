@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::Context;
-use serde_json::json;
 use skiff_artifact_identity::{gateway_entry_identity, websocket_entry_id};
 use skiff_artifact_model::{
     AssemblyActivationServiceDb, CanonicalActiveCollectionProjection, ContractOperationId,
@@ -122,9 +121,8 @@ impl ActiveAssemblyContextSet {
                         .build(DbProviderBuildInput {
                             service_id: deployment.service_id.clone(),
                             state_namespace: binding.namespace.clone(),
-                            config: DbProviderConfig::opaque(json!({
-                                "mongoUrl": provider.mongo_url,
-                            })),
+                            config: DbProviderConfig::mongo(provider.mongo_url.as_str())
+                                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
                             runtime_program_db,
                         })
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?
