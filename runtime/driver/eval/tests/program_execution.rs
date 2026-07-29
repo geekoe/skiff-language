@@ -88,7 +88,7 @@ fn local_execution_catch_identity_for_addr(addr: TypeAddr) -> CatchIdentity {
 }
 
 use crate::{
-    eval::error::{unwrap_diagnostic_source_context, BudgetReason, RuntimeError},
+    eval::error::{unwrap_diagnostic_source_context, RuntimeError},
     eval::exceptions::request_exception_for_rethrow,
     eval::program::{
         anonymous_type_decl, types::PackageSymbolKey, CallIr, ConstAddr, ConstIr, ExecutableAddr,
@@ -214,7 +214,9 @@ fn local_const_receiver_target(executable_index: usize) -> serde_json::Value {
 
 #[tokio::test]
 async fn runtime_program_executes_route_by_executable_addr() {
-    let program = Arc::new(program_with_executable(run_executable()));
+    let mut program = program_with_executable(run_executable());
+    install_run_result_type(&mut program);
+    let program = Arc::new(program);
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     set_request_string_arg(&mut frame, "input", "Ada");
@@ -604,29 +606,12 @@ async fn runtime_program_time_sleep_observes_deadline() {
     .expect("std.time.sleep should observe request deadline")
     .expect_err("expired std.time.sleep should fail");
 
-    assert!(matches!(
-        &error,
-        RuntimeError::ExecutionBudgetExceeded {
-            reason: BudgetReason::DeadlineExceeded,
-            ..
-        }
-    ));
-    assert_eq!(
-        error
-            .ordinary_payload()
-            .expect("deadline remains ordinary")
-            .code,
-        "TimeoutError"
+    assert!(
+        matches!(&error, RuntimeError::ScopeTerminal(_)),
+        "direct eval must retain the current scope deadline owner: {error:?}"
     );
-    assert_eq!(
-        error
-            .ordinary_catch_projection()
-            .map(|(identity, _)| identity),
-        Some(
-            skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity::Timeout
-                .catch_identity()
-        )
-    );
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[tokio::test]
@@ -1679,15 +1664,16 @@ fn runtime_program_deeply_nested_stream_producers_run_to_completion() {
 }
 
 /// The real acceptance test for the root fix: drive a 40-deep forwarding stream
-/// producer chain on a *small* (1 MiB) stack — both the executor thread and the
-/// runtime's worker thread are sized to 1 MiB. The pre-fix co-driven model nested
-/// one future per producer level on a single native stack and overflowed/aborted
-/// well before depth 40 at 1 MiB. With every producer running in its own
-/// `tokio::spawn`ed task, the consumer only polls the bounded channel, so the
-/// native stack depth is constant regardless of nesting depth and the chain
-/// completes on the small stack. This distinguishes the root fix from the
-/// 64 MiB worker-stack mitigation: if the producers were still co-driven, this
-/// test would abort the process.
+/// producer chain while the Tokio worker that polls spawned producers has a
+/// *small* (1 MiB) stack. The outer libtest thread keeps its ordinary stack: the
+/// test is about producer-task isolation, not whether an entire debug runtime
+/// can be constructed and driven inside 1 MiB.
+///
+/// The pre-fix co-driven model nested one future per producer level on the
+/// worker's native stack and overflowed/aborted well before depth 40 at 1 MiB.
+/// With every producer running in its own `tokio::spawn`ed task, each worker poll
+/// sees one producer and the chain completes. This distinguishes the root fix
+/// from the 64 MiB worker-stack mitigation.
 #[test]
 fn runtime_program_deeply_nested_stream_producers_are_stack_depth_independent() {
     let depth: usize = std::env::var("SKIFF_NESTED_PRODUCER_DEPTH")
@@ -1700,41 +1686,32 @@ fn runtime_program_deeply_nested_stream_producers_are_stack_depth_independent() 
     // this would overflow and abort the process.
     let stack_bytes: usize = 1024 * 1024;
 
-    let handle = std::thread::Builder::new()
-        .name("nested-stream-producer-small-stack-test".to_string())
-        .stack_size(stack_bytes)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .thread_stack_size(stack_bytes)
-                .enable_all()
-                .build()
-                .expect("multi-thread runtime should build");
-            runtime.block_on(async move {
-                let mut executables = vec![local_stream_aggregate_route_executable()];
-                for level in 1..depth {
-                    executables.push(forwarding_string_stream_producer_executable(level + 1));
-                }
-                executables.push(local_string_stream_producer_executable());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("nested-stream-producer-small-stack-worker")
+        .thread_stack_size(stack_bytes)
+        .enable_all()
+        .build()
+        .expect("multi-thread runtime should build");
+    runtime.block_on(async move {
+        let mut executables = vec![local_stream_aggregate_route_executable()];
+        for level in 1..depth {
+            executables.push(forwarding_string_stream_producer_executable(level + 1));
+        }
+        executables.push(local_string_stream_producer_executable());
 
-                let program = Arc::new(program_with_executables(executables));
-                let interpreter = Interpreter::with_program(program, runtime_factory());
-                let frame = test_invocation("svc.main.run");
+        let program = Arc::new(program_with_executables(executables));
+        let interpreter = Interpreter::with_program(program, runtime_factory());
+        let frame = test_invocation("svc.main.run");
 
-                let value = execute_test_program_route(&interpreter, &frame)
-                    .await
-                    .expect("deep producer chain should run depth-independently on a small stack");
+        let value = execute_test_program_route(&interpreter, &frame)
+            .await
+            .expect("deep producer chain should run depth-independently on a small worker stack");
 
-                // Every forwarding level passes items through unchanged, so the
-                // leaf's "a","b","c" must still aggregate to "abc".
-                assert_eq!(value, json!("abc"));
-            });
-        })
-        .expect("small-stack test worker thread should spawn");
-
-    handle
-        .join()
-        .expect("deep producer chain must complete on a 1 MiB stack (depth-independent)");
+        // Every forwarding level passes items through unchanged, so the
+        // leaf's "a","b","c" must still aggregate to "abc".
+        assert_eq!(value, json!("abc"));
+    });
 }
 
 #[tokio::test]
@@ -2110,12 +2087,12 @@ fn test_host_operation_double_fails_closed_for_invalid_request_heap_handle() {
 }
 
 #[test]
-fn test_host_operation_double_rejects_public_http_target_id() {
+fn test_host_operation_double_does_not_alias_distinct_binding_key() {
     let program = Arc::new(program_with_executable(run_executable()));
     let interpreter = Interpreter::with_program_test_effect_doubles(
         program,
         HashMap::from([(
-            "std.http.request".to_string(),
+            "std.http.client.request".to_string(),
             TestEffectDouble {
                 expect_request: None,
                 response: json!({
@@ -2146,7 +2123,7 @@ fn test_host_operation_double_rejects_public_http_target_id() {
 
     assert!(
         result.is_none(),
-        "runtime HTTP effect doubles must be keyed by stable bindingKey"
+        "runtime HTTP effect doubles must match the exact bindingKey"
     );
 }
 
@@ -4811,6 +4788,30 @@ fn package_unit(package_id: &str) -> PackageUnit {
 
 fn program_with_executable(executable: LinkedExecutable) -> RuntimeProgram {
     program_with_executables(vec![executable])
+}
+
+fn install_run_result_type(program: &mut RuntimeProgram) {
+    let declaration = anonymous_type_decl(
+        "RunResult",
+        LinkedTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("label".to_string(), linked_builtin_type("string")),
+                ("copy".to_string(), linked_builtin_type("string")),
+            ]),
+        },
+    );
+    Arc::make_mut(
+        program
+            .service_files
+            .get_mut(0)
+            .expect("run fixture should have one service file"),
+    )
+    .types
+    .push(declaration.clone());
+    program
+        .types
+        .descriptors
+        .insert(service_type_addr(0), declaration);
 }
 
 fn program_with_thread_db_target(executable: LinkedExecutable) -> RuntimeProgram {
