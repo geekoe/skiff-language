@@ -3,7 +3,7 @@
 状态：
 
 ```text
-IN_PROGRESS
+COMPLETE
 DECISION_REQUIRED = NO
 ```
 
