@@ -97,7 +97,8 @@ function invoke(actor: UserActor) -> string {
             Arc::new(package.clone()),
             source_files,
             PublicationResourceTable::default(),
-        )],
+        )
+        .with_schema_index(Arc::new(project.package.package_schema_index.clone()))],
     )
     .expect("compiler artifact should link");
 

@@ -1136,8 +1136,8 @@ mod tests {
                 const attempted = catch<Box<string>>(throw value)
               }
 
-              function inspected(value: Box<string>) -> void {
-                match value {
+              function inspected(boxed: Box<string>) -> void {
+                match boxed {
                   Box<string> { value } => {
                   }
                   _ => {
