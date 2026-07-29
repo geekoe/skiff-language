@@ -47,11 +47,12 @@ use skiff_runtime_transport::{
     websocket_generation_lifecycle::WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     sync::mpsc,
     time::{Duration, MissedTickBehavior},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, info, warn};
+use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
+use tracing::{info, warn};
 
 use crate::error::{Result, RuntimeError};
 
@@ -63,12 +64,23 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
         event = "runtime.router_connected",
         router = %host.router_url
     );
-    let (writer, mut reader) = ws.split();
-    let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
     let router_session_id = format!("skiff-router-session-v1:opaque:{}", uuid::Uuid::new_v4());
+    run_connected_session(host, ws, router_session_id).await
+}
+
+async fn run_connected_session<S>(
+    host: super::RuntimeHost,
+    ws: WebSocketStream<S>,
+    router_session_id: String,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let mut ws = ws;
+    let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
+    let mut receiver = receiver;
 
     host.websocket_generations.connect(&router_session_id)?;
-    let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
 
     let session_result = async {
         let mut health_reporter = RuntimeHealthReporter::default();
@@ -80,7 +92,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 
         loop {
             tokio::select! {
-                message = reader.next() => {
+                message = ws.next() => {
                     let Some(message) = message else {
                         break;
                     };
@@ -101,8 +113,30 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                             )
                             .await?;
                         }
-                        _ => {}
+                        Message::Ping(_) => {
+                            ws.flush()
+                                .await
+                                .map_err(|error| RuntimeError::Decode(format!(
+                                    "failed to flush Router ping reply: {error}"
+                                )))?;
+                        }
+                        Message::Pong(_) => {}
+                        Message::Close(_) => {
+                            ws.flush()
+                                .await
+                                .map_err(|error| RuntimeError::Decode(format!(
+                                    "failed to flush Router close reply: {error}"
+                                )))?;
+                            return Ok(());
+                        }
+                        Message::Frame(_) => {}
                     }
+                }
+                message = receiver.recv() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    send_writer_message(&mut ws, message).await?;
                 }
                 _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
                     health_reporter.send_periodic(&host, &sender).await?;
@@ -113,18 +147,29 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
             }
         }
 
-        health_reporter.send_final(&host, &sender).await
+        Ok(())
     }
     .await;
 
-    host.discard_actor_instances_for_session(&router_session_id);
     if let Ok(session) = ConnectionRequestSession::new(router_session_id.clone()) {
         host.connection_requests.disconnect_session(&session);
     }
+    host.outbound_requests.fail_all(ResponseError {
+        code: "ConnectionClosed".to_string(),
+        message: "router connection closed".to_string(),
+        status: None,
+        details: None,
+    });
+    host.actor_method_outbound.fail_all(
+        crate::capability_context::actor_method_outbound::ActorInvocationTransportError {
+            code: "ConnectionClosed".to_string(),
+            message: "router connection closed".to_string(),
+        },
+    );
     host.actor_owner_invocations.cancel_session();
+    host.discard_actor_instances_for_session(&router_session_id);
     let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
     drop(sender);
-    let _ = writer_task.await;
     session_result.and(disconnect_result)
 }
 
@@ -228,6 +273,7 @@ impl RuntimeHealthReporter {
         Ok(true)
     }
 
+    #[cfg(test)]
     async fn send_final(
         &mut self,
         host: &super::RuntimeHost,
@@ -1046,27 +1092,6 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
     }
 }
 
-async fn run_writer_loop<S>(
-    mut writer: S,
-    mut receiver: mpsc::UnboundedReceiver<super::RouterWriterMessage>,
-) where
-    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
-{
-    while let Some(message) = receiver.recv().await {
-        let message = match encode_writer_message(message) {
-            Ok(message) => message,
-            Err(error) => {
-                error!(event = "runtime.encode_writer_message_error", error = %error);
-                break;
-            }
-        };
-        if let Err(error) = writer.send(message).await {
-            error!(event = "runtime.write_error", error = %error);
-            break;
-        }
-    }
-}
-
 fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message> {
     match message {
         super::RouterWriterMessage::Binary(bytes) => Ok(Message::Binary(bytes.into())),
@@ -1074,6 +1099,17 @@ fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message>
             .map_err(super::transport_error_into_runtime_error)
             .map(|bytes| Message::Binary(bytes.into())),
     }
+}
+
+async fn send_writer_message<S>(writer: &mut S, message: super::RouterWriterMessage) -> Result<()>
+where
+    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let message = encode_writer_message(message)?;
+    writer
+        .send(message)
+        .await
+        .map_err(|error| RuntimeError::Decode(format!("router write failed: {error}")))
 }
 
 fn reject_router_text_message(_text: &str) -> Result<()> {

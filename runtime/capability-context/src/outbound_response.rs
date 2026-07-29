@@ -190,6 +190,21 @@ impl OutboundRequestRegistry {
         }
     }
 
+    pub fn fail_all(&self, error: ResponseError) -> usize {
+        let entries = {
+            let Ok(mut pending) = self.inner.pending.lock() else {
+                return 0;
+            };
+            pending.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
+        };
+        let count = entries.len();
+        for entry in entries {
+            let _ = entry.sender.send(OutboundResponse::Error(error.clone()));
+            entry.terminal.mark_terminal();
+        }
+        count
+    }
+
     pub fn pending_count(&self) -> usize {
         self.inner.pending.lock().map_or(0, |pending| pending.len())
     }
@@ -317,5 +332,49 @@ impl OutboundRequestTerminalSignal {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fail_all_delivers_error_and_commits_each_pending_request() {
+        let registry = OutboundRequestRegistry::default();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let lease = registry
+            .insert_with_lease("pending".to_string(), sender, None, "caller_cancel")
+            .expect("pending request");
+        let terminal = lease.terminal_signal();
+
+        assert_eq!(
+            registry.fail_all(ResponseError {
+                code: "ConnectionClosed".to_string(),
+                message: "router connection closed".to_string(),
+                status: None,
+                details: None,
+            }),
+            1
+        );
+        terminal.wait_terminal().await;
+        assert!(matches!(
+            receiver.recv().await,
+            Some(OutboundResponse::Error(error))
+                if error.code == "ConnectionClosed"
+                    && error.message == "router connection closed"
+        ));
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(
+            registry.fail_all(ResponseError {
+                code: "ConnectionClosed".to_string(),
+                message: "router connection closed".to_string(),
+                status: None,
+                details: None,
+            }),
+            0
+        );
+        drop(lease);
+        assert_eq!(registry.active_lease_count(), 0);
     }
 }
