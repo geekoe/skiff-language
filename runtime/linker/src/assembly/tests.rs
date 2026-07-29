@@ -1112,9 +1112,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
         );
         file.type_table.push(TypeDeclIr {
             name: interface_name.to_string(),
-            descriptor: TypeDescriptorIr::Record {
-                fields: BTreeMap::new(),
-            },
+            descriptor: TypeDescriptorIr::Interface,
             type_params: Vec::new(),
             implements: Vec::new(),
             source_span: None,
@@ -1221,9 +1219,7 @@ fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls
         );
         file.types.push(TypeDeclIr {
             name: interface_name.to_string(),
-            descriptor: LinkedTypeDescriptor::Record {
-                fields: BTreeMap::new(),
-            },
+            descriptor: LinkedTypeDescriptor::Interface,
             type_params: Vec::new(),
             implements: Vec::new(),
             source_span: None,
@@ -1375,6 +1371,171 @@ fn assembly_execution_interface_lookup_uses_exact_package_owner_and_abi() {
             "unexpected {label} error: {detail}"
         );
     }
+}
+
+#[test]
+fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
+    use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, TypeRefIr};
+    use skiff_runtime_linked_program::{
+        ExprRefIr, LinkedBoxSourceIr, LinkedExprIr, LinkedInterfaceInstantiationRef,
+        LinkedInterfaceMethodTablePlanIr, LinkedTypeRef,
+    };
+
+    let fixture = CycleFixture::new();
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly)
+        .expect("cycle fixture should hydrate");
+    let candidate = link_runtime_assembly(hydrated).expect("cycle fixture should link");
+    let helper_abi = candidate
+        .shared_image()
+        .code_slots()
+        .iter()
+        .find(|code| code.artifact().package_id == "example.helper")
+        .expect("helper package code")
+        .local_abi_identity()
+        .as_str()
+        .to_string();
+    let canonical_interface_abi_id =
+        skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "example.helper".to_string(),
+                },
+                symbol_path: "Reader".to_string(),
+                abi_expectation: Some(helper_abi.clone()),
+            },
+        });
+    let consumer_interface_abi_id =
+        skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "helper".to_string(),
+                },
+                symbol_path: "Reader".to_string(),
+                abi_expectation: Some(helper_abi),
+            },
+        });
+    let local_interface_abi_id =
+        skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::LocalType { type_index: 1 });
+    let publication_interface_abi_id =
+        skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::PublicationType {
+            module_path: "helper.main".to_string(),
+            type_index: 1,
+        });
+    let interface_box = |interface_abi_id: String| {
+        let interface = LinkedInterfaceInstantiationRef {
+            interface_abi_id,
+            canonical_type_args: Vec::new(),
+        };
+        LinkedExprIr::InterfaceBox {
+            value: ExprRefIr { expression: 0 },
+            interface: interface.clone(),
+            source: LinkedBoxSourceIr::Local {
+                concrete_type: LinkedTypeRef::LocalType { type_index: 0 },
+                method_table: LinkedInterfaceMethodTablePlanIr {
+                    interface,
+                    concrete_type: LinkedTypeRef::LocalType { type_index: 0 },
+                    slots: Vec::new(),
+                },
+            },
+        }
+    };
+
+    let mut files = candidate
+        .execution_image()
+        .code_slots()
+        .iter()
+        .map(|code| code.files().to_vec())
+        .collect::<Vec<_>>();
+    Arc::make_mut(&mut files[1][0]).executables[0]
+        .body
+        .expressions
+        .push(interface_box(local_interface_abi_id));
+
+    let mut sibling = files[1][0].as_ref().clone();
+    sibling.file_ir_identity = "fixture:helper-sibling".to_string();
+    sibling.source_ast_hash = "source:helper-sibling".to_string();
+    sibling.module_path = "helper.sibling".to_string();
+    sibling.declarations.types.clear();
+    sibling.declarations.interfaces.clear();
+    sibling.declarations.db.clear();
+    sibling.declarations.executables.clear();
+    sibling.declarations.constants.clear();
+    sibling.declarations.symbols.clear();
+    sibling.link_targets.types.clear();
+    sibling.link_targets.executables.clear();
+    sibling.link_targets.constants.clear();
+    sibling.actor_declarations.clear();
+    sibling.constants.clear();
+    sibling.executables.truncate(1);
+    sibling.executables[0].body = Default::default();
+    sibling.executables[0]
+        .body
+        .expressions
+        .push(interface_box(publication_interface_abi_id));
+    files[1].push(Arc::new(sibling));
+
+    Arc::make_mut(&mut files[0][0]).executables[0].return_type =
+        Some(LinkedTypeRef::AnyInterface {
+            interface: LinkedInterfaceInstantiationRef {
+                interface_abi_id: consumer_interface_abi_id,
+                canonical_type_args: Vec::new(),
+            },
+        });
+
+    let linked = crate::assembly_execution::relink_execution_files_for_test(
+        candidate.shared_image().as_ref(),
+        &files,
+    )
+    .expect("equivalent interface owner spellings should link");
+    let linked_interface = |code_slot: usize, file_index: usize| {
+        let expression = linked[code_slot][file_index].executables[0]
+            .body
+            .expressions
+            .last()
+            .expect("fixture interface box");
+        let LinkedExprIr::InterfaceBox {
+            interface,
+            source: LinkedBoxSourceIr::Local { method_table, .. },
+            ..
+        } = expression
+        else {
+            panic!("fixture expression should remain an interface box")
+        };
+        assert_eq!(
+            method_table.interface.interface_abi_id, interface.interface_abi_id,
+            "the box and its recoverable method table must share one interface identity"
+        );
+        interface.interface_abi_id.clone()
+    };
+    let owner_identity = linked_interface(1, 0);
+    let sibling_identity = linked_interface(1, 1);
+    let Some(LinkedTypeRef::AnyInterface {
+        interface: consumer_interface,
+    }) = &linked[0][0].executables[0].return_type
+    else {
+        panic!("consumer fixture should retain its expected any-interface type")
+    };
+    let consumer_identity = consumer_interface.interface_abi_id.clone();
+
+    assert_eq!(owner_identity, canonical_interface_abi_id);
+    assert_eq!(sibling_identity, canonical_interface_abi_id);
+    assert_eq!(consumer_identity, canonical_interface_abi_id);
+    let recoverable_index = BTreeMap::from([(
+        (
+            owner_identity.clone(),
+            format!("interface:{owner_identity}"),
+        ),
+        "owner method table",
+    )]);
+    assert_eq!(
+        recoverable_index.get(&(
+            consumer_identity.clone(),
+            format!("interface:{consumer_identity}")
+        )),
+        Some(&"owner method table"),
+        "recoverable restore must find the producer table by the consumer interface/projection composite key"
+    );
 }
 
 #[derive(Clone, Copy)]

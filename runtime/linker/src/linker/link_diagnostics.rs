@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::{canonical_interface_method_abi_id_from_parts, type_ref_abi_key};
+use skiff_artifact_identity::canonical_interface_method_abi_id_from_parts;
 use skiff_artifact_model::{
     CanonicalPublicCallableSignature, FunctionTypeParamIr as ArtifactFunctionTypeParamIr,
     OperationAbiRef, PackageOperationTarget, ReceiverCallAbi, ServiceOperation, TypeRefIr,
@@ -12,7 +12,6 @@ use crate::{
         linked::{
             ConstIr, ExecutableKind, FunctionTypeParamIr, LinkedExecutable, LinkedFileUnit,
             LinkedFunctionTypeParamIr, LinkedTypeRef, PackageRefIr, PackageSymbolRef,
-            ServiceSymbolRef,
         },
     },
     resolver::{ProgramError, ProgramResult},
@@ -72,50 +71,6 @@ pub(super) fn interface_context(unit: &UnitAddr, file: &FileAddr, name: &str) ->
 
 pub(super) fn db_context(unit: &UnitAddr, file: &FileAddr, name: &str) -> String {
     format!("{unit}:{file} db {name}")
-}
-
-pub(super) fn interface_declaration_abi_id(
-    context: &str,
-    file: &LinkedFileUnit,
-    declaration_name: &str,
-) -> ProgramResult<String> {
-    let symbol_name = file
-        .declarations
-        .types
-        .get(declaration_name)
-        .and_then(|declaration| {
-            declaration
-                .symbol
-                .strip_prefix(&format!("{}.", file.module_path))
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| declaration_name.to_string());
-    linked_type_ref_abi_key(
-        context,
-        &LinkedTypeRef::ServiceSymbol {
-            symbol: ServiceSymbolRef {
-                module_path: file.module_path.clone(),
-                symbol: symbol_name,
-            },
-        },
-    )
-}
-
-pub(super) fn package_interface_declaration_abi_id(
-    context: &str,
-    package: PackageRefIr,
-    symbol_path: &str,
-) -> ProgramResult<String> {
-    linked_type_ref_abi_key(
-        context,
-        &LinkedTypeRef::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package,
-                symbol_path: symbol_path.to_string(),
-                abi_expectation: None,
-            },
-        },
-    )
 }
 
 pub(super) fn package_symbol_label(symbol: &PackageSymbolRef) -> String {
@@ -523,26 +478,6 @@ pub(super) fn canonical_linked_interface_method_abi_id(
         &interface.canonical_type_args,
         method_name,
     )
-}
-
-pub(super) fn linked_type_ref_abi_key(
-    context: &str,
-    type_ref: &LinkedTypeRef,
-) -> ProgramResult<String> {
-    let value =
-        serde_json::to_value(type_ref).map_err(|error| ProgramError::LinkSymbolUnresolved {
-            context: context.to_string(),
-            symbol: error.to_string(),
-            expected_kind: "serializable linked type ref for ABI id",
-        })?;
-    let artifact_type = serde_json::from_value::<TypeRefIr>(value).map_err(|error| {
-        ProgramError::LinkSymbolUnresolved {
-            context: context.to_string(),
-            symbol: error.to_string(),
-            expected_kind: "artifact TypeRefIr for ABI id",
-        }
-    })?;
-    Ok(type_ref_abi_key(&artifact_type))
 }
 
 pub(super) fn type_ref_diagnostic(type_ref: &LinkedTypeRef) -> String {

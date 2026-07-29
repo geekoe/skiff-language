@@ -10,7 +10,8 @@ use skiff_runtime_linked_program::{
 };
 
 use super::{
-    address_resolver::AssemblyAddressResolver, call_semantics::AssemblyCallSemanticDelegate,
+    address_resolver::AssemblyAddressResolver,
+    call_semantics::{exact_interface_owner, AssemblyCallSemanticDelegate},
 };
 
 fn actor_registry_target_name(target: &LinkedCallTarget) -> Option<String> {
@@ -482,6 +483,17 @@ impl<'a> AssemblyCodeLinker<'a> {
     ) -> anyhow::Result<()> {
         for arg in &mut interface.canonical_type_args {
             self.link_type_ref(code_slot, file_index, arg)?;
+        }
+        let owner = exact_interface_owner(
+            self,
+            "linked interface instantiation",
+            code_slot,
+            file_index,
+            &interface.interface_abi_id,
+        )
+        .map_err(anyhow::Error::new)?;
+        if let Some(canonical_abi_id) = owner.canonical_abi_id() {
+            interface.interface_abi_id = canonical_abi_id.to_string();
         }
         Ok(())
     }
