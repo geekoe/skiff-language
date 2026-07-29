@@ -220,6 +220,56 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     }
   });
 
+  it.each([
+    {
+      name: 'service',
+      selector: {
+        method: 'POST',
+        path: PATH,
+        serviceId: 'example/other'
+      }
+    },
+    {
+      name: 'version',
+      selector: {
+        method: 'POST',
+        path: PATH,
+        contractVersion: '2.0.0'
+      }
+    },
+    {
+      name: 'method',
+      selector: {
+        method: 'GET',
+        path: PATH
+      }
+    },
+    {
+      name: 'path',
+      selector: {
+        method: 'POST',
+        path: '/wrong'
+      }
+    }
+  ])('fails closed before dispatch for a mismatched $name selector', async ({ selector }) => {
+    const fixture = await createFixture();
+
+    const response = await sendHttp(
+      fixture.httpUrl,
+      new Uint8Array(),
+      '',
+      selector
+    );
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body.toString())).toMatchObject({
+      error: { code: 'AssemblyIngressNotFound' }
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
   it('writes validator-accepted nested headers and preserves zero and opaque payloads', async () => {
     const fixture = await createFixture();
 
