@@ -91,6 +91,52 @@ pub fn validate_package_boundary_projections(
     Ok(())
 }
 
+/// Validates the canonical value-plan invariants that are self-contained in a
+/// boundary operation contract.
+///
+/// This validator deliberately does not infer parameter or result types from
+/// package signatures. Package artifacts must additionally use
+/// [`validate_package_boundary_projections`] for typed-fact agreement.
+pub fn validate_boundary_operation_contract(
+    contract: &BoundaryOperationContract,
+) -> Result<(), BoundaryProjectionValidationError> {
+    for (index, parameter) in contract.parameters.iter().enumerate() {
+        validate_canonical_plan(
+            &parameter.value_plan,
+            BoundaryValueOwner::Caller,
+            BoundaryValueLifetime::Call,
+            &format!("parameter #{index}"),
+        )?;
+    }
+    validate_canonical_plan(
+        &contract.return_value.value_plan,
+        BoundaryValueOwner::Provider,
+        BoundaryValueLifetime::Call,
+        "return value",
+    )?;
+    match &contract.stream {
+        BoundaryStreamContract::Unary => Ok(()),
+        BoundaryStreamContract::ServerStream {
+            item_value_plan, ..
+        } => {
+            if contract.return_value.ty != ContractTypeRef::builtin("void") {
+                return Err(BoundaryProjectionValidationError::new(
+                    "server-stream return sentinel must be exactly builtin void",
+                ));
+            }
+            validate_canonical_plan(
+                item_value_plan,
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+                "server-stream item",
+            )
+        }
+        BoundaryStreamContract::Unsupported { .. } => Err(BoundaryProjectionValidationError::new(
+            "available boundary operation cannot contain an unsupported stream contract",
+        )),
+    }
+}
+
 fn validate_boundary_callable_projection(
     callable_id: &PackageCallableId,
     signature: &PackageCallableSignature,
@@ -98,6 +144,16 @@ fn validate_boundary_callable_projection(
     runtime_requirements: &PackageRuntimeRequirements,
     projection: &BoundaryCallableProjection,
 ) -> Result<(), BoundaryProjectionValidationError> {
+    if let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    {
+        validate_boundary_operation_contract(operation_contract).map_err(|error| {
+            BoundaryProjectionValidationError::new(format!(
+                "boundary projection {callable_id} has an invalid operation contract: {error}"
+            ))
+        })?;
+    }
     let expected = canonical_boundary_callable_projection(signature, facts, runtime_requirements);
     if projection == &expected {
         return Ok(());
@@ -105,6 +161,30 @@ fn validate_boundary_callable_projection(
     Err(BoundaryProjectionValidationError::new(format!(
         "boundary projection {callable_id} is not canonical for its signature, semantic facts, and runtime requirements; expected={expected:?}, actual={projection:?}"
     )))
+}
+
+fn validate_canonical_plan(
+    plan: &BoundaryValuePlan,
+    expected_owner: BoundaryValueOwner,
+    expected_lifetime: BoundaryValueLifetime,
+    location: &str,
+) -> Result<(), BoundaryProjectionValidationError> {
+    match plan {
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime,
+        } if *owner == expected_owner && *lifetime == expected_lifetime => Ok(()),
+        BoundaryValuePlan::Unsupported { .. } => Err(BoundaryProjectionValidationError::new(
+            format!("{location} cannot use an unsupported boundary value plan"),
+        )),
+        BoundaryValuePlan::Linkable { .. } => Err(BoundaryProjectionValidationError::new(
+            format!(
+                "{location} must use DetachedValueGraph/CanonicalValue with {expected_owner:?} ownership and {expected_lifetime:?} lifetime"
+            ),
+        )),
+    }
 }
 
 fn canonical_boundary_callable_projection(
@@ -658,9 +738,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier,
-        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-        CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+        BoundaryOperationContract, BoundaryStreamContract, BoundaryUnavailableReason,
+        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+        BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
         CallableSemanticFacts, PackageArtifact, PackageBuildId, PackageCallableParameter,
         PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi,
         PackageLocalAbiIdentity, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
@@ -693,6 +773,118 @@ mod tests {
             &projection,
         )
         .is_err());
+    }
+
+    #[test]
+    fn standalone_unary_contract_rejects_every_noncanonical_plan_axis() {
+        let canonical = available_contract(&unary_signature());
+        assert!(validate_boundary_operation_contract(&canonical).is_ok());
+
+        for mutation in 0..10 {
+            let mut invalid = canonical.clone();
+            match mutation {
+                0 => {
+                    invalid.parameters[0].value_plan = BoundaryValuePlan::Unsupported {
+                        reason: crate::BoundaryValuePlanUnavailableReason::LanguageUnsupported,
+                    }
+                }
+                1 => set_plan_carrier(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueCarrier::CallbackCapability,
+                ),
+                2 => set_plan_encoding(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueEncoding::OpaqueCapability,
+                ),
+                3 => set_plan_owner(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueOwner::Provider,
+                ),
+                4 => set_plan_lifetime(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueLifetime::Request,
+                ),
+                5 => {
+                    invalid.return_value.value_plan = BoundaryValuePlan::Unsupported {
+                        reason: crate::BoundaryValuePlanUnavailableReason::LanguageUnsupported,
+                    }
+                }
+                6 => set_plan_carrier(
+                    &mut invalid.return_value.value_plan,
+                    BoundaryValueCarrier::CallbackCapability,
+                ),
+                7 => set_plan_encoding(
+                    &mut invalid.return_value.value_plan,
+                    BoundaryValueEncoding::OpaqueCapability,
+                ),
+                8 => set_plan_owner(
+                    &mut invalid.return_value.value_plan,
+                    BoundaryValueOwner::Caller,
+                ),
+                9 => set_plan_lifetime(
+                    &mut invalid.return_value.value_plan,
+                    BoundaryValueLifetime::Request,
+                ),
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_boundary_operation_contract(&invalid).is_err(),
+                "unary mutation {mutation} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_server_stream_contract_rejects_sentinel_and_item_mutations() {
+        let mut signature = unary_signature();
+        signature.return_type = PackageTypeRef::Container {
+            name: "Stream".to_string(),
+            arguments: vec![PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            }],
+        };
+        let canonical = available_contract(&signature);
+        assert!(validate_boundary_operation_contract(&canonical).is_ok());
+
+        for mutation in 0..7 {
+            let mut invalid = canonical.clone();
+            match mutation {
+                0 => invalid.return_value.ty = ContractTypeRef::builtin("string"),
+                1 => {
+                    let BoundaryStreamContract::ServerStream {
+                        item_value_plan, ..
+                    } = &mut invalid.stream
+                    else {
+                        unreachable!()
+                    };
+                    *item_value_plan = BoundaryValuePlan::Unsupported {
+                        reason: crate::BoundaryValuePlanUnavailableReason::LanguageUnsupported,
+                    };
+                }
+                2 => mutate_stream_item_plan(&mut invalid, |plan| {
+                    set_plan_carrier(plan, BoundaryValueCarrier::CallbackCapability)
+                }),
+                3 => mutate_stream_item_plan(&mut invalid, |plan| {
+                    set_plan_encoding(plan, BoundaryValueEncoding::OpaqueCapability)
+                }),
+                4 => mutate_stream_item_plan(&mut invalid, |plan| {
+                    set_plan_owner(plan, BoundaryValueOwner::Caller)
+                }),
+                5 => mutate_stream_item_plan(&mut invalid, |plan| {
+                    set_plan_lifetime(plan, BoundaryValueLifetime::Call)
+                }),
+                6 => {
+                    invalid.stream = BoundaryStreamContract::Unsupported {
+                        reason: crate::BoundaryFeatureUnavailableReason::LanguageUnsupported,
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_boundary_operation_contract(&invalid).is_err(),
+                "server-stream mutation {mutation} must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -1084,6 +1276,34 @@ mod tests {
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         }
+    }
+
+    fn available_contract(signature: &PackageCallableSignature) -> BoundaryOperationContract {
+        let projection = canonical_boundary_callable_projection(
+            signature,
+            &safe_facts(),
+            &empty_runtime_requirements(),
+        );
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = projection
+        else {
+            panic!("fixture signature must be available")
+        };
+        operation_contract
+    }
+
+    fn mutate_stream_item_plan(
+        contract: &mut BoundaryOperationContract,
+        mutation: impl FnOnce(&mut BoundaryValuePlan),
+    ) {
+        let BoundaryStreamContract::ServerStream {
+            item_value_plan, ..
+        } = &mut contract.stream
+        else {
+            unreachable!()
+        };
+        mutation(item_value_plan);
     }
 
     fn detached_plan(

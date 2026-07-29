@@ -60,9 +60,10 @@ pub use assembly_activation_control::{
     ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
 };
 pub use boundary::{
-    validate_package_boundary_projections, BoundaryCallableProjection, BoundaryCallbackContract,
-    BoundaryCallbackExpirationError, BoundaryCallbackLifetime, BoundaryConfigRequirement,
-    BoundaryEffectGuarantee, BoundaryFeatureUnavailableReason, BoundaryImplementationRequirements,
+    validate_boundary_operation_contract, validate_package_boundary_projections,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
+    BoundaryCallbackLifetime, BoundaryConfigRequirement, BoundaryEffectGuarantee,
+    BoundaryFeatureUnavailableReason, BoundaryImplementationRequirements,
     BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter,
     BoundaryProjectionValidationError, BoundaryReturn, BoundaryStateKind, BoundaryStateRequirement,
     BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
