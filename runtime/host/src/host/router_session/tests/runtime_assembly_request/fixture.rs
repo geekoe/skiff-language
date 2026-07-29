@@ -151,6 +151,21 @@ pub(super) async fn admitted_stream_argument_gateway_host(
             2,
             "/package-direct/stream-argument/consumer-cancel",
         ),
+        (
+            "response-sink-normal",
+            3,
+            "/package-direct/response-sink/normal",
+        ),
+        (
+            "response-sink-producer-error",
+            4,
+            "/package-direct/response-sink/producer-error",
+        ),
+        (
+            "response-sink-consumer-cancel",
+            5,
+            "/package-direct/response-sink/consumer-cancel",
+        ),
     ];
     let routes = route_specs
         .into_iter()
@@ -664,7 +679,7 @@ fn compile_stream_argument_fixture() -> StreamArgumentCompiledFixture {
         .expect("stream-argument test service production package");
     let cases = discover_package_test_cases(&test_service, &test_service, false)
         .expect("stream-argument test discovery");
-    assert_eq!(cases.len(), 3);
+    assert_eq!(cases.len(), 6);
     let overlay = compile_package_test_overlay(
         &platform,
         &test_service,

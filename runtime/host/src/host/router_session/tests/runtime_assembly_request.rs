@@ -168,6 +168,132 @@ fn package_direct_stream_producer_argument_real_gateway() {
         .expect("stream-producing argument test thread should not panic");
 }
 
+#[test]
+fn deferred_package_direct_stream_keeps_raw_http_response_sink() {
+    std::thread::Builder::new()
+        .name("deferred-package-direct-response-sink".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("deferred response-sink test runtime")
+                .block_on(async {
+                    deferred_package_direct_response_sink_normal().await;
+                    deferred_package_direct_response_sink_producer_error().await;
+                    deferred_package_direct_response_sink_consumer_cancel().await;
+                });
+        })
+        .expect("deferred response-sink test thread")
+        .join()
+        .expect("deferred response-sink test thread should not panic");
+}
+
+async fn deferred_package_direct_response_sink_normal() {
+    let (host, routes) = fixture::admitted_stream_argument_gateway_host().await;
+    let stream = canonical_header(
+        &routes["response-sink-normal"],
+        "deferred-package-direct-response-sink-normal",
+    );
+    let frame = encode_binary_frame(&stream, &[]).unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    dispatch(&host, &frame, &sender).await.unwrap();
+
+    let start = recv_binary(&mut receiver).await;
+    let (start, payload): (ResponseStartFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&start).unwrap();
+    assert_eq!(start.request_id, stream.request_id);
+    assert_eq!(start.http_response.status, 200);
+    assert!(payload.is_empty());
+
+    let chunk = recv_binary(&mut receiver).await;
+    let (chunk, payload): (ResponseChunkFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&chunk).unwrap();
+    assert_eq!(chunk.request_id, stream.request_id);
+    assert_eq!(chunk.seq, 0);
+    assert_eq!(payload, b"body");
+
+    let end = recv_binary(&mut receiver).await;
+    let (end, payload): (ResponseEndFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&end).unwrap();
+    assert_eq!(end.request_id, stream.request_id);
+    assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
+    assert!(payload.is_empty());
+    assert_no_second_frame(&mut receiver).await;
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+}
+
+async fn deferred_package_direct_response_sink_producer_error() {
+    let (host, routes) = fixture::admitted_stream_argument_gateway_host().await;
+    let stream = canonical_header(
+        &routes["response-sink-producer-error"],
+        "deferred-package-direct-response-sink-producer-error",
+    );
+    let frame = encode_binary_frame(&stream, &[]).unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    dispatch(&host, &frame, &sender).await.unwrap();
+
+    let start = recv_binary(&mut receiver).await;
+    let (start, payload): (ResponseStartFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&start).unwrap();
+    assert_eq!(start.request_id, stream.request_id);
+    assert_eq!(start.http_response.status, 200);
+    assert!(payload.is_empty());
+
+    let chunk = recv_binary(&mut receiver).await;
+    let (chunk, payload): (ResponseChunkFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&chunk).unwrap();
+    assert_eq!(chunk.request_id, stream.request_id);
+    assert_eq!(chunk.seq, 0);
+    assert_eq!(payload, b"before-error");
+
+    let Terminal::Error(response, payload) = recv_terminal(&mut receiver).await else {
+        panic!("producer error must preserve the native response chunk and terminate once")
+    };
+    assert_eq!(response.request_id(), stream.request_id);
+    assert!(!control_error(&response, &payload).code.is_empty());
+    assert_no_second_frame(&mut receiver).await;
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+}
+
+async fn deferred_package_direct_response_sink_consumer_cancel() {
+    let (host, routes) = fixture::admitted_stream_argument_gateway_host().await;
+    let stream = canonical_header(
+        &routes["response-sink-consumer-cancel"],
+        "deferred-package-direct-response-sink-consumer-cancel",
+    );
+    let frame = encode_binary_frame(&stream, &[]).unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    dispatch(&host, &frame, &sender).await.unwrap();
+
+    let start = recv_binary(&mut receiver).await;
+    let (start, payload): (ResponseStartFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&start).unwrap();
+    assert_eq!(start.request_id, stream.request_id);
+    assert_eq!(start.http_response.status, 200);
+    assert!(payload.is_empty());
+
+    let chunk = recv_binary(&mut receiver).await;
+    let (chunk, payload): (ResponseChunkFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&chunk).unwrap();
+    assert_eq!(chunk.request_id, stream.request_id);
+    assert_eq!(chunk.seq, 0);
+    assert_eq!(payload, b"first");
+
+    dispatch_cancel(&host, &stream, &sender, "consumer_break").await;
+    for _ in 0..100 {
+        if host.request_supervisor.active_count().await == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+    assert_no_second_frame(&mut receiver).await;
+}
+
 async fn package_direct_stream_producer_argument_normal() {
     let (host, routes) = fixture::admitted_stream_argument_gateway_host().await;
     let stream = canonical_header(&routes["normal"], "package-direct-stream-argument-normal");
