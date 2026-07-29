@@ -122,6 +122,17 @@ test-runner/fixtures/package-direct-http-stream-registry/**
 建议保留并集成诊断fixture，因为它关闭了“普通wrapper→PackageDirect return stream的registry association已经
 失败”这一假设；但该提交不能解除I。
 
-最小后继应从I的精确失败artifact/source、request header和完整调用形状建立新的可复现fixture，再比较它与本
-GREEN fixture的第一个结构差异。不能继续以泛化的`PackageDirect HTTP stream registry`为production修复任务，
-也不能从现有GREEN轨迹推断第二个registry、owner过早drop、heap、alias/linker或service boundary问题。
+后续只读差分已经把第一个结构差异缩小到“overlay-local stream producer返回值作为另一个dependency
+PackageDirect stream producer的参数”。该差分由
+`P5-F445H-I7-P8-D3-stream-argument-response-sink-refinement-result.md`固化，并交给S2/S3顺序实验。
+本S1状态保持不变：
+
+```text
+TASK_NOT_EXECUTABLE
+S1_COMPLETE = NO
+I_RESUME_UNBLOCKED = NO
+```
+
+不能继续以泛化的`PackageDirect HTTP stream registry`为production修复任务，也不能从现有GREEN轨迹或
+只读差分推断第二个registry、owner过早drop、heap、overlay association、argument transport或response
+sink已经是根因。
