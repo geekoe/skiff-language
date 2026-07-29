@@ -1067,7 +1067,7 @@ async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
 }
 
 #[tokio::test]
-async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape() {
+async fn runtime_program_resource_json_syntax_error_throws_request_local_json_decode_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", b"{");
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
@@ -1077,11 +1077,11 @@ async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape
         .await
         .expect_err("std.resource.json should map syntax errors to std.json.DecodeError");
 
-    assert_resource_json_decode_error(&error, "bad.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
-async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape() {
+async fn runtime_program_resource_json_type_error_throws_request_local_json_decode_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", b"[]");
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
@@ -1091,7 +1091,7 @@ async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape()
         .await
         .expect_err("std.resource.json should map type errors to std.json.DecodeError");
 
-    assert_resource_json_decode_error(&error, "bad.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
@@ -1130,7 +1130,7 @@ async fn runtime_program_resource_json_rejects_stream_return_type() {
         .await
         .expect_err("std.resource.json should not decode resource bytes as a Stream");
 
-    assert_resource_json_decode_error(&error, "stream.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
@@ -2048,7 +2048,7 @@ async fn runtime_program_stream_producer_cancelled_across_task_boundary_on_consu
 async fn runtime_program_create_from_stream_prefers_producer_error_after_consumer_error() {
     let program = Arc::new(program_with_executables_and_std_builtins(vec![
         create_from_stream_route_executable(),
-        bytes_stream_emit_then_bad_emit_producer_executable(),
+        bytes_stream_emit_then_typed_throw_producer_executable(),
     ]));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -2057,12 +2057,7 @@ async fn runtime_program_create_from_stream_prefers_producer_error_after_consume
         .await
         .expect_err("producer error should win over missing file store consumer error");
 
-    assert!(
-        error
-            .to_string()
-            .contains("stream emit item: expected runtime bytes"),
-        "unexpected error: {error}"
-    );
+    assert_json_decode_exception_identity(&error);
 }
 
 #[tokio::test]
@@ -6079,23 +6074,34 @@ fn assert_resource_error(error: &RuntimeError, path: &str) {
     );
 }
 
-fn assert_resource_json_decode_error(error: &RuntimeError, path: &str) {
-    let payload = error
-        .ordinary_payload()
-        .expect("resource JSON decode remains ordinary");
-    assert_eq!(payload.code, "std.json.DecodeError");
+fn assert_resource_json_decode_exception(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.json.DecodeError, got {error:?}");
+    };
+    let expected_site = test_instruction_site();
     assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["target"].as_str()),
-        Some("std.resource.json"),
-        "unexpected payload: {payload:?}"
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
     );
-    assert!(
-        payload.message.contains(path),
-        "decode error message should include resource path {path}: {payload:?}"
+    assert!(exception.request().local_value().is_some());
+    assert_eq!(exception.request().source(), &expected_site);
+    assert_eq!(
+        exception.request().stack(),
+        [ExceptionStackFrame::Local {
+            site: expected_site,
+        }]
     );
+}
+
+fn assert_json_decode_exception_identity(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.json.DecodeError, got {error:?}");
+    };
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
+    );
+    assert!(exception.request().local_value().is_some());
 }
 
 fn for_in_value_block_executable() -> LinkedExecutable {
@@ -6975,7 +6981,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
     }
 }
 
-fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
+fn bytes_stream_emit_then_typed_throw_producer_executable() -> LinkedExecutable {
     LinkedExecutable {
         kind: ExecutableKind::Function,
         symbol: "svc.main.produce".to_string(),
@@ -7008,9 +7014,8 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                     "value": { "expression": 1 }
                 },
                 {
-                    "kind": "emit",
-                    "operation": "emit",
-                    "value": { "expression": 2 }
+                    "kind": "expr",
+                    "value": { "expression": 5 }
                 }
             ],
             "expressions": [
@@ -7032,7 +7037,34 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                         ]
                     }
                 },
-                { "kind": "literal", "value": { "kind": "string", "value": "not bytes" } }
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "fixture.stream.producer" }
+                },
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "typed producer terminal" }
+                },
+                {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "fields": {
+                        "target": { "expression": 2 },
+                        "message": { "expression": 3 }
+                    }
+                },
+                {
+                    "kind": "throw",
+                    "site": test_instruction_site(),
+                    "value": { "expression": 4 },
+                    "payloadType": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    }
+                }
             ]
         })),
     }
