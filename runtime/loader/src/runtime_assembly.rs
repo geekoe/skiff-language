@@ -19,9 +19,9 @@ mod gateway_ingress;
 mod graph_validation;
 
 use content_validation::{
-    validate_assembly, validate_contract_ref, validate_file_ref, validate_file_ref_path,
-    validate_package_file_targets, validate_package_ref, validate_resource_content,
-    validate_resource_ref_path,
+    validate_assembly, validate_contract_ref, validate_file_content, validate_file_ref,
+    validate_file_ref_path, validate_package_file_targets, validate_package_ref,
+    validate_resource_content, validate_resource_ref_path,
 };
 use gateway_ingress::hydrate_gateway_ingress;
 pub use gateway_ingress::{HydratedGatewayCallable, HydratedGatewayEntry};
@@ -326,6 +326,7 @@ impl HydratedRuntimeAssembly {
 
 pub struct RuntimeAssemblyLoader<'a, R: ?Sized> {
     resolver: &'a R,
+    #[cfg(test)]
     file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
 }
 
@@ -333,6 +334,7 @@ fn validate_file_ir_identity(file: &FileIrUnit) -> anyhow::Result<()> {
     skiff_artifact_identity::validate_file_ir_identity(file).map_err(anyhow::Error::from)
 }
 
+#[cfg(test)]
 static FILE_IR_IDENTITY_VALIDATOR: fn(&FileIrUnit) -> anyhow::Result<()> =
     validate_file_ir_identity;
 
@@ -343,6 +345,7 @@ where
     pub fn new(resolver: &'a R) -> Self {
         Self {
             resolver,
+            #[cfg(test)]
             file_ir_identity_validator: &FILE_IR_IDENTITY_VALIDATOR,
         }
     }
@@ -355,6 +358,22 @@ where
         Self {
             resolver,
             file_ir_identity_validator,
+        }
+    }
+
+    fn validate_file_content(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &FileIrRef,
+        file: &FileIrUnit,
+    ) -> anyhow::Result<()> {
+        #[cfg(test)]
+        {
+            validate_file_content(package, reference, file, self.file_ir_identity_validator)
+        }
+        #[cfg(not(test))]
+        {
+            validate_file_content(package, reference, file, &validate_file_ir_identity)
         }
     }
 
@@ -546,13 +565,7 @@ where
             validate_package_ref(&reference, &artifact)?;
             let schema_index = self.load_package_schema_index(&artifact)?;
             let (files, file_slots) = self.load_files(&reference, &artifact, &mut shared_files)?;
-            validate_package_file_targets(
-                &reference,
-                &artifact,
-                &files,
-                &file_slots,
-                self.file_ir_identity_validator,
-            )?;
+            validate_package_file_targets(&reference, &artifact, &files, &file_slots)?;
             let (resources, resource_slots) = self.load_resources(&reference, &artifact)?;
             let schema_records =
                 self.load_package_schema_closure(&artifact, &schema_index, shared_schema_records)?;
@@ -779,12 +792,7 @@ where
             }
 
             let file = if let Some(file) = shared_files.get(&reference.file_ir_identity) {
-                validate_file_ref(
-                    package_ref,
-                    &reference,
-                    file,
-                    self.file_ir_identity_validator,
-                )?;
+                validate_file_ref(package_ref, &reference, file)?;
                 Arc::clone(file)
             } else {
                 let file = self
@@ -796,12 +804,7 @@ where
                             reference.file_ir_identity, package_ref.package_build_id
                         )
                     })?;
-                validate_file_ref(
-                    package_ref,
-                    &reference,
-                    &file,
-                    self.file_ir_identity_validator,
-                )?;
+                self.validate_file_content(package_ref, &reference, &file)?;
                 shared_files.insert(reference.file_ir_identity.clone(), Arc::clone(&file));
                 file
             };

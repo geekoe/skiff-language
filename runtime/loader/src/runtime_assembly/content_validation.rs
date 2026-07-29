@@ -73,7 +73,7 @@ pub(super) fn validate_file_ref_path(
     Ok(())
 }
 
-pub(super) fn validate_file_ref<V>(
+pub(super) fn validate_file_content<V>(
     package: &PackageArtifactRef,
     reference: &FileIrRef,
     file: &FileIrUnit,
@@ -88,6 +88,14 @@ where
             reference.file_ir_identity, package.package_build_id
         )
     })?;
+    validate_file_ref(package, reference, file)
+}
+
+pub(super) fn validate_file_ref(
+    package: &PackageArtifactRef,
+    reference: &FileIrRef,
+    file: &FileIrUnit,
+) -> anyhow::Result<()> {
     if file.file_ir_identity != reference.file_ir_identity
         || file.module_path != reference.module_path
         || reference
@@ -171,7 +179,6 @@ pub(super) fn validate_package_file_targets(
     artifact: &PackageArtifact,
     files: &[Arc<FileIrUnit>],
     file_slots: &BTreeMap<String, usize>,
-    validate_identity: &(impl Fn(&FileIrUnit) -> anyhow::Result<()> + ?Sized),
 ) -> anyhow::Result<()> {
     let resolve = |reference: &FileIrRef, label: &str| -> anyhow::Result<&FileIrUnit> {
         validate_file_ref_path(package_ref, reference)?;
@@ -192,7 +199,7 @@ pub(super) fn validate_package_file_targets(
                 reference.file_ir_identity
             );
         }
-        validate_file_ref(package_ref, reference, file, validate_identity)?;
+        validate_file_ref(package_ref, reference, file)?;
         Ok(file)
     };
 

@@ -94,7 +94,6 @@ struct FixtureResolver {
     package_loads: Cell<usize>,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     schema_index: Option<Arc<PackageSchemaIndex>>,
-    additional_schema_index: Option<Arc<PackageSchemaIndex>>,
     schema_loads: Cell<usize>,
 }
 
@@ -144,20 +143,16 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         &self,
         reference: &PackageSchemaIndexRef,
     ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
-        for index in [
-            self.schema_index.as_ref(),
-            self.additional_schema_index.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
+        let index = self
+            .schema_index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing package schema index"))?;
+        if index.package_id != reference.package_id
+            || index.package_schema_index_identity != reference.package_schema_index_identity
         {
-            if index.package_id == reference.package_id
-                && index.package_schema_index_identity == reference.package_schema_index_identity
-            {
-                return Ok(Arc::clone(index));
-            }
+            anyhow::bail!("missing package schema index")
         }
-        anyhow::bail!("missing package schema index")
+        Ok(Arc::clone(index))
     }
 
     fn resolve_package(
@@ -498,7 +493,6 @@ impl Fixture {
             package_loads: Cell::new(0),
             schema_records: self.schema_records.clone(),
             schema_index: Some(Arc::new(self.schema_index.clone())),
-            additional_schema_index: None,
             schema_loads: Cell::new(0),
         }
     }
@@ -597,9 +591,15 @@ impl Fixture {
     }
 
     fn add_http_gateway(&mut self) {
-        let handler = PackageCallableId::new("pkg-callable:gateway:handler");
-        let pre = PackageCallableId::new("pkg-callable:gateway:pre");
-        let guard = PackageCallableId::new("pkg-callable:gateway:guard");
+        let handler = PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_handler",
+        );
+        let pre = PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_pre",
+        );
+        let guard = PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_guard",
+        );
         for (path, callable_id) in [
             ("provider.main.gateway_handler", &handler),
             ("provider.main.gateway_pre", &pre),
@@ -1072,7 +1072,9 @@ fn runtime_assembly_loader_rejects_gateway_link_and_signature_tamper() {
     let mut nested_id = fixture.resolver();
     Arc::make_mut(&mut nested_id.package)
         .callable_links
-        .get_mut(&PackageCallableId::new("pkg-callable:gateway:handler"))
+        .get_mut(&PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_handler",
+        ))
         .unwrap()
         .callable_id = PackageCallableId::new("pkg-callable:gateway:wrong-nested-id");
     assert!(RuntimeAssemblyLoader::new(&nested_id)
@@ -1082,7 +1084,9 @@ fn runtime_assembly_loader_rejects_gateway_link_and_signature_tamper() {
     let mut target = fixture.resolver();
     Arc::make_mut(&mut target.package)
         .callable_links
-        .get_mut(&PackageCallableId::new("pkg-callable:gateway:handler"))
+        .get_mut(&PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_handler",
+        ))
         .unwrap()
         .target
         .callable_abi_id = "pkg-callable:gateway:wrong-target".to_string();
