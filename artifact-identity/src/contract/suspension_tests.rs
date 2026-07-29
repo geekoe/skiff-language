@@ -142,11 +142,11 @@ fn service_contract(type_id: PackageSchemaTypeId) -> ServiceContract {
             parameters: vec![BoundaryParameter {
                 name: "user".to_string(),
                 ty: ContractTypeRef::package_schema("example.pkg", "User", type_id.clone()),
-                value_plan: value_plan(),
+                value_plan: value_plan(BoundaryValueOwner::Caller),
             }],
             return_value: BoundaryReturn {
                 ty: ContractTypeRef::builtin("void"),
-                value_plan: value_plan(),
+                value_plan: value_plan(BoundaryValueOwner::Provider),
             },
             stream: BoundaryStreamContract::Unary,
             callbacks: BoundaryCallbackContract::None,
@@ -178,11 +178,11 @@ fn service_contract(type_id: PackageSchemaTypeId) -> ServiceContract {
     }
 }
 
-fn value_plan() -> BoundaryValuePlan {
+fn value_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
     BoundaryValuePlan::Linkable {
         carrier: BoundaryValueCarrier::DetachedValueGraph,
         encoding: BoundaryValueEncoding::CanonicalValue,
-        owner: BoundaryValueOwner::Provider,
+        owner,
         lifetime: BoundaryValueLifetime::Call,
     }
 }
