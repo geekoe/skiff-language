@@ -14,7 +14,7 @@ use crate::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
         Expr, ForBinding, FunctionDecl, Literal, SourceFile, Stmt, TypeRef, UnaryOp,
     },
-    shared::ast_utils::expr_path,
+    shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
     shared::prelude_registry::prelude_registry,
     shared::type_expr::TypeExpr,
@@ -2929,6 +2929,11 @@ impl<'a> OwnerChecker<'a> {
         {
             return Some(return_type);
         }
+        if let Some(return_type) =
+            self.package_receiver_call_type(key, callee, type_args, args, arg_types)
+        {
+            return Some(return_type);
+        }
         let path = expr_path(callee)?;
         if !path
             .split('.')
@@ -2969,9 +2974,19 @@ impl<'a> OwnerChecker<'a> {
         }
         if type_args.is_empty() {
             let signature = self.dependency_analysis.and_then(|dependency_analysis| {
-                let (dependency_ref, callable) =
+                let (canonical_dependency_ref, callable) =
                     dependency_analysis.package_callable_by_source_path(&path)?;
-                Some((dependency_ref.to_string(), callable.signature()?.clone()))
+                let type_dependency_ref = dependency_source_address_parts(&path)
+                    .map(|(dependency_ref, _)| dependency_ref)
+                    .filter(|dependency_ref| {
+                        self.type_resolution
+                            .is_top_level_package_dependency_ref(dependency_ref)
+                    })
+                    .unwrap_or(canonical_dependency_ref);
+                Some((
+                    type_dependency_ref.to_string(),
+                    callable.signature()?.clone(),
+                ))
             });
             if let Some((dependency_ref, signature)) = signature {
                 // Resolve each parameter independently: an owner/slot diagnostic
@@ -3965,6 +3980,178 @@ impl<'a> OwnerChecker<'a> {
             source_text: type_ref_debug_text(&return_type),
             ir: return_type,
         })
+    }
+
+    fn package_receiver_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        callee: &Expr,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
+        let (_, method_name) = receiver_call_parts(callee)?;
+        let offset = 1 + receiver_object_offset_in_callee(callee)?;
+        let receiver_key = ExpressionKey::new(
+            key.module_path().to_string(),
+            key.owner().clone(),
+            key.preorder_index().checked_add(offset)?,
+        );
+        let receiver_ty = self.expression_type_at_offset(key, offset)?;
+        let receiver_method = self
+            .type_resolution
+            .package_receiver_method_resolution(&receiver_ty.ir, method_name)?;
+        let source_path = format!(
+            "{}/{}",
+            receiver_method.dependency_ref, receiver_method.source_method_path
+        );
+        let (canonical_dependency_ref, callable) = self
+            .dependency_analysis?
+            .package_callable_by_source_path(&source_path)?;
+        if canonical_dependency_ref != receiver_method.canonical_dependency_ref {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` resolves to dependency `{canonical_dependency_ref}` instead of `{}`",
+                self.module_path, receiver_method.canonical_dependency_ref
+            ));
+            return None;
+        }
+        let signature = callable.signature()?.clone();
+        let receiver_param_count = receiver_method.receiver_type_params.len();
+        if signature.parameters.first().map(|parameter| parameter.name.as_str()) != Some("self")
+            || signature.type_params.len() < receiver_param_count
+            || signature.type_params.len() - receiver_param_count != type_args.len()
+        {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` has an invalid receiver/generic signature",
+                self.module_path
+            ));
+            return None;
+        }
+        let mut substitutions = signature
+            .type_params
+            .iter()
+            .take(receiver_param_count)
+            .cloned()
+            .zip(
+                receiver_method
+                    .receiver_type_arguments
+                    .iter()
+                    .cloned()
+                    .map(|local_type| PackageTypeRef::Local { local_type }),
+            )
+            .collect::<BTreeMap<_, _>>();
+        for (type_param, type_arg) in signature
+            .type_params
+            .iter()
+            .skip(receiver_param_count)
+            .zip(type_args)
+        {
+            let projected = match self.project_source_binding_type(type_arg) {
+                Ok(Some(projected)) => projected,
+                Ok(None) => {
+                    self.diagnostics.push(format!(
+                        "{}: package receiver method `{source_path}` type argument `{type_param}` has no exact package projection",
+                        self.module_path
+                    ));
+                    return None;
+                }
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: package receiver method `{source_path}` type argument `{type_param}` projection failed: {error}",
+                        self.module_path
+                    ));
+                    return None;
+                }
+            };
+            substitutions.insert(type_param.clone(), projected);
+        }
+
+        let exact_parameters = signature
+            .parameters
+            .iter()
+            .map(|parameter| {
+                substitute_package_type(&parameter.ty, &substitutions).and_then(|ty| {
+                    self.type_resolution
+                        .rehydrate_package_signature_type_for_dependency(
+                            &receiver_method.dependency_ref,
+                            &ty,
+                        )
+                        .map(|exact| (parameter.name.clone(), exact))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let exact_parameters = match exact_parameters {
+            Ok(parameters) => parameters,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: package receiver method `{source_path}` parameter substitution failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(key)
+                ));
+                return None;
+            }
+        };
+        let expected_receiver = self.type_resolution.bind_package_type_refs_to_dependency(
+            &resolved_package_type_ref(&exact_parameters[0].1),
+            &receiver_method.dependency_ref,
+        );
+        if !self.type_resolution.assignable_in_context(
+            &receiver_ty,
+            &expected_receiver,
+            &self.type_context,
+        ) {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` receiver type mismatch at {}: expected {}, found {}",
+                self.module_path,
+                self.expression_span_label(&receiver_key),
+                expected_receiver.source_text,
+                receiver_ty.source_text
+            ));
+            return None;
+        }
+        let expected = exact_parameters
+            .iter()
+            .skip(1)
+            .map(|(name, exact)| {
+                (
+                    name.clone(),
+                    Ok((
+                        self.type_resolution.bind_package_type_refs_to_dependency(
+                            &resolved_package_type_ref(exact),
+                            &receiver_method.dependency_ref,
+                        ),
+                        exact.clone(),
+                    )),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.validate_dependency_package_call_params(key, &source_path, &expected, args, arg_types);
+
+        let exact_return = match substitute_package_type(&signature.return_type, &substitutions)
+            .and_then(|ty| {
+                self.type_resolution
+                    .rehydrate_package_signature_type_for_dependency(
+                        &receiver_method.dependency_ref,
+                        &ty,
+                    )
+            }) {
+            Ok(return_type) => return_type,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: package receiver method `{source_path}` return substitution failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(key)
+                ));
+                return None;
+            }
+        };
+        let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
+            &resolved_package_type_ref(&exact_return),
+            &receiver_method.dependency_ref,
+        );
+        self.contract_projection
+            .record_expression_type(key.clone(), exact_return);
+        Some(resolved_return)
     }
 
     fn expression_type_at_offset(

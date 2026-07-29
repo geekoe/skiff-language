@@ -1471,6 +1471,7 @@ impl<'a> FunctionLowerer<'a> {
             _ => (callee, &[][..]),
         };
         let mut lowered_args = Vec::new();
+        let mut receiver_type_arguments = Vec::new();
         let target = if let Some(target) = self.package_call_target(expression_key, callee)? {
             self.consume_static_callee_expression_keys(callee)?;
             target
@@ -1482,7 +1483,14 @@ impl<'a> FunctionLowerer<'a> {
                 service_call_ref_index,
             }
         } else if let Expr::Field { object, field } = callee {
-            if let Some(target) = self.actor_method_call_target(expression_key)? {
+            if let Some((target, type_arguments)) =
+                self.resolved_package_receiver_call_target(expression_key, object, field)?
+            {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                receiver_type_arguments = type_arguments;
+                target
+            } else if let Some(target) = self.actor_method_call_target(expression_key)? {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
                 target
@@ -1504,25 +1512,27 @@ impl<'a> FunctionLowerer<'a> {
             self.consume_static_callee_expression_keys(callee)?;
             self.lower_static_call_target(callee)?
         };
-        let mut type_args = type_arg_refs
-            .iter()
+        let lowered_type_arguments = receiver_type_arguments
+            .into_iter()
+            .map(Ok)
+            .chain(type_arg_refs.iter().map(|ty| {
+                lower_type_ref(
+                    ty,
+                    self.type_indices,
+                    self.local_db_objects,
+                    self.publication_db_metadata,
+                    self.package_aliases,
+                    self.external_type_symbols,
+                    self.source_alias_targets,
+                    self.value_type_context(),
+                )
+            }))
+            .collect::<Result<Vec<_>>>()?;
+        let mut type_args = lowered_type_arguments
+            .into_iter()
             .enumerate()
-            .map(|(index, ty)| {
-                Ok((
-                    format!("T{index}"),
-                    lower_type_ref(
-                        ty,
-                        self.type_indices,
-                        self.local_db_objects,
-                        self.publication_db_metadata,
-                        self.package_aliases,
-                        self.external_type_symbols,
-                        self.source_alias_targets,
-                        self.value_type_context(),
-                    )?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
+            .map(|(index, ty)| (format!("T{index}"), ty))
+            .collect::<BTreeMap<_, _>>();
         self.infer_native_call_type_args(&target, &mut type_args, args)?;
         let metadata = match &target {
             CallTargetIr::Builtin { op } if is_db_builtin_op(op) => self.lower_db_call_metadata(
@@ -1563,6 +1573,9 @@ impl<'a> FunctionLowerer<'a> {
             ..
         }) = target
         {
+            if matches!(callee, Expr::Field { object, .. } if self.is_receiver_call(object)) {
+                return Ok(None);
+            }
             let path = path.as_deref().ok_or_else(|| {
                 package_call_resolution_error(
                     expression_key,
@@ -1634,6 +1647,71 @@ impl<'a> FunctionLowerer<'a> {
             ),
         };
         Err(package_call_resolution_error(expression_key, path, detail))
+    }
+
+    fn resolved_package_receiver_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        object: &Expr,
+        method_name: &str,
+    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+        let Some(ResolvedCallTarget::DependencyPackageFunction {
+            package_requirement_alias,
+            compiler_owned,
+            package_callable_id,
+            expected_local_abi,
+            exact_signature,
+        }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        if *compiler_owned {
+            return Err(unsupported(
+                "compiler-owned package call cannot use a top-level receiver",
+            ));
+        }
+        let (_, receiver_ty) = self.receiver_type_for_call_object(object)?.ok_or_else(|| {
+            unsupported(format!(
+                "package receiver method `{method_name}` has no statically known receiver type at ExpressionKey {expression_key:?}"
+            ))
+        })?;
+        let receiver = self
+            .type_resolution
+            .package_receiver_method_resolution(&receiver_ty, method_name)
+            .ok_or_else(|| {
+                unsupported(format!(
+                    "typed package receiver target `{package_callable_id}` is not authorized by an exact topLevelAlias receiver"
+                ))
+            })?;
+        if receiver.canonical_dependency_ref != *package_requirement_alias
+            || receiver.expected_local_abi != *expected_local_abi
+            || !self.package_aliases.contains_key(package_requirement_alias)
+        {
+            return Err(unsupported(format!(
+                "typed package receiver target `{package_callable_id}` does not match its exact dependency identity"
+            )));
+        }
+        let signature = exact_signature.as_ref().ok_or_else(|| {
+            unsupported(format!(
+                "typed package receiver target `{package_callable_id}` has no exact signature"
+            ))
+        })?;
+        if signature.parameters.first().map(|parameter| parameter.name.as_str()) != Some("self")
+            || signature.type_params.len() < receiver.receiver_type_arguments.len()
+        {
+            return Err(unsupported(format!(
+                "typed package receiver target `{package_callable_id}` has an invalid receiver signature"
+            )));
+        }
+        Ok(Some((
+            CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency {
+                    dependency_ref: package_requirement_alias.clone(),
+                },
+                package_callable_id: package_callable_id.clone(),
+            },
+            receiver.receiver_type_arguments,
+        )))
     }
 
     fn resolved_receiver_builtin_call_target(

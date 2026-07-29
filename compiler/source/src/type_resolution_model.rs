@@ -280,6 +280,17 @@ pub struct PackageCallableResolution {
     pub exact_signature: Option<skiff_artifact_model::PackageCallableSignature>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackageReceiverMethodResolution {
+    pub dependency_ref: String,
+    pub canonical_dependency_ref: String,
+    pub expected_local_abi: PackageLocalAbiIdentity,
+    pub expected_package_build: PackageBuildId,
+    pub source_method_path: String,
+    pub receiver_type_params: Vec<String>,
+    pub receiver_type_arguments: Vec<TypeRefIr>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PackageConstantResolution {
     pub symbol: PackageSymbolRef,
@@ -1557,6 +1568,62 @@ impl TypeResolutionModel {
             &package_symbol.dependency_ref,
             &package_symbol.symbol_path,
         )
+    }
+
+    pub(crate) fn is_top_level_package_dependency_ref(&self, dependency_ref: &str) -> bool {
+        self.package_dependency_views.get(dependency_ref)
+            == Some(&PackageDependencyView::TopLevel)
+    }
+
+    pub fn package_receiver_method_resolution(
+        &self,
+        receiver: &TypeRefIr,
+        method_name: &str,
+    ) -> Option<PackageReceiverMethodResolution> {
+        let (symbol, arguments) = match receiver {
+            TypeRefIr::PackageSymbol { symbol } => (symbol, Vec::new()),
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            } => (symbol, arguments.clone()),
+            _ => return None,
+        };
+        let PackageRefIr::Dependency { dependency_ref } = &symbol.package else {
+            return None;
+        };
+        if !self.is_top_level_package_dependency_ref(dependency_ref) {
+            return None;
+        }
+        let (expected_local_abi, expected_build) =
+            self.package_artifact_identities.get(dependency_ref)?;
+        if symbol.abi_expectation.as_deref() != Some(expected_local_abi.as_str())
+            || expected_build.as_str().is_empty()
+        {
+            return None;
+        }
+        let key = PackageSymbolKey {
+            dependency_ref: dependency_ref.clone(),
+            symbol_path: symbol.symbol_path.clone(),
+        };
+        let receiver_type = self.package_types.get(&key)?;
+        if receiver_type.public_path.as_deref() != Some(symbol.symbol_path.as_str())
+            || self.package_interfaces.contains_key(&key)
+            || receiver_type.type_params.len() != arguments.len()
+            || arguments.iter().any(type_contains_unresolved_param)
+        {
+            return None;
+        }
+        Some(PackageReceiverMethodResolution {
+            dependency_ref: dependency_ref.clone(),
+            canonical_dependency_ref: self
+                .canonical_package_dependency_ref(dependency_ref)
+                .to_string(),
+            expected_local_abi: expected_local_abi.clone(),
+            expected_package_build: expected_build.clone(),
+            source_method_path: format!("{}.{}", symbol.symbol_path, method_name),
+            receiver_type_params: receiver_type.type_params.clone(),
+            receiver_type_arguments: arguments,
+        })
     }
 
     pub fn resolve_package_constant(&self, path: &str) -> Option<&PackageConstantResolution> {
@@ -6271,6 +6338,41 @@ fn nominal_base_type_ref(base: &NominalTypeRefBaseIr) -> TypeRefIr {
             stable_schema_key: stable_schema_key.clone(),
             package_schema_type_id: package_schema_type_id.clone(),
         },
+    }
+}
+
+fn type_contains_unresolved_param(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::TypeParam { .. } => true,
+        TypeRefIr::AppliedNominal { arguments, .. }
+        | TypeRefIr::Builtin {
+            args: arguments, ..
+        }
+        | TypeRefIr::Union { items: arguments } => {
+            arguments.iter().any(type_contains_unresolved_param)
+        }
+        TypeRefIr::Nullable { inner } => type_contains_unresolved_param(inner),
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(type_contains_unresolved_param),
+        TypeRefIr::Record { fields } => fields.values().any(type_contains_unresolved_param),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| type_contains_unresolved_param(&param.ty))
+                || type_contains_unresolved_param(return_type)
+        }
+        TypeRefIr::Literal { .. }
+        | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. } => false,
     }
 }
 
