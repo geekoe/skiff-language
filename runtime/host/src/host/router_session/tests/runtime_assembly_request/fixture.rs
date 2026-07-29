@@ -27,6 +27,15 @@ use skiff_runtime_loader::{
 };
 use skiff_test_runner::canonical_std_seed::seed_canonical_std;
 use skiff_test_runner::package_service_host_fixture::prepare_package_service_host_fixture;
+use skiff_test_runner::{
+    canonical_package::compile_package_project_for_test,
+    canonical_store::CanonicalBaseAssembly,
+    package_test_assembly::{
+        assemble_package_test_fixture_for_run, CanonicalPackageTestEntrypoint,
+    },
+    test_discovery::discover_package_test_cases,
+    test_overlay::compile_package_test_overlay,
+};
 
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
@@ -40,6 +49,7 @@ static PATH_ONLY_FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PINNED_ROUTE_FIXTURE_A: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PINNED_ROUTE_FIXTURE_B: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PACKAGE_DIRECT_STREAM_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
+static STREAM_ARGUMENT_FIXTURE: OnceLock<StreamArgumentCompiledFixture> = OnceLock::new();
 
 pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
@@ -113,6 +123,54 @@ pub(super) async fn admitted_package_direct_stream_gateway_host(
                 binding.selector.path.clone(),
                 host.lookup_active_assembly_request_route(&binding.service_ingress_key())
                     .expect("package-direct HTTP stream gateway route"),
+            )
+        })
+        .collect();
+    (host, routes)
+}
+
+pub(super) async fn admitted_stream_argument_gateway_host(
+) -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
+    let fixture = STREAM_ARGUMENT_FIXTURE.get_or_init(compile_stream_argument_fixture_with_stack);
+    let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        .expect("stream-argument HTTP stream filesystem resolver");
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("stream-argument HTTP stream assembly should admit");
+    let route_specs = [
+        ("normal", 0, "/package-direct/stream-argument/normal"),
+        (
+            "producer-error",
+            1,
+            "/package-direct/stream-argument/producer-error",
+        ),
+        (
+            "consumer-cancel",
+            2,
+            "/package-direct/stream-argument/consumer-cancel",
+        ),
+    ];
+    let routes = route_specs
+        .into_iter()
+        .map(|(role, case_index, path)| {
+            let entrypoint = fixture
+                .entrypoints
+                .get(case_index)
+                .expect("stream-argument package-test entrypoint");
+            let binding = fixture
+                .assembly
+                .gateway_ingress
+                .iter()
+                .find(|binding| {
+                    binding.deployment == entrypoint.deployment && binding.selector.path == path
+                })
+                .expect("stream-argument HTTP ingress binding");
+            (
+                role.to_string(),
+                host.lookup_active_assembly_request_route(&binding.service_ingress_key())
+                    .expect("stream-argument HTTP gateway route"),
             )
         })
         .collect();
@@ -382,6 +440,13 @@ struct CurrentScopeCompiledFixture {
     _temp: TempFixture,
 }
 
+struct StreamArgumentCompiledFixture {
+    assembly: Arc<RuntimeAssembly>,
+    artifact_root: PathBuf,
+    entrypoints: Vec<CanonicalPackageTestEntrypoint>,
+    _temp: TempFixture,
+}
+
 impl CompiledGatewayFixture {
     fn resolver(&self) -> CompiledGatewayResolver<'_> {
         CompiledGatewayResolver {
@@ -571,6 +636,70 @@ fn compile_package_service_fixture(
         artifact_root,
         _temp: temp,
     }
+}
+
+fn compile_stream_argument_fixture() -> StreamArgumentCompiledFixture {
+    let temp = TempFixture::new("host-package-direct-stream-argument");
+    let source_artifacts = temp.child("source-artifacts");
+    let runtime_artifacts = temp.child("runtime-artifacts");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/host must live below the Skiff root")
+        .to_path_buf();
+    let fixture_root = repository.join("test-runner/fixtures/package-direct-http-stream-registry");
+    let platform = CompilerPlatformSources::new(&repository).expect("repository platform sources");
+    seed_canonical_std(&platform, &source_artifacts).expect("canonical std seed");
+    build_authoring_object(
+        &platform,
+        AuthoringObject::Package,
+        &fixture_root.join("argument-provider"),
+        &source_artifacts,
+        "skiff-test",
+        true,
+    )
+    .expect("stream-argument provider publication");
+    let test_service = fixture_root.join("argument-tests");
+    let project = compile_package_project_for_test(&platform, &test_service, &source_artifacts)
+        .expect("stream-argument test service production package");
+    let cases = discover_package_test_cases(&test_service, &test_service, false)
+        .expect("stream-argument test discovery");
+    assert_eq!(cases.len(), 3);
+    let overlay = compile_package_test_overlay(
+        &platform,
+        &test_service,
+        &source_artifacts,
+        &project,
+        &cases,
+    )
+    .expect("stream-argument test overlay");
+    let package_fixture = assemble_package_test_fixture_for_run(
+        &project,
+        overlay,
+        CanonicalBaseAssembly::default(),
+        "p8-s2-stream-argument",
+    )
+    .expect("stream-argument package-test assembly");
+    package_fixture
+        .records
+        .publish(&source_artifacts, &runtime_artifacts)
+        .expect("stream-argument runtime records");
+    StreamArgumentCompiledFixture {
+        assembly: Arc::new(package_fixture.records.assembly),
+        artifact_root: runtime_artifacts,
+        entrypoints: package_fixture.entrypoints,
+        _temp: temp,
+    }
+}
+
+fn compile_stream_argument_fixture_with_stack() -> StreamArgumentCompiledFixture {
+    std::thread::Builder::new()
+        .name("p8-s2-stream-argument-fixture".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(compile_stream_argument_fixture)
+        .expect("stream-argument fixture compiler thread")
+        .join()
+        .expect("stream-argument fixture compiler thread should not panic")
 }
 
 fn path_only_fixture() -> &'static CompiledGatewayFixture {

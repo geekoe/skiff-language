@@ -30,10 +30,21 @@ PRODUCTION_WRITE = NO
 S1状态，也不把`unknown Stream value`预写为registry、heap、argument transport、overlay或response sink
 根因。
 
+Router与下层stream语义采用组合证据，不在每个delta fixture中重复启动完整隔离栈：
+
+- T已经以独立Router business port、真实Runtime和普通service/version selector证明external ingress；
+- S2/S3使用真实compiled/linked/admitted `kind:test` overlay、`RuntimeHost` router-session binary frame
+  dispatch和concrete Host response sink，分别隔离stream argument与deferred response sink；
+- 两份证据只在candidate包含已验收T checkpoint且后续没有修改其Router/Runtime ingress owner时组合；
+  相关owner变化则必须重验T。不能声称S2/S3单个请求经过standalone Router或business port；
+- S2/S3不得手工构造Interpreter、直接调用handler或使用mock sink。只有任务目标本身涉及socket/client
+  disconnect或Router framing时，才必须新增standalone Router实验。
+
 ## 3. Completion
 
 - S1继续为`TASK_NOT_EXECUTABLE / S1_COMPLETE=NO`；
-- S2/S3各自拥有真实Router + `kind:test` fixture、精确trace字段、串行对照、最小候选owner与停止条件；
+- S2/S3各自拥有上述concrete Host lower-seam + `kind:test` fixture、精确trace字段、串行对照、最小候选
+  owner与停止条件，并与T的standalone Router证据组合；
 - DAG更新为`T -> S1 diagnostic -> S2 -> S3 -> I resume -> X -> J`；
 - I只在S3明确给出`I_RESUME_UNBLOCKED=YES`后恢复；
 - X/J覆盖新的argument transport和response sink证据；

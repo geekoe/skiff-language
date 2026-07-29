@@ -1,0 +1,6 @@
+id: example.com/package-direct-http-stream-argument-tests
+version: 1.0.0
+packages:
+  - id: example.com/package-direct-http-stream-argument-provider
+    version: 1.0.0
+    alias: helper

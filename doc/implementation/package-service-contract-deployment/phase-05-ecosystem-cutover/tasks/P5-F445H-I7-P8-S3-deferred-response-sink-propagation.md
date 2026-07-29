@@ -17,6 +17,12 @@ I_RESUME_UNBLOCKED = NO
 - integration owner：`/root/phase05_integration_steward`。
 - DAG：`S2 -> S3 -> I resume -> X`。
 
+S3沿用S2的compiled/linked/admitted `kind:test` fixture、`RuntimeHost` router-session binary frame
+dispatch和concrete Host response sink，只验证Router以下的deferred response-sink env handoff。standalone
+Router ordinary ingress继续组合T的既有证据；本任务不启动Router business port，也不能单独声称请求经过
+standalone Router。若S3 candidate修改T覆盖的Router/Runtime ingress owner，必须先重验T，不能沿用失效
+checkpoint。
+
 ## 2. One independent delta
 
 从S2最终GREEN fixture建立新实验。保持overlay-local `source() -> Stream<string>`作为dependency
@@ -40,10 +46,11 @@ function wrap(
 
 该函数仍是deferred PackageDirect stream producer；start/end走其语言stream，chunk专门检查当前raw HTTP
 request已有response sink是否传播到dependency deferred producer env。不得同时改变argument transport、
-source owner、Router/Host链、manifest identity、类型或取消时机。
+source owner、Host router-session lower seam、manifest identity、类型或取消时机。
 
-预期外部响应仍严格为一个start、`"body"` chunk和一个end。若平台现有single-terminal规则要求native
-chunk与outer stream串行化，fixture按真实response frame顺序断言，不按网络chunk边界断言。
+预期Host response frames仍严格为一个start、`"body"` chunk和一个end。若平台现有single-terminal规则要求
+native chunk与outer stream串行化，fixture按`RouterWriterMessage`实际frame顺序断言，不按network
+socket或chunk边界断言。
 
 ## 3. Trace and verdict
 
@@ -64,6 +71,10 @@ native emitResponseStream target/result
   缺失的相邻existing env handoff；
 - 若重新出现`unknown Stream value`，退回S2分类，不在S3混修；
 - 若错误不属于argument transport或response sink，停止上报。
+
+正常/error/cancel可在同一Host lower seam验证，其中cancel只证明runtime `request.cancel` frame。若目标或
+失败分类要求external socket/client disconnect、Router framing或business-port backpressure，必须停止并
+拆出standalone Router实验；不得把Host frame cancellation冒充外部断连证据。
 
 ## 4. Bounded implementation
 
@@ -117,13 +128,17 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
+selector中的`real_gateway`仍是历史名称，不是standalone Router证据。fixture不得直接调用handler、手工
+构造Interpreter或使用mock response sink。
+
 不运行完整AIHub或J gate。S3通过后由I owner在冻结candidate上恢复四条AIHub迁移。
 
 ## 6. Prohibitions and stop conditions
 
 禁止new registry/protocol/schema/compiler/Router/test-runner/std/Internals production，禁止在同一提交重新
 设计stream argument transport。若无稳定RED、sink从未丢失、需要公共surface、跨request/service sink、
-多个owner同时改动或有多个实现方向，返回`TASK_NOT_EXECUTABLE`/`TASK_SCOPE_EXPANDED`，不做猜测性修复。
+需要external disconnect/Router framing、多个owner同时改动或有多个实现方向，返回
+`TASK_NOT_EXECUTABLE`/`TASK_SCOPE_EXPANDED`，不做猜测性修复。
 
 ## 7. Handoff
 

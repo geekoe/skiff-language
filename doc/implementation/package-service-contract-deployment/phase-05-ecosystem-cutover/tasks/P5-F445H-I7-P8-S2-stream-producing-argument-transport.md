@@ -22,11 +22,12 @@ I_RESUME_UNBLOCKED = NO
 
 S2不能声称完成S1，也不能直接恢复I。只有S3在S2最终GREEN后可以解除I。
 
-## 2. Required real fixture
+## 2. Required concrete lower-seam fixture
 
-复用S1的compiled/admitted/real Router与Host链，但在同一fixture tree新增独立`kind: test` service，
-不改变S1现有consumer。该test service的`http.yml`显式引用自己的`*.test.skiff` overlay entry，并以普通
-public alias `helper`直接依赖provider；provider `api.yml`只公开`wrap`。主实验的源码形状固定为：
+复用S1的compiled/linked/admitted Host router-session lower seam，但在同一fixture tree新增独立
+`kind: test` service，不改变S1现有consumer。该test service的`http.yml`显式引用自己的
+`*.test.skiff` overlay entry，并以普通public alias `helper`直接依赖provider；provider `api.yml`只公开
+`wrap`。主实验的源码形状固定为：
 
 ```skiff
 // kind:test overlay source
@@ -57,9 +58,20 @@ function wrap(
 }
 ```
 
-必须通过真实Router business ingress进入linked/admitted rawHttp `serverStream` entry，并由真实Host
-response sink看到一个start、`"body"` chunk和一个end。禁止直接调用handler、手工构造Interpreter、
-mock response sink或绕过test service overlay。
+fixture必须从linked/admitted rawHttp `serverStream` route构造真实runtime request binary frame，经
+`RuntimeHost::dispatch_router_binary_frame`进入concrete Host router-session，并由其真实response sink
+看到一个start、`"body"` chunk和一个end。禁止直接调用handler、手工构造Interpreter、mock response
+sink或绕过test service overlay。
+
+这里的response sink是Host dispatch实际使用的`RouterWriterMessage`输出通道，不是手工mock；但它也不是
+Router业务端口后的network socket，不能据此声称network ingress。
+
+本任务不启动standalone Router进程，也不监听或访问Router business port。独立Router ordinary ingress由
+`P5-F445H-I7-P8-T-http-entry-combined-probe-result.md`证明；S2只隔离Router以下的stream-producing
+argument delta。candidate必须包含已验收T checkpoint，且从T到candidate未修改其Router/Runtime ingress
+owner；相关owner变化则先重验T。S2 result不得单独声称请求经过真实Router business ingress。若失败只在
+Router framing、socket backpressure或external disconnect中出现，应停止并拆出standalone Router任务，
+不能在本lower seam猜测修复。
 
 ## 3. Required trace and primary verdict
 
@@ -91,7 +103,7 @@ payload必须去敏；最终production与fixture不能保留环境变量或日�
 只有normal主实验稳定得到上述首次next RED时，才在下一次独立运行中把`source()`机械移入dependency，
 并让dependency `wrapLocal()`以相同值、相同三层producer和相同HTTP entry输出消费它。该对照可在
 provider `api.yml`临时公开`wrapLocal`，最终是否保留由result记录；其它manifest、类型、event、
-Router/Host链、取消时机与trace均保持不变。
+Host router-session lower seam、取消时机与trace均保持不变。
 
 判定：
 
@@ -154,6 +166,9 @@ git diff --check
 
 不运行I、完整AIHub、J生态gate、stable/live/network/Mongo/OAuth/browser。
 
+现有selector名中的`real_gateway`是历史名称，只表示concrete Host gateway/session与真实response sink，
+不能作为standalone Router或business-port证据。
+
 ## 7. Prohibitions and stop conditions
 
 禁止：
@@ -165,8 +180,8 @@ git diff --check
 - 无稳定RED或无单一对照结论时修改production。
 
 若主实验/对照无法稳定复现、trace缺任一stream/executable、失败属于response sink、修复需要超出候选
-owner、或仍有多个会改变实现方向的未知量，返回`TASK_NOT_EXECUTABLE`或`TASK_SCOPE_EXPANDED`。保留
-最小诊断fixture/result，不猜测性修复。
+owner、需要external disconnect/Router framing才能复现，或仍有多个会改变实现方向的未知量，返回
+`TASK_NOT_EXECUTABLE`或`TASK_SCOPE_EXPANDED`。保留最小诊断fixture/result，不猜测性修复。
 
 ## 8. Handoff
 

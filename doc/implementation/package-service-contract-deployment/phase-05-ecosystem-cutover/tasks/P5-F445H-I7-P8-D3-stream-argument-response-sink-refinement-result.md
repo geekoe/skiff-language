@@ -6,25 +6,32 @@
 PASS
 S1_STATUS_PRESERVED = TASK_NOT_EXECUTABLE
 S2_READY_FOR_ZERO_WORKTREE_PREFLIGHT = YES
+S2_EVIDENCE_MODE = T_PLUS_CONCRETE_HOST_LOWER_SEAM
 I_RESUME_UNBLOCKED = NO
 DECISION_REQUIRED = NO
 ```
 
 ## 1. Frozen evidence
 
-S1在未修改production的Skiff candidate上建立了真实链路：
+本lane的HTTP覆盖由两份互补证据组成：
 
 ```text
-Router
--> admitted kind:test rawHttp serverStream
--> local wrapper stream
--> dependency PackageDirect return stream
--> real Host response sink
+T:
+standalone Router business port
+-> real Runtime ordinary ingress
+
+S1/S2/S3 lower seam:
+compiled/linked/admitted kind:test rawHttp serverStream
+-> RuntimeHost::dispatch_router_binary_frame
+-> local/dependency stream semantics
+-> concrete Host response sink
 ```
 
+T已经证明独立Router、普通selector与真实Runtime ingress。S1未启动standalone Router，而是在Host
+router-session lower seam用真实binary frame和concrete response sink隔离PackageDirect return stream；
 两个stream在同一registry/request generation内完成，连续三次GREEN，没有
 `unknown Stream value`。S1按合同返回`TASK_NOT_EXECUTABLE`，没有production改动，也没有证明原AIHub失败
-已经消失。
+已经消失。组合证据不等于S1或S2的单个请求经过了Router business port。
 
 后续S2前置只读差分（不是implementation PASS）把共同最小结构差异缩小为：
 
@@ -57,6 +64,11 @@ overlay-local source()
   `std.http.emitResponseStream` response-sink探针；
 - 每个实验必须撤回临时trace并提交自己的result，不能一次改fixture、argument transport和response sink
   后只看最终GREEN。
+
+S2主实验沿上述concrete Host lower seam执行；不得直接调用handler、手工构造Interpreter或使用mock sink。
+它与已验收且未被相关owner变化失效的T checkpoint组合覆盖Router入口，不重复启动standalone Router。
+若Router/Runtime ingress owner变化，先重验T。S3若只验证deferred response sink的existing env handoff，
+沿用同一组合；若要声称external socket/client disconnect，则必须另建standalone Router实验。
 
 ## 3. DAG
 
