@@ -37,7 +37,9 @@ use skiff_runtime_model::{
 };
 
 use crate::{
-    error::{Result, RuntimeError, UserException},
+    error::{
+        decode_opaque_service_error, diagnostic_source_frames, Result, RuntimeError, UserException,
+    },
     exceptions::{
         exact_named_union_branch_index, materialize_service_error_local_value,
         user_exception_for_catch,
@@ -257,30 +259,20 @@ impl CanonicalServiceErrorChannel {
 }
 
 fn diagnostic_instruction_stack(error: &RuntimeError) -> Vec<ExceptionStackFrame> {
-    fn collect(error: &RuntimeError, stack: &mut Vec<ExceptionStackFrame>) {
-        match error {
-            RuntimeError::WithSource { frame, error, .. } => {
-                // Keep only the typed span reference. Diagnostic frame paths,
-                // functions, messages, and other open-ended values stay out.
-                if let Some(span) = frame
-                    .get("span")
-                    .and_then(|span| span.get("span"))
-                    .and_then(|span| serde_json::from_value::<SourceSpanRef>(span.clone()).ok())
-                {
-                    stack.push(ExceptionStackFrame::Local {
-                        site: InstructionSourceSite::Source { span },
-                    });
-                }
-                collect(error, stack);
-            }
-            RuntimeError::WithDiagnosticFrame { error, .. } => collect(error, stack),
-            _ => {}
-        }
-    }
-
-    let mut stack = Vec::new();
-    collect(error, &mut stack);
-    stack
+    diagnostic_source_frames(error)
+        .into_iter()
+        .filter_map(|frame| {
+            // Keep only the typed span reference. Diagnostic frame paths,
+            // functions, messages, and other open-ended values stay out.
+            frame
+                .get("span")
+                .and_then(|span| span.get("span"))
+                .and_then(|span| serde_json::from_value::<SourceSpanRef>(span.clone()).ok())
+                .map(|span| ExceptionStackFrame::Local {
+                    site: InstructionSourceSite::Source { span },
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1112,7 +1104,7 @@ fn fixed_internal(correlation: ErrorCorrelation) -> Result<OpaqueServiceError> {
 fn fixed_error(envelope: ServiceErrorEnvelope) -> Result<OpaqueServiceError> {
     envelope.validate().map_err(RuntimeError::InvalidArtifact)?;
     let bytes = canonical_json_bytes(&envelope)?;
-    OpaqueServiceError::decode(bytes).map_err(RuntimeError::Json)
+    decode_opaque_service_error(bytes)
 }
 
 fn is_internal_error_identity(identity: &ServiceErrorPublicIdentity) -> bool {

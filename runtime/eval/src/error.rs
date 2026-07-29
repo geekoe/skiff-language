@@ -1,5 +1,6 @@
 use std::{fmt, sync::Arc};
 
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use skiff_runtime_model::request_heap::{
     deep_clone_runtime_value_carrier_between_heaps, RequestHeap,
@@ -8,8 +9,8 @@ use skiff_runtime_model::request_heap::{
 pub use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
     service_error::{
-        CatchIdentity, OpaqueServiceError, PlatformBuiltinErrorIdentity, RequestException,
-        RequestExceptionCause,
+        CatchIdentity, InstantiatedTypeArgumentIdentity, OpaqueServiceError,
+        PlatformBuiltinErrorIdentity, RequestException, RequestExceptionCause,
     },
 };
 
@@ -1638,6 +1639,17 @@ pub fn attach_diagnostic_frame(error: RuntimeError, frame: Value) -> RuntimeErro
     error.with_diagnostic_frame(frame)
 }
 
+pub(crate) fn instantiated_type_argument_identity(
+    argument: &impl Serialize,
+) -> Result<InstantiatedTypeArgumentIdentity> {
+    let canonical = serde_json::to_string(argument).map_err(RuntimeError::Json)?;
+    InstantiatedTypeArgumentIdentity::new(canonical).map_err(RuntimeError::InvalidArtifact)
+}
+
+pub(crate) fn decode_opaque_service_error(bytes: Vec<u8>) -> Result<OpaqueServiceError> {
+    OpaqueServiceError::decode(bytes).map_err(RuntimeError::Json)
+}
+
 /// Replaces the user-exception leaf without changing diagnostic wrapper structure.
 pub(crate) fn replace_user_exception_preserving_diagnostics(
     error: RuntimeError,
@@ -1663,6 +1675,71 @@ pub(crate) fn replace_user_exception_preserving_diagnostics(
             )),
         },
         other => other,
+    }
+}
+
+/// Extracts an actor-store leaf while preserving every diagnostic wrapper when
+/// the leaf belongs to a different error class.
+pub(crate) fn extract_actor_instance_store_error(
+    error: RuntimeError,
+) -> std::result::Result<crate::actor_instance::ActorInstanceStoreError, RuntimeError> {
+    match error {
+        RuntimeError::ActorInstance(error) => Ok(error),
+        RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } => extract_actor_instance_store_error(*error).map_err(|error| RuntimeError::WithSource {
+            source_id,
+            frame,
+            error: Box::new(error),
+        }),
+        RuntimeError::WithDiagnosticFrame { frame, error } => {
+            extract_actor_instance_store_error(*error).map_err(|error| {
+                RuntimeError::WithDiagnosticFrame {
+                    frame,
+                    error: Box::new(error),
+                }
+            })
+        }
+        error => Err(error),
+    }
+}
+
+pub(crate) fn diagnostic_source_frames(error: &RuntimeError) -> Vec<&Value> {
+    fn collect<'a>(error: &'a RuntimeError, frames: &mut Vec<&'a Value>) {
+        match error {
+            RuntimeError::WithSource { frame, error, .. } => {
+                frames.push(frame);
+                collect(error, frames);
+            }
+            RuntimeError::WithDiagnosticFrame { error, .. } => collect(error, frames),
+            _ => {}
+        }
+    }
+
+    let mut frames = Vec::new();
+    collect(error, &mut frames);
+    frames
+}
+
+pub(crate) fn is_deadline_budget_terminal(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::ExecutionBudgetExceeded { reason, .. } => {
+            *reason == BudgetReason::DeadlineExceeded
+        }
+        RuntimeError::WithSource { error, .. }
+        | RuntimeError::WithDiagnosticFrame { error, .. } => is_deadline_budget_terminal(error),
+        _ => false,
+    }
+}
+
+pub(crate) fn is_deadline_or_scope_terminal(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::ScopeTerminal(_) => true,
+        RuntimeError::WithSource { error, .. }
+        | RuntimeError::WithDiagnosticFrame { error, .. } => is_deadline_or_scope_terminal(error),
+        _ => is_deadline_budget_terminal(error),
     }
 }
 
@@ -1897,6 +1974,85 @@ mod tests {
             exception.request().local_value().map(|value| value.value()),
             Some(&RuntimeValue::from("caller"))
         );
+    }
+
+    #[test]
+    fn boundary_helpers_preserve_wrapper_order_fields_and_terminal_classes() {
+        let outer_source = serde_json::json!({
+            "span": {
+                "span": {
+                    "sourceId": 41,
+                    "start": { "line": 2, "column": 3 },
+                    "end": { "line": 2, "column": 8 }
+                }
+            }
+        });
+        let diagnostic = serde_json::json!({ "operation": "service.call" });
+        let inner_source = serde_json::json!({ "sourceId": 42, "module": "provider" });
+        let wrapped = RuntimeError::WithSource {
+            source_id: 41,
+            frame: Box::new(outer_source.clone()),
+            error: Box::new(RuntimeError::WithDiagnosticFrame {
+                frame: Box::new(diagnostic.clone()),
+                error: Box::new(RuntimeError::WithSource {
+                    source_id: 42,
+                    frame: Box::new(inner_source.clone()),
+                    error: Box::new(RuntimeError::FileError {
+                        message: "denied".to_string(),
+                    }),
+                }),
+            }),
+        };
+
+        let frames = diagnostic_source_frames(&wrapped);
+        assert_eq!(frames, vec![&outer_source, &inner_source]);
+
+        let preserved =
+            extract_actor_instance_store_error(wrapped).expect_err("non-actor leaf remains eval");
+        let RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } = preserved
+        else {
+            panic!("outer source wrapper should remain first")
+        };
+        assert_eq!(source_id, 41);
+        assert_eq!(*frame, outer_source);
+        let RuntimeError::WithDiagnosticFrame { frame, error } = *error else {
+            panic!("diagnostic wrapper should remain second")
+        };
+        assert_eq!(*frame, diagnostic);
+        let RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } = *error
+        else {
+            panic!("inner source wrapper should remain third")
+        };
+        assert_eq!(source_id, 42);
+        assert_eq!(*frame, inner_source);
+        assert!(matches!(*error, RuntimeError::FileError { ref message } if message == "denied"));
+
+        let actor = RuntimeError::ActorInstance(
+            crate::actor_instance::ActorInstanceStoreError::InstanceNotFound,
+        )
+        .with_diagnostic_frame(serde_json::json!({ "operation": "actor.call" }));
+        assert!(matches!(
+            extract_actor_instance_store_error(actor),
+            Ok(crate::actor_instance::ActorInstanceStoreError::InstanceNotFound)
+        ));
+
+        let deadline = RuntimeError::ExecutionBudgetExceeded {
+            reason: BudgetReason::DeadlineExceeded,
+            instruction_count: 9,
+            limit: Some(10),
+            elapsed_ms: 1.0,
+        }
+        .with_diagnostic_frame(serde_json::json!({ "operation": "service.stream" }));
+        assert!(is_deadline_budget_terminal(&deadline));
+        assert!(is_deadline_or_scope_terminal(&deadline));
     }
 
     #[test]

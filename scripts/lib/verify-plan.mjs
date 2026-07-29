@@ -265,6 +265,14 @@ function phaseBuilders({
     ],
     'checks-default': async () => checkerPhases(root, 'checks'),
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
+    'runtime-execution-boundaries': async () =>
+      checkerPhases(root, 'runtime-execution-boundaries', {
+        kind: 'implementation:runtime',
+      }),
+    'runtime-eval-error-boundary': async () =>
+      checkerPhases(root, 'runtime-eval-error-boundary', {
+        kind: 'implementation:runtime',
+      }),
   };
   assertOrdinaryPhaseBuilderCoverage(builders);
   const ordinaryLeaves = new Set(ORDINARY_LEAF_SELECTORS);

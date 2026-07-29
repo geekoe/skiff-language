@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::*;
-use crate::error::unwrap_diagnostic_source_context;
+use crate::error::{instantiated_type_argument_identity, unwrap_diagnostic_source_context};
 use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_linked_program::{
     FileAddr, LinkedFileUnit, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
@@ -11,10 +11,10 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
     service_error::{
-        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, InstantiatedTypeArgumentIdentity,
-        LiteralIdentity, LocalExecutionTypeIdentity, NamedUnionBranchIdentity,
-        NamedUnionOwnerIdentity, NominalTypeIdentity, PackageSchemaTypeIdentity,
-        PlatformBuiltinErrorIdentity, RequestException,
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LiteralIdentity,
+        LocalExecutionTypeIdentity, NamedUnionBranchIdentity, NamedUnionOwnerIdentity,
+        NominalTypeIdentity, PackageSchemaTypeIdentity, PlatformBuiltinErrorIdentity,
+        RequestException,
     },
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
     value::{HeapNode, RuntimeValueCarrier},
@@ -542,10 +542,7 @@ fn local_execution_identity(
 ) -> Result<LocalExecutionTypeIdentity> {
     let type_arguments = arguments
         .iter()
-        .map(|argument| {
-            let canonical = serde_json::to_string(argument).map_err(RuntimeError::Json)?;
-            InstantiatedTypeArgumentIdentity::new(canonical).map_err(RuntimeError::InvalidArtifact)
-        })
+        .map(instantiated_type_argument_identity)
         .collect::<Result<Vec<_>>>()?;
     Ok(LocalExecutionTypeIdentity {
         addr: addr.clone(),

@@ -48,7 +48,7 @@ use super::{
 use crate::{
     capabilities::{StreamRuntimeOwner, StreamSink, StreamSinkApi},
     env::Env,
-    error::{stream_runtime_error_from_eval, Result, RuntimeError},
+    error::{is_deadline_or_scope_terminal, stream_runtime_error_from_eval, Result, RuntimeError},
     eval_context::EvalContext,
     program_execution::{
         ExecutionCheckpoint, ExecutionCheckpointKind, OwnedProgramExecutionContext,
@@ -449,7 +449,7 @@ async fn finish_provider_stream(producer: ProviderStreamTask, terminal: Provider
                 .stream_runtime
                 .cancel(&producer.stream_value);
         }
-        ProviderTerminal::Provider(Err(error)) if is_deadline_exceeded(&error) => {
+        ProviderTerminal::Provider(Err(error)) if is_deadline_or_scope_terminal(&error) => {
             publish_provider_deadline_terminal(&producer, error).await;
         }
         ProviderTerminal::Provider(Err(error)) => {
@@ -545,19 +545,6 @@ async fn publish_provider_deadline_terminal(producer: &ProviderStreamTask, error
                 .cancel(&producer.stream_value);
         }
         _ = &mut publication => {}
-    }
-}
-
-fn is_deadline_exceeded(error: &RuntimeError) -> bool {
-    match error {
-        RuntimeError::ExecutionBudgetExceeded {
-            reason: crate::error::BudgetReason::DeadlineExceeded,
-            ..
-        }
-        | RuntimeError::ScopeTerminal(_) => true,
-        RuntimeError::WithSource { error, .. }
-        | RuntimeError::WithDiagnosticFrame { error, .. } => is_deadline_exceeded(error),
-        _ => false,
     }
 }
 

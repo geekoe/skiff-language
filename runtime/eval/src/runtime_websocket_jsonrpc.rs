@@ -14,7 +14,7 @@ use skiff_runtime_model::{
 };
 
 use crate::{
-    error::{BudgetReason, RuntimeError},
+    error::{is_deadline_budget_terminal, RuntimeError},
     program_execution::ProgramExecutionContext,
     runtime_ops::{runtime_from_wire_required_plan, runtime_to_wire_required_plan},
     Interpreter, RuntimeAssemblyEvalTarget,
@@ -441,21 +441,10 @@ fn terminal_from_runtime_error(error: &RuntimeError) -> RuntimeWebSocketJsonRpcE
     if error.is_cancellation_terminal() {
         return RuntimeWebSocketJsonRpcExecutionTerminal::Cancelled;
     }
-    if runtime_error_is_deadline(error) {
+    if is_deadline_budget_terminal(error) {
         return RuntimeWebSocketJsonRpcExecutionTerminal::deadline_exceeded();
     }
     RuntimeWebSocketJsonRpcExecutionTerminal::internal_error()
-}
-
-fn runtime_error_is_deadline(error: &RuntimeError) -> bool {
-    match error {
-        RuntimeError::ExecutionBudgetExceeded { reason, .. } => {
-            *reason == BudgetReason::DeadlineExceeded
-        }
-        RuntimeError::WithSource { error, .. }
-        | RuntimeError::WithDiagnosticFrame { error, .. } => runtime_error_is_deadline(error),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
