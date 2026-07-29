@@ -34,7 +34,8 @@ use super::*;
 use crate::eval::InterpreterEnv as Env;
 use skiff_artifact_model::{
     builtin_receiver_op_by_name, DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId,
-    PackageLocalAbiIdentity, PublicationResourceRef,
+    PackageLocalAbiIdentity, PublicationApiBinding, PublicationApiSymbolKind,
+    PublicationResourceRef, TypeExport,
 };
 use skiff_runtime_capability_context::{
     DbCapabilityTarget, DbCapabilityTargetId, DbProviderTargetMetadata,
@@ -1186,6 +1187,64 @@ async fn runtime_program_resource_info_missing_path_throws_resource_error() {
 }
 
 #[tokio::test]
+async fn runtime_program_direct_native_resource_error_catch_preserves_exact_exception() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        catch_resource_text_native_executable("missing.txt"),
+    ));
+    let file = Arc::clone(
+        program
+            .service_files
+            .first()
+            .expect("test program service file"),
+    );
+    let executable = file
+        .executables
+        .first()
+        .expect("test program executable")
+        .clone();
+    let interpreter = Interpreter::with_program(Arc::clone(&program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+    let invocation_context = program_invocation_context(&interpreter, &frame);
+    let context = invocation_context.execution_context();
+    let mut heap = RequestHeap::default();
+    let mut env = Env::default();
+
+    let caught = interpreter
+        .eval_program_expr_ref(
+            context,
+            &mut heap,
+            &mut env,
+            &ExecutableAddr::service(0, 0),
+            file.as_ref(),
+            &executable,
+            ExprRefIr { expression: 2 },
+        )
+        .await
+        .expect("catch<ResourceError> should catch the direct native failure");
+    let caught_handle = caught
+        .as_heap_handle()
+        .expect("catch result should be a request-local object");
+    let tag = heap
+        .object_field_carrier(caught_handle, "tag")
+        .expect("catch tag should be readable")
+        .expect("catch result should have a tag");
+    assert_eq!(tag.value(), &RuntimeValue::String("err".to_string()));
+    let exception_handle = heap
+        .object_field_carrier(caught_handle, "exception")
+        .expect("catch exception should be readable")
+        .expect("err result should have an exception")
+        .as_heap_handle()
+        .expect("caught exception should remain a request-local handle");
+    let HeapNode::Exception(exception) = heap
+        .get(exception_handle)
+        .expect("caught exception handle should resolve")
+    else {
+        panic!("caught err payload should be an exception node");
+    };
+    assert_resource_request_exception(exception);
+}
+
+#[tokio::test]
 async fn runtime_program_resource_error_requires_std_package_type() {
     let program = Arc::new(program_with_executable(resource_text_native_executable(
         "missing.txt",
@@ -1207,7 +1266,7 @@ async fn runtime_program_resource_error_rejects_wrong_std_type_shape() {
     replace_std_resource_error_type(
         &mut program,
         anonymous_type_decl(
-            "std.resource.ResourceError",
+            "ResourceError",
             linked_record_descriptor(vec![("message", linked_builtin_type("string"))]),
         ),
     );
@@ -1217,6 +1276,29 @@ async fn runtime_program_resource_error_rejects_wrong_std_type_shape() {
     let error = execute_test_program_route(&interpreter, &frame)
         .await
         .expect_err("ResourceError projection must reject a non-canonical std type shape");
+
+    assert_resource_error_invalid_artifact(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_rejects_std_implementation_only_type() {
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
+    Arc::make_mut(
+        program
+            .packages
+            .get_mut(0)
+            .expect("std package test fixture"),
+    )
+    .publication_abi
+    .api_bindings
+    .clear();
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("implementation-only ResourceError must not become publicly catchable");
 
     assert_resource_error_invalid_artifact(&error);
 }
@@ -4148,9 +4230,43 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
         package_slot, 0,
         "std HTTP test fixture currently expects an otherwise package-free program"
     );
-    program
-        .packages
-        .push(Arc::new(package_unit("skiff.run/std")));
+    let declarations = std_builtin_type_declarations(package_slot);
+    let std_file = Arc::new(std_builtin_file_unit(
+        declarations
+            .iter()
+            .map(|(_, declaration)| declaration.clone())
+            .collect(),
+    ));
+    let std_file_ref = FileIrRef {
+        file_ir_identity: std_file.file_ir_identity.clone(),
+        module_path: std_file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(std_file.source_ast_hash.clone()),
+    };
+    let mut std_package = package_unit("skiff.run/std");
+    std_package.files.push(std_file_ref.clone());
+    std_package
+        .publication_abi
+        .api_bindings
+        .push(PublicationApiBinding {
+            public_path: "std.resource.ResourceError".to_string(),
+            source_module_path: std_file.module_path.clone(),
+            source_symbol: "ResourceError".to_string(),
+            symbol_kind: PublicationApiSymbolKind::Type,
+        });
+    std_package.implementation_links.types.insert(
+        "std.resource.ResourceError".to_string(),
+        TypeExport {
+            file: std_file_ref,
+            type_index: STD_RESOURCE_ERROR_TYPE_INDEX as u32,
+            symbol: "ResourceError".to_string(),
+            is_interface: false,
+            descriptor: None,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    );
+    program.packages.push(Arc::new(std_package));
     program.package_resources.push(Default::default());
     program
         .link_overlay
@@ -4160,16 +4276,7 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
         .link_overlay
         .package_slots_by_dependency_ref
         .insert("std".to_string(), package_slot);
-
-    let declarations = std_builtin_type_declarations(package_slot);
-    program
-        .package_files
-        .push(vec![Arc::new(std_builtin_file_unit(
-            declarations
-                .iter()
-                .map(|(_, declaration)| declaration.clone())
-                .collect(),
-        ))]);
+    program.package_files.push(vec![std_file]);
     for (index, (symbol_path, declaration)) in declarations.into_iter().enumerate() {
         let addr = std_http_type_addr_for_package(package_slot, index);
         program.types.descriptors.insert(addr.clone(), declaration);
@@ -4184,6 +4291,12 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
                 .insert_package(PackageSymbolKey::new(package_slot, short_path), addr);
         }
     }
+    program.link_overlay.symbols.insert_package(
+        PackageSymbolKey::new(package_slot, "std.resource.ResourceError"),
+        ResolvedSymbol::Type {
+            addr: std_http_type_addr_for_package(package_slot, STD_RESOURCE_ERROR_TYPE_INDEX),
+        },
+    );
 }
 
 fn replace_std_resource_error_type(program: &mut RuntimeProgram, declaration: TypeDeclIr) {
@@ -4580,7 +4693,7 @@ fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, Type
         (
             "std.resource.ResourceError",
             anonymous_type_decl(
-                "std.resource.ResourceError",
+                "ResourceError",
                 linked_record_descriptor(vec![
                     ("path", linked_builtin_type("string")),
                     ("message", linked_builtin_type("string")),
@@ -5985,6 +6098,82 @@ fn resource_text_native_executable(path: &str) -> LinkedExecutable {
     )
 }
 
+fn catch_resource_text_native_executable(path: &str) -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "$catch0".to_string(),
+                kind: "temp".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [{
+                "label": "entry",
+                "statements": [{
+                    "statement": 0
+                }]
+            }],
+            "statements": [{
+                "kind": "return",
+                "value": {
+                    "expression": 2
+                }
+            }],
+            "expressions": [
+                {
+                    "kind": "literal",
+                    "value": {
+                        "kind": "string",
+                        "value": path
+                    }
+                },
+                {
+                    "kind": "call",
+                    "call": {
+                        "site": test_instruction_site(),
+                        "target": {
+                            "kind": "native",
+                            "target": {
+                                "namespace": "std.resource",
+                                "symbol": "text",
+                                "bindingKey": "std.resource.text"
+                            }
+                        },
+                        "args": [{
+                            "expression": 0
+                        }]
+                    }
+                },
+                {
+                    "kind": "catch",
+                    "tryExpression": {
+                        "expression": 1
+                    },
+                    "catchSlot": 0,
+                    "catchType": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(
+                            std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
+                        ).unwrap()
+                    },
+                    "body": {
+                        "expression": 0
+                    }
+                }
+            ]
+        })),
+    }
+}
+
 fn resource_bytes_native_executable(path: &str) -> LinkedExecutable {
     resource_native_executable(
         "bytes",
@@ -6175,17 +6364,21 @@ fn assert_resource_exception(error: &RuntimeError) {
     let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
         panic!("expected request-local std.resource.ResourceError, got {error:?}");
     };
+    assert_resource_request_exception(exception.request());
+}
+
+fn assert_resource_request_exception(exception: &RequestException) {
     let expected_site = test_instruction_site();
     assert_eq!(
-        exception.actual_payload_type(),
+        exception.local_catch_identity(),
         Some(&local_execution_catch_identity_for_addr(
             std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
         ))
     );
-    assert!(exception.request().local_value().is_some());
-    assert_eq!(exception.request().source(), &expected_site);
+    assert!(exception.local_value().is_some());
+    assert_eq!(exception.source(), &expected_site);
     assert_eq!(
-        exception.request().stack(),
+        exception.stack(),
         [ExceptionStackFrame::Local {
             site: expected_site,
         }]
