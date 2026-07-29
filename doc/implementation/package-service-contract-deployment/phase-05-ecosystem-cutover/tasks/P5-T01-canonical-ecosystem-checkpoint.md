@@ -1,5 +1,10 @@
 # P5-T01：Canonical Authoring / Storage / Control Checkpoint
 
+> Superseded scope note（2026-07-29）：本任务是历史shared checkpoint。下文将`contract.yml`、
+> `deployment.yml`和`assembly.yml`列为正向authoring的部分已被current authority废止，不得重新执行或作为
+> completion criterion。ServiceContract、ServiceDeployment与RuntimeAssembly现均由tooling生成；
+> RuntimeAssembly roots来自watch registry、显式roots/receipts或平台部署状态。
+
 ## 权威输入、风险与证据状态
 
 - 唯一设计：`doc/architecture/package-service-contract-deployment.md` §1–§5、§9–§14。

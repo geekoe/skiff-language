@@ -37,7 +37,8 @@ generated service identity/Host route consumer。不改Codex Relay、AIHub、Agi
 7. `skiff-platform/package-registry/registry-phase05-smoke.mjs`提供main-only live入口；其self-test使用fake
    transport断言四类publish/resolve/history最终结果，开发任务不得连接stable。
    同一脚本的`--prepare-test-assembly`模式从account/registry test-owned contract/package/deployment roots向
-   temporary artifact root写完整canonical closure，并只输出assembly identity；它不是T09E production assembly。
+   temporary artifact root写完整canonical closure，并只输出generated assembly identity；它不是T09E最终
+   五deployment验收集合，也不建立repo-level manifest。
 8. owned `AGENTS.md`/README中的service.yml、service/version selector、旧publish/store指令同步改为canonical
    Host与四对象流程；不新建README，优先合入AGENTS。
 

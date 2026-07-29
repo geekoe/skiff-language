@@ -84,12 +84,16 @@ PackageArtifact + ServiceContract + gateway projections + config bindings
   -> ServiceDeployment
 ```
 
-Assembly projection消费显式root deployments及闭包：
+Assembly projection消费操作面选择的精确root deployments及闭包：
 
 ```text
 ServiceDeployments + exact contracts/packages
   -> RuntimeAssembly
 ```
+
+这些roots在dev来自watch registry或显式service roots生成的deployment receipts，在production来自平台部署
+状态。源码仓库不author `assembly.yml`；项目间关系仍由各自`package.yml`拥有。RuntimeAssembly是projection
+产物，不是developer config。
 
 Compiler内部stage不得把`serde_json::Value`当typed model副本。JSON只在YAML/JSON input trust boundary或最终
 emission出现；进入语义阶段前必须parse成strict DTO，emission不得重新做name/type/effect分析。

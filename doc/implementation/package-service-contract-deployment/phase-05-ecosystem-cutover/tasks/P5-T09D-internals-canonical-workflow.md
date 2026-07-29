@@ -18,14 +18,15 @@ Codex/AIHub/Agine `.skiff`源码、contract body、deployment body或platform re
 
 ## 完成态
 
-1. workflow固定顺序为`publish all contracts -> compile all packages independently -> validate all deployments
-   -> resolve one assembly`；不再串行“完整构建provider service后才编译consumer”。
+1. workflow固定顺序为`select explicit service roots -> compile all packages independently ->
+   validate all deployments -> collect exact deployment receipts -> resolve one generated assembly`；不再串行
+   “完整构建provider service后才编译consumer”。
 2. local store只写T01四类immutable records/pointers，不保留source-root symlink publication store、
    `publicationStorageSegment/discoverLocalPublications`或`--service-artifact-root`。
 3. linked worktree type-check/test使用temporary isolated store/assembly及explicit `SKIFF_ROOT`，不写stable root/
    reload；main build/dev/start provenance guard继续fail closed。
-4. workflow为后续actual deployments提供唯一root-set/closure接口与canonical fixture；此checkpoint
-   不创建production `assembly.yml`或虚构deployment identity，最终五service root set归T09E。
+4. workflow为后续actual deployments提供唯一显式roots/receipts closure接口与canonical fixture；不创建
+   `assembly.yml`或虚构deployment identity，最终五service验收集合的generated RuntimeAssembly归T09E。
 5. tests明确拒绝missing contract/package/deployment、duplicate provider/Host selector、partial build及stable
    worktree provenance违规。
 

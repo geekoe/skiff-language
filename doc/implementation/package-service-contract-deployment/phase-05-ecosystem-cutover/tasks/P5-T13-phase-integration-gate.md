@@ -37,8 +37,8 @@ SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
 ```
 
 `pnpm verify`若已展开ecosystem checker，不再单独执行。`verify-phase05-ecosystem --non-live`由T09E提供，
-必须去重覆盖T08/T10/T11/T12的affected tests、registry history、五deployment closure与provider/chat最终
-结果self-tests，不得启动stable服务。
+必须从显式roots/receipts输入去重覆盖T08/T10/T11/T12的affected tests、registry history、五deployment
+closure与provider/chat最终结果self-tests，不得读取repo-level `assembly.yml`或启动stable服务。
 
 ## 失败处理与输出
 

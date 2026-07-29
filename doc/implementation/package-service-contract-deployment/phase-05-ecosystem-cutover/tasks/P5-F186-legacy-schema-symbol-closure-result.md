@@ -2,6 +2,9 @@
 
 状态：Completed
 
+> Authority note（2026-07-29）：本result如实保留当时证据；下文把`assembly.yml`列为正向authoring面的
+> 结论已失效。RuntimeAssembly现由operational roots生成，不存在developer-authored assembly manifest。
+
 ## 直接父任务
 
 - `P5-F186-legacy-schema-symbol-closure.md`

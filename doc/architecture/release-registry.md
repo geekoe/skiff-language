@@ -100,7 +100,8 @@ exact PackageArtifact
 Environment activation：
 
 ```text
-explicit root deployment set
+dev watch registry / explicit service roots / platform deployment state
+  -> exact root deployment refs
   -> close exact package/service dependencies
   -> generate and validate RuntimeAssembly
   -> materialize immutable artifact filesystem view
@@ -111,12 +112,17 @@ explicit root deployment set
 失败必须发生在pointer移动前。Source不可解析、dependency缺失、schema/identity不闭合、operation或gateway
 binding不完整、artifact写入不完整、runtime admission失败或CAS冲突都不能留下active半状态。
 
+这里的roots是操作面输入，不是源码仓库中的集中式manifest。项目依赖只来自各项目的`package.yml`；
+production平台状态选择environment roots，dev sync/watch从watch registry或显式service roots取得同类输入。
+Registry、Router和Runtime都不得要求developer-authored `assembly.yml`。
+
 ## Dev Sync / Reload
 
 开发态不把本地source快照称为production publish。Dev sync仍必须生成与production相同shape和identity规则的
 PackageArtifact、ServiceContract、ServiceDeployment与RuntimeAssembly；区别仅是：
 
 - 输入可以来自当前工作区和dev profile；
+- 参与同步的service roots来自watch registry或命令显式输入，不来自仓库级assembly清单；
 - 输出进入隔离dev artifact root；
 - dev pointer是可替换latest，不承诺正式history/compatibility policy；
 - reload只观察已经完整写入并原子切换的assembly pointer。

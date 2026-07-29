@@ -2,6 +2,10 @@
 
 状态：`AUDIT_COMPLETE / CANONICAL_PATH_NOT_CLOSED / TASK_SCOPE_NOT_EXPANDED`。
 
+> Authority note（2026-07-29）：本result保留当时audit事实和旧CLI路径。临时写
+> `assembly.yml`的描述只证明当时adapter如何工作，不能继续作为developer authoring、T09E配置owner或
+> current completion criterion；直接roots/receipts workflow取代该解释。
+
 结论分成四层：
 
 1. F436A 的 `skiff.run/http-session@1.0.0` pointer 首错是 **canonical fixture omission**，

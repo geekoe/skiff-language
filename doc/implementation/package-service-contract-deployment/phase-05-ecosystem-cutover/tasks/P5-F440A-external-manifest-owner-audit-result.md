@@ -2,6 +2,10 @@
 
 状态：**PASS / TASK_EXECUTABLE**。本节点只完成owner审计，没有实现、迁移或运行live/stable。
 
+> Authority note（2026-07-29）：本result保留当时external manifest审计事实；其中
+> `skiff-dev-sync.mjs`临时写`assembly.yml`的行只描述旧CLI adapter。该adapter现已列入删除范围，不是
+> current source manifest owner。
+
 ## 1. 结论与输入
 
 三个不可执行条件均未出现：
