@@ -234,24 +234,8 @@ fn traced_context(control: ScopeAwareControl) -> ProgramExecutionContext<'static
             test_effect_doubles.clone(),
         ),
         test_effect_doubles,
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: "skiff.run/eval-timeout-test".to_string(),
-                display_name: None,
-                metadata: BTreeMap::new(),
-            },
-            version: "1.0.0".to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: Default::default(),
-        }),
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

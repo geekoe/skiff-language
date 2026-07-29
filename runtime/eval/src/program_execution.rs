@@ -8,7 +8,6 @@ use std::{
 
 use async_recursion::async_recursion;
 use skiff_artifact_model::InstructionSourceSite;
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, ExecutableKind, ExprRefIr, LinkedExecutable, LinkedExprIr,
     LinkedFileUnit, LinkedStmtIr, LinkedTypeRef,
@@ -25,11 +24,10 @@ use super::{
     capabilities::{
         ActorCapabilityContext, ConfigCapabilityContext, DbCapabilityContext,
         EffectDispatchContext, ExecutionControl, FileCapabilityContext, FileCapabilitySource,
-        FileSourceStreamContext, HttpClientCapabilityContext, OutboundServiceContext,
-        OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
-        OwnedWebsocketCapabilityContext, StreamRuntime, StreamRuntimeOwner,
-        TelemetryCapabilityContext, TestEffectDoubleContext, TimeCapabilityContext,
-        WebsocketCapabilityContext, WebsocketCapabilityRebinder,
+        FileSourceStreamContext, HttpClientCapabilityContext, OwnedActorCapabilityContext,
+        OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedWebsocketCapabilityContext,
+        StreamRuntime, StreamRuntimeOwner, TelemetryCapabilityContext, TestEffectDoubleContext,
+        TimeCapabilityContext, WebsocketCapabilityContext, WebsocketCapabilityRebinder,
     },
     error::attach_source_frame,
     eval_context::EvalContext,
@@ -66,10 +64,8 @@ pub struct ProgramExecutionInput<'a> {
     pub effects: EffectDispatchContext,
     pub http_client: HttpClientCapabilityContext,
     pub test_effect_doubles: TestEffectDoubleContext,
-    pub runtime_activation: Arc<RuntimeActivation>,
     pub actor: ActorCapabilityContext<'a>,
     pub spawn: ActorCapabilityContext<'a>,
-    pub outbound: OutboundServiceContext,
     pub request_heap_limits: RequestHeapLimits,
 }
 
@@ -86,10 +82,8 @@ pub struct ProgramExecutionContext<'a> {
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
-    runtime_activation: Arc<RuntimeActivation>,
     actor: ActorCapabilityContext<'a>,
     spawn: ActorCapabilityContext<'a>,
-    outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
     actor_execution_frame: Option<crate::actor_executor::ActorExecutionFrame>,
@@ -114,10 +108,8 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             effects: self.effects.clone(),
             http_client: self.http_client.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
-            runtime_activation: self.runtime_activation.clone(),
             actor: self.actor.clone(),
             spawn: self.spawn.clone(),
-            outbound: self.outbound.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
             runtime_assembly_target: self.runtime_assembly_target.clone(),
             actor_execution_frame: self.actor_execution_frame.clone(),
@@ -149,10 +141,8 @@ impl<'a> ProgramExecutionContext<'a> {
             effects: input.effects,
             http_client: input.http_client,
             test_effect_doubles: input.test_effect_doubles,
-            runtime_activation: input.runtime_activation,
             actor: input.actor,
             spawn: input.spawn,
-            outbound: input.outbound,
             request_heap_limits: input.request_heap_limits,
             runtime_assembly_target: None,
             actor_execution_frame: None,
@@ -300,20 +290,12 @@ impl<'a> ProgramExecutionContext<'a> {
         self.test_effect_doubles.clone()
     }
 
-    pub fn runtime_activation(&self) -> &RuntimeActivation {
-        &self.runtime_activation
-    }
-
     pub fn actor_context(&self) -> ActorCapabilityContext<'a> {
         self.actor.clone()
     }
 
     pub fn spawn_context(&self) -> ActorCapabilityContext<'a> {
         self.spawn.clone()
-    }
-
-    pub fn outbound_context(&self) -> OutboundServiceContext {
-        self.outbound.clone()
     }
 
     pub fn request_heap(&self) -> RequestHeap {
@@ -398,10 +380,8 @@ pub struct OwnedProgramExecutionContext {
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
-    runtime_activation: Arc<RuntimeActivation>,
     actor: OwnedActorCapabilityContext,
     spawn: OwnedActorCapabilityContext,
-    outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
     exception_trace_id: Option<String>,
@@ -427,10 +407,8 @@ impl OwnedProgramExecutionContext {
             effects: context.effects.clone(),
             http_client: context.http_client.clone(),
             test_effect_doubles: context.test_effect_doubles.clone(),
-            runtime_activation: context.runtime_activation.clone(),
             actor: actor.owned(),
             spawn: context.spawn.owned(),
-            outbound: context.outbound.clone(),
             request_heap_limits: context.request_heap_limits.clone(),
             runtime_assembly_target: context.runtime_assembly_target.clone(),
             exception_trace_id: context.exception_trace_id.clone(),
@@ -461,10 +439,8 @@ impl OwnedProgramExecutionContext {
             effects: self.effects.clone(),
             http_client: self.http_client.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
-            runtime_activation: self.runtime_activation.clone(),
             actor,
             spawn,
-            outbound: self.outbound.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
         });
         context.execution_clock = self.execution_clock.clone();

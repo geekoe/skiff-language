@@ -1841,21 +1841,6 @@ fn execution_context_with_actor<'a>(
 ) -> ProgramExecutionContext<'a> {
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
-    let runtime_activation = Arc::new(RuntimeActivation {
-        service: skiff_runtime_linked_program::ServiceMeta {
-            id: "example.package-direct-caller".to_string(),
-            display_name: None,
-            metadata: BTreeMap::new(),
-        },
-        version: "1.0.0".to_string(),
-        package_configs: Vec::new(),
-        service_dependencies: Vec::new(),
-        timeout: Default::default(),
-        operation_route_bindings: Vec::new(),
-        db: Vec::new(),
-        actors: Vec::new(),
-        gateway: Default::default(),
-    });
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -1873,10 +1858,8 @@ fn execution_context_with_actor<'a>(
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation,
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     })
     .with_websocket_capability_rebinder(test_runtime::websocket_rebinder())

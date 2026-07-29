@@ -344,24 +344,8 @@ fn execution_context(interpreter: &Interpreter) -> ProgramExecutionContext<'stat
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: "example.test/stream-supervision".to_string(),
-                display_name: None,
-                metadata: Default::default(),
-            },
-            version: "1.0.0".to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: Default::default(),
-        }),
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

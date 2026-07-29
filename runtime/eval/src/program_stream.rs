@@ -660,13 +660,13 @@ impl Interpreter {
             }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::ExternalServiceSymbol { .. }
+            | LinkedCallTarget::ServiceDependencySymbol { .. }
             | LinkedCallTarget::PackageSymbol { .. } => {
                 return Err(RuntimeError::InvalidArtifact(format!(
                     "RuntimeProgram call target {} was not linked before execution",
                     program_call_target_kind(&call.target)
                 )));
             }
-            LinkedCallTarget::ServiceDependencySymbol { .. } => return Ok(None),
             LinkedCallTarget::LocalConstReceiverExecutable {
                 const_addr,
                 executable_addr,
@@ -1232,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn service_dependency_stream_call_is_not_treated_as_unlinked_producer() {
+    fn service_dependency_stream_call_fails_closed() {
         let program = Arc::new(empty_program());
         let projection = EvalProgramProjection::new(
             &program.service_id,
@@ -1283,7 +1283,7 @@ mod tests {
             },
         };
 
-        let producer = interpreter
+        let error = interpreter
             .resolve_stream_producer_call(
                 projection,
                 &ExecutableAddr::service(0, 0),
@@ -1292,9 +1292,12 @@ mod tests {
                 &executable,
                 &expr,
             )
-            .expect("service dependency call should fall back to normal stream eval");
+            .expect_err("legacy service dependency call must fail closed");
 
-        assert!(producer.is_none());
+        assert!(
+            error.to_string().contains("serviceDependencySymbol"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

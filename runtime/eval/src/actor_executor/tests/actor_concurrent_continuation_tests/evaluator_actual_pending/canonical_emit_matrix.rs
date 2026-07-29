@@ -706,7 +706,6 @@ async fn start_stream(
     let context = program_context_with_stream(
         &fixture.evaluator.interpreter,
         test_runtime::actor_context(),
-        test_runtime::outbound_context(),
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
         runtime,

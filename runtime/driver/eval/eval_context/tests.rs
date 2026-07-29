@@ -197,7 +197,6 @@ async fn local_const_receiver_explicit_self_rejects_extra_user_arg_instead_of_dr
             })),
             source_span: None,
         });
-    let activation = Arc::new(runtime_activation_from_program(&program));
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let request = test_request();
     let operation = test_operation();
@@ -215,7 +214,6 @@ async fn local_const_receiver_explicit_self_rejects_extra_user_arg_instead_of_dr
         &interpreter,
         &request,
         &operation,
-        &activation,
         &cancelled,
         &execution_budget,
         &config,
@@ -398,36 +396,19 @@ async fn interface_wrapper_self_equality_fails_closed_in_program() {
 }
 
 #[tokio::test]
-async fn interface_box_remote_source_constructs_remote_carrier_without_payload() {
-    let (value, heap) =
+async fn interface_box_remote_source_fails_closed() {
+    let error =
         call_run_program_with_args_and_heap(vec![remote_source_interface_box_executable()], |_| {
             Vec::new()
         })
         .await
-        .expect("remote interface box source should construct a remote carrier");
+        .expect_err("legacy remote interface box source must fail closed");
 
-    let RuntimeValue::Heap(handle) = value else {
-        panic!("remote interface box should return a heap interface value");
-    };
-    let HeapNode::Interface(interface) = heap.get(handle).expect("interface handle should exist")
-    else {
-        panic!("remote interface box should allocate an interface value");
-    };
-    assert_eq!(interface.interface(), READER_INTERFACE_ABI_ID);
-    let InterfaceCarrier::Remote {
-        dependency_ref,
-        public_instance_key,
-        operations,
-    } = interface.carrier()
-    else {
-        panic!("remote interface box should not allocate a local payload carrier");
-    };
-    assert_eq!(dependency_ref, "dep");
-    assert_eq!(public_instance_key, "reader");
-    assert_eq!(operations.interface_abi_id(), READER_INTERFACE_ABI_ID);
-    assert_eq!(
-        operations.slots()[0].operation_abi_id(),
-        "operation:dep:reader.read"
+    assert!(
+        error
+            .to_string()
+            .contains("legacy remote interface boxing is not executable"),
+        "unexpected error: {error}"
     );
 }
 
@@ -460,7 +441,7 @@ async fn interface_method_remote_carrier_missing_dependency_fails_closed() {
     assert!(
         error
             .to_string()
-            .contains("service dependency alias dep is not declared"),
+            .contains("legacy remote interface carriers are not executable"),
         "unexpected error: {error}"
     );
 }
@@ -499,7 +480,6 @@ async fn call_run_program_with_args_and_heap(
     build_args: impl FnOnce(&mut RequestHeap) -> Vec<RuntimeValue>,
 ) -> Result<(RuntimeValue, RequestHeap)> {
     let program = program_with_executables(executables);
-    let activation = Arc::new(runtime_activation_from_program(&program));
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let request = test_request();
     let operation = test_operation();
@@ -517,7 +497,6 @@ async fn call_run_program_with_args_and_heap(
         &interpreter,
         &request,
         &operation,
-        &activation,
         &cancelled,
         &execution_budget,
         &config,
@@ -1726,7 +1705,6 @@ fn program_execution_context<'a>(
     interpreter: &Interpreter,
     request: &'a RequestEnvelope,
     operation: &'a RuntimeOperation,
-    activation: &'a Arc<RuntimeActivation>,
     cancelled: &'a Arc<AtomicBool>,
     execution_budget: &'a Arc<ExecutionBudget>,
     config: &'a RuntimeConfigView,
@@ -1781,21 +1759,8 @@ fn program_execution_context<'a>(
             stream_runtime,
             interpreter.test_effect_double_context(),
         ),
-        runtime_activation: activation.clone(),
         actor: actor.clone(),
         spawn: actor,
-        outbound: eval_capabilities::outbound(
-            eval_capabilities::outbound_service_context_from_request(
-                request,
-                execution_budget.clone(),
-                execution.cancel_flag(),
-                RequestHeapLimits::default(),
-                None,
-                outbound_requests.clone(),
-                &activation.service_dependencies,
-                &activation.timeout,
-            ),
-        ),
         request_heap_limits: RequestHeapLimits::default(),
     })
 }
@@ -1839,20 +1804,6 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
         link_overlay: LinkOverlay::default(),
         gateway: GatewayConfig::default(),
         types: RuntimeTypeContext::default(),
-    }
-}
-
-fn runtime_activation_from_program(program: &RuntimeProgram) -> RuntimeActivation {
-    RuntimeActivation {
-        service: program.service.clone(),
-        version: program.version.clone(),
-        package_configs: program.package_configs.clone(),
-        service_dependencies: program.service_dependencies.clone(),
-        timeout: program.timeout.clone(),
-        operation_route_bindings: program.operation_route_bindings.clone(),
-        db: program.db.clone(),
-        actors: program.actors.clone(),
-        gateway: program.gateway.clone(),
     }
 }
 

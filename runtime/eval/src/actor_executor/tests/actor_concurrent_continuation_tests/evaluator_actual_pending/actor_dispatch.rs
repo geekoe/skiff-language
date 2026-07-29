@@ -277,7 +277,6 @@ async fn f445h_e4r_spine_actor_dispatch_ready_keeps_actor_segment() {
     let context = program_context_with(
         &fixture.interpreter,
         ActorCapabilityContext::new(actor.clone()),
-        test_runtime::outbound_context(),
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
     );
@@ -306,7 +305,6 @@ async fn f445h_e4r_spine_actor_dispatch_pending_reacquires_before_finalize() {
     let context = program_context_with(
         &fixture.interpreter,
         ActorCapabilityContext::new(actor.clone()),
-        test_runtime::outbound_context(),
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
     );

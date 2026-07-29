@@ -61,9 +61,8 @@ pub(super) use skiff_runtime_eval::{
     },
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalCapabilityFuture, EvalRuntimeFactory,
-        EvalRuntimeFactoryApi, HttpRuntimeOptions, OutboundServiceApi, OutboundServiceContext,
-        TestEffectDouble, TestEffectDoubleContext, TestEffectDoubleContextApi,
-        WebsocketCapabilityContext as EvalWebsocketCapabilityContext,
+        EvalRuntimeFactoryApi, HttpRuntimeOptions, TestEffectDouble, TestEffectDoubleContext,
+        TestEffectDoubleContextApi, WebsocketCapabilityContext as EvalWebsocketCapabilityContext,
     },
     env::Env,
     error::{Result as EvalResult, RuntimeError},

@@ -40,9 +40,8 @@ use crate::{
     assembly_execution::service_error_channel::RecordingRestrictedServiceDiagnosticSink,
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalRuntimeFactory, EvalRuntimeFactoryApi,
-        HttpRuntimeOptions, OutboundServiceApi, OutboundServiceContext, TestEffectDouble,
-        TestEffectDoubleContext, TestEffectDoubleContextApi, WebsocketCapabilityContext,
-        WebsocketCapabilityRebinder,
+        HttpRuntimeOptions, TestEffectDouble, TestEffectDoubleContext, TestEffectDoubleContextApi,
+        WebsocketCapabilityContext, WebsocketCapabilityRebinder,
     },
     error::{Result, RuntimeError},
 };
@@ -107,12 +106,6 @@ pub(crate) fn actor_context_with_trace(trace_id: &'static str) -> ActorCapabilit
 
 pub(crate) fn effects_context() -> EffectDispatchContext {
     EffectDispatchContext::new(TestEffects)
-}
-
-pub(crate) fn outbound_context() -> OutboundServiceContext {
-    OutboundServiceContext::new(TestOutbound {
-        cancellation: CancellationToken::new(),
-    })
 }
 
 #[derive(Debug)]
@@ -1060,60 +1053,5 @@ impl TestEffectDoubleContextApi for TestEffectDoubles {
         _heap: &mut RequestHeap,
     ) -> Option<Result<RuntimeValue>> {
         None
-    }
-}
-
-struct TestOutbound {
-    cancellation: CancellationToken,
-}
-
-impl OutboundServiceApi for TestOutbound {
-    fn service_dependencies(&self) -> &[skiff_runtime_linked_program::ServiceDependencyConstraint] {
-        &[]
-    }
-    fn test_effects_enabled(&self) -> bool {
-        false
-    }
-    fn test_effect_doubles(
-        &self,
-    ) -> HashMap<String, Vec<skiff_runtime_capability_context::RequestEffectDoubleControl>> {
-        HashMap::new()
-    }
-    fn request_heap(&self) -> RequestHeap {
-        RequestHeap::default()
-    }
-    fn effective_timeout_ms(&self, operation_timeout_ms: Option<u64>) -> Option<u64> {
-        operation_timeout_ms
-    }
-    fn outbound_deadline_error(&self) -> RuntimeError {
-        RuntimeError::Unsupported("test outbound capability is unavailable".to_string())
-    }
-    fn start_request(
-        &self,
-        _start: skiff_runtime_capability_context::OutboundServiceRequestStart,
-        _payload: Vec<u8>,
-    ) -> Result<skiff_runtime_capability_context::OutboundStartedRequest> {
-        Err(RuntimeError::Unsupported(
-            "test outbound capability is unavailable".to_string(),
-        ))
-    }
-    fn receive_response<'a>(
-        &'a self,
-        _lease: &'a skiff_runtime_capability_context::OutboundRequestLease,
-        _target: &'a str,
-        _receiver: &'a mut skiff_runtime_capability_context::OutboundResponseReceiver,
-        _timeout_ms: Option<u64>,
-    ) -> crate::capabilities::EvalCapabilityFuture<
-        'a,
-        skiff_runtime_capability_context::OutboundResponse,
-    > {
-        Box::pin(async {
-            Err(RuntimeError::Unsupported(
-                "test outbound capability is unavailable".to_string(),
-            ))
-        })
-    }
-    fn cancel_signal(&self) -> CancellationToken {
-        self.cancellation.clone()
     }
 }

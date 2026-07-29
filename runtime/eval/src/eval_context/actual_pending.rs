@@ -1,8 +1,6 @@
 use std::future::Future;
 
-use skiff_runtime_linked_program::{
-    CallIr, ExprRefIr, LinkedActorMethodDispatchPlan, ServiceDependencySymbolRef,
-};
+use skiff_runtime_linked_program::{CallIr, ExprRefIr, LinkedActorMethodDispatchPlan};
 use skiff_runtime_model::runtime_value::{
     CallbackCapabilityCarrier, RuntimeValue, RuntimeValueCarrier,
 };
@@ -11,7 +9,7 @@ use skiff_runtime_native::dispatch::PreparedNativeCall;
 use super::*;
 use crate::{
     actor_executor::ActorExecutionFrame, capabilities::ExecutionControl,
-    program_execution::ProgramExecutionContext, service_dispatch::PreparedOutboundServiceCall,
+    program_execution::ProgramExecutionContext,
 };
 
 mod activation;
@@ -93,31 +91,6 @@ impl EvalContext<'_> {
         Ok(Flow::Continue)
     }
 
-    pub(super) async fn eval_remote_interface_call(
-        &mut self,
-        dependency_ref: &str,
-        operation_abi_id: &str,
-        args: &[RuntimeValueCarrier],
-    ) -> Result<RuntimeValueCarrier> {
-        let outbound_context = self.context.outbound_context();
-        let stream_runtime = self.context.stream_runtime();
-        let prepared = super::super::service_dispatch::prepare_outbound_service_operation(
-            self.interpreter,
-            &outbound_context,
-            &stream_runtime,
-            self.heap,
-            self.env,
-            self.addr,
-            dependency_ref,
-            operation_abi_id,
-            args.iter()
-                .cloned()
-                .map(RuntimeValueCarrier::into_value)
-                .collect(),
-        )?;
-        self.finish_outbound_call(prepared).await.map(Into::into)
-    }
-
     pub(super) async fn eval_callback_interface_call(
         &mut self,
         call: &CallIr,
@@ -152,45 +125,6 @@ impl EvalContext<'_> {
         let prepared = crate::actor_dispatch::prepare_actor_method(self, plan, values)?;
         let completed = self.await_actual_pending(prepared.into_wait()).await?;
         completed.finalize(self.heap)
-    }
-
-    pub(super) async fn eval_legacy_service_dependency(
-        &mut self,
-        call: &CallIr,
-        symbol: &ServiceDependencySymbolRef,
-        values: Vec<RuntimeValueCarrier>,
-    ) -> Result<RuntimeValueCarrier> {
-        self.ensure_legacy_service_path_allowed("service dependency dispatch")?;
-        let outbound_context = self.context.outbound_context();
-        let stream_runtime = self.context.stream_runtime();
-        let prepared = super::super::service_dispatch::prepare_outbound_service(
-            self.interpreter,
-            &outbound_context,
-            &stream_runtime,
-            self.heap,
-            self.env,
-            self.addr,
-            call,
-            symbol,
-            values
-                .into_iter()
-                .map(RuntimeValueCarrier::into_value)
-                .collect(),
-        )?;
-        self.finish_outbound_call(prepared).await.map(Into::into)
-    }
-
-    async fn finish_outbound_call(
-        &mut self,
-        prepared: PreparedOutboundServiceCall,
-    ) -> Result<RuntimeValue> {
-        match prepared {
-            PreparedOutboundServiceCall::Ready(value) => Ok(value),
-            PreparedOutboundServiceCall::ExternalWait(operation) => {
-                let completed = self.await_actual_pending(operation.into_wait()).await?;
-                completed.finalize(self.heap, self.env)
-            }
-        }
     }
 
     pub(super) async fn eval_native_prepared_call(

@@ -733,24 +733,8 @@ fn execution_context<'a>(
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: skiff_runtime_linked_program::ServiceMeta {
-                id: SERVICE_ID.to_string(),
-                display_name: None,
-                metadata: BTreeMap::new(),
-            },
-            version: VERSION.to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: Default::default(),
-        }),
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     })
     .with_websocket_capability_rebinder(test_runtime::websocket_rebinder())
