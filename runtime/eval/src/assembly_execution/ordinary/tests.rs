@@ -1508,7 +1508,7 @@ fn stream_callable_package(
         return_origins: Vec::new(),
         direct_return_origins: Vec::new(),
         throw_origins: Vec::new(),
-        escape_lanes: vec![ValueEscapeLane::Stream],
+        escape_lanes: Vec::new(),
     };
     let item_value_plan = BoundaryValuePlan::Linkable {
         carrier: BoundaryValueCarrier::DetachedValueGraph,
