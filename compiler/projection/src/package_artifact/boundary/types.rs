@@ -26,6 +26,24 @@ pub(super) fn project_operation_contract(
     resolved_package_schemas: &[ResolvedPackageSchema],
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) -> Option<BoundaryOperationContract> {
+    for parameter in &signature.parameters {
+        collect_package_type_closure_reasons(
+            owner_module,
+            &parameter.ty,
+            file_ir_units,
+            public_type_ids,
+            resolved_package_schemas,
+            reasons,
+        );
+    }
+    collect_package_type_closure_reasons(
+        owner_module,
+        &signature.return_type,
+        file_ir_units,
+        public_type_ids,
+        resolved_package_schemas,
+        reasons,
+    );
     let parameter_types = signature
         .parameters
         .iter()
@@ -284,6 +302,94 @@ fn validate_local_type_closure(
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
     resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<(), BoundaryUnavailableReason> {
+    let mut reasons = collect_local_type_closure_reasons(
+        owner_module,
+        ty,
+        file_ir_units,
+        public_type_ids,
+        resolved_package_schemas,
+    );
+    super::eligibility::normalize_reasons(&mut reasons);
+    match reasons.into_iter().next() {
+        Some(reason) => Err(reason),
+        None => Ok(()),
+    }
+}
+
+fn collect_package_type_closure_reasons(
+    owner_module: &str,
+    ty: &PackageTypeRef,
+    file_ir_units: &[skiff_artifact_model::FileIrUnit],
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
+    reasons: &mut Vec<BoundaryUnavailableReason>,
+) {
+    match ty {
+        PackageTypeRef::Local { local_type } => {
+            for reason in collect_local_type_closure_reasons(
+                owner_module,
+                local_type,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            ) {
+                push_reason(reasons, reason);
+            }
+        }
+        PackageTypeRef::Container { arguments, .. } => {
+            for argument in arguments {
+                collect_package_type_closure_reasons(
+                    owner_module,
+                    argument,
+                    file_ir_units,
+                    public_type_ids,
+                    resolved_package_schemas,
+                    reasons,
+                );
+            }
+        }
+        PackageTypeRef::Nullable { inner } => collect_package_type_closure_reasons(
+            owner_module,
+            inner,
+            file_ir_units,
+            public_type_ids,
+            resolved_package_schemas,
+            reasons,
+        ),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            collect_package_type_closure_reasons(
+                owner_module,
+                interface,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+                reasons,
+            );
+            for argument in arguments {
+                collect_package_type_closure_reasons(
+                    owner_module,
+                    argument,
+                    file_ir_units,
+                    public_type_ids,
+                    resolved_package_schemas,
+                    reasons,
+                );
+            }
+        }
+        PackageTypeRef::PackageSchema { .. } => {}
+    }
+}
+
+fn collect_local_type_closure_reasons(
+    owner_module: &str,
+    ty: &TypeRefIr,
+    file_ir_units: &[skiff_artifact_model::FileIrUnit],
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
+) -> Vec<BoundaryUnavailableReason> {
     let resolver = ArtifactNominalTypeSource::new(file_ir_units, &[]);
     let guards = NoTypeClosureGuards;
     let walker = TypeClosureWalker::new(&resolver, &guards);
@@ -291,78 +397,98 @@ fn validate_local_type_closure(
         file_ir_units,
         public_type_ids,
         resolved_package_schemas,
-        callback_adapter_required: false,
+        reasons: Vec::new(),
     };
     walker
         .walk(owner_module, ty, &mut policy)
-        .map_err(|failure| failure.error)?;
-    if policy.callback_adapter_required {
-        return Err(BoundaryUnavailableReason::CallbackAdapterUnavailable);
-    }
-    Ok(())
+        .expect("boundary projection reason collection is infallible");
+    policy.reasons
 }
 
 struct BoundaryProjectionTypePolicy<'a> {
     file_ir_units: &'a [skiff_artifact_model::FileIrUnit],
     public_type_ids: &'a BTreeMap<(String, String), ContractTypeRef>,
     resolved_package_schemas: &'a [ResolvedPackageSchema],
-    callback_adapter_required: bool,
+    reasons: Vec<BoundaryUnavailableReason>,
 }
 
 impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
-    type Error = BoundaryUnavailableReason;
+    type Error = std::convert::Infallible;
 
     fn visit_type_ref(
         &mut self,
         visit: TypeClosureVisit<'_>,
     ) -> Result<TypeClosureControl, Self::Error> {
-        match visit.ty {
+        let control = match visit.ty {
             TypeRefIr::Builtin { name, args } => {
-                classify_native(name, args.len())?;
-                Ok(TypeClosureControl::Continue)
+                if let Err(reason) = classify_native(name, args.len()) {
+                    push_reason(&mut self.reasons, reason);
+                }
+                TypeClosureControl::Continue
             }
             TypeRefIr::Record { .. } | TypeRefIr::Union { .. } | TypeRefIr::Nullable { .. } => {
-                Ok(TypeClosureControl::Continue)
+                TypeClosureControl::Continue
             }
             TypeRefIr::AppliedNominal { .. } => {
-                Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+                push_reason(
+                    &mut self.reasons,
+                    BoundaryUnavailableReason::UnsupportedBoundaryType,
+                );
+                TypeClosureControl::Continue
             }
             TypeRefIr::Literal { value } => {
-                project_literal(value)?;
-                Ok(TypeClosureControl::Continue)
+                if let Err(reason) = project_literal(value) {
+                    push_reason(&mut self.reasons, reason);
+                }
+                TypeClosureControl::Continue
             }
             TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
-                self.callback_adapter_required = true;
-                Ok(TypeClosureControl::Continue)
+                push_reason(
+                    &mut self.reasons,
+                    BoundaryUnavailableReason::CallbackAdapterUnavailable,
+                );
+                TypeClosureControl::Continue
             }
             TypeRefIr::ServiceSymbol { symbol }
                 if self
                     .public_type_ids
                     .contains_key(&(symbol.module_path.clone(), symbol.symbol.clone())) =>
             {
-                Ok(TypeClosureControl::Prune)
+                TypeClosureControl::Prune
             }
             TypeRefIr::PackageSymbol { symbol } => {
-                project_package_symbol(symbol, self.resolved_package_schemas)?;
-                Ok(TypeClosureControl::Prune)
+                if let Err(reason) = project_package_symbol(symbol, self.resolved_package_schemas) {
+                    push_reason(&mut self.reasons, reason);
+                }
+                TypeClosureControl::Prune
             }
-            TypeRefIr::PackageSchema { .. } => Ok(TypeClosureControl::Prune),
+            TypeRefIr::PackageSchema { .. } => TypeClosureControl::Prune,
             TypeRefIr::LocalType { type_index } => {
-                project_public_local_type(
+                match project_public_local_type(
                     visit.module_path,
                     *type_index,
                     self.file_ir_units,
                     self.public_type_ids,
-                )?;
-                Ok(TypeClosureControl::Prune)
+                ) {
+                    Ok(_) => TypeClosureControl::Prune,
+                    Err(reason) => {
+                        push_reason(&mut self.reasons, reason);
+                        TypeClosureControl::Continue
+                    }
+                }
             }
             TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::TypeParam { .. } => {
-                Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+                push_reason(
+                    &mut self.reasons,
+                    BoundaryUnavailableReason::UnsupportedBoundaryType,
+                );
+                TypeClosureControl::Continue
             }
-        }
+        };
+        Ok(control)
     }
 }
 
@@ -713,6 +839,14 @@ mod tests {
         reasons
     }
 
+    fn canonical_unavailable_reasons(
+        parameter_type: PackageTypeRef,
+    ) -> Vec<BoundaryUnavailableReason> {
+        let mut reasons = unavailable_reason(parameter_type);
+        super::super::eligibility::normalize_reasons(&mut reasons);
+        reasons
+    }
+
     #[test]
     fn unary_callback_parameters_and_return_use_request_capabilities() {
         let reader = callback_type("example.interfaces", "api.Reader", "type:reader");
@@ -856,6 +990,81 @@ mod tests {
                 },
             }),
             vec![BoundaryUnavailableReason::NativeAdapterUnavailable]
+        );
+    }
+
+    #[test]
+    fn local_type_closure_saturates_nested_boundary_reasons() {
+        let unsupported = || TypeRefIr::TypeParam {
+            name: "T".to_string(),
+        };
+        let raw_callback = || TypeRefIr::Function {
+            params: vec![skiff_artifact_model::FunctionTypeParamIr {
+                name: "value".to_string(),
+                ty: unsupported(),
+            }],
+            return_type: Box::new(TypeRefIr::builtin("void")),
+        };
+        let nested_any = || TypeRefIr::AnyInterface {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: "interface:generic".to_string(),
+                canonical_type_args: vec![unsupported()],
+            },
+        };
+        let expected = vec![
+            BoundaryUnavailableReason::CallbackAdapterUnavailable,
+            BoundaryUnavailableReason::NativeAdapterUnavailable,
+            BoundaryUnavailableReason::UnsupportedBoundaryType,
+        ];
+
+        for local_type in [
+            TypeRefIr::Union {
+                items: vec![
+                    raw_callback(),
+                    TypeRefIr::Builtin {
+                        name: "NativeHandle".to_string(),
+                        args: vec![nested_any()],
+                    },
+                    raw_callback(),
+                ],
+            },
+            TypeRefIr::Union {
+                items: vec![
+                    TypeRefIr::Builtin {
+                        name: "NativeHandle".to_string(),
+                        args: vec![nested_any()],
+                    },
+                    raw_callback(),
+                ],
+            },
+        ] {
+            assert_eq!(
+                canonical_unavailable_reasons(PackageTypeRef::Local { local_type }),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn generic_callback_closure_keeps_callback_and_unsupported_reasons() {
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+            arguments: vec![TypeRefIr::Function {
+                params: Vec::new(),
+                return_type: Box::new(TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                }),
+            }],
+        };
+
+        assert_eq!(
+            canonical_unavailable_reasons(PackageTypeRef::Local {
+                local_type: applied,
+            }),
+            vec![
+                BoundaryUnavailableReason::CallbackAdapterUnavailable,
+                BoundaryUnavailableReason::UnsupportedBoundaryType,
+            ]
         );
     }
 
@@ -1236,7 +1445,7 @@ mod tests {
             },
         ];
 
-        for signature in cases {
+        for (index, signature) in cases.into_iter().enumerate() {
             let mut reasons = Vec::new();
             assert_eq!(
                 project_operation_contract(
@@ -1249,9 +1458,17 @@ mod tests {
                 ),
                 None
             );
+            super::super::eligibility::normalize_reasons(&mut reasons);
             assert_eq!(
                 reasons,
-                vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+                if index == 2 {
+                    vec![
+                        BoundaryUnavailableReason::CallbackAdapterUnavailable,
+                        BoundaryUnavailableReason::UnsupportedBoundaryType,
+                    ]
+                } else {
+                    vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+                }
             );
         }
     }
@@ -1336,9 +1553,13 @@ mod tests {
             ),
             None
         );
+        super::super::eligibility::normalize_reasons(&mut reasons);
         assert_eq!(
             reasons,
-            vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+            vec![
+                BoundaryUnavailableReason::CallbackAdapterUnavailable,
+                BoundaryUnavailableReason::UnsupportedBoundaryType,
+            ]
         );
     }
 
