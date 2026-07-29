@@ -2,19 +2,11 @@ use skiff_artifact_model::{
     AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, GatewayAdapterKind,
     GatewayDispatchMode, GatewayEntryIdentity, ServiceDeploymentRef,
 };
-use skiff_runtime_transport::{
-    protocol::RUNTIME_FRAME_SCHEMA_VERSION,
-    runtime_assembly_request::{
-        RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-        RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
-        RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-        RuntimeAssemblyRequestTraceFrameHeader,
-    },
-};
 
 use super::{
     validate_request_facts, HttpGatewayRequestValidationFacts, RequestError, RequestResult,
 };
+use crate::{BinaryHttpRequestMetadata, RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest};
 
 const ASSEMBLY_GENERATION: u64 = 17;
 const GATEWAY_ENTRY_KEY: &str = "http:users.create";
@@ -49,42 +41,26 @@ impl ValidationFixture {
         }
     }
 
-    fn header(&self) -> RuntimeAssemblyRequestStartFrameHeader {
-        RuntimeAssemblyRequestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "request.start".to_string(),
+    fn request(&self) -> RuntimeHttpGatewayRequest {
+        RuntimeHttpGatewayRequest {
             request_id: format!("request-{}", self.request_local_generation),
-            mode: "unary".to_string(),
-            caller: RuntimeAssemblyRequestCallerFrameHeader {
-                kind: "gateway".to_string(),
-            },
-            routing: RuntimeAssemblyRequestRoutingFrameHeader {
-                kind: "runtimeAssembly".to_string(),
+            dispatch_mode: GatewayDispatchMode::Unary,
+            pin: RuntimeGatewayIngressPin {
                 assembly_identity: self.assembly_identity.clone(),
                 assembly_generation: ASSEMBLY_GENERATION,
                 deployment: self.deployment.clone(),
                 gateway_entry_identity: self.gateway_entry_identity.clone(),
-                ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                    protocol: RuntimeAssemblyRequestIngressProtocol::Http,
-                    method: "POST".to_string(),
-                    path: "/users".to_string(),
-                },
             },
-            client_session: None,
-            deadline: None,
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
-                trace_id: format!("trace-{}", self.request_local_generation),
-                span_id: "span-http-gateway-validation".to_string(),
-                parent_span_id: None,
-                sampled: None,
-            },
-            http_request: RuntimeAssemblyHttpRequestFrameHeader {
+            ingress_method: "POST".to_string(),
+            ingress_path: "/users".to_string(),
+            http_request: BinaryHttpRequestMetadata {
                 method: "POST".to_string(),
                 url: "https://api.example.test/users".to_string(),
                 path: "/users".to_string(),
                 query: Vec::new(),
                 headers: Vec::new(),
             },
+            body: Vec::new(),
             test_effects_enabled: false,
         }
     }
@@ -102,7 +78,7 @@ fn runtime_http_gateway_same_pinned_assembly_accepts_consecutive_request_generat
     assert_ne!(second.request_local_generation, ASSEMBLY_GENERATION);
 
     for fixture in [&first, &second] {
-        validate_request_facts(fixture.target_facts(), &fixture.header())
+        validate_request_facts(fixture.target_facts(), &fixture.request())
             .expect("request-local generation must not replace the pinned assembly generation");
     }
 }
@@ -110,11 +86,11 @@ fn runtime_http_gateway_same_pinned_assembly_accepts_consecutive_request_generat
 #[test]
 fn runtime_http_gateway_wrong_assembly_generation_fails_closed() {
     let fixture = ValidationFixture::new(803);
-    let mut header = fixture.header();
-    header.routing.assembly_generation += 1;
+    let mut request = fixture.request();
+    request.pin.assembly_generation += 1;
 
     assert_protocol_error(
-        validate_request_facts(fixture.target_facts(), &header),
+        validate_request_facts(fixture.target_facts(), &request),
         "HTTP gateway request does not match the pinned assembly activation",
     );
 }
@@ -123,22 +99,22 @@ fn runtime_http_gateway_wrong_assembly_generation_fails_closed() {
 fn runtime_http_gateway_wrong_assembly_or_gateway_identity_fails_closed() {
     let fixture = ValidationFixture::new(804);
 
-    let mut wrong_assembly = fixture.header();
-    wrong_assembly.routing.assembly_identity = assembly_identity('c');
+    let mut wrong_assembly = fixture.request();
+    wrong_assembly.pin.assembly_identity = assembly_identity('c');
     assert_protocol_error(
         validate_request_facts(fixture.target_facts(), &wrong_assembly),
         "HTTP gateway request does not match the pinned assembly activation",
     );
 
-    let mut wrong_deployment = fixture.header();
-    wrong_deployment.routing.deployment = deployment("service.other", 'f');
+    let mut wrong_deployment = fixture.request();
+    wrong_deployment.pin.deployment = deployment("service.other", 'f');
     assert_protocol_error(
         validate_request_facts(fixture.target_facts(), &wrong_deployment),
         "HTTP gateway request does not match the pinned assembly activation",
     );
 
-    let mut wrong_gateway = fixture.header();
-    wrong_gateway.routing.gateway_entry_identity = gateway_entry_identity('d');
+    let mut wrong_gateway = fixture.request();
+    wrong_gateway.pin.gateway_entry_identity = gateway_entry_identity('d');
     assert_protocol_error(
         validate_request_facts(fixture.target_facts(), &wrong_gateway),
         "HTTP gateway request identity does not match the exact linked entry",
@@ -161,14 +137,14 @@ fn deployment(service_id: &str, fill: char) -> ServiceDeploymentRef {
 fn runtime_http_gateway_disagreeing_request_metadata_fails_closed() {
     let fixture = ValidationFixture::new(805);
 
-    let mut wrong_method = fixture.header();
+    let mut wrong_method = fixture.request();
     wrong_method.http_request.method = "PUT".to_string();
     assert_protocol_error(
         validate_request_facts(fixture.target_facts(), &wrong_method),
         "HTTP gateway routing metadata and binary HTTP context disagree",
     );
 
-    let mut wrong_path = fixture.header();
+    let mut wrong_path = fixture.request();
     wrong_path.http_request.path = "/other".to_string();
     assert_protocol_error(
         validate_request_facts(fixture.target_facts(), &wrong_path),

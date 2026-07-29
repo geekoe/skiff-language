@@ -3,6 +3,11 @@ use std::sync::{
     Arc,
 };
 
+use crate::{
+    response_stream_writer::ResponseStreamWriter, BoundaryResponse, ExecutionBudget,
+    ExecutionControl, HttpNameValue, HttpResponseMetadata, RequestError, RequestResult,
+    ResponseEventSink, RuntimeAssemblyHttpGatewayTarget, RuntimeHttpGatewayRequest,
+};
 use skiff_artifact_model::{
     AssemblyIdentity, GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity,
     GatewayProtocolSurface,
@@ -15,21 +20,10 @@ use skiff_runtime_eval::{
     program_execution::ProgramExecutionContext, Interpreter, RuntimeAssemblyEvalTarget,
 };
 use skiff_runtime_model::request_heap::RequestHeapLimits;
-use skiff_runtime_transport::{
-    protocol::RUNTIME_FRAME_SCHEMA_VERSION,
-    runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader,
-};
-
-use crate::{
-    response_stream_writer::ResponseStreamWriter, BoundaryResponse, ExecutionBudget,
-    ExecutionControl, HttpNameValue, HttpResponseMetadata, RequestError, RequestResult,
-    ResponseEventSink, RuntimeAssemblyHttpGatewayTarget,
-};
 
 pub struct RuntimeHttpGatewayExecutionInput {
     pub target: RuntimeAssemblyHttpGatewayTarget,
-    pub header: RuntimeAssemblyRequestStartFrameHeader,
-    pub body: Vec<u8>,
+    pub request: RuntimeHttpGatewayRequest,
     pub cancelled: Arc<AtomicBool>,
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
@@ -91,7 +85,6 @@ impl RuntimeHttpGatewayTestEffectExecution {
 }
 
 pub struct RuntimeHttpGatewayEvalExecutionInputParts<'a> {
-    pub header: &'a RuntimeAssemblyRequestStartFrameHeader,
     pub execution: ExecutionControl<'a>,
     pub cancellation: CancellationToken,
     pub cancelled: &'a AtomicBool,
@@ -104,8 +97,7 @@ pub async fn execute_runtime_http_gateway_request(
 ) -> RequestResult<BoundaryResponse> {
     let RuntimeHttpGatewayExecutionInput {
         target,
-        header,
-        body,
+        request,
         cancelled,
         cancellation,
         execution_budget,
@@ -113,7 +105,7 @@ pub async fn execute_runtime_http_gateway_request(
     } = input;
     let lifecycle = RuntimeHttpGatewayRequestLifecycle::new(target, Arc::clone(&cancelled));
     let target = lifecycle.target();
-    validate_request(target, &header)?;
+    validate_request(target, &request)?;
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
     let test_effect_execution = handles.eval_adapter.begin_test_effect_execution()?;
@@ -124,17 +116,16 @@ pub async fn execute_runtime_http_gateway_request(
                 handles.eval_adapter.runtime_factory(),
             )
         }
-        None if header.test_effects_enabled => {
+        None if request.test_effects_enabled => {
             return Err(RequestError::Unsupported(
                 "test HTTP ingress did not establish an exact test-effect execution".to_string(),
             ))
         }
         None => Interpreter::for_runtime_assembly(handles.eval_adapter.runtime_factory()),
     };
-    let request_context = request_context(target, &header, &body);
+    let request_context = request_context(target, &request);
     let context = handles.eval_adapter.execution_context(
         RuntimeHttpGatewayEvalExecutionInputParts {
-            header: &header,
             execution,
             cancellation,
             cancelled: cancelled.as_ref(),
@@ -174,7 +165,7 @@ pub async fn execute_runtime_http_gateway_request(
             .map_err(RequestError::from),
         GatewayDispatchMode::ServerStream => {
             let mut writer = ResponseStreamWriter::new(
-                header.request_id.clone(),
+                request.request_id.clone(),
                 Arc::clone(&handles.response_events),
             );
             interpreter
@@ -214,7 +205,7 @@ pub async fn execute_runtime_http_gateway_request(
 
 fn validate_request(
     target: &RuntimeAssemblyHttpGatewayTarget,
-    header: &RuntimeAssemblyRequestStartFrameHeader,
+    request: &RuntimeHttpGatewayRequest,
 ) -> RequestResult<()> {
     let GatewayProtocolSurface::Http(http) = &target.protocol_surface().protocol else {
         return Err(RequestError::protocol(
@@ -237,7 +228,7 @@ fn validate_request(
             surface_adapter_kind: http.adapter_kind,
             plan_adapter_kind: target.adapter_plan().kind,
         },
-        header,
+        request,
     )
 }
 
@@ -254,46 +245,32 @@ struct HttpGatewayRequestValidationFacts<'a> {
 
 fn validate_request_facts(
     target: HttpGatewayRequestValidationFacts<'_>,
-    header: &RuntimeAssemblyRequestStartFrameHeader,
+    request: &RuntimeHttpGatewayRequest,
 ) -> RequestResult<()> {
-    if header.schema_version != RUNTIME_FRAME_SCHEMA_VERSION
-        || header.frame_type != "request.start"
-        || header.caller.kind != "gateway"
-        || header.routing.kind != "runtimeAssembly"
-    {
-        return Err(RequestError::protocol(
-            target.gateway_entry_key,
-            "HTTP gateway request is not the canonical runtimeAssembly request.start shape",
-        ));
-    }
-    if header.routing.assembly_identity != *target.assembly_identity
-        || header.routing.assembly_generation != target.assembly_generation
-        || &header.routing.deployment != target.deployment
+    if request.pin.assembly_identity != *target.assembly_identity
+        || request.pin.assembly_generation != target.assembly_generation
+        || &request.pin.deployment != target.deployment
     {
         return Err(RequestError::protocol(
             target.gateway_entry_key,
             "HTTP gateway request does not match the pinned assembly activation",
         ));
     }
-    if header.routing.gateway_entry_identity != *target.gateway_entry_identity {
+    if request.pin.gateway_entry_identity != *target.gateway_entry_identity {
         return Err(RequestError::protocol(
             target.gateway_entry_key,
             "HTTP gateway request identity does not match the exact linked entry",
         ));
     }
-    if header.routing.ingress.method != header.http_request.method
-        || header.routing.ingress.path != header.http_request.path
+    if request.ingress_method != request.http_request.method
+        || request.ingress_path != request.http_request.path
     {
         return Err(RequestError::protocol(
             target.gateway_entry_key,
             "HTTP gateway routing metadata and binary HTTP context disagree",
         ));
     }
-    let expected_mode = match target.dispatch_mode {
-        GatewayDispatchMode::Unary => "unary",
-        GatewayDispatchMode::ServerStream => "serverStream",
-    };
-    if header.mode != expected_mode
+    if request.dispatch_mode != target.dispatch_mode
         || (target.surface_adapter_kind == GatewayAdapterKind::TypedJson
             && target.dispatch_mode != GatewayDispatchMode::Unary)
         || target.plan_adapter_kind != target.surface_adapter_kind
@@ -308,29 +285,28 @@ fn validate_request_facts(
 
 fn request_context<'a>(
     target: &'a RuntimeAssemblyHttpGatewayTarget,
-    header: &'a RuntimeAssemblyRequestStartFrameHeader,
-    body: &'a [u8],
+    request: &'a RuntimeHttpGatewayRequest,
 ) -> RequestPayloadContext<'a> {
     RequestPayloadContext::new(
         target.gateway_entry_key().as_str(),
-        body,
+        &request.body,
         Some(BinaryHttpRequestContext::new(
-            header.http_request.method.as_str(),
-            header.http_request.url.as_str(),
-            header.http_request.path.as_str(),
-            header
+            request.http_request.method.as_str(),
+            request.http_request.url.as_str(),
+            request.http_request.path.as_str(),
+            request
                 .http_request
                 .query
                 .iter()
                 .map(|item| HttpNameValueContext::new(&item.name, &item.value))
                 .collect(),
-            header
+            request
                 .http_request
                 .headers
                 .iter()
                 .map(|item| HttpNameValueContext::new(&item.name, &item.value))
                 .collect(),
-            body,
+            &request.body,
         )),
     )
 }

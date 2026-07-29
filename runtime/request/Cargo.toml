@@ -16,6 +16,5 @@ skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-request-contract = { path = "../request-contract" }
-skiff-runtime-transport = { path = "../transport" }
 thiserror = "2.0"
 time = { version = "0.3.47", features = ["formatting", "parsing"] }

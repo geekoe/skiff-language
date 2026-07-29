@@ -674,6 +674,23 @@ function runSelfTests() {
       },
     },
     {
+      name: 'current DAG rejects request depending on transport',
+      run: () => {
+        const metadata = metadataFromRuntimeDag();
+        const requestPackage = metadata.packages.find((pkg) => pkg.name === 'skiff-runtime-request');
+        requestPackage.dependencies.push(runtimeDependency('skiff-runtime-transport'));
+        const result = checkRuntimeDag(metadata);
+        assert(
+          result.violations.some(
+            (violation) =>
+              violation.packageName === 'skiff-runtime-request'
+              && violation.message.includes('skiff-runtime-transport is not allowed'),
+          ),
+          'expected skiff-runtime-request -> skiff-runtime-transport to be rejected',
+        );
+      },
+    },
+    {
       name: 'current DAG ignores dev-only runtime edges',
       run: () => {
         const metadata = metadataFromRuntimeDag();

@@ -2591,7 +2591,6 @@ dependencies = [
  "skiff-runtime-linker",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
- "skiff-runtime-transport",
  "thiserror",
  "time",
 ]

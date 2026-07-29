@@ -49,7 +49,11 @@ impl RuntimeHost {
         http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
-        let AdmittedWebSocketConnectRequest { route, header } = request;
+        let AdmittedWebSocketConnectRequest {
+            route,
+            header,
+            request,
+        } = request;
         let request_id = header.request_id.clone();
         if route.entry().optional_handler().is_none() {
             let connection_id = header.websocket_connect.connection_id.clone();
@@ -143,7 +147,7 @@ impl RuntimeHost {
             let execution = request_runner::execute_runtime_websocket_connect(
                 request_runner::RuntimeWebSocketConnectExecutionInput {
                     target,
-                    header,
+                    request,
                     cancelled,
                     cancellation: cancellation.clone(),
                     execution_budget: Arc::clone(&execution_budget),
@@ -257,7 +261,7 @@ impl RuntimeHost {
         let AdmittedHttpGatewayRequest {
             route,
             header,
-            body,
+            request,
         } = request;
         let target = match route.request_target() {
             Ok(target) => target,
@@ -300,8 +304,7 @@ impl RuntimeHost {
             let execution = request_runner::execute_runtime_http_gateway_request(
                 request_runner::RuntimeHttpGatewayExecutionInput {
                     target,
-                    header,
-                    body,
+                    request,
                     cancelled,
                     cancellation: cancellation.clone(),
                     execution_budget: Arc::clone(&execution_budget),

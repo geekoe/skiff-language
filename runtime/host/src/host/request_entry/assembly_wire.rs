@@ -3,7 +3,10 @@ use skiff_artifact_model::{
     IngressProtocol, IngressSelector, ServiceIngressKey,
 };
 use skiff_runtime_capability_context::ExecutionBudgetReason;
-use skiff_runtime_request::{RequestError, RouterWriterMessage};
+use skiff_runtime_request::{
+    BinaryHttpRequestMetadata, HttpNameValue, RequestError, RouterWriterMessage,
+    RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest, RuntimeWebSocketConnectIngress,
+};
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
@@ -26,12 +29,13 @@ use crate::{
 pub(super) struct AdmittedHttpGatewayRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyRequestStartFrameHeader,
-    pub(super) body: Vec<u8>,
+    pub(super) request: RuntimeHttpGatewayRequest,
 }
 
 pub(super) struct AdmittedWebSocketConnectRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    pub(super) request: RuntimeWebSocketConnectIngress,
 }
 
 pub(super) struct AdmittedWebSocketJsonRpcRequest {
@@ -141,7 +145,12 @@ impl RuntimeHost {
                     .to_string(),
             });
         }
-        Ok(AdmittedWebSocketConnectRequest { route, header })
+        let request = websocket_connect_ingress_from_wire(&header);
+        Ok(AdmittedWebSocketConnectRequest {
+            route,
+            header,
+            request,
+        })
     }
 
     fn http_gateway_request_from_wire(
@@ -165,10 +174,11 @@ impl RuntimeHost {
         {
             return Err(deadline_exceeded());
         }
+        let request = http_gateway_request_from_admitted_wire(&header, body)?;
         Ok(AdmittedHttpGatewayRequest {
             route,
             header,
-            body,
+            request,
         })
     }
 
@@ -234,6 +244,93 @@ enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
+}
+
+fn gateway_ingress_pin(
+    assembly_identity: &skiff_artifact_model::AssemblyIdentity,
+    assembly_generation: u64,
+    deployment: &skiff_artifact_model::ServiceDeploymentRef,
+    gateway_entry_identity: &skiff_artifact_model::GatewayEntryIdentity,
+) -> RuntimeGatewayIngressPin {
+    RuntimeGatewayIngressPin {
+        assembly_identity: assembly_identity.clone(),
+        assembly_generation,
+        deployment: deployment.clone(),
+        gateway_entry_identity: gateway_entry_identity.clone(),
+    }
+}
+
+fn http_gateway_request_from_admitted_wire(
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+    body: Vec<u8>,
+) -> Result<RuntimeHttpGatewayRequest> {
+    let dispatch_mode = match header.mode.as_str() {
+        "unary" => GatewayDispatchMode::Unary,
+        "serverStream" => GatewayDispatchMode::ServerStream,
+        other => {
+            return Err(RuntimeError::Decode(format!(
+                "canonical HTTP gateway dispatch mode is invalid: {other}"
+            )))
+        }
+    };
+    Ok(RuntimeHttpGatewayRequest {
+        request_id: header.request_id.clone(),
+        dispatch_mode,
+        pin: gateway_ingress_pin(
+            &header.routing.assembly_identity,
+            header.routing.assembly_generation,
+            &header.routing.deployment,
+            &header.routing.gateway_entry_identity,
+        ),
+        ingress_method: header.routing.ingress.method.clone(),
+        ingress_path: header.routing.ingress.path.clone(),
+        http_request: BinaryHttpRequestMetadata {
+            method: header.http_request.method.clone(),
+            url: header.http_request.url.clone(),
+            path: header.http_request.path.clone(),
+            query: request_name_values(&header.http_request.query),
+            headers: request_name_values(&header.http_request.headers),
+        },
+        body,
+        test_effects_enabled: header.test_effects_enabled,
+    })
+}
+
+fn websocket_connect_ingress_from_wire(
+    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+) -> RuntimeWebSocketConnectIngress {
+    let request = &header.websocket_connect;
+    RuntimeWebSocketConnectIngress {
+        request_id: header.request_id.clone(),
+        pin: gateway_ingress_pin(
+            &header.routing.assembly_identity,
+            header.routing.assembly_generation,
+            &header.routing.deployment,
+            &header.routing.gateway_entry_identity,
+        ),
+        ingress_path: header.routing.ingress.path.clone(),
+        connection_id: request.connection_id.clone(),
+        url: request.url.clone(),
+        query: request_name_values(&request.query),
+        headers: request_name_values(&request.headers),
+        cookies: request_name_values(&request.cookies),
+        version: request.version.clone(),
+        websocket_entry_id: request.websocket_entry_id.clone(),
+        connect_gateway_entry_identity: request.gateway_entry_identity.clone(),
+        test_effects_enabled: header.test_effects_enabled,
+    }
+}
+
+fn request_name_values(
+    values: &[skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader],
+) -> Vec<HttpNameValue> {
+    values
+        .iter()
+        .map(|value| HttpNameValue {
+            name: value.name.clone(),
+            value: value.value.clone(),
+        })
+        .collect()
 }
 
 fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Result<()> {

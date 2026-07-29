@@ -218,7 +218,7 @@ impl RequestError {
     }
 }
 
-impl skiff_runtime_transport::response_mapper::OrdinaryResponseErrorSource for RequestError {
+impl skiff_runtime_capability_context::OrdinaryResponseErrorSource for RequestError {
     fn ordinary_response_error(&self) -> Option<ResponseError> {
         RequestError::ordinary_response_error(self)
     }
