@@ -1,0 +1,8 @@
+package-direct.stream:
+  method: POST
+  path: /package-direct/stream
+  kind: rawHttp
+  handler: main.stream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

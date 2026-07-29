@@ -1,0 +1,8 @@
+import std
+
+function responseEvents(body: bytes) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(202, Array.empty<std.http.HttpHeader>()))
+  emit(std.http.streamChunk(body))
+  emit(std.http.streamEnd())
+  return null
+}

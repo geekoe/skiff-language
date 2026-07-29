@@ -112,6 +112,42 @@ async fn host_http_gateway_typed_raw_and_stream_execute_private_handlers() {
 }
 
 #[tokio::test]
+async fn package_direct_http_stream_registry_return_stream_reaches_real_gateway() {
+    let (host, routes) = fixture::admitted_package_direct_stream_gateway_host().await;
+    let stream = canonical_header(
+        &routes["/package-direct/stream"],
+        "package-direct-http-stream-return",
+    );
+    let body = b"package-direct-body";
+    let frame = encode_binary_frame(&stream, body).unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    dispatch(&host, &frame, &sender).await.unwrap();
+
+    let start = recv_binary(&mut receiver).await;
+    let (start, payload): (ResponseStartFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&start).unwrap();
+    assert_eq!(start.request_id, stream.request_id);
+    assert_eq!(start.http_response.status, 202);
+    assert!(payload.is_empty());
+
+    let chunk = recv_binary(&mut receiver).await;
+    let (chunk, payload): (ResponseChunkFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&chunk).unwrap();
+    assert_eq!(chunk.request_id, stream.request_id);
+    assert_eq!(chunk.seq, 0);
+    assert_eq!(payload, body);
+
+    let end = recv_binary(&mut receiver).await;
+    let (end, payload): (ResponseEndFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&end).unwrap();
+    assert_eq!(end.request_id, stream.request_id);
+    assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
+    assert!(payload.is_empty());
+    assert_no_second_frame(&mut receiver).await;
+}
+
+#[tokio::test]
 async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadata_fail_closed() {
     let (host, routes) = fixture::admitted_gateway_host().await;
     let exact = canonical_header(&routes["/typed"], "host-http-negative");

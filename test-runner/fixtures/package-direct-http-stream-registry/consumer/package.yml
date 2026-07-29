@@ -1,0 +1,6 @@
+id: example.com/package-direct-http-stream-consumer
+version: 1.0.0
+packages:
+  - id: example.com/package-direct-http-stream-helper
+    version: 1.0.0
+    alias: helper

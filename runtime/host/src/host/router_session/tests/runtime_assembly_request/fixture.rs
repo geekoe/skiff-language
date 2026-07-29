@@ -39,6 +39,7 @@ static FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PATH_ONLY_FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PINNED_ROUTE_FIXTURE_A: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PINNED_ROUTE_FIXTURE_B: OnceLock<CompiledGatewayFixture> = OnceLock::new();
+static PACKAGE_DIRECT_STREAM_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 
 pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
@@ -82,6 +83,36 @@ pub(super) async fn admitted_current_scope_gateway_host(
                 binding.selector.path.clone(),
                 host.lookup_active_assembly_request_route(&binding.service_ingress_key())
                     .expect("exact current-scope gateway route"),
+            )
+        })
+        .collect();
+    (host, routes)
+}
+
+pub(super) async fn admitted_package_direct_stream_gateway_host(
+) -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
+    let fixture = PACKAGE_DIRECT_STREAM_FIXTURE.get_or_init(|| {
+        compile_package_service_fixture(
+            "host-package-direct-http-stream-registry",
+            "test-runner/fixtures/package-direct-http-stream-registry",
+        )
+    });
+    let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        .expect("package-direct HTTP stream filesystem resolver");
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("package-direct HTTP stream assembly should admit");
+    let routes = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .map(|binding| {
+            (
+                binding.selector.path.clone(),
+                host.lookup_active_assembly_request_route(&binding.service_ingress_key())
+                    .expect("package-direct HTTP stream gateway route"),
             )
         })
         .collect();
@@ -502,6 +533,39 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
             .as_str(),
         "skiff-deployment-artifact-v4:sha256:bfa01d12d90d7a9e5af9da153b63862270a52eaffe59383a4563cff2a0dde2a4"
     );
+    CurrentScopeCompiledFixture {
+        assembly,
+        artifact_root,
+        _temp: temp,
+    }
+}
+
+fn compile_package_service_fixture(
+    temp_name: &str,
+    repository_relative_fixture: &str,
+) -> CurrentScopeCompiledFixture {
+    let temp = TempFixture::new(temp_name);
+    let artifact_root = temp.child("artifacts");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/host must live below the Skiff root")
+        .to_path_buf();
+    let platform = CompilerPlatformSources::new(&repository).expect("repository platform sources");
+    seed_canonical_std(&platform, &artifact_root).expect("canonical std seed");
+    let receipt = prepare_package_service_host_fixture(
+        &platform,
+        &repository.join(repository_relative_fixture),
+        &temp.child("authoring"),
+        &artifact_root,
+        "current-scope",
+    )
+    .expect("package-service HTTP stream fixture authoring");
+    let store =
+        CanonicalArtifactStore::open(&artifact_root).expect("HTTP stream fixture artifact store");
+    let assembly = store
+        .read_runtime_assembly(&receipt.base_assembly)
+        .expect("HTTP stream fixture RuntimeAssembly");
     CurrentScopeCompiledFixture {
         assembly,
         artifact_root,
