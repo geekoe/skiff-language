@@ -4,7 +4,10 @@ use serde_json::json;
 use skiff_artifact_model::STD_NATIVE_SIGNATURES;
 use skiff_runtime_capability_context::NativeCapabilityContexts;
 
-use crate::{error::RuntimeError, runtime_value_facade::RuntimeValue};
+use crate::{
+    error::RuntimeError,
+    runtime_value_facade::{RequestHeap, RuntimeValue},
+};
 
 use super::{
     http::{
@@ -12,10 +15,10 @@ use super::{
         HTTP_STREAM_CHUNK_KEY, HTTP_STREAM_END_KEY, HTTP_STREAM_START_KEY,
     },
     http_helpers::{cookie_value, forwardable_headers, name_values, sse_headers, NameMatch},
-    json::json_codec_decode_error,
+    json::{json_codec_decode_error, JsonNativeDispatch},
     runtime_shared_native_route,
     time::{clamp_sleep_millis, sleep_millis_from_runtime_value, TIME_SLEEP_MAX_MILLIS},
-    RuntimeNativeRoute,
+    RuntimeNativeInvocation, RuntimeNativeRoute,
 };
 
 #[test]
@@ -99,6 +102,49 @@ fn std_json_codec_decode_errors_use_public_decode_error_payload() {
             "unexpected error: {error}"
         );
     }
+}
+
+#[test]
+fn plan_free_json_encode_is_dynamic_but_decode_remains_strict() {
+    let mut heap = RequestHeap::default();
+    let encode = RuntimeNativeInvocation::new(
+        "std.json.encode".to_string(),
+        "std.json.encode",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        JsonNativeDispatch::dispatch(
+            &encode,
+            "std.json.encode",
+            vec![RuntimeValue::String("deepseek".to_string())],
+            &mut heap,
+        )
+        .expect("plan-free JSON encode should use its admitted dynamic codec"),
+        RuntimeValue::String("\"deepseek\"".to_string())
+    );
+
+    let decode = RuntimeNativeInvocation::new(
+        "std.json.decode".to_string(),
+        "std.json.decode",
+        None,
+        None,
+        None,
+    );
+    let error = JsonNativeDispatch::dispatch(
+        &decode,
+        "std.json.decode",
+        vec![RuntimeValue::String("\"deepseek\"".to_string())],
+        &mut heap,
+    )
+    .expect_err("JSON decode cannot infer its return type without a plan");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported native target std.json.decode"),
+        "unexpected strict decode diagnostic: {error}"
+    );
 }
 
 #[test]
