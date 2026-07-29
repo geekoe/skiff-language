@@ -5,8 +5,8 @@ use crate::error::unwrap_diagnostic_source_context;
 use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_linked_program::{
     FileAddr, LinkedFileUnit, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
-    LinkedTypeDescriptor, LinkedTypeRef, ServiceErrorExecutionContext, ServiceErrorTypeLink,
-    TypeAddr, UnitAddr,
+    LinkedTypeDescriptor, LinkedTypeRef, ResolvedSymbol, ServiceErrorExecutionContext,
+    ServiceErrorTypeLink, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
@@ -58,6 +58,131 @@ pub fn request_exception_for_catch(
     RequestException::local(carrier, source, stack, correlation)
         .map(Some)
         .map_err(RuntimeError::InvalidArtifact)
+}
+
+pub(crate) fn request_exception_for_resource_error(
+    error: &RuntimeError,
+    projection: &crate::assembly_execution::RuntimeExecutionProjection<'_>,
+    current_addr: &skiff_runtime_linked_program::ExecutableAddr,
+    source: InstructionSourceSite,
+    stack: Vec<ExceptionStackFrame>,
+    next_correlation: impl FnOnce() -> Result<ErrorCorrelation>,
+    heap: &mut RequestHeap,
+) -> Result<Option<RequestException>> {
+    const STD_PACKAGE_ID: &str = "skiff.run/std";
+    const RESOURCE_ERROR_SYMBOL: &str = "std.resource.ResourceError";
+
+    let RuntimeError::ResourceError { path, message } = unwrap_diagnostic_source_context(error)
+    else {
+        return Ok(None);
+    };
+    let resolved = projection
+        .resolved_package_id_symbol(STD_PACKAGE_ID, RESOURCE_ERROR_SYMBOL)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "native ResourceError requires exact public type {STD_PACKAGE_ID}:{RESOURCE_ERROR_SYMBOL}"
+            ))
+        })?;
+    let ResolvedSymbol::Type { addr } = resolved else {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "native ResourceError public symbol {STD_PACKAGE_ID}:{RESOURCE_ERROR_SYMBOL} is not a type"
+        )));
+    };
+    let canonical_addr = projection.canonical_type_addr(addr)?;
+    let UnitAddr::Package(package_slot) = &canonical_addr.unit else {
+        return Err(RuntimeError::InvalidArtifact(
+            "native ResourceError public type resolved outside Package code".to_string(),
+        ));
+    };
+    if projection.package_id(*package_slot) != Some(STD_PACKAGE_ID) {
+        return Err(RuntimeError::InvalidArtifact(
+            "native ResourceError public type is not owned by exact package skiff.run/std"
+                .to_string(),
+        ));
+    }
+    projection.validate_public_package_type(
+        STD_PACKAGE_ID,
+        RESOURCE_ERROR_SYMBOL,
+        &canonical_addr,
+    )?;
+    let root_ref = LinkedTypeRef::Address {
+        addr: canonical_addr.clone(),
+    };
+    let mut plan = RuntimeTypePlan::from_linked_nested_ref(
+        &root_ref,
+        &PlanContext::from_type_view(projection.type_view(), current_addr),
+    )?;
+    annotate_runtime_type_plan(&mut plan, &root_ref, projection.type_view())?;
+    validate_resource_error_plan(&plan, &canonical_addr)?;
+
+    let handle = heap
+        .alloc_object_carriers(BTreeMap::from([
+            (
+                "path".to_string(),
+                RuntimeValueCarrier::unidentified(RuntimeValue::String(path.clone())),
+            ),
+            (
+                "message".to_string(),
+                RuntimeValueCarrier::unidentified(RuntimeValue::String(message.clone())),
+            ),
+        ]))
+        .map_err(RuntimeError::from)?;
+    let carrier = runtime_carrier_for_plan(
+        RuntimeValue::Heap(handle),
+        &plan,
+        "native std.resource.ResourceError projection",
+        heap,
+    )?;
+    let expected_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: canonical_addr,
+            type_arguments: Vec::new(),
+        },
+    ));
+    if carrier.catch_identity() != Some(&expected_identity) {
+        return Err(RuntimeError::InvalidArtifact(
+            "native ResourceError materialization lost its exact Package-owned identity"
+                .to_string(),
+        ));
+    }
+    RequestException::local(carrier, source, stack, next_correlation()?)
+        .map(Some)
+        .map_err(RuntimeError::InvalidArtifact)
+}
+
+fn validate_resource_error_plan(plan: &RuntimeTypePlan, addr: &TypeAddr) -> Result<()> {
+    let expected_identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: addr.clone(),
+            type_arguments: Vec::new(),
+        },
+    ));
+    if plan.catch_identity() != Some(&expected_identity) {
+        return Err(RuntimeError::InvalidArtifact(
+            "std.resource.ResourceError linked plan is missing its exact Package-owned nominal identity"
+                .to_string(),
+        ));
+    }
+    let RuntimeTypeNode::Record { fields, .. } = plan.node() else {
+        return Err(RuntimeError::InvalidArtifact(
+            "std.resource.ResourceError linked plan root is not a record".to_string(),
+        ));
+    };
+    let exact_string_field = |name: &str| {
+        fields.iter().filter(|field| field.name == name).count() == 1
+            && fields.iter().any(|field| {
+                field.name == name
+                    && field.required
+                    && matches!(field.ty.node(), RuntimeTypeNode::String)
+            })
+    };
+    if fields.len() != 2 || !exact_string_field("path") || !exact_string_field("message") {
+        return Err(RuntimeError::InvalidArtifact(
+            "std.resource.ResourceError linked plan must be the exact required path/message string record"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn catch_ok(value: RuntimeValueCarrier, heap: &mut RequestHeap) -> Result<RuntimeValueCarrier> {

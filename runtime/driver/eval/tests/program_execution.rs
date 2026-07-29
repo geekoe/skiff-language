@@ -34,7 +34,8 @@ use super::*;
 use crate::eval::InterpreterEnv as Env;
 use skiff_artifact_model::{
     builtin_receiver_op_by_name, DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId,
-    PackageLocalAbiIdentity, PublicationResourceRef,
+    PackageLocalAbiIdentity, PublicationApiBinding, PublicationApiSymbolKind,
+    PublicationResourceRef, TypeExport,
 };
 use skiff_runtime_capability_context::{
     DbCapabilityTarget, DbCapabilityTargetId, DbProviderTargetMetadata,
@@ -61,6 +62,7 @@ const STD_FILE_IMMUTABLE_TYPE_INDEX: usize = 10;
 const STD_FILE_CREATE_OPTIONS_TYPE_INDEX: usize = 11;
 const STD_FILE_INFO_TYPE_INDEX: usize = 12;
 const STD_RESOURCE_INFO_TYPE_INDEX: usize = 13;
+const STD_RESOURCE_ERROR_TYPE_INDEX: usize = 14;
 
 fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capability_adapter::runtime_factory()
@@ -73,9 +75,13 @@ fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
 }
 
 fn local_execution_catch_identity(type_index: usize) -> CatchIdentity {
+    local_execution_catch_identity_for_addr(service_type_addr(type_index))
+}
+
+fn local_execution_catch_identity_for_addr(addr: TypeAddr) -> CatchIdentity {
     CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
         LocalExecutionTypeIdentity {
-            addr: service_type_addr(type_index),
+            addr,
             type_arguments: Vec::new(),
         },
     ))
@@ -1024,9 +1030,9 @@ async fn runtime_program_resource_exists_returns_false_for_invalid_and_missing_p
 
 #[tokio::test]
 async fn runtime_program_resource_text_missing_path_throws_resource_error() {
-    let program = Arc::new(program_with_executable(resource_text_native_executable(
-        "missing.txt",
-    )));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_text_native_executable("missing.txt"),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1034,14 +1040,14 @@ async fn runtime_program_resource_text_missing_path_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for missing resources");
 
-    assert_resource_error(&error, "missing.txt");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
-    let program = Arc::new(program_with_executable(resource_text_native_executable(
-        "./bad",
-    )));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_text_native_executable("./bad"),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1049,12 +1055,13 @@ async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for invalid paths");
 
-    assert_resource_error(&error, "./bad");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
-    let mut program = program_with_executable(resource_text_native_executable("bad.txt"));
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("bad.txt"));
     program.service_resources = resource_table("bad.txt", &[0xff, 0xfe]);
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -1063,11 +1070,11 @@ async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for invalid UTF-8");
 
-    assert_resource_error(&error, "bad.txt");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
-async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape() {
+async fn runtime_program_resource_json_syntax_error_throws_request_local_json_decode_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", b"{");
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
@@ -1077,11 +1084,11 @@ async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape
         .await
         .expect_err("std.resource.json should map syntax errors to std.json.DecodeError");
 
-    assert_resource_json_decode_error(&error, "bad.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
-async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape() {
+async fn runtime_program_resource_json_type_error_throws_request_local_json_decode_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", b"[]");
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
@@ -1091,7 +1098,7 @@ async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape()
         .await
         .expect_err("std.resource.json should map type errors to std.json.DecodeError");
 
-    assert_resource_json_decode_error(&error, "bad.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
@@ -1130,12 +1137,14 @@ async fn runtime_program_resource_json_rejects_stream_return_type() {
         .await
         .expect_err("std.resource.json should not decode resource bytes as a Stream");
 
-    assert_resource_json_decode_error(&error, "stream.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
-    let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
+    let mut program = program_with_executable_and_std_builtins(
+        resource_json_object_native_executable("bad.json"),
+    );
     program.service_resources = resource_table("bad.json", &[0xff, 0xfe]);
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -1144,7 +1153,154 @@ async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
         .await
         .expect_err("std.resource.json should throw ResourceError for invalid UTF-8");
 
-    assert_resource_error(&error, "bad.json");
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_bytes_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_bytes_native_executable("missing.bin"),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.bytes should throw ResourceError for missing resources");
+
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_info_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_info_native_executable("missing.bin"),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.info should throw ResourceError for missing resources");
+
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_direct_native_resource_error_catch_preserves_exact_exception() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        catch_resource_text_native_executable("missing.txt"),
+    ));
+    let file = Arc::clone(
+        program
+            .service_files
+            .first()
+            .expect("test program service file"),
+    );
+    let executable = file
+        .executables
+        .first()
+        .expect("test program executable")
+        .clone();
+    let interpreter = Interpreter::with_program(Arc::clone(&program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+    let invocation_context = program_invocation_context(&interpreter, &frame);
+    let context = invocation_context.execution_context();
+    let mut heap = RequestHeap::default();
+    let mut env = Env::default();
+
+    let caught = interpreter
+        .eval_program_expr_ref(
+            context,
+            &mut heap,
+            &mut env,
+            &ExecutableAddr::service(0, 0),
+            file.as_ref(),
+            &executable,
+            ExprRefIr { expression: 2 },
+        )
+        .await
+        .expect("catch<ResourceError> should catch the direct native failure");
+    let caught_handle = caught
+        .as_heap_handle()
+        .expect("catch result should be a request-local object");
+    let tag = heap
+        .object_field_carrier(caught_handle, "tag")
+        .expect("catch tag should be readable")
+        .expect("catch result should have a tag");
+    assert_eq!(tag.value(), &RuntimeValue::String("err".to_string()));
+    let exception_handle = heap
+        .object_field_carrier(caught_handle, "exception")
+        .expect("catch exception should be readable")
+        .expect("err result should have an exception")
+        .as_heap_handle()
+        .expect("caught exception should remain a request-local handle");
+    let HeapNode::Exception(exception) = heap
+        .get(exception_handle)
+        .expect("caught exception handle should resolve")
+    else {
+        panic!("caught err payload should be an exception node");
+    };
+    assert_resource_request_exception(exception);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_requires_std_package_type() {
+    let program = Arc::new(program_with_executable(resource_text_native_executable(
+        "missing.txt",
+    )));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("ResourceError projection must require the canonical std package type");
+
+    assert_resource_error_invalid_artifact(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_rejects_wrong_std_type_shape() {
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
+    replace_std_resource_error_type(
+        &mut program,
+        anonymous_type_decl(
+            "ResourceError",
+            linked_record_descriptor(vec![("message", linked_builtin_type("string"))]),
+        ),
+    );
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("ResourceError projection must reject a non-canonical std type shape");
+
+    assert_resource_error_invalid_artifact(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_rejects_std_implementation_only_type() {
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
+    Arc::make_mut(
+        program
+            .packages
+            .get_mut(0)
+            .expect("std package test fixture"),
+    )
+    .publication_abi
+    .api_bindings
+    .clear();
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("implementation-only ResourceError must not become publicly catchable");
+
+    assert_resource_error_invalid_artifact(&error);
 }
 
 #[tokio::test]
@@ -2048,7 +2204,7 @@ async fn runtime_program_stream_producer_cancelled_across_task_boundary_on_consu
 async fn runtime_program_create_from_stream_prefers_producer_error_after_consumer_error() {
     let program = Arc::new(program_with_executables_and_std_builtins(vec![
         create_from_stream_route_executable(),
-        bytes_stream_emit_then_bad_emit_producer_executable(),
+        bytes_stream_emit_then_typed_throw_producer_executable(),
     ]));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -2057,12 +2213,7 @@ async fn runtime_program_create_from_stream_prefers_producer_error_after_consume
         .await
         .expect_err("producer error should win over missing file store consumer error");
 
-    assert!(
-        error
-            .to_string()
-            .contains("stream emit item: expected runtime bytes"),
-        "unexpected error: {error}"
-    );
+    assert_json_decode_exception_identity(&error);
 }
 
 #[tokio::test]
@@ -4079,9 +4230,43 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
         package_slot, 0,
         "std HTTP test fixture currently expects an otherwise package-free program"
     );
-    program
-        .packages
-        .push(Arc::new(package_unit("skiff.run/std")));
+    let declarations = std_builtin_type_declarations(package_slot);
+    let std_file = Arc::new(std_builtin_file_unit(
+        declarations
+            .iter()
+            .map(|(_, declaration)| declaration.clone())
+            .collect(),
+    ));
+    let std_file_ref = FileIrRef {
+        file_ir_identity: std_file.file_ir_identity.clone(),
+        module_path: std_file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(std_file.source_ast_hash.clone()),
+    };
+    let mut std_package = package_unit("skiff.run/std");
+    std_package.files.push(std_file_ref.clone());
+    std_package
+        .publication_abi
+        .api_bindings
+        .push(PublicationApiBinding {
+            public_path: "std.resource.ResourceError".to_string(),
+            source_module_path: std_file.module_path.clone(),
+            source_symbol: "ResourceError".to_string(),
+            symbol_kind: PublicationApiSymbolKind::Type,
+        });
+    std_package.implementation_links.types.insert(
+        "std.resource.ResourceError".to_string(),
+        TypeExport {
+            file: std_file_ref,
+            type_index: STD_RESOURCE_ERROR_TYPE_INDEX as u32,
+            symbol: "ResourceError".to_string(),
+            is_interface: false,
+            descriptor: None,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    );
+    program.packages.push(Arc::new(std_package));
     program.package_resources.push(Default::default());
     program
         .link_overlay
@@ -4091,16 +4276,7 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
         .link_overlay
         .package_slots_by_dependency_ref
         .insert("std".to_string(), package_slot);
-
-    let declarations = std_builtin_type_declarations(package_slot);
-    program
-        .package_files
-        .push(vec![Arc::new(std_builtin_file_unit(
-            declarations
-                .iter()
-                .map(|(_, declaration)| declaration.clone())
-                .collect(),
-        ))]);
+    program.package_files.push(vec![std_file]);
     for (index, (symbol_path, declaration)) in declarations.into_iter().enumerate() {
         let addr = std_http_type_addr_for_package(package_slot, index);
         program.types.descriptors.insert(addr.clone(), declaration);
@@ -4115,6 +4291,25 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
                 .insert_package(PackageSymbolKey::new(package_slot, short_path), addr);
         }
     }
+    program.link_overlay.symbols.insert_package(
+        PackageSymbolKey::new(package_slot, "std.resource.ResourceError"),
+        ResolvedSymbol::Type {
+            addr: std_http_type_addr_for_package(package_slot, STD_RESOURCE_ERROR_TYPE_INDEX),
+        },
+    );
+}
+
+fn replace_std_resource_error_type(program: &mut RuntimeProgram, declaration: TypeDeclIr) {
+    let addr = std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX);
+    let file = Arc::make_mut(
+        program
+            .package_files
+            .get_mut(0)
+            .and_then(|files| files.get_mut(0))
+            .expect("std package test fixture should have one file"),
+    );
+    file.types[STD_RESOURCE_ERROR_TYPE_INDEX] = declaration.clone();
+    program.types.descriptors.insert(addr, declaration);
 }
 
 fn program_with_executables_and_local_error_type(
@@ -4492,6 +4687,16 @@ fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, Type
                             inner: Box::new(linked_builtin_type("string")),
                         },
                     ),
+                ]),
+            ),
+        ),
+        (
+            "std.resource.ResourceError",
+            anonymous_type_decl(
+                "ResourceError",
+                linked_record_descriptor(vec![
+                    ("path", linked_builtin_type("string")),
+                    ("message", linked_builtin_type("string")),
                 ]),
             ),
         ),
@@ -5893,6 +6098,102 @@ fn resource_text_native_executable(path: &str) -> LinkedExecutable {
     )
 }
 
+fn catch_resource_text_native_executable(path: &str) -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "$catch0".to_string(),
+                kind: "temp".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [{
+                "label": "entry",
+                "statements": [{
+                    "statement": 0
+                }]
+            }],
+            "statements": [{
+                "kind": "return",
+                "value": {
+                    "expression": 2
+                }
+            }],
+            "expressions": [
+                {
+                    "kind": "literal",
+                    "value": {
+                        "kind": "string",
+                        "value": path
+                    }
+                },
+                {
+                    "kind": "call",
+                    "call": {
+                        "site": test_instruction_site(),
+                        "target": {
+                            "kind": "native",
+                            "target": {
+                                "namespace": "std.resource",
+                                "symbol": "text",
+                                "bindingKey": "std.resource.text"
+                            }
+                        },
+                        "args": [{
+                            "expression": 0
+                        }]
+                    }
+                },
+                {
+                    "kind": "catch",
+                    "tryExpression": {
+                        "expression": 1
+                    },
+                    "catchSlot": 0,
+                    "catchType": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(
+                            std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
+                        ).unwrap()
+                    },
+                    "body": {
+                        "expression": 0
+                    }
+                }
+            ]
+        })),
+    }
+}
+
+fn resource_bytes_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "bytes",
+        "std.resource.bytes",
+        path,
+        None,
+        builtin_type("bytes"),
+    )
+}
+
+fn resource_info_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "info",
+        "std.resource.info",
+        path,
+        None,
+        std_http_type_ref(STD_RESOURCE_INFO_TYPE_INDEX),
+    )
+}
+
 fn resource_exists_native_executable(path: &str) -> LinkedExecutable {
     resource_native_executable(
         "exists",
@@ -6059,43 +6360,69 @@ fn builtin_type(name: &str) -> LinkedTypeRef {
     }
 }
 
-fn assert_resource_error(error: &RuntimeError, path: &str) {
-    let payload = error
-        .ordinary_payload()
-        .expect("resource error remains ordinary");
-    assert_eq!(payload.code, "std.resource.ResourceError");
+fn assert_resource_exception(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.resource.ResourceError, got {error:?}");
+    };
+    assert_resource_request_exception(exception.request());
+}
+
+fn assert_resource_request_exception(exception: &RequestException) {
+    let expected_site = test_instruction_site();
     assert_eq!(
-        error.ordinary_catch_projection(),
-        None,
-        "ResourceError must stay package-owned even through eval diagnostic wrappers",
+        exception.local_catch_identity(),
+        Some(&local_execution_catch_identity_for_addr(
+            std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
+        ))
     );
+    assert!(exception.local_value().is_some());
+    assert_eq!(exception.source(), &expected_site);
     assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["path"].as_str()),
-        Some(path),
-        "unexpected payload: {payload:?}"
+        exception.stack(),
+        [ExceptionStackFrame::Local {
+            site: expected_site,
+        }]
     );
 }
 
-fn assert_resource_json_decode_error(error: &RuntimeError, path: &str) {
-    let payload = error
-        .ordinary_payload()
-        .expect("resource JSON decode remains ordinary");
-    assert_eq!(payload.code, "std.json.DecodeError");
-    assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["target"].as_str()),
-        Some("std.resource.json"),
-        "unexpected payload: {payload:?}"
-    );
+fn assert_resource_error_invalid_artifact(error: &RuntimeError) {
+    let RuntimeError::InvalidArtifact(message) = runtime_error_leaf(error) else {
+        panic!("expected invalid ResourceError projection artifact, got {error:?}");
+    };
     assert!(
-        payload.message.contains(path),
-        "decode error message should include resource path {path}: {payload:?}"
+        message.contains("std.resource.ResourceError"),
+        "invalid artifact should identify the required ResourceError type: {message}"
     );
+}
+
+fn assert_resource_json_decode_exception(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.json.DecodeError, got {error:?}");
+    };
+    let expected_site = test_instruction_site();
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
+    );
+    assert!(exception.request().local_value().is_some());
+    assert_eq!(exception.request().source(), &expected_site);
+    assert_eq!(
+        exception.request().stack(),
+        [ExceptionStackFrame::Local {
+            site: expected_site,
+        }]
+    );
+}
+
+fn assert_json_decode_exception_identity(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.json.DecodeError, got {error:?}");
+    };
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
+    );
+    assert!(exception.request().local_value().is_some());
 }
 
 fn for_in_value_block_executable() -> LinkedExecutable {
@@ -6975,7 +7302,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
     }
 }
 
-fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
+fn bytes_stream_emit_then_typed_throw_producer_executable() -> LinkedExecutable {
     LinkedExecutable {
         kind: ExecutableKind::Function,
         symbol: "svc.main.produce".to_string(),
@@ -7008,9 +7335,8 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                     "value": { "expression": 1 }
                 },
                 {
-                    "kind": "emit",
-                    "operation": "emit",
-                    "value": { "expression": 2 }
+                    "kind": "expr",
+                    "value": { "expression": 5 }
                 }
             ],
             "expressions": [
@@ -7032,7 +7358,34 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                         ]
                     }
                 },
-                { "kind": "literal", "value": { "kind": "string", "value": "not bytes" } }
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "fixture.stream.producer" }
+                },
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "typed producer terminal" }
+                },
+                {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "fields": {
+                        "target": { "expression": 2 },
+                        "message": { "expression": 3 }
+                    }
+                },
+                {
+                    "kind": "throw",
+                    "site": test_instruction_site(),
+                    "value": { "expression": 4 },
+                    "payloadType": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    }
+                }
             ]
         })),
     }

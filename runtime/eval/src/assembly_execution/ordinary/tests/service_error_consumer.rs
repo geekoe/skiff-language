@@ -565,10 +565,60 @@ async fn ordinary_representation_private_platform_and_resource_share_one_channel
                         _
                     )))
                 ));
+                assert_resource_local_value(request, &heap);
             }
             ProviderFailureKind::PublicRecord => unreachable!(),
         }
     }
+}
+
+#[tokio::test]
+async fn native_resource_failure_exports_public_std_type_and_caller_catches_it() {
+    let fixture = ServiceErrorConsumerFixture::new(
+        ProviderFailureKind::Resource,
+        ConsumerTopology::OneHop,
+        true,
+        true,
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let (result, heap, _) = fixture.execute_internal(&interpreter).await;
+    let caught = result.expect("caller must catch the exact public std ResourceError");
+    let request = caught_request(&caught, &heap);
+    assert!(matches!(
+        request
+            .fixed_service_error()
+            .expect("caught service ResourceError retains fixed bytes")
+            .envelope(),
+        ServiceErrorEnvelope::PublicTypedError {
+            package_id,
+            stable_schema_key,
+            ..
+        } if package_id == STD_PACKAGE && stable_schema_key == RESOURCE_ERROR
+    ));
+    assert_resource_local_value(request, &heap);
+}
+
+fn assert_resource_local_value(
+    request: &skiff_runtime_model::service_error::RequestException,
+    heap: &RequestHeap,
+) {
+    let local = request
+        .local_value()
+        .expect("linked caller must materialize ResourceError locally");
+    let RuntimeValue::Heap(handle) = local.value() else {
+        panic!("ResourceError local value must be a record");
+    };
+    let HeapNode::Object(object) = heap.get(*handle).expect("ResourceError heap record") else {
+        panic!("ResourceError local value must be an object");
+    };
+    assert_eq!(
+        object.fields().get("path"),
+        Some(&RuntimeValue::String("missing-resource.txt".to_string()))
+    );
+    assert!(matches!(
+        object.fields().get("message"),
+        Some(RuntimeValue::String(message)) if message.contains("is not declared")
+    ));
 }
 
 #[test]
@@ -1004,7 +1054,6 @@ fn provider_package(
     service_call: &ServiceCallRef,
 ) -> PackageFixture {
     let std_file = package_symbol(std_ref, "std.file.FileError");
-    let std_resource = package_symbol(std_ref, "std.resource.ResourceError");
     let mut file = FileIrUnit::empty("provider.main", "source:provider-private-path");
     file.type_table = vec![
         TypeDeclIr {
@@ -1038,7 +1087,7 @@ fn provider_package(
     file.external_refs
         .service_call_refs
         .push(service_call.clone());
-    file.external_refs.package_symbols = vec![std_file.clone(), std_resource.clone()];
+    file.external_refs.package_symbols = vec![std_file.clone()];
     file.executables = vec![
         service_call_executable("relay", relay_call_site(), None),
         record_throw_executable(
@@ -1060,14 +1109,7 @@ fn provider_package(
             "message",
             "provider file failed",
         ),
-        record_throw_executable(
-            "throwResource",
-            TypeRefIr::PackageSymbol {
-                symbol: std_resource,
-            },
-            "message",
-            "resource denied",
-        ),
+        native_resource_error_executable(),
     ];
     skiff_artifact_identity::assign_file_ir_identity(&mut file).expect("provider file identity");
     let file_ref = file_reference(&file);
@@ -1208,6 +1250,15 @@ fn caller_package(
                 symbol: internal_error,
             }
         }
+        ProviderFailureKind::Resource => {
+            let resource_error = package_symbol(std_ref, RESOURCE_ERROR);
+            file.external_refs
+                .package_symbols
+                .push(resource_error.clone());
+            TypeRefIr::PackageSymbol {
+                symbol: resource_error,
+            }
+        }
         _ if linked_provider => {
             file.external_refs
                 .package_symbols
@@ -1332,13 +1383,16 @@ fn std_package() -> PackageFixture {
             "ResourceError",
             RESOURCE_ERROR,
             TypeDescriptorIr::Record {
-                fields: BTreeMap::from([("message".to_string(), TypeRefIr::builtin("string"))]),
+                fields: BTreeMap::from([
+                    ("message".to_string(), TypeRefIr::builtin("string")),
+                    ("path".to_string(), TypeRefIr::builtin("string")),
+                ]),
             },
             ContractTypeDescriptor::Record {
-                fields: BTreeMap::from([(
-                    "message".to_string(),
-                    ContractTypeRef::builtin("string"),
-                )]),
+                fields: BTreeMap::from([
+                    ("message".to_string(), ContractTypeRef::builtin("string")),
+                    ("path".to_string(), ContractTypeRef::builtin("string")),
+                ]),
             },
         ),
     ];
@@ -1384,6 +1438,22 @@ fn std_package() -> PackageFixture {
                 },
             )
         })
+        .collect::<BTreeMap<_, _>>();
+    let public_symbols = specs
+        .iter()
+        .map(|(_, _, stable_key, descriptor, _)| {
+            (
+                (*stable_key).to_string(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id: format!("type:{stable_key}"),
+                    descriptor: descriptor.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                },
+            )
+        })
         .collect();
     let build = PackageBuildId::new("build:ordinary-error-std");
     let abi = PackageLocalAbiIdentity::new("abi:ordinary-error-std");
@@ -1396,7 +1466,7 @@ fn std_package() -> PackageFixture {
         static_resources: Vec::new(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: abi.clone(),
-            public_symbols: BTreeMap::new(),
+            public_symbols,
             implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
@@ -1658,6 +1728,52 @@ fn record_throw_executable(
                     value: ExprRefIr { expression: 1 },
                     payload_type,
                     site: provider_throw_site(),
+                },
+            ],
+        },
+        source_span: None,
+    }
+}
+
+fn native_resource_error_executable() -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "throwResource".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("string"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 1 }),
+            }],
+            expressions: vec![
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "missing-resource.txt".to_string(),
+                    },
+                },
+                ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::Native {
+                            target: NativeTarget {
+                                namespace: "std.resource".to_string(),
+                                symbol: "text".to_string(),
+                                binding_key: Some("std.resource.text".to_string()),
+                                metadata: BTreeMap::new(),
+                            },
+                        },
+                        site: provider_throw_site(),
+                        args: vec![ExprRefIr { expression: 0 }],
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
                 },
             ],
         },
