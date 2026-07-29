@@ -62,10 +62,9 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
         Self { context }
     }
 
-    fn project(
+    fn project_callback(
         &self,
         request: ServiceLinkableCapabilityRequest<'_>,
-        native: bool,
     ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
     {
         let target = self
@@ -75,24 +74,13 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
         let interface = interface_value(request.value, request.source_heap)?;
         let (callback_type, operations) =
             callback_contract(request.ty, request.package_schema_records)?;
-        let adapter = if native {
-            InProcessCallbackAdapter::from_registered_explicit_native_interface(
-                request.ty,
-                callback_type,
-                operations,
-                &interface,
-                request.package_schema_records,
-                request.source_heap,
-            )
-        } else {
-            InProcessCallbackAdapter::from_local_interface(
-                callback_type,
-                &interface,
-                operations,
-                request.package_schema_records,
-                request.source_heap,
-            )
-        }
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            callback_type,
+            &interface,
+            operations,
+            request.package_schema_records,
+            request.source_heap,
+        )
         .map_err(callback_materialization_error)?;
         validate_adapter_preimage(target, &adapter)?;
         let contract = serde_json::to_string(adapter.canonical_package_schema_type())
@@ -143,7 +131,7 @@ impl ServiceLinkableCapabilityHooks for CallbackNativeCapabilityHooks<'_, '_> {
         request: ServiceLinkableCapabilityRequest<'_>,
     ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
     {
-        self.project(request, false)
+        self.project_callback(request)
     }
 
     fn project_native_adapter_capability(
@@ -151,7 +139,10 @@ impl ServiceLinkableCapabilityHooks for CallbackNativeCapabilityHooks<'_, '_> {
         request: ServiceLinkableCapabilityRequest<'_>,
     ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
     {
-        self.project(request, true)
+        let _ = request;
+        Err(ServiceLinkableMaterializationError::InvalidPlan {
+            message: "native callback adapters require an explicit non-service capability path",
+        })
     }
 }
 
@@ -199,7 +190,20 @@ fn callback_contract<'a>(
     ),
     ServiceLinkableMaterializationError,
 > {
-    callback_contract_inner(ty, schema, &mut HashSet::new())
+    let ContractTypeRef::AnyInterface {
+        interface,
+        arguments,
+    } = ty
+    else {
+        return Err(ServiceLinkableMaterializationError::TypeMismatch);
+    };
+    if !arguments.is_empty() {
+        return Err(ServiceLinkableMaterializationError::TypeMismatch);
+    }
+    let ContractTypeRef::PackageSchema { .. } = interface.as_ref() else {
+        return Err(ServiceLinkableMaterializationError::TypeMismatch);
+    };
+    callback_contract_inner(interface, schema, &mut HashSet::new())
 }
 
 fn callback_contract_inner<'a>(
@@ -349,11 +353,15 @@ mod tests {
     #[test]
     fn in_process_callback_resolves_only_declared_callback_contract_operations() {
         let callback_id = PackageSchemaTypeId::new("package-schema:callback");
-        let callback_ty = ContractTypeRef::package_schema(
+        let callback_interface = ContractTypeRef::package_schema(
             "example.callback",
             "api.Callback",
             callback_id.clone(),
         );
+        let callback_ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(callback_interface.clone()),
+            arguments: Vec::new(),
+        };
         let operations = BTreeMap::from([(
             "invoke".to_string(),
             BoundaryCallbackOperation {
@@ -387,6 +395,30 @@ mod tests {
             callback_contract(&ContractTypeRef::builtin("string"), &schema),
             Err(ServiceLinkableMaterializationError::TypeMismatch)
         ));
+        assert!(matches!(
+            callback_contract(&callback_interface, &schema),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
+        assert!(matches!(
+            callback_contract(
+                &ContractTypeRef::AnyInterface {
+                    interface: Box::new(callback_interface.clone()),
+                    arguments: vec![ContractTypeRef::builtin("string")],
+                },
+                &schema
+            ),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
+        assert!(matches!(
+            callback_contract(
+                &ContractTypeRef::Builtin {
+                    name: "Array".to_string(),
+                    arguments: vec![callback_ty],
+                },
+                &schema
+            ),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
     }
 
     #[test]
@@ -402,8 +434,12 @@ mod tests {
     #[test]
     fn callback_contract_rejects_owner_key_id_descriptor_and_missing_alias_record() {
         let type_id = PackageSchemaTypeId::new("schema:callback-validation");
-        let ty =
+        let interface =
             ContractTypeRef::package_schema("example.callback", "api.Callback", type_id.clone());
+        let ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(interface),
+            arguments: Vec::new(),
+        };
         let callback_record = || PackageSchemaTypeRecord {
             package_id: "example.callback".to_string(),
             stable_schema_key: "api.Callback".to_string(),
@@ -463,5 +499,70 @@ mod tests {
             callback_contract(&ty, &BTreeMap::from([(type_id, Arc::new(alias))])),
             Err(ServiceLinkableMaterializationError::MissingSchema { .. })
         ));
+    }
+
+    #[test]
+    fn callback_contract_unwraps_exact_existential_alias_representation_closure() {
+        let callback_id = PackageSchemaTypeId::new("schema:callback-terminal");
+        let representation_id = PackageSchemaTypeId::new("schema:callback-representation");
+        let alias_id = PackageSchemaTypeId::new("schema:callback-alias");
+        let package_ref = |key: &str, id: PackageSchemaTypeId| {
+            ContractTypeRef::package_schema("example.callback", key, id)
+        };
+        let operations = BTreeMap::from([(
+            "invoke".to_string(),
+            BoundaryCallbackOperation {
+                parameters: vec![ContractTypeRef::builtin("string")],
+                return_type: ContractTypeRef::builtin("bool"),
+            },
+        )]);
+        let record = |key: &str, id: PackageSchemaTypeId, descriptor: ContractTypeDescriptor| {
+            (
+                id.clone(),
+                Arc::new(PackageSchemaTypeRecord {
+                    package_id: "example.callback".to_string(),
+                    stable_schema_key: key.to_string(),
+                    package_schema_type_id: id,
+                    canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                        type_params: Vec::new(),
+                        descriptor,
+                    },
+                }),
+            )
+        };
+        let schema = BTreeMap::from([
+            record(
+                "api.Callback",
+                callback_id.clone(),
+                ContractTypeDescriptor::CallbackInterface {
+                    operations: operations.clone(),
+                },
+            ),
+            record(
+                "api.CallbackRepresentation",
+                representation_id.clone(),
+                ContractTypeDescriptor::Representation {
+                    target: package_ref("api.Callback", callback_id.clone()),
+                },
+            ),
+            record(
+                "api.CallbackAlias",
+                alias_id.clone(),
+                ContractTypeDescriptor::Alias {
+                    target: package_ref("api.CallbackRepresentation", representation_id),
+                },
+            ),
+        ]);
+        let ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(package_ref("api.CallbackAlias", alias_id)),
+            arguments: Vec::new(),
+        };
+
+        let (resolved, resolved_operations) =
+            callback_contract(&ty, &schema).expect("closed alias chain should resolve");
+        assert_eq!(resolved.package_id, "example.callback");
+        assert_eq!(resolved.stable_schema_key, "api.Callback");
+        assert_eq!(resolved.package_schema_type_id, callback_id);
+        assert_eq!(resolved_operations, &operations);
     }
 }

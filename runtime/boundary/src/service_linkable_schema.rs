@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use skiff_artifact_model::{
+    boundary::{classify_boundary_callback_position, BoundaryCallbackPosition},
     ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
 };
 
@@ -122,7 +123,20 @@ pub(crate) fn contract_type_is_callback_interface(
     ty: &ContractTypeRef,
     schema: &PackageSchema,
 ) -> Result<bool, ServiceLinkableMaterializationError> {
-    contract_type_is_callback_interface_inner(ty, schema, &mut HashSet::new())
+    let BoundaryCallbackPosition::Exact { interface_type } =
+        classify_boundary_callback_position(ty)
+    else {
+        return Ok(false);
+    };
+    contract_type_is_callback_interface_inner(
+        &ContractTypeRef::PackageSchema {
+            package_id: interface_type.package_id,
+            stable_schema_key: interface_type.stable_schema_key,
+            package_schema_type_id: interface_type.package_schema_type_id,
+        },
+        schema,
+        &mut HashSet::new(),
+    )
 }
 
 fn contract_type_is_callback_interface_inner(
