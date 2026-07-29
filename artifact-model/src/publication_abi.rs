@@ -1,11 +1,8 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{
     executable::ExecutableSignatureIr,
-    metadata::MetadataValue,
-    types::{FunctionTypeParamIr, TypeDescriptorIr, TypeRefIr},
+    types::{FunctionTypeParamIr, TypeRefIr},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,17 +37,6 @@ pub enum PublicationOperationKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicationOperationAbi {
-    pub operation: OperationAbiRef,
-    pub public_signature: CanonicalPublicCallableSignature,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub schema_closure: Vec<PublicationSchemaType>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub stream_effect_throw_config: BTreeMap<String, MetadataValue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanonicalPublicCallableSignature {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<FunctionTypeParamIr>,
@@ -74,74 +60,4 @@ impl From<ExecutableSignatureIr> for CanonicalPublicCallableSignature {
             may_suspend: signature.may_suspend,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicationApiBinding {
-    pub public_path: String,
-    pub source_module_path: String,
-    pub source_symbol: String,
-    pub symbol_kind: PublicationApiSymbolKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PublicationApiSymbolKind {
-    Type,
-    Alias,
-    Interface,
-    Callable,
-    Const,
-    PublicInstance,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SourceCallOperationIndexEntry {
-    pub source_call_path: String,
-    pub operation: OperationAbiRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicationPublicInstanceExport {
-    pub public_instance_key: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub interfaces: Vec<InterfaceInstantiationRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_call_method_index: Vec<SourceCallMethodIndexEntry>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub method_operations: Vec<OperationAbiRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SourceCallMethodIndexEntry {
-    pub method_name: String,
-    pub operation: OperationAbiRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicationSchemaType {
-    pub abi_type_id: String,
-    pub nameability: PublicationSchemaTypeNameability,
-    pub ty: TypeRefIr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub descriptor: Option<TypeDescriptorIr>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PublicationSchemaTypeNameability {
-    PublicNameable,
-    ClosureOnly,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublicationConformanceFact {
-    pub type_abi_id: String,
-    pub interface: InterfaceInstantiationRef,
 }

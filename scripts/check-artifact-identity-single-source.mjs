@@ -17,13 +17,22 @@ const skippedRustScanDirectories = new Set([
   'target',
 ]);
 const artifactIdentityFacadePath = 'artifact-identity/src/lib.rs';
-const terminalLegacyArtifactTypeNames = Object.freeze([
+const terminalLegacyArtifactSymbolNames = Object.freeze([
   'PackageUnit',
   'ServiceUnit',
   'PublicationAbiUnit',
   'PackageTestAssembly',
   'ServiceDependencyConstraint',
   'ServiceDependencyOperationRef',
+  'PublicationApiBinding',
+  'PublicationApiSymbolKind',
+  'PublicationConformanceFact',
+  'PublicationOperationAbi',
+  'PublicationPublicInstanceExport',
+  'PublicationSchemaType',
+  'PublicationSchemaTypeNameability',
+  'SourceCallMethodIndexEntry',
+  'SourceCallOperationIndexEntry',
 ]);
 const canonicalFileIrCallValidatorRegistry = Object.freeze([
   Object.freeze({
@@ -811,7 +820,7 @@ async function runCheck() {
     );
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
-  failures.push(...collectTerminalLegacyArtifactTypeFailures(files));
+  failures.push(...collectTerminalLegacyArtifactSymbolFailures(files));
   failures.push(...collectCanonicalCompileModelFailures(files));
   failures.push(...collectCanonicalDeploymentAssemblyModelFailures(files));
   failures.push(...collectCanonicalBoundaryContractFailures(files));
@@ -961,17 +970,17 @@ function collectOwnedDefinitionViolations(files) {
   return violations;
 }
 
-function collectTerminalLegacyArtifactTypeFailures(files) {
+function collectTerminalLegacyArtifactSymbolFailures(files) {
   const failures = [];
   const legacyTypeRegexp = new RegExp(
-    `\\b(${terminalLegacyArtifactTypeNames.join('|')})\\b`,
+    `\\b(${terminalLegacyArtifactSymbolNames.join('|')})\\b`,
     'g',
   );
   for (const file of files) {
     const identifierView = rustIdentifierView(file.text);
     for (const match of identifierView.matchAll(legacyTypeRegexp)) {
       failures.push(
-        `${file.relPath}:${lineNumberAt(identifierView, match.index ?? 0)} contains terminal legacy artifact type ${match[1]}`,
+        `${file.relPath}:${lineNumberAt(identifierView, match.index ?? 0)} contains terminal legacy artifact symbol ${match[1]}`,
       );
     }
   }
@@ -1301,12 +1310,23 @@ function runSelfTest() {
       expectedFailures: 0,
     },
     {
-      name: 'rejects terminal legacy type in production code',
+      name: 'rejects every terminal legacy artifact symbol in production code',
       files: [{
         relPath: 'runtime/model/src/legacy.rs',
-        text: 'pub struct PublicationAbiUnit;\n',
+        text: [
+          'pub struct PublicationApiBinding;',
+          'pub enum PublicationApiSymbolKind {}',
+          'pub struct PublicationConformanceFact;',
+          'pub struct PublicationOperationAbi;',
+          'pub struct PublicationPublicInstanceExport;',
+          'pub struct PublicationSchemaType;',
+          'pub enum PublicationSchemaTypeNameability {}',
+          'pub struct SourceCallMethodIndexEntry;',
+          'pub struct SourceCallOperationIndexEntry;',
+          '',
+        ].join('\n'),
       }],
-      expectedFailures: 1,
+      expectedFailures: 9,
     },
     {
       name: 'rejects terminal legacy type in test code',
@@ -1327,7 +1347,7 @@ function runSelfTest() {
   ];
   const failures = [];
   for (const testCase of terminalLegacyCases) {
-    const legacyFailures = collectTerminalLegacyArtifactTypeFailures(testCase.files);
+    const legacyFailures = collectTerminalLegacyArtifactSymbolFailures(testCase.files);
     if (legacyFailures.length !== testCase.expectedFailures) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedFailures} terminal legacy failure(s), got ${legacyFailures.length}`,

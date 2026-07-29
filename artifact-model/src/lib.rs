@@ -168,10 +168,7 @@ pub use package_unit::{
 };
 pub use publication_abi::{
     CanonicalPublicCallableSignature, InterfaceInstantiationRef, OperationAbiRef,
-    PublicationApiBinding, PublicationApiSymbolKind, PublicationConformanceFact,
-    PublicationOperationAbi, PublicationOperationKind, PublicationPublicInstanceExport,
-    PublicationSchemaType, PublicationSchemaTypeNameability, SourceCallMethodIndexEntry,
-    SourceCallOperationIndexEntry,
+    PublicationOperationKind,
 };
 pub use recoverable::{
     recoverable_expected_type_plans_compatible, validate_recoverable_artifact_metadata,
