@@ -9,6 +9,61 @@ use skiff_artifact_model::{
 
 use super::*;
 
+#[test]
+fn canonical_dependency_root_is_opened_without_creation() {
+    let root = std::env::temp_dir().join(format!(
+        "skiff-compiler-canonical-open-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    assert!(!root.exists());
+
+    let error = open_canonical_artifact_store(Some(&root))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("could not be opened"), "{error}");
+    assert!(
+        !root.exists(),
+        "compile dependency reads must not create roots"
+    );
+}
+
+#[test]
+fn canonical_dependency_root_rejects_files_and_preserves_the_exact_root() {
+    let base = std::env::temp_dir().join(format!(
+        "skiff-compiler-canonical-root-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let file = base.join("not-a-directory");
+    std::fs::write(&file, "occupied").unwrap();
+
+    let file_error = open_canonical_artifact_store(Some(&file))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        file_error.contains("artifact root must be a directory"),
+        "{file_error}"
+    );
+
+    let canonical = base.canonicalize().unwrap();
+    let store = open_canonical_artifact_store(Some(&base))
+        .unwrap()
+        .expect("configured root");
+    assert_eq!(store.root(), canonical);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "occupied");
+
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 #[cfg(unix)]
 mod p5_f18a;
 

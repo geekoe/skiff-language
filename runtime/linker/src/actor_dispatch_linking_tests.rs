@@ -1,20 +1,30 @@
-mod common;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use std::sync::Arc;
-
-use common::{package_project::compile_package_project, TestDir};
 use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, PackageCodeSlot, RuntimeAssembly,
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
+use skiff_compiler::CompilerPlatformSources;
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_linked_program::{
     HydratedPackageCode, LinkedActorMethodImplementation, LinkedCallTarget, LinkedExprIr,
-    LinkedTypeRef, PublicationResourceTable,
+    LinkedTypeRef, PublicationResourceTable, SharedPackageLinkedImage,
 };
+use skiff_test_runner::canonical_package::compile_package_project;
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn real_actor_source_links_to_routed_actor_dispatch() {
-    let project_dir = TestDir::new("skiff-compiler", "actor-dispatch-linking");
+    let project_dir = TestDir::new("actor-dispatch-linking");
     project_dir.write(
         "package.yml",
         "id: example.com/actor-dispatch-linking\nversion: 1.0.0\n",
@@ -40,8 +50,14 @@ function invoke(actor: UserActor) -> string {
 "#,
     );
 
-    let project =
-        compile_package_project(project_dir.path()).expect("real Actor source should compile");
+    let artifact_root = project_dir.path().join("artifacts");
+    CanonicalArtifactStore::create(&artifact_root).expect("isolated canonical artifact store");
+    let project = compile_package_project(
+        &repository_platform_sources(),
+        project_dir.path(),
+        &artifact_root,
+    )
+    .expect("real Actor source should compile");
     let package = project.package.artifact.clone();
     let package_ref =
         skiff_artifact_identity::package_artifact_ref(&package).expect("package must be canonical");
@@ -91,16 +107,20 @@ function invoke(actor: UserActor) -> string {
         activation_templates: Vec::new(),
         gateway_ingress: Vec::new(),
     };
-    let image = skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
-        &assembly,
-        [HydratedPackageCode::new(
-            Arc::new(package.clone()),
-            source_files,
-            PublicationResourceTable::default(),
+    let shared = Arc::new(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &assembly,
+            [HydratedPackageCode::new(
+                Arc::new(package.clone()),
+                source_files,
+                PublicationResourceTable::default(),
+            )
+            .with_schema_index(Arc::new(project.package.package_schema_index.clone()))],
         )
-        .with_schema_index(Arc::new(project.package.package_schema_index.clone()))],
-    )
-    .expect("compiler artifact should link");
+        .expect("compiler artifact package links should resolve"),
+    );
+    let image = crate::assembly_execution::link_assembly_execution_image(shared)
+        .expect("compiler artifact should link");
 
     let linked_file = image
         .code_by_build(&package.package_build_id)
@@ -160,4 +180,50 @@ function invoke(actor: UserActor) -> string {
         linked_method.implementation,
         LinkedActorMethodImplementation::Executable { .. }
     ));
+}
+
+fn repository_platform_sources() -> CompilerPlatformSources {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/linker must live below the Skiff root")
+        .to_path_buf();
+    CompilerPlatformSources::new(&root).expect("repository platform sources")
+}
+
+struct TestDir {
+    path: PathBuf,
+}
+
+impl TestDir {
+    fn new(name: &str) -> Self {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should follow the Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "skiff-runtime-linker-{name}-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("test directory");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn write(&self, relative_path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
+        let path = self.path.join(relative_path);
+        let parent = path.parent().expect("fixture file parent");
+        fs::create_dir_all(parent).expect("fixture parent directory");
+        fs::write(path, contents).expect("fixture file");
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }

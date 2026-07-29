@@ -52,10 +52,10 @@ pub enum GeneratedServiceDeploymentError {
         field: &'static str,
         message: String,
     },
-    #[error(transparent)]
-    Identity(#[from] skiff_artifact_identity::ArtifactIdentityError),
-    #[error(transparent)]
-    Projection(#[from] ProjectionError),
+    #[error("generated deployment artifact identity is invalid: {message}")]
+    Identity { message: String },
+    #[error("generated deployment projection failed: {message}")]
+    Projection { message: String },
     #[error(transparent)]
     HttpGateway(#[from] HttpGatewayProjectionError),
     #[error(transparent)]
@@ -97,9 +97,9 @@ pub fn generate_service_deployment(
     ingress.extend(websocket_ingress);
     let typed = ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
-        contract: service_contract_ref(&input.service_api.contract)?,
+        contract: service_contract_ref(&input.service_api.contract).map_err(identity_error)?,
         deployment_revision: generated_revision(&input)?,
-        implementation: package_artifact_ref(input.implementation)?,
+        implementation: package_artifact_ref(input.implementation).map_err(identity_error)?,
         operation_bindings: operation_bindings(&input)?,
         package_bindings: package_bindings(&input)?,
         service_selectors: service_selectors(&input),
@@ -142,7 +142,8 @@ pub fn generate_service_deployment(
         &input.service_api.contract,
         &artifacts,
         &contract_schema_records,
-    )?)
+    )
+    .map_err(projection_error)?)
 }
 
 fn contract_package_schema_records(
@@ -290,7 +291,7 @@ fn package_bindings(
                     caller_package_build_id: caller.package_build_id.clone(),
                     package_requirement_alias: requirement.alias.clone(),
                 },
-                package: package_artifact_ref(package)?,
+                package: package_artifact_ref(package).map_err(identity_error)?,
                 collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
@@ -513,6 +514,20 @@ fn canonical_service_calls(
 
 fn invalid(message: impl Into<String>) -> GeneratedServiceDeploymentError {
     GeneratedServiceDeploymentError::InvalidInput(message.into())
+}
+
+fn identity_error(
+    error: skiff_artifact_identity::ArtifactIdentityError,
+) -> GeneratedServiceDeploymentError {
+    GeneratedServiceDeploymentError::Identity {
+        message: error.to_string(),
+    }
+}
+
+fn projection_error(error: ProjectionError) -> GeneratedServiceDeploymentError {
+    GeneratedServiceDeploymentError::Projection {
+        message: error.to_string(),
+    }
 }
 
 #[cfg(test)]

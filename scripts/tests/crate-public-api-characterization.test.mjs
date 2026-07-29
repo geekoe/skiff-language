@@ -29,7 +29,7 @@ Default gated crates:
 `;
 
 const selfTestOutput =
-  'Self-test passed: allowed fixture 0 violation(s), denied fixture 7 violation(s).\n';
+  'Self-test passed: allowed fixture 0 violation(s), denied fixture 9 violation(s).\n';
 const nightlyUnavailableWarning =
   'Nightly Rust toolchain is unavailable; falling back to current toolchain with RUSTC_BOOTSTRAP=1.\n';
 const managedCrateCount = GATE_POLICY.length;

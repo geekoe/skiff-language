@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{
@@ -49,10 +49,16 @@ pub fn compile_package(
         })?;
     let package_id = input.package_id.to_string();
     let package_version = input.package.manifest.version.clone();
+    let canonical_artifact_store = open_canonical_artifact_store(input.canonical_artifact_root())?;
     let declared_package_requirements = package_requirements(&input)?;
     let contract_requirements = contract_requirements(&input);
-    let pre_source_package_schemas = pre_source_contract_package_schemas(&input)?;
-    let compiled = source_compile::compile(&input, &pre_source_package_schemas)?;
+    let pre_source_package_schemas =
+        pre_source_contract_package_schemas(&input, canonical_artifact_store.as_ref())?;
+    let compiled = source_compile::compile(
+        &input,
+        &pre_source_package_schemas,
+        canonical_artifact_store.as_ref(),
+    )?;
     skiff_compiler_source::validate_source_execution_semantics(compiled.compile_model())?;
     let service_requirements = compiled
         .lowered()
@@ -79,7 +85,7 @@ pub fn compile_package(
         &package_requirements,
         input.available_packages,
         &pre_source_package_schemas,
-        input.canonical_artifact_store(),
+        canonical_artifact_store.as_ref(),
     )?;
     let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: &package_id,
@@ -108,8 +114,9 @@ pub fn compile_package(
 /// this function never opens a latest-by-package-id pointer.
 fn pre_source_contract_package_schemas(
     input: &PackageCompileInput<'_>,
+    store: Option<&CanonicalArtifactStore>,
 ) -> Result<Vec<ResolvedPackageSchema>, PackageCompileError> {
-    let mut schemas = input.resolved_package_schemas().to_vec();
+    let mut schemas = Vec::<ResolvedPackageSchema>::new();
     let owners = input
         .contract_dependencies
         .iter()
@@ -152,7 +159,7 @@ fn pre_source_contract_package_schemas(
             continue;
         }
 
-        let Some(store) = input.canonical_artifact_store() else {
+        let Some(store) = store else {
             continue;
         };
         validate_package_artifact_identities(artifact).map_err(|error| {
@@ -187,6 +194,20 @@ fn pre_source_contract_package_schemas(
         schemas.push(schema);
     }
     Ok(schemas)
+}
+
+fn open_canonical_artifact_store(
+    root: Option<&Path>,
+) -> Result<Option<CanonicalArtifactStore>, PackageCompileError> {
+    root.map(|root| {
+        CanonicalArtifactStore::open(root).map_err(|error| {
+            package_schema_input_error(format!(
+                "canonical artifact root {} could not be opened: {error}",
+                root.display()
+            ))
+        })
+    })
+    .transpose()
 }
 
 fn pre_source_schema_binding<'a>(

@@ -62,7 +62,7 @@ export function fakeAllowedRustdoc() {
 
 export function fakeDeniedRustdoc() {
   return fakeRustdoc({
-    rootItems: ['0:1', '0:10', '0:20', '0:40', '0:50'],
+    rootItems: ['0:1', '0:10', '0:20', '0:40', '0:50', '0:70'],
     index: {
       '0:1': publicItem('ContractDefinitionInput', {
         struct: {
@@ -94,7 +94,7 @@ export function fakeDeniedRustdoc() {
         impl: {
           for: resolvedType('0:1', 'ContractDefinitionInput'),
           generics: emptyGenerics(),
-          items: ['0:31', '0:32'],
+          items: ['0:31', '0:32', '0:33'],
           trait: null,
         },
       }),
@@ -113,6 +113,15 @@ export function fakeDeniedRustdoc() {
           sig: {
             inputs: [['compiled', resolvedType('5:1', 'CompiledPublication')]],
             output: null,
+          },
+        },
+      }),
+      '0:33': publicItem('with_canonical_artifact_store', {
+        function: {
+          generics: emptyGenerics(),
+          sig: {
+            inputs: [['store', resolvedType('9:1', 'CanonicalArtifactStore')]],
+            output: resolvedType('0:1', 'ContractDefinitionInput'),
           },
         },
       }),
@@ -158,6 +167,15 @@ export function fakeDeniedRustdoc() {
           },
         },
       }),
+      '0:70': publicItem('publish_package_artifact_records', {
+        function: {
+          generics: emptyGenerics(),
+          sig: {
+            inputs: [['store', resolvedType('9:1', 'CanonicalArtifactStore')]],
+            output: null,
+          },
+        },
+      }),
     },
     paths: {
       '0:1': localPath('ContractDefinitionInput', 'struct'),
@@ -170,6 +188,11 @@ export function fakeDeniedRustdoc() {
       '7:1': externalPath(7, ['skiff_compiler_lowering', 'LoweringPrivateModel'], 'struct'),
       '8:1': externalPath(8, ['skiff_syntax', 'ast', 'AstNode'], 'struct'),
       '8:2': externalPath(8, ['skiff_syntax', 'parser', 'ParserState'], 'struct'),
+      '9:1': externalPath(
+        9,
+        ['skiff_deployment', 'storage', 'CanonicalArtifactStore'],
+        'struct',
+      ),
     },
   });
 }
@@ -186,6 +209,7 @@ export function fakeRustdoc({ rootItems, index, paths }) {
       6: { name: 'skiff_compiler_source' },
       7: { name: 'skiff_compiler_lowering' },
       8: { name: 'skiff_syntax' },
+      9: { name: 'skiff_deployment' },
     },
     format_version: 0,
     index: {

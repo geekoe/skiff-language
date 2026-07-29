@@ -173,7 +173,7 @@ pub(crate) fn compile_package_artifact_with_context(
     .with_canonical_dependencies(context.dependency_packages, context.contract_dependencies)
     .with_available_canonical_packages(context.available_packages);
     if let Some(store) = context.canonical_artifact_store {
-        input = input.with_canonical_artifact_store(store);
+        input = input.with_canonical_artifact_root(store.root());
     }
     if context.test_service {
         input = input.for_test_service();

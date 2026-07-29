@@ -14,9 +14,9 @@ use common::{
     artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
     package_project::{
-        compile_package_project, compile_package_project_with_contract_dependencies_and_schemas,
+        compile_package_project, compile_package_project_with_contract_dependencies,
     },
-    package_schemas::{public_contract_type, resolved_package_schema},
+    package_schemas::public_contract_type,
     TestDir,
 };
 
@@ -104,13 +104,9 @@ impl Adapter {
 "#,
     );
     write_schema_package_dependency(&temp);
-    let (dependencies, schemas) = package_nominal_contract_fixture();
-    let project = compile_package_project_with_contract_dependencies_and_schemas(
-        temp.path(),
-        &dependencies,
-        &schemas,
-    )
-    .expect("impl receiver and Package nominal contract parameter fixture should compile");
+    let dependencies = package_nominal_contract_fixture();
+    let project = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
+        .expect("impl receiver and Package nominal contract parameter fixture should compile");
     let main = module_artifact(&project.package, "main");
     let relay = executable(&main.unit.executables, "Adapter.relay");
 
@@ -157,25 +153,15 @@ function consume(request: payments.Request) -> payments.Request {{
         ),
     );
     write_schema_package_dependency(&temp);
-    let (dependencies, schemas) = package_nominal_contract_fixture();
-    compile_package_project_with_contract_dependencies_and_schemas(
-        temp.path(),
-        &dependencies,
-        &schemas,
-    )
-    .expect("Package nominal execution identity fixture should compile")
+    let dependencies = package_nominal_contract_fixture();
+    compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
+        .expect("Package nominal execution identity fixture should compile")
 }
 
-fn package_nominal_contract_fixture() -> (
-    BTreeMap<
-        skiff_compiler_input::package_config::PackageManifestKey,
-        Vec<skiff_compiler::PackageContractCompileDependency>,
-    >,
-    BTreeMap<
-        skiff_compiler_input::package_config::PackageManifestKey,
-        Vec<skiff_compiler::ResolvedPackageSchema>,
-    >,
-) {
+fn package_nominal_contract_fixture() -> BTreeMap<
+    skiff_compiler_input::package_config::PackageManifestKey,
+    Vec<skiff_compiler::PackageContractCompileDependency>,
+> {
     let seed = TestDir::new("skiff-compiler", "file-ir-execution-schema-seed");
     seed.write(
         "package.yml",
@@ -231,16 +217,10 @@ fn package_nominal_contract_fixture() -> (
             required_type_ids: vec![request_id],
         }]
     );
-    let schema = resolved_package_schema(SCHEMA_ALIAS, &seed.package).unwrap();
-    assert_eq!(schema.alias(), SCHEMA_ALIAS);
-    assert_eq!(schema.package_id(), SCHEMA_PACKAGE_ID);
-    (
-        BTreeMap::from([(
-            (PACKAGE_ID.to_string(), VERSION.to_string()),
-            vec![package_contract_dependency("payments", contract)],
-        )]),
-        BTreeMap::from([((PACKAGE_ID.to_string(), VERSION.to_string()), vec![schema])]),
-    )
+    BTreeMap::from([(
+        (PACKAGE_ID.to_string(), VERSION.to_string()),
+        vec![package_contract_dependency("payments", contract)],
+    )])
 }
 
 fn executable<'a>(executables: &'a [ExecutableIr], name: &str) -> &'a ExecutableIr {

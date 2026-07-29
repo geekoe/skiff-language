@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_identity::{
@@ -94,8 +94,18 @@ fn author_official_std_package_after_platform_context_guard(
 /// planned before the first immutable write. Storage paths emitted by earlier
 /// compiler stages are treated as non-canonical candidate metadata; this owner
 /// replaces both the top-level record path and every nested `artifactPath`
-/// with the typed ecosystem-store paths.
+/// with the typed ecosystem-store paths. A missing artifact root is created;
+/// a non-directory root is rejected. The deployment storage owner remains an
+/// implementation detail behind this path-based compiler facade.
 pub fn publish_package_artifact_records(
+    artifact_root: &Path,
+    published: &PublishedPackageArtifact,
+) -> AuthoringResult<PublishedPackageArtifactReceipt> {
+    let store = CanonicalArtifactStore::create(artifact_root)?;
+    publish_package_artifact_records_to_store(&store, published)
+}
+
+pub(super) fn publish_package_artifact_records_to_store(
     store: &CanonicalArtifactStore,
     published: &PublishedPackageArtifact,
 ) -> AuthoringResult<PublishedPackageArtifactReceipt> {

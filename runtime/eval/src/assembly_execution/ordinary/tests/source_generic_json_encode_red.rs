@@ -63,7 +63,7 @@ async fn run_compiler_linked_generic_std_json_encode_red() {
         &fixture.artifact_root,
     )
     .expect("model package must compile before its consumer");
-    let model_receipt = publish_package_artifact_records(&store, &model.package)
+    let model_receipt = publish_package_artifact_records(store.root(), &model.package)
         .expect("model package canonical records");
     let model_pointer =
         PackageArtifactPointer::new(model_receipt.artifact).expect("model package pointer");

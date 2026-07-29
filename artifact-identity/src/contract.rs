@@ -670,12 +670,22 @@ mod tests {
         mutations.push(streamed);
 
         let mut callback = base.clone();
-        callback
-            .operations
-            .get_mut(&operation_id)
-            .unwrap()
-            .contract
-            .callbacks = BoundaryCallbackContract::RequestScoped {
+        let callback_operation = &mut callback.operations.get_mut(&operation_id).unwrap().contract;
+        callback_operation.parameters[0].ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(ContractTypeRef::package_schema(
+                "example.pkg",
+                "User",
+                type_id.clone(),
+            )),
+            arguments: Vec::new(),
+        };
+        callback_operation.parameters[0].value_plan = BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            encoding: BoundaryValueEncoding::OpaqueCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Request,
+        };
+        callback_operation.callbacks = BoundaryCallbackContract::RequestScoped {
             interface_types: vec![PackageSchemaTypeRef {
                 package_id: "example.pkg".to_string(),
                 stable_schema_key: "User".to_string(),

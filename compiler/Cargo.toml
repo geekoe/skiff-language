@@ -27,6 +27,10 @@ name = "connect_mongo_package"
 path = "tests/connect_mongo_package.rs"
 
 [[test]]
+name = "contract_dependency_store_boundary"
+path = "tests/contract_dependency_store_boundary.rs"
+
+[[test]]
 name = "db_process_metadata"
 path = "tests/db_process_metadata.rs"
 
@@ -127,10 +131,6 @@ name = "service_calls_manifest_selection"
 path = "tests/service_calls_manifest_selection.rs"
 
 [[test]]
-name = "actor_dispatch_linking"
-path = "tests/actor_dispatch_linking.rs"
-
-[[test]]
 name = "timeout_artifact_lowering"
 path = "tests/timeout_artifact_lowering.rs"
 
@@ -162,5 +162,3 @@ hex = "0.4"
 sha2 = "0.10"
 skiff-compiler-compiled = { path = "compiled", features = ["test-support"] }
 skiff-compiler-source = { path = "source", features = ["test-support"] }
-skiff-runtime-linked-program = { path = "../runtime/linked-program" }
-skiff-runtime-linker = { path = "../runtime/linker", features = ["test-support"] }

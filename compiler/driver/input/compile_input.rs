@@ -1,12 +1,9 @@
-use std::{collections::BTreeMap, ops::Deref};
+use std::{collections::BTreeMap, ops::Deref, path::Path};
 
+use crate::input::{PackageDependency, PackageSourceInput};
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_input_model::{PackageCompileInputMetadata, PackageContractCompileDependency};
-use skiff_compiler_projection_input::ResolvedPackageSchema;
-use skiff_deployment::storage::CanonicalArtifactStore;
-
-use crate::input::{PackageDependency, PackageSourceInput};
 
 impl PackageCompileInputMetadata for PackageSourceInput {
     fn package_dependencies(&self) -> &[PackageDependency] {
@@ -21,8 +18,7 @@ type CanonicalPackageCompileInput<'a> =
 pub struct PackageCompileInput<'a> {
     platform_sources: &'a CompilerPlatformSources,
     canonical: CanonicalPackageCompileInput<'a>,
-    resolved_package_schemas: &'a [ResolvedPackageSchema],
-    canonical_artifact_store: Option<&'a CanonicalArtifactStore>,
+    canonical_artifact_root: Option<&'a Path>,
     test_service: bool,
 }
 
@@ -36,8 +32,7 @@ impl<'a> PackageCompileInput<'a> {
         Self {
             platform_sources,
             canonical: CanonicalPackageCompileInput::new(package, package_aliases, package_id),
-            resolved_package_schemas: &[],
-            canonical_artifact_store: None,
+            canonical_artifact_root: None,
             test_service: false,
         }
     }
@@ -67,34 +62,18 @@ impl<'a> PackageCompileInput<'a> {
         self
     }
 
-    /// Supplies store-verified schema records for exact dependency bindings.
+    /// Gives the compiler facade the root of canonical dependency records.
     ///
-    /// The driver selects only bindings that are actually required after File
-    /// IR closes compiler-owned dependencies such as `std`.
-    pub fn with_resolved_package_schemas(
-        mut self,
-        resolved_package_schemas: &'a [ResolvedPackageSchema],
-    ) -> Self {
-        self.resolved_package_schemas = resolved_package_schemas;
+    /// The facade opens the deployment-owned store internally. Compiler
+    /// callers never exchange the deployment storage owner through this
+    /// package input.
+    pub fn with_canonical_artifact_root(mut self, canonical_artifact_root: &'a Path) -> Self {
+        self.canonical_artifact_root = Some(canonical_artifact_root);
         self
     }
 
-    pub fn resolved_package_schemas(&self) -> &'a [ResolvedPackageSchema] {
-        self.resolved_package_schemas
-    }
-
-    /// Gives the compiler driver read-only access to canonical dependency
-    /// records. Projection crates never receive this filesystem owner.
-    pub fn with_canonical_artifact_store(
-        mut self,
-        canonical_artifact_store: &'a CanonicalArtifactStore,
-    ) -> Self {
-        self.canonical_artifact_store = Some(canonical_artifact_store);
-        self
-    }
-
-    pub(crate) fn canonical_artifact_store(&self) -> Option<&'a CanonicalArtifactStore> {
-        self.canonical_artifact_store
+    pub(crate) fn canonical_artifact_root(&self) -> Option<&'a Path> {
+        self.canonical_artifact_root
     }
 
     /// Enables the test-service-only dependency visibility mode. This flag is

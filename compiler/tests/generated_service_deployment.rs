@@ -7,7 +7,8 @@ use skiff_artifact_model::{
     WebSocketGatewayDocumentAuthoring,
 };
 use skiff_compiler::{
-    generate_service_deployment, GeneratedServiceDeploymentInput, ServiceApiProjection,
+    generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
+    ServiceApiProjection,
 };
 use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::assembly::resolve_runtime_assembly;
@@ -341,6 +342,58 @@ fn automatic_service_api_mapping_fails_closed() {
     })
     .unwrap_err();
     assert!(error.to_string().contains("duplicate source callable"));
+}
+
+#[test]
+fn generated_deployment_identity_failure_uses_compiler_owned_error_shape() {
+    let (project, mut service_api) = compile_fixture("generated-identity-error-facade", "\"ok\"");
+    service_api.contract.service_protocol_identity =
+        skiff_artifact_model::ServiceProtocolIdentity::new("sha256-deadbeef");
+
+    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &manifest(),
+        http: None,
+        websocket: None,
+        profile_name: "prod",
+        profile: &profile(),
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap_err();
+
+    let GeneratedServiceDeploymentError::Identity { message } = error else {
+        panic!("expected compiler-owned identity error facade");
+    };
+    assert!(message.contains("identity"), "{message}");
+}
+
+#[test]
+fn generated_deployment_projection_failure_uses_compiler_owned_error_shape() {
+    let (project, service_api) = compile_fixture("generated-projection-error-facade", "\"ok\"");
+    let repeated = vec![
+        project.package.artifact.clone(),
+        project.package.artifact.clone(),
+    ];
+
+    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &manifest(),
+        http: None,
+        websocket: None,
+        profile_name: "prod",
+        profile: &profile(),
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &repeated,
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap_err();
+
+    let GeneratedServiceDeploymentError::Projection { message } = error else {
+        panic!("expected compiler-owned projection error facade");
+    };
+    assert!(message.contains("repeats build"), "{message}");
 }
 
 #[test]
