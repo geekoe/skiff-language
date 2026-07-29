@@ -1,0 +1,170 @@
+import std
+
+function ingressUrl(path: string) -> string {
+  return config.require<string>("skiff.test.ingressUrl").concat(path)
+}
+
+function headers() -> Array<std.http.HttpHeader> {
+  return Array.empty<std.http.HttpHeader>()
+}
+
+function request(
+  method: string,
+  path: string,
+  requestHeaders: Array<std.http.HttpHeader>,
+  body: bytes?
+) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: method,
+    url: ingressUrl(path),
+    headers: requestHeaders,
+    body: body,
+    timeoutMs: null,
+  }
+}
+
+function textResponse(status: integer, value: string) -> std.http.HttpResponse {
+  return std.http.HttpResponse {
+    status: status,
+    headers: headers(),
+    body: bytes.fromUtf8(value),
+  }
+}
+
+function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const outbound = std.http.request(std.http.HttpClientRequest {
+    method: "POST",
+    url: "https://example.test/from-entry",
+    headers: headers(),
+    body: bytes.fromUtf8("entry-outbound"),
+    timeoutMs: null,
+  })
+  return textResponse(
+    201,
+    "unary:"
+      .concat(request.body.toUtf8String())
+      .concat(":")
+      .concat(outbound.body.toUtf8String())
+  )
+}
+
+function plain(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return textResponse(200, "plain:".concat(request.body.toUtf8String()))
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(206, headers()))
+  emit(std.http.streamChunk(bytes.fromUtf8("alpha|")))
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamChunk(bytes.fromUtf8("|omega")))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function slow(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(200, headers()))
+  emit(std.http.streamChunk(bytes.fromUtf8("first")))
+  std.time.sleep(Duration.milliseconds(10000))
+  emit(std.http.streamChunk(bytes.fromUtf8("late")))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function readBody(body: Stream<bytes>) -> string {
+  let value = ""
+  for chunk in body {
+    value = value.concat(chunk.toUtf8String())
+  }
+  return value
+}
+
+function reservedHeaderRejected(name: string) -> boolean {
+  const requestHeaders = headers()
+  requestHeaders.push(std.http.HttpHeader { name: name, value: "caller-owned" })
+  const rejected = catch<std.http.HttpError>(
+    std.http.request(request("POST", "/plain", requestHeaders, bytes.fromUtf8("blocked")))
+  )
+  if rejected.tag == "err" {
+    return rejected.exception.error.message
+      == "self-ingress HTTP request must not set runtime-owned header ".concat(name)
+  }
+  return false
+}
+
+test "unary entry returns its complete body and consumes the parent inline double" effects {
+  std/http.request {
+    expect: {
+      method: "POST",
+      url: "https://example.test/from-entry",
+      body: bytes.fromUtf8("entry-outbound"),
+    },
+    respond: std.http.HttpClientResponse {
+      status: 200,
+      headers: Array.empty<std.http.HttpHeader>(),
+      body: bytes.fromUtf8("double-body"),
+    },
+  }
+} {
+  const response = std.http.request(
+    request("POST", "/unary", headers(), bytes.fromUtf8("request-body"))
+  )
+  assert response.status == 201
+  assert response.body.toUtf8String() == "unary:request-body:double-body"
+}
+
+test "raw response stream is consumed through the ordinary HTTP client" {
+  const response = std.http.stream(
+    request("POST", "/stream", headers(), bytes.fromUtf8("middle"))
+  )
+  assert response.status == 206
+  assert readBody(response.body) == "alpha|middle|omega"
+}
+
+test "reserved selector host framing and hop headers fail before self-ingress send" {
+  assert reservedHeaderRejected("X-Skiff-Service")
+  assert reservedHeaderRejected("x-skiff-version")
+  assert reservedHeaderRejected("Host")
+  assert reservedHeaderRejected("Content-Length")
+  assert reservedHeaderRejected("Transfer-Encoding")
+  assert reservedHeaderRejected("Connection")
+}
+
+test "non-self origin remains an ordinary inline HTTP double" effects {
+  std/http.request {
+    expect: {
+      method: "GET",
+      url: "https://example.test/direct",
+    },
+    respond: std.http.HttpClientResponse {
+      status: 202,
+      headers: Array.empty<std.http.HttpHeader>(),
+      body: bytes.fromUtf8("direct-double"),
+    },
+  }
+} {
+  const response = std.http.request(std.http.HttpClientRequest {
+    method: "GET",
+    url: "https://example.test/direct",
+    headers: headers(),
+    body: null,
+    timeoutMs: null,
+  })
+  assert response.status == 202
+  assert response.body.toUtf8String() == "direct-double"
+}
+
+test "consumer break cancels the slow child and releases a sequential self-ingress slot" {
+  const response = std.http.stream(request("GET", "/slow", headers(), null))
+  let first = ""
+  for chunk in response.body {
+    first = chunk.toUtf8String()
+    break
+  }
+  assert first == "first"
+
+  const sequential = std.http.request(
+    request("POST", "/plain", headers(), bytes.fromUtf8("after-break"))
+  )
+  assert sequential.status == 200
+  assert sequential.body.toUtf8String() == "plain:after-break"
+}
