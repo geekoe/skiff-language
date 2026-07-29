@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { parse } from 'yaml';
 
@@ -19,11 +19,6 @@ const DEFAULT_TELEMETRY_QUEUE_MAX_EVENTS = 10000;
 const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS = 200;
 const DEFAULT_TELEMETRY_BATCH_MAX_BYTES = 262144;
 const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 1000;
-const IDENTITY_CLI_ENV = 'SKIFF_ARTIFACT_IDENTITY_CLI';
-const IDENTITY_CLI_BINARY = process.platform === 'win32'
-  ? 'skiff-artifact-identity.exe'
-  : 'skiff-artifact-identity';
-
 export interface RouterConfig {
   activationPrepareTimeoutMs: number;
   artifactsPath: string;
@@ -33,7 +28,6 @@ export interface RouterConfig {
   httpMaxRequestBytes: number;
   httpMaxResponseBytes: number;
   httpPort: number;
-  identityCliPath?: string;
   manifests: string[];
   profile: string;
   releaseMode?: boolean;
@@ -56,7 +50,6 @@ export interface RouterConfigOverrides {
   httpMaxRequestBytes?: string;
   httpMaxResponseBytes?: string;
   httpPort?: string;
-  identityCliPath?: string;
   manifest?: string;
   profile?: string;
   releaseMode?: boolean;
@@ -91,7 +84,6 @@ interface RawRouterConfig {
     port?: unknown;
   };
   httpPort?: unknown;
-  identityCliPath?: unknown;
   fileBackend?: unknown;
   manifest?: unknown;
   manifests?: unknown;
@@ -152,14 +144,6 @@ export async function loadRouterConfig(
     overrides.releaseMode ?? raw.releaseMode,
     'releaseMode'
   );
-  const identityCliPath = readIdentityCliPath({
-    raw: raw.identityCliPath,
-    configDir,
-    ...(overrides.identityCliPath !== undefined
-      ? { override: overrides.identityCliPath }
-      : {}),
-    ...(releaseMode !== undefined ? { releaseMode } : {}),
-  });
   rejectRemovedValuesConfig(raw.values);
   const rawProfile = readRequiredProfile(raw.profile, 'profile');
   const profile = readRequiredProfile(overrides.profile ?? rawProfile, 'profile');
@@ -221,9 +205,6 @@ export async function loadRouterConfig(
   }
   if (releaseMode !== undefined) {
     config.releaseMode = releaseMode;
-  }
-  if (identityCliPath !== undefined) {
-    config.identityCliPath = identityCliPath;
   }
   const fileBackend = readFileBackendConfig(raw.fileBackend, configDir);
   if (fileBackend !== undefined) {
@@ -383,47 +364,6 @@ function readManifests(value: unknown): string[] {
 
 function resolveConfigPath(configDir: string, value: string): string {
   return isAbsolute(value) ? value : resolve(configDir, value);
-}
-
-function readIdentityCliPath(input: {
-  override?: string;
-  raw: unknown;
-  configDir: string;
-  releaseMode?: boolean;
-}): string | undefined {
-  if (input.override !== undefined) {
-    return resolveProcessPath(readString(input.override, 'identityCliPath', input.override));
-  }
-  if (input.raw !== undefined && input.raw !== null) {
-    return resolveConfigPath(
-      input.configDir,
-      readString(input.raw, 'identityCliPath', String(input.raw))
-    );
-  }
-  const envPath = process.env[IDENTITY_CLI_ENV];
-  if (envPath !== undefined && envPath.trim().length > 0) {
-    return resolveProcessPath(envPath);
-  }
-  if (input.releaseMode === true) {
-    return undefined;
-  }
-  return defaultDevIdentityCliPath();
-}
-
-function defaultDevIdentityCliPath(): string {
-  return join(defaultDevBinDir(), IDENTITY_CLI_BINARY);
-}
-
-function defaultDevBinDir(): string {
-  const devHome =
-    process.env.SKIFF_DEV_HOME && process.env.SKIFF_DEV_HOME.trim().length > 0
-      ? process.env.SKIFF_DEV_HOME
-      : join(process.cwd(), '.skiff-instance', 'dev-home');
-  return join(resolve(devHome), 'bin');
-}
-
-function resolveProcessPath(value: string): string {
-  return isAbsolute(value) ? value : resolve(value);
 }
 
 function readRequiredProfile(value: unknown, name: string): string {
