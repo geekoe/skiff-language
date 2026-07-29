@@ -70,9 +70,9 @@ pub use service_unit::{
     ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
 };
 pub use shared_image::{
-    ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageDirectCall,
-    PackageCodeSlotIndex, SharedPackageCode, SharedPackageImageError, SharedPackageImageResult,
-    SharedPackageLinkedImage,
+    ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageCallableTarget,
+    LinkedPackageDirectCall, PackageCodeSlotIndex, SharedPackageCode, SharedPackageImageError,
+    SharedPackageImageResult, SharedPackageLinkedImage,
 };
 pub use skiff_runtime_model::resource::{
     LoadedPublicationResource, PublicationResourcePath, PublicationResourcePathError,

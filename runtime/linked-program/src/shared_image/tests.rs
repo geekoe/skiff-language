@@ -4,17 +4,17 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    AssemblyIdentity, CallIr, CallTargetIr, CanonicalPackageLinkPlan, ContractOperationId,
-    ContractRequirement, DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr, ExecutableBody,
-    ExecutableIr, ExecutableKind, ExprIr, FileIrRef, FileIrUnit, InstructionSourceSite,
-    OperationCallableKind, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCodeSlot,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr,
-    PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSymbolRef, PublicationResourceRef, RuntimeAssembly,
-    ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, SlotLayout,
-    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
-    TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    AssemblyIdentity, CallIr, CallTargetIr, CanonicalPackageLinkPlan, ConstExport, ConstIr,
+    ContractOperationId, ContractRequirement, DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr,
+    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, FileIrRef, FileIrUnit,
+    InstructionSourceSite, OperationCallableKind, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
+    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
+    PublicationResourceRef, RuntimeAssembly, ServiceCallRef, ServiceProtocolIdentity,
+    ServiceRequirement, SlotLayout, SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr,
+    TypeDescriptorIr, TypeExport, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_model::resource::LoadedPublicationResource;
 
@@ -219,6 +219,299 @@ fn assembly_execution_package_diamond_has_one_dependency_code_owner() {
             .unwrap(),
     );
     assert!(Arc::ptr_eq(&by_build, &by_slot));
+}
+
+#[test]
+fn public_instance_method_links_exact_receiver_while_ordinary_callables_keep_none() {
+    let mut package_file = file("file:receiver", "api");
+    add_const(&mut package_file, "WORKER");
+    let method = callable_id("worker.run");
+    let ordinary = callable_id("ordinary");
+    let top_level = callable_id("top-level:api.Worker.run");
+    let mut package = artifact(
+        "receiver.pkg",
+        "receiver-build",
+        "receiver-abi",
+        &package_file,
+    );
+    add_callable_kind(
+        &mut package,
+        &package_file,
+        method.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    add_callable(&mut package, &package_file, ordinary.clone());
+    add_callable_kind(
+        &mut package,
+        &package_file,
+        top_level.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    add_public_instance(
+        &mut package,
+        &package_file,
+        "worker",
+        0,
+        [("run", method.clone())],
+        TypeRefIr::builtin("Worker"),
+        vec![TypeRefIr::builtin("Runnable")],
+    );
+
+    let image = one_package_image(package, package_file).expect("public instance should link");
+    let code = &image.code_slots()[0];
+    assert_eq!(
+        code.linked_callable_target(&method)
+            .unwrap()
+            .receiver_const(),
+        Some(&ConstAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            const_index: 0,
+        })
+    );
+    assert_eq!(
+        code.linked_callable_target(&ordinary)
+            .unwrap()
+            .receiver_const(),
+        None
+    );
+    assert_eq!(
+        code.linked_callable_target(&top_level)
+            .unwrap()
+            .receiver_const(),
+        None,
+        "an implementation/topLevelAlias callable is not a bound public instance method"
+    );
+}
+
+#[test]
+fn two_public_instances_sharing_one_executable_keep_distinct_receivers() {
+    let mut package_file = file("file:two-receivers", "api");
+    add_const(&mut package_file, "LEFT");
+    add_const(&mut package_file, "RIGHT");
+    let left = callable_id("left.run");
+    let right = callable_id("right.run");
+    let mut package = artifact("receiver.pkg", "two-build", "two-abi", &package_file);
+    add_callable_kind(
+        &mut package,
+        &package_file,
+        left.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    add_callable_kind(
+        &mut package,
+        &package_file,
+        right.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    add_public_instance(
+        &mut package,
+        &package_file,
+        "left",
+        0,
+        [("run", left.clone())],
+        TypeRefIr::builtin("Worker"),
+        vec![TypeRefIr::builtin("Runnable")],
+    );
+    add_public_instance(
+        &mut package,
+        &package_file,
+        "right",
+        1,
+        [("run", right.clone())],
+        TypeRefIr::builtin("Worker"),
+        vec![TypeRefIr::builtin("Runnable")],
+    );
+
+    let image = one_package_image(package, package_file).expect("two receivers should link");
+    let code = &image.code_slots()[0];
+    let left_target = code.linked_callable_target(&left).unwrap();
+    let right_target = code.linked_callable_target(&right).unwrap();
+    assert_eq!(
+        left_target.executable_addr(),
+        right_target.executable_addr()
+    );
+    assert_eq!(left_target.receiver_const().unwrap().const_index, 0);
+    assert_eq!(right_target.receiver_const().unwrap().const_index, 1);
+}
+
+#[test]
+fn generic_multi_interface_instance_uses_declared_callable_ids_without_name_guessing() {
+    let mut package_file = file("file:generic-receiver", "api");
+    add_const(&mut package_file, "BOX");
+    let read = callable_id("box.read");
+    let write = callable_id("box.write");
+    let mut package = artifact(
+        "receiver.pkg",
+        "generic-build",
+        "generic-abi",
+        &package_file,
+    );
+    for callable in [&read, &write] {
+        add_callable_kind(
+            &mut package,
+            &package_file,
+            callable.clone(),
+            OperationCallableKind::ImplMethod,
+        );
+    }
+    add_public_instance(
+        &mut package,
+        &package_file,
+        "box",
+        0,
+        [("read", read.clone()), ("write", write.clone())],
+        TypeRefIr::AppliedNominal {
+            base: skiff_artifact_model::NominalTypeRefBaseIr::ServiceSymbol {
+                symbol: skiff_artifact_model::ServiceSymbolRef {
+                    module_path: "api".to_string(),
+                    symbol: "Box".to_string(),
+                },
+            },
+            arguments: vec![TypeRefIr::builtin("string")],
+        },
+        vec![TypeRefIr::builtin("Reader"), TypeRefIr::builtin("Writer")],
+    );
+
+    let image = one_package_image(package, package_file).expect("generic receiver should link");
+    let code = &image.code_slots()[0];
+    assert_eq!(
+        code.linked_callable_target(&read)
+            .unwrap()
+            .receiver_const()
+            .unwrap()
+            .const_index,
+        0
+    );
+    assert_eq!(
+        code.linked_callable_target(&write)
+            .unwrap()
+            .receiver_const()
+            .unwrap()
+            .const_index,
+        0
+    );
+}
+
+#[test]
+fn malformed_public_instance_receiver_facts_fail_closed() {
+    let mut missing_receiver_file = file("file:missing-receiver", "api");
+    add_const(&mut missing_receiver_file, "WORKER");
+    let missing_receiver_callable = callable_id("missing.run");
+    let mut missing_receiver = artifact(
+        "receiver.pkg",
+        "missing-receiver-build",
+        "missing-receiver-abi",
+        &missing_receiver_file,
+    );
+    add_callable_kind(
+        &mut missing_receiver,
+        &missing_receiver_file,
+        missing_receiver_callable.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    missing_receiver.package_local_abi.public_symbols.insert(
+        "worker".to_string(),
+        public_instance_symbol(
+            "worker",
+            [("run", missing_receiver_callable)],
+            TypeRefIr::builtin("Worker"),
+            vec![TypeRefIr::builtin("Runnable")],
+        ),
+    );
+    assert!(matches!(
+        one_package_image(missing_receiver, missing_receiver_file),
+        Err(SharedPackageImageError::MissingPublicInstanceReceiverLink { .. })
+    ));
+
+    let mut missing_callable_file = file("file:missing-callable", "api");
+    add_const(&mut missing_callable_file, "WORKER");
+    let mut missing_callable = artifact(
+        "receiver.pkg",
+        "missing-callable-build",
+        "missing-callable-abi",
+        &missing_callable_file,
+    );
+    add_public_instance(
+        &mut missing_callable,
+        &missing_callable_file,
+        "worker",
+        0,
+        [("run", callable_id("missing.run"))],
+        TypeRefIr::builtin("Worker"),
+        vec![TypeRefIr::builtin("Runnable")],
+    );
+    assert!(matches!(
+        one_package_image(missing_callable, missing_callable_file),
+        Err(SharedPackageImageError::MissingPublicInstanceCallableLink { .. })
+    ));
+}
+
+#[test]
+fn duplicate_and_conflicting_public_instance_callable_ownership_fail_closed() {
+    let mut duplicate_file = file("file:duplicate-receiver", "api");
+    add_const(&mut duplicate_file, "WORKER");
+    let duplicate_callable = callable_id("worker.run");
+    let mut duplicate = artifact(
+        "receiver.pkg",
+        "duplicate-build",
+        "duplicate-abi",
+        &duplicate_file,
+    );
+    add_callable_kind(
+        &mut duplicate,
+        &duplicate_file,
+        duplicate_callable.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    add_public_instance(
+        &mut duplicate,
+        &duplicate_file,
+        "worker",
+        0,
+        [
+            ("run", duplicate_callable.clone()),
+            ("repeat", duplicate_callable),
+        ],
+        TypeRefIr::builtin("Worker"),
+        vec![TypeRefIr::builtin("Runnable")],
+    );
+    assert!(matches!(
+        one_package_image(duplicate, duplicate_file),
+        Err(SharedPackageImageError::DuplicatePublicInstanceCallableReceiver { .. })
+    ));
+
+    let mut conflict_file = file("file:conflicting-receivers", "api");
+    add_const(&mut conflict_file, "LEFT");
+    add_const(&mut conflict_file, "RIGHT");
+    let conflict_callable = callable_id("shared.run");
+    let mut conflict = artifact(
+        "receiver.pkg",
+        "conflict-build",
+        "conflict-abi",
+        &conflict_file,
+    );
+    add_callable_kind(
+        &mut conflict,
+        &conflict_file,
+        conflict_callable.clone(),
+        OperationCallableKind::ImplMethod,
+    );
+    for (path, index) in [("left", 0), ("right", 1)] {
+        add_public_instance(
+            &mut conflict,
+            &conflict_file,
+            path,
+            index,
+            [("run", conflict_callable.clone())],
+            TypeRefIr::builtin("Worker"),
+            vec![TypeRefIr::builtin("Runnable")],
+        );
+    }
+    assert!(matches!(
+        one_package_image(conflict, conflict_file),
+        Err(SharedPackageImageError::ConflictingPublicInstanceCallableReceiver { .. })
+    ));
 }
 
 #[test]
@@ -1122,6 +1415,20 @@ fn add_service_call(file: &mut FileIrUnit, service_call: ServiceCallRef) {
 }
 
 fn add_callable(artifact: &mut PackageArtifact, file: &FileIrUnit, callable: PackageCallableId) {
+    add_callable_kind(
+        artifact,
+        file,
+        callable,
+        OperationCallableKind::PublicFunction,
+    );
+}
+
+fn add_callable_kind(
+    artifact: &mut PackageArtifact,
+    file: &FileIrUnit,
+    callable: PackageCallableId,
+    callable_kind: OperationCallableKind,
+) {
     artifact.callable_links.insert(
         callable.clone(),
         PackageCallableLinkFact {
@@ -1130,10 +1437,72 @@ fn add_callable(artifact: &mut PackageArtifact, file: &FileIrUnit, callable: Pac
                 file_ref: file_ref(file),
                 executable_index: 0,
                 callable_abi_id: callable.to_string(),
-                callable_kind: OperationCallableKind::PublicFunction,
+                callable_kind,
             },
         },
     );
+}
+
+fn add_const(file: &mut FileIrUnit, name: &str) {
+    file.constants.push(ConstIr {
+        name: name.to_string(),
+        ty: TypeRefIr::builtin("unknown"),
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+}
+
+fn public_instance_symbol<const N: usize>(
+    public_path: &str,
+    methods: [(&str, PackageCallableId); N],
+    declared_receiver_type: TypeRefIr,
+    interfaces: Vec<TypeRefIr>,
+) -> PackageLocalAbiSymbol {
+    PackageLocalAbiSymbol::PublicInstance {
+        instance_id: public_path.to_string(),
+        declared_receiver_type,
+        interfaces,
+        methods: methods
+            .into_iter()
+            .map(|(name, callable)| (name.to_string(), callable))
+            .collect(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_public_instance<const N: usize>(
+    artifact: &mut PackageArtifact,
+    file: &FileIrUnit,
+    public_path: &str,
+    const_index: u32,
+    methods: [(&str, PackageCallableId); N],
+    declared_receiver_type: TypeRefIr,
+    interfaces: Vec<TypeRefIr>,
+) {
+    artifact.implementation_links.constants.insert(
+        public_path.to_string(),
+        ConstExport {
+            file: file_ref(file),
+            const_index,
+            symbol: public_path.to_string(),
+            ty: declared_receiver_type.clone(),
+        },
+    );
+    artifact.package_local_abi.public_symbols.insert(
+        public_path.to_string(),
+        public_instance_symbol(public_path, methods, declared_receiver_type, interfaces),
+    );
+}
+
+fn one_package_image(
+    package: PackageArtifact,
+    file: FileIrUnit,
+) -> SharedPackageImageResult<SharedPackageLinkedImage> {
+    let package_ref = artifact_ref(&package);
+    SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly(vec![package_ref], Vec::new()),
+        vec![hydration(package, file)],
+    )
 }
 
 fn add_service_requirement(artifact: &mut PackageArtifact, service_call: &ServiceCallRef) {

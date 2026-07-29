@@ -20,7 +20,11 @@ use skiff_artifact_model::{
     ServiceProtocolIdentity, ServiceSymbolRef, TypeRefIr,
 };
 
-use crate::{DbObjectTargetId, ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr};
+use crate::{
+    ConstAddr, DbObjectTargetId, ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr,
+};
+
+mod callable_targets;
 
 /// Loader-owned immutable inputs for one canonical package code slot.
 #[derive(Debug)]
@@ -90,6 +94,7 @@ pub struct SharedPackageCode {
     static_resources: PublicationResourceTable,
     schema_index: Arc<PackageSchemaIndex>,
     schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    callable_targets: BTreeMap<PackageCallableId, LinkedPackageCallableTarget>,
 }
 
 impl SharedPackageCode {
@@ -145,6 +150,33 @@ impl SharedPackageCode {
             .get(callable_id)
             .map(|fact| &fact.target)
     }
+
+    pub fn linked_callable_target(
+        &self,
+        callable_id: &PackageCallableId,
+    ) -> Option<&LinkedPackageCallableTarget> {
+        self.callable_targets.get(callable_id)
+    }
+}
+
+/// Runtime-only target for one exact package callable.
+///
+/// The receiver is derived from canonical package facts while hydrating the
+/// linked image. It is never serialized back into the artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedPackageCallableTarget {
+    executable_addr: ExecutableAddr,
+    receiver_const: Option<ConstAddr>,
+}
+
+impl LinkedPackageCallableTarget {
+    pub fn executable_addr(&self) -> &ExecutableAddr {
+        &self.executable_addr
+    }
+
+    pub fn receiver_const(&self) -> Option<&ConstAddr> {
+        self.receiver_const.as_ref()
+    }
 }
 
 /// Fully resolved direct package call. It contains only package-code facts and never an
@@ -156,7 +188,7 @@ pub struct LinkedPackageDirectCall {
     dependency_package_build_id: PackageBuildId,
     package_callable_id: PackageCallableId,
     target: OperationTargetRef,
-    executable_addr: ExecutableAddr,
+    linked_target: LinkedPackageCallableTarget,
 }
 
 impl LinkedPackageDirectCall {
@@ -181,7 +213,11 @@ impl LinkedPackageDirectCall {
     }
 
     pub fn executable_addr(&self) -> &ExecutableAddr {
-        &self.executable_addr
+        self.linked_target.executable_addr()
+    }
+
+    pub fn receiver_const(&self) -> Option<&ConstAddr> {
+        self.linked_target.receiver_const()
     }
 }
 
@@ -392,7 +428,15 @@ impl SharedPackageLinkedImage {
             });
         }
         dependency.validate_callable_target(package_callable_id, &fact.target)?;
-        let executable_addr = dependency.executable_addr(&fact.target)?;
+        let linked_target = dependency
+            .linked_callable_target(package_callable_id)
+            .ok_or_else(
+                || SharedPackageImageError::MissingLinkedPackageCallableTarget {
+                    dependency_package_build_id: dependency.package_build_id().clone(),
+                    package_callable_id: package_callable_id.clone(),
+                },
+            )?
+            .clone();
 
         Ok(LinkedPackageDirectCall {
             caller_package_build_id: caller_package_build_id.clone(),
@@ -400,7 +444,7 @@ impl SharedPackageLinkedImage {
             dependency_package_build_id: dependency.package_build_id().clone(),
             package_callable_id: package_callable_id.clone(),
             target: fact.target.clone(),
-            executable_addr,
+            linked_target,
         })
     }
 
@@ -828,6 +872,7 @@ impl SharedPackageCode {
             static_resources: hydrated.static_resources,
             schema_index,
             schema_records: hydrated.schema_records,
+            callable_targets: BTreeMap::new(),
         };
         for (callable_id, fact) in &code.artifact.callable_links {
             if *callable_id != fact.callable_id {
@@ -839,6 +884,11 @@ impl SharedPackageCode {
             }
             code.validate_callable_target(callable_id, &fact.target)?;
         }
+        let callable_targets = callable_targets::link_callable_targets(&code)?;
+        let code = Self {
+            callable_targets,
+            ..code
+        };
         validate_package_service_call_aggregate(&code)?;
         Ok(code)
     }
@@ -1451,6 +1501,54 @@ pub enum SharedPackageImageError {
     MissingPackageCallable {
         dependency_package_build_id: PackageBuildId,
         package_callable_id: PackageCallableId,
+    },
+    MissingLinkedPackageCallableTarget {
+        dependency_package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+    },
+    MissingPublicInstanceReceiverLink {
+        package_build_id: PackageBuildId,
+        public_path: String,
+    },
+    MissingPublicInstanceCallableLink {
+        package_build_id: PackageBuildId,
+        public_path: String,
+        package_callable_id: PackageCallableId,
+    },
+    PublicInstanceCallableKindMismatch {
+        package_build_id: PackageBuildId,
+        public_path: String,
+        package_callable_id: PackageCallableId,
+        actual: skiff_artifact_model::OperationCallableKind,
+    },
+    DuplicatePublicInstanceCallableReceiver {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+        first_public_path: String,
+        duplicate_public_path: String,
+    },
+    ConflictingPublicInstanceCallableReceiver {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+        first_public_path: String,
+        first_receiver: ConstAddr,
+        conflicting_public_path: String,
+        conflicting_receiver: ConstAddr,
+    },
+    PublicInstanceReceiverFileNotLoaded {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+    },
+    PublicInstanceReceiverFileRefMismatch {
+        package_build_id: PackageBuildId,
+        expected: FileIrRef,
+        actual: FileIrRef,
+    },
+    PublicInstanceReceiverConstOutOfBounds {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        const_index: u32,
+        const_count: usize,
     },
     CallableLinkKeyMismatch {
         package_build_id: PackageBuildId,
