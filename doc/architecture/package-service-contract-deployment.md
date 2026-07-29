@@ -592,6 +592,13 @@ package dependency调用使用`PackageLocalAbi`和implementation links：
 - 不经过service dispatcher，不切换activation owner；
 - 不要求linkable或recoverable。
 
+同一request、同一linked assembly内的wrapper调用`PackageDirect` stream producer时，stream handle必须继续
+属于当前request已有的`StreamRuntime` registry；package call不能为该handle新建registry，也不能把handle
+当作boundary value重新materialize。这里不要求producer与consumer使用同一个`RequestHeap`：两侧heap可以
+不同，stream item通过既有`StreamInternalItem`及canonical item materialization从producer heap搬运到
+consumer heap。只有6.2定义的service call boundary继续按value plan rematerialize参数、item与返回值，
+不得把package-local registry共享规则扩张到service boundary。
+
 File IR 对 package direct call 使用唯一 canonical target，不携带 legacy publication operation ABI：
 
 ```text
@@ -893,6 +900,11 @@ Agine普通HTTP RPC、Host主动发起的HTTP上行和AIHub HTTP event stream；
 - runner拥有隔离Router和单一Runtime。Runtime/test execution按精确case deployment使self-ingress
   子请求复用父case的inline-effect registry；子请求不另行setup或finalize，父case是唯一finalization
   owner；
+- self-ingress父请求与HTTP子请求仍是两个独立request，各自拥有Interpreter、request heap和
+  `StreamRuntime` registry。父子之间只共享`TestEffectCaseContext`；其中的stream effect以wire item
+  snapshots保存，并在HTTP子请求当前runtime中生成新的stream handle，不能把父request的stream id或
+  registry handle带入子request。子request内部的wrapper→`PackageDirect`调用再遵守6.1的同request
+  registry规则；
 - 第一版同一case最多有一个active self-ingress子请求。`request`在完整response结束后释放；
   `stream`在EOF、失败或consumer drop/break后释放。已有active子请求时再发起一个应使case失败；
 - stream复用普通HTTP client stream、Router backpressure和disconnect取消链，不新增显式cancel API。
