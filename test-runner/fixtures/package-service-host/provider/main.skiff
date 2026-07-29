@@ -5,6 +5,7 @@ function handle(input: string) -> string {
 
 interface LabelReader {
   function label(self: Self) -> string
+  function events(self: Self) -> Stream<string>
 }
 
 type Worker implements LabelReader {
@@ -14,6 +15,17 @@ type Worker implements LabelReader {
 impl Worker {
   function label() -> string {
     return self.value.concat("")
+  }
+
+  function events() -> Stream<string> {
+    if self.value == "left" {
+      emit("left")
+      emit("left-done")
+      return null
+    }
+    emit("right")
+    emit("right-done")
+    return null
   }
 }
 

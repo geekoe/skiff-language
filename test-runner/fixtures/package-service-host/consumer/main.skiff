@@ -44,3 +44,19 @@ function leftLabel() -> string {
 function rightLabel() -> string {
   return payments/right.label()
 }
+
+function leftEvents() -> string {
+  let output = ""
+  for event in payments/left.events() {
+    output = output.concat(event)
+  }
+  return output
+}
+
+function rightEvents() -> string {
+  let output = ""
+  for event in payments/right.events() {
+    output = output.concat(event)
+  }
+  return output
+}
