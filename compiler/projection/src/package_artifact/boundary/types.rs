@@ -35,7 +35,7 @@ pub(super) fn project_operation_contract(
             .map(|ty| BoundaryParameter {
                 name: parameter.name.clone(),
                 ty,
-                value_plan: linkable_plan(BoundaryValueOwner::Caller),
+                value_plan: linkable_plan(BoundaryValueOwner::Caller, BoundaryValueLifetime::Call),
             })
             .map_err(|reason| push_reason(reasons, reason))
             .ok()
@@ -114,16 +114,20 @@ fn project_return(
         }
         _ => None,
     };
-    let provider_plan = linkable_plan(BoundaryValueOwner::Provider);
+    let provider_call_plan =
+        linkable_plan(BoundaryValueOwner::Provider, BoundaryValueLifetime::Call);
     Ok(match stream_item {
         Some(item_type) => (
             BoundaryReturn {
                 ty: ContractTypeRef::builtin("void"),
-                value_plan: provider_plan.clone(),
+                value_plan: provider_call_plan,
             },
             BoundaryStreamContract::ServerStream {
                 item_type,
-                item_value_plan: provider_plan,
+                item_value_plan: linkable_plan(
+                    BoundaryValueOwner::Provider,
+                    BoundaryValueLifetime::Stream,
+                ),
             },
         ),
         None => (
@@ -135,7 +139,7 @@ fn project_return(
                     public_type_ids,
                     resolved_package_schemas,
                 )?,
-                value_plan: provider_plan,
+                value_plan: provider_call_plan,
             },
             BoundaryStreamContract::Unary,
         ),
@@ -524,12 +528,12 @@ fn project_literal(value: &LiteralIr) -> Result<ContractTypeRef, BoundaryUnavail
     }
 }
 
-fn linkable_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+fn linkable_plan(owner: BoundaryValueOwner, lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
     BoundaryValuePlan::Linkable {
         carrier: BoundaryValueCarrier::DetachedValueGraph,
         encoding: BoundaryValueEncoding::CanonicalValue,
         owner,
-        lifetime: BoundaryValueLifetime::Call,
+        lifetime,
     }
 }
 
@@ -578,6 +582,81 @@ mod tests {
         let wire = serde_json::to_value(non_suspending_contract).unwrap();
         assert!(wire.get("maySuspend").is_none());
         assert!(wire.get("cancellation").is_none());
+    }
+
+    #[test]
+    fn operation_value_plans_use_call_lifetime_except_for_server_stream_items() {
+        let signature = |return_type| PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                name: "input".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type,
+            may_suspend: false,
+        };
+        let project = |signature: &PackageCallableSignature| {
+            project_operation_contract(
+                "api",
+                signature,
+                &[],
+                &BTreeMap::new(),
+                &[],
+                &mut Vec::new(),
+            )
+            .expect("builtin signature is boundary-projectable")
+        };
+
+        let unary = project(&signature(PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("string"),
+        }));
+        assert_eq!(
+            unary.parameters[0].value_plan,
+            linkable_plan(BoundaryValueOwner::Caller, BoundaryValueLifetime::Call)
+        );
+        assert_eq!(
+            unary.return_value.value_plan,
+            linkable_plan(BoundaryValueOwner::Provider, BoundaryValueLifetime::Call,)
+        );
+        assert_eq!(unary.stream, BoundaryStreamContract::Unary);
+
+        for stream_return in [
+            PackageTypeRef::Container {
+                name: "Stream".to_string(),
+                arguments: vec![PackageTypeRef::Container {
+                    name: "string".to_string(),
+                    arguments: Vec::new(),
+                }],
+            },
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::Builtin {
+                    name: "Stream".to_string(),
+                    args: vec![TypeRefIr::builtin("string")],
+                },
+            },
+        ] {
+            let stream = project(&signature(stream_return));
+            assert_eq!(
+                stream.parameters[0].value_plan,
+                linkable_plan(BoundaryValueOwner::Caller, BoundaryValueLifetime::Call)
+            );
+            assert_eq!(
+                stream.return_value.value_plan,
+                linkable_plan(BoundaryValueOwner::Provider, BoundaryValueLifetime::Call,)
+            );
+            let BoundaryStreamContract::ServerStream {
+                item_value_plan, ..
+            } = stream.stream
+            else {
+                panic!("Stream<T> return must project as a server stream");
+            };
+            assert_eq!(
+                item_value_plan,
+                linkable_plan(BoundaryValueOwner::Provider, BoundaryValueLifetime::Stream,)
+            );
+        }
     }
 
     #[test]

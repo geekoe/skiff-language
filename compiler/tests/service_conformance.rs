@@ -150,7 +150,7 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
     let request_type = operation.contract.parameters[0].ty.clone();
     let BoundaryStreamContract::ServerStream {
         item_type: event_type,
-        ..
+        item_value_plan,
     } = &operation.contract.stream
     else {
         panic!("generated operation must stream")
@@ -161,12 +161,25 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
         operation.contract.return_value.ty,
         ContractTypeRef::builtin("void")
     );
+    assert_eq!(
+        operation.contract.parameters[0].value_plan,
+        linkable(BoundaryValueOwner::Caller),
+        "server-stream request arguments remain caller-owned for the call lifetime"
+    );
+    assert_eq!(
+        operation.contract.return_value.value_plan,
+        linkable(BoundaryValueOwner::Provider),
+        "the synchronous server-stream setup return remains call-scoped"
+    );
+    validate_runtime_server_stream_item_plan(item_value_plan)
+        .expect("a projected service stream item must satisfy the runtime Provider/Stream lane");
     assert!(matches!(
         &operation.contract.stream,
         BoundaryStreamContract::ServerStream {
             item_type,
             item_value_plan: BoundaryValuePlan::Linkable {
                 owner: BoundaryValueOwner::Provider,
+                lifetime: BoundaryValueLifetime::Stream,
                 ..
             },
         } if item_type == event_type
@@ -974,6 +987,25 @@ fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
     }
 }
 
+fn validate_runtime_server_stream_item_plan(plan: &BoundaryValuePlan) -> Result<(), String> {
+    match plan {
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner: BoundaryValueOwner::Provider,
+            lifetime: BoundaryValueLifetime::Stream,
+        } => Ok(()),
+        BoundaryValuePlan::Linkable {
+            owner, lifetime, ..
+        } => Err(format!(
+            "expected Provider/Stream server-stream item plan, got {owner:?}/{lifetime:?}"
+        )),
+        BoundaryValuePlan::Unsupported { reason } => Err(format!(
+            "server-stream item plan is unsupported: {reason:?}"
+        )),
+    }
+}
+
 fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
     temp.write(
         "package.yml",
@@ -1083,6 +1115,19 @@ fn compile_generated_stream_contract(
         "stream projection: {:?}",
         public_callable_projection(&provider_project.package.artifact, "events")
     );
+    let PackageLocalAbiSymbol::Callable { signature, .. } = &provider_project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols["events"]
+    else {
+        panic!("stream provider must remain a package callable");
+    };
+    assert!(matches!(
+        &signature.return_type,
+        PackageTypeRef::Container { name, arguments }
+            if name == "Stream" && arguments.len() == 1
+    ));
     assert_no_provider_binding_wire(&provider_project.package.artifact);
     let contract = projected_service_api.contract;
     let schema = resolved_package_schema("contractSchema", &provider_project.package)
