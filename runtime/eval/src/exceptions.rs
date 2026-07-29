@@ -72,8 +72,7 @@ pub(crate) fn request_exception_for_resource_error(
     const STD_PACKAGE_ID: &str = "skiff.run/std";
     const RESOURCE_ERROR_SYMBOL: &str = "std.resource.ResourceError";
 
-    let RuntimeError::ResourceError { path, message } =
-        unwrap_diagnostic_source_context(error)
+    let RuntimeError::ResourceError { path, message } = unwrap_diagnostic_source_context(error)
     else {
         return Ok(None);
     };

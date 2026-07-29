@@ -598,7 +598,10 @@ async fn native_resource_failure_exports_public_std_type_and_caller_catches_it()
     assert_resource_local_value(request, &heap);
 }
 
-fn assert_resource_local_value(request: &skiff_runtime_model::service_error::RequestException, heap: &RequestHeap) {
+fn assert_resource_local_value(
+    request: &skiff_runtime_model::service_error::RequestException,
+    heap: &RequestHeap,
+) {
     let local = request
         .local_value()
         .expect("linked caller must materialize ResourceError locally");
@@ -1387,10 +1390,7 @@ fn std_package() -> PackageFixture {
             },
             ContractTypeDescriptor::Record {
                 fields: BTreeMap::from([
-                    (
-                        "message".to_string(),
-                        ContractTypeRef::builtin("string"),
-                    ),
+                    ("message".to_string(), ContractTypeRef::builtin("string")),
                     ("path".to_string(), ContractTypeRef::builtin("string")),
                 ]),
             },

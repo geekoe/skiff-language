@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use skiff_artifact_model::{
-    PackageBuildId, PackageLocalAbiSymbol, PublicationApiSymbolKind,
-};
+use skiff_artifact_model::{PackageBuildId, PackageLocalAbiSymbol, PublicationApiSymbolKind};
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ConstAddr, ConstIr, DbObjectTargetId, ExecutableAddr, FileAddr,
@@ -541,17 +539,19 @@ impl<'a> RuntimeExecutionProjection<'a> {
                         ))
                     })?;
                 if !matches!(
-                    code.artifact()
-                        .package_local_abi
-                        .public_symbols
-                        .get(symbol),
+                    code.artifact().package_local_abi.public_symbols.get(symbol),
                     Some(PackageLocalAbiSymbol::Type { .. })
                 ) {
                     return Err(RuntimeError::InvalidArtifact(format!(
                         "Package type {package_id}:{symbol} is not an exact public type symbol"
                     )));
                 }
-                if !code.artifact().implementation_links.types.contains_key(symbol) {
+                if !code
+                    .artifact()
+                    .implementation_links
+                    .types
+                    .contains_key(symbol)
+                {
                     return Err(RuntimeError::InvalidArtifact(format!(
                         "public Package type {package_id}:{symbol} has no exact implementation link"
                     )));
@@ -1135,16 +1135,10 @@ mod tests {
             .canonical_type_addr(&addr)
             .expect("implementation address canonicalizes");
         let error = projection
-            .validate_public_package_type(
-                "skiff.run/std",
-                "std.resource.ResourceError",
-                &addr,
-            )
+            .validate_public_package_type("skiff.run/std", "std.resource.ResourceError", &addr)
             .expect_err("implementation-only ResourceError must not count as public");
-        assert!(
-            matches!(error, RuntimeError::InvalidArtifact(message)
-                if message.contains("not an exact public type symbol"))
-        );
+        assert!(matches!(error, RuntimeError::InvalidArtifact(message)
+                if message.contains("not an exact public type symbol")));
     }
 
     #[test]
