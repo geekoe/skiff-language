@@ -473,18 +473,18 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
         .expect("exact current-scope RuntimeAssembly");
     assert_eq!(
         receipt.base_assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:9ba9353a6e9e626cc6868bc79c3cac791906a02ad5070c27dbb068bcd6b97649"
+        "skiff-runtime-assembly-v3:sha256:f42948a37913c0d8df6ecac416a8e04328b8a7d960854d3d0fa828cfa578a279"
     );
     assert_eq!(
         receipt.consumer_package.package_build_id.as_str(),
-        "skiff-package-build-v10:sha256:b9a3da5ce58146bdc81c55a2b5d8c16cc6954753d0f90075570ec5a1f9b4ea7d"
+        "skiff-package-build-v10:sha256:aae3bc279027081667992b0881772f5fcee397c7443156403a5c1651c6f57c54"
     );
     assert_eq!(
         receipt
             .consumer_deployment
             .deployment_artifact_identity
             .as_str(),
-        "skiff-deployment-artifact-v4:sha256:df04c3cdd007222ff5753a975007c27606ab946811b93cc66d19246710aae508"
+        "skiff-deployment-artifact-v4:sha256:f653875d8978c9eec31dcd05a090dee7135a7f8351a91026849b5f0c3edf31b2"
     );
     CurrentScopeCompiledFixture {
         assembly,
