@@ -6,13 +6,13 @@ use std::{
 
 use serde_json::Value;
 use skiff_artifact_identity::{
-    package_artifact_ref, package_schema_type_id, runtime_assembly_ref, service_contract_ref,
-    service_deployment_ref, validate_file_ir_identity, validate_package_artifact_identities,
-    validate_package_schema_index, validate_package_schema_records,
-    validate_runtime_assembly_identity, validate_service_contract_identities,
-    validate_service_deployment_ref, PackageArtifactRecordPath, PackageFileIrRecordPath,
-    PackageResourceRecordPath, PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
-    RuntimeAssemblyRecordPath, ServiceContractRecordPath, ServiceDeploymentRecordPath,
+    package_schema_type_id, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
+    validate_file_ir_identity, validate_package_artifact_identities, validate_package_schema_index,
+    validate_package_schema_records, validate_runtime_assembly_identity,
+    validate_service_contract_identities, validate_service_deployment_ref,
+    PackageArtifactRecordPath, PackageFileIrRecordPath, PackageResourceRecordPath,
+    PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath, RuntimeAssemblyRecordPath,
+    ServiceContractRecordPath, ServiceDeploymentRecordPath,
 };
 use skiff_artifact_model::{
     package_schema_descriptor_refs, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
@@ -24,6 +24,7 @@ use skiff_artifact_model::{
 use super::{
     error::{EcosystemStorageError, StorageResult},
     io::{canonical_bytes, strict_value, typed_from_value, CanonicalArtifactStore},
+    package_copy_admission::declared_package_artifact_ref,
 };
 
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ pub struct ResolvedPackageSchema {
 impl CanonicalArtifactStore {
     pub fn write_package_artifact(&self, artifact: &PackageArtifact) -> StorageResult<PathBuf> {
         validate_package_artifact_identities(artifact)?;
-        let reference = package_artifact_ref(artifact)?;
+        let reference = declared_package_artifact_ref(artifact);
         let path = PackageArtifactRecordPath::new(&reference)?;
         self.write_immutable(path.as_relative_path(), &canonical_bytes(artifact)?)
     }
@@ -44,21 +45,7 @@ impl CanonicalArtifactStore {
         &self,
         reference: &PackageArtifactRef,
     ) -> StorageResult<Arc<PackageArtifact>> {
-        let path = PackageArtifactRecordPath::new(reference)?;
-        let bytes = self.read_bytes(path.as_relative_path())?;
-        let host_path = self.root().join(path.as_relative_path().as_path());
-        let value = strict_value(&host_path, &bytes)?;
-        raw_package_ref(&host_path, &value, reference)?;
-        let artifact = typed_from_value::<PackageArtifact>(&host_path, value)?;
-        validate_package_artifact_identities(&artifact)?;
-        if &package_artifact_ref(&artifact)? != reference {
-            return invalid(
-                &host_path,
-                "typed PackageArtifact does not match exact reference",
-            );
-        }
-        ensure_canonical(&host_path, &bytes, &artifact)?;
-        Ok(Arc::new(artifact))
+        self.read_validated_package_artifact_record(reference)
     }
 
     pub fn write_package_schema_index(&self, index: &PackageSchemaIndex) -> StorageResult<PathBuf> {
@@ -151,6 +138,13 @@ impl CanonicalArtifactStore {
         artifact: &PackageArtifact,
     ) -> StorageResult<ResolvedPackageSchema> {
         validate_package_artifact_identities(artifact)?;
+        self.resolve_package_artifact_schema_after_validation(artifact)
+    }
+
+    pub(super) fn resolve_package_artifact_schema_after_validation(
+        &self,
+        artifact: &PackageArtifact,
+    ) -> StorageResult<ResolvedPackageSchema> {
         let index = self.read_package_schema_index(&artifact.package_schema_index)?;
         if index.package_id != artifact.package_id {
             return invalid(
@@ -418,7 +412,7 @@ fn validate_package_schema_type_record(
     Ok(())
 }
 
-fn raw_package_ref(
+pub(super) fn raw_package_ref(
     path: &std::path::Path,
     value: &Value,
     reference: &PackageArtifactRef,
@@ -567,7 +561,7 @@ fn invalid<T>(path: &std::path::Path, message: impl Into<String>) -> StorageResu
     })
 }
 
-fn ensure_canonical<T: serde::Serialize>(
+pub(super) fn ensure_canonical<T: serde::Serialize>(
     path: &std::path::Path,
     bytes: &[u8],
     value: &T,

@@ -7,6 +7,7 @@ use std::{
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
 use skiff_artifact_model::{GatewayEntryKey, ServiceAuthoringKind};
 use skiff_compiler::CompilerPlatformSources;
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,
     canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
@@ -132,6 +133,7 @@ fn kind_test_compiles_and_assembles_only_ordinary_service_artifacts() {
 fn multiple_cases_receive_separate_deployments_and_assemblies() {
     let root = TestRoot::new("case-isolation");
     let artifacts = root.path().join("artifacts");
+    let runtime_artifacts = root.path().join("runtime-artifacts");
     seed_canonical_std(&platform_sources(), &artifacts).expect("seed std");
     let service = root.path().join("service");
     fs::create_dir_all(&service).unwrap();
@@ -192,6 +194,18 @@ fn multiple_cases_receive_separate_deployments_and_assemblies() {
         fixture.cases[0].records.assembly.assembly_identity,
         fixture.cases[1].records.assembly.assembly_identity
     );
+    fixture
+        .publish(&artifacts, &runtime_artifacts)
+        .expect("multi-case publish reuses admitted external package records");
+    let runtime_store =
+        CanonicalArtifactStore::open(&runtime_artifacts).expect("runtime artifact store");
+    for case in &fixture.cases {
+        runtime_store
+            .read_runtime_assembly(&skiff_artifact_model::RuntimeAssemblyRef {
+                assembly_identity: case.records.assembly.assembly_identity.clone(),
+            })
+            .expect("every case assembly remains independently published");
+    }
 }
 
 #[test]

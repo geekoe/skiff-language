@@ -26,7 +26,7 @@ use skiff_deployment::{
 use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::CanonicalPackageProject,
-    canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
+    canonical_store::{CanonicalBaseAssembly, CanonicalPublishSession, CanonicalTestRecords},
     canonical_test_gateway::canonical_typed_null_gateway,
     test_discovery::TestServiceCase,
 };
@@ -67,11 +67,13 @@ impl CanonicalTestServiceFixture {
         runtime_artifact_root: &std::path::Path,
     ) -> Result<Vec<std::path::PathBuf>, CanonicalFixtureError> {
         let mut written = Vec::new();
+        let mut session = CanonicalPublishSession::default();
         for case in &self.cases {
-            written.extend(
-                case.records
-                    .publish(source_artifact_root, runtime_artifact_root)?,
-            );
+            written.extend(case.records.publish_with_session(
+                source_artifact_root,
+                runtime_artifact_root,
+                &mut session,
+            )?);
         }
         written.sort();
         written.dedup();

@@ -18,8 +18,8 @@ use skiff_artifact_model::{
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractDiagnosticText, FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceContract, ServiceProtocolIdentity,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, ServiceContract,
+    ServiceProtocolIdentity, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -98,6 +98,141 @@ fn package_fixture() -> PackageArtifact {
     };
     assign_package_artifact_identities(&mut artifact).expect("package identities");
     artifact
+}
+
+fn empty_schema_index(artifact: &PackageArtifact) -> PackageSchemaIndex {
+    PackageSchemaIndex {
+        package_id: artifact.package_schema_index.package_id.clone(),
+        package_schema_index_identity: artifact
+            .package_schema_index
+            .package_schema_index_identity
+            .clone(),
+        types: BTreeMap::new(),
+    }
+}
+
+fn declared_package_ref(artifact: &PackageArtifact) -> skiff_artifact_model::PackageArtifactRef {
+    skiff_artifact_model::PackageArtifactRef {
+        package_id: artifact.package_id.clone(),
+        package_version: artifact.package_version.clone(),
+        package_build_id: artifact.package_build_id.clone(),
+        package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
+    }
+}
+
+fn write_empty_package_closure(store: &CanonicalArtifactStore, artifact: &PackageArtifact) {
+    store
+        .write_package_schema_index(&empty_schema_index(artifact))
+        .unwrap();
+    store.write_package_artifact(artifact).unwrap();
+}
+
+#[test]
+fn package_copy_admission_cache_is_content_identity_and_source_exact() {
+    let (_source_root, source) = test_store();
+    let (_target_root, target) = test_store();
+    let (_other_root, other_source) = test_store();
+    let first = package_fixture();
+    let mut second = first.clone();
+    second.package_version = "2.0.0".to_string();
+    assign_package_artifact_identities(&mut second).unwrap();
+    let first_ref = package_artifact_ref(&first).unwrap();
+    let second_ref = package_artifact_ref(&second).unwrap();
+    write_empty_package_closure(&source, &first);
+    write_empty_package_closure(&source, &second);
+    write_empty_package_closure(&other_source, &first);
+
+    let mut cache = PackageArtifactAdmissionCache::default();
+    {
+        let admitted = cache.admit(&source, &first_ref).unwrap();
+        assert_eq!(admitted.reference(), &first_ref);
+        target
+            .write_validated_package_copy_records(admitted)
+            .unwrap();
+    }
+    assert_eq!(cache.admission_count(), 1);
+    cache.admit(&source, &first_ref).unwrap();
+    assert_eq!(
+        cache.admission_count(),
+        1,
+        "same source root and identity must not repeat full admission"
+    );
+
+    cache.admit(&source, &second_ref).unwrap();
+    assert_eq!(
+        cache.admission_count(),
+        2,
+        "a different artifact identity requires its own admission"
+    );
+    cache.admit(&other_source, &first_ref).unwrap();
+    assert_eq!(
+        cache.admission_count(),
+        3,
+        "an identical record from another source root cannot reuse admission"
+    );
+
+    let package_path = PackageArtifactRecordPath::new(&first_ref).unwrap();
+    let package_host_path = source
+        .root()
+        .join(package_path.as_relative_path().as_path());
+    let original_package = fs::read(&package_host_path).unwrap();
+    let mut tampered_package = original_package.clone();
+    tampered_package.push(b'\n');
+    fs::write(&package_host_path, tampered_package).unwrap();
+    assert!(cache.admit(&source, &first_ref).is_err());
+    assert_eq!(cache.admission_count(), 3);
+    fs::write(&package_host_path, &original_package).unwrap();
+
+    let schema_path =
+        skiff_artifact_identity::PackageSchemaIndexRecordPath::new(&first.package_schema_index)
+            .unwrap();
+    let schema_host_path = source.root().join(schema_path.as_relative_path().as_path());
+    let original_schema = fs::read(&schema_host_path).unwrap();
+    let mut tampered_schema = original_schema.clone();
+    tampered_schema.push(b'\n');
+    fs::write(&schema_host_path, tampered_schema).unwrap();
+    assert!(cache.admit(&source, &first_ref).is_err());
+    assert_eq!(cache.admission_count(), 3);
+    fs::write(&schema_host_path, original_schema).unwrap();
+
+    let target_package_path = target
+        .root()
+        .join(package_path.as_relative_path().as_path());
+    let mut target_tamper = fs::read(&target_package_path).unwrap();
+    target_tamper.push(b'\n');
+    fs::write(&target_package_path, target_tamper).unwrap();
+    let admitted = cache.admit(&source, &first_ref).unwrap();
+    assert!(target
+        .write_validated_package_copy_records(admitted)
+        .is_err());
+}
+
+#[test]
+fn package_copy_cache_never_admits_an_invalid_declared_identity() {
+    let (_source_root, source) = test_store();
+    let mut invalid = package_fixture();
+    invalid.package_build_id =
+        PackageBuildId::new(format!("skiff-package-build-v10:sha256:{}", "0".repeat(64)));
+    let invalid_ref = declared_package_ref(&invalid);
+    source
+        .write_package_schema_index(&empty_schema_index(&invalid))
+        .unwrap();
+    let path = PackageArtifactRecordPath::new(&invalid_ref).unwrap();
+    let host_path = source.root().join(path.as_relative_path().as_path());
+    fs::create_dir_all(host_path.parent().unwrap()).unwrap();
+    fs::write(
+        &host_path,
+        skiff_canonical_json::canonical_json_bytes(&invalid).unwrap(),
+    )
+    .unwrap();
+
+    let mut cache = PackageArtifactAdmissionCache::default();
+    assert!(cache.admit(&source, &invalid_ref).is_err());
+    assert_eq!(
+        cache.admission_count(),
+        0,
+        "failed first admission must not populate the cache"
+    );
 }
 
 fn contract_fixture() -> ServiceContract {

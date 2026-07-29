@@ -10,6 +10,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::{authoring::publish_package_artifact_records, PublishedPackageArtifact};
 use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_deployment::storage::PackageArtifactAdmissionCache;
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
@@ -77,6 +78,19 @@ impl CanonicalTestRecords {
         source_artifact_root: &Path,
         runtime_artifact_root: &Path,
     ) -> Result<Vec<PathBuf>, CanonicalFixtureError> {
+        self.publish_with_session(
+            source_artifact_root,
+            runtime_artifact_root,
+            &mut CanonicalPublishSession::default(),
+        )
+    }
+
+    pub(crate) fn publish_with_session(
+        &self,
+        source_artifact_root: &Path,
+        runtime_artifact_root: &Path,
+        session: &mut CanonicalPublishSession,
+    ) -> Result<Vec<PathBuf>, CanonicalFixtureError> {
         let source = CanonicalArtifactStore::open(source_artifact_root)?;
         let target = CanonicalArtifactStore::create(runtime_artifact_root)?;
         let owned_packages = self
@@ -100,7 +114,7 @@ impl CanonicalTestRecords {
         let mut written = Vec::new();
         for package in &self.assembly.resolved_packages {
             if !owned_packages.contains(package) {
-                copy_package(&source, &target, package, &mut written)?;
+                copy_package(&source, &target, package, session, &mut written)?;
             }
         }
         for contract in &self.assembly.resolved_contracts {
@@ -133,14 +147,20 @@ impl CanonicalTestRecords {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct CanonicalPublishSession {
+    package_admissions: PackageArtifactAdmissionCache,
+}
+
 fn copy_package(
     source: &CanonicalArtifactStore,
     target: &CanonicalArtifactStore,
     reference: &PackageArtifactRef,
+    session: &mut CanonicalPublishSession,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
-    let artifact = source.read_package_artifact(reference)?;
-    let schema = source.resolve_package_artifact_schema(&artifact)?;
+    let admitted = session.package_admissions.admit(source, reference)?;
+    let artifact = admitted.artifact();
     for file in &artifact.files {
         let unit = source.read_file_ir(reference, file)?;
         written.push(target.write_file_ir(reference, file, &unit)?);
@@ -149,11 +169,7 @@ fn copy_package(
         let bytes = source.read_static_resource(reference, resource)?;
         written.push(target.write_static_resource(reference, resource, &bytes)?);
     }
-    for record in schema.records.values() {
-        written.push(target.write_package_schema_type_record(record)?);
-    }
-    written.push(target.write_package_schema_index(&schema.index)?);
-    written.push(target.write_package_artifact(&artifact)?);
+    written.extend(target.write_validated_package_copy_records(admitted)?);
     Ok(())
 }
 
