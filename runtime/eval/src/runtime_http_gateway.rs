@@ -194,6 +194,11 @@ impl Interpreter {
             "HTTP gateway response stream",
             &mut heap,
         )?;
+        self.attach_deferred_http_response_sink(
+            &stream_value,
+            item_plan.clone(),
+            context.stream_runtime().request_scope_generation(),
+        )?;
         let consumer = self.consume_in_process_binary_http_response_stream(
             &context,
             &stream_value,

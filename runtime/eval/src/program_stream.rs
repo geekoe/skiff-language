@@ -24,7 +24,7 @@ use skiff_runtime_model::{
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink},
+    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink, TypedStreamSink},
     env::{Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
@@ -338,6 +338,25 @@ impl Interpreter {
             consumer,
         )
         .await
+    }
+
+    pub(crate) fn attach_deferred_http_response_sink(
+        &self,
+        stream_value: &Value,
+        item_type: RuntimeTypePlan,
+        request_generation: Option<u64>,
+    ) -> Result<()> {
+        let id = stream_id(stream_value).ok_or_else(|| {
+            RuntimeError::Decode(
+                "raw HTTP response stream is not a canonical Stream value".to_string(),
+            )
+        })?;
+        self.deferred_stream_producers.attach_response_sink(
+            id,
+            stream_value,
+            item_type,
+            request_generation,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -935,6 +954,41 @@ impl DeferredStreamProducerRegistry {
             .lock()
             .expect("deferred stream producer registry poisoned")
             .remove(id)
+    }
+
+    fn attach_response_sink(
+        &self,
+        id: &str,
+        stream_value: &Value,
+        item_type: RuntimeTypePlan,
+        request_generation: Option<u64>,
+    ) -> Result<()> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("deferred stream producer registry poisoned");
+        let producer = entries.get_mut(id).ok_or_else(|| {
+            RuntimeError::Decode(format!(
+                "raw HTTP response stream {id} is not a parked deferred producer"
+            ))
+        })?;
+        if producer.stream_value != *stream_value
+            || producer.stream_runtime.request_scope_generation() != request_generation
+        {
+            return Err(RuntimeError::Decode(format!(
+                "raw HTTP response stream {id} does not belong to the current request"
+            )));
+        }
+        if producer.producer_env.response_stream_sink.is_some() {
+            return Err(RuntimeError::Decode(format!(
+                "raw HTTP response stream {id} already has a response sink"
+            )));
+        }
+        producer.producer_env.response_stream_sink = Some(TypedStreamSink {
+            sink: producer.sink.clone(),
+            item_type,
+        });
+        Ok(())
     }
 }
 
