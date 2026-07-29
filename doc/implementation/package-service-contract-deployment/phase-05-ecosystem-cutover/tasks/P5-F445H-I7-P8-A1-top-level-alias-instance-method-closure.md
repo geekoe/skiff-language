@@ -3,9 +3,11 @@
 状态：
 
 ```text
-IN_PROGRESS
+COMPLETE
 RED_COMPLETE
 A1_V_INTEGRATED
+A1_COMPLETE
+AGINE_170_RESUME_UNBLOCKED
 ```
 
 ## 1. Parent, baseline and ownership

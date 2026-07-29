@@ -3,141 +3,145 @@
 状态：
 
 ```text
-TASK_SCOPE_EXPANDED
+PASS
 RED_COMPLETE
-BLOCKED_BY = A1_V_PASS
-A1_COMPLETE = NO
-A1_RESUME_UNBLOCKED = NO
-AGINE_170_RESUME_UNBLOCKED = NO
+A1_V_INTEGRATED
+A1_COMPLETE = YES
+AGINE_170_RESUME_UNBLOCKED = YES
+RUNTIME_LINKER_TEST_RUNNER_PRODUCTION = NO_OP
 DECISION_REQUIRED = NO
 ```
 
-## 1. Frozen input and RED
+## 1. Frozen ancestry
 
-零worktree预检与RED锚定Skiff：
-
-```text
-baseline commit = 44e83695d5d9e6559b3ac5f482b9faffd1f96cb3
-baseline tree   = 6cc2284797d52a6d3549afb255eeaae6247a6915
-RED commit      = c05cf4beb56db29e8d441e268fb8b57a044f0852
-RED tree        = 67ed93c128353fb1a8f34ea4346b5dd38e6107d8
-```
-
-RED同时建立了两层独立失败：
-
-1. projection fixture包含真实`ExecutableKind::ImplMethod`、receiver type和executable declaration；
-   `implementationSymbols["api.Worker.handle"]`缺失；
-2. compiler driver临时project包含空`api.yml`的provider、`Box`、`makeBox`、`Box.read`和
-   `kind: test` consumer；provider artifact已有`internal.Box`与`internal.makeBox`，但
-   `implementationSymbols["internal.Box.read"]`缺失，consumer尚不能进入typed source/File IR。
-
-canonical linked fixture也已加入同形`makeBox`/`Box.read`/`box.read()` case，但因projection RED尚未解除而
-未冒充execution PASS。
-
-RED命令与非零发现数：
+恢复开发锚定：
 
 ```text
-cargo test --locked -p skiff-compiler-projection \
-  package_implementation_projection_includes_exact_impl_method_callable -- --nocapture
-=> 1 discovered, 0 passed, 1 failed
-=> no entry found for key api.Worker.handle
-
-cargo test --locked -p skiff-compiler --test package_imports \
-  test_service_top_level_alias_executes_exact_package_receiver_method -- --nocapture
-=> 1 discovered, 0 passed, 1 failed
-=> no entry found for key internal.Box.read
+resume baseline commit = 6563ef36d7540636fe8e6b28ec4239d8845ec883
+resume baseline tree   = 383e9dff8e6b847a79dd899c205ad79f2c7bf293
+WIP checkpoint commit  = 067dd442643829ce14bd1bcfa46d77ea2e5771fa
+WIP checkpoint tree    = 8f23e24c3bd6d8323061335cc3e7a9447b252e48
 ```
 
-## 2. Scope expansion proof
-
-在冻结owner
-`compiler/projection/src/package_artifact/callables/mod.rs`内做最小诊断改动后，projection能够构造：
+A1-V原始实现`227cb96f337a0051f279bee9e64a2af0f7068758`已由integration
+`405cc99b3af136429a52ecf8b85dbf7d044e5438`合入。为在旧A1工作树上保持精确实现而不对脏改动rebase，
+本分支把同一tree cherry-pick为：
 
 ```text
-PackageLocalAbiSymbol::Callable
-PackageCallableId(pkg-callable:<package>:top-level:<module>.<type>.<method>)
-PackageCallableSignature(self first)
-OperationCallableKind::ImplMethod
-PackageCallableLinkFact
+local A1-V commit = f8d059fda6dbed7369a5b6c0b19d6807a214d1f6
+implementation    = 50b61a85a2e85ed3c6aba6c13c0e70b326684e9c
+implementation tree = d4e4cb89866efdcb96713fef845d81ce9cdd073c
 ```
 
-但`project_package_artifact_facts`随即被现有artifact identity validator拒绝：
+integration owner应在已经含原始A1-V commit的candidate上串行接入A1 checkpoint与最终implementation，
+跳过本地重复的`f8d059fd`。
+
+## 2. Implemented closure
+
+五层链已经闭合：
+
+1. projection把真实`ExecutableKind::ImplMethod`登记为
+   `implementationSymbols`、`OperationCallableKind::ImplMethod`、精确
+   `PackageCallableId`、callable link和implementation link；signature只保留一个首位`self`。
+2. source只为direct `topLevelAlias`产生的精确`PackageSymbol`或完成替换的`AppliedNominal`开放receiver
+   method lookup，同时核对Local ABI、build、owner source path与generic arity。
+3. resolved target继续使用既有`ResolvedCallTarget::DependencyPackageFunction`，没有增加target种类；
+   不按短名或display text回退。
+4. lowering继续产生既有`CallTargetIr::PackageCallable`，File IR使用primary alias，执行参数固定为receiver
+   第一项，随后才是显式参数；receiver generic arguments排在method generic arguments前。
+5. canonical source fixture真实运行`box.read()`并通过7项测试。
+
+top-level view的source type provenance保留在source IR；公开参数和annotation仍优先使用primary public
+projection，因此不会破坏既有“top-level callable的公开类型按primary alias兼容”的行为。
+
+## 3. Negative and generic evidence
+
+同一`package_imports`测试族证明：
+
+| 维度 | 结果 |
+| --- | --- |
+| ordinary public alias | `.read()`不获得implementation method |
+| service / permission | 非test service声明`topLevelAlias`被拒绝；service target不进入本分派 |
+| method | missing exact member产生结构化source错误 |
+| arity / type | 少参、显式重复receiver、错误参数类型均在source阶段拒绝 |
+| identity / owner | source unit拒绝错误ABI、错误owner、错误dependency ref及未完成type param |
+| generic | `Box<string>`保留exact owner与type argument；0/2 arity和未完成替换均拒绝 |
+| existing dispatch | source/lowering现有actor、builtin、local concrete、public instance与interface tests保持原优先级 |
+
+projection使用唯一map key和artifact validator继续对重复/歧义、缺signature及错误link fail closed；A1没有
+增加动态method lookup或同名fallback。
+
+## 4. Verification
+
+最终implementation tree上的必需聚焦证据：
 
 ```text
-PackageArtifact is invalid:
-implementation link executable Worker.handle targets public callable
-pkg-callable:example.pkg:top-level:api.Worker.handle
-without a Local ABI signature
+cargo test --locked -p skiff-compiler-projection package_artifact -- --nocapture
+=> PASS 64/64
+
+cargo test --locked -p skiff-compiler-source package_receiver -- --nocapture
+=> PASS 1/1
+
+cargo test --locked -p skiff-compiler-lowering package_receiver -- --nocapture
+=> PASS 2/2
+
+cargo test --locked -p skiff-compiler --test package_imports package_receiver -- --nocapture
+=> PASS 3/3
+
+cargo check --locked -p skiff-compiler-projection -p skiff-compiler-source \
+  -p skiff-compiler-lowering -p skiff-compiler
+=> PASS
+
+cargo test --locked -p skiff-compiler --test package_imports
+=> PASS 17/17
+
+cargo fmt --all -- --check
+=> PASS
+
+git diff --check
+=> PASS
 ```
 
-精确owner是：
+扩大回归中，`skiff-compiler-source`为`338/342`，4个失败与已记录baseline相同：
+reserved-validation越界、两个prelude identity snapshot及builtin spelling owner。
+`skiff-compiler-lowering`为`54/55`，唯一失败是既有fixture
+`internal/any_lowering.skiff`第35行parser错误；A1聚焦lowering和完整package imports均通过。
+
+canonical命令的目标fixture阶段：
 
 ```text
-artifact-identity/src/package_artifact/validation.rs
-  implementation_link_callable_scope
+[skiff-tests] running top-level-alias-instance-method
+test result: ok. 7 passed; 0 failed
 ```
 
-该validator遍历`implementation_links.functions + implementation_links.impl_methods`，对同一
-File IR executable上的每个`OperationCallableKind::ImplMethod` link只在
-`packageLocalAbi.publicSymbols`查signature。权威设计要求同一production source set的impl method也以
-独立top-level callable登记到`implementationSymbols`；当impl method同时是现有public-instance method时，
-新的top-level link与原public link共享executable，validator必然看到top-level callable id并错误地只查
-public surface。
+随后公共suite在与A1无关的host fixture校验失败：prepare已产出当前
+`skiff-runtime-assembly-v3:*`，但`scripts/lib/skiff-source-test-suite.mjs`仍只接受
+`skiff-runtime-assembly-v2:*`。该文件在integration `405cc99b`中同样为旧校验，且不在A1冻结写集；
+因此不把后续harness漂移冒充A1执行失败，也没有越权修改test-runner production。
 
-以下绕法均不合法：
+Agine完整170项仍归J。A1已解除D2记录的receiver compile缺口；便宜Agine discovery/compile探针由
+integration owner在含A1的最终candidate上运行，不能由本旧基线工作树替代。
 
-- 跳过public-instance对应的impl method：违反“当前impl method namespace”完整投影；
-- 把top-level callable伪装为`InternalFunction`：违反冻结的`OperationCallableKind::ImplMethod`；
-- 复用public callable id/signature：public-instance signature不含receiver，且Local ABI禁止跨surface重复
-  callable id；
-- 只让最小private fixture通过：会让含public-instance method的真实package在identity validation失败。
+## 5. Write set and handoff
 
-因此完成A1需要新增artifact-identity validator owner。它不要求schema/artifact model代际变化，但已经超出
-任务冻结的五个production owner，并触发第7节“其它owner”停止条件。诊断production改动已全部撤销；RED提交
-不含production修改。
-
-## 3. Required DAG repair
-
-已冻结的最小修复链：
+A1整体production写集严格保持冻结owner：
 
 ```text
-A1 RED checkpoint
-  -> D4 validation authority
-  -> A1-V artifact identity callable-scope validation
-  -> A1 compiler resume
-  -> Agine 170 resume
+compiler/projection/src/package_artifact/callables/mod.rs
+compiler/source/src/type_resolution_model.rs
+compiler/source/src/expression_type_model.rs
+compiler/source/src/resolved_call_targets/builder.rs
+compiler/lowering/src/function_lowering.rs
 ```
 
-`A1-V`只需让implementation link callable scope按精确callable id在public/implementation Local ABI
-surface中唯一解析signature，并保留重复id、缺signature、scope不一致fail closed；不得改变schema、identity
-代际或public-instance执行语义。完成后A1可在原冻结五个compiler owner继续projection、source typing、
-resolved target、receiver-first lowering与五层GREEN。
-
-该扩张是确定性implementation ownership修正，不需要用户设计决策。Runtime、linker、Router、test-runner
-production、Agine源码仍保持NO-OP；P8 stream lane仍无因果关系。
-
-D4和A1-V是A1的显式scope-expansion后继，不把本result升级为A1 PASS。A1-V集成并设置
-`A1_RESUME_UNBLOCKED = YES`后，A1才从新的精确integration commit/tree恢复原五个compiler owner与
-五层GREEN；A1-V不能直接解除Agine 170或J。
-
-## 4. Write set and handoff
-
-本提交实际写集仅为：
+测试写集为projection fixture/test、`compiler/tests/package_imports.rs`以及两个canonical source fixture。
+除此之外只更新本task/result。Runtime、linker、Router、test-runner production、artifact/schema代际、
+manifest和Agine业务源码均未修改。
 
 ```text
-compiler/projection/src/package_artifact/tests/fixtures.rs
-compiler/projection/src/package_artifact/tests/projection.rs
-compiler/tests/package_imports.rs
-test-runner/fixtures/alias-return-catch-once/main.skiff
-test-runner/fixtures/alias-return-catch-once-tests/main.test.skiff
-本task及result
+branch   = codex/p5-f445h-i7-p8-a1-top-level-receiver-resume
+worktree = /Users/geek/workspace/skiff-p5-f445h-i7-p8-a1-top-level-receiver-resume
 ```
 
-分支和worktree保留给integration owner：
-
-```text
-branch   = codex/p5-f445h-i7-p8-a1-top-level-receiver
-worktree = /Users/geek/workspace/skiff-p5-f445h-i7-p8-a1-top-level-receiver
-```
-
-本节点不merge、不push、不运行Agine或J。
+交给`/root/phase05_integration_steward`串行集成、运行便宜Agine探针并清理本一级worktree/branch；本节点不
+merge、不push、不启动J。
