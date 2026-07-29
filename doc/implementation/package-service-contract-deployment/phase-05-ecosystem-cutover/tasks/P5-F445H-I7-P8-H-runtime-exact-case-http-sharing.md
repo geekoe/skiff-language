@@ -112,3 +112,69 @@ runtime/host/src/host/runtime_host.rs
 
 允许为上述调用链增加同目录聚焦tests和机械module声明。Router、compiler、std、File IR、frame/schema、
 test-runner保持NO-OP。
+
+## 7. Implementation result
+
+状态：
+
+```text
+IMPLEMENTATION_PASS
+NEXT_OWNER = P5-F445H-I7-P8-T
+```
+
+实现提交：
+
+```text
+commit 0440b786858d1732285e8400c4e42f5f2b965241
+tree   77bde7d9ee73f3940f55119efe5d613dcdd450f9
+```
+
+实现闭合了预检确认的三处Runtime缺口：
+
+1. `std.http.request`和`std.http.stream`在inline effect分派前，只对当前父case受信
+   business-ingress origin进行self-ingress识别。外部origin仍按普通inline double处理；
+2. Host按exact activation注册父case的effect registry。self-ingress发送前拒绝用户声明的
+   `x-skiff-service`、`x-skiff-version`、`Host`、长度/传输及hop-by-hop headers，再加入当前
+   exact deployment的既有service/version selector；
+3. Router回入的普通HTTP child只在父请求持有active self-ingress slot时借用同一registry。
+   child不执行`finalize_test_case`，父请求仍是唯一finalize owner。
+
+同一case只允许一个active self-ingress；请求完成后释放slot，顺序调用可以继续。unary lease覆盖
+完整响应；stream lease由现有pull source持有，因此EOF、错误、drop或break继续沿既有
+stream取消/释放路径收束。
+
+为在Eval的inline effect匹配前完成精确分类，实际写集比预检多一个内部机械适配文件：
+
+```text
+runtime/capability-context/src/http.rs
+```
+
+该适配只有Runtime内部默认false查询，不新增语言API、artifact、wire/frame/schema或用户可见
+header。Router、compiler、std、File IR、test-runner均保持NO-OP。
+
+验证结果：
+
+```text
+cargo fmt --all -- --check
+git diff --check
+
+cargo check --locked \
+  -p skiff-runtime-capability-context \
+  -p skiff-runtime-eval \
+  -p skiff-runtime-request \
+  -p skiff-runtime-host
+
+cargo test --locked -p skiff-runtime-host \
+  capability_context::test_http_entry::tests -- --nocapture
+# 3 passed
+
+cargo test --locked -p skiff-runtime-request http_gateway -- --nocapture
+# 9 passed
+
+cargo test --locked -p skiff-runtime-eval source_inline -- --nocapture
+# 6 passed
+```
+
+首次使用本worktree私有target编译时仅因磁盘`ENOSPC`中止；清理本worktree可再生Cargo缓存后，
+改用已有共享target复验，以上命令全部通过。真实Router往返、父entry内消费double、父未消费
+double结算与stream break端到端组合证据按DAG由T负责，不在H内复制第二套harness。
