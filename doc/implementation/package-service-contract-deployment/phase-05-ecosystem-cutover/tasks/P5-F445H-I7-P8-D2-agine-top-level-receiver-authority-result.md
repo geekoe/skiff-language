@@ -6,6 +6,7 @@
 PASS
 A1_READY_FOR_ZERO_WORKTREE_PREFLIGHT = YES
 AGINE_DEFAULT_BLOCKED_BY = P8_A1
+A1_RESUME_BLOCKED_BY = P8_A1_V
 P8_STREAM_CAUSAL_RELATION = NONE
 DECISION_REQUIRED = NO
 ```
@@ -74,12 +75,14 @@ substitution。普通alias公开type、service boundary返回对象和interface 
 两条工作线互不成为对方根因：
 
 ```text
-P8 stream lane:   S1 -> I -> X -------------------+
-                                                   +-> J final gate
-Agine compiler:   D2 -> A1 -> Agine 170 resume ---+
+P8 stream lane:   S1 diagnostic -> S2 -> S3 -> I -> X --------+
+                                                               +-> J final gate
+Agine compiler:   D2 -> A1 RED -> D4 -> A1-V -> A1 resume
+                  -> Agine 170 resume --------------------------+
 ```
 
-A1直接父节点是本result。A1 PASS只表示编译器闭环并解除Agine恢复阻塞；Agine最终
+A1最初的直接父节点是本result；其RED揭示artifact-identity validator owner缺口后，必须先经过D4/A1-V，
+再恢复A1原compiler闭环。A1-V PASS只解除A1恢复阻塞；A1 PASS才解除Agine恢复阻塞。Agine最终
 `170 pass / 0 fail / 0 skip`仍由J在冻结candidate上建立，早期诊断不能冒充final PASS。
 
 ## 5. Validation

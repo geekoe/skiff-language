@@ -1075,6 +1075,18 @@ reference，也不复制provider的DB metadata。
 generic applied nominal时，将method解析成现有package callable target。Lowering继续生成普通
 `PackageCallable`调用，并把receiver作为第一项执行参数。
 
+Artifact identity validation必须按每个`callableLinks`中的精确`PackageCallableId`，在互斥的
+`publicSymbols`与`implementationSymbols` callable facts中恰好解析一次。implementation-only impl
+callable id固定为
+`pkg-callable:<packageId>:top-level:<sourcePath>`，并使用`implementationSymbols`中的exact
+signature/type-parameter scope校验其
+`implementationLinks.implMethods` executable target，并要求`OperationCallableKind::ImplMethod`；同一
+executable同时拥有public-instance callable与implementation-only callable时，分别验证两个canonical id，
+不能把后者伪装为`InternalFunction`或public symbol。impl method target coverage由public与implementation
+`ImplMethod` callable并集闭合，不能再假定每个impl method都公开。缺失、重复、错误surface owner、
+signature scope、file/index target或callable kind一律fail closed。现有canonical identity projection已经
+覆盖两套surface及callable links；这项校验闭合不新增schema、字段或identity代际。
+
 普通public alias、service boundary对象和interface receiver不获得这项implementation method view。
 public alias仍只有API graph公开的public instance methods；service boundary只按ServiceContract
 operation/schema materialize；interface receiver只按interface slot dispatch。Compiler不得按显示名、

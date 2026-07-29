@@ -102,10 +102,15 @@ PackageArtifact拥有代码和Package本地链接事实：
 
 - File IR与implementation links；
 - PackageCallableId及exact signatures；
-- PackageLocalAbi/public source-call index；
+- PackageLocalAbi中互斥的public/implementation source-call indexes；
 - PackageSchema index refs；
 - dependency/runtime requirements；
 - callable effect、provenance与boundary availability。
+
+Artifact identity owner按精确`PackageCallableId`把每条callable link唯一绑定到上述两个index之一，再以
+该exact signature scope校验对应implementation executable target/kind。它不能用同executable、显示路径或
+public-first fallback代替精确owner，也不能把implementation-only callable提升到public index；
+implementation callable id必须与其`top-level:<sourcePath>` canonical owner一致。
 
 它不含`serviceCallRoots`或任何`service.yml`选择；同一PackageArtifact可被不同service projection复用。
 

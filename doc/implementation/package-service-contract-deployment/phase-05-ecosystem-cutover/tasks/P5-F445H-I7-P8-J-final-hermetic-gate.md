@@ -3,7 +3,7 @@
 状态：
 
 ```text
-BLOCKED_BY = X_PASS + A1_PASS
+BLOCKED_BY = X_PASS + A1_V_PASS + A1_PASS
 GATE_OWNER_UNIQUE = YES
 ```
 
@@ -11,6 +11,8 @@ GATE_OWNER_UNIQUE = YES
 
 - 直接父节点：
   - stream lane：`P5-F445H-I7-P8-X-independent-http-entry-acceptance.md`
+  - Agine validator lane：
+    `P5-F445H-I7-P8-A1-V-implementation-callable-scope-validation.md`
   - Agine compiler lane：`P5-F445H-I7-P8-A1-top-level-alias-instance-method-closure.md`
 - ancestry floors：
   - Skiff `3a87d37f81a04c249f308b311bd91dcfdf3a8aa3` /
@@ -29,7 +31,8 @@ GATE_OWNER_UNIQUE = YES
 3. Agine默认non-live tests（当前源码声明基线目标170，实际发现数必须记录且不能静默下降）。Early
    diagnostic在Skiff `2bcb40e61ee6b922eeca913651e2cc344a38b50e`上得到`170 declared /
    0 discovered`，阻塞是A1拥有的`topLevelAlias`精确package receiver method编译缺口；A1合流前不能把
-   零发现写成stream、runner或Agine业务失败，A1 PASS也不能替代本项最终170个测试；
+   零发现写成stream、runner或Agine业务失败。A1 RED揭示的artifact-identity validation缺口必须先由
+   A1-V闭合；A1-V PASS只恢复A1，A1 PASS也不能替代本项最终170个测试；
 4. Codex Relay全部default isolated tests；gate前只读发现当前默认test files/cases并冻结数量，最终实际
    发现数不得下降，使用canonical `scripts/test-isolated-service.mjs agine.ai/codex-relay`入口；
 5. official `skiff-packages`全部default offline tests；先用
@@ -70,15 +73,16 @@ pre-acceptance candidate上并行运行Codex Relay、official packages或其它�
 projection/source/lowering，不属于P8 stream根因或S2/S3/I修复面。两条lane可以独立推进：
 
 ```text
-P8 stream lane:   S1 diagnostic -> S2 -> S3 -> I -> X ---+
-                                                          +-> J final gate
-Agine compiler:   D2 -> A1 -> Agine 170 resume -----------+
+P8 stream lane:   S1 diagnostic -> S2 -> S3 -> I -> X --------+
+                                                               +-> J final gate
+Agine compiler:   D2 -> A1 RED -> D4 -> A1-V -> A1 resume
+                  -> Agine 170 resume --------------------------+
 ```
 
 S1保持`TASK_NOT_EXECUTABLE / S1_COMPLETE=NO`；它的GREEN fixture只是否定普通return-stream根因。
 `P5-F445H-I7-P8-D3-stream-argument-response-sink-refinement-result.md`把后继拆成顺序S2/S3，禁止把
 argument transport和response sink混在一次修复中。
 
-所有diagnostic blocker批量闭合、S2/S3/I合流、X PASS、A1 PASS且没有在途写入后，才冻结final candidate
-并执行本文件第2节的最终验收。任何影响这些consumer的后续代码、配置、依赖或环境变化都会使早期诊断
-证据失效；最终candidate仍须由J唯一owner建立一次对应的验收结果。
+所有diagnostic blocker批量闭合、S2/S3/I合流、X PASS、A1-V PASS、恢复后的A1 PASS且没有在途写入后，
+才冻结final candidate并执行本文件第2节的最终验收。任何影响这些consumer的后续代码、配置、依赖或
+环境变化都会使早期诊断证据失效；最终candidate仍须由J唯一owner建立一次对应的验收结果。

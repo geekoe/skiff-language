@@ -5,7 +5,8 @@
 ```text
 TASK_SCOPE_EXPANDED
 RED_COMPLETE
-BLOCKED_BY = ARTIFACT_IDENTITY_VALIDATION_OWNER
+BLOCKED_BY = A1_V_PASS
+RESUME_AFTER = A1_V_INTEGRATION
 ```
 
 ## 1. Parent, baseline and ownership
@@ -21,8 +22,9 @@ BLOCKED_BY = ARTIFACT_IDENTITY_VALIDATION_OWNER
   读取移动中的integration工作区。
 - repo：Skiff。
 - integration owner：`/root/phase05_integration_steward`。
-- DAG：`D2 -> A1 -> Agine 170 resume -> J`。A1与`S1 -> I -> X`没有因果依赖，也不得修改或诊断P8
-  package stream链。
+- DAG：
+  `D2 -> A1 RED -> D4 -> A1-V -> A1 resume -> Agine 170 resume -> J`。
+  A1与`S1 diagnostic -> S2 -> S3 -> I -> X`没有因果依赖，也不得修改或诊断P8 package stream链。
 
 ## 2. Exact semantic target
 
@@ -249,3 +251,30 @@ projection fixture、compiler driver临时project与canonical source fixture建�
 本节点风险为高（exact Local ABI identity与call lowering）。开发自验收拥有第6节聚焦命令；完整Agine 170与
 阶段J仍不在本任务运行。证据仅对本分支最终implementation/result commit有效；production owner、fixture、
 dependency artifact或identity输入变化即失效。
+
+## 10. Scope expansion checkpoint and resume
+
+A1 RED在第9节基线上稳定触发
+`artifact-identity/src/package_artifact/validation.rs::implementation_link_callable_scope`的owner缺口。
+该缺口由以下已拆分节点独占：
+
+```text
+P5-F445H-I7-P8-D4-implementation-callable-validation-authority-result.md
+  -> P5-F445H-I7-P8-A1-V-implementation-callable-scope-validation.md
+```
+
+A1-V只拥有artifact-identity validator及其测试，不得修改本任务冻结的五个compiler production owner。
+A1-V集成并设置`A1_RESUME_UNBLOCKED = YES`后，A1必须以该精确integration commit/tree重新做零worktree
+预检，从已集成的A1 RED checkpoint恢复原第4至第6节闭环。恢复时不得把validator写集吸收到A1，也不得把
+A1-V PASS写成`A1_COMPLETE`或`AGINE_170_RESUME_UNBLOCKED`。
+
+只有恢复后的A1在原冻结写集上建立projection、typed source、File IR target、receiver-first args和linked
+execution五层GREEN，才可设置：
+
+```text
+A1_COMPLETE = YES
+AGINE_170_RESUME_UNBLOCKED = YES
+```
+
+在此之前，本任务保持`TASK_SCOPE_EXPANDED / RED_COMPLETE`。P8 stream lane的状态、任务和写集均不因
+本次拆分变化。
