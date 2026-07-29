@@ -4,7 +4,6 @@ use crate::input::{PackageDependency, PackageSourceInput};
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_input_model::{PackageCompileInputMetadata, PackageContractCompileDependency};
-use skiff_compiler_projection_input::ResolvedPackageSchema;
 
 impl PackageCompileInputMetadata for PackageSourceInput {
     fn package_dependencies(&self) -> &[PackageDependency] {
@@ -19,7 +18,6 @@ type CanonicalPackageCompileInput<'a> =
 pub struct PackageCompileInput<'a> {
     platform_sources: &'a CompilerPlatformSources,
     canonical: CanonicalPackageCompileInput<'a>,
-    resolved_package_schemas: &'a [ResolvedPackageSchema],
     canonical_artifact_root: Option<&'a Path>,
     test_service: bool,
 }
@@ -34,7 +32,6 @@ impl<'a> PackageCompileInput<'a> {
         Self {
             platform_sources,
             canonical: CanonicalPackageCompileInput::new(package, package_aliases, package_id),
-            resolved_package_schemas: &[],
             canonical_artifact_root: None,
             test_service: false,
         }
@@ -63,22 +60,6 @@ impl<'a> PackageCompileInput<'a> {
             .canonical
             .with_available_canonical_packages(available_packages);
         self
-    }
-
-    /// Supplies store-verified schema records for exact dependency bindings.
-    ///
-    /// The driver selects only bindings that are actually required after File
-    /// IR closes compiler-owned dependencies such as `std`.
-    pub fn with_resolved_package_schemas(
-        mut self,
-        resolved_package_schemas: &'a [ResolvedPackageSchema],
-    ) -> Self {
-        self.resolved_package_schemas = resolved_package_schemas;
-        self
-    }
-
-    pub fn resolved_package_schemas(&self) -> &'a [ResolvedPackageSchema] {
-        self.resolved_package_schemas
     }
 
     /// Gives the compiler facade the root of canonical dependency records.

@@ -116,7 +116,7 @@ fn pre_source_contract_package_schemas(
     input: &PackageCompileInput<'_>,
     store: Option<&CanonicalArtifactStore>,
 ) -> Result<Vec<ResolvedPackageSchema>, PackageCompileError> {
-    let mut schemas = input.resolved_package_schemas().to_vec();
+    let mut schemas = Vec::<ResolvedPackageSchema>::new();
     let owners = input
         .contract_dependencies
         .iter()

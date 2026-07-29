@@ -20,10 +20,10 @@ use skiff_artifact_model::{
     PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity,
     SERVICE_CONTRACT_SCHEMA_VERSION,
 };
-use skiff_compiler::ResolvedPackageSchema;
 use skiff_compiler_input::{
     read_contract_dependency_json, ContractDependencyError, ResolvedContractDependency,
 };
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);

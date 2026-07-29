@@ -7,8 +7,7 @@ use std::{
 
 use skiff_compiler::{
     PackageCompileError, PackageContractCompileDependency, PublishedPackageArtifact,
-    ResolvedPackageSchema, ResolvedPackageSchemaError, ServiceApiProjection,
-    ServicePackageCompileError,
+    ServiceApiProjection, ServicePackageCompileError,
 };
 use skiff_compiler_input::{
     package_config::{
@@ -77,8 +76,6 @@ pub enum PackageProjectCompileError {
     #[error(transparent)]
     ServiceCompile(#[from] ServicePackageCompileError),
     #[error(transparent)]
-    ResolvedPackageSchema(#[from] ResolvedPackageSchemaError),
-    #[error(transparent)]
     ServiceConfig(#[from] ServiceSourceConfigError),
     #[error("package dependency {package_id}@{package_version} has no discovered package.yml")]
     MissingDependencyManifest {
@@ -135,7 +132,6 @@ pub fn compile_service_package_project(
         &root_manifest.dependencies,
     )?;
     let contract_dependencies = BTreeMap::new();
-    let resolved_package_schemas = BTreeMap::new();
     let artifact_store = CanonicalArtifactStore::create(
         root.join(".skiff-compiler-test-artifacts"),
     )
@@ -146,7 +142,6 @@ pub fn compile_service_package_project(
         &platform_sources,
         manifests,
         &contract_dependencies,
-        &resolved_package_schemas,
         artifact_store,
     );
     // The compiler-owned std artifact must be available for exact source type
@@ -174,28 +169,10 @@ pub fn compile_package_project_with_contract_dependencies(
     let package_dirs = PackageResolutionDirs {
         package_dirs: store.is_dir().then_some(store).into_iter().collect(),
     };
-    compile_package_project_with_dirs_contract_dependencies_and_schemas(
+    compile_package_project_with_dirs_contract_dependencies(
         root,
         &package_dirs,
         contract_dependencies,
-        &BTreeMap::new(),
-    )
-}
-
-pub fn compile_package_project_with_contract_dependencies_and_schemas(
-    root: &Path,
-    contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
-    resolved_package_schemas: &BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
-) -> Result<PublishedPackageProject, PackageProjectCompileError> {
-    let store = root.join(LOCAL_PACKAGE_STORE);
-    let package_dirs = PackageResolutionDirs {
-        package_dirs: store.is_dir().then_some(store).into_iter().collect(),
-    };
-    compile_package_project_with_dirs_contract_dependencies_and_schemas(
-        root,
-        &package_dirs,
-        contract_dependencies,
-        resolved_package_schemas,
     )
 }
 
@@ -206,19 +183,13 @@ pub fn compile_package_project_with_dirs(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
-    compile_package_project_with_dirs_contract_dependencies_and_schemas(
-        root,
-        package_dirs,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-    )
+    compile_package_project_with_dirs_contract_dependencies(root, package_dirs, &BTreeMap::new())
 }
 
-fn compile_package_project_with_dirs_contract_dependencies_and_schemas(
+fn compile_package_project_with_dirs_contract_dependencies(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
     contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
-    resolved_package_schemas: &BTreeMap<PackageManifestKey, Vec<ResolvedPackageSchema>>,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
     let platform_sources = repository_platform_sources()?;
     let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
@@ -233,7 +204,6 @@ fn compile_package_project_with_dirs_contract_dependencies_and_schemas(
         &platform_sources,
         manifests,
         contract_dependencies,
-        resolved_package_schemas,
         CanonicalArtifactStore::create(root.join(".skiff-compiler-test-artifacts")).map_err(
             |error| PackageProjectCompileError::CanonicalArtifactStore {
                 message: error.to_string(),
