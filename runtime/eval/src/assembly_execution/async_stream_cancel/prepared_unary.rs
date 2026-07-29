@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, future::Future};
 use skiff_artifact_model::PackageBuildId;
 use skiff_runtime_activation::RequestActivationContext;
 use skiff_runtime_capability_context::OwnedExecutionControl;
-use skiff_runtime_linked_program::{CallIr, ExecutableAddr, LinkedTypeRef};
+use skiff_runtime_linked_program::{CallIr, ConstAddr, ExecutableAddr, LinkedTypeRef};
 use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
 
 use super::{
@@ -32,6 +32,7 @@ pub(crate) struct PreparedProviderUnary {
     provider_invocation_env: Env,
     caller_addr: ExecutableAddr,
     provider_addr: ExecutableAddr,
+    provider_receiver_const: Option<ConstAddr>,
     type_args: BTreeMap<String, LinkedTypeRef>,
     provider_args: Vec<RuntimeValue>,
     execution: OwnedExecutionControl,
@@ -120,6 +121,7 @@ pub(crate) fn prepare_provider_unary(
         provider_invocation_env: detached_provider_invocation_env(context.env),
         caller_addr: context.addr.clone(),
         provider_addr: target.executable_addr().clone(),
+        provider_receiver_const: target.receiver_const().cloned(),
         type_args: call.type_args.clone(),
         provider_args,
         execution: context.execution.owned(),
@@ -141,6 +143,7 @@ impl PreparedProviderUnary {
                 provider_invocation_env,
                 caller_addr,
                 provider_addr,
+                provider_receiver_const,
                 type_args,
                 provider_args,
                 execution,
@@ -151,12 +154,14 @@ impl PreparedProviderUnary {
             } = self;
             let terminal = {
                 let provider_context = provider_context.borrow();
-                let provider_future = interpreter.call_program_executable(
+                let provider_future = super::call_provider_callable(
+                    &interpreter,
                     provider_context,
                     &mut provider_heap,
                     &provider_invocation_env,
                     &caller_addr,
                     &provider_addr,
+                    provider_receiver_const.as_ref(),
                     &type_args,
                     provider_args,
                 );

@@ -1,2 +1,2 @@
 id: example.com/payments
-serviceCalls: [echo]
+serviceCalls: [echo, left, right]

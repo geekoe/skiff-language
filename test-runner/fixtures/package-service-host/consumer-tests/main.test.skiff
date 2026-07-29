@@ -4,6 +4,11 @@ test "provider observes helper mutation" {
   assert subjectImpl/main.run() == "provider-observed-helper-mutated"
 }
 
+test "service public instances preserve their exact receiver const" {
+  assert subjectImpl/main.leftLabel() == "left"
+  assert subjectImpl/main.rightLabel() == "right"
+}
+
 test "inline package effect sequence uses typed setup and request subset" effects {
   helper/tools.lookup {
     expect: { method: "POST" },

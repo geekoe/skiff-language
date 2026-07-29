@@ -153,8 +153,11 @@ impl ServiceErrorConsumerFixture {
 
         let caller_site = caller_call_site();
         let relay_site = relay_call_site();
-        let terminal_target =
-            operation_target(&provider.files[0], kind.executable(), "provider-terminal");
+        let terminal_target = operation_target(
+            &provider.files[0],
+            kind.executable(),
+            &format!("provider-terminal-{}", kind.executable()),
+        );
         let relay_target = operation_target(&provider.files[0], RELAY_EXECUTABLE, "provider-relay");
 
         let terminal_identity =
@@ -1129,7 +1132,23 @@ fn provider_package(
             types: implementation_types,
             ..PackageImplementationLinks::default()
         },
-        callable_links: BTreeMap::new(),
+        callable_links: (0..file.executables.len())
+            .map(|executable| {
+                let abi = if executable == RELAY_EXECUTABLE {
+                    "provider-relay".to_string()
+                } else {
+                    format!("provider-terminal-{executable}")
+                };
+                let callable_id = PackageCallableId::new(abi.clone());
+                (
+                    callable_id.clone(),
+                    PackageCallableLinkFact {
+                        callable_id,
+                        target: operation_target(&file, executable, &abi),
+                    },
+                )
+            })
+            .collect(),
         package_requirements: vec![package_requirement(STD_ALIAS, std_ref)],
         contract_requirements: vec![contract_requirement.clone()],
         service_requirements: vec![ServiceRequirement {
