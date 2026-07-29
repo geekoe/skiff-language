@@ -14,7 +14,7 @@ use crate::{
     canonical_store::CanonicalBaseAssembly,
     inline_effects,
     package_test_assembly::{
-        assemble_package_test_fixture_for_run, CanonicalPackageTestEntrypoint,
+        assemble_package_test_fixture_for_run_with_ingress, CanonicalPackageTestEntrypoint,
     },
     test_discovery::PackageTestCase,
     test_overlay::compile_package_test_overlay,
@@ -30,7 +30,6 @@ const BUSINESS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const HEALTH_PATH: &str = "/__router/health";
-const PACKAGE_TEST_REQUEST_AUTHORITY: &str = "localhost";
 static PACKAGE_TEST_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn run_package_cases(
@@ -59,7 +58,19 @@ pub fn run_package_cases(
         &cases,
     )?;
     let run_scope = package_test_run_scope()?;
-    let fixture = assemble_package_test_fixture_for_run(&project, overlay, base, &run_scope)?;
+    let ingress_url = options.ingress_url.as_deref().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "canonical execution requires --ingress-url".to_string(),
+        )
+    })?;
+    let ingress_url = ingress_url.strip_suffix('/').unwrap_or(ingress_url);
+    let fixture = assemble_package_test_fixture_for_run_with_ingress(
+        &project,
+        overlay,
+        base,
+        &run_scope,
+        ingress_url,
+    )?;
     fixture
         .records
         .publish(source_artifact_root, runtime_artifact_root)?;
@@ -116,14 +127,10 @@ pub fn run_package_cases(
         )
     })?;
 
-    options.ingress_url.as_deref().ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(
-            "canonical execution requires --ingress-url".to_string(),
-        )
-    })?;
     Ok(execute_entrypoints(
         fixture.entrypoints,
         activation_url,
+        ingress_url,
         &active_assembly,
         active_generation,
     ))
@@ -161,13 +168,20 @@ fn package_test_run_scope() -> Result<String, CanonicalFixtureError> {
 fn execute_entrypoints(
     entrypoints: Vec<CanonicalPackageTestEntrypoint>,
     activation_url: &str,
+    ingress_url: &str,
     assembly: &RuntimeAssemblyRef,
     generation: u64,
 ) -> SkiffTestSummary {
     let mut results = Vec::with_capacity(entrypoints.len());
     for entrypoint in entrypoints {
         let (passed, message) = execute_business_request_once(|| {
-            execute_control_test_dispatch(activation_url, assembly, generation, &entrypoint)
+            execute_control_test_dispatch(
+                activation_url,
+                ingress_url,
+                assembly,
+                generation,
+                &entrypoint,
+            )
         });
         results.push(SkiffTestResult {
             module_path: entrypoint.case.module_path,
@@ -189,6 +203,7 @@ fn execute_entrypoints(
 
 fn execute_control_test_dispatch(
     activation_url: &str,
+    ingress_url: &str,
     assembly: &RuntimeAssemblyRef,
     generation: u64,
     entrypoint: &CanonicalPackageTestEntrypoint,
@@ -200,7 +215,7 @@ fn execute_control_test_dispatch(
                 "activation URL is not canonical for test dispatch".to_string(),
             )
         })?;
-    let body = package_test_dispatch_body(assembly, generation, entrypoint)?;
+    let body = package_test_dispatch_body(ingress_url, assembly, generation, entrypoint)?;
     let connected = http::request_url(
         &format!("{control_url}/__skiff/test-dispatch"),
         "POST",
@@ -216,6 +231,7 @@ fn execute_control_test_dispatch(
 }
 
 fn package_test_dispatch_body(
+    ingress_url: &str,
     assembly: &RuntimeAssemblyRef,
     generation: u64,
     entrypoint: &CanonicalPackageTestEntrypoint,
@@ -230,10 +246,7 @@ fn package_test_dispatch_body(
             "package-test gateway selector must have an exact HTTP method".to_string(),
         )
     })?;
-    let url = format!(
-        "http://{PACKAGE_TEST_REQUEST_AUTHORITY}{}",
-        entrypoint.selector.path
-    );
+    let url = format!("{ingress_url}{}", entrypoint.selector.path);
     serde_json::to_vec(&serde_json::json!({
         "kind": "test",
         "routing": {

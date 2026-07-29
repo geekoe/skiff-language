@@ -178,13 +178,15 @@ pub fn run_skiff_tests_with_options(
         }
         runtime_artifact_root
     };
-    let (Some(activation_url), Some(_ingress_url)) = (
+    let (Some(activation_url), Some(ingress_url)) = (
         options.activation_url.as_deref(),
         options.ingress_url.as_deref(),
     ) else {
         return Err(SkiffTestError::MissingCanonicalRuntime);
     };
     validate_activation_url(activation_url)
+        .map_err(canonical_fixture::CanonicalFixtureError::InvalidInput)?;
+    validate_ingress_url(ingress_url)
         .map_err(canonical_fixture::CanonicalFixtureError::InvalidInput)?;
     Ok(canonical_fixture::run_package_cases(
         &package_root,

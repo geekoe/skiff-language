@@ -42,7 +42,10 @@ use skiff_test_runner::{
     package_service_host_fixture::{
         prepare_package_service_host_fixture, PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
     },
-    package_test_assembly::{assemble_package_test_fixture_for_run, CanonicalPackageTestFixture},
+    package_test_assembly::{
+        assemble_package_test_fixture_for_run, assemble_package_test_fixture_for_run_with_ingress,
+        CanonicalPackageTestFixture,
+    },
     run_skiff_tests_with_options,
     test_overlay::compile_package_test_overlay,
     SkiffTestError, SkiffTestOptions,
@@ -2401,6 +2404,171 @@ fn package_test_http_fixture_is_zero_operation_reference_closed_and_fail_closed(
 }
 
 #[test]
+fn explicit_test_service_http_entries_are_projected_per_case_without_subject_ingress() {
+    let root = TestRoot::new("test-service-http-entry");
+    let artifacts = root.child("artifacts");
+    let service = root.child("tests");
+    create_store(&artifacts);
+    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+    write_package(
+        &service,
+        "id: example.com/http-entry-tests\nversion: 1.0.0\n",
+        Some("{}\n"),
+        None,
+    );
+    fs::write(
+        service.join("service.yml"),
+        "id: example.com/http-entry-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(
+        service.join("config.skiff-test.yml"),
+        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:example.com/http-entry-tests\nlifecycle:\n  maxConcurrency: 2\n",
+    )
+    .unwrap();
+    fs::write(
+        service.join("http.yml"),
+        "self:\n  method: POST\n  path: /self\n  kind: rawHttp\n  handler: main.__test.selfEntry\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+    )
+    .unwrap();
+    fs::write(
+        service.join("main.test.skiff"),
+        "import std\n\
+         function selfEntry(request: std.http.HttpRequest) -> std.http.HttpResponse {\n\
+           return std.http.HttpResponse {\n\
+             status: 200,\n\
+             headers: Array.empty<std.http.HttpHeader>(),\n\
+             body: request.body,\n\
+           }\n\
+         }\n\
+         test \"first HTTP entry\" {\n\
+           assert config.require<string>(\"skiff.test.ingressUrl\") != \"\"\n\
+         }\n\
+         test \"second HTTP entry\" {\n\
+           assert config.require<string>(\"skiff.test.ingressUrl\") != \"\"\n\
+         }\n",
+    )
+    .unwrap();
+
+    let project =
+        compile_package_project_for_test(&platform_sources(), &service, &artifacts).unwrap();
+    let cases = discover_package_test_cases(&service, &service, false).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &service, &artifacts, &project, &cases)
+            .unwrap();
+    let fixture = assemble_package_test_fixture_for_run_with_ingress(
+        &project,
+        overlay,
+        CanonicalBaseAssembly::default(),
+        "http-entry-run",
+        "http://127.0.0.1:46123",
+    )
+    .unwrap();
+
+    assert_eq!(fixture.records.deployments.len(), 2);
+    assert_ne!(
+        fixture.records.contracts[0].service_id, fixture.records.contracts[1].service_id,
+        "every case must retain its unique synthetic service id"
+    );
+    for deployment in &fixture.records.deployments {
+        assert_eq!(deployment.gateway_entries.len(), 2);
+        assert_eq!(deployment.ingress.len(), 2);
+        assert!(deployment
+            .ingress
+            .iter()
+            .any(|binding| binding.selector.path == "/self"));
+        assert_eq!(
+            deployment
+                .ingress
+                .iter()
+                .filter(|binding| binding.selector.path == "/self")
+                .count(),
+            1,
+            "only the test service's explicit http.yml may supply /self"
+        );
+        assert!(deployment.config_literals.iter().any(|binding| {
+            binding.path == "skiff.test.ingressUrl"
+                && binding.value
+                    == skiff_artifact_model::MetadataValue::String(
+                        "http://127.0.0.1:46123".to_string(),
+                    )
+        }));
+    }
+}
+
+#[test]
+fn explicit_test_service_http_entry_rejects_single_concurrency_and_reserved_config_override() {
+    let root = TestRoot::new("test-service-http-entry-negative");
+    let artifacts = root.child("artifacts");
+    let service = root.child("tests");
+    create_store(&artifacts);
+    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+    write_package(
+        &service,
+        "id: example.com/http-entry-negative-tests\nversion: 1.0.0\n",
+        Some("{}\n"),
+        None,
+    );
+    fs::write(
+        service.join("service.yml"),
+        "id: example.com/http-entry-negative-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(
+        service.join("http.yml"),
+        "self:\n  method: POST\n  path: /self\n  kind: rawHttp\n  handler: main.__test.selfEntry\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+    )
+    .unwrap();
+    fs::write(
+        service.join("main.test.skiff"),
+        "import std\n\
+         function selfEntry(request: std.http.HttpRequest) -> std.http.HttpResponse {\n\
+           return std.http.HttpResponse {\n\
+             status: 200,\n\
+             headers: Array.empty<std.http.HttpHeader>(),\n\
+             body: request.body,\n\
+           }\n\
+         }\n\
+         test \"HTTP entry\" { assert true }\n",
+    )
+    .unwrap();
+
+    let write_profile = |max_concurrency: u32, config: &str| {
+        fs::write(
+            service.join("config.skiff-test.yml"),
+            format!(
+                "config:{config}\ntimeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:example.com/http-entry-negative-tests\nlifecycle:\n  maxConcurrency: {max_concurrency}\n"
+            ),
+        )
+        .unwrap();
+    };
+    let assemble = || {
+        let project =
+            compile_package_project_for_test(&platform_sources(), &service, &artifacts).unwrap();
+        let cases = discover_package_test_cases(&service, &service, false).unwrap();
+        let overlay = compile_package_test_overlay(
+            &platform_sources(),
+            &service,
+            &artifacts,
+            &project,
+            &cases,
+        )
+        .unwrap();
+        assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default())
+    };
+
+    write_profile(1, " {}");
+    let error = assemble().unwrap_err().to_string();
+    assert!(error.contains("maxConcurrency"), "{error}");
+    assert!(error.contains("at least 2"), "{error}");
+
+    write_profile(2, "\n  skiff.test.ingressUrl: http://authored.invalid");
+    let error = assemble().unwrap_err().to_string();
+    assert!(error.contains("skiff.test.ingressUrl"), "{error}");
+    assert!(error.contains("reserved"), "{error}");
+}
+
+#[test]
 fn package_test_generates_typed_state_bindings_in_run_isolated_namespaces() {
     let root = TestRoot::new("package-test-state-bindings");
     let artifacts = root.child("artifacts");
@@ -2640,6 +2808,52 @@ fn non_live_runtime_root_cannot_be_nested_under_the_external_store() {
     .unwrap_err();
     assert!(matches!(error, SkiffTestError::MissingIsolatedRuntimeRoot));
     assert_eq!(read_tree(&artifacts), before);
+}
+
+#[test]
+fn canonical_execution_rejects_missing_or_invalid_business_ingress_before_network() {
+    let root = TestRoot::new("invalid-business-ingress");
+    let artifacts = root.child("artifacts");
+    let runtime = root.child("runtime");
+    let package = root.child("package");
+    create_store(&artifacts);
+    fs::create_dir_all(&runtime).unwrap();
+    write_package(
+        &package,
+        "id: example.com/invalid-business-ingress\nversion: 1.0.0\n",
+        None,
+        None,
+    );
+    fs::write(
+        package.join("main.test.skiff"),
+        "test \"ingress validation\" { assert true }\n",
+    )
+    .unwrap();
+    let options = |ingress_url| SkiffTestOptions {
+        live: false,
+        artifact_root: Some(artifacts.clone()),
+        platform_sources: platform_sources(),
+        runtime_artifact_root: Some(runtime.clone()),
+        base_assembly: None,
+        activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
+        ingress_url,
+        target_environment: "invalid-business-ingress".to_string(),
+        expected_generation: 0,
+    };
+
+    let missing = run_skiff_tests_with_options(&package, &options(None)).unwrap_err();
+    assert!(matches!(missing, SkiffTestError::MissingCanonicalRuntime));
+
+    let invalid = run_skiff_tests_with_options(
+        &package,
+        &options(Some("http://127.0.0.1:9/not-an-origin".to_string())),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        invalid.contains("ingress URL must be an http:// origin"),
+        "{invalid}"
+    );
 }
 
 #[test]

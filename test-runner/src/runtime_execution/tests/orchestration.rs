@@ -74,7 +74,8 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
     };
 
-    let body = package_test_dispatch_body(&assembly, 7, &entrypoint).unwrap();
+    let body =
+        package_test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(
@@ -107,7 +108,7 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
             "mode": "unary",
             "httpRequest": {
                 "method": "POST",
-                "url": "http://localhost/__skiff/package-test/0",
+                "url": "http://127.0.0.1:46123/__skiff/package-test/0",
                 "path": "/__skiff/package-test/0",
                 "query": [],
                 "headers": [{
@@ -140,11 +141,15 @@ fn package_test_control_body_rejects_non_http_or_methodless_selectors() {
     };
     let mut entrypoint = package_test_entrypoint();
     entrypoint.selector.protocol = IngressProtocol::WebSocket;
-    assert!(package_test_dispatch_body(&assembly, 7, &entrypoint).is_err());
+    assert!(
+        package_test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err()
+    );
 
     entrypoint.selector.protocol = IngressProtocol::Http;
     entrypoint.selector.method = None;
-    assert!(package_test_dispatch_body(&assembly, 7, &entrypoint).is_err());
+    assert!(
+        package_test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err()
+    );
 }
 
 #[test]

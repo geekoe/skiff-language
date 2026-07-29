@@ -5,8 +5,8 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    ContractRequirement, PackageArtifact, PackageLocalAbiIdentity, ServiceAuthoringKind,
-    ServiceConfigProfileAuthoring,
+    ContractRequirement, HttpGatewayDocumentAuthoring, PackageArtifact, PackageLocalAbiIdentity,
+    ServiceAuthoringKind, ServiceConfigProfileAuthoring,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, PackageCompileError, PackageCompileInput,
@@ -44,6 +44,7 @@ pub struct CanonicalTestServiceProfile {
     pub service_id: String,
     pub profile_name: String,
     pub authoring: ServiceConfigProfileAuthoring,
+    pub http: Option<HttpGatewayDocumentAuthoring>,
 }
 
 impl CanonicalPackageProject {
@@ -336,6 +337,7 @@ fn read_test_service_profile(
         service_id: service.service.id,
         profile_name: TEST_SERVICE_CONFIG_PROFILE.to_string(),
         authoring: profile.authoring.clone(),
+        http: service.http,
     }))
 }
 
