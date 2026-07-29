@@ -9,8 +9,9 @@
 
 ## 第一版 Assembly 放置
 
-第一版每个environment只有一个active RuntimeAssembly，root set是该环境全部active services。每个runtime
-replica加载完整相同assembly：
+第一版每个environment只有一个active RuntimeAssembly，root set是该环境由操作面选择的全部active
+services。dev由watch registry或显式service roots选择，production由平台部署状态选择；不存在
+developer-authored repository-level `assembly.yml`。每个runtime replica加载完整相同assembly：
 
 - Package code在replica内只链接一次；
 - service binding全部解析为`InProcessBoundary`；
@@ -104,7 +105,8 @@ WebSocket generation release使用独立release timeout，不继承business requ
 
 Router外部的ingress可以按HTTP Host、域名或其它平台规则选择service坐标，并注入
 `x-skiff-service`与`x-skiff-version`。该映射不属于RuntimeAssembly，也不在Skiff Router内重复实现；
-原始HTTP Host只作为request业务metadata继续传递。
+原始HTTP Host只作为request业务metadata继续传递。Host mapping也不选择environment root set，不能成为
+assembly authoring的一部分。
 
 Router收到HTTP request或WebSocket upgrade后必须：
 

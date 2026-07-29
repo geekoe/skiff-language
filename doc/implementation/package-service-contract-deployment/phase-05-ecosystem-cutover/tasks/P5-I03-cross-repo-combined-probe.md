@@ -1,4 +1,4 @@
-# P5-I03：Cross-Repo Actual Assembly Combined Probe
+# P5-I03：Cross-Repo Generated RuntimeAssembly Combined Probe
 
 ## 角色与输入
 
@@ -20,11 +20,13 @@ git -C /Users/geek/workspace/skiff-packages-phase-05-integration diff --check
 git -C /Users/geek/workspace/internals-phase-05-integration diff --check
 ```
 
-脚本必须在temporary store/runtime/router/Mongo与fake upstream上，从真实五个service source roots和
-`skiff-packages` source依次publish contracts、独立compile packages、validate deployments、resolve one
-assembly并完成activation transaction。至少断言account/registry ping、Codex/AIHub同path不同Host、
+脚本必须在temporary store/runtime/router/Mongo与fake upstream上，从命令显式给出的真实五个service
+source roots和`skiff-packages` source独立compile packages、validate deployments、收集exact deployment
+receipts、resolve one generated RuntimeAssembly并完成activation transaction。不得读取repo-level
+`assembly.yml`。至少断言account/registry ping、Codex/AIHub同path不同Host、
 Agine provider/list含`aihub/gpt-5.5`及一条chat最终结果；legacy selector不能改变target，tampered candidate
 abort后旧generation仍服务。不得调用AIHub/Agine build/dev/start或stable reload。
 
-输出三仓exact commit/tree、四对象closure、activation/replica provenance、每个Host最终结果、负例与耗时。
+输出三仓exact commit/tree、root来源及receipts、四对象closure、activation/replica provenance、每个Host
+最终结果、负例与耗时。
 PASS才可提交R03；T13不得重跑本命令。FAIL退回精确owner，修复合流后重跑本probe与失效证据。

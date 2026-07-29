@@ -1202,7 +1202,7 @@ owner和lifecycle必须分开。
 
 ## 12. RuntimeAssembly 与扩容
 
-RuntimeAssembly由显式root deployment set做依赖闭包：
+RuntimeAssembly由一个操作面选择的精确root deployment set做依赖闭包：
 
 ```text
 RuntimeAssembly
@@ -1215,6 +1215,18 @@ RuntimeAssembly
   ActivationContext templates
   assemblyIdentity
 ```
+
+Root set不是developer-authored source config，也没有`assembly.yml`。它的来源按运行场景区分：
+
+- dev sync/watch从watch registry选择的service roots生成各自deployment，再把这些精确deployment refs作为
+  roots；一次性开发、测试或验收命令也可以显式传入service roots或deployment receipts；
+- production由平台部署状态选择当前environment的精确deployment refs；
+- 每个项目的package/service依赖仍只由该项目自己的`package.yml`声明；assembly projection从roots沿这些
+  已编译依赖闭合，不在仓库顶层复制一份依赖图。
+
+因此，一个放置多个项目的源码仓库仍然只是项目集合，不拥有environment assembly。任何tooling为了调用旧CLI
+而临时写出的`assembly.yml`都只是待删除的实现adapter，不能成为公共authoring格式、配置owner或验收输入。
+Host/domain到service selector的映射属于外部ingress，同样不进入root set或RuntimeAssembly。
 
 Package link与service binding使用不同的可变性边界：
 

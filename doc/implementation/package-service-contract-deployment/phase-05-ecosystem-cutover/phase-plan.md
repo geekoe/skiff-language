@@ -50,6 +50,27 @@ single-generation smoke代替最终验收。
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
 ownership和验收证据，不改变四对象、两类调用或InProcessBoundary语义。
 
+### 2026-07-29 RuntimeAssembly root authority correction
+
+用户已确认Internals只是松散项目集合，不能增加repo-level `assembly.yml`或其它集中式environment owner。
+本节覆盖本文更早的`assembly.yml` authoring、T09E root manifest和R03对应验收条款：
+
+- RuntimeAssembly仍是四种canonical artifact之一，但它由tooling生成，不是developer-authored config；
+- package/service依赖只来自各项目自己的`package.yml`，不在仓库顶层重复声明；
+- dev sync/watch从watch registry或命令显式service roots取得参与集合；production从平台部署状态取得精确
+  deployment roots；isolated test/probe从显式roots或deployment receipts取得；
+- Internals最终验收仍覆盖account、registry、Codex Relay、AIHub、Agine五个实际deployment，但这个集合是
+  probe/receipt输入，不是源码manifest；
+- Host/domain mapping只属于external ingress，不进入RuntimeAssembly或root选择；
+- 现有脚本为了调用旧`assembly build <root>`而临时生成`assembly.yml`的路径只是待删除CLI adapter，不得
+  继续作为authoring格式、completion criterion或新配置owner；
+- final verifier/probe必须消费watch registry、显式service roots或deployment receipts，不读取repo root
+  manifest。
+
+旧task/result中记录的临时`assembly.yml`、single-root/four-root assembly操作仍可说明当时命令和证据，
+但其“developer应author assembly manifest”含义已经失效。历史result不改写为新结果，T13/A01也不能据此
+伪造PASS。
+
 ### 2026-07-28 service-scoped ingress correction
 
 I7真实Relay/AIHub组合assembly证明旧裸全局route key错误地把两个不同service都声明的
@@ -152,8 +173,9 @@ D6冻结：
 - `skiff-packages`基线：`5defc94161cee14def1a6bbb340308004e65b741`。
 - `internals`基线：`4b04e744f430f49f1ed9c76dfebfeb2a1ed5d7d2`。
 - source authoring一次性收敛为：`package.yml` + `api.yml` + `.skiff` 只属于Package；
-  `contract.yml` 是code-free ServiceContractDefinition；`deployment.yml` 是source-free deployment
-  authoring；`assembly.yml` 只列environment与root deployments。旧 `service.yml` 不按兼容格式读取。
+  Service在此基础上使用`service.yml`、按需存在的`http.yml`/`websocket.yml`与`config.*.yml`。
+  ServiceContract、ServiceDeployment和RuntimeAssembly均由tooling生成；不存在developer-owned
+  `contract.yml`、`deployment.yml`或`assembly.yml`。旧authoring格式不兼容读取。
 - `package.yml` 用顶层 `contracts` 声明contract compile coordinate/alias；编译时从已发布
   ServiceContract得到exact protocol identity并写入PackageArtifact。provider package也用contract-owned
   types，不用package-local nominal type伪装contract type。
@@ -180,11 +202,11 @@ D6冻结：
   prepare只使用operator-owned `activation.prepareTimeoutMs`。
 - publish只是四种typed artifact的immutable write + typed pointer CAS操作；不产生Publication、
   common artifact kind或archive shim。历史本地/registry数据不兼容读取，也不在本阶段破坏性删除。
-- canonical local CLI拼写冻结为 `package|contract|deployment|assembly build <root>
-  --artifact-root <dir> --json`；四对象remote write使用各自`publish`命令，environment切换只用
-  `assembly activate <root> --artifact-root <dir> --expected-generation <n> --json`。旧`service`
-  build/publish/dev命令不作alias。`assembly activate`只请求router coordinator执行上述transaction，不直接
-  CAS committed pointer。T02负责实现这些入口，后续任务不得另造脚本级语义。
+- Package/service authoring入口生成PackageArtifact、ServiceContract和ServiceDeployment。Assembly
+  projection/activation只消费watch registry、显式service roots、deployment receipts或平台部署状态解析出的
+  精确root refs，并请求router coordinator执行transaction，不直接CAS committed pointer。旧
+  `assembly build <root>`临时目录/`assembly.yml`输入只作为待删除adapter存在，不是canonical public CLI，
+  后续任务不得把它固化为脚本级语义。
 - 本地actual service可以由local ingress把`account.skiff.localhost`、`registry.skiff.localhost`、
   `codex-relay.localhost`、`aihub.localhost`、`agine.localhost`映射为service/version header。这些域名
   只属于Router外部映射，不进入`IngressSelector`、ServiceDeployment或RuntimeAssembly identity。
@@ -197,9 +219,10 @@ canonical artifact schema。
 
 1. 四对象都有唯一strict reader/writer/path/identity owner；任意unknown field、tamper、missing ref、
    cross-root path或partial record都在trust boundary失败。
-2. `contract publish -> package compile -> deployment project -> assembly resolve -> activate` 可以分步执行；
-   package compile不读provider package/deployment，deployment不读source/AST。
-3. dev sync/watch将watch registry中的package/contract/deployment roots组成一个完整assembly，先写
+2. `package/service authoring -> package compile -> generated contract/deployment -> assembly resolve ->
+   activate`可以分步执行；package compile不读provider implementation/deployment，deployment projection
+   不另读source/AST。
+3. dev sync/watch将watch registry中的service roots及其authoring依赖闭包组成一个完整assembly，先写
    immutable records，再请求router执行prepare/admit/commit transaction。任一pre-commit失败只abort pending，
    不改committed active generation。
 4. router协调durable activation state，runtime通过production resolver加载/验证/链接/admit staged完整assembly；
@@ -267,7 +290,7 @@ Wave 3 / Batch C：R02 PASS的exact Skiff checkpoint后terminal/external扇出
   T09C Agine contract ─┘                                      ├─► T11 AIHub
                                                              └─► T12 Agine + clients
 
-  T07 + T08 + T10–T12 ─► T09E final Internals assembly/workflow
+  T07 + T08 + T10–T12 ─► T09E final Internals generated-assembly workflow
   T06 + T09E ─► I03 cross-repo combined probe ─► R03 ─► T13 pre-merge final gate ─► A01
       └─► each repo one main merge ─► V01 post-merge stable verification ─► cleanup
 ```
@@ -276,8 +299,9 @@ Wave 2的四个节点没有语义依赖；平台只有三个worker slot，因此
 完成后立即用新Agent启动第四个，不把调度限制伪装成DAG依赖。Wave 3需要一个短的
 Internals contract/workflow checkpoint，因为Agine编译必须只依赖已冻结AIHub ServiceContract；这是真实
 contract-first依赖，不用复制临时descriptor伪并行。三个contract owner可并行，合流后由T09D
-唯一修改Internals共享package-store/isolated graph framework；T10–T12落地实际deployments后，T09E才拥有
-production `assembly.yml`及完整closure，避免上游checkpoint虚构尚不存在的deployment identity。
+唯一修改Internals共享package-store/isolated graph framework；T10–T12落地实际deployments后，T09E才用
+watch registry、显式service roots或deployment receipts闭合最终generated RuntimeAssembly，避免上游
+checkpoint虚构尚不存在的deployment identity。T09E不拥有repo-level manifest。
 T06/T07/T08在该链路期间继续执行，因此不增加第四个架构实现波次。
 
 Batch A退出点是R01 PASS的Skiff implementation checkpoint；Batch B退出点是R02 PASS且可供
@@ -638,7 +662,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T10 | [Codex Relay](tasks/P5-T10-internals-codex-relay.md) | R09 PASS | 高；service/deployment/host |
 | T11 | [AIHub](tasks/P5-T11-internals-aihub.md) | R09 PASS | 高；service boundary/schema |
 | T12 | [Agine + clients](tasks/P5-T12-internals-agine-clients.md) | R09 PASS + T07 exact packages | 高；service/chat ingress |
-| T09E | [Final Internals assembly/workflow](tasks/P5-T09E-internals-final-assembly.md) | T07/T08 + T10–T12 merged | 高；完整环境closure |
+| T09E | [Final Internals generated-assembly workflow](tasks/P5-T09E-internals-final-assembly.md) | T07/T08 + T10–T12 merged | 高；完整环境closure，无root manifest |
 | I03 | [Cross-repo combined probe](tasks/P5-I03-cross-repo-combined-probe.md) | T06 + T09E exact trees | 主integration owner；actual assembly |
 | R03 | [Cross-repo ecosystem acceptance](tasks/P5-R03-ecosystem-acceptance.md) | I03 PASS | 高；单一verdict |
 | T13 | [Unique final gate](tasks/P5-T13-phase-integration-gate.md) | R03 PASS + frozen candidate | 唯一昂贵gate owner |
@@ -756,7 +780,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   但不建立production assembly authoring。
   T10独占 `internals/codex-relay/**`；T11独占 `internals/aihub/**`（排除T09D已冻结文件）；T12
   独占 `internals/agine/**`及客户端Host/WS/chat smoke（排除T09D已冻结文件）。T09E在这些任务合流后
-  独占Internals root `assembly.yml`、完整closure配置、`prepare-canonical-assembly.mjs`最终接线及其tests。
+  独占`prepare-canonical-assembly.mjs`的direct roots/receipts接线、final verifier/probe及其tests；不得
+  新增Internals root manifest或集中式environment owner。
 - T13只做preflight、stable candidate冻结、唯一gate调度及ledger/结果文档草案；不做
   实现修复，也不操作stable。V01只在三仓各自main已完成唯一merge后操作stable并记录live ledger；
   任何candidate-code blocker停止阶段并升级，不用第二次main merge偷偷修复。
@@ -811,8 +836,9 @@ isolated assembly。T13的two-replica generic lifecycle与完整selectors不重�
 ## 7. 证据覆盖与gate经济性
 
 开发Agent只运行targeted format/static/direct tests。R01验收shared schema/storage/control边界；R02验收
-Skiff consumer合流；R09验收Internals code-free contract及schema closure；T09E关闭完整environment
-assembly的最后共享owner；I02/I03是两个明确的批次combined-probe owner；R03是三仓ecosystem的单一
+Skiff consumer合流；R09验收Internals code-free contract及schema closure；T09E关闭由显式roots/receipts
+生成完整environment assembly的最后共享workflow owner；I02/I03是两个明确的批次combined-probe owner；
+R03是三仓ecosystem的单一
 pre-gate verdict。每个修复批次合流后，先由对应integration owner运行便宜combined probe，再重验
 受影响边界。
 

@@ -19,6 +19,25 @@
 
 若聊天摘要、历史task或result文档与权威设计和当前代码冲突，以权威设计及用户在上述对话中确认的决策为准。
 
+## 2026-07-29 RuntimeAssembly root authority correction
+
+本handoff之后发现，旧Phase 5计划错误地把RuntimeAssembly所需的root set提升成Internals repo-level
+`assembly.yml`。用户已明确纠正：
+
+- Internals是松散项目集合，不拥有仓库级environment manifest；
+- 项目依赖只由各自`package.yml`声明；
+- dev watch registry或命令显式service roots选择开发集合，production平台部署状态选择精确deployment
+  roots，测试/验收可以消费显式roots或deployment receipts；
+- RuntimeAssembly仍是生成的canonical artifact，不是developer-authored config；
+- Host mapping属于external ingress，不进入assembly或root set；
+- Internals final verifier/probe仍应覆盖account、registry、Codex Relay、AIHub、Agine五个deployment，
+  但输入来自上述operational roots/receipts；
+- 现有临时`assembly.yml`只是在旧CLI前的adapter，必须删除，不能据此新增顶层配置。
+
+因此旧T09E/R03的root manifest要求和任何独立X据此给出的“Internals缺少`assembly.yml`”blocker均已失效。
+review/X只能报告旧task与current authority冲突，不能把旧task自动升级为终局blocker。不得伪造T13/A01
+result；其余阶段证据仍按实际候选重新验证。
+
 ## 精确代码状态
 
 ### Skiff

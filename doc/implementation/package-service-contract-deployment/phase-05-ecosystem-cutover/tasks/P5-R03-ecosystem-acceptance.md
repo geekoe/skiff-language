@@ -26,9 +26,11 @@ combined integration probe ledger、legacy search ledger及gate preflight计划�
    stale/unauthorized/tampered operations失败不改history。
 7. Codex、AIHub、Agine contracts独立、schema自包；AIHub/Agine contract types不冒用package-local nominal
    types，显式wrapper及deployment/state/config/secret binding完整。
-8. T09E production `assembly.yml`闭合五个actual deployments；I03从canonical authoring/store构建
-   该完整Internals assembly，经router/runtime Host ingress到
-   最终业务结果；provider/list/chat的stable live执行留给V01，但self-test必须实际断言最终结果。
+8. T09E从watch registry、显式service roots或deployment receipts闭合account、registry、Codex Relay、
+   AIHub、Agine五个actual deployments并生成完整RuntimeAssembly；三仓没有developer-authored
+   `assembly.yml`。I03从canonical authoring/store及上述显式输入构建该assembly，经router/runtime与独立
+   ingress Host mapping到最终业务结果；provider/list/chat的stable live执行留给V01，但self-test必须实际
+   断言最终结果。
 9. ecosystem checker subject/mutation完整，reference/architecture/runtime/router docs与唯一设计一致。
 
 ## 输出

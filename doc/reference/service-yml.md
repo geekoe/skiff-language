@@ -13,6 +13,12 @@ Service首先是Package，因此root仍必须包含`package.yml`与`api.yml`。S
 `root.*` namespace，不能被Skiff源码import。`service.yml`中的`http`/`websocket`字段非法；Skiff尚未发布，
 不读取旧内联格式。
 
+Skiff没有developer-authored `assembly.yml`。Package和service之间的依赖关系只来自各项目自己的
+`package.yml`；源码仓库不通过一个顶层清单重新声明这些关系，也不因为同仓库存在多个项目而成为一个
+集中编排单元。开发态由watch registry或命令显式给出的service roots选择本次参与的项目，生产态由平台部署
+状态选择精确deployment。Tooling据此生成RuntimeAssembly；RuntimeAssembly是artifact，不是source
+authoring文件。
+
 ## 2. service.yml
 
 第一版shape：

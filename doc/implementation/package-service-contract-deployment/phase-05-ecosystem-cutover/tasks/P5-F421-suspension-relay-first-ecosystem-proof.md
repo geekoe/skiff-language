@@ -1,6 +1,9 @@
 # P5-F421 Suspension Relay-first fresh ecosystem proof
 
-状态：Ready（N5；全程只读 production，唯一 tracked 写入为本任务 result）。
+状态：Superseded for execution（2026-07-29）。本文件保留当时N5 gate合同；其中临时
+`assembly.yml`/`assembly build <root>`步骤只记录旧CLI adapter，不能作为current authoring或验收要求。
+若恢复同类fresh proof，必须从显式service roots/deployment receipts直接调用RuntimeAssembly resolver，
+重新编写任务合同，不执行本文旧步骤。
 
 ## 直接父节点
 
