@@ -388,48 +388,53 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn call_provider_callable(
-    interpreter: &crate::Interpreter,
-    context: ProgramExecutionContext<'_>,
-    heap: &mut RequestHeap,
-    env: &Env,
-    caller_addr: &ExecutableAddr,
-    provider_addr: &ExecutableAddr,
-    receiver_const: Option<&ConstAddr>,
-    type_args: &BTreeMap<String, LinkedTypeRef>,
+fn call_provider_callable<'call, 'ctx>(
+    interpreter: &'call crate::Interpreter,
+    context: ProgramExecutionContext<'ctx>,
+    heap: &'call mut RequestHeap,
+    env: &'call Env,
+    caller_addr: &'call ExecutableAddr,
+    provider_addr: &'call ExecutableAddr,
+    receiver_const: Option<&'call ConstAddr>,
+    type_args: &'call BTreeMap<String, LinkedTypeRef>,
     args: Vec<RuntimeValue>,
-) -> Result<RuntimeValue> {
+) -> Pin<Box<dyn Future<Output = Result<RuntimeValue>> + Send + 'call>>
+where
+    'ctx: 'call,
+{
+    // Keep ordinary service calls on their existing future directly. An `async fn` wrapper here
+    // adds another poll stack frame to every provider call, including receiver-free calls.
     let Some(receiver_const) = receiver_const else {
-        return interpreter
-            .call_program_executable(
-                context,
-                heap,
-                env,
-                caller_addr,
-                provider_addr,
-                type_args,
-                args,
-            )
-            .await;
-    };
-    let receiver = interpreter
-        .eval_program_const_addr(context.clone(), heap, env, receiver_const)
-        .await?;
-    interpreter
-        .call_program_executable_with_self_direct_carriers(
+        return Box::pin(interpreter.call_program_executable(
             context,
             heap,
             env,
             caller_addr,
             provider_addr,
             type_args,
-            receiver,
-            args.into_iter()
-                .map(RuntimeValueCarrier::from)
-                .collect::<Vec<_>>(),
-        )
-        .await
-        .map(RuntimeValueCarrier::into_value)
+            args,
+        ));
+    };
+    Box::pin(async move {
+        let receiver = interpreter
+            .eval_program_const_addr(context.clone(), heap, env, receiver_const)
+            .await?;
+        interpreter
+            .call_program_executable_with_self_direct_carriers(
+                context,
+                heap,
+                env,
+                caller_addr,
+                provider_addr,
+                type_args,
+                receiver,
+                args.into_iter()
+                    .map(RuntimeValueCarrier::from)
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .map(RuntimeValueCarrier::into_value)
+    })
 }
 
 async fn finish_provider_stream(producer: ProviderStreamTask, terminal: ProviderTerminal) {
