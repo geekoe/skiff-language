@@ -474,7 +474,7 @@ fn bytes_concat_lowers_to_exact_native_binding_and_rejects_malformed_calls() {
 }
 
 #[test]
-fn std_http_json_infers_native_type_arg_from_record_payload() {
+fn std_http_json_lowers_to_exact_std_package_callables() {
     let artifact = compile_package_file_ir(
         r#"
             import std
@@ -507,15 +507,11 @@ fn std_http_json_infers_native_type_arg_from_record_payload() {
     let plain = executable_entry(&artifact_value, "plain");
     let with_headers = executable_entry(&artifact_value, "withHeaders");
 
-    assert_eq!(
-        native_call(plain, "std.http", "json")["typeArgs"]["T0"]["kind"],
-        "localType",
-        "std.http.json should carry direct native typeArgs.T0 for the payload record"
-    );
-    assert_eq!(
-        native_call(with_headers, "std.http", "jsonWithHeaders")["typeArgs"]["T0"]["kind"],
-        "localType",
-        "std.http.jsonWithHeaders should carry direct native typeArgs.T0 for the payload record"
+    assert_package_callable(plain, "std", "pkg-callable:skiff.run/std:std.http.json");
+    assert_package_callable(
+        with_headers,
+        "std",
+        "pkg-callable:skiff.run/std:std.http.jsonWithHeaders",
     );
 }
 
@@ -630,12 +626,20 @@ fn generic_impl_receiver_call_lowers_to_static_executable() {
     assert_eq!(method["typeParams"], serde_json::json!(["T"]));
     let run = executable_entry(&artifact_value, "run");
 
-    assert!(
-        call_exprs(run).into_iter().any(|call| {
+    let call = call_exprs(run)
+        .into_iter()
+        .find(|call| {
             call["target"]["kind"] == "localExecutable"
                 && call["target"]["executableIndex"].as_u64() == Some(method_index)
+        })
+        .expect("generic impl receiver call should lower to the impl method executable");
+    assert_eq!(
+        call["typeArgs"]["T0"],
+        serde_json::json!({
+            "kind": "builtin",
+            "name": "string"
         }),
-        "generic impl receiver call should lower to the impl method executable"
+        "Box<string>.unwrap must instantiate Box<T>.unwrap with the exact typed receiver argument"
     );
     assert!(
         dynamic_receiver_call(run, "unwrap").is_none(),
@@ -1048,6 +1052,9 @@ fn package_string_receiver_facts_flow_through_config_and_db_body() {
         r#"
 id: example.com/example
 version: 1.0.0
+state:
+  database:
+    kind: database
 "#,
     )
     .unwrap();
@@ -1963,11 +1970,13 @@ fn compile_package_file_ir(
     module_path: impl AsRef<str>,
 ) -> Result<PublishedFileIrArtifact, PackageProjectCompileError> {
     let temp = TestDir::new("skiff-compiler", "runtime-slots-package");
-    fs::write(
-        temp.path().join("package.yml"),
-        "id: example.com/runtime-slots\nversion: 1.0.0\n",
-    )
-    .expect("package manifest should be written");
+    let package_manifest = if source.contains("db object ") {
+        "id: example.com/runtime-slots\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n"
+    } else {
+        "id: example.com/runtime-slots\nversion: 1.0.0\n"
+    };
+    fs::write(temp.path().join("package.yml"), package_manifest)
+        .expect("package manifest should be written");
     fs::write(temp.path().join("api.yml"), "{}\n").expect("api.yml should be written");
     let source_file = temp.path().join(source_path.as_ref());
     fs::create_dir_all(
@@ -2179,15 +2188,16 @@ fn has_native_call(
     })
 }
 
-fn native_call<'a>(executable: &'a Value, namespace: &str, symbol_name: &str) -> &'a Value {
-    call_exprs(executable)
-        .into_iter()
-        .find(|call| {
-            call["target"]["kind"] == "native"
-                && call["target"]["target"]["namespace"] == namespace
-                && call["target"]["target"]["symbol"] == symbol_name
-        })
-        .unwrap_or_else(|| panic!("native call {namespace}.{symbol_name} should be present"))
+fn assert_package_callable(executable: &Value, dependency_ref: &str, package_callable_id: &str) {
+    assert!(
+        call_exprs(executable).into_iter().any(|call| {
+            call["target"]["kind"] == "packageCallable"
+                && call["target"]["packageRef"]["kind"] == "dependency"
+                && call["target"]["packageRef"]["dependencyRef"] == dependency_ref
+                && call["target"]["packageCallableId"] == package_callable_id
+        }),
+        "package callable {dependency_ref}/{package_callable_id} should be present in {executable}"
+    );
 }
 
 fn expr_for_ref<'a>(executable: &'a Value, expr_ref: &Value) -> &'a Value {

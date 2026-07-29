@@ -466,6 +466,25 @@ impl TargetCollector<'_> {
                     .concrete_nominal_record_symbol(ty, &context)
             }) {
                 if let Some(target) = self.local_targets.resolve_receiver(&receiver, field) {
+                    if let ResolvedCallTarget::LocalImplMethod {
+                        source_callable,
+                        receiver_type_arguments: _,
+                    } = target
+                    {
+                        let Some(exact) = receiver_type.and_then(|ty| {
+                            self.type_resolution
+                                .local_receiver_method_resolution(&ty.ir, field, &context)
+                        }) else {
+                            return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);
+                        };
+                        if exact.source_callable != source_callable {
+                            return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);
+                        }
+                        return ResolvedCallTarget::LocalImplMethod {
+                            source_callable,
+                            receiver_type_arguments: exact.receiver_type_arguments,
+                        };
+                    }
                     return target;
                 }
             }
@@ -673,6 +692,7 @@ impl LocalCallTarget {
                     module_path,
                     crate::semantic::impl_method_declaration_name(&type_name, &method_name),
                 ),
+                receiver_type_arguments: Vec::new(),
             },
             Self::ActorMethod {
                 actor,

@@ -178,6 +178,7 @@ struct PackageInterfaceFact {
 
 #[derive(Clone, Debug)]
 struct LocalImplMethodSignature {
+    source_callable: SourceSymbolKey,
     type_params: Vec<String>,
     params: Vec<FunctionTypeParamIr>,
     return_type: TypeRefIr,
@@ -288,6 +289,12 @@ pub struct PackageReceiverMethodResolution {
     pub expected_package_build: PackageBuildId,
     pub source_method_path: String,
     pub receiver_type_params: Vec<String>,
+    pub receiver_type_arguments: Vec<TypeRefIr>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalReceiverMethodResolution {
+    pub source_callable: SourceSymbolKey,
     pub receiver_type_arguments: Vec<TypeRefIr>,
 }
 
@@ -1624,6 +1631,39 @@ impl TypeResolutionModel {
             source_method_path: format!("{source_symbol_path}.{method_name}"),
             receiver_type_params: receiver_type.type_params.clone(),
             receiver_type_arguments: arguments,
+        })
+    }
+
+    pub fn local_receiver_method_resolution(
+        &self,
+        receiver: &TypeRefIr,
+        method_name: &str,
+        context: &TypeResolutionContext<'_>,
+    ) -> Option<LocalReceiverMethodResolution> {
+        let resolved = ResolvedTypeRef {
+            source_text: type_ref_debug_text(receiver),
+            ir: receiver.clone(),
+        };
+        let owner = self.actual_receiver_symbol(&resolved, context)?;
+        let receiver_type = self.source_types.get(&owner)?;
+        if !matches!(receiver_type.kind, SourceTypeKind::Record { .. }) {
+            return None;
+        }
+        let receiver_type_arguments = match receiver {
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments.clone(),
+            _ => Vec::new(),
+        };
+        if receiver_type.type_params.len() != receiver_type_arguments.len()
+            || receiver_type_arguments
+                .iter()
+                .any(type_contains_unresolved_param)
+        {
+            return None;
+        }
+        let method = self.local_impl_methods.get(&owner)?.get(method_name)?;
+        Some(LocalReceiverMethodResolution {
+            source_callable: method.source_callable.clone(),
+            receiver_type_arguments,
         })
     }
 
@@ -3427,8 +3467,12 @@ impl TypeResolutionModel {
                     if method.is_static {
                         continue;
                     }
-                    let signature =
-                        self.local_impl_method_signature(&receiver, method, &context)?;
+                    let signature = self.local_impl_method_signature(
+                        &receiver,
+                        &implementation.target,
+                        method,
+                        &context,
+                    )?;
                     receiver_methods.insert(method.name.clone(), signature);
                 }
             }
@@ -3439,6 +3483,7 @@ impl TypeResolutionModel {
     fn local_impl_method_signature(
         &self,
         receiver: &SourceSymbolKey,
+        receiver_declaration: &str,
         method: &InterfaceOperation,
         context: &TypeResolutionContext<'_>,
     ) -> Result<LocalImplMethodSignature, String> {
@@ -3464,6 +3509,10 @@ impl TypeResolutionModel {
         let return_type =
             self.resolve_impl_method_type_ref(receiver, &method.return_type, context)?;
         Ok(LocalImplMethodSignature {
+            source_callable: SourceSymbolKey::new(
+                receiver.module_path(),
+                crate::semantic::impl_method_declaration_name(receiver_declaration, &method.name),
+            ),
             type_params: method.type_params.clone(),
             params,
             return_type,
@@ -6633,7 +6682,8 @@ mod tests {
                     "{undeclared} must not become an implicit FileIR builtin alias"
                 ),
                 Err(error) => assert!(
-                    error.contains("unresolved type"),
+                    error.contains("unresolved type")
+                        || error.contains("unknown compiler-owned type"),
                     "{undeclared} should fail as unresolved: {error}"
                 ),
             }
@@ -7307,6 +7357,78 @@ mod tests {
                     .package_receiver_method_resolution(&rejected, "read")
                     .is_none(),
                 "receiver discovery must fail closed for {rejected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_receiver_resolution_requires_exact_applied_owner_arity_and_closed_arguments() {
+        initialize_test_prelude();
+        let (_parsed, model) = type_resolution(
+            r#"
+              type Box<T> { value: T }
+              type Other<T> { value: T }
+
+              impl Box<T> {
+                function unwrap() -> T {
+                  return self.value
+                }
+              }
+            "#,
+        );
+        let exact = model
+            .resolve_type_text("Box<string>", &context())
+            .expect("Box<string> resolves");
+        let resolved = model
+            .local_receiver_method_resolution(&exact.ir, "unwrap", &context())
+            .expect("the exact applied receiver should authorize Box<T>.unwrap");
+        assert_eq!(
+            resolved.source_callable,
+            SourceSymbolKey::new(MODULE, "Box<T>.unwrap")
+        );
+        assert_eq!(
+            resolved.receiver_type_arguments,
+            vec![TypeRefIr::builtin("string")]
+        );
+
+        let TypeRefIr::AppliedNominal { base, .. } = exact.ir else {
+            panic!("Box<string> must be an applied nominal");
+        };
+        let wrong_owner = model
+            .resolve_type_text("Other<string>", &context())
+            .expect("Other<string> resolves");
+        let TypeRefIr::AppliedNominal {
+            base: wrong_owner_base,
+            ..
+        } = wrong_owner.ir
+        else {
+            panic!("Other<string> must be an applied nominal");
+        };
+        for rejected in [
+            TypeRefIr::AppliedNominal {
+                base: wrong_owner_base,
+                arguments: vec![TypeRefIr::builtin("string")],
+            },
+            TypeRefIr::AppliedNominal {
+                base: base.clone(),
+                arguments: Vec::new(),
+            },
+            TypeRefIr::AppliedNominal {
+                base: base.clone(),
+                arguments: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+            },
+            TypeRefIr::AppliedNominal {
+                base,
+                arguments: vec![TypeRefIr::TypeParam {
+                    name: "Open".to_string(),
+                }],
+            },
+        ] {
+            assert!(
+                model
+                    .local_receiver_method_resolution(&rejected, "unwrap", &context())
+                    .is_none(),
+                "local receiver discovery must fail closed for {rejected:?}"
             );
         }
     }
