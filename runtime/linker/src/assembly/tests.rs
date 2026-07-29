@@ -1232,6 +1232,12 @@ fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls
             interface_abi_id,
             canonical_type_args: Vec::new(),
         };
+        let local_interface = LinkedInterfaceInstantiationRef {
+            interface_abi_id: skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::LocalType {
+                type_index: (file.types.len() - 1) as u32,
+            }),
+            canonical_type_args: Vec::new(),
+        };
         let mut native = linked_call(
             LinkedCallTarget::Native {
                 target: NativeTarget {
@@ -1270,7 +1276,252 @@ fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls
                     0,
                 ),
             },
+            LinkedExprIr::Call {
+                call: linked_call(
+                    LinkedCallTarget::InterfaceMethod {
+                        method_abi_id: format!("method:{}:read", local_interface.interface_abi_id),
+                        interface: local_interface,
+                        slot: 0,
+                    },
+                    0,
+                ),
+            },
         ]);
     })
     .expect("valid builtin, native, and interface calls must keep linking");
+}
+
+#[test]
+fn assembly_execution_interface_lookup_uses_exact_package_owner_and_abi() {
+    use skiff_artifact_model::PackageRefIr;
+
+    relink_cycle_package_interface_call(
+        PackageRefIr::PackageId {
+            package_id: "example.helper".to_string(),
+        },
+        "Reader",
+        FixtureInterfaceAbi::Helper,
+        FixtureInterfaceCollision::CallerDecoy,
+    )
+    .expect("direct package interface owner with exact ABI must link");
+
+    relink_cycle_package_interface_call(
+        PackageRefIr::Dependency {
+            dependency_ref: "helper".to_string(),
+        },
+        "Reader",
+        FixtureInterfaceAbi::Helper,
+        FixtureInterfaceCollision::None,
+    )
+    .expect("dependency package interface owner with exact ABI must link");
+
+    for (label, package, symbol_path, abi, collision, expected) in [
+        (
+            "wrong ABI",
+            PackageRefIr::PackageId {
+                package_id: "example.helper".to_string(),
+            },
+            "Reader",
+            FixtureInterfaceAbi::Wrong,
+            FixtureInterfaceCollision::None,
+            "local ABI expectation mismatches",
+        ),
+        (
+            "missing ABI",
+            PackageRefIr::PackageId {
+                package_id: "example.helper".to_string(),
+            },
+            "Reader",
+            FixtureInterfaceAbi::Missing,
+            FixtureInterfaceCollision::None,
+            "exact local ABI expectation",
+        ),
+        (
+            "wrong package",
+            PackageRefIr::PackageId {
+                package_id: "example.shared".to_string(),
+            },
+            "Reader",
+            FixtureInterfaceAbi::Shared,
+            FixtureInterfaceCollision::None,
+            "is not exported",
+        ),
+        (
+            "wrong symbol path",
+            PackageRefIr::PackageId {
+                package_id: "example.helper".to_string(),
+            },
+            "MissingReader",
+            FixtureInterfaceAbi::Helper,
+            FixtureInterfaceCollision::None,
+            "is not exported",
+        ),
+        (
+            "ambiguous exact declaration coordinate",
+            PackageRefIr::PackageId {
+                package_id: "example.helper".to_string(),
+            },
+            "Reader",
+            FixtureInterfaceAbi::Helper,
+            FixtureInterfaceCollision::OwnerAmbiguous,
+            "unique interface declaration",
+        ),
+    ] {
+        let error = relink_cycle_package_interface_call(package, symbol_path, abi, collision)
+            .expect_err(label);
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains(expected),
+            "unexpected {label} error: {detail}"
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FixtureInterfaceAbi {
+    Helper,
+    Shared,
+    Wrong,
+    Missing,
+}
+
+#[derive(Clone, Copy)]
+enum FixtureInterfaceCollision {
+    None,
+    CallerDecoy,
+    OwnerAmbiguous,
+}
+
+fn relink_cycle_package_interface_call(
+    package: skiff_artifact_model::PackageRefIr,
+    symbol_path: &str,
+    abi: FixtureInterfaceAbi,
+    collision: FixtureInterfaceCollision,
+) -> anyhow::Result<()> {
+    use crate::program::linked::TypeDeclarationIr;
+    use skiff_artifact_model::{PackageSymbolRef, TypeRefIr};
+    use skiff_runtime_linked_program::{
+        FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LinkedCallTarget, LinkedExprIr,
+        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef, TypeDeclIr,
+    };
+
+    let fixture = CycleFixture::new();
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver).load(fixture.assembly)?;
+    let candidate = link_runtime_assembly(hydrated)?;
+    let package_abi = |package_id: &str| {
+        candidate
+            .shared_image()
+            .code_slots()
+            .iter()
+            .find(|code| code.artifact().package_id == package_id)
+            .expect("fixture package code slot")
+            .local_abi_identity()
+            .as_str()
+            .to_string()
+    };
+    let abi_expectation = match abi {
+        FixtureInterfaceAbi::Helper => Some(package_abi("example.helper")),
+        FixtureInterfaceAbi::Shared => Some(package_abi("example.shared")),
+        FixtureInterfaceAbi::Wrong => Some("wrong-local-abi".to_string()),
+        FixtureInterfaceAbi::Missing => None,
+    };
+    let interface_abi_id = skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package,
+            symbol_path: symbol_path.to_string(),
+            abi_expectation,
+        },
+    });
+    let interface = LinkedInterfaceInstantiationRef {
+        interface_abi_id,
+        canonical_type_args: Vec::new(),
+    };
+    let mut files = candidate
+        .execution_image()
+        .code_slots()
+        .iter()
+        .map(|code| code.files().to_vec())
+        .collect::<Vec<_>>();
+    if matches!(collision, FixtureInterfaceCollision::CallerDecoy) {
+        let shared_file = Arc::make_mut(&mut files[0][0]);
+        let type_index = shared_file.types.len();
+        shared_file.declarations.types.insert(
+            "Reader".to_string(),
+            TypeDeclarationIr {
+                type_index,
+                symbol: "shared.main.Reader".to_string(),
+                source_span: None,
+            },
+        );
+        shared_file.declarations.interfaces.insert(
+            "Reader".to_string(),
+            InterfaceDeclIr {
+                name: "Reader".to_string(),
+                type_params: Vec::new(),
+                operations: vec![InterfaceOperationIr {
+                    name: "decoy".to_string(),
+                    type_params: Vec::new(),
+                    params: vec![FunctionTypeParamIr {
+                        name: "self".to_string(),
+                        ty: LinkedTypeRef::TypeParam {
+                            name: "Self".to_string(),
+                        },
+                    }],
+                    return_type: LinkedTypeRef::Native {
+                        name: "bool".to_string(),
+                        args: Vec::new(),
+                    },
+                    is_native: false,
+                    is_provider: false,
+                    is_static: false,
+                    implicit_self: None,
+                }],
+                source_span: None,
+            },
+        );
+        shared_file.types.push(TypeDeclIr {
+            name: "Reader".to_string(),
+            descriptor: LinkedTypeDescriptor::Interface,
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+    }
+    if matches!(collision, FixtureInterfaceCollision::OwnerAmbiguous) {
+        let helper_file = files
+            .iter_mut()
+            .flat_map(|package_files| package_files.iter_mut())
+            .find(|file| file.module_path == "helper.main")
+            .expect("fixture helper file");
+        let helper_file = Arc::make_mut(helper_file);
+        let declaration = helper_file.declarations.types["Reader"].clone();
+        let interface = helper_file.declarations.interfaces["Reader"].clone();
+        helper_file
+            .declarations
+            .types
+            .insert("ReaderAlias".to_string(), declaration);
+        helper_file
+            .declarations
+            .interfaces
+            .insert("ReaderAlias".to_string(), interface);
+    }
+    let shared_file = Arc::make_mut(&mut files[0][0]);
+    shared_file.executables[0]
+        .body
+        .expressions
+        .push(LinkedExprIr::Call {
+            call: linked_call(
+                LinkedCallTarget::InterfaceMethod {
+                    method_abi_id: format!("method:{}:read", interface.interface_abi_id),
+                    interface,
+                    slot: 0,
+                },
+                0,
+            ),
+        });
+    crate::assembly_execution::relink_execution_files_for_test(
+        candidate.shared_image().as_ref(),
+        &files,
+    )?;
+    Ok(())
 }
