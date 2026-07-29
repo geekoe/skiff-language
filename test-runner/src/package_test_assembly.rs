@@ -4,22 +4,19 @@ use std::{
     time::SystemTime,
 };
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
     assign_service_contract_identities, package_artifact_ref, service_contract_ref,
     service_deployment_ref,
 };
 use skiff_artifact_model::{
-    ActivationPolicy, ConfigLiteralBinding, ContractDiagnosticText, DeploymentDiagnosticText,
-    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision,
-    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
-    IngressProtocol, IngressSelector, MetadataValue, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageRequirementKey, ResourceBinding, ResourcePolicy,
-    RuntimeCapabilityBinding, SecretRefBinding, ServiceContract, ServiceDeployment,
-    ServiceDeploymentInput, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSelectorBinding,
-    StateBinding, StateBindingKind, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    ContractDiagnosticText, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentRevision, GatewayDispatchMode, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayExternalSchema, IngressProtocol, IngressSelector, PackageArtifact,
+    PackageArtifactRef, PackageBinding, PackageRequirementKey, RuntimeCapabilityBinding,
+    ServiceContract, ServiceDeployment, ServiceDeploymentInput, ServiceProtocolIdentity,
+    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_deployment::{
     assembly::resolve_runtime_assembly, projection::project_service_deployment,
@@ -35,6 +32,10 @@ use crate::{
 };
 
 static PACKAGE_TEST_ASSEMBLY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+mod http_entry;
+mod profile;
+
+use profile::{selected_profile_bindings, SelectedProfileBindings};
 
 #[derive(Debug, Clone)]
 pub struct CanonicalPackageTestEntrypoint {
@@ -54,21 +55,13 @@ pub struct CanonicalPackageTestFixture {
     pub entrypoints: Vec<CanonicalPackageTestEntrypoint>,
 }
 
-#[derive(Debug, Clone)]
-struct SelectedProfileBindings {
-    config_literals: Vec<ConfigLiteralBinding>,
-    secret_refs: Vec<SecretRefBinding>,
-    resource_bindings: Vec<ResourceBinding>,
-    policy: DeploymentPolicy,
-}
-
 pub fn assemble_package_test_fixture(
     project: &CanonicalPackageProject,
     overlay: PublishedPackageTestOverlay,
     base: CanonicalBaseAssembly,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
     let scope = format!("fixture:{}", overlay.overlay.artifact.package_build_id);
-    assemble_package_test_fixture_for_run(project, overlay, base, &scope)
+    assemble_package_test_fixture_inner(project, overlay, base, &scope, None)
 }
 
 pub fn assemble_package_test_fixture_for_run(
@@ -76,6 +69,26 @@ pub fn assemble_package_test_fixture_for_run(
     overlay: PublishedPackageTestOverlay,
     base: CanonicalBaseAssembly,
     run_scope: &str,
+) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
+    assemble_package_test_fixture_inner(project, overlay, base, run_scope, None)
+}
+
+pub fn assemble_package_test_fixture_for_run_with_ingress(
+    project: &CanonicalPackageProject,
+    overlay: PublishedPackageTestOverlay,
+    base: CanonicalBaseAssembly,
+    run_scope: &str,
+    ingress_url: &str,
+) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
+    assemble_package_test_fixture_inner(project, overlay, base, run_scope, Some(ingress_url))
+}
+
+fn assemble_package_test_fixture_inner(
+    project: &CanonicalPackageProject,
+    overlay: PublishedPackageTestOverlay,
+    base: CanonicalBaseAssembly,
+    run_scope: &str,
+    ingress_url: Option<&str>,
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
     let assembly_nonce = package_test_assembly_nonce()?;
     let gateway_inputs = overlay
@@ -95,7 +108,13 @@ pub fn assemble_package_test_fixture_for_run(
     let service_selectors = package_test_service_selectors(&deployment_packages, &base)?;
     let owner = binding_owner(&base, &production_ref)?;
     let state_requirements = package_test_state_requirements(&deployment_packages)?;
-    let profile_bindings = selected_profile_bindings(project, &state_requirements, owner)?;
+    let profile_bindings = selected_profile_bindings(
+        project,
+        &overlay.overlay.artifact,
+        &state_requirements,
+        owner,
+        ingress_url,
+    )?;
     let runtime_capability_bindings =
         selected_runtime_capability_bindings(project, &deployment_packages, owner);
     let mut contracts = Vec::with_capacity(overlay.bindings.len());
@@ -109,6 +128,17 @@ pub fn assemble_package_test_fixture_for_run(
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         let case_scope = package_test_case_scope(run_scope, &assembly_nonce, index, &binding.case);
         let state_bindings = package_test_state_bindings(&state_requirements, &case_scope)?;
+        let (mut gateway_entries, mut deployment_ingress) =
+            http_entry::project(project, &overlay, &contract, ingress_url)?;
+        if gateway_entries
+            .insert(gateway_entry_key.clone(), gateway_entry.clone())
+            .is_some()
+        {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test service http.yml entry key {gateway_entry_key} conflicts with the package-test control entry"
+            )));
+        }
+        deployment_ingress.extend(ingress.iter().cloned());
         let deployment = project_service_deployment(
             package_test_deployment_input(
                 &overlay,
@@ -116,8 +146,8 @@ pub fn assemble_package_test_fixture_for_run(
                 overlay_ref.clone(),
                 package_bindings.clone(),
                 service_selectors.clone(),
-                BTreeMap::from([(gateway_entry_key.clone(), gateway_entry.clone())]),
-                ingress.clone(),
+                gateway_entries,
+                deployment_ingress,
                 profile_bindings.clone(),
                 state_bindings,
                 runtime_capability_bindings.clone(),
@@ -505,203 +535,6 @@ fn package_test_state_namespace(
     digest.update(format!("{kind:?}").as_bytes());
     let hash = format!("{:x}", digest.finalize());
     format!("skiff_pt_{}", &hash[..40])
-}
-
-/// Project the ordinary profile bindings that may be shared by every case.
-///
-/// State keys/kinds are validated separately; the runner replaces authored
-/// namespaces with fresh per-case namespaces after that validation.
-fn selected_profile_bindings(
-    project: &CanonicalPackageProject,
-    state_requirements: &BTreeMap<String, StateBindingKind>,
-    owner: Option<&ServiceDeployment>,
-) -> Result<SelectedProfileBindings, CanonicalFixtureError> {
-    let Some(test_service) = &project.test_service_profile else {
-        return Ok(owner
-            .map(|deployment| SelectedProfileBindings {
-                config_literals: deployment.config_literals.clone(),
-                secret_refs: deployment.secret_refs.clone(),
-                resource_bindings: deployment.resource_bindings.clone(),
-                policy: deployment.policy.clone(),
-            })
-            .unwrap_or_else(default_package_test_policy));
-    };
-    let config = profile_map::<serde_json::Value>(test_service, "config")?;
-    let secrets = profile_map::<String>(test_service, "secrets")?;
-    let resources = profile_map::<TestResourceAuthoring>(test_service, "resources")?;
-    let states = profile_map::<TestStateAuthoring>(test_service, "state")?;
-    validate_test_service_states(test_service, state_requirements, &states)?;
-    Ok(SelectedProfileBindings {
-        config_literals: config
-            .into_iter()
-            .map(|(path, value)| ConfigLiteralBinding {
-                path,
-                value: MetadataValue::from_json(value),
-            })
-            .collect(),
-        secret_refs: secrets
-            .into_iter()
-            .map(|(path, secret_ref)| SecretRefBinding { path, secret_ref })
-            .collect(),
-        resource_bindings: resources
-            .into_iter()
-            .map(|(requirement_key, binding)| ResourceBinding {
-                requirement_key,
-                capability: binding.capability,
-                resource_ref: binding.resource_ref,
-            })
-            .collect(),
-        policy: test_service_policy(test_service)?,
-    })
-}
-
-fn default_package_test_policy() -> SelectedProfileBindings {
-    SelectedProfileBindings {
-        config_literals: Vec::new(),
-        secret_refs: Vec::new(),
-        resource_bindings: Vec::new(),
-        policy: DeploymentPolicy {
-            timeout_ms: Some(30_000),
-            resources: ResourcePolicy {
-                cpu_millis: 100,
-                memory_bytes: 64 * 1024 * 1024,
-            },
-            activation: ActivationPolicy {
-                max_concurrency: 1,
-                idle_timeout_ms: None,
-            },
-            principal: "test:package-runner".to_string(),
-        },
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TestStateAuthoring {
-    kind: StateBindingKind,
-    namespace: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TestResourceAuthoring {
-    capability: String,
-    resource_ref: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TestQuotaAuthoring {
-    cpu_millis: u32,
-    memory_bytes: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TestLifecycleAuthoring {
-    max_concurrency: u32,
-    #[serde(default)]
-    idle_timeout_ms: Option<u64>,
-}
-
-fn profile_map<T: for<'de> Deserialize<'de>>(
-    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
-    field: &'static str,
-) -> Result<BTreeMap<String, T>, CanonicalFixtureError> {
-    let value = match field {
-        "config" => &test_service.authoring.config,
-        "secrets" => &test_service.authoring.secrets,
-        "state" => &test_service.authoring.state,
-        "resources" => &test_service.authoring.resources,
-        _ => unreachable!("profile map field is compiler-owned"),
-    };
-    if value.is_null() {
-        return Ok(BTreeMap::new());
-    }
-    serde_json::from_value(value.clone()).map_err(|error| {
-        CanonicalFixtureError::InvalidInput(format!(
-            "test service {} config.{}.yml field {field} must be a path-keyed object: {error}",
-            test_service.service_id, test_service.profile_name
-        ))
-    })
-}
-
-fn validate_test_service_states(
-    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
-    expected: &BTreeMap<String, StateBindingKind>,
-    authored: &BTreeMap<String, TestStateAuthoring>,
-) -> Result<(), CanonicalFixtureError> {
-    for (key, kind) in expected {
-        let binding = authored.get(key).ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(format!(
-                "test service {} config.{}.yml is missing state binding {key}",
-                test_service.service_id, test_service.profile_name
-            ))
-        })?;
-        if &binding.kind != kind {
-            return Err(CanonicalFixtureError::InvalidInput(format!(
-                "test service {} config.{}.yml state binding {key} must be {kind:?}, got {:?}",
-                test_service.service_id, test_service.profile_name, binding.kind
-            )));
-        }
-        if binding.namespace.trim().is_empty() {
-            return Err(CanonicalFixtureError::InvalidInput(format!(
-                "test service {} config.{}.yml state binding {key} namespace must not be empty",
-                test_service.service_id, test_service.profile_name
-            )));
-        }
-    }
-    if let Some(key) = authored.keys().find(|key| !expected.contains_key(*key)) {
-        return Err(CanonicalFixtureError::InvalidInput(format!(
-            "test service {} config.{}.yml has extra state binding {key}",
-            test_service.service_id, test_service.profile_name
-        )));
-    }
-    Ok(())
-}
-
-fn test_service_policy(
-    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
-) -> Result<DeploymentPolicy, CanonicalFixtureError> {
-    let quota = profile_value::<TestQuotaAuthoring>(test_service, "quota")?;
-    let lifecycle = profile_value::<TestLifecycleAuthoring>(test_service, "lifecycle")?;
-    let principal = profile_value::<String>(test_service, "principal")?;
-    let timeout_ms = if test_service.authoring.timeout.is_null() {
-        None
-    } else {
-        Some(profile_value::<u64>(test_service, "timeout")?)
-    };
-    Ok(DeploymentPolicy {
-        timeout_ms,
-        resources: ResourcePolicy {
-            cpu_millis: quota.cpu_millis,
-            memory_bytes: quota.memory_bytes,
-        },
-        activation: ActivationPolicy {
-            max_concurrency: lifecycle.max_concurrency,
-            idle_timeout_ms: lifecycle.idle_timeout_ms,
-        },
-        principal,
-    })
-}
-
-fn profile_value<T: for<'de> Deserialize<'de>>(
-    test_service: &crate::canonical_package::CanonicalTestServiceProfile,
-    field: &'static str,
-) -> Result<T, CanonicalFixtureError> {
-    let value = match field {
-        "timeout" => &test_service.authoring.timeout,
-        "quota" => &test_service.authoring.quota,
-        "principal" => &test_service.authoring.principal,
-        "lifecycle" => &test_service.authoring.lifecycle,
-        _ => unreachable!("profile scalar field is compiler-owned"),
-    };
-    serde_json::from_value(value.clone()).map_err(|error| {
-        CanonicalFixtureError::InvalidInput(format!(
-            "test service {} config.{}.yml field {field} is invalid: {error}",
-            test_service.service_id, test_service.profile_name
-        ))
-    })
 }
 
 fn selected_runtime_capability_bindings(
