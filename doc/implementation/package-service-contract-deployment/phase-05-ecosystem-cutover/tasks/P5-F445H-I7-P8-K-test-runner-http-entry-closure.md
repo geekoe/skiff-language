@@ -3,16 +3,17 @@
 状态：
 
 ```text
-READY_FOR_ZERO_WORKTREE_PREFLIGHT
+IMPLEMENTED
+READY_FOR_INTEGRATION
 ```
 
 ## 1. Parent, baseline, DAG
 
 - 直接父节点：
   `P5-F445H-I7-P8-D0-http-entry-test-authority-result.md`
-- Skiff baseline：
-  `3a87d37f81a04c249f308b311bd91dcfdf3a8aa3`
-  （tree `eafc29e952f6b5170e4f5faca4e5d181b3ace9f6`）
+- 实际Skiff baseline：
+  `45a89dc40dd2f4cffc19296acc9a31065fcc3a37`
+  （tree `e67bfc6553b9a59797b04a4722768ee765529947`）
 - DAG：`D0 -> K -> T`
 - 并行兄弟：H拥有Runtime/Host/Eval；R拥有Router审计。K不得修改这些表面。
 - integration owner：`/root/phase05_integration_steward`
@@ -64,3 +65,6 @@ git diff --check
 
 若闭环要求compiler/std/File IR改动、第二套artifact、runtime wire/schema、特殊URL、session/token/header、
 或与H/R共享production owner，返回`TASK_SCOPE_EXPANDED`。不得在K内发明替代机制。
+
+实现与验证结果见
+`P5-F445H-I7-P8-K-test-runner-http-entry-closure-result.md`。
