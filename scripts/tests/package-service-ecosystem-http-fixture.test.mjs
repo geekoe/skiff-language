@@ -22,7 +22,6 @@ test('router compiler fixture uses split HTTP authoring and keeps dev timeout', 
   assert.equal(
     http,
     `ping:
-  host: websocket-fixture.skiff.localhost
   method: GET
   path: /ping
   kind: typedJson
