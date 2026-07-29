@@ -1,9 +1,14 @@
 use std::path::PathBuf;
 
-use skiff_compiler::authoring::{build_authoring_object, AuthoringObject};
+use skiff_artifact_model::ServiceDeploymentRef;
+use skiff_compiler::authoring::{
+    build_authoring_object, project_runtime_assembly, AuthoringObject,
+};
 use skiff_compiler::CompilerPlatformSources;
 
-const USAGE: &str = "usage: skiff-compiler <package|assembly> <build|publish> <root> --artifact-root <dir> [--environment <name>] [--json]";
+const USAGE: &str = "usage:
+  skiff-compiler package <build|publish> <root> --artifact-root <dir> [--environment <name>] [--json]
+  skiff-compiler assembly <build|publish> --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... [--json]";
 
 fn main() {
     if let Err(error) = run() {
@@ -35,6 +40,16 @@ fn run_with_args(
             )
         }
     };
+    match object {
+        AuthoringObject::Package => run_package_action(args, publish_pointer),
+        AuthoringObject::Assembly => run_assembly_action(args, publish_pointer),
+    }
+}
+
+fn run_package_action(
+    mut args: impl Iterator<Item = String>,
+    publish_pointer: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut artifact_root = None;
     let mut platform_source_root = None;
@@ -74,16 +89,74 @@ fn run_with_args(
     let platform_sources = CompilerPlatformSources::new(&platform_source_root)?;
     let receipt = build_authoring_object(
         &platform_sources,
-        object,
+        AuthoringObject::Package,
         &root,
         &artifact_root,
         environment.as_deref().unwrap_or("dev"),
         publish_pointer,
     )?;
+    print_receipt(&receipt, json)
+}
+
+fn run_assembly_action(
+    mut args: impl Iterator<Item = String>,
+    publish_pointer: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut artifact_root = None;
+    let mut environment = None;
+    let mut root_deployments = Vec::new();
+    let mut json = false;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--artifact-root" => {
+                if artifact_root.is_some() {
+                    return Err("--artifact-root was provided more than once".into());
+                }
+                artifact_root = Some(PathBuf::from(
+                    args.next().ok_or("--artifact-root requires a path")?,
+                ));
+            }
+            "--environment" => {
+                if environment.is_some() {
+                    return Err("--environment was provided more than once".into());
+                }
+                environment = Some(args.next().ok_or("--environment requires a name")?);
+            }
+            "--root-deployment" => {
+                let source = args
+                    .next()
+                    .ok_or("--root-deployment requires exact ServiceDeploymentRef JSON")?;
+                let reference =
+                    serde_json::from_str::<ServiceDeploymentRef>(&source).map_err(|error| {
+                        format!(
+                            "--root-deployment requires exact ServiceDeploymentRef JSON: {error}"
+                        )
+                    })?;
+                root_deployments.push(reference);
+            }
+            "--json" => json = true,
+            _ => return Err(format!("unknown assembly option {argument}\n{USAGE}").into()),
+        }
+    }
+    let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
+    let environment = environment.ok_or("--environment is required for assembly projection")?;
+    let receipt = project_runtime_assembly(
+        &artifact_root,
+        &environment,
+        &root_deployments,
+        publish_pointer,
+    )?;
+    print_receipt(&receipt, json)
+}
+
+fn print_receipt(
+    receipt: &serde_json::Value,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        println!("{}", serde_json::to_string_pretty(receipt)?);
     } else {
-        println!("{}", render_authoring_receipt(&receipt)?);
+        println!("{}", render_authoring_receipt(receipt)?);
     }
     Ok(())
 }
@@ -165,32 +238,61 @@ mod tests {
 
     #[test]
     fn authoring_actions_require_exactly_one_platform_source_root() {
-        for object in ["package", "assembly"] {
-            let missing = run_error(&[
-                object,
-                "build",
-                "/missing-authoring-root",
-                "--artifact-root",
-                "/tmp/skiff-artifacts",
-            ]);
-            assert_eq!(missing, "--platform-source-root is required");
+        let missing = run_error(&[
+            "package",
+            "build",
+            "/missing-authoring-root",
+            "--artifact-root",
+            "/tmp/skiff-artifacts",
+        ]);
+        assert_eq!(missing, "--platform-source-root is required");
 
-            let duplicate = run_error(&[
-                object,
-                "build",
-                "/missing-authoring-root",
-                "--artifact-root",
-                "/tmp/skiff-artifacts",
-                "--platform-source-root",
-                "/missing-platform-root-a",
-                "--platform-source-root",
-                "/missing-platform-root-b",
-            ]);
-            assert_eq!(
-                duplicate,
-                "--platform-source-root was provided more than once"
-            );
-        }
+        let duplicate = run_error(&[
+            "package",
+            "build",
+            "/missing-authoring-root",
+            "--artifact-root",
+            "/tmp/skiff-artifacts",
+            "--platform-source-root",
+            "/missing-platform-root-a",
+            "--platform-source-root",
+            "/missing-platform-root-b",
+        ]);
+        assert_eq!(
+            duplicate,
+            "--platform-source-root was provided more than once"
+        );
+    }
+
+    #[test]
+    fn assembly_projection_rejects_positional_authoring_roots() {
+        let error = run_error(&[
+            "assembly",
+            "build",
+            "/legacy/assembly.yml",
+            "--artifact-root",
+            "/tmp/skiff-artifacts",
+            "--environment",
+            "dev",
+        ]);
+        assert!(error.contains("unknown assembly option /legacy/assembly.yml"));
+        assert!(!error.contains("No such file"));
+    }
+
+    #[test]
+    fn assembly_projection_requires_inline_exact_reference_json() {
+        let error = run_error(&[
+            "assembly",
+            "build",
+            "--artifact-root",
+            "/tmp/skiff-artifacts",
+            "--environment",
+            "dev",
+            "--root-deployment",
+            "/tmp/deployment.json",
+        ]);
+        assert!(error.contains("requires exact ServiceDeploymentRef JSON"));
+        assert!(!error.contains("No such file"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::de::{MapAccess, Visitor};
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BoundaryOperationContract, GatewayAdapterArg, GatewayAdapterKind, GatewayEntryKey,
-    PackageSchemaTypeId, PackageTypeRequirement, ServiceDeploymentInput, ServiceDeploymentRef,
+    PackageSchemaTypeId, PackageTypeRequirement, ServiceDeploymentInput,
     SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 
@@ -288,15 +288,6 @@ pub struct ServiceContractDefinition {
 /// projection input. This alias prevents a second copy of that body.
 pub type ServiceDeploymentAuthoring = ServiceDeploymentInput;
 
-/// The complete canonical `assembly.yml` surface. Closure and identity are
-/// resolved from the exact root deployment references, never from "latest".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyAuthoring {
-    pub environment: String,
-    pub root_deployments: Vec<ServiceDeploymentRef>,
-}
-
 pub fn parse_service_contract_definition_yml(
     source: &str,
 ) -> Result<ServiceContractDefinition, EcosystemAuthoringError> {
@@ -313,16 +304,6 @@ pub fn parse_service_deployment_yml(
     let deployment = serde_yaml::from_str::<ServiceDeploymentAuthoring>(source)?;
     validate_deployment_authoring(&deployment).map_err(EcosystemAuthoringError::Validation)?;
     Ok(deployment)
-}
-
-pub fn parse_runtime_assembly_yml(
-    source: &str,
-) -> Result<RuntimeAssemblyAuthoring, EcosystemAuthoringError> {
-    let assembly = serde_yaml::from_str::<RuntimeAssemblyAuthoring>(source)?;
-    assembly
-        .validate()
-        .map_err(EcosystemAuthoringError::Validation)?;
-    Ok(assembly)
 }
 
 impl ServiceContractDefinition {
@@ -365,32 +346,6 @@ impl ServiceContractDefinition {
             return Err(format!(
                 "contract.yml diagnosticText references unknown type {key}"
             ));
-        }
-        Ok(())
-    }
-}
-
-impl RuntimeAssemblyAuthoring {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.environment.trim().is_empty() {
-            return Err("assembly.yml environment must not be empty".to_string());
-        }
-        if !is_safe_token(&self.environment) {
-            return Err(
-                "assembly.yml environment must use only letters, digits, dot, dash, or underscore"
-                    .to_string(),
-            );
-        }
-        if self.root_deployments.is_empty() {
-            return Err("assembly.yml rootDeployments must not be empty".to_string());
-        }
-        let mut roots = BTreeSet::new();
-        for root in &self.root_deployments {
-            if !roots.insert(root) {
-                return Err(format!(
-                    "assembly.yml contains duplicate root deployment {root:?}"
-                ));
-            }
         }
         Ok(())
     }
@@ -446,28 +401,15 @@ fn validate_deployment_authoring(deployment: &ServiceDeploymentAuthoring) -> Res
     Ok(())
 }
 
-fn is_safe_token(value: &str) -> bool {
-    !value.is_empty()
-        && value != "."
-        && value != ".."
-        && value.bytes().all(|byte| {
-            matches!(
-                byte,
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_'
-            )
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
         ActivationPolicy, BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryReturn,
         BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-        BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, DeploymentArtifactIdentity,
-        DeploymentDiagnosticText, DeploymentPolicy, DeploymentRevision, PackageArtifactRef,
-        PackageBuildId, PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef,
-        ServiceProtocolIdentity, SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
-        SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+        BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, DeploymentDiagnosticText,
+        DeploymentPolicy, DeploymentRevision, PackageArtifactRef, PackageBuildId,
+        PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef, ServiceProtocolIdentity,
+        SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -744,7 +686,7 @@ jsonRpc:
     }
 
     #[test]
-    fn contract_deployment_and_assembly_documents_have_exact_top_level_fields() {
+    fn contract_and_deployment_documents_have_exact_top_level_fields() {
         let contract = ServiceContractDefinition {
             schema_version: SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION.to_string(),
             service_id: "example.com/echo".to_string(),
@@ -827,19 +769,6 @@ jsonRpc:
             parse_service_deployment_yml(&format!("{deployment_yml}sourceRoot: forbidden\n"))
                 .is_err()
         );
-
-        let assembly = RuntimeAssemblyAuthoring {
-            environment: "test".to_string(),
-            root_deployments: vec![ServiceDeploymentRef {
-                service_id: "example.com/echo".to_string(),
-                contract_version: "1.0.0".to_string(),
-                deployment_revision: DeploymentRevision::new("revision-1"),
-                deployment_artifact_identity: DeploymentArtifactIdentity::new("deployment"),
-            }],
-        };
-        let assembly_yml = serde_yaml::to_string(&assembly).unwrap();
-        assert_eq!(parse_runtime_assembly_yml(&assembly_yml).unwrap(), assembly);
-        assert!(parse_runtime_assembly_yml(&format!("{assembly_yml}artifactRoots: []\n")).is_err());
     }
 
     fn operation_contract() -> BoundaryOperationContract {

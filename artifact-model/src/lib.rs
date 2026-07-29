@@ -123,9 +123,8 @@ pub use deployment::{
 };
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
-    parse_runtime_assembly_yml, parse_service_contract_definition_yml,
-    parse_service_deployment_yml, EcosystemAuthoringError, HttpGatewayDocumentAuthoring,
-    HttpGatewayEntryAuthoring, RuntimeAssemblyAuthoring, ServiceAuthoringKind,
+    parse_service_contract_definition_yml, parse_service_deployment_yml, EcosystemAuthoringError,
+    HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring, ServiceAuthoringKind,
     ServiceConfigProfileAuthoring, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring, ServiceManifestAuthoring,
     WebSocketConnectAuthoring, WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
