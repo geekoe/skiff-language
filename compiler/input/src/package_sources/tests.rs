@@ -1,8 +1,13 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use super::*;
 use crate::{
-    package_config::{discover_package_manifests, package_manifest_key},
+    package_config::{
+        discover_package_manifests, package_manifest_key, read_user_package_manifest,
+    },
     CompilerPlatformSources,
 };
 
@@ -101,6 +106,98 @@ fn package_source_validation_remains_fail_closed_without_origin_metadata() {
     let incomplete_sources = incomplete_sources.to_string();
     assert!(incomplete_sources.contains("missing.skiff has package visibility but no raw source"));
     assert!(incomplete_sources.contains("missing.skiff has empty public module path"));
+}
+
+#[test]
+fn user_package_sources_exclude_tests_by_default_and_explicit_test_reader_preserves_them() {
+    let fixture = PlatformFixture::new("user-test-sources");
+    let package_root = fixture.root().join("widget");
+    fs::create_dir_all(package_root.join("internal")).unwrap();
+    fs::write(
+        package_root.join("package.yml"),
+        "id: example.com/widget-tests\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(package_root.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        package_root.join("internal/widget.skiff"),
+        "function helper() -> number { return 1 }\n",
+    )
+    .unwrap();
+    fs::write(
+        package_root.join("internal/widget.test.skiff"),
+        "test \"helper\" { assert true }\n",
+    )
+    .unwrap();
+
+    let manifest = read_user_package_manifest(&package_root.join("package.yml")).unwrap();
+    let production_sources = read_package_sources(&manifest, &package_root).unwrap();
+    assert_eq!(production_sources.files().len(), 1);
+    assert!(production_sources
+        .files()
+        .iter()
+        .all(|source| !source.meta.is_test_file));
+    assert!(production_sources
+        .source_tree()
+        .sources
+        .iter()
+        .all(|source| !source.is_test_file));
+
+    let sources = read_test_service_package_sources(&manifest, &package_root).unwrap();
+    let production = sources
+        .files()
+        .iter()
+        .find(|source| source.meta.relative_path == Path::new("internal/widget.skiff"))
+        .expect("production source is retained");
+    let test = sources
+        .files()
+        .iter()
+        .find(|source| source.meta.relative_path == Path::new("internal/widget.test.skiff"))
+        .expect("test source is retained");
+
+    assert_eq!(production.meta.module_path, "internal.widget");
+    assert_eq!(test.meta.module_path, "internal.widget");
+    assert!(!production.meta.is_test_file);
+    assert!(test.meta.is_test_file);
+
+    let source_tree = sources.source_tree();
+    let test_tree_entry = source_tree
+        .sources
+        .iter()
+        .find(|source| source.file_path == Path::new("internal/widget.test.skiff"))
+        .expect("source tree preserves test source");
+    assert_eq!(test_tree_entry.module_path, "internal.widget");
+    assert!(test_tree_entry.is_test_file);
+}
+
+#[test]
+fn production_source_rejects_reserved_test_module_segment() {
+    let fixture = PlatformFixture::new("reserved-test-module");
+    let package_root = fixture.root().join("reserved");
+    fs::create_dir_all(package_root.join("internal/__test")).unwrap();
+    fs::write(
+        package_root.join("package.yml"),
+        "id: example.com/reserved-test-module\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(package_root.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        package_root.join("internal/__test/helper.skiff"),
+        "function helper() -> number { return 1 }\n",
+    )
+    .unwrap();
+
+    let manifest = read_user_package_manifest(&package_root.join("package.yml")).unwrap();
+    let error = read_package_sources(&manifest, &package_root)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains(
+            "production source internal/__test/helper.skiff uses reserved compiler test module segment __test"
+        ),
+        "{error}"
+    );
 }
 
 struct PlatformFixture {

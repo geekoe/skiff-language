@@ -24,11 +24,8 @@ use skiff_test_runner::package_service_host_fixture::prepare_package_service_hos
 use skiff_test_runner::{
     canonical_package::compile_package_project_for_test,
     canonical_store::CanonicalBaseAssembly,
-    package_test_assembly::{
-        assemble_package_test_fixture_for_run, CanonicalPackageTestEntrypoint,
-    },
-    test_discovery::discover_package_test_cases,
-    test_overlay::compile_package_test_overlay,
+    test_discovery::discover_test_service_cases,
+    test_service_fixture::{assemble_test_service_fixture_for_run, CanonicalTestServiceEntrypoint},
 };
 
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
@@ -134,46 +131,38 @@ pub(super) async fn admitted_stream_argument_gateway_host(
         .await
         .expect("stream-argument HTTP stream assembly should admit");
     let route_specs = [
-        ("normal", 0, "/package-direct/stream-argument/normal"),
+        ("normal", "/package-direct/stream-argument/normal"),
         (
             "producer-error",
-            1,
             "/package-direct/stream-argument/producer-error",
         ),
         (
             "consumer-cancel",
-            2,
             "/package-direct/stream-argument/consumer-cancel",
         ),
         (
             "response-sink-normal",
-            3,
             "/package-direct/response-sink/normal",
         ),
         (
             "response-sink-producer-error",
-            4,
             "/package-direct/response-sink/producer-error",
         ),
         (
             "response-sink-consumer-cancel",
-            5,
             "/package-direct/response-sink/consumer-cancel",
         ),
     ];
     let routes = route_specs
         .into_iter()
-        .map(|(role, case_index, path)| {
-            let entrypoint = fixture
-                .entrypoints
-                .get(case_index)
-                .expect("stream-argument package-test entrypoint");
+        .map(|(role, path)| {
             let binding = fixture
                 .assembly
                 .gateway_ingress
                 .iter()
                 .find(|binding| {
-                    binding.deployment == entrypoint.deployment && binding.selector.path == path
+                    binding.deployment == fixture.entrypoint.deployment
+                        && binding.selector.path == path
                 })
                 .expect("stream-argument HTTP ingress binding");
             (
@@ -445,7 +434,7 @@ struct CurrentScopeCompiledFixture {
 struct StreamArgumentCompiledFixture {
     assembly: Arc<RuntimeAssembly>,
     artifact_root: PathBuf,
-    entrypoints: Vec<CanonicalPackageTestEntrypoint>,
+    entrypoint: CanonicalTestServiceEntrypoint,
     _temp: TempFixture,
 }
 
@@ -561,32 +550,28 @@ fn compile_stream_argument_fixture() -> StreamArgumentCompiledFixture {
     let test_service = fixture_root.join("argument-tests");
     let project = compile_package_project_for_test(&platform, &test_service, &source_artifacts)
         .expect("stream-argument test service production package");
-    let cases = discover_package_test_cases(&test_service, &test_service, false)
+    let cases = discover_test_service_cases(&test_service, &test_service, false)
         .expect("stream-argument test discovery");
     assert_eq!(cases.len(), 6);
-    let overlay = compile_package_test_overlay(
-        &platform,
-        &test_service,
-        &source_artifacts,
+    let test_fixture = assemble_test_service_fixture_for_run(
         &project,
         &cases,
-    )
-    .expect("stream-argument test overlay");
-    let package_fixture = assemble_package_test_fixture_for_run(
-        &project,
-        overlay,
         CanonicalBaseAssembly::default(),
         "p8-s2-stream-argument",
     )
-    .expect("stream-argument package-test assembly");
-    package_fixture
-        .records
+    .expect("stream-argument test-service assemblies");
+    test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
         .expect("stream-argument runtime records");
+    let first_case = test_fixture
+        .cases
+        .into_iter()
+        .next()
+        .expect("stream-argument fixture has six cases");
     StreamArgumentCompiledFixture {
-        assembly: Arc::new(package_fixture.records.assembly),
+        assembly: Arc::new(first_case.records.assembly),
         artifact_root: runtime_artifacts,
-        entrypoints: package_fixture.entrypoints,
+        entrypoint: first_case.entrypoint,
         _temp: temp,
     }
 }

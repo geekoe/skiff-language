@@ -178,7 +178,7 @@ const hostBoundaryTarget = {
     ],
     [
       'skiff-runtime-native-contract',
-      'host still consumes native contract metadata during current request and package-test assembly',
+      'host still consumes native contract metadata during current request and test-service assembly',
     ],
     [
       'skiff-runtime-linked-type-plan',

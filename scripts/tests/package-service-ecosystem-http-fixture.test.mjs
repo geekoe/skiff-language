@@ -67,10 +67,12 @@ test('owned WebSocket source fixtures use private current connect authoring', as
     ],
   ]) {
     const root = join('test-runner', 'fixtures', name);
-    const [actualApi, service, websocket, source] = await Promise.all([
+    const [actualApi, service, http, websocket, config, source] = await Promise.all([
       readFile(join(root, 'api.yml'), 'utf8'),
       readFile(join(root, 'service.yml'), 'utf8'),
+      readFile(join(root, 'http.yml'), 'utf8'),
       readFile(join(root, 'websocket.yml'), 'utf8'),
+      readFile(join(root, 'config.skiff-test.yml'), 'utf8'),
       readFile(join(root, 'main.skiff'), 'utf8'),
     ]);
     assert.equal(actualApi, api, `${name} API`);
@@ -81,6 +83,20 @@ kind: test
 `,
       `${name} service authoring`,
     );
+    assert.equal(
+      http,
+      `probe:
+  method: POST
+  path: /probe
+  kind: typedJson
+  handler: main.__skiffHttpProbe
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+`,
+      `${name} HTTP authoring`,
+    );
+    assert.match(config, /^  maxConcurrency: 2$/m, `${name} test-service concurrency`);
     assert.equal(
       websocket,
       `path: /socket
@@ -108,14 +124,14 @@ connect:
   }
 });
 
-test('v2 receipt accepts exactly the package-test and probe HTTP gateways', () => {
+test('v3 receipt accepts exactly the test-service and probe HTTP gateways', () => {
   const receipt = validSmokeFixtureReceipt(ENVIRONMENT);
   const decoded = readPackageServiceFixtureReceipt(
     JSON.stringify(receipt),
     ENVIRONMENT,
   );
 
-  assert.equal(decoded.schemaVersion, 'skiff-package-service-smoke-fixture-v2');
+  assert.equal(decoded.schemaVersion, 'skiff-package-service-smoke-fixture-v3');
   assert.equal(decoded.candidate.entrypoints.length, 2);
   assert.deepEqual(
     decoded.candidate.entrypoints.map((entrypoint) => ({
@@ -129,9 +145,8 @@ test('v2 receipt accepts exactly the package-test and probe HTTP gateways', () =
         identity: smokeFixtureIdentities.packageTestGateway,
         selector: {
           protocol: 'http',
-          host: 'case-0.package-test.skiff.localhost',
           method: 'POST',
-          path: '/__skiff/package-test/0',
+          path: '/__skiff/test/0',
         },
       },
       {
@@ -139,7 +154,6 @@ test('v2 receipt accepts exactly the package-test and probe HTTP gateways', () =
         identity: smokeFixtureIdentities.smokeProbeGateway,
         selector: {
           protocol: 'http',
-          host: 'ecosystem-smoke.skiff.localhost',
           method: 'POST',
           path: '/probe',
         },
@@ -148,11 +162,14 @@ test('v2 receipt accepts exactly the package-test and probe HTTP gateways', () =
   );
 });
 
-test('v1 and retired contract or operation fields fail closed without dual-read', () => {
+test('retired receipt schemas and entrypoint fields fail closed without dual-read', () => {
   const cases = [];
   const v1 = validSmokeFixtureReceipt(ENVIRONMENT);
   v1.schemaVersion = 'skiff-package-service-smoke-fixture-v1';
   cases.push(['v1 schema', v1]);
+  const v2 = validSmokeFixtureReceipt(ENVIRONMENT);
+  v2.schemaVersion = 'skiff-package-service-smoke-fixture-v2';
+  cases.push(['v2 schema', v2]);
 
   const contract = validSmokeFixtureReceipt(ENVIRONMENT);
   contract.candidate.entrypoints[0].contract = {

@@ -66,7 +66,7 @@ test('Cargo owns the current ungated integration targets and no recursive wrappe
   const targets = manifest.split('[[test]]').slice(1).map(parseTestTarget);
 
   assert.deepEqual(targets, [
-    { name: 'package_service_contract_deployment' },
+    { name: 'test_service_flow' },
     { name: 'canonical_std_seed_bootstrap' },
     { name: 'http_entry_test_service' },
   ]);

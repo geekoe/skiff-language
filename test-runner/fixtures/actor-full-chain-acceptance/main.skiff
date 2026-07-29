@@ -19,3 +19,7 @@ function marker() -> string {
   const counter = std.actor.getOrCreate<Counter>("shared", { count: 0 })
   return counter.increment()
 }
+
+function __skiffHttpProbe(body: null) -> string {
+  return marker()
+}

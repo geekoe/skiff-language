@@ -8,7 +8,8 @@ import {
 } from '../lib/package-service-http-unary.mjs';
 import { encodeRuntimePayload } from '../lib/runtime-payload-codec.mjs';
 
-const WIRE_HOST = 'ecosystem-smoke.skiff.localhost';
+const SERVICE_ID = 'test.skiff/package-service-http-unary';
+const SERVICE_VERSION = '1.0.0';
 
 test('HTTP unary client preserves a bounded successful raw body', async () => {
   const encoded = encodeRuntimePayload('raw-success', { type: 'string' });
@@ -16,7 +17,8 @@ test('HTTP unary client preserves a bounded successful raw body', async () => {
   try {
     const response = await requestPackageServiceHttpUnary({
       url: `${server.origin}/probe`,
-      host: WIRE_HOST,
+      serviceId: SERVICE_ID,
+      serviceVersion: SERVICE_VERSION,
       signal: new AbortController().signal,
     });
     assert.deepEqual(response, {
@@ -28,7 +30,8 @@ test('HTTP unary client preserves a bounded successful raw body', async () => {
     assert.deepEqual(server.requests, [{
       method: 'POST',
       url: '/probe',
-      host: WIRE_HOST,
+      serviceId: SERVICE_ID,
+      serviceVersion: SERVICE_VERSION,
     }]);
   } finally {
     await server.close();
@@ -44,7 +47,8 @@ test('HTTP unary client rejects a truncated oversized 200 body', async () => {
     await assert.rejects(
       requestPackageServiceHttpUnary({
         url: `${server.origin}/probe`,
-        host: WIRE_HOST,
+        serviceId: SERVICE_ID,
+        serviceVersion: SERVICE_VERSION,
         signal: new AbortController().signal,
       }),
       /package-service HTTP unary response exceeded 512 bytes/,
@@ -61,16 +65,15 @@ test('HTTP unary client reports exact non-200 wire metadata', async () => {
     await assert.rejects(
       requestPackageServiceHttpUnary({
         url: `${server.origin}/probe`,
-        host: WIRE_HOST,
+        serviceId: SERVICE_ID,
+        serviceVersion: SERVICE_VERSION,
         signal: new AbortController().signal,
       }),
       (error) => {
         assert.match(error.message, /method=POST/);
         assert.match(error.message, new RegExp(`url=${server.origin}/probe`));
-        assert.match(
-          error.message,
-          new RegExp(`wireHost=${WIRE_HOST.replaceAll('.', '\\.')}`),
-        );
+        assert.match(error.message, new RegExp(`serviceId=${SERVICE_ID.replaceAll('.', '\\.')}`));
+        assert.match(error.message, /serviceVersion=1\.0\.0/);
         assert.match(error.message, /status=404/);
         assert.match(error.message, /responseBody="not found"/);
         assert.match(error.message, /responseBodyBytes=9/);
@@ -92,7 +95,8 @@ test('HTTP unary client bounds and redacts non-200 response diagnostics', async 
     await assert.rejects(
       requestPackageServiceHttpUnary({
         url: `${server.origin}/probe`,
-        host: WIRE_HOST,
+        serviceId: SERVICE_ID,
+        serviceVersion: SERVICE_VERSION,
         signal: new AbortController().signal,
       }),
       (error) => {
@@ -153,7 +157,8 @@ async function listenUnaryServer({ status, body }) {
     requests.push({
       method: request.method,
       url: request.url,
-      host: request.headers.host,
+      serviceId: request.headers['x-skiff-service'],
+      serviceVersion: request.headers['x-skiff-version'],
     });
     response.statusCode = status;
     response.end(body);

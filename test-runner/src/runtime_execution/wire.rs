@@ -12,7 +12,7 @@ use crate::canonical_fixture::CanonicalFixtureError;
 const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PackageTestDispatchOutcome {
+pub(super) enum TestDispatchOutcome {
     Passed,
     Failed(String),
 }
@@ -63,10 +63,10 @@ pub(super) enum ReplicaState {
     Disconnected,
 }
 
-pub(super) fn decode_package_test_dispatch_response(
+pub(super) fn decode_test_dispatch_response(
     body: &str,
-) -> Result<PackageTestDispatchOutcome, CanonicalFixtureError> {
-    decode_package_test_dispatch_response_inner(body)
+) -> Result<TestDispatchOutcome, CanonicalFixtureError> {
+    decode_test_dispatch_response_inner(body)
         .map_err(|message| wire_error("runtime test dispatch response", message))
 }
 
@@ -89,9 +89,7 @@ pub(super) fn decode_health_snapshot(body: &str) -> Result<HealthSnapshot, Canon
         .map_err(|message| wire_error("router health response", message))
 }
 
-fn decode_package_test_dispatch_response_inner(
-    body: &str,
-) -> Result<PackageTestDispatchOutcome, String> {
+fn decode_test_dispatch_response_inner(body: &str) -> Result<TestDispatchOutcome, String> {
     let value = decode_json(body, "runtime test dispatch response")?;
     let root = exact_object(
         &value,
@@ -105,8 +103,8 @@ fn decode_package_test_dispatch_response_inner(
         .as_object()
         .ok_or_else(|| "runtime test dispatch response.header must be an object".to_string())?;
     match string_field(header, "type", "runtime test dispatch response.header")? {
-        "response.end" => decode_package_test_success(root, header_value),
-        "response.error" => decode_package_test_failure(root, header_value),
+        "response.end" => decode_test_success(root, header_value),
+        "response.error" => decode_test_failure(root, header_value),
         _ => Err(
             "runtime test dispatch response.header.type must be response.end or response.error"
                 .to_string(),
@@ -114,10 +112,10 @@ fn decode_package_test_dispatch_response_inner(
     }
 }
 
-fn decode_package_test_success(
+fn decode_test_success(
     root: &Map<String, Value>,
     header_value: &Value,
-) -> Result<PackageTestDispatchOutcome, String> {
+) -> Result<TestDispatchOutcome, String> {
     let header = exact_object(
         header_value,
         &[
@@ -165,13 +163,13 @@ fn decode_package_test_success(
             "payloadBase64 must be the canonical Base64 encoding of exact null".to_string(),
         );
     }
-    Ok(PackageTestDispatchOutcome::Passed)
+    Ok(TestDispatchOutcome::Passed)
 }
 
-fn decode_package_test_failure(
+fn decode_test_failure(
     root: &Map<String, Value>,
     header_value: &Value,
-) -> Result<PackageTestDispatchOutcome, String> {
+) -> Result<TestDispatchOutcome, String> {
     let header = header_value
         .as_object()
         .ok_or_else(|| "runtime test dispatch response.header must be an object".to_string())?;
@@ -189,7 +187,7 @@ fn decode_package_test_failure(
 fn decode_control_dispatch_failure(
     root: &Map<String, Value>,
     header_value: &Value,
-) -> Result<PackageTestDispatchOutcome, String> {
+) -> Result<TestDispatchOutcome, String> {
     let header = exact_object(
         header_value,
         &["schemaVersion", "type", "requestId", "errorKind", "error"],
@@ -214,15 +212,13 @@ fn decode_control_dispatch_failure(
     if string_field(root, "payloadBase64", "runtime test dispatch response")? != "" {
         return Err("control response.error payloadBase64 must be empty".to_string());
     }
-    Ok(PackageTestDispatchOutcome::Failed(format!(
-        "{code}: {message}"
-    )))
+    Ok(TestDispatchOutcome::Failed(format!("{code}: {message}")))
 }
 
 fn decode_fixed_dispatch_failure(
     root: &Map<String, Value>,
     header_value: &Value,
-) -> Result<PackageTestDispatchOutcome, String> {
+) -> Result<TestDispatchOutcome, String> {
     let header = exact_object(
         header_value,
         &["schemaVersion", "type", "requestId", "errorKind"],
@@ -254,7 +250,7 @@ fn decode_fixed_dispatch_failure(
             ..
         } => format!("fixed service error {}", builtin_error_identity.symbol()),
     };
-    Ok(PackageTestDispatchOutcome::Failed(message))
+    Ok(TestDispatchOutcome::Failed(message))
 }
 
 fn validate_error_header_prefix(header: &Map<String, Value>) -> Result<(), String> {

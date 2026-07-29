@@ -68,14 +68,13 @@ fn activation_request_preserves_dev_target_environment() {
 }
 
 #[test]
-fn package_test_control_body_is_the_exact_f385_http_request() {
-    let entrypoint = package_test_entrypoint();
+fn test_service_control_body_is_the_exact_http_request() {
+    let entrypoint = test_service_entrypoint();
     let assembly = RuntimeAssemblyRef {
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
     };
 
-    let body =
-        package_test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).unwrap();
+    let body = test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(
@@ -102,14 +101,14 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
                 "ingress": {
                     "protocol": "http",
                     "method": "POST",
-                    "path": "/__skiff/package-test/0",
+                    "path": "/__skiff/test/0",
                 },
             },
             "mode": "unary",
             "httpRequest": {
                 "method": "POST",
-                "url": "http://127.0.0.1:46123/__skiff/package-test/0",
-                "path": "/__skiff/package-test/0",
+                "url": "http://127.0.0.1:46123/__skiff/test/0",
+                "path": "/__skiff/test/0",
                 "query": [],
                 "headers": [{
                     "name": "content-type",
@@ -135,21 +134,17 @@ fn package_test_control_body_is_the_exact_f385_http_request() {
 }
 
 #[test]
-fn package_test_control_body_rejects_non_http_or_methodless_selectors() {
+fn test_service_control_body_rejects_non_http_or_methodless_selectors() {
     let assembly = RuntimeAssemblyRef {
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
     };
-    let mut entrypoint = package_test_entrypoint();
+    let mut entrypoint = test_service_entrypoint();
     entrypoint.selector.protocol = IngressProtocol::WebSocket;
-    assert!(
-        package_test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err()
-    );
+    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err());
 
     entrypoint.selector.protocol = IngressProtocol::Http;
     entrypoint.selector.method = None;
-    assert!(
-        package_test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err()
-    );
+    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err());
 }
 
 #[test]
@@ -329,10 +324,10 @@ fn non_success_control_response_requires_and_preserves_typed_error_identity() {
     assert!(matches!(malformed, CanonicalFixtureError::Wire { .. }));
 }
 
-fn three_entrypoints() -> Vec<CanonicalPackageTestEntrypoint> {
+fn three_entrypoints() -> Vec<CanonicalTestServiceEntrypoint> {
     (1..=3)
         .map(|index| {
-            let mut entrypoint = package_test_entrypoint();
+            let mut entrypoint = test_service_entrypoint();
             entrypoint.case.name = format!("case {index}");
             entrypoint
         })
@@ -378,10 +373,10 @@ fn valid_business_success_response() -> String {
     .to_string()
 }
 
-fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {
+fn test_service_entrypoint() -> CanonicalTestServiceEntrypoint {
     let source = "test \"control body\" { assert true }\n";
-    CanonicalPackageTestEntrypoint {
-        case: PackageTestCase {
+    CanonicalTestServiceEntrypoint {
+        case: TestServiceCase {
             case_identity: "main::test[0]".to_string(),
             relative_path: "main.test.skiff".into(),
             module_path: "main".to_string(),
@@ -394,7 +389,7 @@ fn package_test_entrypoint() -> CanonicalPackageTestEntrypoint {
         selector: skiff_artifact_model::IngressSelector {
             protocol: IngressProtocol::Http,
             method: Some("POST".to_string()),
-            path: "/__skiff/package-test/0".to_string(),
+            path: "/__skiff/test/0".to_string(),
         },
         deployment: serde_json::from_value(serde_json::json!({
             "serviceId": "test.skiff/package/example",

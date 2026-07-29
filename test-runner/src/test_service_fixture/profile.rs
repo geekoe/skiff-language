@@ -38,7 +38,7 @@ pub(super) fn selected_profile_bindings(
                 resource_bindings: deployment.resource_bindings.clone(),
                 policy: deployment.policy.clone(),
             })
-            .unwrap_or_else(default_package_test_policy));
+            .unwrap_or_else(default_test_service_policy));
     };
     let config = profile_map::<serde_json::Value>(test_service, "config")?;
     let secrets = profile_map::<String>(test_service, "secrets")?;
@@ -121,7 +121,7 @@ fn reject_reserved_test_ingress_binding(
     Ok(())
 }
 
-fn default_package_test_policy() -> SelectedProfileBindings {
+fn default_test_service_policy() -> SelectedProfileBindings {
     SelectedProfileBindings {
         config_literals: Vec::new(),
         secret_refs: Vec::new(),

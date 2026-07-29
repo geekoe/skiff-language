@@ -14,6 +14,7 @@ thread_local! {
 }
 
 mod canonical_dependencies;
+mod test_service;
 
 pub(crate) fn compile(
     input: &PackageCompileInput<'_>,
@@ -27,22 +28,6 @@ pub(crate) fn compile(
         resolved_package_schemas,
         canonical_artifact_store,
     )?;
-    if let Some(overlay) = &input.package.test_overlay {
-        let manifest = &input.package.manifest;
-        if overlay.production.package_id != manifest.id.as_str()
-            || overlay.production.package_version != manifest.version
-        {
-            return Err(PackageCompileError::ContractValidation {
-                message: format!(
-                    "test overlay production coordinate {}@{} does not match source package {}@{}",
-                    overlay.production.package_id,
-                    overlay.production.package_version,
-                    manifest.id,
-                    manifest.version
-                ),
-            });
-        }
-    }
     let model = build(
         input,
         &canonical_dependencies.analysis,
@@ -69,7 +54,7 @@ fn build<'a>(
     dependency_analysis: &SourceDependencyAnalysisInput,
     type_resolution_artifacts: &[skiff_artifact_model::PackageArtifact],
 ) -> Result<PackageSourceModel, PackageCompileError> {
-    let production_sources = input.package.compile_sources();
+    let production_sources = test_service::compile_sources(input)?;
     let parsed_sources = skiff_compiler_source::parsed_sources::parse_publication_sources(
         &input.package.source_tree.root,
         &production_sources,

@@ -13,7 +13,7 @@ use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
 use skiff_artifact_model::*;
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
-    compile_contract, CompilerPlatformSources, ServiceContractDefinition,
+    compile_contract, CompilerPlatformSources, PublishedPackageArtifact, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText,
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, ServiceContractPointer};
@@ -34,10 +34,8 @@ use skiff_runtime_model::{
     },
 };
 use skiff_test_runner::{
-    canonical_fixture::discover_package_test_cases,
-    canonical_package::compile_package_project,
-    canonical_std_seed::seed_canonical_std,
-    test_overlay::{compile_package_test_overlay, PublishedPackageTestOverlay},
+    canonical_fixture::discover_test_service_cases,
+    canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
 };
 
 use crate::{
@@ -1038,15 +1036,12 @@ async fn source_inline_service_effect_sequence_typed_throw_is_caught_then_respon
 
     let consumer = fixture.child("consumer");
     write_consumer_package(&consumer);
-    let project = compile_package_project(&platform_sources, &consumer, &artifacts)
-        .expect("consumer source package compile");
-    let cases = discover_package_test_cases(&consumer, &consumer, false).expect("test discovery");
+    let project = compile_package_project_for_test(&platform_sources, &consumer, &artifacts)
+        .expect("consumer test service compile");
+    let cases = discover_test_service_cases(&consumer, &consumer, false).expect("test discovery");
     assert_eq!(cases.len(), 1);
-    let overlay =
-        compile_package_test_overlay(&platform_sources, &consumer, &artifacts, &project, &cases)
-            .expect("source test overlay compile and lower");
-    assert_throw_lowered_to_exact_package_symbol(&overlay);
-    execute_overlay_case(&store, &overlay, &project.dependency_packages);
+    assert_throw_lowered_to_exact_package_symbol(&project.package, &project.dependency_packages);
+    execute_compiled_test_case(&store, &project.package, &project.dependency_packages);
 }
 
 #[tokio::test]
@@ -1058,17 +1053,14 @@ async fn source_inline_compiler_owned_std_effect_replaces_the_exact_package_call
 
     let consumer = fixture.child("consumer");
     write_std_effect_consumer_package(&consumer);
-    let project = compile_package_project(&platform_sources, &consumer, &artifacts)
-        .expect("std effect consumer source package compile");
-    let cases = discover_package_test_cases(&consumer, &consumer, false).expect("test discovery");
+    let project = compile_package_project_for_test(&platform_sources, &consumer, &artifacts)
+        .expect("std effect consumer test service compile");
+    let cases = discover_test_service_cases(&consumer, &consumer, false).expect("test discovery");
     assert_eq!(cases.len(), 1);
-    let overlay =
-        compile_package_test_overlay(&platform_sources, &consumer, &artifacts, &project, &cases)
-            .expect("compiler-owned std effect overlay compile and lower");
 
     let request_callable = PackageCallableId::new("pkg-callable:skiff.run/std:std.http.request");
-    let std_calls = overlay
-        .overlay
+    let std_calls = project
+        .package
         .file_ir_units
         .iter()
         .flat_map(|file| &file.unit.executables)
@@ -1095,8 +1087,8 @@ async fn source_inline_compiler_owned_std_effect_replaces_the_exact_package_call
         std_calls, 1,
         "the production call must use the exact std package callable"
     );
-    let registrations = overlay
-        .overlay
+    let registrations = project
+        .package
         .file_ir_units
         .iter()
         .flat_map(|file| &file.unit.executables)
@@ -1121,62 +1113,73 @@ async fn source_inline_compiler_owned_std_effect_replaces_the_exact_package_call
     );
 
     let store = CanonicalArtifactStore::open(&artifacts).expect("canonical store");
-    execute_overlay_case(&store, &overlay, &project.dependency_packages);
+    execute_compiled_test_case(&store, &project.package, &project.dependency_packages);
 }
 
-fn execute_overlay_case(
+fn execute_compiled_test_case(
     store: &CanonicalArtifactStore,
-    overlay: &PublishedPackageTestOverlay,
+    test_service: &PublishedPackageArtifact,
     dependencies: &[PackageArtifact],
 ) {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
-            .name("source-inline-overlay".to_string())
+            .name("source-inline-test-service".to_string())
             .stack_size(16 * 1024 * 1024)
             .spawn_scoped(scope, || {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("source inline overlay test runtime")
-                    .block_on(execute_hydrated_overlay_case(store, overlay, dependencies));
+                    .expect("source inline test-service runtime")
+                    .block_on(execute_hydrated_test_service_case(
+                        store,
+                        test_service,
+                        dependencies,
+                    ));
             })
-            .expect("source inline overlay test thread")
+            .expect("source inline test-service thread")
             .join()
-            .expect("source inline overlay test thread should finish");
+            .expect("source inline test-service thread should finish");
     });
 }
 
-async fn execute_hydrated_overlay_case(
+async fn execute_hydrated_test_service_case(
     store: &CanonicalArtifactStore,
-    overlay: &PublishedPackageTestOverlay,
+    test_service: &PublishedPackageArtifact,
     dependencies: &[PackageArtifact],
 ) {
-    let mut packages = vec![overlay.overlay.artifact.clone()];
+    let mut packages = vec![test_service.artifact.clone()];
     packages.extend(dependencies.iter().cloned());
     let assembly = package_link_fixture(&packages);
-    let overlay_ref =
-        package_artifact_ref(&overlay.overlay.artifact).expect("overlay package reference");
-    let binding = overlay.bindings.first().expect("one test binding");
-    let callable = overlay
-        .overlay
+    let test_service_ref =
+        package_artifact_ref(&test_service.artifact).expect("test-service package reference");
+    let PackageLocalAbiSymbol::Callable { callable_id, .. } = test_service
+        .artifact
+        .package_local_abi
+        .implementation_symbols
+        .get("main.__test.skiffTestCase0")
+        .expect("compiled test-service case callable")
+    else {
+        panic!("compiled test-service case symbol must be callable")
+    };
+    let callable = test_service
         .artifact
         .callable_links
-        .get(&binding.callable_id)
+        .get(callable_id)
         .expect("test callable link");
-    let hydrated = hydrate_packages(store, overlay, dependencies);
+    let hydrated = hydrate_packages(store, test_service, dependencies);
     let image =
         skiff_runtime_linker::link_package_fixture_from_runtime_assembly(&assembly, hydrated)
-            .expect("fully hydrated source overlay packages should link");
+            .expect("fully hydrated test-service packages should link");
     let caller_addr = image
         .shared_packages()
-        .code_by_build(&overlay_ref.package_build_id)
-        .expect("overlay code slot")
+        .code_by_build(&test_service_ref.package_build_id)
+        .expect("test-service code slot")
         .executable_addr(&callable.target)
         .expect("test callable executable address");
 
     let activation = activation_context(
         assembly.assembly_identity,
-        overlay_ref.package_build_id.clone(),
+        test_service_ref.package_build_id.clone(),
     );
     let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(TestResolver {
         activation: Arc::clone(&activation),
@@ -1184,7 +1187,7 @@ async fn execute_hydrated_overlay_case(
     let request =
         RequestActivationContext::begin(activation).expect("test request generation should begin");
     let eval_target = RuntimeAssemblyEvalTarget::new(image, request, resolver)
-        .expect("linked source overlay should form an eval target");
+        .expect("linked test service should form an eval target");
     let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
         Default::default(),
         test_runtime::runtime_factory(),
@@ -1259,14 +1262,15 @@ fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
     }
 }
 
-fn assert_throw_lowered_to_exact_package_symbol(overlay: &PublishedPackageTestOverlay) {
-    let error_dependency = overlay
-        .dependency_packages
+fn assert_throw_lowered_to_exact_package_symbol(
+    test_service: &PublishedPackageArtifact,
+    dependencies: &[PackageArtifact],
+) {
+    let error_dependency = dependencies
         .iter()
         .find(|package| package.package_id == ERROR_PACKAGE_ID)
         .expect("error dependency package");
-    let payload_types = overlay
-        .overlay
+    let payload_types = test_service
         .file_ir_units
         .iter()
         .flat_map(|file| &file.unit.executables)
@@ -1364,27 +1368,25 @@ fn package_link_fixture(packages: &[PackageArtifact]) -> RuntimeAssembly {
 
 fn hydrate_packages(
     store: &CanonicalArtifactStore,
-    overlay: &PublishedPackageTestOverlay,
+    test_service: &PublishedPackageArtifact,
     dependencies: &[PackageArtifact],
 ) -> Vec<HydratedPackageCode> {
-    let overlay_schema_records = overlay
-        .overlay
+    let test_service_schema_records = test_service
         .package_schema_type_records
         .iter()
         .map(|(type_id, record)| (type_id.clone(), Arc::new(record.clone())))
         .collect();
     let mut hydrated = vec![HydratedPackageCode::new(
-        Arc::new(overlay.overlay.artifact.clone()),
-        overlay
-            .overlay
+        Arc::new(test_service.artifact.clone()),
+        test_service
             .file_ir_units
             .iter()
             .map(|file| Arc::new(file.unit.clone()))
             .collect(),
         PublicationResourceTable::default(),
     )
-    .with_schema_index(Arc::new(overlay.overlay.package_schema_index.clone()))
-    .with_schema_records(overlay_schema_records)];
+    .with_schema_index(Arc::new(test_service.package_schema_index.clone()))
+    .with_schema_records(test_service_schema_records)];
     hydrated.extend(dependencies.iter().map(|package| {
         let reference = package_artifact_ref(package).expect("dependency package reference");
         let files = package
@@ -1447,6 +1449,7 @@ services:
         ),
     )
     .expect("consumer manifest");
+    write_test_service_controls(root, "example.com/typed-effect-consumer-tests");
     fs::write(root.join("api.yml"), "{}\n").expect("consumer API");
     fs::write(
         root.join("main.skiff"),
@@ -1494,6 +1497,7 @@ fn write_std_effect_consumer_package(root: &Path) {
         "id: example.com/std-effect-consumer\nversion: 1.0.0\n",
     )
     .expect("std effect consumer manifest");
+    write_test_service_controls(root, "example.com/std-effect-consumer-tests");
     fs::write(root.join("api.yml"), "{}\n").expect("std effect consumer API");
     fs::write(
         root.join("main.skiff"),
@@ -1534,6 +1538,26 @@ test "compiler-owned std request is replaced by exact package identity" effects 
 "#,
     )
     .expect("std effect consumer test source");
+}
+
+fn write_test_service_controls(root: &Path, service_id: &str) {
+    fs::write(
+        root.join("service.yml"),
+        format!("id: {service_id}\nkind: test\n"),
+    )
+    .expect("test service manifest");
+    fs::write(
+        root.join("config.skiff-test.yml"),
+        r#"timeout: 30000
+quota:
+  cpuMillis: 100
+  memoryBytes: 67108864
+principal: test:runtime-eval
+lifecycle:
+  maxConcurrency: 1
+"#,
+    )
+    .expect("test service profile");
 }
 
 fn repository_platform_sources() -> CompilerPlatformSources {

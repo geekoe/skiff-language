@@ -16,8 +16,7 @@ use super::{
 };
 use crate::canonical_package::{compile_package_project, compile_package_project_for_test};
 use crate::{
-    canonical_fixture::discover_package_test_cases, canonical_std_seed::seed_canonical_std,
-    test_overlay::compile_package_test_overlay,
+    canonical_fixture::discover_test_service_cases, canonical_std_seed::seed_canonical_std,
 };
 
 // Explicit F18 identity probe pins refreshed with the current canonical std
@@ -171,33 +170,21 @@ fn p5_f76_contextual_callable_provenance_combined() {
         assert!(project.dependency_packages.iter().any(|dependency| {
             dependency.package_build_id == production.package.artifact.package_build_id
         }));
-        let cases = discover_package_test_cases(&test_root, &test_root, false).unwrap();
+        let cases = discover_test_service_cases(&test_root, &test_root, false).unwrap();
         assert!(
             !cases.is_empty(),
             "{package} current tests/{package} service root selected zero cases"
         );
-        let overlay = compile_package_test_overlay(
-            &platform_sources,
-            &test_root,
-            &artifacts,
-            &project,
-            &cases,
-        )
-        .unwrap();
-        assert_eq!(
-            overlay.bindings.len(),
-            cases.len(),
-            "{package} current test-service cases must map one-to-one to overlay bindings"
-        );
-        for (index, binding) in overlay.bindings.iter().enumerate() {
-            assert_eq!(binding.public_path, format!("testCases.case{index}"));
+        for case in &cases {
+            let gateway = format!("{}.{}Gateway", case.module_path, case.function_name);
             assert!(
-                overlay
-                    .overlay
+                project
+                    .package
                     .artifact
-                    .callable_semantic_facts
-                    .contains_key(&binding.callable_id),
-                "{package} {index} omitted callable semantic facts"
+                    .package_local_abi
+                    .implementation_symbols
+                    .contains_key(&gateway),
+                "{package} omitted ordinary private gateway {gateway}"
             );
         }
     }

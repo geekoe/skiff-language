@@ -10,16 +10,26 @@ const RUNTIME_PAYLOAD_STRING_SCHEMA = Object.freeze({ type: 'string' });
 export async function requestPackageServiceHttpUnary({
   method = 'POST',
   url,
-  host,
+  serviceId,
+  serviceVersion,
   signal,
 }) {
   assert.equal(method, 'POST', 'package-service HTTP unary request must use POST');
   assert.equal(
-    typeof host,
+    typeof serviceId,
     'string',
-    'package-service HTTP unary Host must be a string',
+    'package-service HTTP unary serviceId must be a string',
   );
-  assert.ok(host.length > 0, 'package-service HTTP unary Host must not be empty');
+  assert.ok(serviceId.length > 0, 'package-service HTTP unary serviceId must not be empty');
+  assert.equal(
+    typeof serviceVersion,
+    'string',
+    'package-service HTTP unary serviceVersion must be a string',
+  );
+  assert.ok(
+    serviceVersion.length > 0,
+    'package-service HTTP unary serviceVersion must not be empty',
+  );
   const target = new URL(url);
   assert.equal(
     target.protocol,
@@ -29,7 +39,10 @@ export async function requestPackageServiceHttpUnary({
   const response = await new Promise((resolveResponse, rejectResponse) => {
     const request = requestHttp(target, {
       method,
-      headers: { Host: host },
+      headers: {
+        'x-skiff-service': serviceId,
+        'x-skiff-version': serviceVersion,
+      },
       signal,
     }, resolveResponse);
     request.once('error', rejectResponse);
@@ -42,7 +55,7 @@ export async function requestPackageServiceHttpUnary({
     bodyBytes: body.bytes,
     bodyTruncated: body.truncated,
   };
-  assertHttpUnarySuccess({ method, url, host }, result);
+  assertHttpUnarySuccess({ method, url, serviceId, serviceVersion }, result);
   return result;
 }
 
@@ -95,7 +108,8 @@ function assertHttpUnarySuccess(request, response) {
     'package-service HTTP unary request failed',
     `method=${request.method}`,
     `url=${request.url}`,
-    `wireHost=${request.host}`,
+    `serviceId=${request.serviceId}`,
+    `serviceVersion=${request.serviceVersion}`,
     `status=${response.status}`,
     `responseBody=${JSON.stringify(body.value)}`,
     `responseBodyBytes=${response.bodyBytes ?? response.body?.byteLength ?? 0}`,

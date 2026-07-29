@@ -2,16 +2,15 @@ use super::super::test_support::*;
 use super::*;
 
 #[test]
-fn package_test_dispatch_response_requires_canonical_response_end_and_null_payload() {
+fn test_dispatch_response_requires_canonical_response_end_and_null_payload() {
     assert_eq!(
-        decode_package_test_dispatch_response(&valid_package_test_dispatch_response().to_string())
-            .unwrap(),
-        PackageTestDispatchOutcome::Passed
+        decode_test_dispatch_response(&valid_test_dispatch_response().to_string()).unwrap(),
+        TestDispatchOutcome::Passed
     );
 
     let mut mutations = Vec::new();
     let mut mutate = |name: &'static str, update: fn(&mut Value)| {
-        let mut response = valid_package_test_dispatch_response();
+        let mut response = valid_test_dispatch_response();
         update(&mut response);
         mutations.push((name, response));
     };
@@ -55,14 +54,14 @@ fn package_test_dispatch_response_requires_canonical_response_end_and_null_paylo
 
     for (name, response) in mutations {
         assert!(
-            decode_package_test_dispatch_response(&response.to_string()).is_err(),
+            decode_test_dispatch_response(&response.to_string()).is_err(),
             "response mutation {name} was accepted"
         );
     }
 }
 
 #[test]
-fn package_test_dispatch_typed_control_error_is_a_business_failure() {
+fn test_dispatch_typed_control_error_is_a_business_failure() {
     let response = serde_json::json!({
         "ok": true,
         "header": {
@@ -79,15 +78,15 @@ fn package_test_dispatch_typed_control_error_is_a_business_failure() {
     });
 
     assert_eq!(
-        decode_package_test_dispatch_response(&response.to_string()).unwrap(),
-        PackageTestDispatchOutcome::Failed(
+        decode_test_dispatch_response(&response.to_string()).unwrap(),
+        TestDispatchOutcome::Failed(
             "UnhandledServiceError: unhandled request-local user exception".to_string()
         )
     );
 }
 
 #[test]
-fn package_test_dispatch_typed_fixed_error_is_a_business_failure() {
+fn test_dispatch_typed_fixed_error_is_a_business_failure() {
     let payload = serde_json::to_vec(&serde_json::json!({
         "kind": "internalError",
         "payload": {
@@ -109,13 +108,13 @@ fn package_test_dispatch_typed_fixed_error_is_a_business_failure() {
     });
 
     assert_eq!(
-        decode_package_test_dispatch_response(&response.to_string()).unwrap(),
-        PackageTestDispatchOutcome::Failed("Internal service error".to_string())
+        decode_test_dispatch_response(&response.to_string()).unwrap(),
+        TestDispatchOutcome::Failed("Internal service error".to_string())
     );
 }
 
 #[test]
-fn package_test_dispatch_malformed_error_frame_is_a_wire_failure() {
+fn test_dispatch_malformed_error_frame_is_a_wire_failure() {
     let response = serde_json::json!({
         "ok": true,
         "header": {
@@ -132,7 +131,7 @@ fn package_test_dispatch_malformed_error_frame_is_a_wire_failure() {
     });
 
     assert!(matches!(
-        decode_package_test_dispatch_response(&response.to_string()),
+        decode_test_dispatch_response(&response.to_string()),
         Err(CanonicalFixtureError::Wire { .. })
     ));
 }
@@ -455,7 +454,7 @@ fn replica_connection_lifecycle_count_mutations_fail_closed() {
     }
 }
 
-fn valid_package_test_dispatch_response() -> Value {
+fn valid_test_dispatch_response() -> Value {
     serde_json::json!({
         "ok": true,
         "header": {

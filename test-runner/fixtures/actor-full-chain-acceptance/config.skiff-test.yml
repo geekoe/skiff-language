@@ -2,6 +2,6 @@ timeout: 30000
 quota:
   cpuMillis: 500
   memoryBytes: 268435456
-principal: service:test.skiff/package-service-websocket-smoke
+principal: service:test.skiff/actor-full-chain-acceptance
 lifecycle:
   maxConcurrency: 2

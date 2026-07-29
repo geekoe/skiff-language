@@ -20,8 +20,8 @@ name = "skiff-package-service-smoke-fixture"
 path = "src/bin/package_service_smoke_fixture.rs"
 
 [[test]]
-name = "package_service_contract_deployment"
-path = "tests/package_service_contract_deployment.rs"
+name = "test_service_flow"
+path = "tests/test_service_flow.rs"
 
 [[test]]
 name = "canonical_std_seed_bootstrap"
