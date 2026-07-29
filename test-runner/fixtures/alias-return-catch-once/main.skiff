@@ -1,5 +1,19 @@
 import std
 
+type Box {
+  value: string
+}
+
+function makeBox(value: string) -> Box {
+  return Box { value: value }
+}
+
+impl Box {
+  function read(self: Box) -> string {
+    return self.value
+  }
+}
+
 function alias(value: bytes) -> bytes {
   return value
 }

@@ -7,6 +7,7 @@ use common::{
     package_project::{compile_package_project, compile_service_package_project},
     TestDir,
 };
+use skiff_artifact_model::PackageLocalAbiSymbol;
 use skiff_compiler_input::package_config::read_user_package_manifest;
 use skiff_syntax::parser::parse_source;
 
@@ -466,6 +467,161 @@ function privateOnly() -> string {
         error.contains("has no callable public path `internal.codec.privateOnly`"),
         "{error}"
     );
+}
+
+#[test]
+fn test_service_top_level_alias_executes_exact_package_receiver_method() {
+    let temp = TestDir::new("skiff-compiler", "top-level-alias-package-receiver");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/box-tests
+version: 1.0.0
+packages:
+  - id: example.com/box
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        "id: example.com/box-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import subjectImpl
+
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.read()
+}
+"#,
+    )
+    .unwrap();
+
+    let dependency = temp
+        .path()
+        .join(".skiff-packages/example~com~~box/1.0.0");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.yml"),
+        "id: example.com/box\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(dependency.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        dependency.join("internal.skiff"),
+        r#"
+type Box {
+  value: string
+}
+
+function makeBox(value: string) -> Box {
+  return Box { value: value }
+}
+
+impl Box {
+  function read(self: Box) -> string {
+    return self.value
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let provider =
+        compile_package_project(&dependency).expect("provider package should compile independently");
+    assert!(matches!(
+        provider
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols
+            .get("internal.Box"),
+        Some(skiff_artifact_model::PackageLocalAbiSymbol::Type { .. })
+    ));
+    assert!(matches!(
+        provider
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols
+            .get("internal.makeBox"),
+        Some(skiff_artifact_model::PackageLocalAbiSymbol::Callable { .. })
+    ));
+    let PackageLocalAbiSymbol::Callable {
+        callable_id: receiver_callable_id,
+        signature,
+    } = &provider
+        .package
+        .artifact
+        .package_local_abi
+        .implementation_symbols["internal.Box.read"]
+    else {
+        panic!("provider implementation ABI must contain Box.read");
+    };
+    assert_eq!(signature.parameters.len(), 1);
+    assert_eq!(signature.parameters[0].name, "self");
+    assert!(provider
+        .package
+        .artifact
+        .callable_links
+        .contains_key(receiver_callable_id));
+
+    let (project, _) =
+        compile_service_package_project(temp.path()).expect("top-level receiver call should compile");
+    let file = module_artifact(&project.package, "main");
+    let run = file
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with(".run"))
+        .expect("run executable should be lowered");
+    let receiver_call = run
+        .body
+        .expressions
+        .iter()
+        .find_map(|expression| {
+            let skiff_artifact_model::ExprIr::Call { call } = expression else {
+                return None;
+            };
+            let skiff_artifact_model::CallTargetIr::PackageCallable {
+                package_ref,
+                package_callable_id,
+            } = &call.target
+            else {
+                return None;
+            };
+            (package_callable_id == receiver_callable_id).then_some((package_ref, call))
+        })
+        .expect("receiver method must lower to the exact package callable");
+    assert!(matches!(
+        receiver_call.0,
+        skiff_artifact_model::PackageRefIr::Dependency { dependency_ref }
+            if dependency_ref == "subject"
+    ));
+    assert_eq!(
+        receiver_call.1.args.len(),
+        1,
+        "receiver must be the first and only execution argument"
+    );
+    assert!(file
+        .unit
+        .external_refs
+        .package_callables
+        .iter()
+        .any(|callable| {
+            callable.package_callable_id == *receiver_callable_id
+                && matches!(
+                    &callable.package_ref,
+                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref }
+                        if dependency_ref == "subject"
+                )
+        }));
 }
 
 #[test]

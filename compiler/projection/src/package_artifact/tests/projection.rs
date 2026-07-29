@@ -123,6 +123,37 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
 }
 
 #[test]
+fn package_implementation_projection_includes_exact_impl_method_callable() {
+    let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &artifact.package_local_abi.implementation_symbols["api.Worker.handle"]
+    else {
+        panic!("implementation receiver method must be projected as a package callable");
+    };
+    assert_eq!(
+        callable_id.as_str(),
+        "pkg-callable:example.pkg:top-level:api.Worker.handle"
+    );
+    assert_eq!(signature.parameters.len(), 2);
+    assert_eq!(signature.parameters[0].name, "self");
+    assert_eq!(
+        signature.parameters[0].ty,
+        skiff_artifact_model::PackageTypeRef::Local {
+            local_type: skiff_artifact_model::TypeRefIr::LocalType { type_index: 0 }
+        }
+    );
+    assert_eq!(signature.parameters[1].name, "value");
+    let link = &artifact.callable_links[callable_id];
+    assert_eq!(link.target.executable_index, 2);
+    assert_eq!(
+        link.target.callable_kind,
+        skiff_artifact_model::OperationCallableKind::ImplMethod
+    );
+}
+
+#[test]
 fn ordinary_and_service_package_projection_share_artifact_and_local_abi() {
     let ordinary_package = project_fixture(SignatureSet::Complete, "async").unwrap();
     // A service root uses this exact same Package producer. There is no

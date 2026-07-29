@@ -215,3 +215,36 @@ git diff --check
 
 交给`/root/phase05_integration_steward`串行集成、便宜探针和一级worktree/branch清理；不得自行写
 integration、merge、push或启动J。
+
+## 9. Development preflight
+
+零worktree预检锚定：
+
+```text
+commit = 44e83695d5d9e6559b3ac5f482b9faffd1f96cb3
+tree   = 6cc2284797d52a6d3549afb255eeaae6247a6915
+```
+
+预检确认单一路径可执行：
+
+- `project_implementation_symbols`已经遍历每个File IR executable declaration，但当前只接受
+  `ExecutableKind::Function`；在这里复用现有executable signature、`PackageCallableId`、
+  `OperationCallableKind::ImplMethod`和callable link即可投影receiver method；
+- top-level view已经把`implementationSymbols`索引进同一
+  `SourceDependencyAnalysisInput`，并把`topLevelAlias`canonicalize回primary alias；无需新增dependency
+  input或artifact字段；
+- `TypeResolutionModel`已经保留exact package receiver的dependency ref、source symbol path、
+  Local ABI和build identity；只需提供receiver method精确查询，不需要display-name fallback；
+- `ResolvedCallTarget::DependencyPackageFunction`和`CallTargetIr::PackageCallable`已经携带本任务所需的
+  callable identity；lowering只需把receiver field call识别为该typed target，并沿现有receiver路径把
+  receiver放在第一项；
+- Runtime/linker现有package callable link执行链无需修改。
+
+实际production/test写集保持第2节冻结范围；没有运行中兄弟任务占有这些文件。第一笔实现动作先在现有
+projection fixture、compiler driver临时project与canonical source fixture建立RED；若RED证明需要
+`callables/signatures.rs`、artifact model、resolved target enum、Runtime、linker或test-runner production，
+立即按第7节停止。
+
+本节点风险为高（exact Local ABI identity与call lowering）。开发自验收拥有第6节聚焦命令；完整Agine 170与
+阶段J仍不在本任务运行。证据仅对本分支最终implementation/result commit有效；production owner、fixture、
+dependency artifact或identity输入变化即失效。
