@@ -621,7 +621,10 @@ fn callable_id(package_id: &str) -> PackageCallableId {
 }
 
 fn gateway_callable_id(package_id: &str) -> PackageCallableId {
-    PackageCallableId::new(format!("pkg-callable:{package_id}:gateway"))
+    let module_path = package_id.replace('/', ".");
+    PackageCallableId::new(format!(
+        "pkg-callable:{package_id}:top-level:{module_path}.main.gateway"
+    ))
 }
 
 fn package_ref(package: &PackageArtifact) -> PackageArtifactRef {
