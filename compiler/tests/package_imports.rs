@@ -503,9 +503,7 @@ function run() -> string {
     )
     .unwrap();
 
-    let dependency = temp
-        .path()
-        .join(".skiff-packages/example~com~~box/1.0.0");
+    let dependency = temp.path().join(".skiff-packages/example~com~~box/1.0.0");
     fs::create_dir_all(&dependency).unwrap();
     fs::write(
         dependency.join("package.yml"),
@@ -533,8 +531,8 @@ impl Box {
     )
     .unwrap();
 
-    let provider =
-        compile_package_project(&dependency).expect("provider package should compile independently");
+    let provider = compile_package_project(&dependency)
+        .expect("provider package should compile independently");
     assert!(matches!(
         provider
             .package
@@ -572,8 +570,8 @@ impl Box {
         .callable_links
         .contains_key(receiver_callable_id));
 
-    let (project, _) =
-        compile_service_package_project(temp.path()).expect("top-level receiver call should compile");
+    let (project, _) = compile_service_package_project(temp.path())
+        .expect("top-level receiver call should compile");
     let file = module_artifact(&project.package, "main");
     let run = file
         .unit
@@ -622,6 +620,274 @@ impl Box {
                         if dependency_ref == "subject"
                 )
         }));
+}
+
+#[test]
+fn package_receiver_calls_fail_closed_outside_the_exact_top_level_surface() {
+    let temp = TestDir::new("skiff-compiler", "top-level-package-receiver-negative");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/box-negative-tests
+version: 1.0.0
+packages:
+  - id: example.com/box-negative
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        "id: example.com/box-negative-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+
+    let dependency = temp
+        .path()
+        .join(".skiff-packages/example~com~~box-negative/1.0.0");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.yml"),
+        "id: example.com/box-negative\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("api.yml"),
+        "Box: internal.Box\nmakeBox: internal.makeBox\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("internal.skiff"),
+        r#"
+type Box {
+  value: string
+}
+
+function makeBox(value: string) -> Box {
+  return Box { value: value }
+}
+
+impl Box {
+  function read(self: Box) -> string {
+    return self.value
+  }
+
+  function append(self: Box, suffix: string) -> string {
+    return self.value + suffix
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.append("!")
+}
+"#,
+    )
+    .unwrap();
+    compile_service_package_project(temp.path())
+        .expect("a package receiver method with one explicit argument should compile");
+
+    let cases = [
+        (
+            "ordinary alias",
+            r#"
+import subject
+function run() -> string {
+  const box = subject/makeBox("ok")
+  return box.read()
+}
+"#,
+            "receiver method `read`",
+        ),
+        (
+            "missing method",
+            r#"
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.missing()
+}
+"#,
+            "internal.Box.missing",
+        ),
+        (
+            "missing explicit argument",
+            r#"
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.append()
+}
+"#,
+            "expected 1 arguments, found 0",
+        ),
+        (
+            "explicit receiver argument",
+            r#"
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.read(box)
+}
+"#,
+            "expected 0 arguments, found 1",
+        ),
+        (
+            "wrong argument type",
+            r#"
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.append(1)
+}
+"#,
+            "argument 1 type mismatch",
+        ),
+    ];
+    for (label, source, expected) in cases {
+        fs::write(temp.path().join("main.skiff"), source).unwrap();
+        let error = compile_service_package_project(temp.path())
+            .expect_err(label)
+            .to_string();
+        assert!(
+            error.contains(expected),
+            "{label} should contain `{expected}`, got:\n{error}"
+        );
+    }
+
+    fs::write(
+        temp.path().join("main.skiff"),
+        "function run() -> string { return \"unreachable\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        "id: example.com/box-negative-tests\n",
+    )
+    .unwrap();
+    let error = compile_service_package_project(temp.path())
+        .expect_err("non-test services must reject top-level aliases")
+        .to_string();
+    assert!(
+        error.contains("topLevelAlias") && error.contains("kind: test"),
+        "unexpected top-level permission diagnostic: {error}"
+    );
+}
+
+#[test]
+fn package_receiver_generic_applied_nominal_keeps_exact_owner_and_type_arguments() {
+    let temp = TestDir::new("skiff-compiler", "top-level-generic-package-receiver");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/generic-box-tests
+version: 1.0.0
+packages:
+  - id: example.com/generic-box
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        "id: example.com/generic-box-tests\nkind: test\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        r#"
+import subjectImpl
+
+function run() -> string {
+  const box = subjectImpl/internal.Box<string> { value: "ok" }
+  return box.read()
+}
+"#,
+    )
+    .unwrap();
+
+    let dependency = temp
+        .path()
+        .join(".skiff-packages/example~com~~generic-box/1.0.0");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.yml"),
+        "id: example.com/generic-box\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(dependency.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        dependency.join("internal.skiff"),
+        r#"
+type Box<T> {
+  value: T
+}
+
+impl Box<T> {
+  function read(self: Box<T>) -> T {
+    return self.value
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let provider = compile_package_project(&dependency)
+        .expect("generic provider should compile independently");
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &provider
+        .package
+        .artifact
+        .package_local_abi
+        .implementation_symbols["internal.Box.read"]
+    else {
+        panic!("generic receiver method must use the owner path without source type parameters");
+    };
+    assert_eq!(signature.type_params, vec!["T"]);
+    assert_eq!(signature.parameters[0].name, "self");
+
+    let (project, _) = compile_service_package_project(temp.path())
+        .expect("closed generic package receiver should compile");
+    let file = module_artifact(&project.package, "main");
+    let call = file
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with(".run"))
+        .and_then(|run| {
+            run.body.expressions.iter().find_map(|expression| {
+                let skiff_artifact_model::ExprIr::Call { call } = expression else {
+                    return None;
+                };
+                (matches!(
+                    &call.target,
+                    skiff_artifact_model::CallTargetIr::PackageCallable {
+                        package_callable_id,
+                        ..
+                    } if package_callable_id == callable_id
+                ))
+                .then_some(call)
+            })
+        })
+        .expect("generic receiver call must lower to its exact package callable");
+    assert_eq!(call.args.len(), 1);
+    assert_eq!(
+        call.type_args.get("T0"),
+        Some(&skiff_artifact_model::TypeRefIr::builtin("string"))
+    );
 }
 
 #[test]

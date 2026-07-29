@@ -482,6 +482,46 @@ impl TargetCollector<'_> {
             if receiver_type.is_some_and(|ty| matches!(ty.ir, TypeRefIr::AnyInterface { .. })) {
                 return unknown(UnknownCallTargetReason::UnresolvedName);
             }
+            if let Some(receiver_method) = receiver_type.and_then(|ty| {
+                self.type_resolution
+                    .package_receiver_method_resolution(&ty.ir, field)
+            }) {
+                let source_path = format!(
+                    "{}/{}",
+                    receiver_method.dependency_ref, receiver_method.source_method_path
+                );
+                return match self.dependencies.resolve_path(&source_path) {
+                    ResolvedDependencyAnalysisTarget::Package {
+                        alias,
+                        package_build_id,
+                        expected_local_abi,
+                        compiler_owned,
+                        callable,
+                    } if alias == receiver_method.canonical_dependency_ref
+                        && package_build_id == &receiver_method.expected_package_build
+                        && expected_local_abi == &receiver_method.expected_local_abi =>
+                    {
+                        ResolvedCallTarget::DependencyPackageFunction {
+                            package_requirement_alias: alias,
+                            compiler_owned,
+                            package_callable_id: callable.callable_id().clone(),
+                            expected_local_abi: expected_local_abi.clone(),
+                            exact_signature: callable.signature().cloned(),
+                        }
+                    }
+                    ResolvedDependencyAnalysisTarget::MissingMember => {
+                        self.errors.push(dependency_member_error(
+                            self.diagnostic_path,
+                            call_key,
+                            self.expression_sources,
+                            &receiver_method.dependency_ref,
+                            &receiver_method.source_method_path,
+                        ));
+                        unknown(UnknownCallTargetReason::UnresolvedName)
+                    }
+                    _ => unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch),
+                };
+            }
         }
 
         unknown(if expr_path(semantic_callee).is_some() {

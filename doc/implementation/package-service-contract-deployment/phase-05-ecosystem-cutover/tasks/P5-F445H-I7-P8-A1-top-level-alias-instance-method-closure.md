@@ -3,10 +3,11 @@
 状态：
 
 ```text
-TASK_SCOPE_EXPANDED
+COMPLETE
 RED_COMPLETE
-BLOCKED_BY = A1_V_PASS
-RESUME_AFTER = A1_V_INTEGRATION
+A1_V_INTEGRATED
+A1_COMPLETE
+AGINE_170_RESUME_UNBLOCKED
 ```
 
 ## 1. Parent, baseline and ownership
@@ -251,6 +252,18 @@ projection fixture、compiler driver临时project与canonical source fixture建�
 本节点风险为高（exact Local ABI identity与call lowering）。开发自验收拥有第6节聚焦命令；完整Agine 170与
 阶段J仍不在本任务运行。证据仅对本分支最终implementation/result commit有效；production owner、fixture、
 dependency artifact或identity输入变化即失效。
+
+Resume预检锚定：
+
+```text
+commit = 6563ef36d7540636fe8e6b28ec4239d8845ec883
+tree   = 383e9dff8e6b847a79dd899c205ad79f2c7bf293
+```
+
+该baseline已包含A1 RED checkpoint与A1-V。`implementation_link_callable_scopes`现在按
+`OperationCallableKind`筛选link，并由`exact_callable_signature`在public/implementation Local ABI
+surface中按canonical callable id唯一解析signature；原`implementationSymbols` validator blocker已解除。
+恢复实现仍保持第2节冻结五个compiler production owner，artifact-identity不再属于本节点写集。
 
 ## 10. Scope expansion checkpoint and resume
 

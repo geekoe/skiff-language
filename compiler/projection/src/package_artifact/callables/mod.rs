@@ -5,11 +5,12 @@ mod surface;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, ConstExport, ExecutableKind, FileIrRef,
-    FileIrUnit, FunctionTypeParamIr, InterfaceMethodSignature, OperationCallableKind,
-    OperationTargetRef, PackageCallableId, PackageCallableLinkFact, PackageCallableParameter,
-    PackageCallableSignature, PackageImplementationLinks, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageTypeRef, TypeExport,
+    BoundaryCallableProjection, CallableSemanticFacts, ConstExport, ExecutableExport,
+    ExecutableKind, ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
+    InterfaceMethodSignature, OperationCallableKind, OperationTargetRef, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
+    PackageImplementationLinks, PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageTypeRef,
+    TypeExport,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts, ResolvedPackageSchema,
@@ -168,21 +169,97 @@ fn project_implementation_symbols(
                     ),
                 ));
             };
-            if executable.kind != ExecutableKind::Function {
-                continue;
-            }
+            let (callable_kind, self_type, explicit_parameters) = match executable.kind {
+                ExecutableKind::Function => (
+                    OperationCallableKind::InternalFunction,
+                    None,
+                    executable.params.as_slice(),
+                ),
+                ExecutableKind::ImplMethod => {
+                    let explicit_self = executable
+                        .params
+                        .first()
+                        .filter(|parameter| parameter.name == "self");
+                    let self_type = match (executable.self_type.as_ref(), explicit_self) {
+                        (Some(_), Some(_)) => {
+                            return Err(projection_error(
+                                package_id,
+                                format!(
+                                    "implementation method {} declares two receivers",
+                                    declaration.symbol
+                                ),
+                            ));
+                        }
+                        (Some(self_type), None) => self_type,
+                        (None, Some(self_parameter)) => &self_parameter.ty,
+                        (None, None) => {
+                            return Err(projection_error(
+                                package_id,
+                                format!(
+                                    "implementation method {} has no exact receiver type",
+                                    declaration.symbol
+                                ),
+                            ));
+                        }
+                    };
+                    let explicit_parameters =
+                        &executable.params[usize::from(explicit_self.is_some())..];
+                    if explicit_parameters
+                        .iter()
+                        .any(|parameter| parameter.name == "self")
+                    {
+                        return Err(projection_error(
+                            package_id,
+                            format!(
+                                "implementation method {} has a non-leading receiver",
+                                declaration.symbol
+                            ),
+                        ));
+                    }
+                    (
+                        OperationCallableKind::ImplMethod,
+                        Some(self_type),
+                        explicit_parameters,
+                    )
+                }
+            };
             let top_level_name = declaration
                 .symbol
                 .strip_prefix(&format!("{}.", unit.module_path))
                 .unwrap_or(&declaration.symbol);
+            let top_level_name = if callable_kind == OperationCallableKind::ImplMethod {
+                canonical_impl_method_source_name(package_id, top_level_name)?
+            } else {
+                top_level_name.to_string()
+            };
             let source_path = format!("{}.{}", unit.module_path, top_level_name);
             let callable_id = PackageCallableId::new(format!(
                 "pkg-callable:{package_id}:top-level:{source_path}"
             ));
-            let signature = PackageCallableSignature {
-                type_params: executable.type_params.clone(),
-                parameters: executable
-                    .params
+            let mut parameters = Vec::new();
+            if let Some(self_type) = self_type {
+                parameters.push(PackageCallableParameter {
+                    name: "self".to_string(),
+                    ty: PackageTypeRef::Local {
+                        local_type: normalization::normalize_implementation_type(
+                            package_id,
+                            &unit.module_path,
+                            self_type,
+                            units,
+                        )
+                        .map_err(|message| {
+                            projection_error(
+                                package_id,
+                                format!(
+                                    "implementation callable {source_path} receiver: {message}"
+                                ),
+                            )
+                        })?,
+                    },
+                });
+            }
+            parameters.extend(
+                explicit_parameters
                     .iter()
                     .map(|parameter| {
                         Ok(PackageCallableParameter {
@@ -207,6 +284,10 @@ fn project_implementation_symbols(
                         })
                     })
                     .collect::<Result<Vec<_>, ProjectionError>>()?,
+            );
+            let signature = PackageCallableSignature {
+                type_params: executable.type_params.clone(),
+                parameters,
                 return_type: PackageTypeRef::Local {
                     local_type: normalization::normalize_implementation_type(
                         package_id,
@@ -217,14 +298,50 @@ fn project_implementation_symbols(
                     .map_err(|message| {
                         projection_error(
                             package_id,
-                            format!(
-                                "implementation callable {source_path} return type: {message}"
-                            ),
+                            format!("implementation callable {source_path} return type: {message}"),
                         )
                     })?,
                 },
                 may_suspend: executable.may_suspend,
             };
+            if callable_kind == OperationCallableKind::ImplMethod {
+                let implementation_export = ExecutableExport {
+                    file: FileIrRef {
+                        file_ir_identity: unit.file_ir_identity.clone(),
+                        module_path: unit.module_path.clone(),
+                        artifact_path: None,
+                        source_ast_hash: Some(unit.source_ast_hash.clone()),
+                    },
+                    executable_index: declaration.executable_index,
+                    symbol: declaration.symbol.clone(),
+                    signature: ExecutableSignatureIr {
+                        params: executable.params.clone(),
+                        return_type: executable.return_type.clone(),
+                        self_type: executable.self_type.clone(),
+                        may_suspend: executable.may_suspend,
+                    },
+                };
+                match implementation_links.impl_methods.get(&source_path) {
+                    Some(existing) if existing != &implementation_export => {
+                        return Err(projection_error(
+                            package_id,
+                            format!(
+                                "implementation method source path {source_path} has conflicting execution links"
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
+                    None if implementation_links.impl_methods.values().any(|existing| {
+                        existing.file == implementation_export.file
+                            && existing.executable_index == implementation_export.executable_index
+                    }) => {}
+                    None => {
+                        implementation_links
+                            .impl_methods
+                            .insert(source_path.clone(), implementation_export);
+                    }
+                }
+            }
             if symbols
                 .insert(
                     source_path.clone(),
@@ -249,7 +366,7 @@ fn project_implementation_symbols(
                 },
                 executable_index: declaration.executable_index,
                 callable_abi_id: callable_id.to_string(),
-                callable_kind: OperationCallableKind::InternalFunction,
+                callable_kind,
             };
             insert_callable_entry(
                 callable_links,
@@ -529,6 +646,41 @@ fn insert_callable_entry<T>(
         ));
     }
     Ok(())
+}
+
+fn canonical_impl_method_source_name(
+    package_id: &str,
+    top_level_name: &str,
+) -> Result<String, ProjectionError> {
+    let (owner, method) = top_level_name.rsplit_once('.').ok_or_else(|| {
+        projection_error(
+            package_id,
+            format!("implementation method `{top_level_name}` has no receiver owner"),
+        )
+    })?;
+    if method.is_empty() {
+        return Err(projection_error(
+            package_id,
+            format!("implementation method `{top_level_name}` has no method name"),
+        ));
+    }
+    let owner = match owner.find('<') {
+        Some(start) if owner.ends_with('>') && start > 0 => &owner[..start],
+        Some(_) => {
+            return Err(projection_error(
+                package_id,
+                format!("implementation method `{top_level_name}` has malformed generic owner"),
+            ));
+        }
+        None => owner,
+    };
+    if owner.is_empty() {
+        return Err(projection_error(
+            package_id,
+            format!("implementation method `{top_level_name}` has no receiver owner"),
+        ));
+    }
+    Ok(format!("{owner}.{method}"))
 }
 
 pub(super) fn projection_error(package_id: &str, message: impl Into<String>) -> ProjectionError {

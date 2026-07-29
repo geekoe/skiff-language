@@ -55,8 +55,8 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         artifact.package_local_abi.public_symbols["VERSION"],
         PackageLocalAbiSymbol::Constant { .. }
     ));
-    assert_eq!(artifact.callable_links.len(), 3);
-    assert_eq!(artifact.callable_semantic_facts.len(), 3);
+    assert_eq!(artifact.callable_links.len(), 4);
+    assert_eq!(artifact.callable_semantic_facts.len(), 4);
     assert_eq!(artifact.boundary_projections.len(), 3);
     assert_eq!(artifact.package_requirements.len(), 1);
     assert_eq!(artifact.contract_requirements.len(), 1);
@@ -141,7 +141,15 @@ fn package_implementation_projection_includes_exact_impl_method_callable() {
     assert_eq!(
         signature.parameters[0].ty,
         skiff_artifact_model::PackageTypeRef::Local {
-            local_type: skiff_artifact_model::TypeRefIr::LocalType { type_index: 0 }
+            local_type: skiff_artifact_model::TypeRefIr::PackageSymbol {
+                symbol: skiff_artifact_model::PackageSymbolRef {
+                    package: skiff_artifact_model::PackageRefIr::PackageId {
+                        package_id: "example.pkg".to_string()
+                    },
+                    symbol_path: "api.Worker".to_string(),
+                    abi_expectation: None,
+                }
+            }
         }
     );
     assert_eq!(signature.parameters[1].name, "value");
