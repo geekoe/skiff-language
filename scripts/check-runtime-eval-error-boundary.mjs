@@ -1,14 +1,11 @@
 #!/usr/bin/env node
 
-import { readdir, readFile } from 'node:fs/promises';
-import { basename, dirname, join, relative } from 'node:path';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const evalRoots = [
-  join(root, 'runtime', 'driver', 'eval'),
-  join(root, 'runtime', 'eval', 'src'),
-];
+const defaultRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runtimeRootEvalPrefix = 'runtime/driver/eval/';
 const promotedEvalPrefix = 'runtime/eval/src/';
 const evalErrorBoundaries = new Set(['runtime/driver/eval/error.rs', 'runtime/eval/src/error.rs']);
@@ -58,89 +55,226 @@ const rules = [
   },
 ];
 
-const files = await collectProductionEvalRustFiles(evalRoots);
-const violations = [];
-let scannedFiles = 0;
-
-for (const file of files) {
-  const source = await readFile(file.absPath, 'utf8');
-  if (isCfgTestSupportOnlyFile(source)) {
-    continue;
-  }
-  scannedFiles += 1;
-  const scanText = maskRustCommentsAndStrings(stripCfgTestSupportItems(source));
-  for (const rule of rules) {
-    if (rule.appliesTo && !rule.appliesTo(file.relPath)) {
-      continue;
+const options = parseArgs(process.argv.slice(2));
+if (options.selfTest) {
+  await runSelfTest();
+} else {
+  const { violations, scannedFiles } = await collectViolations(options.root);
+  if (violations.length > 0) {
+    console.error('\nRuntime eval error boundary check failed.\n');
+    for (const violation of violations) {
+      console.error(formatViolation(violation));
     }
-    for (const match of scanText.matchAll(rule.regexp)) {
-      if (rule.allowedRelPaths.has(file.relPath)) {
-        continue;
-      }
-      violations.push({
-        rule,
-        relPath: file.relPath,
-        line: lineNumberAt(scanText, match.index ?? 0),
-        matched: match[0].trim().replace(/\s+/g, ' '),
-        sourceLine: sourceLineAt(source, match.index ?? 0),
-      });
-    }
-  }
-}
-
-if (violations.length > 0) {
-  console.error('\nRuntime eval error boundary check failed.\n');
-  for (const violation of violations) {
-    console.error(
-      [
-        `DENY ${violation.relPath}:${violation.line} ${violation.rule.id}`,
-        `  matched: ${violation.matched}`,
-        `  line: ${violation.sourceLine}`,
-        `  allowed boundary: ${violation.rule.allowedBoundary}`,
-      ].join('\n'),
+    process.exitCode = 1;
+  } else {
+    console.log(
+      `Runtime eval error boundary check passed for ${scannedFiles} production eval file(s).`,
     );
   }
-  process.exitCode = 1;
-} else {
-  console.log(`Runtime eval error boundary check passed for ${scannedFiles} production eval file(s).`);
 }
 
-async function collectProductionEvalRustFiles(directories) {
-  const files = [];
-  for (const directory of directories) {
-    await collectRustFiles(directory, files);
-  }
-  return files.filter((file) => isProductionEvalRustFile(file.relPath)).sort((left, right) => {
-    return left.relPath.localeCompare(right.relPath);
-  });
-}
-
-async function collectRustFiles(directory, files) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const absPath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      await collectRustFiles(absPath, files);
+function parseArgs(argv) {
+  const options = { root: defaultRoot, selfTest: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--self-test') {
+      options.selfTest = true;
       continue;
     }
-    if (!entry.isFile() || !entry.name.endsWith('.rs')) {
+    if (arg === '--root') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--root requires a directory path');
+      }
+      options.root = resolve(value);
+      index += 1;
       continue;
     }
-    files.push({
-      absPath,
-      relPath: normalizePath(relative(root, absPath)),
-    });
+    if (arg.startsWith('--root=')) {
+      options.root = resolve(arg.slice('--root='.length));
+      continue;
+    }
+    throw new Error(`unknown argument ${arg}`);
+  }
+  if (options.selfTest && options.root !== defaultRoot) {
+    throw new Error('--self-test uses hermetic fixtures and cannot be combined with --root');
+  }
+  return options;
+}
+
+async function collectViolations(root) {
+  const files = await collectProductionEvalRustFiles(root);
+  const violations = [];
+  for (const file of files) {
+    const source = await readFile(file.absPath, 'utf8');
+    const scanText = maskRustCommentsAndStrings(stripCfgTestSupportItems(source));
+    for (const rule of rules) {
+      if (rule.appliesTo && !rule.appliesTo(file.relPath)) {
+        continue;
+      }
+      for (const match of scanText.matchAll(rule.regexp)) {
+        if (rule.allowedRelPaths.has(file.relPath)) {
+          continue;
+        }
+        violations.push({
+          rule,
+          relPath: file.relPath,
+          line: lineNumberAt(scanText, match.index ?? 0),
+          matched: match[0].trim().replace(/\s+/g, ' '),
+          sourceLine: sourceLineAt(source, match.index ?? 0),
+        });
+      }
+    }
+  }
+  return { violations, scannedFiles: files.length };
+}
+
+async function collectProductionEvalRustFiles(root) {
+  const roots = [
+    join(root, 'runtime', 'driver', 'eval', 'mod.rs'),
+    join(root, 'runtime', 'eval', 'src', 'lib.rs'),
+  ];
+  const files = new Map();
+  for (const moduleRoot of roots) {
+    await collectReachableModules(root, moduleRoot, files);
+  }
+  return [...files.values()].sort((left, right) => left.relPath.localeCompare(right.relPath));
+}
+
+async function collectReachableModules(root, absPath, files) {
+  const relPath = normalizePath(relative(root, absPath));
+  if (files.has(relPath)) {
+    return;
+  }
+  const source = await readFile(absPath, 'utf8');
+  if (isCfgTestSupportOnlyFile(source)) {
+    return;
+  }
+  files.set(relPath, { absPath, relPath });
+
+  const production = stripCfgTestSupportItems(source);
+  const masked = maskRustCommentsAndStrings(production);
+  const modulePattern =
+    /(?:^|\n)\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  for (const match of masked.matchAll(modulePattern)) {
+    const child = await resolveModuleFile(absPath, match.groups.name);
+    if (child !== undefined) {
+      await collectReachableModules(root, child, files);
+    }
   }
 }
 
-function isProductionEvalRustFile(relPath) {
-  if (!relPath.startsWith(runtimeRootEvalPrefix) && !relPath.startsWith(promotedEvalPrefix)) {
-    return false;
+async function resolveModuleFile(parentPath, moduleName) {
+  const parentDirectory = dirname(parentPath);
+  const stem = parentPath.endsWith('/mod.rs') || parentPath.endsWith('/lib.rs')
+    ? parentDirectory
+    : join(parentDirectory, parentPath.slice(parentPath.lastIndexOf('/') + 1, -3));
+  for (const candidate of [join(stem, `${moduleName}.rs`), join(stem, moduleName, 'mod.rs')]) {
+    try {
+      await readFile(candidate, 'utf8');
+      return candidate;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
   }
-  if (relPath.split('/').includes('tests')) {
-    return false;
+  return undefined;
+}
+
+function formatViolation(violation) {
+  return [
+    `DENY ${violation.relPath}:${violation.line} ${violation.rule.id}`,
+    `  matched: ${violation.matched}`,
+    `  line: ${violation.sourceLine}`,
+    `  allowed boundary: ${violation.rule.allowedBoundary}`,
+  ].join('\n');
+}
+
+async function runSelfTest() {
+  const cases = [
+    {
+      name: 'diagnostic wrapper mutation',
+      file: 'runtime/eval/src/production.rs',
+      source: 'fn mutation(error: RuntimeError) { let _ = RuntimeError::WithSource { source_id: 1, frame: todo!(), error: Box::new(error) }; }\n',
+      expectedId: 'eval_error_diagnostic_wrapper_boundary',
+    },
+    {
+      name: 'eval Json variant mutation',
+      file: 'runtime/eval/src/production.rs',
+      source: 'fn mutation(error: serde_json::Error) { let _ = RuntimeError::Json(error); }\n',
+      expectedId: 'eval_error_json_variant_boundary',
+    },
+    {
+      name: 'root-only variant mutation',
+      file: 'runtime/eval/src/production.rs',
+      source: 'fn mutation(error: mongodb::error::Error) { let _ = RuntimeError::Mongo(error); }\n',
+      expectedId: 'eval_error_no_root_only_runtime_variants',
+    },
+    {
+      name: 'runtime-root dependency mutation',
+      file: 'runtime/driver/eval/bridge.rs',
+      source: 'use crate::error::RuntimeError;\n',
+      expectedId: 'eval_error_root_dependency_boundary',
+    },
+  ];
+
+  for (const testCase of cases) {
+    const root = await createSelfTestFixture();
+    try {
+      const baseline = await collectViolations(root);
+      if (baseline.violations.length !== 0) {
+        throw new Error(
+          `${testCase.name}: baseline fixture was not clean:\n${baseline.violations.map(formatViolation).join('\n')}`,
+        );
+      }
+      await writeFile(join(root, testCase.file), testCase.source);
+      const mutated = await collectViolations(root);
+      if (
+        mutated.violations.length !== 1 ||
+        mutated.violations[0].rule.id !== testCase.expectedId
+      ) {
+        throw new Error(
+          `${testCase.name}: expected one ${testCase.expectedId} violation, got:\n${mutated.violations.map(formatViolation).join('\n')}`,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
-  return basename(relPath) !== 'tests.rs';
+
+  console.log(
+    `Runtime eval error boundary self-test passed (${cases.length} mutation RED cases; cfg(test) external module excluded by reachability).`,
+  );
+}
+
+async function createSelfTestFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-runtime-eval-error-boundary-'));
+  await mkdir(join(root, 'runtime', 'driver', 'eval'), { recursive: true });
+  await mkdir(join(root, 'runtime', 'eval', 'src'), { recursive: true });
+  await writeFile(
+    join(root, 'runtime', 'driver', 'eval', 'mod.rs'),
+    'mod bridge;\npub(crate) mod error;\n',
+  );
+  await writeFile(join(root, 'runtime', 'driver', 'eval', 'bridge.rs'), 'fn clean() {}\n');
+  await writeFile(
+    join(root, 'runtime', 'driver', 'eval', 'error.rs'),
+    'pub(crate) use skiff_runtime_eval::error::*;\n',
+  );
+  await writeFile(
+    join(root, 'runtime', 'eval', 'src', 'lib.rs'),
+    'pub mod error;\nmod production;\n#[cfg(test)]\nmod external_tests;\n',
+  );
+  await writeFile(
+    join(root, 'runtime', 'eval', 'src', 'error.rs'),
+    'enum RuntimeError { Json(serde_json::Error), WithSource { error: Box<RuntimeError> } }\n',
+  );
+  await writeFile(join(root, 'runtime', 'eval', 'src', 'production.rs'), 'fn clean() {}\n');
+  await writeFile(
+    join(root, 'runtime', 'eval', 'src', 'external_tests.rs'),
+    'fn test_only(error: RuntimeError) { let _ = RuntimeError::WithDiagnosticFrame { error: Box::new(error) }; }\n',
+  );
+  return root;
 }
 
 function stripCfgTestSupportItems(text) {

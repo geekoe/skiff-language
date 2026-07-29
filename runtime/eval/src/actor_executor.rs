@@ -18,7 +18,7 @@ use crate::{
         resolve_actor_declaration, validate_declaration_fence, ActorExecutorAuthority,
         ActorInstanceHandle, ActorInstanceStore, ActorInstanceStoreError,
     },
-    error::RuntimeError,
+    error::{extract_actor_instance_store_error, RuntimeError},
     program_execution::ProgramExecutionContext,
     Interpreter,
 };
@@ -266,32 +266,9 @@ fn store_error(error: ActorInstanceStoreError) -> RuntimeError {
 }
 
 fn actor_execution_error(error: RuntimeError) -> ActorMethodExecutorError {
-    match extract_actor_instance_error(error) {
+    match extract_actor_instance_store_error(error) {
         Ok(error) => ActorMethodExecutorError::Store(error),
         Err(error) => ActorMethodExecutorError::Execution(error),
-    }
-}
-
-fn extract_actor_instance_error(
-    error: RuntimeError,
-) -> Result<ActorInstanceStoreError, RuntimeError> {
-    match error {
-        RuntimeError::ActorInstance(error) => Ok(error),
-        RuntimeError::WithSource {
-            source_id,
-            frame,
-            error,
-        } => extract_actor_instance_error(*error).map_err(|error| RuntimeError::WithSource {
-            source_id,
-            frame,
-            error: Box::new(error),
-        }),
-        RuntimeError::WithDiagnosticFrame { frame, error } => extract_actor_instance_error(*error)
-            .map_err(|error| RuntimeError::WithDiagnosticFrame {
-                frame,
-                error: Box::new(error),
-            }),
-        error => Err(error),
     }
 }
 
