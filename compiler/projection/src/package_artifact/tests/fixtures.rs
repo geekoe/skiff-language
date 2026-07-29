@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
     ConstDeclarationIr, ConstExport, ConstIr, ContractOperationId, ContractRequirement,
-    ExecutableBody, ExecutableExport, ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr,
-    InterfaceDeclIr, InterfaceOperationIr, PackageCallableParameter, PackageCallableSignature,
-    PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr,
-    PackageRequirement, PackageResourceRequirement, PackageRuntimeCapabilityRequirement,
-    PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ServiceCallRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, TypeDeclIr, TypeDeclarationIr,
+    ExecutableBody, ExecutableDeclarationIr, ExecutableExport, ExecutableIr, ExecutableKind,
+    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
+    PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
+    PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
+    PackageSymbolRef, PackageTypeRef, ParamIr, ServiceCallRef, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceSymbolRef, SlotLayout, TypeDeclIr, TypeDeclarationIr,
     TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
@@ -224,6 +225,23 @@ pub(super) fn project_fixture_with_runtime_requirements(
             source_span: None,
         },
     );
+    file.executables.extend([
+        fixture_executable(ExecutableKind::Function, "api.run", None),
+        fixture_executable(ExecutableKind::Function, "api.mutate", None),
+        fixture_executable(
+            ExecutableKind::ImplMethod,
+            "api.Worker.handle",
+            Some(TypeRefIr::LocalType { type_index: 0 }),
+        ),
+    ]);
+    file.declarations.executables.insert(
+        "Worker.handle".to_string(),
+        ExecutableDeclarationIr {
+            executable_index: 2,
+            symbol: "api.Worker.handle".to_string(),
+            source_span: None,
+        },
+    );
     file.constants.push(ConstIr {
         name: "worker".to_string(),
         ty: TypeRefIr::LocalType { type_index: 0 },
@@ -387,6 +405,29 @@ fn executable_export(file: &FileIrRef, index: u32, symbol: &str) -> ExecutableEx
             self_type: None,
             may_suspend: false,
         },
+    }
+}
+
+fn fixture_executable(
+    kind: ExecutableKind,
+    symbol: &str,
+    self_type: Option<TypeRefIr>,
+) -> ExecutableIr {
+    ExecutableIr {
+        kind,
+        symbol: symbol.to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "value".to_string(),
+            slot: u32::from(self_type.is_some()),
+            ty: TypeRefIr::builtin("string"),
+        }],
+        return_type: TypeRefIr::builtin("string"),
+        self_type,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
     }
 }
 

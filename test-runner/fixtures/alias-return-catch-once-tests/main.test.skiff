@@ -1,5 +1,10 @@
 import subjectImpl
 
+test "package receiver method" {
+  const box = subjectImpl/main.makeBox("ok")
+  assert box.read() == "ok"
+}
+
 test "direct alias receiver chain followed by catch success executes effect once" {
   const state = Array.empty<string>()
   assert subjectImpl/main.aliasThenCatch(state, false) == "value:ok"
