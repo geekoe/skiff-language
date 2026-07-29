@@ -409,7 +409,11 @@ function ownerAnchorViolationId(role) {
   if (role === 'service-dispatcher') {
     return 'dispatcher-owner-incomplete';
   }
-  if (role === 'host-request-entry') {
+  if (
+    role === 'host-request-route-lookup'
+    || role === 'assembly-request-wire'
+    || role === 'assembly-request-spawn'
+  ) {
     return 'host-active-assembly-entry-missing';
   }
   if (role === 'router-runtime-service-rejection') {

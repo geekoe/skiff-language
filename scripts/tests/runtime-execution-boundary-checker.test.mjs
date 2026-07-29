@@ -20,7 +20,7 @@ import {
 test('runtime execution boundary checker rejects every hermetic mutation', async () => {
   const matrix = await runRuntimeExecutionBoundarySelfTest();
   assert.deepEqual(matrix, RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS);
-  assert.equal(matrix.length, 30);
+  assert.equal(matrix.length, 33);
   assert.deepEqual(
     new Set(matrix.map(({ expectedId }) => expectedId)),
     new Set([
@@ -114,41 +114,36 @@ test('source scanner masks camouflage literals and preserves typed spans', () =>
 });
 
 test('independent R03 in-memory camouflage mutations fail closed', () => {
-  const hostPath = 'runtime/host/src/host/request_entry/assembly.rs';
+  const hostPath = 'runtime/host/src/host/request_entry.rs';
   const hostOwner = {
     declarationKind: 'function',
     language: 'rust',
     ownedRoots: [hostPath],
     requiredAnchors: [
-      'lookup_active_assembly_request_route(',
-      'route.request_target(',
-      'spawn_assembly_request(',
+      'active_runtime_assembly_route(',
+      'ActiveAssemblyRoute',
     ],
     requiredFile: hostPath,
-    role: 'host-request-entry',
+    role: 'host-request-route-lookup',
     subjectId: 'active-only-host-request-entry',
-    symbol: 'spawn_request_inner',
+    symbol: 'lookup_active_assembly_request_route',
   };
   const hostSafe = [
-    'async fn spawn_request_inner(&self) {',
-    '    let route = self.lookup_active_assembly_request_route();',
-    '    let target = route.request_target();',
-    '    self.spawn_assembly_request(route, target).await;',
+    'fn lookup_active_assembly_request_route(&self, key: &Key) -> Result<ActiveAssemblyRoute> {',
+    '    self.active_runtime_assembly_route(key)',
     '}',
   ].join('\n');
   const hostMutation = replaceProbe(
     hostSafe,
     [
-      '    let route = self.lookup_active_assembly_request_route();',
-      '    let target = route.request_target();',
-      '    self.spawn_assembly_request(route, target).await;',
+      '-> Result<ActiveAssemblyRoute> {',
+      '    self.active_runtime_assembly_route(key)',
     ].join('\n'),
     [
-      '    let lookup_active_assembly_request_route_similar = 1;',
-      '    let _ordinary = "lookup_active_assembly_request_route(";',
-      '    let _raw = r#"route.request_target("#;',
-      '    let _bytes = b"spawn_assembly_request(";',
-      '    let _ = lookup_active_assembly_request_route_similar;',
+      '-> Result<Route> {',
+      '    let _ordinary = "active_runtime_assembly_route( ActiveAssemblyRoute";',
+      '    let _ = key;',
+      '    unreachable!()',
     ].join('\n'),
   );
   const hostViolations = [];
@@ -245,6 +240,43 @@ test('independent R03 in-memory camouflage mutations fail closed', () => {
   );
 });
 
+test('diagnostic remote frames and test-effect dispatch are not service routing owners', () => {
+  const subject = {
+    discoveryRoots: ['runtime/eval/src'],
+    id: 'single-service-dispatcher',
+    language: 'rust',
+    zones: { canonicalCallers: [], legacyServiceEdges: [] },
+  };
+  const sources = new Map([
+    [
+      'runtime/eval/src/assembly_execution/service_error_channel.rs',
+      rustSource(
+        'runtime/eval/src/assembly_execution/service_error_channel.rs',
+        [
+          'fn import_error() {',
+          '    stack.push(ExceptionStackFrame::RemoteBoundary { service_id, operation_id });',
+          '}',
+        ].join('\n'),
+      ),
+    ],
+    [
+      'runtime/eval/src/test_effect_registry.rs',
+      rustSource(
+        'runtime/eval/src/test_effect_registry.rs',
+        'fn dispatch_service(&self, target: &TestEffectTarget) -> TestEffect { todo!() }\n',
+      ),
+    ],
+  ]);
+  const violations = [];
+  checkRuntimeExecutionBoundaryRules(
+    { owners: [], subjects: [subject] },
+    sources,
+    new Map(),
+    violations,
+  );
+  assert.deepEqual(violations, []);
+});
+
 test('production registry names every required subject and owner role exactly once', () => {
   assert.deepEqual(
     RUNTIME_EXECUTION_BOUNDARY_REGISTRY.subjects.map(({ id }) => id).sort(),
@@ -295,13 +327,18 @@ test('production registry names every required subject and owner role exactly on
         'runtime/host/src/loader/assembly_admission.rs',
       ),
       owner(
-        'host-request-entry',
-        'spawn_request_inner',
-        'runtime/host/src/host/request_entry/assembly.rs',
+        'host-request-route-lookup',
+        'lookup_active_assembly_request_route',
+        'runtime/host/src/host/request_entry.rs',
+      ),
+      owner(
+        'assembly-request-wire',
+        'spawn_runtime_assembly_request',
+        'runtime/host/src/host/request_entry/assembly_wire.rs',
       ),
       owner(
         'assembly-request-spawn',
-        'spawn_assembly_request',
+        'spawn_request_on_active_assembly_route',
         'runtime/host/src/host/request_entry/assembly.rs',
       ),
       owner(

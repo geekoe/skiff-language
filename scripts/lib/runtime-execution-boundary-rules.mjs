@@ -32,7 +32,7 @@ export function checkRuntimeExecutionBoundaryRules(
   checkSingleDispatcher(registry, sources, ownerMatches, violations);
   checkActivationOwnership(registry, sources, ownerMatches, violations);
   checkOwnedContextSpawns(registry, sources, violations);
-  checkHostRequestEntry(ownerMatches, violations);
+  checkHostRequestChain(ownerMatches, violations);
   checkRecoverableCallbackRejection(registry, sources, violations);
   checkRouterServiceRejection(registry, sources, ownerMatches, violations);
 }
@@ -52,6 +52,24 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
   for (const source of sourcesWithin(subject.discoveryRoots, subject.language, sources)) {
     for (const match of source.identifiers.matchAll(candidateRegexp)) {
       const symbol = match[1] ?? match[2];
+      const functionOwnsBoundary = !match[2]
+        || match[2].includes('in_process_boundary')
+        || (
+          canonicalOwner
+          && rustFunctionCallsOwner(
+            source.identifiers,
+            match.index,
+            canonicalOwner.symbol,
+          )
+        )
+        || rustFunctionCallsOwner(
+          source.identifiers,
+          match.index,
+          'execute_service_call',
+        );
+      if (!functionOwnsBoundary) {
+        continue;
+      }
       const isCanonical = canonicalOwner
         && symbol === canonicalOwner.symbol
         && canonical.some((entry) => entry.relPath === source.relPath && entry.index === match.index);
@@ -74,7 +92,7 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
     }
   }
 
-  const remoteRule = /\b(?:[A-Za-z0-9_]*RemoteBoundary[A-Za-z0-9_]*|[A-Za-z0-9_]*remote_boundary[A-Za-z0-9_]*|select_remote(?:_boundary)?|dispatch_remote(?:_service)?|fallback_to_remote|remote_fallback|BoundaryKind\s*::\s*Remote)\b/g;
+  const remoteRule = /\b(?:select_remote(?:_boundary)?|dispatch_remote(?:_service)?|fallback_to_remote|remote_fallback)\b|\bBoundaryKind\s*::\s*Remote\b/g;
   for (const source of sourcesWithin(subject.discoveryRoots, subject.language, sources)) {
     addPatternViolations(
       source,
@@ -255,8 +273,13 @@ function checkOwnedContextSpawns(registry, sources, violations) {
   }
 }
 
-function checkHostRequestEntry(ownerMatches, violations) {
-  for (const match of ownerMatches.get('host-request-entry') ?? []) {
+function checkHostRequestChain(ownerMatches, violations) {
+  const requestChainOwners = [
+    ...(ownerMatches.get('host-request-route-lookup') ?? []),
+    ...(ownerMatches.get('assembly-request-wire') ?? []),
+    ...(ownerMatches.get('assembly-request-spawn') ?? []),
+  ];
+  for (const match of requestChainOwners) {
     const forbidden = /\b(?:lookup_operation_in_state|lookup_request_operation|route_registry|lazy_[A-Za-z0-9_]*|load_[A-Za-z0-9_]*artifact|legacy_[A-Za-z0-9_]*|fallback_[A-Za-z0-9_]*)\b/g;
     for (const entry of match.item.identifiers.matchAll(forbidden)) {
       violations.push(runtimeExecutionBoundaryViolation({
