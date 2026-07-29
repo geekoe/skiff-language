@@ -2,3 +2,20 @@ function handle(input: string) -> string {
   if input == "helper-mutated" { return "provider-observed-helper-mutated" }
   return "provider-rejected-unmutated"
 }
+
+interface LabelReader {
+  function label(self: Self) -> string
+}
+
+type Worker implements LabelReader {
+  value: string,
+}
+
+impl Worker {
+  function label() -> string {
+    return self.value.concat("")
+  }
+}
+
+const left: Worker = Worker { value: "left" }
+const right: Worker = Worker { value: "right" }

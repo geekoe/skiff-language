@@ -8,7 +8,8 @@ use skiff_runtime_activation::{
     ActivationContext, ActivationContextError, ActivationId, RequestActivationContext,
 };
 use skiff_runtime_linked_program::{
-    ActivationRelativeServiceCall, AssemblyExecutionImage, ExecutableAddr, LinkedPackageDirectCall,
+    ActivationRelativeServiceCall, AssemblyExecutionImage, ConstAddr, ExecutableAddr,
+    LinkedPackageCallableTarget, LinkedPackageDirectCall,
 };
 use skiff_runtime_linked_type_plan::{
     RuntimeAssemblyTypePlanSeamError, RuntimeAssemblyTypePlanTarget,
@@ -257,9 +258,9 @@ impl RuntimeAssemblyEvalTarget {
                 activation_id: provider.activation_id().as_str().to_string(),
                 operation: instruction.operation_id().clone(),
             })?;
-        let executable = self
+        let callable_target = self
             .execution_image
-            .entry_executable(
+            .entry_callable_target(
                 provider.implementation_package_build_id(),
                 &operation_target,
             )
@@ -275,7 +276,7 @@ impl RuntimeAssemblyEvalTarget {
             contract,
             schema_records,
             operation: instruction.operation_id().clone(),
-            executable_addr: executable.addr().clone(),
+            callable_target,
         })
     }
 
@@ -342,9 +343,9 @@ impl RuntimeAssemblyEvalTarget {
                 },
             );
         }
-        let executable = self
+        let callable_target = self
             .execution_image
-            .entry_executable(provider.implementation_package_build_id(), operation_target)
+            .entry_callable_target(provider.implementation_package_build_id(), operation_target)
             .map_err(
                 |error| RuntimeAssemblyEvalSeamError::InvalidProviderTarget {
                     activation_id: provider.activation_id().as_str().to_string(),
@@ -357,7 +358,7 @@ impl RuntimeAssemblyEvalTarget {
             contract,
             schema_records,
             operation: operation.clone(),
-            executable_addr: executable.addr().clone(),
+            callable_target,
         })
     }
 }
@@ -368,7 +369,7 @@ pub struct RuntimeAssemblyServiceCallTarget {
     contract: Arc<ServiceContract>,
     schema_records: AdmittedPackageSchemaRecords,
     operation: ContractOperationId,
-    executable_addr: ExecutableAddr,
+    callable_target: LinkedPackageCallableTarget,
 }
 
 impl RuntimeAssemblyServiceCallTarget {
@@ -396,7 +397,11 @@ impl RuntimeAssemblyServiceCallTarget {
     }
 
     pub fn executable_addr(&self) -> &ExecutableAddr {
-        &self.executable_addr
+        self.callable_target.executable_addr()
+    }
+
+    pub fn receiver_const(&self) -> Option<&ConstAddr> {
+        self.callable_target.receiver_const()
     }
 }
 

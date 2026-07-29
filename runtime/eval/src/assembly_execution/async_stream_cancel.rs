@@ -28,10 +28,10 @@ use skiff_runtime_capability_context::{
     StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi, StreamRuntimeError,
     StreamRuntimeResult,
 };
-use skiff_runtime_linked_program::CallIr;
+use skiff_runtime_linked_program::{CallIr, ConstAddr, ExecutableAddr, LinkedTypeRef};
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::RuntimeValue,
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
     service_error::{ExceptionStackFrame, OpaqueServiceError},
     type_plan::RuntimeTypePlan,
 };
@@ -277,6 +277,7 @@ fn start_provider_stream(
         call_site,
         caller_stack_at_site,
         provider_addr: target.executable_addr().clone(),
+        provider_receiver_const: target.receiver_const().cloned(),
         provider_package_build_id,
         provider_service_id,
         operation_id,
@@ -337,6 +338,7 @@ struct ProviderStreamTask {
     call_site: InstructionSourceSite,
     caller_stack_at_site: Vec<ExceptionStackFrame>,
     provider_addr: skiff_runtime_linked_program::ExecutableAddr,
+    provider_receiver_const: Option<ConstAddr>,
     provider_package_build_id: PackageBuildId,
     provider_service_id: String,
     operation_id: String,
@@ -363,12 +365,14 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
     let args = std::mem::take(&mut producer.args);
     let terminal = {
         let provider_context = producer.provider_context.borrow();
-        let provider_future = producer.interpreter.call_program_executable(
+        let provider_future = call_provider_callable(
+            &producer.interpreter,
             provider_context,
             &mut producer.provider_heap,
             &producer.provider_env,
             &producer.caller_addr,
             &producer.provider_addr,
+            producer.provider_receiver_const.as_ref(),
             &producer.type_args,
             args,
         );
@@ -381,6 +385,51 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
     };
 
     finish_provider_stream(producer, terminal).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_provider_callable(
+    interpreter: &crate::Interpreter,
+    context: ProgramExecutionContext<'_>,
+    heap: &mut RequestHeap,
+    env: &Env,
+    caller_addr: &ExecutableAddr,
+    provider_addr: &ExecutableAddr,
+    receiver_const: Option<&ConstAddr>,
+    type_args: &BTreeMap<String, LinkedTypeRef>,
+    args: Vec<RuntimeValue>,
+) -> Result<RuntimeValue> {
+    let Some(receiver_const) = receiver_const else {
+        return interpreter
+            .call_program_executable(
+                context,
+                heap,
+                env,
+                caller_addr,
+                provider_addr,
+                type_args,
+                args,
+            )
+            .await;
+    };
+    let receiver = interpreter
+        .eval_program_const_addr(context.clone(), heap, env, receiver_const)
+        .await?;
+    interpreter
+        .call_program_executable_with_self_direct_carriers(
+            context,
+            heap,
+            env,
+            caller_addr,
+            provider_addr,
+            type_args,
+            receiver,
+            args.into_iter()
+                .map(RuntimeValueCarrier::from)
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .map(RuntimeValueCarrier::into_value)
 }
 
 async fn finish_provider_stream(producer: ProviderStreamTask, terminal: ProviderTerminal) {
@@ -1772,6 +1821,7 @@ mod tests {
             call_site: call.site.clone(),
             caller_stack_at_site,
             provider_addr: target.executable_addr().clone(),
+            provider_receiver_const: target.receiver_const().cloned(),
             provider_package_build_id: target
                 .provider_activation()
                 .implementation_package_build_id()

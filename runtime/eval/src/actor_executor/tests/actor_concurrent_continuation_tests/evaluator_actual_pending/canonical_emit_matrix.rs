@@ -575,6 +575,20 @@ fn fixture(items: usize) -> ServiceFixture {
         super::callback_matrix::private_package(PROVIDER_PACKAGE, &provider_file);
     skiff_artifact_identity::assign_package_artifact_identities(&mut provider_package)
         .expect("canonical Emit provider package identities");
+    let provider_callable = artifact::PackageCallableId::new(OPERATION_ID);
+    let provider_target = artifact::OperationTargetRef {
+        file_ref: super::callback_matrix::file_ref(&provider_file),
+        executable_index: 0,
+        callable_abi_id: provider_callable.to_string(),
+        callable_kind: artifact::OperationCallableKind::PublicFunction,
+    };
+    provider_package.callable_links.insert(
+        provider_callable.clone(),
+        artifact::PackageCallableLinkFact {
+            callable_id: provider_callable,
+            target: provider_target.clone(),
+        },
+    );
     let provider_ref = super::callback_matrix::package_ref(&provider_package);
     let assembly_identity = artifact::AssemblyIdentity::new("assembly:f445h-e4r-canonical-emit");
     let assembly = artifact::RuntimeAssembly {
@@ -606,12 +620,7 @@ fn fixture(items: usize) -> ServiceFixture {
             (provider_package, vec![provider_file.clone()]),
         ],
     );
-    let target = artifact::OperationTargetRef {
-        file_ref: super::callback_matrix::file_ref(&provider_file),
-        executable_index: 0,
-        callable_abi_id: OPERATION_ID.to_string(),
-        callable_kind: artifact::OperationCallableKind::PublicFunction,
-    };
+    let target = provider_target;
     let provider = ActivationContext::new(
         activation_identity(
             assembly_identity.clone(),

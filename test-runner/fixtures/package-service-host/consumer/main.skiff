@@ -36,3 +36,11 @@ function effectEvents(url: string) -> string {
 function serviceEffect(value: string) -> string {
   return payments/echo(value)
 }
+
+function leftLabel() -> string {
+  return payments/left.label()
+}
+
+function rightLabel() -> string {
+  return payments/right.label()
+}

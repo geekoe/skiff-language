@@ -294,6 +294,39 @@ mod server_stream_fixture {
         let mut provider_package = private_package(PROVIDER_PACKAGE, &provider_file);
         skiff_artifact_identity::assign_package_artifact_identities(&mut provider_package)
             .expect("activation stream provider package identities");
+        let provider_callable = artifact::PackageCallableId::new(OPERATION_ID);
+        let receiver_type = artifact::TypeRefIr::builtin("string");
+        let provider_target = artifact::OperationTargetRef {
+            file_ref: file_ref(&provider_file),
+            executable_index: 0,
+            callable_abi_id: provider_callable.to_string(),
+            callable_kind: artifact::OperationCallableKind::ImplMethod,
+        };
+        provider_package.implementation_links.constants.insert(
+            "worker".to_string(),
+            artifact::ConstExport {
+                file: file_ref(&provider_file),
+                const_index: 0,
+                symbol: "worker".to_string(),
+                ty: receiver_type.clone(),
+            },
+        );
+        provider_package.package_local_abi.public_symbols.insert(
+            "worker".to_string(),
+            artifact::PackageLocalAbiSymbol::PublicInstance {
+                instance_id: "worker".to_string(),
+                declared_receiver_type: receiver_type,
+                interfaces: vec![artifact::TypeRefIr::builtin("EventSource")],
+                methods: BTreeMap::from([("events".to_string(), provider_callable.clone())]),
+            },
+        );
+        provider_package.callable_links.insert(
+            provider_callable.clone(),
+            artifact::PackageCallableLinkFact {
+                callable_id: provider_callable,
+                target: provider_target.clone(),
+            },
+        );
         let provider_ref = package_ref(&provider_package);
 
         let assembly_identity =
@@ -327,12 +360,6 @@ mod server_stream_fixture {
                 (provider_package, vec![provider_file.clone()]),
             ],
         );
-        let provider_target = artifact::OperationTargetRef {
-            file_ref: file_ref(&provider_file),
-            executable_index: 0,
-            callable_abi_id: OPERATION_ID.to_string(),
-            callable_kind: artifact::OperationCallableKind::PublicFunction,
-        };
         let provider = ActivationContext::new(
             activation_identity(
                 assembly_identity.clone(),
@@ -443,25 +470,64 @@ mod server_stream_fixture {
             "activation_stream.provider",
             "source:f445h-e4r-activation-stream-provider",
         );
-        file.executables.push(artifact::ExecutableIr {
-            kind: artifact::ExecutableKind::Function,
-            symbol: "stream".to_string(),
-            type_params: Vec::new(),
-            params: Vec::new(),
-            return_type: artifact::TypeRefIr::Builtin {
-                name: "Stream".to_string(),
-                args: vec![artifact::TypeRefIr::builtin("string")],
-            },
-            self_type: None,
-            slots: artifact::SlotLayout::default(),
-            may_suspend: true,
+        file.constants.push(artifact::ConstIr {
+            name: "worker".to_string(),
+            ty: artifact::TypeRefIr::builtin("string"),
             body: artifact::ExecutableBody {
                 blocks: vec![artifact::BlockIr {
                     label: "entry".to_string(),
                     statements: vec![artifact::StmtRefIr { statement: 0 }],
                 }],
-                statements: vec![artifact::StmtIr::Return { value: None }],
-                expressions: Vec::new(),
+                statements: vec![artifact::StmtIr::Return {
+                    value: Some(artifact::ExprRefIr { expression: 0 }),
+                }],
+                expressions: vec![artifact::ExprIr::Literal {
+                    value: artifact::LiteralIr::String {
+                        value: "receiver-stream-item".to_string(),
+                    },
+                }],
+            },
+            source_span: None,
+        });
+        file.executables.push(artifact::ExecutableIr {
+            kind: artifact::ExecutableKind::ImplMethod,
+            symbol: "Worker.events".to_string(),
+            type_params: Vec::new(),
+            params: vec![artifact::ParamIr {
+                name: "self".to_string(),
+                slot: 0,
+                ty: artifact::TypeRefIr::builtin("string"),
+            }],
+            return_type: artifact::TypeRefIr::Builtin {
+                name: "Stream".to_string(),
+                args: vec![artifact::TypeRefIr::builtin("string")],
+            },
+            self_type: Some(artifact::TypeRefIr::builtin("string")),
+            slots: artifact::SlotLayout {
+                slots: vec![artifact::SlotIr {
+                    index: 0,
+                    name: "self".to_string(),
+                    kind: artifact::SlotKind::SelfValue,
+                }],
+                frame_size: 1,
+            },
+            may_suspend: true,
+            body: artifact::ExecutableBody {
+                blocks: vec![artifact::BlockIr {
+                    label: "entry".to_string(),
+                    statements: vec![
+                        artifact::StmtRefIr { statement: 0 },
+                        artifact::StmtRefIr { statement: 1 },
+                    ],
+                }],
+                statements: vec![
+                    artifact::StmtIr::Emit {
+                        operation: "events".to_string(),
+                        value: artifact::ExprRefIr { expression: 0 },
+                    },
+                    artifact::StmtIr::Return { value: None },
+                ],
+                expressions: vec![artifact::ExprIr::LoadSlot { slot: 0 }],
             },
             source_span: None,
         });
@@ -762,7 +828,7 @@ async fn f445h_e4r_stream_activation_unary_ready_keeps_actor_segment() {
 }
 
 #[tokio::test]
-async fn f445h_e4r_stream_activation_server_stream_setup_is_synchronous_ready() {
+async fn f445h_e4r_stream_activation_public_instance_receiver_executes_after_synchronous_setup() {
     let actor = ActorFrameFixture::new();
     let (frame, mut heap) = actor.frame().await;
     let authority = ActorExecutorAuthority::new();
@@ -824,6 +890,18 @@ async fn f445h_e4r_stream_activation_server_stream_setup_is_synchronous_ready() 
         .finish(heap)
         .expect("finish activation stream Actor segment");
 
+    let receiver_item = interpreter
+        .stream_runtime
+        .next(&stream)
+        .await
+        .expect("activation stream receiver item");
+    assert!(
+        matches!(
+            &receiver_item,
+            StreamPoll::Item(value) if value == &serde_json::json!("receiver-stream-item")
+        ),
+        "public instance stream must emit its receiver const, got {receiver_item:?}"
+    );
     assert!(matches!(
         interpreter
             .stream_runtime

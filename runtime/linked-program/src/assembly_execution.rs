@@ -7,9 +7,10 @@ use skiff_artifact_model::{
 
 use crate::{
     ActivationRelativeServiceCall, ConstAddr, ConstIr, ExecutableAddr, FileAddr, LinkOverlay,
-    LinkedExecutable, LinkedFileUnit, LinkedPackageDirectCall, PackageCodeSlotIndex,
-    PackageSymbolKey, ResolvedSymbol, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageCode,
-    SharedPackageImageError, SharedPackageLinkedImage, TypeAddr, UnitAddr,
+    LinkedExecutable, LinkedFileUnit, LinkedPackageCallableTarget, LinkedPackageDirectCall,
+    PackageCodeSlotIndex, PackageSymbolKey, ResolvedSymbol, RuntimeTypeContext,
+    ServiceErrorTypeIndex, SharedPackageCode, SharedPackageImageError, SharedPackageLinkedImage,
+    TypeAddr, UnitAddr,
 };
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
@@ -190,6 +191,44 @@ impl AssemblyExecutionImage {
             .executable_addr(target)
             .map_err(AssemblyExecutionImageError::SharedImage)?;
         self.executable_at(&addr)
+    }
+
+    /// Resolves one exact package callable target for provider execution.
+    ///
+    /// `OperationTargetRef::callable_abi_id` is the canonical callable identity
+    /// embedded in the already-admitted target. The full target is compared
+    /// before returning the runtime-only receiver/executable pair, so this
+    /// lookup never falls back to an operation name or method symbol.
+    pub fn entry_callable_target(
+        &self,
+        package_build_id: &PackageBuildId,
+        target: &OperationTargetRef,
+    ) -> AssemblyExecutionResult<LinkedPackageCallableTarget> {
+        let shared = self
+            .shared_packages
+            .code_by_build(package_build_id)
+            .ok_or_else(|| AssemblyExecutionImageError::PackageBuildNotLoaded {
+                package_build_id: package_build_id.clone(),
+            })?;
+        let callable_id = PackageCallableId::new(target.callable_abi_id.clone());
+        if shared.callable_target(&callable_id) != Some(target) {
+            return Err(AssemblyExecutionImageError::EntryCallableTargetMismatch {
+                package_build_id: package_build_id.clone(),
+                package_callable_id: callable_id,
+            });
+        }
+        let linked = shared
+            .linked_callable_target(&callable_id)
+            .ok_or_else(|| AssemblyExecutionImageError::MissingEntryCallableTarget {
+                package_build_id: package_build_id.clone(),
+                package_callable_id: callable_id.clone(),
+            })?
+            .clone();
+        self.executable_at(linked.executable_addr())?;
+        if let Some(receiver) = linked.receiver_const() {
+            self.const_at(receiver)?;
+        }
+        Ok(linked)
     }
 
     pub fn const_at(&self, addr: &ConstAddr) -> AssemblyExecutionResult<&ConstIr> {
@@ -461,6 +500,14 @@ pub enum AssemblyExecutionImageError {
     },
     PackageBuildNotLoaded {
         package_build_id: PackageBuildId,
+    },
+    MissingEntryCallableTarget {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+    },
+    EntryCallableTargetMismatch {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
     },
     CodeSlotOutOfBounds {
         code_slot: PackageCodeSlotIndex,
