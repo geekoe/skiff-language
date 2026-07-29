@@ -15,6 +15,13 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         ))
     }
 
+    fn is_test_http_self_ingress(
+        &self,
+        input: &Value,
+    ) -> capability_contract::CapabilityResult<bool> {
+        Ok(self.0.is_test_http_self_ingress(input))
+    }
+
     fn dispatch_http_request<'a>(
         &'a self,
         input: &'a Value,

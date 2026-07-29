@@ -657,6 +657,7 @@ impl RuntimeHost {
                 router_session: ConnectionRequestSession::new(router_session_id.to_string())
                     .map_err(RuntimeError::Decode)?,
                 http_response_max_bytes,
+                test_http_entries: self.test_http_entries.clone(),
             },
         )
     }

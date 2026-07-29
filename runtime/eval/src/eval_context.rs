@@ -1250,7 +1250,9 @@ impl<'a> EvalContext<'a> {
                     .await
             }
             LinkedCallTarget::PackageDirect { call: target } => {
-                if self.interpreter.test_effects_enabled {
+                let bypass_test_effect =
+                    is_std_http_self_ingress_call(target, &values, self.heap, &self.context)?;
+                if self.interpreter.test_effects_enabled && !bypass_test_effect {
                     let effect_target = TestEffectTarget::package_callable(
                         target.dependency_package_build_id().clone(),
                         target.package_callable_id().clone(),
@@ -1770,6 +1772,29 @@ impl<'a> EvalContext<'a> {
             }
         }
     }
+}
+
+fn is_std_http_self_ingress_call(
+    target: &skiff_runtime_linked_program::LinkedPackageDirectCall,
+    values: &[RuntimeValueCarrier],
+    heap: &RequestHeap,
+    context: &ProgramExecutionContext<'_>,
+) -> Result<bool> {
+    if !matches!(
+        target.package_callable_id().as_str(),
+        "pkg-callable:skiff.run/std:std.http.request"
+            | "pkg-callable:skiff.run/std:std.http.stream"
+    ) {
+        return Ok(false);
+    }
+    let [input] = values else {
+        return Ok(false);
+    };
+    let input = runtime_to_wire(input, heap)?;
+    context
+        .http_client_context()
+        .is_test_http_self_ingress(&input)
+        .map_err(RuntimeError::from)
 }
 
 fn stream_item_plans_match(

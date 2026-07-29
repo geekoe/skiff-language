@@ -49,7 +49,7 @@ pub use execution_control::{ExecutionControl, OwnedExecutionControl};
 pub use http_gateway_execution::{
     execute_runtime_http_gateway_request, RuntimeHttpGatewayEvalAdapter,
     RuntimeHttpGatewayEvalExecutionInputParts, RuntimeHttpGatewayExecutionHandles,
-    RuntimeHttpGatewayExecutionInput,
+    RuntimeHttpGatewayExecutionInput, RuntimeHttpGatewayTestEffectExecution,
 };
 pub use http_gateway_target::{
     RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyHttpGatewayTargetError,

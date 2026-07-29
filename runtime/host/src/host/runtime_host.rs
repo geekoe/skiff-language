@@ -29,6 +29,7 @@ use super::{
     OutboundRequestRegistry,
 };
 use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
+use crate::capability_context::TestHttpEntryRegistry;
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
@@ -78,6 +79,7 @@ pub struct RuntimeHost {
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     pub(crate) actor_owner_invocations: Arc<ActorOwnerInvocationRegistry>,
     pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
+    pub(crate) test_http_entries: TestHttpEntryRegistry,
 }
 
 impl RuntimeHost {
@@ -137,6 +139,7 @@ impl RuntimeHost {
             actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
             actor_owner_invocations: Arc::new(ActorOwnerInvocationRegistry::default()),
             actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),
+            test_http_entries: TestHttpEntryRegistry::default(),
         })
     }
 

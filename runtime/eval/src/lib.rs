@@ -262,6 +262,16 @@ pub struct Interpreter {
     pub deferred_stream_producers: program_stream::DeferredStreamProducerRegistry,
 }
 
+/// Opaque, request-independent ownership of one inline test-effect registry.
+///
+/// Runtime orchestration uses this context to let an exact nested ingress borrow
+/// its parent test case's effects without exposing registry internals.
+#[derive(Clone, Default)]
+#[doc(hidden)]
+pub struct TestEffectCaseContext {
+    registry: test_effect_registry::RuntimeTestEffectRegistry,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct InterpreterHttpOptions {
     allow_unsafe_targets: bool,
@@ -334,6 +344,19 @@ impl Interpreter {
             runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn for_runtime_assembly_with_test_effect_case_context(
+        test_effect_case: TestEffectCaseContext,
+        runtime_factory: EvalRuntimeFactory,
+    ) -> Self {
+        let mut interpreter = Self::for_runtime_assembly_with_test_effect_double_sequences(
+            HashMap::new(),
+            runtime_factory,
+        );
+        interpreter.runtime_test_effects = test_effect_case.registry;
+        interpreter
     }
 
     pub fn with_program(

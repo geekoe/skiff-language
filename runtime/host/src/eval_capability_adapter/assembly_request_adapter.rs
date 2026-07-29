@@ -33,6 +33,10 @@ pub(crate) fn http_gateway_eval_adapter(
         input.header.deadline.as_ref(),
         &input.header.trace,
         input.header.test_effects_enabled,
+        input
+            .header
+            .test_effects_enabled
+            .then_some(input.header.http_request.url),
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -56,6 +60,7 @@ pub(crate) fn websocket_connect_eval_adapter(
         input.header.deadline.as_ref(),
         &input.header.trace,
         input.header.test_effects_enabled,
+        None,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -79,6 +84,7 @@ pub(crate) fn websocket_jsonrpc_eval_adapter(
         input.header.deadline.as_ref(),
         &input.header.trace,
         input.header.test_effects_enabled,
+        None,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -94,6 +100,7 @@ fn request_metadata(
     deadline: Option<&RuntimeAssemblyRequestDeadlineFrameHeader>,
     trace: &RuntimeAssemblyRequestTraceFrameHeader,
     test_effects_enabled: bool,
+    test_ingress_url: Option<String>,
 ) -> anyhow::Result<RuntimeAssemblyRequestMetadata> {
     Ok(RuntimeAssemblyRequestMetadata {
         request_id,
@@ -103,12 +110,48 @@ fn request_metadata(
         deadline: deadline.map(serde_json::to_value).transpose()?,
         trace: serde_json::to_value(trace)?,
         test_effects_enabled,
+        test_ingress_url,
     })
 }
 
 impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
     fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
         runtime_factory()
+    }
+
+    fn begin_test_effect_execution(
+        &self,
+    ) -> skiff_runtime_request::RequestResult<
+        Option<skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution>,
+    > {
+        let activation_id = self.activation.activation_id().as_str();
+        let execution = if self.request.test_effects_enabled {
+            let ingress_url = self.test_ingress_url.as_deref().ok_or_else(|| {
+                skiff_runtime_request::RequestError::Unsupported(
+                    "test HTTP ingress is missing its trusted ingress URL".to_string(),
+                )
+            })?;
+            Some(
+                self.test_http_entries
+                    .begin_parent(
+                        activation_id.to_string(),
+                        ingress_url,
+                        self.activation.identity().deployment.clone(),
+                    )
+                    .map_err(|error| {
+                        skiff_runtime_request::RequestError::Unsupported(error.to_string())
+                    })?,
+            )
+        } else {
+            self.test_http_entries.borrow_child(activation_id)
+        };
+        Ok(execution.map(|execution| {
+            skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::new(
+                execution.effects(),
+                execution.finalize(),
+                execution,
+            )
+        }))
     }
 
     fn execution_context<'a>(
