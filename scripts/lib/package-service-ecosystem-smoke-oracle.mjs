@@ -75,7 +75,7 @@ export function readPackageServiceFixtureReceipt(
       method: 'POST',
       path: '/__skiff/package-test/0',
     },
-    serviceId: `test.skiff/package/${safeCoordinate(packageId)}/case-0`,
+    serviceId: `test.skiff/${safeCoordinate(packageId)}/case-0`,
     contractVersion: packageVersion,
     deploymentRevision: `test-${identityHash(overlay.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
   });

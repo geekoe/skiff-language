@@ -31,7 +31,7 @@ export function validSmokeFixtureReceipt(environment) {
   };
   const packageTestDeployment = {
     serviceId:
-      'test.skiff/package/test.skiff/package-service-websocket-smoke/case-0',
+      'test.skiff/test.skiff/package-service-websocket-smoke/case-0',
     contractVersion: '1.0.0',
     deploymentRevision: `test-${hash(smokeFixtureIdentities.overlayBuild)}`,
     deploymentArtifactIdentity: smokeFixtureIdentities.packageTestDeployment,
