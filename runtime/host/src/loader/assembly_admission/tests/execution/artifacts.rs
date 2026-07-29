@@ -12,6 +12,8 @@ use super::resolver::TypedResolver;
 
 const CALLBACK_INTERFACE_SYMBOL: &str = "CallbackProbe";
 const CALLBACK_INTERFACE_METHOD: &str = "invoke";
+const CALLBACK_RECEIVER_SYMBOL: &str = "CallbackProbeReceiver";
+const IMPLEMENTATION_MODULE_PATH: &str = "phase_four.implementation";
 const CALLBACK_OWNER_EXECUTABLE_INDEX: u32 = 3;
 const CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX: u32 = 2;
 const PROVIDER_PACKAGE_ID: &str = "example.phase-four-provider";
@@ -446,7 +448,7 @@ impl ProjectedFixture {
         let provider_callable =
             PackageCallableId::new("pkg-callable:example.phase-four-provider:provide");
         let provider_file = implementation_file(
-            "phase_four.provider",
+            IMPLEMENTATION_MODULE_PATH,
             "provide",
             provider_may_suspend,
             callback_owner_may_suspend,
@@ -478,7 +480,7 @@ impl ProjectedFixture {
             expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         };
         let consumer_file = implementation_file(
-            "phase_four.consumer",
+            IMPLEMENTATION_MODULE_PATH,
             "consume",
             consumer_may_suspend,
             callback_owner_may_suspend,
@@ -746,7 +748,7 @@ fn implementation_file(
             package_call,
             behavior,
         } => {
-            configure_consumer_entry(&mut file, &mut entry, module_path, service_call, behavior);
+            configure_consumer_entry(&mut file, &mut entry, service_call, behavior);
             file.executables.push(entry);
             install_consumer_support(
                 &mut file,
@@ -776,11 +778,9 @@ fn configure_provider_entry(
             configure_async_typed_error_provider_entry(file, entry, module_path);
         }
         ProviderBehavior::InvokeCallback => configure_callback_provider_entry(entry),
-        ProviderBehavior::EmitCallbackStream => configure_callback_stream_provider_entry(
-            entry,
-            module_path,
-            CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
-        ),
+        ProviderBehavior::EmitCallbackStream => {
+            configure_callback_stream_provider_entry(entry, CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX)
+        }
         ProviderBehavior::EmitBooleanSequence => {
             configure_boolean_stream_provider_entry(file, entry, module_path, false);
         }
@@ -793,13 +793,12 @@ fn configure_provider_entry(
 fn configure_consumer_entry(
     file: &mut FileIrUnit,
     entry: &mut ExecutableIr,
-    module_path: &str,
     service_call: ServiceCallRef,
     behavior: ConsumerBehavior,
 ) {
     file.external_refs.service_call_refs.push(service_call);
     let call_args = match behavior {
-        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry, module_path),
+        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry),
         ConsumerBehavior::ReturnCall
         | ConsumerBehavior::ReturnGenericBooleanStream
         | ConsumerBehavior::ConsumeCallbackStream { .. }
@@ -1170,19 +1169,15 @@ fn configure_async_typed_error_provider_entry(
     };
 }
 
-fn configure_callback_stream_provider_entry(
-    entry: &mut ExecutableIr,
-    module_path: &str,
-    owner_executable_index: u32,
-) {
-    let callback_interface = callback_interface_ref(module_path);
+fn configure_callback_stream_provider_entry(entry: &mut ExecutableIr, owner_executable_index: u32) {
+    let callback_interface = callback_interface_ref();
     entry.return_type = TypeRefIr::Builtin {
         name: "Stream".to_string(),
         args: vec![TypeRefIr::AnyInterface {
             interface: callback_interface,
         }],
     };
-    let callback = append_callback_preimage_at(entry, module_path, owner_executable_index);
+    let callback = append_callback_preimage_at(entry, owner_executable_index);
     entry.body.statements.push(StmtIr::Emit {
         operation: "provide".to_string(),
         value: callback[0],
@@ -1198,7 +1193,7 @@ fn configure_callback_stream_consumer_entry(
     stream_expression: u32,
     break_after_item: bool,
 ) {
-    let callback_interface = callback_interface_ref("phase_four.provider");
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -1272,7 +1267,7 @@ fn configure_callback_stream_consumer_entry(
 }
 
 fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
-    let callback_interface = callback_interface_ref("phase_four.consumer");
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -1319,24 +1314,24 @@ fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
     };
 }
 
-fn append_callback_preimage(entry: &mut ExecutableIr, module_path: &str) -> Vec<ExprRefIr> {
-    append_callback_preimage_at(entry, module_path, CALLBACK_OWNER_EXECUTABLE_INDEX)
+fn append_callback_preimage(entry: &mut ExecutableIr) -> Vec<ExprRefIr> {
+    append_callback_preimage_at(entry, CALLBACK_OWNER_EXECUTABLE_INDEX)
 }
 
 fn append_callback_preimage_at(
     entry: &mut ExecutableIr,
-    module_path: &str,
     owner_executable_index: u32,
 ) -> Vec<ExprRefIr> {
-    let callback_interface = callback_interface_ref(module_path);
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
     );
     let concrete_type = TypeRefIr::LocalType { type_index: 0 };
     entry.body.expressions.extend([
-        ExprIr::Literal {
-            value: LiteralIr::Bool { value: true },
+        ExprIr::Construct {
+            type_ref: concrete_type.clone(),
+            fields: BTreeMap::new(),
         },
         ExprIr::InterfaceBox {
             value: ExprRefIr { expression: 0 },
@@ -1377,24 +1372,24 @@ fn install_callback_interface_fixture(
     owner_executable_index: u32,
     owner_may_suspend: bool,
 ) {
-    let callback_interface = callback_interface_ref(module_path);
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
     );
     file.declarations.types.insert(
-        CALLBACK_INTERFACE_SYMBOL.to_string(),
+        CALLBACK_RECEIVER_SYMBOL.to_string(),
         TypeDeclarationIr {
             type_index: 0,
-            symbol: format!("{module_path}.{CALLBACK_INTERFACE_SYMBOL}"),
+            symbol: format!("{module_path}.{CALLBACK_RECEIVER_SYMBOL}"),
             source_span: None,
         },
     );
     file.declarations.types.insert(
-        format!("{CALLBACK_INTERFACE_SYMBOL}Schema"),
+        CALLBACK_INTERFACE_SYMBOL.to_string(),
         TypeDeclarationIr {
             type_index: 1,
-            symbol: format!("{module_path}.{CALLBACK_INTERFACE_SYMBOL}Schema"),
+            symbol: format!("{module_path}.{CALLBACK_INTERFACE_SYMBOL}"),
             source_span: None,
         },
     );
@@ -1420,7 +1415,7 @@ fn install_callback_interface_fixture(
         },
     );
     file.type_table.push(TypeDeclIr {
-        name: CALLBACK_INTERFACE_SYMBOL.to_string(),
+        name: CALLBACK_RECEIVER_SYMBOL.to_string(),
         descriptor: TypeDescriptorIr::Record {
             fields: BTreeMap::new(),
         },
@@ -1429,7 +1424,7 @@ fn install_callback_interface_fixture(
         source_span: None,
     });
     file.type_table.push(TypeDeclIr {
-        name: format!("{CALLBACK_INTERFACE_SYMBOL}Schema"),
+        name: CALLBACK_INTERFACE_SYMBOL.to_string(),
         descriptor: TypeDescriptorIr::Interface,
         type_params: Vec::new(),
         implements: Vec::new(),
@@ -1567,11 +1562,11 @@ fn callback_checkpoint_executable(
     executable
 }
 
-pub(super) fn callback_interface_ref(module_path: &str) -> InterfaceInstantiationRef {
+pub(super) fn callback_interface_ref() -> InterfaceInstantiationRef {
     skiff_artifact_identity::interface_instantiation_ref(
         TypeRefIr::ServiceSymbol {
             symbol: ServiceSymbolRef {
-                module_path: module_path.to_string(),
+                module_path: IMPLEMENTATION_MODULE_PATH.to_string(),
                 symbol: CALLBACK_INTERFACE_SYMBOL.to_string(),
             },
         },

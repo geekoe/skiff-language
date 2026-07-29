@@ -153,7 +153,7 @@ impl TypedExecutionFixture {
             "package executable must propagate the same-heap provider result"
         );
 
-        let callback_interface = callback_interface_ref("phase_four.consumer");
+        let callback_interface = callback_interface_ref();
         let linked_interface = LinkedInterfaceInstantiationRef {
             interface_abi_id: callback_interface.interface_abi_id.clone(),
             canonical_type_args: Vec::new(),
