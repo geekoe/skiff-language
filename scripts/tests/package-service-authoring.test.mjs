@@ -18,6 +18,13 @@ import {
 } from './package-service-fixtures.mjs';
 
 const skiffRoot = resolve(import.meta.dirname, '..', '..');
+const rootDeployment = {
+  contractVersion: '1.0.0',
+  deploymentArtifactIdentity:
+    `skiff-deployment-artifact-v2:sha256:${'1'.repeat(64)}`,
+  deploymentRevision: 'revision-1',
+  serviceId: 'example.com/service',
+};
 
 test(
   'compiler authoring transports the exact absolute platform root independently of cwd',
@@ -58,17 +65,149 @@ test(
 test('public package/assembly CLI does not expose the internal platform trust option', () => {
   for (const kind of ['package', 'assembly']) {
     assert.doesNotMatch(objectUsage(kind), /platform-source-root/);
+  }
+  assert.throws(
+    () => parseObjectArgs('package', 'build', [
+      '/tmp/object-root',
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--platform-source-root',
+      skiffRoot,
+    ]),
+    /unknown option --platform-source-root/,
+  );
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--environment',
+      'dev',
+      '--root-deployment',
+      JSON.stringify(rootDeployment),
+      '--platform-source-root',
+      skiffRoot,
+    ]),
+    /unknown option --platform-source-root/,
+  );
+});
+
+test('assembly authoring transports only exact inline deployment roots', () => {
+  const second = {
+    ...rootDeployment,
+    deploymentRevision: 'revision-2',
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v2:sha256:${'2'.repeat(64)}`,
+  };
+  const parsed = parseObjectArgs('assembly', 'publish', [
+    '--artifact-root=/tmp/artifacts',
+    '--environment',
+    'dev',
+    '--root-deployment',
+    JSON.stringify(rootDeployment),
+    `--root-deployment=${JSON.stringify(second)}`,
+  ]);
+  assert.equal(parsed.root, undefined);
+  assert.deepEqual(parsed.rootDeployments, [rootDeployment, second]);
+
+  const invocation = compilerAuthoringInvocation({
+    skiffRoot,
+    kind: 'assembly',
+    action: 'publish',
+    artifactRoot: parsed.artifactRoot,
+    environment: parsed.environment,
+    rootDeployments: parsed.rootDeployments,
+  });
+  assert.equal(invocation.args.includes('/tmp/object-root'), false);
+  assert.equal(invocation.args.includes('--platform-source-root'), false);
+  assert.deepEqual(
+    invocation.args.flatMap((value, index) => (
+      value === '--root-deployment' ? [JSON.parse(invocation.args[index + 1])] : []
+    )),
+    [rootDeployment, second],
+  );
+});
+
+test('assembly authoring rejects empty, duplicate, malformed, and retired root inputs', () => {
+  const base = [
+    '--artifact-root',
+    '/tmp/artifacts',
+    '--environment',
+    'dev',
+  ];
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', base),
+    /requires at least one --root-deployment/,
+  );
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      ...base,
+      '--root-deployment',
+      JSON.stringify(rootDeployment),
+      '--root-deployment',
+      JSON.stringify({
+        serviceId: rootDeployment.serviceId,
+        deploymentRevision: rootDeployment.deploymentRevision,
+        contractVersion: rootDeployment.contractVersion,
+        deploymentArtifactIdentity: rootDeployment.deploymentArtifactIdentity,
+      }),
+    ]),
+    /duplicate exact reference/,
+  );
+  for (const bad of [
+    '{',
+    '[]',
+    JSON.stringify({ ...rootDeployment, extra: true }),
+    JSON.stringify({ ...rootDeployment, serviceId: ' ' }),
+  ]) {
     assert.throws(
-      () => parseObjectArgs(kind, 'build', [
-        '/tmp/object-root',
-        '--artifact-root',
-        '/tmp/artifacts',
-        '--platform-source-root',
-        skiffRoot,
+      () => parseObjectArgs('assembly', 'build', [
+        ...base,
+        '--root-deployment',
+        bad,
       ]),
-      /unknown option --platform-source-root/,
+      /ServiceDeploymentRef|fields must be exactly|non-empty trimmed string/,
     );
   }
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      '/tmp/object-root',
+      ...base,
+      '--root-deployment',
+      JSON.stringify(rootDeployment),
+    ]),
+    /does not accept a positional root/,
+  );
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      '--root',
+      '/tmp/object-root',
+      ...base,
+      '--root-deployment',
+      JSON.stringify(rootDeployment),
+    ]),
+    /unknown option --root/,
+  );
+  assert.throws(
+    () => compilerAuthoringInvocation({
+      skiffRoot,
+      kind: 'assembly',
+      action: 'build',
+      artifactRoot: '/tmp/artifacts',
+      rootDeployments: [rootDeployment],
+    }),
+    /explicit environment/,
+  );
+  assert.throws(
+    () => compilerAuthoringInvocation({
+      skiffRoot,
+      kind: 'assembly',
+      action: 'build',
+      artifactRoot: '/tmp/artifacts',
+      environment: 'dev',
+      rootDeployments: [],
+    }),
+    /at least one exact root deployment/,
+  );
 });
 
 test('human service API output renders the exact compiler projection', () => {

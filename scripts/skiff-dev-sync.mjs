@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -173,25 +172,15 @@ export async function runDevSyncOnce({
   if (rootDeployments.some((reference) => !isPlainObject(reference))) {
     throw new Error('deployment publish did not return an exact ServiceDeployment reference');
   }
-  const temporary = await mkdtemp(join(tmpdir(), 'skiff-runtime-assembly-'));
-  let assemblyReceipt;
-  try {
-    await writeFile(join(temporary, 'assembly.yml'), `${JSON.stringify({
-      environment,
-      rootDeployments,
-    }, null, 2)}\n`);
-    const result = await compilerRunner({
-      skiffRoot: compilerRoot,
-      kind: 'assembly',
-      action: 'build',
-      root: temporary,
-      artifactRoot,
-      environment,
-    });
-    assemblyReceipt = result.runtimeAssemblyReceipt;
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  const assemblyResult = await compilerRunner({
+    skiffRoot: compilerRoot,
+    kind: 'assembly',
+    action: 'build',
+    rootDeployments,
+    artifactRoot,
+    environment,
+  });
+  const assemblyReceipt = assemblyResult.runtimeAssemblyReceipt;
   if (!isPlainObject(assemblyReceipt?.assembly)) {
     throw new Error('assembly build did not return an exact RuntimeAssembly reference');
   }
