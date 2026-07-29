@@ -363,6 +363,12 @@ fn implementation_throw_facts_change_build_but_not_local_abi_or_service_protocol
         panic!("fixture provenance must be analyzed")
     };
     *throw_origins = vec![ValueProvenance::CallerParameter { index: 0 }];
+    changed.boundary_projections.insert(
+        callable_id,
+        BoundaryCallableProjection::Unavailable {
+            reasons: vec![BoundaryUnavailableReason::ThrowsCallerAlias],
+        },
+    );
 
     assert_eq!(
         package_artifact_local_abi_identity(&changed).unwrap(),
@@ -401,6 +407,21 @@ fn caller_projection_path_changes_build_identity_but_not_local_abi() {
         throw_origins: Vec::new(),
         escape_lanes: Vec::new(),
     };
+    let callable_id = state_projection
+        .callable_semantic_facts
+        .keys()
+        .next()
+        .expect("fixture callable id")
+        .clone();
+    state_projection.boundary_projections.insert(
+        callable_id,
+        BoundaryCallableProjection::Unavailable {
+            reasons: vec![
+                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::ReturnsCallerAlias,
+            ],
+        },
+    );
 
     let mut status_projection = state_projection.clone();
     let CallableProvenanceSummary::Analyzed {

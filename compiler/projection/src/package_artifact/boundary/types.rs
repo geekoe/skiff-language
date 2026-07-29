@@ -1,15 +1,20 @@
+use skiff_artifact_model::boundary::{
+    classify_boundary_callback_position, BoundaryCallbackPosition,
+};
 use skiff_artifact_model::{
+    BoundaryCallbackContract, BoundaryCallbackExpirationError, BoundaryCallbackLifetime,
     BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
     BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, LiteralIr,
-    PackageCallableSignature, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    PackageCallableSignature, PackageRefIr, PackageSchemaTypeRef, PackageSymbolRef, PackageTypeRef,
+    TypeRefIr,
 };
 use skiff_compiler_core::type_closure::{
     ArtifactNominalTypeSource, NoTypeClosureGuards, TypeClosureControl, TypeClosurePolicy,
     TypeClosureVisit, TypeClosureWalker,
 };
 use skiff_compiler_projection_input::ResolvedPackageSchema;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::eligibility::push_reason;
 
@@ -21,7 +26,7 @@ pub(super) fn project_operation_contract(
     resolved_package_schemas: &[ResolvedPackageSchema],
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) -> Option<BoundaryOperationContract> {
-    let parameters = signature
+    let parameter_types = signature
         .parameters
         .iter()
         .filter_map(|parameter| {
@@ -32,11 +37,6 @@ pub(super) fn project_operation_contract(
                 public_type_ids,
                 resolved_package_schemas,
             )
-            .map(|ty| BoundaryParameter {
-                name: parameter.name.clone(),
-                ty,
-                value_plan: linkable_plan(BoundaryValueOwner::Caller, BoundaryValueLifetime::Call),
-            })
             .map_err(|reason| push_reason(reasons, reason))
             .ok()
         })
@@ -50,16 +50,70 @@ pub(super) fn project_operation_contract(
     )
     .map_err(|reason| push_reason(reasons, reason))
     .ok();
-    if parameters.len() != signature.parameters.len() || return_projection.is_none() {
+    if parameter_types.len() != signature.parameters.len() || return_projection.is_none() {
         return None;
     }
 
-    let (return_value, stream) = return_projection.expect("checked complete return projection");
+    let (mut return_value, mut stream) =
+        return_projection.expect("checked complete return projection");
+    let callback_lifetime = match &stream {
+        BoundaryStreamContract::ServerStream { .. } => BoundaryValueLifetime::Stream,
+        BoundaryStreamContract::Unary => BoundaryValueLifetime::Request,
+        BoundaryStreamContract::Unsupported { .. } => {
+            unreachable!("unsupported stream projections are rejected before contract assembly")
+        }
+    };
+    let mut callback_interfaces = BTreeSet::new();
+    let parameters = signature
+        .parameters
+        .iter()
+        .zip(parameter_types)
+        .map(|(parameter, ty)| {
+            let value_plan = canonical_projected_plan(
+                &ty,
+                BoundaryValueOwner::Caller,
+                BoundaryValueLifetime::Call,
+                callback_lifetime,
+                &mut callback_interfaces,
+            )?;
+            Ok(BoundaryParameter {
+                name: parameter.name.clone(),
+                ty,
+                value_plan,
+            })
+        })
+        .collect::<Result<Vec<_>, BoundaryUnavailableReason>>()
+        .map_err(|reason| push_reason(reasons, reason))
+        .ok()?;
+    return_value.value_plan = canonical_projected_plan(
+        &return_value.ty,
+        BoundaryValueOwner::Provider,
+        BoundaryValueLifetime::Call,
+        callback_lifetime,
+        &mut callback_interfaces,
+    )
+    .map_err(|reason| push_reason(reasons, reason))
+    .ok()?;
+    if let BoundaryStreamContract::ServerStream {
+        item_type,
+        item_value_plan,
+    } = &mut stream
+    {
+        *item_value_plan = canonical_projected_plan(
+            item_type,
+            BoundaryValueOwner::Provider,
+            BoundaryValueLifetime::Stream,
+            BoundaryValueLifetime::Stream,
+            &mut callback_interfaces,
+        )
+        .map_err(|reason| push_reason(reasons, reason))
+        .ok()?;
+    }
     Some(BoundaryOperationContract {
         parameters,
         return_value,
         stream,
-        callbacks: skiff_artifact_model::BoundaryCallbackContract::None,
+        callbacks: canonical_callback_contract(callback_interfaces, callback_lifetime),
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -537,6 +591,54 @@ fn linkable_plan(owner: BoundaryValueOwner, lifetime: BoundaryValueLifetime) -> 
     }
 }
 
+fn callback_plan(lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
+    BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::CallbackCapability,
+        encoding: BoundaryValueEncoding::OpaqueCapability,
+        owner: BoundaryValueOwner::CapabilityOwner,
+        lifetime,
+    }
+}
+
+fn canonical_projected_plan(
+    ty: &ContractTypeRef,
+    detached_owner: BoundaryValueOwner,
+    detached_lifetime: BoundaryValueLifetime,
+    callback_lifetime: BoundaryValueLifetime,
+    callback_interfaces: &mut BTreeSet<PackageSchemaTypeRef>,
+) -> Result<BoundaryValuePlan, BoundaryUnavailableReason> {
+    match classify_boundary_callback_position(ty) {
+        BoundaryCallbackPosition::Detached => Ok(linkable_plan(detached_owner, detached_lifetime)),
+        BoundaryCallbackPosition::Exact { interface_type } => {
+            callback_interfaces.insert(interface_type);
+            Ok(callback_plan(callback_lifetime))
+        }
+        BoundaryCallbackPosition::Unsupported => {
+            Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
+        }
+    }
+}
+
+fn canonical_callback_contract(
+    interfaces: BTreeSet<PackageSchemaTypeRef>,
+    lifetime: BoundaryValueLifetime,
+) -> BoundaryCallbackContract {
+    if interfaces.is_empty() {
+        return BoundaryCallbackContract::None;
+    }
+    BoundaryCallbackContract::RequestScoped {
+        interface_types: interfaces.into_iter().collect(),
+        lifetime: match lifetime {
+            BoundaryValueLifetime::Stream => BoundaryCallbackLifetime::Stream,
+            BoundaryValueLifetime::Request => BoundaryCallbackLifetime::TopLevelRequest,
+            BoundaryValueLifetime::Call => {
+                unreachable!("callback capabilities never use call lifetime")
+            }
+        },
+        expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,6 +648,216 @@ mod tests {
         PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord,
         TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
     };
+
+    fn schema_type(package_id: &str, stable_key: &str, type_id: &str) -> PackageTypeRef {
+        PackageTypeRef::PackageSchema {
+            package_id: package_id.to_string(),
+            stable_schema_key: stable_key.to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new(type_id),
+        }
+    }
+
+    fn callback_type(package_id: &str, stable_key: &str, type_id: &str) -> PackageTypeRef {
+        PackageTypeRef::AnyInterface {
+            interface: Box::new(schema_type(package_id, stable_key, type_id)),
+            arguments: Vec::new(),
+        }
+    }
+
+    fn operation_contract(
+        parameters: Vec<PackageTypeRef>,
+        return_type: PackageTypeRef,
+    ) -> BoundaryOperationContract {
+        let signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: parameters
+                .into_iter()
+                .enumerate()
+                .map(
+                    |(index, ty)| skiff_artifact_model::PackageCallableParameter {
+                        name: format!("p{index}"),
+                        ty,
+                    },
+                )
+                .collect(),
+            return_type,
+            may_suspend: true,
+        };
+        let mut reasons = Vec::new();
+        let contract =
+            project_operation_contract("api", &signature, &[], &BTreeMap::new(), &[], &mut reasons)
+                .expect("fixture must project");
+        assert!(reasons.is_empty());
+        skiff_artifact_model::validate_boundary_operation_contract(&contract)
+            .expect("compiler projection must satisfy canonical boundary validation");
+        contract
+    }
+
+    fn unavailable_reason(parameter_type: PackageTypeRef) -> Vec<BoundaryUnavailableReason> {
+        let signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![skiff_artifact_model::PackageCallableParameter {
+                name: "value".to_string(),
+                ty: parameter_type,
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("void"),
+            },
+            may_suspend: true,
+        };
+        let mut reasons = Vec::new();
+        assert_eq!(
+            project_operation_contract("api", &signature, &[], &BTreeMap::new(), &[], &mut reasons,),
+            None
+        );
+        reasons
+    }
+
+    #[test]
+    fn unary_callback_parameters_and_return_use_request_capabilities() {
+        let reader = callback_type("example.interfaces", "api.Reader", "type:reader");
+        let writer = callback_type("example.interfaces", "api.Writer", "type:writer");
+        let contract =
+            operation_contract(vec![writer.clone(), reader.clone(), writer.clone()], reader);
+
+        for parameter in &contract.parameters {
+            assert_eq!(
+                parameter.value_plan,
+                callback_plan(BoundaryValueLifetime::Request)
+            );
+        }
+        assert_eq!(
+            contract.return_value.value_plan,
+            callback_plan(BoundaryValueLifetime::Request)
+        );
+        assert_eq!(
+            contract.callbacks,
+            BoundaryCallbackContract::RequestScoped {
+                interface_types: vec![
+                    PackageSchemaTypeRef {
+                        package_id: "example.interfaces".to_string(),
+                        stable_schema_key: "api.Reader".to_string(),
+                        package_schema_type_id: PackageSchemaTypeId::new("type:reader"),
+                    },
+                    PackageSchemaTypeRef {
+                        package_id: "example.interfaces".to_string(),
+                        stable_schema_key: "api.Writer".to_string(),
+                        package_schema_type_id: PackageSchemaTypeId::new("type:writer"),
+                    },
+                ],
+                lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+                expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+            }
+        );
+    }
+
+    #[test]
+    fn server_stream_callback_parameters_and_items_live_for_the_stream() {
+        let reader = callback_type("example.interfaces", "api.Reader", "type:reader");
+        let contract = operation_contract(
+            vec![reader.clone()],
+            PackageTypeRef::Container {
+                name: "Stream".to_string(),
+                arguments: vec![reader],
+            },
+        );
+
+        assert_eq!(
+            contract.parameters[0].value_plan,
+            callback_plan(BoundaryValueLifetime::Stream)
+        );
+        assert_eq!(
+            contract.return_value.value_plan,
+            linkable_plan(BoundaryValueOwner::Provider, BoundaryValueLifetime::Call)
+        );
+        let BoundaryStreamContract::ServerStream {
+            item_value_plan, ..
+        } = contract.stream
+        else {
+            panic!("expected server stream")
+        };
+        assert_eq!(
+            item_value_plan,
+            callback_plan(BoundaryValueLifetime::Stream)
+        );
+        assert!(matches!(
+            contract.callbacks,
+            BoundaryCallbackContract::RequestScoped {
+                lifetime: BoundaryCallbackLifetime::Stream,
+                expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn direct_package_schema_remains_detached_data() {
+        let schema = schema_type("example.interfaces", "api.Reader", "type:reader");
+        let contract = operation_contract(vec![schema.clone()], schema);
+
+        assert_eq!(
+            contract.parameters[0].value_plan,
+            linkable_plan(BoundaryValueOwner::Caller, BoundaryValueLifetime::Call)
+        );
+        assert_eq!(
+            contract.return_value.value_plan,
+            linkable_plan(BoundaryValueOwner::Provider, BoundaryValueLifetime::Call)
+        );
+        assert_eq!(contract.callbacks, BoundaryCallbackContract::None);
+    }
+
+    #[test]
+    fn unsupported_callback_shapes_are_structured_unavailable() {
+        let exact = callback_type("example.interfaces", "api.Reader", "type:reader");
+        let generic = PackageTypeRef::AnyInterface {
+            interface: Box::new(schema_type(
+                "example.interfaces",
+                "api.Reader",
+                "type:reader",
+            )),
+            arguments: vec![PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            }],
+        };
+        let local_any = PackageTypeRef::Local {
+            local_type: TypeRefIr::AnyInterface {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id: "interface:reader".to_string(),
+                    canonical_type_args: Vec::new(),
+                },
+            },
+        };
+        let raw_function = PackageTypeRef::Local {
+            local_type: TypeRefIr::Function {
+                params: Vec::new(),
+                return_type: Box::new(TypeRefIr::builtin("void")),
+            },
+        };
+
+        for ty in [
+            PackageTypeRef::Container {
+                name: "Array".to_string(),
+                arguments: vec![exact],
+            },
+            generic,
+            local_any,
+            raw_function,
+        ] {
+            assert_eq!(
+                unavailable_reason(ty),
+                vec![BoundaryUnavailableReason::CallbackAdapterUnavailable]
+            );
+        }
+        assert_eq!(
+            unavailable_reason(PackageTypeRef::Local {
+                local_type: TypeRefIr::Builtin {
+                    name: "NativeHandle".to_string(),
+                    args: Vec::new(),
+                },
+            }),
+            vec![BoundaryUnavailableReason::NativeAdapterUnavailable]
+        );
+    }
 
     #[test]
     fn concrete_suspension_summary_does_not_enter_operation_contract_shape() {
