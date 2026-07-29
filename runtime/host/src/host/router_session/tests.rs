@@ -67,6 +67,7 @@ async fn connection_request_response_demux_uses_exact_router_session() {
     assert_eq!(host.connection_requests.active_timer_count(), 0);
 }
 
+mod connection_lifecycle;
 mod foreign_db_exact_identity;
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;
@@ -205,43 +206,39 @@ async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
     }
 
     let encoded_frames = Arc::new(AtomicUsize::new(0));
-    let (sender, receiver) = mpsc::unbounded_channel();
-    sender
-        .send(super::super::RouterWriterMessage::Control(
-            skiff_runtime_request::OutboundControlMessage::SpawnSubmit {
-                request: skiff_runtime_request::SpawnSubmitControlRequest {
-                    rpc_id: "rpc-spawn".to_string(),
-                    runtime_id: "runtime-1".to_string(),
-                    target_kind: "operation".to_string(),
-                    service_id: "test.skiff/agine.ai/api-tests/case-23".to_string(),
-                    service_version: "1.0.0".to_string(),
-                    service_protocol_identity: "service-protocol-1".to_string(),
-                    target: "Worker.run".to_string(),
-                    spawn_id: Some("spawn-1".to_string()),
-                    build_id: Some("build-1".to_string()),
-                    activation_identity:
-                        skiff_runtime_request::ActivationIdentityControl {
-                            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                            ),
-                            generation: 7,
-                            runtime_replica_id: "runtime-replica-7".to_string(),
-                            deployment_revision: skiff_artifact_model::DeploymentRevision::new(
-                                "deployment-revision-7",
-                            ),
-                        },
-                    caller_request_id: Some("request-1".to_string()),
-                    trace_id: Some("trace-1".to_string()),
-                    caller_target: Some("Caller.start".to_string()),
-                    max_queue_wait_ms: Some(250.0),
+    let message = super::super::RouterWriterMessage::Control(
+        skiff_runtime_request::OutboundControlMessage::SpawnSubmit {
+            request: skiff_runtime_request::SpawnSubmitControlRequest {
+                rpc_id: "rpc-spawn".to_string(),
+                runtime_id: "runtime-1".to_string(),
+                target_kind: "operation".to_string(),
+                service_id: "test.skiff/agine.ai/api-tests/case-23".to_string(),
+                service_version: "1.0.0".to_string(),
+                service_protocol_identity: "service-protocol-1".to_string(),
+                target: "Worker.run".to_string(),
+                spawn_id: Some("spawn-1".to_string()),
+                build_id: Some("build-1".to_string()),
+                activation_identity: skiff_runtime_request::ActivationIdentityControl {
+                    assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
+                        "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ),
+                    generation: 7,
+                    runtime_replica_id: "runtime-replica-7".to_string(),
+                    deployment_revision: skiff_artifact_model::DeploymentRevision::new(
+                        "deployment-revision-7",
+                    ),
                 },
-                payload: b"opaque spawn args".to_vec(),
+                caller_request_id: Some("request-1".to_string()),
+                trace_id: Some("trace-1".to_string()),
+                caller_target: Some("Caller.start".to_string()),
+                max_queue_wait_ms: Some(250.0),
             },
-        ))
-        .expect("writer input should enqueue");
-    drop(sender);
-
-    run_writer_loop(CountingSocket(Arc::clone(&encoded_frames)), receiver).await;
+            payload: b"opaque spawn args".to_vec(),
+        },
+    );
+    send_writer_message(&mut CountingSocket(Arc::clone(&encoded_frames)), message)
+        .await
+        .expect_err("invalid service ID must fail before writing a frame");
 
     assert_eq!(encoded_frames.load(Ordering::SeqCst), 0);
 }

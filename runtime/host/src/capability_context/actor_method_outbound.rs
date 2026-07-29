@@ -131,6 +131,21 @@ impl ActorMethodOutboundRegistry {
             .map(|entry| entry.cancellation_correlation.clone())
     }
 
+    pub fn fail_all(&self, error: ActorInvocationTransportError) -> usize {
+        let entries = {
+            let Ok(mut entries) = self.inner.lock() else {
+                return 0;
+            };
+            entries.drain().map(|(_, entry)| entry).collect::<Vec<_>>()
+        };
+        let count = entries.len();
+        for entry in entries {
+            entry.response_committed.commit();
+            let _ = entry.sender.send(Err(error.clone()));
+        }
+        count
+    }
+
     #[cfg(test)]
     pub fn pending_count(&self) -> usize {
         self.inner.lock().map_or(0, |entries| entries.len())
@@ -229,6 +244,34 @@ mod tests {
         );
         assert!(!registry.complete("invoke-1", ActorInvocationOutcome::Returned(vec![3])));
         assert_eq!(registry.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn fail_all_delivers_connection_error_and_fences_late_response() {
+        let registry = ActorMethodOutboundRegistry::default();
+        let mut lease = registry
+            .register("invoke-1".into(), "cancel-1".into(), 1, implementation())
+            .unwrap();
+
+        assert_eq!(
+            registry.fail_all(ActorInvocationTransportError {
+                code: "ConnectionClosed".to_string(),
+                message: "router connection closed".to_string(),
+            }),
+            1
+        );
+        assert_eq!(
+            lease.receive().await.unwrap().unwrap_err(),
+            ActorInvocationTransportError {
+                code: "ConnectionClosed".to_string(),
+                message: "router connection closed".to_string(),
+            }
+        );
+        assert_eq!(registry.pending_count(), 0);
+        assert!(!registry.complete(
+            "invoke-1",
+            ActorInvocationOutcome::Returned(b"late".to_vec())
+        ));
     }
 
     #[test]
