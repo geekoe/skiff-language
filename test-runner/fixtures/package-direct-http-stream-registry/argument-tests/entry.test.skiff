@@ -47,8 +47,41 @@ function consumerCancelEntry(
   return null
 }
 
+function responseSinkEntry(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  for event in helper/wrapWithResponseSink(source()) {
+    emit(event)
+  }
+  return null
+}
+
+function responseSinkProducerErrorEntry(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  for event in helper/wrapWithResponseSink(producerErrorSource()) {
+    emit(event)
+  }
+  return null
+}
+
+function responseSinkConsumerCancelEntry(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  for event in helper/wrapWithResponseSink(consumerCancelSource()) {
+    emit(event)
+  }
+  return null
+}
+
 test "normal stream-producing argument" {}
 
 test "producer error stream-producing argument" {}
 
 test "consumer cancel stream-producing argument" {}
+
+test "deferred package-direct producer keeps raw HTTP response sink" {}
+
+test "deferred package-direct response sink preserves producer error" {}
+
+test "deferred package-direct response sink stops on consumer cancel" {}

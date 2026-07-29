@@ -22,3 +22,27 @@ consumerCancel:
   adapterArgs:
     - param: request
       source: { kind: http.request }
+responseSink:
+  method: POST
+  path: /package-direct/response-sink/normal
+  kind: rawHttp
+  handler: entry.__test.responseSinkEntry
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+responseSinkProducerError:
+  method: POST
+  path: /package-direct/response-sink/producer-error
+  kind: rawHttp
+  handler: entry.__test.responseSinkProducerErrorEntry
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+responseSinkConsumerCancel:
+  method: POST
+  path: /package-direct/response-sink/consumer-cancel
+  kind: rawHttp
+  handler: entry.__test.responseSinkConsumerCancelEntry
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
