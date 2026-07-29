@@ -27,7 +27,7 @@ use skiff_test_runner::{
     canonical_std_seed::seed_canonical_std,
 };
 
-use super::{activation_context, execution_context, test_runtime, TestResolver};
+use super::{activation_context, execution_context_with_trace, test_runtime, TestResolver};
 use crate::{Interpreter, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 
 const CONSUMER_ID: &str = "example.com/generic-json-encode-red";
@@ -90,6 +90,11 @@ async fn run_compiler_linked_generic_std_json_encode_red() {
         linked.execute("genericDecodeControl").await.unwrap(),
         RuntimeValue::String("decoded".to_string()),
         "the existing generic std.json.decode substitution path must remain a GREEN control",
+    );
+    assert_eq!(
+        linked.execute("resourceCatch").await.unwrap(),
+        RuntimeValue::String("missing-package-resource.txt".to_string()),
+        "PackageDirect std.resource.text must materialize and catch the exact public ResourceError",
     );
     assert_eq!(
         linked.execute("leftValue").await.unwrap(),
@@ -262,7 +267,8 @@ impl LinkedFixture {
         let target = RuntimeAssemblyEvalTarget::new(Arc::clone(&self.image), request, resolver)
             .expect("linked generic JSON image and activation");
         let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-        let context = execution_context(&interpreter, target);
+        let context =
+            execution_context_with_trace(&interpreter, target, "trace:resource-package-direct");
         let mut heap = RequestHeap::default();
         interpreter
             .execute_runtime_assembly_addr(
@@ -544,7 +550,7 @@ fn write_consumer_package(root: &Path) {
     .expect("consumer package manifest");
     fs::write(
         root.join("api.yml"),
-        "encodeLocal: main.encodeLocal\nencodePackage: main.encodePackage\nencodeNested: main.encodeNested\nconcreteEncodeControl: main.concreteEncodeControl\ngenericDecodeControl: main.genericDecodeControl\nleftValue: main.leftValue\nrightValue: main.rightValue\nleftTag: main.leftTag\nleftItems: main.leftItems\n",
+        "encodeLocal: main.encodeLocal\nencodePackage: main.encodePackage\nencodeNested: main.encodeNested\nconcreteEncodeControl: main.concreteEncodeControl\ngenericDecodeControl: main.genericDecodeControl\nresourceCatch: main.resourceCatch\nleftValue: main.leftValue\nrightValue: main.rightValue\nleftTag: main.leftTag\nleftItems: main.leftItems\n",
     )
     .expect("consumer package API");
     fs::write(
@@ -584,6 +590,14 @@ function concreteEncodeControl() -> Json {
 
 function genericDecodeControl() -> Json {
   return genericDecode<Json>("\"decoded\"")
+}
+
+function resourceCatch() -> string {
+  const result = catch<std.resource.ResourceError>(std.resource.text("missing-package-resource.txt"))
+  if result.tag == "ok" {
+    return "resource-error-was-not-caught"
+  }
+  return result.exception.error.path
 }
 
 function leftValue() -> string {

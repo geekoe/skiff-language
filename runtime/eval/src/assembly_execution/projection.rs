@@ -1122,6 +1122,32 @@ mod tests {
     }
 
     #[test]
+    fn assembly_resource_projection_rejects_implementation_only_std_lookalike() {
+        let (image, errors) = std_error_projection_image("skiff.run/std");
+        let projection = RuntimeExecutionProjection::Assembly(
+            RuntimeAssemblyExecutionProjection::from_image(image),
+        );
+        let (_, addr) = errors
+            .into_iter()
+            .find(|(symbol, _)| symbol == "std.resource.ResourceError")
+            .expect("ResourceError implementation fixture");
+        let addr = projection
+            .canonical_type_addr(&addr)
+            .expect("implementation address canonicalizes");
+        let error = projection
+            .validate_public_package_type(
+                "skiff.run/std",
+                "std.resource.ResourceError",
+                &addr,
+            )
+            .expect_err("implementation-only ResourceError must not count as public");
+        assert!(
+            matches!(error, RuntimeError::InvalidArtifact(message)
+                if message.contains("not an exact public type symbol"))
+        );
+    }
+
+    #[test]
     fn builtin_only_registered_errors_remain_native_without_package_guessing() {
         let (image, _) = projection_image();
         let projection = RuntimeAssemblyExecutionProjection::from_image(image);
