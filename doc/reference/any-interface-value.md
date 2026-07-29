@@ -20,8 +20,21 @@ Recoverable codec 不重新判断“本地还是远程”；它读取值中已�
 
 ## Boundary Rule
 
-普通 service/public API schema、ordinary JSON/materialization、config schema 和 test double external fixture schema 不允许
-`any I` 默认 wire shape，也不隐式打开 recoverable envelope。
+普通JSON/materialization、config schema和test double external fixture schema不允许`any I`默认wire shape，也不隐式
+打开recoverable envelope。service operation有一个显式例外：顶层、非泛型`any I`参数、unary返回或server-stream
+item可以投影为opaque callback capability，前提是`I`的全部method都可形成service boundary contract。capability由
+创建该值的一侧拥有；unary调用中活到顶层request结束，server stream中延长到stream关闭。对端只能按`I`声明的
+operation回调owner，不能看到method table、本地地址或native object。
+
+callback position是精确的类型位置规则，不按schema descriptor猜测：
+
+- `any I`必须直接占据operation position，且`I`必须是非泛型、具有精确Package schema身份的interface；
+- `Array<any I>`、record/nullable内嵌`any I`和泛型`any I<T>`第一版fail closed；
+- 直接的Package schema仍按普通detached data处理，即使其descriptor是callback interface；
+- raw function和没有显式callback adapter的native value继续不可用。
+
+callback capability在request或stream结束、owner退出或内部停止后失效，稳定返回`CapabilityExpired`或
+`CapabilityUnavailable`；runtime不重建、不fallback，也不把它转换成recoverable envelope。
 
 DB stored field、`spawn` target 参数、queue / persistent work item payload 和 runtime 内部跨 request payload 是
 owner-internal recoverable boundary。它们的底线是“值必须可恢复”，不是“`any I` 一律禁止”。`carrier = Local` 行为值走
@@ -38,9 +51,9 @@ execution context 的 linked program 中查找这个 key；找不到 concrete、
 interface/projection，或 self state 不再符合当前 expected type 时，边界 fail closed。`any I` 不定义自动应用迁移，也不通过
 runtime wrapper schema version 迁移旧 local self。
 
-跨 service 行为值第一版 fail closed。目标态需要 sealed opaque payload 与 service callback transport；这些能力落地前，
-不得把明文 `LocalConcrete` / `NativeAdapter` / `InterfaceValue` state 发给对端 service 或 public client。离开 owner service
-trust domain 的显式 recoverable slot 第一版只允许 plain data envelope。
+跨service只发送上述sealed opaque callback capability，绝不发送明文`LocalConcrete`、`NativeAdapter`、
+`InterfaceValue` state、method table或本地地址。callback capability不能进入DB、`spawn`、queue、persistent work
+item或其它recoverable lane；离开owner service trust domain的显式recoverable slot第一版仍只允许plain data envelope。
 
 ## Examples
 
