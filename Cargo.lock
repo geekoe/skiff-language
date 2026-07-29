@@ -2188,8 +2188,6 @@ dependencies = [
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
  "skiff-deployment",
- "skiff-runtime-linked-program",
- "skiff-runtime-linker",
  "skiff-syntax",
  "thiserror",
 ]
@@ -2502,9 +2500,12 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
+ "skiff-compiler",
+ "skiff-deployment",
  "skiff-runtime-linked-program",
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",
+ "skiff-test-runner",
  "thiserror",
 ]
 

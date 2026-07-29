@@ -1,6 +1,6 @@
 mod common;
 
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, path::Path};
 
 use common::{
     artifacts::module_artifact,
@@ -891,7 +891,7 @@ impl Box<T> {
 }
 
 #[test]
-fn test_service_top_level_alias_lowers_foreign_db_targets_to_the_primary_dependency() {
+fn test_service_top_level_alias_lowers_the_foreign_db_operation_matrix() {
     let temp = TestDir::new("skiff-compiler", "foreign-db-top-level-alias");
     fs::write(
         temp.path().join("package.yml"),
@@ -1048,106 +1048,8 @@ db object Session {
         );
     }
 
-    let packages = project.artifacts().collect::<Vec<_>>();
-    let package_links = packages
-        .iter()
-        .flat_map(|caller| {
-            caller
-                .artifact
-                .package_requirements
-                .iter()
-                .map(|requirement| {
-                    let provider = packages
-                        .iter()
-                        .find(|candidate| {
-                            candidate.artifact.package_id == requirement.package_id
-                                && candidate.artifact.package_version == requirement.exact_version
-                                && requirement.expected_package_build.as_ref().is_none_or(
-                                    |expected| &candidate.artifact.package_build_id == expected,
-                                )
-                        })
-                        .expect("every exact requirement must have one dependency artifact");
-                    skiff_artifact_model::PackageBinding {
-                        key: skiff_artifact_model::PackageRequirementKey {
-                            caller_package_build_id: caller.artifact.package_build_id.clone(),
-                            package_requirement_alias: requirement.alias.clone(),
-                        },
-                        package: skiff_artifact_identity::package_artifact_ref(&provider.artifact)
-                            .expect("provider artifact identity"),
-                        collection_name_mapping: requirement.collection_name_mapping.clone(),
-                    }
-                })
-        })
-        .collect();
-    let assembly = skiff_artifact_model::RuntimeAssembly {
-        schema_version: skiff_artifact_model::RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: skiff_artifact_model::AssemblyIdentity::new("foreign-db-compiler-link"),
-        roots: Vec::new(),
-        resolved_deployments: Vec::new(),
-        resolved_contracts: Vec::new(),
-        resolved_packages: packages
-            .iter()
-            .map(|package| {
-                skiff_artifact_identity::package_artifact_ref(&package.artifact)
-                    .expect("compiled package identity")
-            })
-            .collect(),
-        package_link_plan: skiff_artifact_model::CanonicalPackageLinkPlan {
-            code_slots: packages
-                .iter()
-                .map(|package| skiff_artifact_model::PackageCodeSlot {
-                    package: skiff_artifact_identity::package_artifact_ref(&package.artifact)
-                        .expect("compiled package identity"),
-                })
-                .collect(),
-            package_links,
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    let image = skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
-        &assembly,
-        packages.iter().map(|package| {
-            skiff_runtime_linked_program::HydratedPackageCode::new(
-                Arc::new(package.artifact.clone()),
-                package
-                    .file_ir_units
-                    .iter()
-                    .map(|file| Arc::new(file.unit.clone()))
-                    .collect(),
-                skiff_runtime_linked_program::PublicationResourceTable::default(),
-            )
-            .with_schema_index(Arc::new(package.package_schema_index.clone()))
-            .with_schema_records(
-                package
-                    .package_schema_type_records
-                    .iter()
-                    .map(|(id, record)| (id.clone(), Arc::new(record.clone())))
-                    .collect(),
-            )
-        }),
-    )
-    .expect("compiler foreign DB target should link through P3R0");
-    let linked_target = image
-        .code_by_build(&project.package.artifact.package_build_id)
-        .expect("consumer code slot")
-        .files()
-        .iter()
-        .flat_map(|file| &file.executables)
-        .flat_map(|executable| &executable.body.expressions)
-        .find_map(|expression| match expression {
-            skiff_runtime_linked_program::LinkedExprIr::DbOperation { operation } => {
-                Some(&operation.target.target_id)
-            }
-            _ => None,
-        })
-        .expect("linked consumer DB operation target");
-    assert_eq!(
-        linked_target.package_artifact_ref.package_build_id,
-        provider_artifact.artifact.package_build_id
-    );
-
+    // This compiler-owned matrix intentionally stops at File IR. Exact foreign-package DB
+    // identity through linking and execution belongs to the runtime host acceptance suite.
     fs::write(
         temp.path().join("main.skiff"),
         "import provider\nfunction bad() -> number { return db count provider/Session {} }\n",
