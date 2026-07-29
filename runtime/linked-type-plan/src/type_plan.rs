@@ -4,7 +4,7 @@ use crate::error::{Error as RuntimeError, Result};
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, LinkedNamedUnionBranch,
     LinkedNominalTypeRefBase, LinkedProgramImage, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-    PackageRefIr, PackageSymbolRef, PackageUnit, ResolvedSymbol, RuntimeTypeContext,
+    PackageRefIr, PackageSymbolRef, ResolvedSymbol, RuntimeExecutionPackage, RuntimeTypeContext,
     ServiceSymbolRef, TypeAddr, TypeDeclIr, UnitAddr,
 };
 use skiff_runtime_model::recoverable::{
@@ -39,8 +39,7 @@ pub use skiff_runtime_model::type_plan::{
 #[derive(Clone, Copy)]
 pub struct ProgramTypeView<'a> {
     pub service_files: &'a [Arc<LinkedFileUnit>],
-    pub packages: &'a [Arc<PackageUnit>],
-    pub package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+    pub packages: &'a [Arc<RuntimeExecutionPackage>],
     pub link_overlay: &'a LinkOverlay,
     pub types: &'a RuntimeTypeContext,
 }
@@ -48,15 +47,13 @@ pub struct ProgramTypeView<'a> {
 impl<'a> ProgramTypeView<'a> {
     pub fn new(
         service_files: &'a [Arc<LinkedFileUnit>],
-        packages: &'a [Arc<PackageUnit>],
-        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+        packages: &'a [Arc<RuntimeExecutionPackage>],
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
     ) -> Self {
         Self {
             service_files,
             packages,
-            package_files,
             link_overlay,
             types,
         }
@@ -66,7 +63,6 @@ impl<'a> ProgramTypeView<'a> {
         Self::new(
             &program.service_files,
             &program.packages,
-            &program.package_files,
             &program.link_overlay,
             &program.types,
         )
@@ -83,6 +79,71 @@ impl<'a> From<&'a Arc<LinkedProgramImage>> for ProgramTypeView<'a> {
     fn from(program: &'a Arc<LinkedProgramImage>) -> Self {
         Self::from_linked_image(program.as_ref())
     }
+}
+
+impl<'a> ProgramTypeView<'a> {
+    fn package_files(self, slot: usize) -> Option<&'a [Arc<LinkedFileUnit>]> {
+        self.packages.get(slot).map(|package| package.files())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_runtime_package(
+    slot: usize,
+    package_id: &str,
+    files: Vec<Arc<LinkedFileUnit>>,
+) -> Arc<RuntimeExecutionPackage> {
+    let file_refs = files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "fileIrIdentity": file.file_ir_identity,
+                "modulePath": file.module_path,
+                "sourceAstHash": file.source_ast_hash,
+            })
+        })
+        .collect::<Vec<_>>();
+    let artifact = serde_json::from_value(serde_json::json!({
+        "schemaVersion": "skiff-package-artifact-v9",
+        "packageId": package_id,
+        "packageVersion": "1.0.0",
+        "packageBuildId": format!("test-build:{slot}:{package_id}"),
+        "files": file_refs,
+        "staticResources": [],
+        "packageLocalAbi": {
+            "localAbiIdentity": format!("test-abi:{slot}:{package_id}"),
+            "publicSymbols": {}
+        },
+        "packageSchemaIndex": {
+            "packageId": package_id,
+            "packageSchemaIndexIdentity": format!("test-schema:{slot}:{package_id}")
+        },
+        "packageSchemaTypeRecords": {},
+        "implementationLinks": {},
+        "callableLinks": {},
+        "packageRequirements": [],
+        "contractRequirements": [],
+        "serviceRequirements": [],
+        "runtimeRequirements": {
+            "config": [],
+            "state": [],
+            "resources": [],
+            "runtimeCapabilities": []
+        },
+        "callableSemanticFacts": {},
+        "boundaryProjections": {},
+        "serviceCallRefs": []
+    }))
+    .expect("test package artifact");
+    Arc::new(
+        RuntimeExecutionPackage::try_new(
+            skiff_runtime_linked_program::PackageCodeSlotIndex::new(slot),
+            Arc::new(artifact),
+            files,
+            Default::default(),
+        )
+        .expect("test runtime package context"),
+    )
 }
 
 #[allow(dead_code)]
@@ -1710,7 +1771,7 @@ fn program_db_object_type_addr(
             }))
         }
         UnitAddr::Package(slot) => {
-            let Some(files) = program.package_files.get(*slot) else {
+            let Some(files) = program.package_files(*slot) else {
                 return Ok(None);
             };
             program_local_type_addr(files, unit, symbol)
@@ -1726,7 +1787,7 @@ fn program_publication_type_addr(
 ) -> Option<TypeAddr> {
     let files = match unit {
         UnitAddr::Service => program.service_files,
-        UnitAddr::Package(slot) => program.package_files.get(*slot)?.as_slice(),
+        UnitAddr::Package(slot) => program.package_files(*slot)?,
     };
     let (file_index, file) = files
         .iter()
@@ -1757,7 +1818,7 @@ fn program_service_symbol_type_addr(
     let UnitAddr::Package(slot) = unit else {
         return Ok(None);
     };
-    let Some(files) = program.package_files.get(*slot) else {
+    let Some(files) = program.package_files(*slot) else {
         return Ok(None);
     };
     program_local_type_addr(files, unit, symbol)
@@ -2177,20 +2238,19 @@ fn db_result_node_from_linked_parts(
 mod recoverable_expected_plan_tests {
     use std::{collections::BTreeMap, sync::Arc};
 
-    use skiff_runtime_linked_program::{LinkedInterfaceInstantiationRef, PackageUnit};
+    use skiff_runtime_linked_program::{LinkedInterfaceInstantiationRef, RuntimeExecutionPackage};
 
     use super::*;
 
     fn empty_ctx<'a>(
         service_files: &'a [Arc<LinkedFileUnit>],
-        packages: &'a [Arc<PackageUnit>],
-        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+        packages: &'a [Arc<RuntimeExecutionPackage>],
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
         addr: &'a ExecutableAddr,
     ) -> PlanContext<'a> {
         PlanContext::from_type_view(
-            ProgramTypeView::new(service_files, packages, package_files, link_overlay, types),
+            ProgramTypeView::new(service_files, packages, link_overlay, types),
             addr,
         )
     }
@@ -2216,18 +2276,10 @@ mod recoverable_expected_plan_tests {
     fn linked_recoverable_expected_plan_preserves_nested_any_interface() {
         let service_files = Vec::new();
         let packages = Vec::new();
-        let package_files = Vec::new();
         let link_overlay = LinkOverlay::default();
         let types = RuntimeTypeContext::default();
         let addr = ExecutableAddr::service(0, 0);
-        let ctx = empty_ctx(
-            &service_files,
-            &packages,
-            &package_files,
-            &link_overlay,
-            &types,
-            &addr,
-        );
+        let ctx = empty_ctx(&service_files, &packages, &link_overlay, &types, &addr);
         let interface = LinkedInterfaceInstantiationRef {
             interface_abi_id: "pkg.ToolProvider".to_string(),
             canonical_type_args: Vec::new(),
@@ -2432,12 +2484,11 @@ mod applied_nominal_type_plan_tests {
 
     fn with_context<T>(types: &RuntimeTypeContext, test: impl FnOnce(&PlanContext<'_>) -> T) -> T {
         let service_files: Vec<Arc<LinkedFileUnit>> = Vec::new();
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let overlay = LinkOverlay::default();
         let current = ExecutableAddr::package(0, 0, 0);
         let context = PlanContext::from_type_view(
-            ProgramTypeView::new(&service_files, &packages, &package_files, &overlay, types),
+            ProgramTypeView::new(&service_files, &packages, &overlay, types),
             &current,
         );
         test(&context)

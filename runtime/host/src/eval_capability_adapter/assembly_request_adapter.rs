@@ -237,12 +237,8 @@ pub(super) fn package_config_views(
     image: &skiff_runtime_linked_program::AssemblyExecutionImage,
     literals: &[skiff_artifact_model::ConfigLiteralBinding],
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
-    if image.code_slots().len() != image.shared_packages().code_slots().len() {
-        anyhow::bail!("active execution image package code-slot vectors are misaligned");
-    }
-
-    let mut requirements_by_slot = Vec::with_capacity(image.shared_packages().code_slots().len());
-    for (slot, package) in image.shared_packages().code_slots().iter().enumerate() {
+    let mut requirements_by_slot = Vec::with_capacity(image.execution_packages().len());
+    for (slot, package) in image.execution_packages().iter().enumerate() {
         if package.code_slot().index() != slot {
             anyhow::bail!(
                 "active execution image package slot mismatch: expected {slot}, got {}",

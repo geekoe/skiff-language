@@ -100,14 +100,38 @@ impl LinkedProgramImageResolverExt for LinkedProgramImage {
         unit: &UnitAddr,
         file: &FileAddr,
     ) -> LinkedProgramResolveResult<&Arc<LinkedFileUnit>> {
-        resolve_file_from_units(&self.service_files, &self.package_files, unit, file)
+        let files = match unit {
+            UnitAddr::Service => self.service_files.as_slice(),
+            UnitAddr::Package(slot) => self
+                .packages
+                .get(*slot)
+                .map(|package| package.files())
+                .ok_or(LinkedProgramResolveError::PackageSlotOutOfBounds {
+                    slot: *slot,
+                    package_count: self.packages.len(),
+                })?,
+        };
+        resolve_file_in_unit(files, unit, file)
     }
 
     fn resolve_executable(
         &self,
         addr: &ExecutableAddr,
     ) -> LinkedProgramResolveResult<ResolvedLinkedExecutable<'_>> {
-        resolve_executable_from_units(&self.service_files, &self.package_files, addr)
+        let file_arc = self.resolve_file(&addr.unit, &addr.file)?;
+        let executable = file_arc.executables.get(addr.executable).ok_or_else(|| {
+            LinkedProgramResolveError::ExecutableIndexOutOfBounds {
+                unit: addr.unit.clone(),
+                file: addr.file.clone(),
+                index: addr.executable,
+                executable_count: file_arc.executables.len(),
+            }
+        })?;
+        Ok(ResolvedLinkedExecutable {
+            file: file_arc.as_ref(),
+            file_arc,
+            executable,
+        })
     }
 }
 
@@ -140,6 +164,14 @@ pub fn resolve_file_from_units<'a>(
     file: &FileAddr,
 ) -> LinkedProgramResolveResult<&'a Arc<LinkedFileUnit>> {
     let files = files_for_unit(service_files, package_files, unit)?;
+    resolve_file_in_unit(files, unit, file)
+}
+
+fn resolve_file_in_unit<'a>(
+    files: &'a [Arc<LinkedFileUnit>],
+    unit: &UnitAddr,
+    file: &FileAddr,
+) -> LinkedProgramResolveResult<&'a Arc<LinkedFileUnit>> {
     match file {
         FileAddr::LoadedFileIndex(index) => {
             files
@@ -183,7 +215,8 @@ mod tests {
     use super::*;
     use crate::{
         ExecutableKind, ExternalRefTable, FileDeclarations, FileLinkTargets, LinkOverlay,
-        LinkedExecutableBody, ParamIr, RuntimeTypeContext, SlotLayoutIr, SourceMapDto,
+        LinkedExecutableBody, PackageCodeSlotIndex, ParamIr, RuntimeExecutionPackage,
+        RuntimeTypeContext, SlotLayoutIr, SourceMapDto,
     };
 
     #[test]
@@ -277,12 +310,67 @@ mod tests {
         service_files: Vec<Arc<LinkedFileUnit>>,
         package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
     ) -> LinkedProgramImage {
+        let packages = package_files
+            .into_iter()
+            .enumerate()
+            .map(|(slot, files)| {
+                let file_refs = files
+                    .iter()
+                    .map(|file| {
+                        serde_json::json!({
+                            "fileIrIdentity": file.file_ir_identity,
+                            "modulePath": file.module_path,
+                            "sourceAstHash": file.source_ast_hash,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let package_id = format!("test.package.{slot}");
+                let artifact = serde_json::from_value(serde_json::json!({
+                    "schemaVersion": "skiff-package-artifact-v9",
+                    "packageId": package_id,
+                    "packageVersion": "1.0.0",
+                    "packageBuildId": format!("test-build:{slot}"),
+                    "files": file_refs,
+                    "staticResources": [],
+                    "packageLocalAbi": {
+                        "localAbiIdentity": format!("test-abi:{slot}"),
+                        "publicSymbols": {}
+                    },
+                    "packageSchemaIndex": {
+                        "packageId": package_id,
+                        "packageSchemaIndexIdentity": format!("test-schema:{slot}")
+                    },
+                    "packageSchemaTypeRecords": {},
+                    "implementationLinks": {},
+                    "callableLinks": {},
+                    "packageRequirements": [],
+                    "contractRequirements": [],
+                    "serviceRequirements": [],
+                    "runtimeRequirements": {
+                        "config": [],
+                        "state": [],
+                        "resources": [],
+                        "runtimeCapabilities": []
+                    },
+                    "callableSemanticFacts": {},
+                    "boundaryProjections": {},
+                    "serviceCallRefs": []
+                }))
+                .unwrap();
+                RuntimeExecutionPackage::try_new(
+                    PackageCodeSlotIndex::new(slot),
+                    Arc::new(artifact),
+                    files,
+                    Default::default(),
+                )
+                .map(Arc::new)
+                .unwrap()
+            })
+            .collect();
         LinkedProgramImage {
             service_files,
-            packages: Vec::new(),
-            package_files,
+            packages,
             service_resources: Default::default(),
-            package_resources: Vec::new(),
             routes: HashMap::new(),
             spawn_routes: HashMap::new(),
             operations: HashMap::new(),

@@ -163,7 +163,7 @@ fn linked_address_resolves_to_std_http_package_type(
     let Some(package) = program.packages.get(*slot) else {
         return false;
     };
-    if package.package_id != "skiff.run/std" {
+    if package.package_id() != "skiff.run/std" {
         return false;
     }
     let Some(declaration) = program.types.declaration(addr) else {
@@ -181,12 +181,12 @@ fn http_type_short_name(expected: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
-
     use skiff_runtime_linked_program::{
-        anonymous_type_decl, FileAddr, LinkedProgramImage, LinkedTypeDescriptor, LinkedTypeRef,
-        PackageUnit, RuntimeTypeContext, TypeAddr, UnitAddr,
+        anonymous_type_decl, FileAddr, LinkOverlay, LinkedTypeDescriptor, LinkedTypeRef,
+        RuntimeTypeContext, TypeAddr, UnitAddr,
     };
+
+    use crate::type_plan::test_runtime_package;
 
     use super::*;
 
@@ -221,44 +221,24 @@ mod tests {
                 },
             ),
         );
-        let program = LinkedProgramImage {
-            service_files: Vec::new(),
-            packages: vec![
-                Arc::new(PackageUnit::empty(
-                    "skiff.run/std",
-                    "1.0.0",
-                    "build:std",
-                    "abi:std",
-                )),
-                Arc::new(PackageUnit::empty(
-                    "example.com/std-lookalike",
-                    "1.0.0",
-                    "build:spoof",
-                    "abi:spoof",
-                )),
-            ],
-            package_files: vec![Vec::new(), Vec::new()],
-            service_resources: Default::default(),
-            package_resources: vec![Default::default(), Default::default()],
-            routes: HashMap::new(),
-            spawn_routes: HashMap::new(),
-            operations: HashMap::new(),
-            operation_receivers: HashMap::new(),
-            link_overlay: Default::default(),
-            types,
-        };
+        let packages = vec![
+            test_runtime_package(0, "skiff.run/std", Vec::new()),
+            test_runtime_package(1, "example.com/std-lookalike", Vec::new()),
+        ];
+        let overlay = LinkOverlay::default();
+        let program = ProgramTypeView::new(&[], &packages, &overlay, &types);
         let current_addr = ExecutableAddr::service(0, 0);
 
         let std_response_ref = LinkedTypeRef::Address {
             addr: std_response_addr,
         };
-        binary_http_response_plan(Some(&std_response_ref), &program, &current_addr)
+        binary_http_response_plan(Some(&std_response_ref), program, &current_addr)
             .expect("std package HttpResponse address should be accepted");
 
         let spoof_response_ref = LinkedTypeRef::Address {
             addr: spoof_response_addr,
         };
-        let error = binary_http_response_plan(Some(&spoof_response_ref), &program, &current_addr)
+        let error = binary_http_response_plan(Some(&spoof_response_ref), program, &current_addr)
             .expect_err("lookalike package HttpResponse address should be rejected");
         assert!(error.to_string().contains("std.http.HttpResponse"));
     }

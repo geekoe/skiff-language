@@ -93,15 +93,8 @@ pub(super) fn interpreter_for(file: Arc<LinkedFileUnit>) -> (Arc<Interpreter>, P
     let program = Arc::new(EvalRuntimeProgram {
         service_id: SERVICE_ID.to_string(),
         service_files: vec![file],
-        packages: vec![Arc::new(PackageUnit::empty(
-            "skiff.run/std",
-            VERSION,
-            "skiff.run/std:build:f445h-e4r-combined",
-            "skiff.run/std:abi:f445h-e4r-combined",
-        ))],
-        package_files: vec![vec![std_file]],
+        packages: vec![runtime_package_fixture("skiff.run/std", std_file)],
         service_resources: PublicationResourceTable::default(),
-        package_resources: vec![PublicationResourceTable::default()],
         spawn_routes: HashMap::new(),
         link_overlay: overlay,
         types,
@@ -114,4 +107,60 @@ pub(super) fn interpreter_for(file: Arc<LinkedFileUnit>) -> (Arc<Interpreter>, P
         }),
     );
     (Arc::new(interpreter), stream)
+}
+
+fn runtime_package_fixture(
+    package_id: &str,
+    file: Arc<LinkedFileUnit>,
+) -> Arc<RuntimeExecutionPackage> {
+    let artifact = PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: package_id.to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new(format!("{package_id}:build")),
+        files: vec![skiff_artifact_model::FileIrRef {
+            file_ir_identity: file.file_ir_identity.clone(),
+            module_path: file.module_path.clone(),
+            artifact_path: None,
+            source_ast_hash: Some(file.source_ast_hash.clone()),
+        }],
+        static_resources: Vec::new(),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new(format!("{package_id}:abi")),
+            public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
+        },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .expect("empty package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: PackageImplementationLinks::default(),
+        callable_links: BTreeMap::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements {
+            config: Vec::new(),
+            state: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
+        },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
+        service_call_refs: Vec::new(),
+    };
+    Arc::new(
+        RuntimeExecutionPackage::try_new(
+            PackageCodeSlotIndex::new(0),
+            Arc::new(artifact),
+            vec![file],
+            PublicationResourceTable::default(),
+        )
+        .expect("combined runtime package fixture must be exact"),
+    )
 }

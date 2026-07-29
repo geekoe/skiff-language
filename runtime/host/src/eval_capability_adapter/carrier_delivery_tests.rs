@@ -16,8 +16,8 @@ use skiff_runtime_eval::{
     EvalRuntimeProgram, EvalRuntimeProgramSource,
 };
 use skiff_runtime_linked_program::{
-    ExecutableAddr, GatewayConfig, LinkOverlay, LinkedFileUnit, PackageUnit,
-    PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
+    ExecutableAddr, GatewayConfig, LinkOverlay, LinkedFileUnit, PublicationResourceTable,
+    RuntimeExecutionPackage, RuntimeTypeContext, ServiceMeta,
 };
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_native::capability::NativeWebsocketCapability;
@@ -92,10 +92,8 @@ fn runtime_activation() -> Arc<RuntimeActivation> {
 #[derive(Default)]
 struct EmptyProgramSource {
     service_files: Vec<Arc<LinkedFileUnit>>,
-    packages: Vec<Arc<PackageUnit>>,
-    package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+    packages: Vec<Arc<RuntimeExecutionPackage>>,
     service_resources: PublicationResourceTable,
-    package_resources: Vec<PublicationResourceTable>,
     spawn_routes: HashMap<String, ExecutableAddr>,
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
@@ -110,20 +108,12 @@ impl EvalRuntimeProgramSource for EmptyProgramSource {
         &self.service_files
     }
 
-    fn packages(&self) -> &[Arc<PackageUnit>] {
+    fn packages(&self) -> &[Arc<RuntimeExecutionPackage>] {
         &self.packages
-    }
-
-    fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
-        &self.package_files
     }
 
     fn service_resources(&self) -> &PublicationResourceTable {
         &self.service_resources
-    }
-
-    fn package_resources(&self) -> &[PublicationResourceTable] {
-        &self.package_resources
     }
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {

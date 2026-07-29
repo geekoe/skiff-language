@@ -358,9 +358,9 @@ mod recoverable_spawn_payload_tests {
         LinkedBoxSourceIr, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
         LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
         LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
-        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, PackageUnit,
-        ParamIr, ReceiverCallAbi, RuntimeTypeContext, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr,
-        UnitAddr,
+        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, ParamIr,
+        ReceiverCallAbi, RuntimeExecutionPackage, RuntimeTypeContext, SlotIr, SlotLayoutIr,
+        TypeAddr, TypeDeclIr, UnitAddr,
     };
     use skiff_runtime_linked_type_plan::{
         linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -392,8 +392,7 @@ mod recoverable_spawn_payload_tests {
 
     struct TestProgram {
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         spawn_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
@@ -406,7 +405,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: vec![file.clone()],
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext {
@@ -422,7 +420,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: vec![first.clone(), second.clone()],
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext {
@@ -443,7 +440,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: vec![file.clone()],
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext {
@@ -457,7 +453,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: Vec::new(),
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext::default(),
@@ -469,7 +464,6 @@ mod recoverable_spawn_payload_tests {
                 SERVICE_ID,
                 &self.service_files,
                 &self.packages,
-                &self.package_files,
                 &self.spawn_routes,
                 &self.link_overlay,
                 &self.types,
@@ -1099,7 +1093,7 @@ mod legacy_spawn_tests {
     use std::{collections::HashMap, sync::Arc};
 
     use skiff_runtime_linked_program::{
-        ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
+        ExecutableAddr, LinkOverlay, LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext,
     };
 
     use crate::invocation::EvalProgramProjection;
@@ -1127,15 +1121,13 @@ mod legacy_spawn_tests {
             addr.clone(),
         );
         let service_files = Vec::<Arc<LinkedFileUnit>>::new();
-        let packages = Vec::<Arc<PackageUnit>>::new();
-        let package_files = Vec::<Vec<Arc<LinkedFileUnit>>>::new();
+        let packages = Vec::<Arc<RuntimeExecutionPackage>>::new();
         let link_overlay = LinkOverlay::default();
         let types = RuntimeTypeContext::default();
         let program = EvalProgramProjection::new(
             "skiff.test/spawn",
             &service_files,
             &packages,
-            &package_files,
             &routes,
             &link_overlay,
             &types,

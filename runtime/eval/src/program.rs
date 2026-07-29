@@ -25,7 +25,7 @@ pub use skiff_runtime_linked_program::{
     LinkedFileUnit, LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
     LinkedInterfaceMethodTablePlanIr, LinkedRemoteOperationSlotPlanIr,
     LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-    MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PackageUnit, ParamIr, PatternIr,
+    MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, ParamIr, PatternIr,
     ReceiverCallAbi, ResolvedSymbol, RuntimeTypeContext, ServiceDependencyConstraint,
     ServiceDependencySymbolRef, ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr,
     TypeAddr, TypeDeclIr, UnaryOpIr, UnitAddr,

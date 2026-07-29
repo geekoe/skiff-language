@@ -633,7 +633,7 @@ pub(crate) fn program_publication_type_addr(
 ) -> Option<TypeAddr> {
     let files = match &current_addr.unit {
         UnitAddr::Service => program.service_files,
-        UnitAddr::Package(slot) => program.package_files.get(*slot)?.as_slice(),
+        UnitAddr::Package(slot) => program.packages.get(*slot)?.files(),
     };
     let file_index = files
         .iter()
@@ -754,9 +754,7 @@ mod from_linked_oracle {
                 external_refs: Default::default(),
             })],
             packages: Vec::new(),
-            package_files: Vec::new(),
             service_resources: Default::default(),
-            package_resources: Vec::new(),
             service_dependencies: Vec::new(),
             timeout: Default::default(),
             operation_route_bindings: Vec::new(),

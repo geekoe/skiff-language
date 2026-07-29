@@ -7,8 +7,6 @@ use serde_json::{json, Map};
 use skiff_artifact_model::AssemblyActivationControl;
 #[cfg(any())]
 use skiff_artifact_model::ConfigShape;
-#[cfg(any())]
-use skiff_runtime_linked_program::{package_config_shape, LinkedProgramImage};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
 #[cfg(any())]
 use skiff_runtime_transport::protocol::{

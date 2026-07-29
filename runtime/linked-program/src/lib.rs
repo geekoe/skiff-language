@@ -21,9 +21,9 @@ pub use addr::{
 };
 pub use assembly_execution::{
     AssemblyExecutable, AssemblyExecutionImage, AssemblyExecutionImageError,
-    AssemblyExecutionResult, AssemblyPackageExecutionCode,
+    AssemblyExecutionResult, RuntimeExecutionPackage,
 };
-pub use boundary::{LinkedProgramImage, RuntimeProgramIdentity};
+pub use boundary::{LinkedProgramImage, RuntimeExecutionResourceView, RuntimeProgramIdentity};
 pub use file_unit::{FileIrRef, FileIrUnit as ArtifactFileIrUnit};
 pub use linked::{
     AssignTargetIr, BinaryOpIr, BlockIr, BuiltinReceiverOp, CallIr, ConstIr, DbBodyIr, DbChangeIr,
@@ -48,10 +48,10 @@ pub use linked::{
 };
 pub use overlay::{LinkOverlay, ResolvedSymbol, SymbolOverlay};
 pub use package_unit::{
-    config_and_effect_metadata_shape, package_config_shape, ConfigAndEffectMetadata, ConstExport,
-    ExecutableExport, LinkedConstExport, LinkedExecutableExport, LinkedPackageExportIndex,
-    LinkedTypeExport, PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint,
-    PackageExportIndex, PackageUnit, TypeExport,
+    config_and_effect_metadata_shape, ConfigAndEffectMetadata, ConstExport, ExecutableExport,
+    LinkedConstExport, LinkedExecutableExport, LinkedPackageExportIndex, LinkedTypeExport,
+    PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint, PackageExportIndex,
+    TypeExport,
 };
 pub use resolver::{
     resolve_executable_from_units, resolve_file_from_units, LinkedProgramImageResolverExt,

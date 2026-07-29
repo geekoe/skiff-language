@@ -1,34 +1,45 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use skiff_artifact_model::{
-    AssemblyIdentity, OperationTargetRef, PackageBuildId, PackageCallableId, PackageRefIr,
-    ServiceCallRefIndex,
+    AssemblyIdentity, FileIrRef, LocalReceiverExecutableRef, OperationTargetRef, PackageArtifact,
+    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageImplementationLinks,
+    PackageOperationTarget, PackageRefIr, ServiceCallRefIndex,
 };
 
 use crate::{
     ActivationRelativeServiceCall, ConstAddr, ConstIr, DbTargetIr, ExecutableAddr, FileAddr,
     LinkOverlay, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
     LinkedPackageCallableTarget, LinkedPackageDirectCall, LinkedTypeRef, PackageCodeSlotIndex,
-    PackageSymbolKey, ResolvedSymbol, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageCode,
-    SharedPackageImageError, SharedPackageLinkedImage, TypeAddr, UnitAddr,
+    PackageSymbolKey, PublicationResourceTable, ResolvedSymbol, RuntimeTypeContext,
+    ServiceErrorTypeIndex, SharedPackageCode, SharedPackageImageError, SharedPackageLinkedImage,
+    TypeAddr, UnitAddr,
 };
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
 #[derive(Debug)]
 pub struct AssemblyExecutionImage {
     shared_packages: Arc<SharedPackageLinkedImage>,
-    code_slots: Vec<Arc<AssemblyPackageExecutionCode>>,
+    execution_packages: Vec<Arc<RuntimeExecutionPackage>>,
     code_slot_by_build: BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
     service_error_types: Arc<ServiceErrorTypeIndex>,
 }
 
-/// Runtime-ready code owned exactly once for one canonical package code slot.
+/// Canonical runtime package context for one admitted package code slot.
+///
+/// The context binds the exact admitted [`PackageArtifact`], its loaded static
+/// resources, and its linked File IR units. Callers therefore cannot address a
+/// package through a package-id array while reading code or resources from a
+/// separate, potentially misaligned array.
 #[derive(Debug)]
-pub struct AssemblyPackageExecutionCode {
+pub struct RuntimeExecutionPackage {
     code_slot: PackageCodeSlotIndex,
-    package_build_id: PackageBuildId,
+    artifact: Arc<PackageArtifact>,
+    static_resources: PublicationResourceTable,
     files: Vec<Arc<LinkedFileUnit>>,
     files_by_identity: BTreeMap<String, usize>,
 }
@@ -43,49 +54,50 @@ pub struct AssemblyExecutable<'a> {
 impl AssemblyExecutionImage {
     pub fn try_new(
         shared_packages: Arc<SharedPackageLinkedImage>,
-        code_slots: Vec<Arc<AssemblyPackageExecutionCode>>,
+        execution_packages: Vec<Arc<RuntimeExecutionPackage>>,
         types: RuntimeTypeContext,
         service_error_types: Arc<ServiceErrorTypeIndex>,
     ) -> AssemblyExecutionResult<Self> {
-        if code_slots.len() != shared_packages.code_slots().len() {
+        if execution_packages.len() != shared_packages.code_slots().len() {
             return Err(AssemblyExecutionImageError::CodeSlotCountMismatch {
                 expected: shared_packages.code_slots().len(),
-                actual: code_slots.len(),
+                actual: execution_packages.len(),
             });
         }
         let mut code_slot_by_build = BTreeMap::new();
-        for (index, code) in code_slots.iter().enumerate() {
+        for (index, code) in execution_packages.iter().enumerate() {
             let slot = PackageCodeSlotIndex::new(index);
-            if code.code_slot != slot {
+            if code.code_slot() != slot {
                 return Err(AssemblyExecutionImageError::CodeSlotOrderMismatch {
                     expected: slot,
-                    actual: code.code_slot,
+                    actual: code.code_slot(),
                 });
             }
             let shared = shared_packages
                 .code_by_slot(slot)
                 .ok_or(AssemblyExecutionImageError::MissingSharedCodeSlot { code_slot: slot })?;
-            if code.package_build_id != *shared.package_build_id() {
+            if &code.artifact_ref() != shared.artifact_ref() {
                 return Err(AssemblyExecutionImageError::CodeSlotBuildMismatch {
                     code_slot: slot,
                     expected: shared.package_build_id().clone(),
-                    actual: code.package_build_id.clone(),
+                    actual: code.package_build_id().clone(),
                 });
             }
             if code_slot_by_build
-                .insert(code.package_build_id.clone(), slot)
+                .insert(code.package_build_id().clone(), slot)
                 .is_some()
             {
                 return Err(AssemblyExecutionImageError::DuplicatePackageBuild {
-                    package_build_id: code.package_build_id.clone(),
+                    package_build_id: code.package_build_id().clone(),
                 });
             }
         }
-        validate_execution_db_targets(&shared_packages, &code_slots, &code_slot_by_build)?;
-        let link_overlay = execution_link_overlay(shared_packages.as_ref(), &code_slots, &types)?;
+        validate_execution_db_targets(&shared_packages, &execution_packages, &code_slot_by_build)?;
+        let link_overlay =
+            execution_link_overlay(shared_packages.as_ref(), &execution_packages, &types)?;
         Ok(Self {
             shared_packages,
-            code_slots,
+            execution_packages,
             code_slot_by_build,
             link_overlay,
             types,
@@ -101,17 +113,17 @@ impl AssemblyExecutionImage {
         &self.shared_packages
     }
 
-    pub fn code_slots(&self) -> &[Arc<AssemblyPackageExecutionCode>] {
-        &self.code_slots
+    pub fn execution_packages(&self) -> &[Arc<RuntimeExecutionPackage>] {
+        &self.execution_packages
     }
 
     pub fn code_by_build(
         &self,
         package_build_id: &PackageBuildId,
-    ) -> Option<&Arc<AssemblyPackageExecutionCode>> {
+    ) -> Option<&Arc<RuntimeExecutionPackage>> {
         self.code_slot_by_build
             .get(package_build_id)
-            .and_then(|slot| self.code_slots.get(slot.index()))
+            .and_then(|slot| self.execution_packages.get(slot.index()))
     }
 
     pub fn types(&self) -> &RuntimeTypeContext {
@@ -135,10 +147,10 @@ impl AssemblyExecutionImage {
                 addr: addr.clone(),
             });
         };
-        let code = self.code_slots.get(code_slot).ok_or_else(|| {
+        let code = self.execution_packages.get(code_slot).ok_or_else(|| {
             AssemblyExecutionImageError::CodeSlotOutOfBounds {
                 code_slot: PackageCodeSlotIndex::new(code_slot),
-                code_slot_count: self.code_slots.len(),
+                code_slot_count: self.execution_packages.len(),
             }
         })?;
         let file_index = match addr.file {
@@ -148,20 +160,20 @@ impl AssemblyExecutionImage {
                 .get(identity)
                 .copied()
                 .ok_or_else(|| AssemblyExecutionImageError::FileNotLoaded {
-                    package_build_id: code.package_build_id.clone(),
+                    package_build_id: code.package_build_id().clone(),
                     file_ir_identity: identity.clone(),
                 })?,
         };
         let file = code.files.get(file_index).ok_or_else(|| {
             AssemblyExecutionImageError::FileIndexOutOfBounds {
-                package_build_id: code.package_build_id.clone(),
+                package_build_id: code.package_build_id().clone(),
                 file_index,
                 file_count: code.files.len(),
             }
         })?;
         let executable = file.executables.get(addr.executable).ok_or_else(|| {
             AssemblyExecutionImageError::ExecutableIndexOutOfBounds {
-                package_build_id: code.package_build_id.clone(),
+                package_build_id: code.package_build_id().clone(),
                 file_ir_identity: file.file_ir_identity.clone(),
                 executable_index: addr.executable,
                 executable_count: file.executables.len(),
@@ -236,10 +248,10 @@ impl AssemblyExecutionImage {
         let UnitAddr::Package(code_slot) = addr.unit else {
             return Err(AssemblyExecutionImageError::NonPackageConstAddress { addr: addr.clone() });
         };
-        let code = self.code_slots.get(code_slot).ok_or_else(|| {
+        let code = self.execution_packages.get(code_slot).ok_or_else(|| {
             AssemblyExecutionImageError::CodeSlotOutOfBounds {
                 code_slot: PackageCodeSlotIndex::new(code_slot),
-                code_slot_count: self.code_slots.len(),
+                code_slot_count: self.execution_packages.len(),
             }
         })?;
         let file_index = match addr.file {
@@ -249,20 +261,20 @@ impl AssemblyExecutionImage {
                 .get(identity)
                 .copied()
                 .ok_or_else(|| AssemblyExecutionImageError::FileNotLoaded {
-                    package_build_id: code.package_build_id.clone(),
+                    package_build_id: code.package_build_id().clone(),
                     file_ir_identity: identity.clone(),
                 })?,
         };
         let file = code.files.get(file_index).ok_or_else(|| {
             AssemblyExecutionImageError::FileIndexOutOfBounds {
-                package_build_id: code.package_build_id.clone(),
+                package_build_id: code.package_build_id().clone(),
                 file_index,
                 file_count: code.files.len(),
             }
         })?;
         file.constants.get(addr.const_index).ok_or_else(|| {
             AssemblyExecutionImageError::ConstIndexOutOfBounds {
-                package_build_id: code.package_build_id.clone(),
+                package_build_id: code.package_build_id().clone(),
                 file_ir_identity: file.file_ir_identity.clone(),
                 const_index: addr.const_index,
                 const_count: file.constants.len(),
@@ -302,7 +314,7 @@ impl AssemblyExecutionImage {
             });
         }
         Ok(TypeAddr {
-            unit: UnitAddr::Package(code.code_slot.index()),
+            unit: UnitAddr::Package(code.code_slot().index()),
             file: FileAddr::LoadedFileIndex(file_index),
             type_index,
         })
@@ -343,7 +355,7 @@ impl AssemblyExecutionImage {
 
 fn validate_execution_db_targets(
     shared: &SharedPackageLinkedImage,
-    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slots: &[Arc<RuntimeExecutionPackage>],
     code_slot_by_build: &BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
 ) -> AssemblyExecutionResult<()> {
     for code in code_slots {
@@ -375,7 +387,7 @@ fn validate_execution_db_targets(
 
 fn validate_db_targets_in_body(
     shared: &SharedPackageLinkedImage,
-    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slots: &[Arc<RuntimeExecutionPackage>],
     code_slot_by_build: &BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
     owner_package_build_id: &PackageBuildId,
     owner_file_ir_identity: &str,
@@ -435,7 +447,7 @@ fn db_target_in_expression(expression: &LinkedExprIr) -> Option<&DbTargetIr> {
 
 fn validate_db_target(
     shared: &SharedPackageLinkedImage,
-    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slots: &[Arc<RuntimeExecutionPackage>],
     code_slot_by_build: &BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
     owner_package_build_id: &PackageBuildId,
     owner_file_ir_identity: &str,
@@ -510,7 +522,7 @@ fn validate_db_target(
 
 fn execution_link_overlay(
     shared: &SharedPackageLinkedImage,
-    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slots: &[Arc<RuntimeExecutionPackage>],
     types: &RuntimeTypeContext,
 ) -> AssemblyExecutionResult<LinkOverlay> {
     let mut overlay = LinkOverlay::default();
@@ -563,55 +575,131 @@ fn execution_link_overlay(
     Ok(overlay)
 }
 
-impl AssemblyPackageExecutionCode {
+impl RuntimeExecutionPackage {
+    /// Binds one admitted package artifact to its linked code and loaded
+    /// resources. File order is canonicalized from `artifact.files`; caller
+    /// ordering is never used as package identity.
     pub fn try_new(
-        shared: &SharedPackageCode,
+        code_slot: PackageCodeSlotIndex,
+        artifact: Arc<PackageArtifact>,
         files: Vec<Arc<LinkedFileUnit>>,
+        static_resources: PublicationResourceTable,
     ) -> AssemblyExecutionResult<Self> {
-        if files.len() != shared.files().len() {
+        if files.len() != artifact.files.len() {
             return Err(AssemblyExecutionImageError::PackageFileCountMismatch {
-                package_build_id: shared.package_build_id().clone(),
-                expected: shared.files().len(),
+                package_build_id: artifact.package_build_id.clone(),
+                expected: artifact.files.len(),
                 actual: files.len(),
             });
         }
-        let mut files_by_identity = BTreeMap::new();
-        for (index, (linked, source)) in files.iter().zip(shared.files()).enumerate() {
-            if linked.file_ir_identity != source.file_ir_identity
-                || linked.module_path != source.module_path
-                || linked.source_ast_hash != source.source_ast_hash
-            {
-                return Err(AssemblyExecutionImageError::ExecutionFileMismatch {
-                    package_build_id: shared.package_build_id().clone(),
-                    file_index: index,
-                    expected_file_ir_identity: source.file_ir_identity.clone(),
-                    actual_file_ir_identity: linked.file_ir_identity.clone(),
-                });
-            }
-            if files_by_identity
-                .insert(linked.file_ir_identity.clone(), index)
-                .is_some()
-            {
-                return Err(AssemblyExecutionImageError::DuplicateExecutionFile {
-                    package_build_id: shared.package_build_id().clone(),
-                    file_ir_identity: linked.file_ir_identity.clone(),
+        let mut artifact_file_identities = BTreeSet::new();
+        for expected in &artifact.files {
+            if !artifact_file_identities.insert(expected.file_ir_identity.as_str()) {
+                return Err(AssemblyExecutionImageError::DuplicateArtifactFileRef {
+                    package_build_id: artifact.package_build_id.clone(),
+                    file_ir_identity: expected.file_ir_identity.clone(),
                 });
             }
         }
-        Ok(Self {
-            code_slot: shared.code_slot(),
-            package_build_id: shared.package_build_id().clone(),
-            files,
+        let mut loaded_by_identity = BTreeMap::new();
+        for linked in files {
+            let file_ir_identity = linked.file_ir_identity.clone();
+            if loaded_by_identity
+                .insert(file_ir_identity.clone(), linked)
+                .is_some()
+            {
+                return Err(AssemblyExecutionImageError::DuplicateExecutionFile {
+                    package_build_id: artifact.package_build_id.clone(),
+                    file_ir_identity,
+                });
+            }
+        }
+        let mut files_by_identity = BTreeMap::new();
+        let mut canonical_files = Vec::with_capacity(artifact.files.len());
+        for (index, expected) in artifact.files.iter().enumerate() {
+            let linked = loaded_by_identity
+                .remove(&expected.file_ir_identity)
+                .ok_or_else(|| AssemblyExecutionImageError::FileNotLoaded {
+                    package_build_id: artifact.package_build_id.clone(),
+                    file_ir_identity: expected.file_ir_identity.clone(),
+                })?;
+            if !file_ref_matches_linked(expected, &linked) {
+                return Err(AssemblyExecutionImageError::ExecutionFileMismatch {
+                    package_build_id: artifact.package_build_id.clone(),
+                    file_index: index,
+                    expected_file_ir_identity: expected.file_ir_identity.clone(),
+                    actual_file_ir_identity: linked.file_ir_identity.clone(),
+                });
+            }
+            files_by_identity.insert(linked.file_ir_identity.clone(), index);
+            canonical_files.push(linked);
+        }
+        if let Some((file_ir_identity, _)) = loaded_by_identity.into_iter().next() {
+            return Err(AssemblyExecutionImageError::ExecutionFileOutsideArtifact {
+                package_build_id: artifact.package_build_id.clone(),
+                file_ir_identity,
+            });
+        }
+        let package = Self {
+            code_slot,
+            artifact,
+            static_resources,
+            files: canonical_files,
             files_by_identity,
-        })
+        };
+        package.validate_resources()?;
+        package.validate_implementation_links()?;
+        package.validate_callable_links()?;
+        Ok(package)
+    }
+
+    pub fn try_from_shared(
+        shared_code: Arc<SharedPackageCode>,
+        files: Vec<Arc<LinkedFileUnit>>,
+    ) -> AssemblyExecutionResult<Self> {
+        Self::try_new(
+            shared_code.code_slot(),
+            shared_code.artifact_arc(),
+            files,
+            shared_code.static_resources().clone(),
+        )
     }
 
     pub fn code_slot(&self) -> PackageCodeSlotIndex {
         self.code_slot
     }
 
+    pub fn artifact(&self) -> &PackageArtifact {
+        self.artifact.as_ref()
+    }
+
+    pub fn artifact_arc(&self) -> Arc<PackageArtifact> {
+        Arc::clone(&self.artifact)
+    }
+
+    pub fn artifact_ref(&self) -> PackageArtifactRef {
+        PackageArtifactRef {
+            package_id: self.artifact.package_id.clone(),
+            package_version: self.artifact.package_version.clone(),
+            package_build_id: self.artifact.package_build_id.clone(),
+            package_local_abi_identity: self.artifact.package_local_abi.local_abi_identity.clone(),
+        }
+    }
+
+    pub fn package_id(&self) -> &str {
+        &self.artifact().package_id
+    }
+
     pub fn package_build_id(&self) -> &PackageBuildId {
-        &self.package_build_id
+        &self.artifact.package_build_id
+    }
+
+    pub fn implementation_links(&self) -> &PackageImplementationLinks {
+        &self.artifact().implementation_links
+    }
+
+    pub fn static_resources(&self) -> &PublicationResourceTable {
+        &self.static_resources
     }
 
     pub fn files(&self) -> &[Arc<LinkedFileUnit>] {
@@ -623,6 +711,214 @@ impl AssemblyPackageExecutionCode {
             .get(file_ir_identity)
             .and_then(|index| self.files.get(*index))
     }
+
+    fn validate_resources(&self) -> AssemblyExecutionResult<()> {
+        let mut expected_paths = BTreeSet::new();
+        for expected in &self.artifact.static_resources {
+            if !expected_paths.insert(expected.path.as_str()) {
+                return Err(AssemblyExecutionImageError::DuplicateStaticResourceRef {
+                    package_build_id: self.package_build_id().clone(),
+                    path: expected.path.clone(),
+                });
+            }
+            let loaded = self.static_resources.get(&expected.path).ok_or_else(|| {
+                AssemblyExecutionImageError::MissingStaticResource {
+                    package_build_id: self.package_build_id().clone(),
+                    path: expected.path.clone(),
+                }
+            })?;
+            if loaded.meta != *expected || loaded.bytes.len() as u64 != expected.byte_len {
+                return Err(AssemblyExecutionImageError::StaticResourceMismatch {
+                    package_build_id: self.package_build_id().clone(),
+                    path: expected.path.clone(),
+                });
+            }
+        }
+        if let Some(path) = self
+            .static_resources
+            .resources_by_path
+            .keys()
+            .find(|path| !expected_paths.contains(path.as_str()))
+        {
+            return Err(AssemblyExecutionImageError::StaticResourceOutsideArtifact {
+                package_build_id: self.package_build_id().clone(),
+                path: path.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_implementation_links(&self) -> AssemblyExecutionResult<()> {
+        for (symbol, export) in &self.artifact.implementation_links.types {
+            let file = self.link_file("type", symbol, &export.file)?;
+            self.validate_index(
+                "type",
+                symbol,
+                &export.file,
+                export.type_index as usize,
+                file.types.len(),
+            )?;
+        }
+        for (symbol, export) in &self.artifact.implementation_links.constants {
+            let file = self.link_file("constant", symbol, &export.file)?;
+            self.validate_index(
+                "constant",
+                symbol,
+                &export.file,
+                export.const_index as usize,
+                file.constants.len(),
+            )?;
+        }
+        for (symbol, export) in self
+            .artifact
+            .implementation_links
+            .functions
+            .iter()
+            .chain(&self.artifact.implementation_links.impl_methods)
+        {
+            let file = self.link_file("executable", symbol, &export.file)?;
+            self.validate_index(
+                "executable",
+                symbol,
+                &export.file,
+                export.executable_index as usize,
+                file.executables.len(),
+            )?;
+        }
+        for (symbol, target) in &self.artifact.implementation_links.operation_targets {
+            match target {
+                PackageOperationTarget::LocalExecutable { target, .. } => {
+                    self.validate_operation_target("operation", symbol, target)?;
+                }
+                PackageOperationTarget::LocalConstReceiverExecutable { target, .. } => {
+                    self.validate_receiver_target(symbol, target)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_callable_links(&self) -> AssemblyExecutionResult<()> {
+        for (callable_id, fact) in &self.artifact.callable_links {
+            if callable_id != &fact.callable_id
+                || fact.target.callable_abi_id != callable_id.as_str()
+            {
+                return Err(AssemblyExecutionImageError::CallableLinkIdentityMismatch {
+                    package_build_id: self.package_build_id().clone(),
+                    package_callable_id: callable_id.clone(),
+                });
+            }
+            self.validate_operation_target("callable", callable_id.as_str(), &fact.target)?;
+        }
+        Ok(())
+    }
+
+    fn validate_receiver_target(
+        &self,
+        symbol: &str,
+        target: &LocalReceiverExecutableRef,
+    ) -> AssemblyExecutionResult<()> {
+        let file = self.link_file("receiver", symbol, &target.receiver.file_ref)?;
+        self.validate_index(
+            "receiver",
+            symbol,
+            &target.receiver.file_ref,
+            target.receiver.const_index as usize,
+            file.constants.len(),
+        )?;
+        self.validate_operation_target("receiver executable", symbol, &target.executable_target)
+    }
+
+    fn validate_operation_target(
+        &self,
+        kind: &'static str,
+        symbol: &str,
+        target: &OperationTargetRef,
+    ) -> AssemblyExecutionResult<()> {
+        let file = self.link_file(kind, symbol, &target.file_ref)?;
+        self.validate_index(
+            kind,
+            symbol,
+            &target.file_ref,
+            target.executable_index as usize,
+            file.executables.len(),
+        )
+    }
+
+    fn link_file(
+        &self,
+        kind: &'static str,
+        symbol: &str,
+        reference: &FileIrRef,
+    ) -> AssemblyExecutionResult<&LinkedFileUnit> {
+        let mut matches = self
+            .artifact
+            .files
+            .iter()
+            .filter(|candidate| semantic_file_ref_matches(candidate, reference));
+        let expected = matches.next().ok_or_else(|| {
+            AssemblyExecutionImageError::ImplementationLinkFileMismatch {
+                package_build_id: self.package_build_id().clone(),
+                kind,
+                symbol: symbol.to_string(),
+                file_ir_identity: reference.file_ir_identity.clone(),
+            }
+        })?;
+        if matches.next().is_some() {
+            return Err(
+                AssemblyExecutionImageError::ImplementationLinkFileAmbiguous {
+                    package_build_id: self.package_build_id().clone(),
+                    kind,
+                    symbol: symbol.to_string(),
+                    file_ir_identity: reference.file_ir_identity.clone(),
+                },
+            );
+        }
+        self.file(&expected.file_ir_identity)
+            .map(AsRef::as_ref)
+            .ok_or_else(|| AssemblyExecutionImageError::FileNotLoaded {
+                package_build_id: self.package_build_id().clone(),
+                file_ir_identity: expected.file_ir_identity.clone(),
+            })
+    }
+
+    fn validate_index(
+        &self,
+        kind: &'static str,
+        symbol: &str,
+        reference: &FileIrRef,
+        index: usize,
+        count: usize,
+    ) -> AssemblyExecutionResult<()> {
+        if index < count {
+            return Ok(());
+        }
+        Err(
+            AssemblyExecutionImageError::ImplementationLinkIndexOutOfBounds {
+                package_build_id: self.package_build_id().clone(),
+                kind,
+                symbol: symbol.to_string(),
+                file_ir_identity: reference.file_ir_identity.clone(),
+                index,
+                count,
+            },
+        )
+    }
+}
+
+fn semantic_file_ref_matches(left: &FileIrRef, right: &FileIrRef) -> bool {
+    left.file_ir_identity == right.file_ir_identity
+        && left.module_path == right.module_path
+        && left.source_ast_hash == right.source_ast_hash
+}
+
+fn file_ref_matches_linked(reference: &FileIrRef, linked: &LinkedFileUnit) -> bool {
+    reference.file_ir_identity == linked.file_ir_identity
+        && reference.module_path == linked.module_path
+        && reference
+            .source_ast_hash
+            .as_deref()
+            .is_none_or(|hash| hash == linked.source_ast_hash)
 }
 
 impl AssemblyExecutable<'_> {
@@ -701,6 +997,54 @@ pub enum AssemblyExecutionImageError {
     DuplicateExecutionFile {
         package_build_id: PackageBuildId,
         file_ir_identity: String,
+    },
+    DuplicateArtifactFileRef {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+    },
+    ExecutionFileOutsideArtifact {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+    },
+    DuplicateStaticResourceRef {
+        package_build_id: PackageBuildId,
+        path: String,
+    },
+    MissingStaticResource {
+        package_build_id: PackageBuildId,
+        path: String,
+    },
+    StaticResourceMismatch {
+        package_build_id: PackageBuildId,
+        path: String,
+    },
+    StaticResourceOutsideArtifact {
+        package_build_id: PackageBuildId,
+        path: String,
+    },
+    ImplementationLinkFileMismatch {
+        package_build_id: PackageBuildId,
+        kind: &'static str,
+        symbol: String,
+        file_ir_identity: String,
+    },
+    ImplementationLinkFileAmbiguous {
+        package_build_id: PackageBuildId,
+        kind: &'static str,
+        symbol: String,
+        file_ir_identity: String,
+    },
+    ImplementationLinkIndexOutOfBounds {
+        package_build_id: PackageBuildId,
+        kind: &'static str,
+        symbol: String,
+        file_ir_identity: String,
+        index: usize,
+        count: usize,
+    },
+    CallableLinkIdentityMismatch {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
     },
     FileNotLoaded {
         package_build_id: PackageBuildId,

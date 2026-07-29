@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, AssemblyPackageExecutionCode, LinkedCallTarget, LinkedFileUnit,
+    AssemblyExecutionImage, LinkedCallTarget, LinkedFileUnit, RuntimeExecutionPackage,
 };
 
 use crate::linker::linked_file_unit_from_assembly_artifact;
@@ -26,7 +26,7 @@ pub(super) fn link_assembly_execution_image(
         .iter()
         .zip(linked_files)
         .map(|(code, files)| {
-            AssemblyPackageExecutionCode::try_new(code, files)
+            RuntimeExecutionPackage::try_from_shared(Arc::clone(code), files)
                 .map(Arc::new)
                 .map_err(anyhow::Error::new)
         })

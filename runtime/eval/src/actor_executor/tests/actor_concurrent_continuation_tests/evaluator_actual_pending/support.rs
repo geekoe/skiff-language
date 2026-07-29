@@ -304,15 +304,13 @@ pub(super) fn interpreter_with_std_types(file: Arc<LinkedFileUnit>) -> Interpret
     let program = Arc::new(EvalRuntimeProgram::new(
         "skiff.run/counter",
         vec![file],
-        vec![Arc::new(PackageUnit::empty(
+        vec![crate::test_support::runtime_execution_package_fixture(
             "skiff.run/std",
-            "1.0.0",
-            "skiff.run/std:build:f445h-e4r",
-            "skiff.run/std:abi:f445h-e4r",
-        ))],
-        vec![vec![std_file]],
+            0,
+            vec![std_file],
+            PublicationResourceTable::default(),
+        )],
         PublicationResourceTable::default(),
-        vec![PublicationResourceTable::default()],
         Default::default(),
         overlay,
         types,

@@ -867,9 +867,9 @@ pub(crate) fn resolve_actor_declaration<'a>(
     let files = match owner.unit {
         UnitAddr::Service => program.service_files,
         UnitAddr::Package(slot) => program
-            .package_files
+            .packages
             .get(slot)
-            .map(Vec::as_slice)
+            .map(|package| package.files())
             .ok_or(ActorInstanceStoreError::DeclarationFileMissing)?,
     };
     let file = match &owner.file {
@@ -960,7 +960,8 @@ mod tests {
     use serde_json::json;
     use skiff_runtime_linked_program::{
         ExternalRefTable, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedActorField,
-        LinkedFileUnit, PackageUnit, RuntimeTypeContext, ServiceSymbolRef, SourceMapDto,
+        LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext, ServiceSymbolRef,
+        SourceMapDto,
     };
 
     use super::*;
@@ -968,8 +969,7 @@ mod tests {
 
     struct ProgramFixture {
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         overlay: LinkOverlay,
         types: RuntimeTypeContext,
     }
@@ -979,7 +979,6 @@ mod tests {
             ProgramTypeView::new(
                 &self.service_files,
                 &self.packages,
-                &self.package_files,
                 &self.overlay,
                 &self.types,
             )
@@ -1046,7 +1045,6 @@ mod tests {
                 external_refs: ExternalRefTable::default(),
             })],
             packages: Vec::new(),
-            package_files: Vec::new(),
             overlay: LinkOverlay::default(),
             types: RuntimeTypeContext::default(),
         }

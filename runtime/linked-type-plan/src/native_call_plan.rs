@@ -101,10 +101,10 @@ fn native_named_union_error_owner(
             "{WEBSOCKET_REQUEST_BINDING} std package slot {package_slot} is missing linked code"
         ))
     })?;
-    if package.package_id != STD_PACKAGE_ID {
+    if package.package_id() != STD_PACKAGE_ID {
         return Err(RuntimeError::InvalidArtifact(format!(
             "{WEBSOCKET_REQUEST_BINDING} std package slot {package_slot} resolves to {}",
-            package.package_id
+            package.package_id()
         )));
     }
     let addr = program
@@ -360,11 +360,13 @@ mod tests {
     use std::sync::Arc;
 
     use skiff_runtime_linked_program::{
-        anonymous_type_decl, ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit,
-        LinkedTypeDescriptor, PackageSymbolKey, PackageUnit, ResolvedSymbol, RuntimeTypeContext,
-        TypeAddr, UnitAddr,
+        anonymous_type_decl, ExecutableAddr, FileAddr, LinkOverlay, LinkedTypeDescriptor,
+        PackageSymbolKey, ResolvedSymbol, RuntimeExecutionPackage, RuntimeTypeContext, TypeAddr,
+        UnitAddr,
     };
     use skiff_runtime_model::service_error::{LocalExecutionTypeIdentity, NamedUnionOwnerIdentity};
+
+    use crate::type_plan::test_runtime_package;
 
     use super::{
         native_builtin_plan, native_named_union_error_owner, native_package_type_addr,
@@ -382,10 +384,9 @@ mod tests {
     fn view<'a>(
         overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
-        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
-        packages: &'a [Arc<PackageUnit>],
+        packages: &'a [Arc<RuntimeExecutionPackage>],
     ) -> ProgramTypeView<'a> {
-        ProgramTypeView::new(&[], packages, package_files, overlay, types)
+        ProgramTypeView::new(&[], packages, overlay, types)
     }
 
     #[test]
@@ -420,9 +421,8 @@ mod tests {
         types
             .exported_types
             .insert_package(PackageSymbolKey::new(1, "api.Options"), right_addr.clone());
-        let package_files = vec![Vec::new(), Vec::new()];
         let packages = Vec::new();
-        let program = view(&overlay, &types, &package_files, &packages);
+        let program = view(&overlay, &types, &packages);
 
         assert_eq!(
             native_package_type_addr(program, "example.left", "api.Options").unwrap(),
@@ -451,9 +451,8 @@ mod tests {
         types
             .exported_types
             .insert_package(PackageSymbolKey::new(0, "api.NotAType"), addr);
-        let package_files = vec![Vec::new()];
         let packages = Vec::new();
-        let program = view(&overlay, &types, &package_files, &packages);
+        let program = view(&overlay, &types, &packages);
 
         for (package_id, public_path, expected) in [
             ("missing.pkg", "api.NotAType", "unknown package"),
@@ -480,7 +479,11 @@ mod tests {
         addr: TypeAddr,
         symbol: Option<ResolvedSymbol>,
         descriptor: LinkedTypeDescriptor,
-    ) -> (LinkOverlay, RuntimeTypeContext, Vec<Arc<PackageUnit>>) {
+    ) -> (
+        LinkOverlay,
+        RuntimeTypeContext,
+        Vec<Arc<RuntimeExecutionPackage>>,
+    ) {
         let mut overlay = LinkOverlay {
             package_slots_by_id: [(STD_PACKAGE_ID.to_string(), 0)].into_iter().collect(),
             ..LinkOverlay::default()
@@ -500,12 +503,7 @@ mod tests {
             addr,
             anonymous_type_decl("WebSocketRequestError", descriptor),
         );
-        let packages = vec![Arc::new(PackageUnit::empty(
-            STD_PACKAGE_ID,
-            "1.0.0",
-            "build:std",
-            "abi:std",
-        ))];
+        let packages = vec![test_runtime_package(0, STD_PACKAGE_ID, Vec::new())];
         (overlay, types, packages)
     }
 
@@ -519,8 +517,7 @@ mod tests {
                 branches: Vec::new(),
             },
         );
-        let package_files = vec![Vec::new()];
-        let program = view(&overlay, &types, &package_files, &packages);
+        let program = view(&overlay, &types, &packages);
 
         assert_eq!(
             native_named_union_error_owner(WEBSOCKET_REQUEST_BINDING, program).unwrap(),
@@ -579,8 +576,7 @@ mod tests {
         ] {
             let (overlay, types, packages) =
                 std_owner_program(exact_addr.clone(), symbol, descriptor);
-            let package_files = vec![Vec::new()];
-            let program = view(&overlay, &types, &package_files, &packages);
+            let program = view(&overlay, &types, &packages);
             let error =
                 native_named_union_error_owner(WEBSOCKET_REQUEST_BINDING, program).unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
@@ -609,27 +605,14 @@ mod tests {
                 branches: Vec::new(),
             },
         );
-        let left_package_files = vec![Vec::new()];
-        let right_package_files = vec![Vec::new()];
-
         let left = native_named_union_error_owner(
             WEBSOCKET_REQUEST_BINDING,
-            view(
-                &left_overlay,
-                &left_types,
-                &left_package_files,
-                &left_packages,
-            ),
+            view(&left_overlay, &left_types, &left_packages),
         )
         .unwrap();
         let right = native_named_union_error_owner(
             WEBSOCKET_REQUEST_BINDING,
-            view(
-                &right_overlay,
-                &right_types,
-                &right_package_files,
-                &right_packages,
-            ),
+            view(&right_overlay, &right_types, &right_packages),
         )
         .unwrap();
 

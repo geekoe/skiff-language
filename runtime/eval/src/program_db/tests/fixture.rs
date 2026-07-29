@@ -37,8 +37,7 @@ async fn db_actor_fixture_checkpoint() {
     let executable = fixture.linked.executable();
     assert_eq!(fixture.linked.program.service_files.len(), 1);
     assert_eq!(fixture.linked.program.packages.len(), 1);
-    assert_eq!(fixture.linked.program.package_files.len(), 1);
-    assert_eq!(fixture.linked.program.package_files[0].len(), 1);
+    assert_eq!(fixture.linked.program.packages[0].files().len(), 1);
     assert_eq!(fixture.linked.file.executables.len(), 1);
 
     let binding_slot = fixture

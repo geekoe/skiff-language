@@ -148,9 +148,8 @@ fn wrap_target_identity_keeps_external_owner_and_ordered_generic_arguments() {
     );
     let service_files = Vec::new();
     let packages = Vec::new();
-    let package_files = Vec::new();
     let overlay = LinkOverlay::default();
-    let program = ProgramTypeView::new(&service_files, &packages, &package_files, &overlay, &types);
+    let program = ProgramTypeView::new(&service_files, &packages, &overlay, &types);
     let arguments = vec![
         LinkedTypeRef::Native {
             name: "number".to_string(),
