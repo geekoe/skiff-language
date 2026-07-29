@@ -19,10 +19,11 @@
     },
     "config.<profile>.yml": {
       "fields": ["config", "secrets", "state", "resources", "timeout", "quota", "principal", "lifecycle"]
-    },
-    "assembly.yml": {
-      "fields": ["environment", "rootDeployments"]
     }
+  },
+  "runtimeAssemblyProjection": {
+    "argv": ["assembly", "<build|publish>", "--artifact-root", "<artifact-root>", "--environment", "<environment>", "--root-deployment", "<exact ServiceDeploymentRef JSON>", "..."],
+    "persistentAuthoring": false
   },
   "recordPaths": {
     "PackageArtifact": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/package.json",

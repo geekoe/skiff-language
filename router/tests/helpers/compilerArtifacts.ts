@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -89,16 +89,11 @@ export async function writeCompilerGeneratedFixtureArtifactRoot(
     'serviceDeploymentReceipt'
   ) as CompilerGeneratedArtifactRoot['serviceDeployment'];
 
-  const assemblyRoot = join(root, '.authoring', 'assembly');
-  await mkdir(assemblyRoot, { recursive: true });
-  await writeFile(
-    join(assemblyRoot, 'assembly.yml'),
-    `${JSON.stringify({
-      environment: 'router-fixture',
-      rootDeployments: [serviceDeployment.deployment],
-    }, null, 2)}\n`
+  const assemblyReceipt = await projectRuntimeAssembly(
+    root,
+    'router-fixture',
+    [serviceDeployment.deployment]
   );
-  const assemblyReceipt = await author('assembly', 'build', assemblyRoot, root);
   const runtimeAssembly = objectReceipt(
     assemblyReceipt.runtimeAssemblyReceipt,
     'runtimeAssemblyReceipt'
@@ -178,7 +173,7 @@ async function runPackageServiceFixture(args: string[]): Promise<void> {
 }
 
 async function author(
-  object: 'package' | 'assembly',
+  object: 'package',
   action: 'build' | 'publish',
   sourceRoot: string,
   artifactRoot: string
@@ -202,6 +197,39 @@ async function author(
       'dev',
       '--platform-source-root',
       repoRoot,
+      '--json',
+    ],
+    { cwd: repoRoot }
+  );
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+async function projectRuntimeAssembly(
+  artifactRoot: string,
+  environment: string,
+  rootDeployments: ReadonlyArray<Record<string, string>>
+): Promise<Record<string, unknown>> {
+  const rootArguments = rootDeployments.flatMap((deployment) => [
+    '--root-deployment',
+    JSON.stringify(deployment),
+  ]);
+  const { stdout } = await execFileAsync(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      compilerManifestPath,
+      '--bin',
+      'skiff-compiler',
+      '--',
+      'assembly',
+      'build',
+      '--artifact-root',
+      artifactRoot,
+      '--environment',
+      environment,
+      ...rootArguments,
       '--json',
     ],
     { cwd: repoRoot }

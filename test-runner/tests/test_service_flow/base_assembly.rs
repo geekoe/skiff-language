@@ -140,6 +140,20 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
         Some(receipt.base_assembly.assembly_identity.as_str()),
     )
     .expect("load exact base assembly");
+    assert_eq!(
+        base.assembly
+            .as_ref()
+            .expect("base assembly receipt must hydrate an assembly")
+            .roots
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            receipt.provider_deployment.clone(),
+            receipt.consumer_deployment.clone(),
+        ]),
+        "fileless base projection must receive both exact provider and consumer roots"
+    );
 
     let project = compile_package_project_for_test(&platform_sources(), &test_service, &artifacts)
         .expect("compile only the ordinary test service source");

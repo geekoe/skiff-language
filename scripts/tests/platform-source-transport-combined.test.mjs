@@ -24,8 +24,15 @@ import {
 import { runtimeLivePlatformSourceArgs } from '../lib/verify-live-plan.mjs';
 
 const skiffRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const rootDeployment = {
+  contractVersion: '1.0.0',
+  deploymentArtifactIdentity:
+    `skiff-deployment-artifact-v2:sha256:${'1'.repeat(64)}`,
+  deploymentRevision: 'revision-1',
+  serviceId: 'example.com/service',
+};
 
-test('merged compiler and test transports share one absolute platform root', async () => {
+test('package and test transports share the platform root while assembly stays fileless', async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-platform-transport-combined-'));
   try {
     const marker = join(tempRoot, 'cargo-argv.jsonl');
@@ -47,15 +54,21 @@ test('merged compiler and test transports share one absolute platform root', asy
     process.env.PATH = `${fakeBin}${delimiter}${previousPath ?? ''}`;
     process.env.SKIFF_COMBINED_CARGO_MARKER = marker;
     try {
-      for (const kind of ['package', 'assembly']) {
-        await runCompilerAuthoring({
-          skiffRoot,
-          kind,
-          action: 'build',
-          root: join(tempRoot, kind),
-          artifactRoot,
-        });
-      }
+      await runCompilerAuthoring({
+        skiffRoot,
+        kind: 'package',
+        action: 'build',
+        root: join(tempRoot, 'package'),
+        artifactRoot,
+      });
+      await runCompilerAuthoring({
+        skiffRoot,
+        kind: 'assembly',
+        action: 'build',
+        artifactRoot,
+        environment: 'combined-transport',
+        rootDeployments: [rootDeployment],
+      });
       const skiffResult = await runProcess(process.execPath, [
         join(skiffRoot, 'scripts', 'skiff.mjs'),
         'test',
@@ -83,8 +96,15 @@ test('merged compiler and test transports share one absolute platform root', asy
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
     assert.equal(captured.length, 3);
+    assertPlatformRoot(captured[0], 'package-authoring');
+    assert.equal(captured[1].includes('--platform-source-root'), false);
+    assert.deepEqual(
+      captured[1].flatMap((value, index) => (
+        value === '--root-deployment' ? [JSON.parse(captured[1][index + 1])] : []
+      )),
+      [rootDeployment],
+    );
     const argv = [
-      ...captured.map((args, index) => ({ label: `authoring-${index}`, args })),
       {
         label: 'source-suite-std',
         args: skiffSourceTestRunnerCargoArgs({

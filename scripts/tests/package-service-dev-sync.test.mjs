@@ -126,6 +126,7 @@ test('a failing package batch never sends activation prepare', async () => {
 test('dev sync has one package phase and consumes generated service receipts before assembly', async () => {
   const fixture = await rootsFixture('success');
   const events = [];
+  let assemblyInput;
   const result = await runDevSyncOnce({
     roots: fixture.roots,
     environment: 'dev',
@@ -133,6 +134,9 @@ test('dev sync has one package phase and consumes generated service receipts bef
     expectedGeneration: 7,
     activationId: 'activation-8',
     compilerRunner: async (input) => {
+      if (input.kind === 'assembly') {
+        assemblyInput = input;
+      }
       events.push(input.kind === 'assembly'
         ? `assembly:${input.environment}`
         : `${input.kind}:${basename(input.root)}:${input.environment}`);
@@ -152,6 +156,13 @@ test('dev sync has one package phase and consumes generated service receipts bef
   assert.equal(result.packageArtifactReceipts.length, 2);
   assert.equal(result.serviceContractReceipts.length, 1);
   assert.equal(result.serviceDeploymentReceipts.length, 1);
+  assert.equal('root' in assemblyInput, false);
+  assert.deepEqual(assemblyInput.rootDeployments, [dummyDeploymentRef]);
+  const source = await readFile(
+    new URL('../skiff-dev-sync.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(source, /assembly\.yml/);
 });
 
 test('dev sync defers roots until exact package/service pointers are available', async () => {

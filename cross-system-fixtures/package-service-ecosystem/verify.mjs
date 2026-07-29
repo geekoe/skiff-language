@@ -181,8 +181,23 @@ assert.deepEqual(checkpoint.externalAuthoring["config.<profile>.yml"], {
     "lifecycle",
   ],
 });
-assert.deepEqual(checkpoint.externalAuthoring["assembly.yml"], {
-  fields: ["environment", "rootDeployments"],
+assert.equal(
+  Object.hasOwn(checkpoint.externalAuthoring, "assembly.yml"),
+  false,
+);
+assert.deepEqual(checkpoint.runtimeAssemblyProjection, {
+  argv: [
+    "assembly",
+    "<build|publish>",
+    "--artifact-root",
+    "<artifact-root>",
+    "--environment",
+    "<environment>",
+    "--root-deployment",
+    "<exact ServiceDeploymentRef JSON>",
+    "...",
+  ],
+  persistentAuthoring: false,
 });
 assert.deepEqual(checkpoint.activationStateFields.committed, [
   "generation",
