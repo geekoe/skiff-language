@@ -6,11 +6,11 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    ActivationRelativeServiceCall, ConstAddr, ConstIr, ExecutableAddr, FileAddr, LinkOverlay,
-    LinkedExecutable, LinkedFileUnit, LinkedPackageCallableTarget, LinkedPackageDirectCall,
-    PackageCodeSlotIndex, PackageSymbolKey, ResolvedSymbol, RuntimeTypeContext,
-    ServiceErrorTypeIndex, SharedPackageCode, SharedPackageImageError, SharedPackageLinkedImage,
-    TypeAddr, UnitAddr,
+    ActivationRelativeServiceCall, ConstAddr, ConstIr, DbTargetIr, ExecutableAddr, FileAddr,
+    LinkOverlay, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+    LinkedPackageCallableTarget, LinkedPackageDirectCall, LinkedTypeRef, PackageCodeSlotIndex,
+    PackageSymbolKey, ResolvedSymbol, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageCode,
+    SharedPackageImageError, SharedPackageLinkedImage, TypeAddr, UnitAddr,
 };
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
@@ -81,6 +81,7 @@ impl AssemblyExecutionImage {
                 });
             }
         }
+        validate_execution_db_targets(&shared_packages, &code_slots, &code_slot_by_build)?;
         let link_overlay = execution_link_overlay(shared_packages.as_ref(), &code_slots, &types)?;
         Ok(Self {
             shared_packages,
@@ -340,6 +341,173 @@ impl AssemblyExecutionImage {
     }
 }
 
+fn validate_execution_db_targets(
+    shared: &SharedPackageLinkedImage,
+    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slot_by_build: &BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
+) -> AssemblyExecutionResult<()> {
+    for code in code_slots {
+        for file in code.files() {
+            for executable in &file.executables {
+                validate_db_targets_in_body(
+                    shared,
+                    code_slots,
+                    code_slot_by_build,
+                    code.package_build_id(),
+                    &file.file_ir_identity,
+                    &executable.body,
+                )?;
+            }
+            for constant in &file.constants {
+                validate_db_targets_in_body(
+                    shared,
+                    code_slots,
+                    code_slot_by_build,
+                    code.package_build_id(),
+                    &file.file_ir_identity,
+                    &constant.body,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_db_targets_in_body(
+    shared: &SharedPackageLinkedImage,
+    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slot_by_build: &BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
+    owner_package_build_id: &PackageBuildId,
+    owner_file_ir_identity: &str,
+    body: &LinkedExecutableBody,
+) -> AssemblyExecutionResult<()> {
+    for (expression_index, expression) in body.expressions.iter().enumerate() {
+        let Some(target) = db_target_in_expression(expression) else {
+            continue;
+        };
+        validate_db_target(
+            shared,
+            code_slots,
+            code_slot_by_build,
+            owner_package_build_id,
+            owner_file_ir_identity,
+            expression_index,
+            target,
+        )?;
+    }
+    Ok(())
+}
+
+/// Exhaustive carrier inventory for DB targets in linked executable bodies.
+///
+/// Keeping this match exhaustive makes a newly-added expression carrier a
+/// compile-time admission decision instead of silently bypassing validation.
+fn db_target_in_expression(expression: &LinkedExprIr) -> Option<&DbTargetIr> {
+    match expression {
+        LinkedExprIr::DbOperation { operation } => Some(&operation.target),
+        LinkedExprIr::DbQuery { target, .. } => Some(target),
+        LinkedExprIr::DbLeaseClaim { claim } => Some(&claim.target),
+        LinkedExprIr::DbLeaseRead { read } => Some(&read.target),
+        LinkedExprIr::Literal { .. }
+        | LinkedExprIr::LoadSlot { .. }
+        | LinkedExprIr::LoadConst { .. }
+        | LinkedExprIr::LoadPackageConst { .. }
+        | LinkedExprIr::LoadConstAddress { .. }
+        | LinkedExprIr::ActorSelfField { .. }
+        | LinkedExprIr::Field { .. }
+        | LinkedExprIr::Construct { .. }
+        | LinkedExprIr::RepresentationWrap { .. }
+        | LinkedExprIr::InterfaceBox { .. }
+        | LinkedExprIr::MapLiteral { .. }
+        | LinkedExprIr::ArrayLiteral { .. }
+        | LinkedExprIr::Unary { .. }
+        | LinkedExprIr::Binary { .. }
+        | LinkedExprIr::Call { .. }
+        | LinkedExprIr::Throw { .. }
+        | LinkedExprIr::Rethrow { .. }
+        | LinkedExprIr::Catch { .. }
+        | LinkedExprIr::Timeout { .. }
+        | LinkedExprIr::ValueBlock { .. }
+        | LinkedExprIr::ConcurrentValue { .. }
+        | LinkedExprIr::DbTransaction { .. } => None,
+    }
+}
+
+fn validate_db_target(
+    shared: &SharedPackageLinkedImage,
+    code_slots: &[Arc<AssemblyPackageExecutionCode>],
+    code_slot_by_build: &BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
+    owner_package_build_id: &PackageBuildId,
+    owner_file_ir_identity: &str,
+    expression_index: usize,
+    target: &DbTargetIr,
+) -> AssemblyExecutionResult<()> {
+    shared
+        .validate_db_object_target_id(&target.target_id)
+        .map_err(AssemblyExecutionImageError::SharedImage)?;
+
+    let target_build_id = &target.target_id.package_artifact_ref.package_build_id;
+    let target_slot = code_slot_by_build.get(target_build_id).ok_or_else(|| {
+        AssemblyExecutionImageError::PackageBuildNotLoaded {
+            package_build_id: target_build_id.clone(),
+        }
+    })?;
+    let target_code = code_slots.get(target_slot.index()).ok_or({
+        AssemblyExecutionImageError::CodeSlotOutOfBounds {
+            code_slot: *target_slot,
+            code_slot_count: code_slots.len(),
+        }
+    })?;
+    let target_file_identity = &target.target_id.file_ir_ref.file_ir_identity;
+    let target_file_index = target_code
+        .files_by_identity
+        .get(target_file_identity)
+        .copied()
+        .ok_or_else(|| AssemblyExecutionImageError::FileNotLoaded {
+            package_build_id: target_build_id.clone(),
+            file_ir_identity: target_file_identity.clone(),
+        })?;
+    let target_file = target_code.files.get(target_file_index).ok_or_else(|| {
+        AssemblyExecutionImageError::FileIndexOutOfBounds {
+            package_build_id: target_build_id.clone(),
+            file_index: target_file_index,
+            file_count: target_code.files.len(),
+        }
+    })?;
+    if target.target_id.type_index >= target_file.types.len() {
+        return Err(AssemblyExecutionImageError::TypeIndexOutOfBounds {
+            package_build_id: target_build_id.clone(),
+            file_ir_identity: target_file_identity.clone(),
+            type_index: target.target_id.type_index,
+            type_count: target_file.types.len(),
+        });
+    }
+    let expected = TypeAddr {
+        unit: UnitAddr::Package(target_slot.index()),
+        file: FileAddr::LoadedFileIndex(target_file_index),
+        type_index: target.target_id.type_index,
+    };
+    let LinkedTypeRef::Address { addr: actual } = &target.type_ref else {
+        return Err(AssemblyExecutionImageError::DbTargetTypeRefNotAddress {
+            owner_package_build_id: owner_package_build_id.clone(),
+            owner_file_ir_identity: owner_file_ir_identity.to_string(),
+            expression_index,
+            type_name: target.type_name.clone(),
+        });
+    };
+    if actual != &expected {
+        return Err(AssemblyExecutionImageError::DbTargetAddressMismatch {
+            owner_package_build_id: owner_package_build_id.clone(),
+            owner_file_ir_identity: owner_file_ir_identity.to_string(),
+            expression_index,
+            type_name: target.type_name.clone(),
+            expected,
+            actual: actual.clone(),
+        });
+    }
+    Ok(())
+}
+
 fn execution_link_overlay(
     shared: &SharedPackageLinkedImage,
     code_slots: &[Arc<AssemblyPackageExecutionCode>],
@@ -561,6 +729,20 @@ pub enum AssemblyExecutionImageError {
         type_index: usize,
         type_count: usize,
     },
+    DbTargetTypeRefNotAddress {
+        owner_package_build_id: PackageBuildId,
+        owner_file_ir_identity: String,
+        expression_index: usize,
+        type_name: String,
+    },
+    DbTargetAddressMismatch {
+        owner_package_build_id: PackageBuildId,
+        owner_file_ir_identity: String,
+        expression_index: usize,
+        type_name: String,
+        expected: TypeAddr,
+        actual: TypeAddr,
+    },
 }
 
 impl std::fmt::Display for AssemblyExecutionImageError {
@@ -573,3 +755,6 @@ impl std::fmt::Display for AssemblyExecutionImageError {
 }
 
 impl std::error::Error for AssemblyExecutionImageError {}
+
+#[cfg(test)]
+mod tests;
