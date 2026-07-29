@@ -16,23 +16,24 @@ use skiff_artifact_model::{
     ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy,
     DeploymentRevision, ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind,
-    ExecutableSignatureIr, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, GatewayAdapterArg,
-    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
-    GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
+    ExecutableSignatureIr, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
+    GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
     GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
-    InstructionSourceSite, MetadataValue, OperationCallableKind, OperationTargetRef,
-    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
-    PackageCallableLinkFact, PackageCallableParameter, PackageCallableRef,
-    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
-    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, ResourceBinding,
-    ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate, ServiceCallRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SlotLayout, StateBinding, StateBindingKind, SyntheticInstructionSiteReason, TypeDeclIr,
-    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    InstructionSourceSite, InterfaceDeclIr, InterfaceMethodSignature, InterfaceOperationIr,
+    MetadataValue, OperationCallableKind, OperationTargetRef, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableParameter, PackageCallableRef, PackageCallableSignature, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
+    ResolvedServiceBinding, ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding,
+    ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
+    ServiceSelectorBinding, SlotLayout, StateBinding, StateBindingKind,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
+    TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -114,12 +115,83 @@ impl CycleFixture {
 
         let helper_callable = PackageCallableId::new("pkg-callable:example.helper:entry");
         let mut helper_file = file("helper.main");
+        let helper_interface_index = helper_file.type_table.len() as u32;
+        let helper_interface_operation = InterfaceOperationIr {
+            name: "read".to_string(),
+            type_params: Vec::new(),
+            params: vec![FunctionTypeParamIr {
+                name: "self".to_string(),
+                ty: TypeRefIr::builtin("Self"),
+            }],
+            return_type: TypeRefIr::builtin("string"),
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: None,
+        };
+        helper_file.declarations.types.insert(
+            "Reader".to_string(),
+            TypeDeclarationIr {
+                type_index: helper_interface_index,
+                symbol: "helper.main.Reader".to_string(),
+                source_span: None,
+            },
+        );
+        helper_file.declarations.interfaces.insert(
+            "Reader".to_string(),
+            InterfaceDeclIr {
+                name: "Reader".to_string(),
+                type_params: Vec::new(),
+                operations: vec![helper_interface_operation.clone()],
+                source_span: None,
+            },
+        );
+        helper_file.type_table.push(TypeDeclIr {
+            name: "Reader".to_string(),
+            descriptor: TypeDescriptorIr::Interface,
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
         skiff_artifact_identity::assign_file_ir_identity(&mut helper_file).unwrap();
         let mut helper = package(
             "example.helper",
             &helper_file,
             helper_callable.clone(),
             operation_contract.clone(),
+        );
+        let helper_interface_methods = vec![InterfaceMethodSignature {
+            name: helper_interface_operation.name.clone(),
+            type_params: helper_interface_operation.type_params.clone(),
+            params: helper_interface_operation.params.clone(),
+            return_type: helper_interface_operation.return_type.clone(),
+            is_native: helper_interface_operation.is_native,
+            is_provider: helper_interface_operation.is_provider,
+            is_static: helper_interface_operation.is_static,
+            implicit_self: helper_interface_operation.implicit_self.clone(),
+        }];
+        helper.package_local_abi.public_symbols.insert(
+            "Reader".to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: "type:example.helper:top-level:Reader".to_string(),
+                descriptor: TypeDescriptorIr::Interface,
+                is_alias: false,
+                is_interface: true,
+                type_params: Vec::new(),
+                interface_methods: helper_interface_methods.clone(),
+            },
+        );
+        helper.implementation_links.types.insert(
+            "Reader".to_string(),
+            TypeExport {
+                file: file_ref(&helper_file),
+                type_index: helper_interface_index,
+                symbol: "helper.main.Reader".to_string(),
+                is_interface: true,
+                descriptor: Some(TypeDescriptorIr::Interface),
+                type_params: Vec::new(),
+                interface_methods: helper_interface_methods,
+            },
         );
         let helper_resource: Arc<[u8]> = Arc::from(b"shared helper resource".as_slice());
         helper.static_resources.push(PublicationResourceRef {
@@ -286,9 +358,14 @@ impl CycleFixture {
             used_operations: BTreeSet::from([second_operation_id.clone()]),
         });
         shared.service_call_refs.push(service_call);
-        let gateway_handler = PackageCallableId::new("pkg-callable:gateway:handler");
-        let gateway_pre = PackageCallableId::new("pkg-callable:gateway:pre");
-        let gateway_guard = PackageCallableId::new("pkg-callable:gateway:guard");
+        let gateway_handler = PackageCallableId::new(
+            "pkg-callable:example.shared:top-level:shared.main.gateway_handler",
+        );
+        let gateway_pre =
+            PackageCallableId::new("pkg-callable:example.shared:top-level:shared.main.gateway_pre");
+        let gateway_guard = PackageCallableId::new(
+            "pkg-callable:example.shared:top-level:shared.main.gateway_guard",
+        );
         for (path, callable) in [
             ("shared.main.gateway_handler", &gateway_handler),
             ("shared.main.gateway_pre", &gateway_pre),
