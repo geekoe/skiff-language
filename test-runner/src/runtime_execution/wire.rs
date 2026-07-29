@@ -1,13 +1,27 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{Map, Value};
 use skiff_artifact_model::RuntimeAssemblyRef;
 use skiff_deployment::storage::{
     CommittedActivation, EnvironmentActivationState, PendingActivation,
     ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
 };
+use skiff_runtime_model::service_error::{OpaqueServiceError, ServiceErrorEnvelope};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
 const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PackageTestDispatchOutcome {
+    Passed,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ControlErrorResponse {
+    pub(super) code: String,
+    pub(super) message: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ActivationReceipt {
@@ -51,27 +65,33 @@ pub(super) enum ReplicaState {
 
 pub(super) fn decode_package_test_dispatch_response(
     body: &str,
-) -> Result<(), CanonicalFixtureError> {
-    decode_package_test_dispatch_response_inner(body).map_err(|message| {
-        CanonicalFixtureError::InvalidInput(format!(
-            "invalid runtime test dispatch response: {message}"
-        ))
-    })
+) -> Result<PackageTestDispatchOutcome, CanonicalFixtureError> {
+    decode_package_test_dispatch_response_inner(body)
+        .map_err(|message| wire_error("runtime test dispatch response", message))
+}
+
+pub(super) fn decode_control_error_response(
+    body: &str,
+) -> Result<ControlErrorResponse, CanonicalFixtureError> {
+    decode_control_error_response_inner(body)
+        .map_err(|message| wire_error("control error response", message))
 }
 
 pub(super) fn decode_activation_receipt(
     body: &str,
 ) -> Result<ActivationReceipt, CanonicalFixtureError> {
     decode_activation_receipt_inner(body)
-        .map_err(|message| wire_error(format!("invalid assembly activation receipt: {message}")))
+        .map_err(|message| wire_error("assembly activation receipt", message))
 }
 
 pub(super) fn decode_health_snapshot(body: &str) -> Result<HealthSnapshot, CanonicalFixtureError> {
     decode_health_snapshot_inner(body)
-        .map_err(|message| wire_error(format!("invalid router health response: {message}")))
+        .map_err(|message| wire_error("router health response", message))
 }
 
-fn decode_package_test_dispatch_response_inner(body: &str) -> Result<(), String> {
+fn decode_package_test_dispatch_response_inner(
+    body: &str,
+) -> Result<PackageTestDispatchOutcome, String> {
     let value = decode_json(body, "runtime test dispatch response")?;
     let root = exact_object(
         &value,
@@ -80,8 +100,26 @@ fn decode_package_test_dispatch_response_inner(body: &str) -> Result<(), String>
         "runtime test dispatch response",
     )?;
     require_true(root, "ok", "runtime test dispatch response")?;
+    let header_value = field(root, "header", "runtime test dispatch response")?;
+    let header = header_value
+        .as_object()
+        .ok_or_else(|| "runtime test dispatch response.header must be an object".to_string())?;
+    match string_field(header, "type", "runtime test dispatch response.header")? {
+        "response.end" => decode_package_test_success(root, header_value),
+        "response.error" => decode_package_test_failure(root, header_value),
+        _ => Err(
+            "runtime test dispatch response.header.type must be response.end or response.error"
+                .to_string(),
+        ),
+    }
+}
+
+fn decode_package_test_success(
+    root: &Map<String, Value>,
+    header_value: &Value,
+) -> Result<PackageTestDispatchOutcome, String> {
     let header = exact_object(
-        field(root, "header", "runtime test dispatch response")?,
+        header_value,
         &[
             "schemaVersion",
             "type",
@@ -126,6 +164,156 @@ fn decode_package_test_dispatch_response_inner(body: &str) -> Result<(), String>
         return Err(
             "payloadBase64 must be the canonical Base64 encoding of exact null".to_string(),
         );
+    }
+    Ok(PackageTestDispatchOutcome::Passed)
+}
+
+fn decode_package_test_failure(
+    root: &Map<String, Value>,
+    header_value: &Value,
+) -> Result<PackageTestDispatchOutcome, String> {
+    let header = header_value
+        .as_object()
+        .ok_or_else(|| "runtime test dispatch response.header must be an object".to_string())?;
+    let error_kind = string_field(header, "errorKind", "runtime test dispatch response.header")?;
+    match error_kind {
+        "control" => decode_control_dispatch_failure(root, header_value),
+        "fixedService" => decode_fixed_dispatch_failure(root, header_value),
+        _ => Err(
+            "runtime test dispatch response.header.errorKind must be control or fixedService"
+                .to_string(),
+        ),
+    }
+}
+
+fn decode_control_dispatch_failure(
+    root: &Map<String, Value>,
+    header_value: &Value,
+) -> Result<PackageTestDispatchOutcome, String> {
+    let header = exact_object(
+        header_value,
+        &["schemaVersion", "type", "requestId", "errorKind", "error"],
+        &[],
+        "runtime test dispatch response.header",
+    )?;
+    validate_error_header_prefix(header)?;
+    let error = exact_object(
+        field(header, "error", "runtime test dispatch response.header")?,
+        &["code", "message"],
+        &["status", "details"],
+        "runtime test dispatch response.header.error",
+    )?;
+    let code =
+        canonical_non_empty_string(error, "code", "runtime test dispatch response.header.error")?;
+    let message = canonical_non_empty_string(
+        error,
+        "message",
+        "runtime test dispatch response.header.error",
+    )?;
+    validate_optional_error_status(error, "runtime test dispatch response.header.error")?;
+    if string_field(root, "payloadBase64", "runtime test dispatch response")? != "" {
+        return Err("control response.error payloadBase64 must be empty".to_string());
+    }
+    Ok(PackageTestDispatchOutcome::Failed(format!(
+        "{code}: {message}"
+    )))
+}
+
+fn decode_fixed_dispatch_failure(
+    root: &Map<String, Value>,
+    header_value: &Value,
+) -> Result<PackageTestDispatchOutcome, String> {
+    let header = exact_object(
+        header_value,
+        &["schemaVersion", "type", "requestId", "errorKind"],
+        &[],
+        "runtime test dispatch response.header",
+    )?;
+    validate_error_header_prefix(header)?;
+    let encoded = string_field(root, "payloadBase64", "runtime test dispatch response")?;
+    if encoded.is_empty() {
+        return Err("fixedService response.error payloadBase64 must be non-empty".to_string());
+    }
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("fixedService payloadBase64 is invalid: {error}"))?;
+    if BASE64_STANDARD.encode(&bytes) != encoded {
+        return Err("fixedService payloadBase64 must be canonical".to_string());
+    }
+    let error = OpaqueServiceError::decode(bytes)
+        .map_err(|error| format!("fixedService payload is invalid: {error}"))?;
+    let message = match error.envelope() {
+        ServiceErrorEnvelope::PublicTypedError {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("fixed service error {package_id}::{stable_schema_key}"),
+        ServiceErrorEnvelope::InternalError { payload } => payload.message.clone(),
+        ServiceErrorEnvelope::PlatformError {
+            builtin_error_identity,
+            ..
+        } => format!("fixed service error {}", builtin_error_identity.symbol()),
+    };
+    Ok(PackageTestDispatchOutcome::Failed(message))
+}
+
+fn validate_error_header_prefix(header: &Map<String, Value>) -> Result<(), String> {
+    if string_field(
+        header,
+        "schemaVersion",
+        "runtime test dispatch response.header",
+    )? != RUNTIME_FRAME_SCHEMA_VERSION
+    {
+        return Err(format!(
+            "header.schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
+        ));
+    }
+    if string_field(header, "type", "runtime test dispatch response.header")? != "response.error" {
+        return Err("header.type must be response.error".to_string());
+    }
+    canonical_non_empty_string(header, "requestId", "runtime test dispatch response.header")?;
+    Ok(())
+}
+
+fn decode_control_error_response_inner(body: &str) -> Result<ControlErrorResponse, String> {
+    let value = decode_json(body, "control error response")?;
+    let root = exact_object(&value, &["error"], &[], "control error response")?;
+    let error = exact_object(
+        field(root, "error", "control error response")?,
+        &["code", "message"],
+        &["details"],
+        "control error response.error",
+    )?;
+    Ok(ControlErrorResponse {
+        code: canonical_non_empty_string(error, "code", "control error response.error")?
+            .to_string(),
+        message: canonical_non_empty_string(error, "message", "control error response.error")?
+            .to_string(),
+    })
+}
+
+fn canonical_non_empty_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    let value = string_field(object, name, context)?;
+    if value.is_empty() || value.trim() != value {
+        return Err(format!(
+            "{context}.{name} must be a non-empty canonical string"
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_optional_error_status(error: &Map<String, Value>, context: &str) -> Result<(), String> {
+    if let Some(status) = error.get("status") {
+        let status = status
+            .as_u64()
+            .filter(|status| (400..=599).contains(status))
+            .ok_or_else(|| format!("{context}.status must be an integer from 400 through 599"))?;
+        u16::try_from(status)
+            .map_err(|_| format!("{context}.status must fit the HTTP status range"))?;
     }
     Ok(())
 }
@@ -580,8 +768,11 @@ fn require_true(object: &Map<String, Value>, name: &str, context: &str) -> Resul
     }
 }
 
-fn wire_error(message: impl Into<String>) -> CanonicalFixtureError {
-    CanonicalFixtureError::InvalidInput(format!("runtime readiness failed: {}", message.into()))
+fn wire_error(context: impl Into<String>, message: impl Into<String>) -> CanonicalFixtureError {
+    CanonicalFixtureError::Wire {
+        context: context.into(),
+        message: message.into(),
+    }
 }
 
 #[cfg(test)]

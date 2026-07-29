@@ -100,10 +100,12 @@ pub fn run_package_cases(
         MAX_HTTP_RESPONSE_BYTES,
     )?;
     if !(200..300).contains(&activation.response.status) {
-        return Err(CanonicalFixtureError::InvalidInput(format!(
-            "assembly activation returned HTTP {}: {}",
-            activation.response.status, activation.response.body
-        )));
+        let error = wire::decode_control_error_response(&activation.response.body)?;
+        return Err(CanonicalFixtureError::RemoteControl {
+            status: activation.response.status,
+            code: error.code,
+            message: error.message,
+        });
     }
     let receipt = wire::decode_activation_receipt(&activation.response.body)?;
     let active_assembly = receipt.assembly.clone();
@@ -127,13 +129,13 @@ pub fn run_package_cases(
         )
     })?;
 
-    Ok(execute_entrypoints(
+    execute_entrypoints(
         fixture.entrypoints,
         activation_url,
         ingress_url,
         &active_assembly,
         active_generation,
-    ))
+    )
 }
 
 fn activation_request_body(
@@ -171,18 +173,46 @@ fn execute_entrypoints(
     ingress_url: &str,
     assembly: &RuntimeAssemblyRef,
     generation: u64,
-) -> SkiffTestSummary {
-    let mut results = Vec::with_capacity(entrypoints.len());
-    for entrypoint in entrypoints {
-        let (passed, message) = execute_business_request_once(|| {
+) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    execute_entrypoints_with(entrypoints, |entrypoint| {
+        execute_business_request_once(|| {
             execute_control_test_dispatch(
                 activation_url,
                 ingress_url,
                 assembly,
                 generation,
-                &entrypoint,
+                entrypoint,
             )
-        });
+        })
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DispatchOutcome {
+    Passed,
+    Failed(String),
+}
+
+fn execute_entrypoints_with(
+    entrypoints: Vec<CanonicalPackageTestEntrypoint>,
+    mut dispatch: impl FnMut(
+        &CanonicalPackageTestEntrypoint,
+    ) -> Result<DispatchOutcome, CanonicalFixtureError>,
+) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    let mut results = Vec::with_capacity(entrypoints.len());
+    for entrypoint in entrypoints {
+        let outcome = dispatch(&entrypoint).map_err(|source| {
+            suite_execution_error(
+                results.clone(),
+                &entrypoint.case.module_path,
+                &entrypoint.case.name,
+                source,
+            )
+        })?;
+        let (passed, message) = match outcome {
+            DispatchOutcome::Passed => (true, None),
+            DispatchOutcome::Failed(message) => (false, Some(message)),
+        };
         results.push(SkiffTestResult {
             module_path: entrypoint.case.module_path,
             name: entrypoint.case.name,
@@ -193,11 +223,25 @@ fn execute_entrypoints(
     }
     let passed = results.iter().filter(|result| result.passed).count();
     let failed = results.len() - passed;
-    SkiffTestSummary {
+    Ok(SkiffTestSummary {
         passed,
         skipped: 0,
         failed,
         results,
+    })
+}
+
+fn suite_execution_error(
+    completed: Vec<SkiffTestResult>,
+    module_path: &str,
+    name: &str,
+    source: CanonicalFixtureError,
+) -> CanonicalFixtureError {
+    CanonicalFixtureError::SuiteExecution {
+        completed,
+        module_path: module_path.to_string(),
+        name: name.to_string(),
+        source: Box::new(source),
     }
 }
 
@@ -224,9 +268,6 @@ fn execute_control_test_dispatch(
         deadline_after(BUSINESS_HTTP_TIMEOUT)?,
         MAX_HTTP_RESPONSE_BYTES,
     )?;
-    if (200..300).contains(&connected.response.status) {
-        wire::decode_package_test_dispatch_response(&connected.response.body)?;
-    }
     Ok(connected.response)
 }
 
@@ -276,15 +317,24 @@ fn package_test_dispatch_body(
 
 fn execute_business_request_once(
     send: impl FnOnce() -> Result<http::HttpResponse, CanonicalFixtureError>,
-) -> (bool, Option<String>) {
-    match send() {
-        Ok(response) if (200..300).contains(&response.status) => (true, None),
-        Ok(response) => (
-            false,
-            Some(format!("HTTP {}: {}", response.status, response.body)),
-        ),
-        Err(error) => (false, Some(error.to_string())),
+) -> Result<DispatchOutcome, CanonicalFixtureError> {
+    let response = send()?;
+    if (200..300).contains(&response.status) {
+        return wire::decode_package_test_dispatch_response(&response.body).map(|outcome| {
+            match outcome {
+                wire::PackageTestDispatchOutcome::Passed => DispatchOutcome::Passed,
+                wire::PackageTestDispatchOutcome::Failed(message) => {
+                    DispatchOutcome::Failed(message)
+                }
+            }
+        });
     }
+    let error = wire::decode_control_error_response(&response.body)?;
+    Err(CanonicalFixtureError::RemoteControl {
+        status: response.status,
+        code: error.code,
+        message: error.message,
+    })
 }
 
 fn deadline_after(duration: Duration) -> Result<Instant, CanonicalFixtureError> {

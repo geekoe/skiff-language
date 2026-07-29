@@ -3,8 +3,11 @@ use super::*;
 
 #[test]
 fn package_test_dispatch_response_requires_canonical_response_end_and_null_payload() {
-    decode_package_test_dispatch_response(&valid_package_test_dispatch_response().to_string())
-        .unwrap();
+    assert_eq!(
+        decode_package_test_dispatch_response(&valid_package_test_dispatch_response().to_string())
+            .unwrap(),
+        PackageTestDispatchOutcome::Passed
+    );
 
     let mut mutations = Vec::new();
     let mut mutate = |name: &'static str, update: fn(&mut Value)| {
@@ -56,6 +59,82 @@ fn package_test_dispatch_response_requires_canonical_response_end_and_null_paylo
             "response mutation {name} was accepted"
         );
     }
+}
+
+#[test]
+fn package_test_dispatch_typed_control_error_is_a_business_failure() {
+    let response = serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "response.error",
+            "requestId": "package-test-request-error",
+            "errorKind": "control",
+            "error": {
+                "code": "UnhandledServiceError",
+                "message": "unhandled request-local user exception",
+            },
+        },
+        "payloadBase64": "",
+    });
+
+    assert_eq!(
+        decode_package_test_dispatch_response(&response.to_string()).unwrap(),
+        PackageTestDispatchOutcome::Failed(
+            "UnhandledServiceError: unhandled request-local user exception".to_string()
+        )
+    );
+}
+
+#[test]
+fn package_test_dispatch_typed_fixed_error_is_a_business_failure() {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "kind": "internalError",
+        "payload": {
+            "message": "Internal service error",
+            "traceId": "trace-package-test",
+            "errorId": "error-package-test",
+        },
+    }))
+    .unwrap();
+    let response = serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "response.error",
+            "requestId": "package-test-request-fixed-error",
+            "errorKind": "fixedService",
+        },
+        "payloadBase64": BASE64_STANDARD.encode(payload),
+    });
+
+    assert_eq!(
+        decode_package_test_dispatch_response(&response.to_string()).unwrap(),
+        PackageTestDispatchOutcome::Failed("Internal service error".to_string())
+    );
+}
+
+#[test]
+fn package_test_dispatch_malformed_error_frame_is_a_wire_failure() {
+    let response = serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "response.error",
+            "requestId": "package-test-request-error",
+            "errorKind": "control",
+            "error": {
+                "code": "",
+                "message": "missing canonical code",
+            },
+        },
+        "payloadBase64": "",
+    });
+
+    assert!(matches!(
+        decode_package_test_dispatch_response(&response.to_string()),
+        Err(CanonicalFixtureError::Wire { .. })
+    ));
 }
 
 #[test]
