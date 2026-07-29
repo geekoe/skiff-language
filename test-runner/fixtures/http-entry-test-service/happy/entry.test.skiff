@@ -84,7 +84,11 @@ function reservedHeaderRejected(name: string) -> boolean {
   const rejected = catch<std.http.HttpError>(
     std.http.request(request("POST", "/plain", requestHeaders, bytes.fromUtf8("blocked")))
   )
-  return rejected.tag == "err"
+  if rejected.tag == "err" {
+    return rejected.exception.error.message
+      == "self-ingress request cannot set runtime-owned header `".concat(name).concat("`")
+  }
+  return false
 }
 
 test "unary entry returns its complete body and consumes the parent inline double" effects {
