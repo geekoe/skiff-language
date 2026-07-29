@@ -50,7 +50,12 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     validate_unique_resources(&artifact.static_resources)?;
     validate_requirements(artifact)?;
     validate_callable_surfaces(artifact)?;
-    validate_service_calls(artifact)
+    validate_service_calls(artifact)?;
+    skiff_artifact_model::validate_package_boundary_projections(artifact).map_err(|error| {
+        crate::ArtifactIdentityError::InvalidPackageArtifact {
+            message: format!("boundary projections are invalid: {error}"),
+        }
+    })
 }
 
 fn validate_unique_file_refs(files: &[FileIrRef]) -> Result<()> {

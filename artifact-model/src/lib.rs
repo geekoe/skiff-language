@@ -60,15 +60,17 @@ pub use assembly_activation_control::{
     ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
 };
 pub use boundary::{
+    validate_boundary_operation_contract, validate_package_boundary_projections,
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
     BoundaryCallbackLifetime, BoundaryConfigRequirement, BoundaryEffectGuarantee,
     BoundaryFeatureUnavailableReason, BoundaryImplementationRequirements,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
-    BoundaryStateKind, BoundaryStateRequirement, BoundaryStreamContract, BoundaryUnavailableReason,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, CallableProvenanceSummary,
-    CallableProvenanceUnknownReason, CallableSemanticFacts, CallableTargetFact, ValueEscapeLane,
-    ValueProjectionPath, ValueProjectionPathError, ValueProjectionStep, ValueProvenance,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter,
+    BoundaryProjectionValidationError, BoundaryReturn, BoundaryStateKind, BoundaryStateRequirement,
+    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    BoundaryValuePlanUnavailableReason, CallableProvenanceSummary, CallableProvenanceUnknownReason,
+    CallableSemanticFacts, CallableTargetFact, ValueEscapeLane, ValueProjectionPath,
+    ValueProjectionPathError, ValueProjectionStep, ValueProvenance,
     MAX_VALUE_PROJECTION_PATH_STEPS,
 };
 pub use builtin_receiver_ops::{

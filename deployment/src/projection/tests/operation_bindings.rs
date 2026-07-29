@@ -67,10 +67,8 @@ fn callable_facts_requirements_and_link_target_mismatches_fail_closed() {
     facts_mismatch.refresh_implementation_ref();
     assert!(matches!(
         facts_mismatch.project(),
-        Err(ProjectionError::CallableFactsMismatch {
-            message,
-            ..
-        }) if message == "complete may-effects differ"
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
 
     let mut provenance_mismatch = ProjectionFixture::new();
@@ -94,10 +92,8 @@ fn callable_facts_requirements_and_link_target_mismatches_fail_closed() {
     provenance_mismatch.refresh_implementation_ref();
     assert!(matches!(
         provenance_mismatch.project(),
-        Err(ProjectionError::CallableFactsMismatch {
-            message,
-            ..
-        }) if message == "provenance differs"
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
 
     let mut link_mismatch = ProjectionFixture::new();
@@ -123,12 +119,18 @@ fn callable_facts_requirements_and_link_target_mismatches_fail_closed() {
 }
 
 fn make_callable_implementation_only(fixture: &mut ProjectionFixture) {
-    let symbol = fixture
+    let mut symbol = fixture
         .implementation
         .package_local_abi
         .public_symbols
         .remove("handle")
         .unwrap();
+    let internal_callable_id =
+        PackageCallableId::new("pkg-callable:example.provider:top-level:provider.main.handle");
+    let PackageLocalAbiSymbol::Callable { callable_id, .. } = &mut symbol else {
+        unreachable!()
+    };
+    *callable_id = internal_callable_id.clone();
     fixture
         .implementation
         .package_local_abi
@@ -143,13 +145,31 @@ fn make_callable_implementation_only(fixture: &mut ProjectionFixture) {
         .implementation
         .boundary_projections
         .remove(&fixture.callable_id);
+    let facts = fixture
+        .implementation
+        .callable_semantic_facts
+        .remove(&fixture.callable_id)
+        .unwrap();
+    fixture
+        .implementation
+        .callable_semantic_facts
+        .insert(internal_callable_id.clone(), facts);
+    let mut link = fixture
+        .implementation
+        .callable_links
+        .remove(&fixture.callable_id)
+        .unwrap();
+    link.callable_id = internal_callable_id.clone();
+    link.target.callable_abi_id = internal_callable_id.to_string();
+    link.target.callable_kind = OperationCallableKind::InternalFunction;
     fixture
         .implementation
         .callable_links
-        .get_mut(&fixture.callable_id)
-        .unwrap()
-        .target
-        .callable_kind = OperationCallableKind::InternalFunction;
+        .insert(internal_callable_id.clone(), link);
+    fixture.callable_id = internal_callable_id.clone();
+    for binding in &mut fixture.input.operation_bindings {
+        binding.package_callable_id = internal_callable_id.clone();
+    }
     fixture.refresh_implementation_ref();
 }
 

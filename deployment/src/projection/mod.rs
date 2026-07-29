@@ -3,7 +3,6 @@
 //! The trust boundary consumes exact callable identities from typed input and
 //! emits only typed, canonical artifact references and callable identities.
 
-mod eligibility;
 mod error;
 mod operations;
 mod package_closure;
@@ -12,8 +11,9 @@ mod requirements;
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, PackageArtifact, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    ServiceContract, ServiceDeployment, ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    validate_package_boundary_projections, DeploymentArtifactIdentity, PackageArtifact,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract, ServiceDeployment,
+    ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 pub use error::{ProjectionError, ProjectionResult};
@@ -28,6 +28,14 @@ pub fn project_service_deployment(
     validate_contract_ref(&input, contract)?;
     validate_package_schema_records(contract, package_schema_records)?;
     let closure = package_closure::PackageClosure::resolve(&input, package_artifacts)?;
+    for artifact in closure.artifacts() {
+        validate_package_boundary_projections(artifact).map_err(|source| {
+            ProjectionError::InvalidPackageBoundaryProjections {
+                build_id: artifact.package_build_id.clone(),
+                source,
+            }
+        })?;
+    }
     let operations =
         operations::project_operation_bindings(&input, contract, closure.implementation(&input))?;
     requirements::validate_requirement_bindings(&input, &closure, &operations.selected)?;

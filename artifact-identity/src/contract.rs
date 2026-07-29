@@ -283,6 +283,14 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
             ));
         }
         validate_operation_existentials(&descriptor.contract)?;
+        skiff_artifact_model::validate_boundary_operation_contract(&descriptor.contract).map_err(
+            |error| ArtifactIdentityError::InvalidServiceContract {
+                message: format!(
+                    "operation {} has an invalid boundary contract: {error}",
+                    descriptor.stable_key
+                ),
+            },
+        )?;
     }
     let mut previous_package: Option<&str> = None;
     let mut required = BTreeSet::new();
@@ -551,10 +559,11 @@ fn invalid_contract<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use skiff_artifact_model::{
         BoundaryCallbackContract, BoundaryCallbackExpirationError, BoundaryCallbackLifetime,
-        BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-        BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
-        PackageSchemaIndexEntry, PackageSchemaTypeRef, PackageTypeRequirement,
+        BoundaryEffectGuarantee, BoundaryFeatureUnavailableReason, BoundaryOperationContract,
+        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+        ContractDiagnosticText, ContractTypeDescriptor, PackageSchemaIndexEntry,
+        PackageSchemaTypeRef, PackageTypeRequirement,
     };
 
     use super::*;
@@ -653,7 +662,10 @@ mod tests {
             .contract
             .stream = BoundaryStreamContract::ServerStream {
             item_type: ContractTypeRef::builtin("string"),
-            item_value_plan: value_plan(),
+            item_value_plan: value_plan(
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+            ),
         };
         mutations.push(streamed);
 
@@ -680,6 +692,104 @@ mod tests {
                 changed.operations.keys().next().unwrap(),
                 &operation_id,
                 "ContractOperationId excludes mutable operation surface"
+            );
+        }
+    }
+
+    #[test]
+    fn service_contract_identity_rejects_noncanonical_boundary_value_plans() {
+        let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let canonical = service_contract(type_id);
+
+        for mutation in 0..8 {
+            let mut invalid = canonical.clone();
+            let operation = &mut invalid.operations.values_mut().next().unwrap().contract;
+            let plan = if mutation < 4 {
+                &mut operation.parameters[0].value_plan
+            } else {
+                &mut operation.return_value.value_plan
+            };
+            match mutation % 4 {
+                0 => set_plan_owner(
+                    plan,
+                    if mutation < 4 {
+                        BoundaryValueOwner::Provider
+                    } else {
+                        BoundaryValueOwner::Caller
+                    },
+                ),
+                1 => set_plan_lifetime(plan, BoundaryValueLifetime::Request),
+                2 => set_plan_carrier(plan, BoundaryValueCarrier::CallbackCapability),
+                3 => set_plan_encoding(plan, BoundaryValueEncoding::OpaqueCapability),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    service_protocol_identity(&invalid),
+                    Err(ArtifactIdentityError::InvalidServiceContract { .. })
+                ),
+                "boundary value-plan mutation {mutation} must be rejected before hashing"
+            );
+        }
+    }
+
+    #[test]
+    fn service_contract_identity_rejects_noncanonical_server_stream_setup() {
+        let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+        let mut canonical = service_contract(type_id);
+        canonical
+            .operations
+            .values_mut()
+            .next()
+            .unwrap()
+            .contract
+            .stream = BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::builtin("string"),
+            item_value_plan: value_plan(
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+            ),
+        };
+
+        for mutation in 0..6 {
+            let mut invalid = canonical.clone();
+            let operation = &mut invalid.operations.values_mut().next().unwrap().contract;
+            match mutation {
+                0 => operation.return_value.ty = ContractTypeRef::builtin("string"),
+                1 => {
+                    operation.stream = BoundaryStreamContract::Unsupported {
+                        reason: BoundaryFeatureUnavailableReason::LanguageUnsupported,
+                    }
+                }
+                2..=5 => {
+                    let BoundaryStreamContract::ServerStream {
+                        item_value_plan, ..
+                    } = &mut operation.stream
+                    else {
+                        unreachable!()
+                    };
+                    match mutation {
+                        2 => set_plan_owner(item_value_plan, BoundaryValueOwner::Caller),
+                        3 => set_plan_lifetime(item_value_plan, BoundaryValueLifetime::Call),
+                        4 => set_plan_carrier(
+                            item_value_plan,
+                            BoundaryValueCarrier::CallbackCapability,
+                        ),
+                        5 => set_plan_encoding(
+                            item_value_plan,
+                            BoundaryValueEncoding::OpaqueCapability,
+                        ),
+                        _ => unreachable!(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    service_protocol_identity(&invalid),
+                    Err(ArtifactIdentityError::InvalidServiceContract { .. })
+                ),
+                "server-stream mutation {mutation} must be rejected before hashing"
             );
         }
     }
@@ -839,11 +949,14 @@ mod tests {
                 parameters: vec![BoundaryParameter {
                     name: "user".to_string(),
                     ty: ContractTypeRef::package_schema("example.pkg", "User", type_id.clone()),
-                    value_plan: value_plan(),
+                    value_plan: value_plan(BoundaryValueOwner::Caller, BoundaryValueLifetime::Call),
                 }],
                 return_value: BoundaryReturn {
                     ty: ContractTypeRef::builtin("void"),
-                    value_plan: value_plan(),
+                    value_plan: value_plan(
+                        BoundaryValueOwner::Provider,
+                        BoundaryValueLifetime::Call,
+                    ),
                 },
                 stream: BoundaryStreamContract::Unary,
                 callbacks: BoundaryCallbackContract::None,
@@ -875,12 +988,40 @@ mod tests {
         }
     }
 
-    fn value_plan() -> BoundaryValuePlan {
+    fn value_plan(owner: BoundaryValueOwner, lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
         BoundaryValuePlan::Linkable {
             carrier: BoundaryValueCarrier::DetachedValueGraph,
             encoding: BoundaryValueEncoding::CanonicalValue,
-            owner: BoundaryValueOwner::Provider,
-            lifetime: BoundaryValueLifetime::Call,
+            owner,
+            lifetime,
         }
+    }
+
+    fn set_plan_carrier(plan: &mut BoundaryValuePlan, value: BoundaryValueCarrier) {
+        let BoundaryValuePlan::Linkable { carrier, .. } = plan else {
+            unreachable!()
+        };
+        *carrier = value;
+    }
+
+    fn set_plan_encoding(plan: &mut BoundaryValuePlan, value: BoundaryValueEncoding) {
+        let BoundaryValuePlan::Linkable { encoding, .. } = plan else {
+            unreachable!()
+        };
+        *encoding = value;
+    }
+
+    fn set_plan_owner(plan: &mut BoundaryValuePlan, value: BoundaryValueOwner) {
+        let BoundaryValuePlan::Linkable { owner, .. } = plan else {
+            unreachable!()
+        };
+        *owner = value;
+    }
+
+    fn set_plan_lifetime(plan: &mut BoundaryValuePlan, value: BoundaryValueLifetime) {
+        let BoundaryValuePlan::Linkable { lifetime, .. } = plan else {
+            unreachable!()
+        };
+        *lifetime = value;
     }
 }

@@ -4,7 +4,8 @@ use anyhow::Context;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::ArtifactRelativePath;
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageOperationTarget,
+    validate_boundary_operation_contract, validate_package_boundary_projections, FileIrRef,
+    FileIrUnit, PackageArtifact, PackageArtifactRef, PackageOperationTarget,
     PublicationResourceRef, RuntimeAssembly, ServiceContract, ServiceContractRef,
 };
 
@@ -23,6 +24,13 @@ pub(super) fn validate_contract_ref(
     skiff_artifact_identity::validate_service_contract_identities(contract)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("contract content is invalid for ref {reference:?}"))?;
+    for (operation_id, descriptor) in &contract.operations {
+        validate_boundary_operation_contract(&descriptor.contract).with_context(|| {
+            format!(
+                "contract operation {operation_id} has an invalid canonical boundary contract for ref {reference:?}"
+            )
+        })?;
+    }
     let actual = ServiceContractRef {
         service_id: contract.service_id.clone(),
         contract_version: contract.contract_version.clone(),
@@ -41,6 +49,12 @@ pub(super) fn validate_package_ref(
     skiff_artifact_identity::validate_package_artifact_identities(artifact)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("package content is invalid for ref {reference:?}"))?;
+    validate_package_boundary_projections(artifact).with_context(|| {
+        format!(
+            "package {} has invalid canonical boundary projections for ref {reference:?}",
+            artifact.package_build_id
+        )
+    })?;
     let actual = PackageArtifactRef {
         package_id: artifact.package_id.clone(),
         package_version: artifact.package_version.clone(),

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities, contract_operation_id,
     package_schema_index_identity, package_schema_type_id, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
@@ -85,12 +86,12 @@ impl ProjectionFixture {
             }],
             state: vec![
                 BoundaryStateRequirement {
-                    key: "echo-state".to_string(),
-                    kind: BoundaryStateKind::Database,
-                },
-                BoundaryStateRequirement {
                     key: "echo-db".to_string(),
                     kind: BoundaryStateKind::ExternalResource,
+                },
+                BoundaryStateRequirement {
+                    key: "echo-state".to_string(),
+                    kind: BoundaryStateKind::Database,
                 },
             ],
             native_capabilities: Vec::new(),
@@ -315,8 +316,31 @@ impl ProjectionFixture {
     }
 
     fn refresh_implementation_ref(&mut self) {
-        assign_package_artifact_identities(&mut self.implementation).unwrap();
+        if let Err(error) = assign_package_artifact_identities(&mut self.implementation) {
+            assert!(
+                matches!(
+                    error,
+                    skiff_artifact_identity::ArtifactIdentityError::InvalidPackageArtifact { .. }
+                ) && validate_package_boundary_projections(&self.implementation).is_err(),
+                "unexpected PackageArtifact identity assignment failure: {error}"
+            );
+        }
         self.input.implementation = package_ref(&self.implementation);
+    }
+
+    fn refresh_contract_ref(&mut self) {
+        if let Err(error) = assign_service_contract_identities(&mut self.contract) {
+            assert!(
+                matches!(
+                    error,
+                    skiff_artifact_identity::ArtifactIdentityError::InvalidServiceContract { .. }
+                ) && self.contract.operations.values().any(|descriptor| {
+                    validate_boundary_operation_contract(&descriptor.contract).is_err()
+                }),
+                "unexpected ServiceContract identity assignment failure: {error}"
+            );
+        }
+        self.input.contract = contract_ref(&self.contract);
     }
 
     fn set_provider_may_suspend(&mut self, may_suspend: bool) {
@@ -553,7 +577,8 @@ fn unavailable_callable_and_nominal_descriptor_mismatch_fail_closed() {
     fixture.refresh_implementation_ref();
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::BoundaryUnavailable { .. })
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
 
     let mut fixture = ProjectionFixture::new();
@@ -573,7 +598,8 @@ fn unavailable_callable_and_nominal_descriptor_mismatch_fail_closed() {
     fixture.refresh_implementation_ref();
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::OperationContractMismatch { .. })
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
 }
 
@@ -625,7 +651,8 @@ fn package_owned_operation_requires_exact_owner_key_and_type_id() {
         fixture.refresh_implementation_ref();
         assert!(matches!(
             fixture.project(),
-            Err(ProjectionError::OperationContractMismatch { .. })
+            Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+                | ProjectionError::InvalidTypedArtifact { .. })
         ));
     }
 }
@@ -968,8 +995,73 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
             &[fixture.implementation, dependency],
             &fixture.package_schema_records,
         ),
-        Err(ProjectionError::CallableFactsMismatch { .. })
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
+}
+
+#[test]
+fn every_package_in_the_resolved_closure_gets_boundary_admission() {
+    let mut fixture = ProjectionFixture::new();
+    let mut dependency = fixture.implementation.clone();
+    let dependency_projection = serde_json::to_value(
+        skiff_artifact_identity::package_artifact_build_identity_projection(&dependency).unwrap(),
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = dependency
+        .boundary_projections
+        .get_mut(&fixture.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let BoundaryValuePlan::Linkable { encoding, .. } =
+        &mut operation_contract.return_value.value_plan
+    else {
+        unreachable!()
+    };
+    *encoding = BoundaryValueEncoding::OpaqueCapability;
+    mechanically_rehash_forged_package(&mut dependency, dependency_projection);
+    let dependency_identity_admitted =
+        skiff_artifact_identity::validate_package_artifact_identities(&dependency).is_ok();
+
+    fixture.implementation.package_requirements = vec![PackageRequirement {
+        alias: "util".to_string(),
+        package_id: dependency.package_id.clone(),
+        exact_version: dependency.package_version.clone(),
+        expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        collection_name_mapping: BTreeMap::new(),
+        expected_package_build: None,
+    }];
+    fixture.refresh_implementation_ref();
+    fixture.input.package_bindings = vec![PackageBinding {
+        key: PackageRequirementKey {
+            caller_package_build_id: fixture.implementation.package_build_id.clone(),
+            package_requirement_alias: "util".to_string(),
+        },
+        package: package_ref(&dependency),
+        collection_name_mapping: BTreeMap::new(),
+    }];
+
+    let error = project_service_deployment(
+        fixture.input,
+        &fixture.contract,
+        &[fixture.implementation, dependency.clone()],
+        &fixture.package_schema_records,
+    )
+    .unwrap_err();
+    match error {
+        ProjectionError::InvalidPackageBoundaryProjections { build_id, .. } => {
+            assert!(dependency_identity_admitted);
+            assert_eq!(build_id, dependency.package_build_id);
+        }
+        ProjectionError::InvalidTypedArtifact { .. } => {
+            assert!(!dependency_identity_admitted);
+        }
+        error => panic!("expected identity or canonical boundary rejection, got {error}"),
+    }
 }
 
 fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
@@ -1026,6 +1118,32 @@ fn package_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
         package_build_id: artifact.package_build_id.clone(),
         package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
     }
+}
+
+fn mechanically_rehash_forged_package(
+    artifact: &mut PackageArtifact,
+    mut canonical_projection: serde_json::Value,
+) {
+    canonical_projection["boundaryProjections"] =
+        serde_json::to_value(&artifact.boundary_projections).unwrap();
+    let bytes = skiff_canonical_json::canonical_json_bytes(&canonical_projection).unwrap();
+    artifact.package_build_id = PackageBuildId::new(skiff_artifact_identity::framed_identity(
+        skiff_artifact_identity::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        &hex::encode(Sha256::digest(bytes)),
+    ));
+}
+
+fn mechanically_rehash_forged_contract(
+    contract: &mut ServiceContract,
+    mut canonical_projection: serde_json::Value,
+) {
+    canonical_projection["operations"] = serde_json::to_value(&contract.operations).unwrap();
+    let bytes = skiff_canonical_json::canonical_json_bytes(&canonical_projection).unwrap();
+    contract.service_protocol_identity =
+        ServiceProtocolIdentity::new(skiff_artifact_identity::framed_identity(
+            skiff_artifact_identity::SERVICE_PROTOCOL_IDENTITY_PREFIX,
+            &hex::encode(Sha256::digest(bytes)),
+        ));
 }
 
 fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {

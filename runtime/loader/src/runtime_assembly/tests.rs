@@ -499,6 +499,21 @@ impl Fixture {
 
     fn add_schema_return(&mut self, record: PackageSchemaTypeRecord) {
         let type_id = record.package_schema_type_id.clone();
+        let package_return = PackageTypeRef::PackageSchema {
+            package_id: record.package_id.clone(),
+            stable_schema_key: record.stable_schema_key.clone(),
+            package_schema_type_id: type_id.clone(),
+        };
+        let PackageLocalAbiSymbol::Callable { signature, .. } = self
+            .package
+            .package_local_abi
+            .public_symbols
+            .get_mut("health")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        signature.return_type = package_return;
         self.contract
             .operations
             .get_mut(&self.operation_id)
@@ -1695,6 +1710,100 @@ fn tampered_assembly_contract_deployment_package_and_file_fail_closed() {
 }
 
 #[test]
+fn rehashed_forged_package_plan_is_rejected_during_hydration_admission() {
+    let mut fixture = Fixture::new();
+    let package_projection = serde_json::to_value(
+        skiff_artifact_identity::package_artifact_build_identity_projection(&fixture.package)
+            .unwrap(),
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = fixture
+        .package
+        .boundary_projections
+        .get_mut(&fixture.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let BoundaryValuePlan::Linkable { owner, .. } = &mut operation_contract.return_value.value_plan
+    else {
+        unreachable!()
+    };
+    *owner = BoundaryValueOwner::Caller;
+    mechanically_rehash_forged_package(&mut fixture.package, package_projection);
+    let package_identity_admitted =
+        skiff_artifact_identity::validate_package_artifact_identities(&fixture.package).is_ok();
+    let reference = package_ref(&fixture.package);
+    fixture.deployment.implementation = reference.clone();
+    fixture.assembly.resolved_packages = vec![reference.clone()];
+    fixture.assembly.package_link_plan.code_slots = vec![PackageCodeSlot { package: reference }];
+    fixture.assembly.activation_templates[0].implementation_package_build_id =
+        fixture.package.package_build_id.clone();
+    fixture.refresh_deployment_chain();
+
+    let error = RuntimeAssemblyLoader::new(&fixture.resolver())
+        .load(fixture.assembly)
+        .unwrap_err();
+    let message = format!("{error:#}");
+    if package_identity_admitted {
+        assert!(
+            message.contains("invalid canonical boundary projections"),
+            "unexpected error: {message}"
+        );
+    } else {
+        assert!(
+            message.contains("package content is invalid"),
+            "unexpected error: {message}"
+        );
+    }
+}
+
+#[test]
+fn rehashed_forged_contract_plan_is_rejected_during_hydration_admission() {
+    let mut fixture = Fixture::new();
+    let contract_projection = serde_json::to_value(
+        skiff_artifact_identity::service_protocol_identity_projection(&fixture.contract).unwrap(),
+    )
+    .unwrap();
+    let descriptor = fixture
+        .contract
+        .operations
+        .get_mut(&fixture.operation_id)
+        .unwrap();
+    let BoundaryValuePlan::Linkable { lifetime, .. } =
+        &mut descriptor.contract.return_value.value_plan
+    else {
+        unreachable!()
+    };
+    *lifetime = BoundaryValueLifetime::Request;
+    mechanically_rehash_forged_contract(&mut fixture.contract, contract_projection);
+    let contract_identity_admitted =
+        skiff_artifact_identity::validate_service_contract_identities(&fixture.contract).is_ok();
+    let reference = contract_ref(&fixture.contract);
+    fixture.deployment.contract = reference.clone();
+    fixture.assembly.resolved_contracts = vec![reference];
+    fixture.refresh_deployment_chain();
+
+    let error = RuntimeAssemblyLoader::new(&fixture.resolver())
+        .load(fixture.assembly)
+        .unwrap_err();
+    let message = format!("{error:#}");
+    if contract_identity_admitted {
+        assert!(
+            message.contains("invalid canonical boundary contract"),
+            "unexpected error: {message}"
+        );
+    } else {
+        assert!(
+            message.contains("contract content is invalid"),
+            "unexpected error: {message}"
+        );
+    }
+}
+
+#[test]
 fn resource_hash_size_and_storage_path_fail_before_linking() {
     let fixture = Fixture::new();
     let mut resolver = fixture.resolver();
@@ -1882,6 +1991,32 @@ fn package_ref(package: &PackageArtifact) -> PackageArtifactRef {
         package_build_id: package.package_build_id.clone(),
         package_local_abi_identity: package.package_local_abi.local_abi_identity.clone(),
     }
+}
+
+fn mechanically_rehash_forged_package(
+    artifact: &mut PackageArtifact,
+    mut canonical_projection: serde_json::Value,
+) {
+    canonical_projection["boundaryProjections"] =
+        serde_json::to_value(&artifact.boundary_projections).unwrap();
+    let bytes = skiff_canonical_json::canonical_json_bytes(&canonical_projection).unwrap();
+    artifact.package_build_id = PackageBuildId::new(skiff_artifact_identity::framed_identity(
+        skiff_artifact_identity::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        &hex::encode(Sha256::digest(bytes)),
+    ));
+}
+
+fn mechanically_rehash_forged_contract(
+    contract: &mut ServiceContract,
+    mut canonical_projection: serde_json::Value,
+) {
+    canonical_projection["operations"] = serde_json::to_value(&contract.operations).unwrap();
+    let bytes = skiff_canonical_json::canonical_json_bytes(&canonical_projection).unwrap();
+    contract.service_protocol_identity =
+        ServiceProtocolIdentity::new(skiff_artifact_identity::framed_identity(
+            skiff_artifact_identity::SERVICE_PROTOCOL_IDENTITY_PREFIX,
+            &hex::encode(Sha256::digest(bytes)),
+        ));
 }
 
 fn operation_contract() -> BoundaryOperationContract {

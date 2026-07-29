@@ -158,15 +158,18 @@ fn invalid_artifact<T>(message: impl Into<String>) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use skiff_artifact_model::{
-        BoundaryUnavailableReason, CallableEffectSummary, CallableMayEffects,
-        CallableProvenanceSummary, CallableSemanticFacts, ConstExport, ContractOperationId,
-        ContractRequirement, ExecutableExport, ExecutableSignatureIr, FileIrRef,
-        FunctionTypeParamIr, InterfaceMethodSignature, NominalTypeRefBaseIr, OperationCallableKind,
-        OperationTargetRef, PackageCallableLinkFact, PackageCallableParameter,
-        PackageCallableSignature, PackageImplementationLinks, PackageRefIr, PackageRequirement,
-        PackageSymbolRef, PackageTypeRef, ParamIr, ServiceProtocolIdentity, ServiceRequirement,
-        ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
-        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryImplementationRequirements,
+        BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+        BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
+        BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
+        CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ConstExport,
+        ContractOperationId, ContractRequirement, ContractTypeRef, ExecutableExport,
+        ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
+        NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageCallableLinkFact,
+        PackageCallableParameter, PackageCallableSignature, PackageImplementationLinks,
+        PackageRefIr, PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr,
+        ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr,
+        TypeExport, TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -251,10 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn implementation_throw_facts_change_build_but_not_open_local_abi() {
+    fn implementation_throw_facts_without_matching_boundary_projection_are_rejected() {
         let base = callable_fixture();
-        let baseline_local = package_artifact_local_abi_identity(&base).unwrap();
-        let baseline_build = package_artifact_build_identity(&base).unwrap();
         let callable_id = base.callable_semantic_facts.keys().next().unwrap().clone();
 
         let mut changed = base;
@@ -272,14 +273,11 @@ mod tests {
         };
         *throw_origins = vec![ValueProvenance::CallerParameter { index: 0 }];
 
-        assert_eq!(
-            package_artifact_local_abi_identity(&changed).unwrap(),
-            baseline_local
-        );
-        assert_ne!(
-            package_artifact_build_identity(&changed).unwrap(),
-            baseline_build
-        );
+        assert_invalid_package_artifact(&changed);
+        assert!(matches!(
+            package_artifact_local_abi_identity(&changed),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
     }
 
     #[test]
@@ -375,6 +373,222 @@ mod tests {
     }
 
     #[test]
+    fn package_identity_entrypoints_reject_boundary_plan_and_type_mutations() {
+        let canonical = callable_fixture();
+        let mut mutations = Vec::new();
+
+        for mutation in 0..8 {
+            let mut invalid = canonical.clone();
+            let operation = available_operation_mut(&mut invalid);
+            let plan = if mutation < 4 {
+                &mut operation.parameters[0].value_plan
+            } else {
+                &mut operation.return_value.value_plan
+            };
+            match mutation % 4 {
+                0 => set_plan_owner(
+                    plan,
+                    if mutation < 4 {
+                        BoundaryValueOwner::Provider
+                    } else {
+                        BoundaryValueOwner::Caller
+                    },
+                ),
+                1 => set_plan_lifetime(plan, BoundaryValueLifetime::Request),
+                2 => set_plan_carrier(plan, BoundaryValueCarrier::CallbackCapability),
+                3 => set_plan_encoding(plan, BoundaryValueEncoding::OpaqueCapability),
+                _ => unreachable!(),
+            }
+            mutations.push(invalid);
+        }
+
+        let mut private_local_as_public_schema = canonical.clone();
+        available_operation_mut(&mut private_local_as_public_schema).parameters[0].ty =
+            ContractTypeRef::package_schema(
+                "example.schema",
+                "Input",
+                PackageSchemaTypeId::new("type:input"),
+            );
+        mutations.push(private_local_as_public_schema);
+
+        let mut wrong_requirements = canonical.clone();
+        let BoundaryCallableProjection::Available {
+            implementation_requirements,
+            ..
+        } = wrong_requirements
+            .boundary_projections
+            .values_mut()
+            .next()
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        implementation_requirements.complete_may_effects.may_suspend = true;
+        mutations.push(wrong_requirements);
+
+        let mut wrong_facts = canonical;
+        let CallableEffectSummary::Analyzed { effects } = &mut wrong_facts
+            .callable_semantic_facts
+            .values_mut()
+            .next()
+            .unwrap()
+            .effects
+        else {
+            unreachable!()
+        };
+        effects.requires_same_heap_identity = true;
+        mutations.push(wrong_facts);
+
+        for (index, invalid) in mutations.iter().enumerate() {
+            assert_all_package_identity_entries_reject(invalid, &format!("mutation {index}"));
+        }
+    }
+
+    #[test]
+    fn package_identity_rejects_public_schema_and_unavailable_reason_mutations() {
+        let mut public_schema = callable_fixture();
+        public_schema.package_requirements.push(PackageRequirement {
+            alias: "schema".to_string(),
+            package_id: "example.schema".to_string(),
+            exact_version: "1.0.0".to_string(),
+            expected_local_abi: PackageLocalAbiIdentity::new("schema-abi"),
+            collection_name_mapping: BTreeMap::new(),
+            expected_package_build: None,
+        });
+        let schema_type = PackageSchemaTypeId::new("type:input");
+        callable_signature_mut(&mut public_schema).parameters[0].ty =
+            PackageTypeRef::PackageSchema {
+                package_id: "example.schema".to_string(),
+                stable_schema_key: "Input".to_string(),
+                package_schema_type_id: schema_type.clone(),
+            };
+        available_operation_mut(&mut public_schema).parameters[0].ty =
+            ContractTypeRef::package_schema("example.schema", "Input", schema_type);
+        assign_package_artifact_identities(&mut public_schema).unwrap();
+
+        let mut public_schema_as_private_local = public_schema;
+        available_operation_mut(&mut public_schema_as_private_local).parameters[0].ty =
+            ContractTypeRef::builtin("string");
+        assert_all_package_identity_entries_reject(
+            &public_schema_as_private_local,
+            "public PackageSchema projected as a private local type",
+        );
+
+        let mut unavailable = callable_fixture();
+        let CallableEffectSummary::Analyzed { effects } = &mut unavailable
+            .callable_semantic_facts
+            .values_mut()
+            .next()
+            .unwrap()
+            .effects
+        else {
+            unreachable!()
+        };
+        effects.writes_caller_reachable = true;
+        effects.invokes_unknown_target = true;
+        let canonical_reasons = vec![
+            BoundaryUnavailableReason::UnknownCallTarget,
+            BoundaryUnavailableReason::WritesCallerReachable,
+        ];
+        set_boundary_unavailable(&mut unavailable, canonical_reasons.clone());
+        assign_package_artifact_identities(&mut unavailable).unwrap();
+
+        for (label, reasons) in [
+            ("empty", Vec::new()),
+            (
+                "wrong",
+                vec![BoundaryUnavailableReason::WritesCallerReachable],
+            ),
+            (
+                "out-of-order",
+                canonical_reasons.into_iter().rev().collect(),
+            ),
+        ] {
+            let mut invalid = unavailable.clone();
+            set_boundary_unavailable(&mut invalid, reasons);
+            assert_all_package_identity_entries_reject(
+                &invalid,
+                &format!("{label} unavailable reasons"),
+            );
+        }
+    }
+
+    #[test]
+    fn package_identity_rejects_server_stream_sentinel_setup_and_item_plan_mutations() {
+        let mut canonical = callable_fixture();
+        callable_signature_mut(&mut canonical).return_type = PackageTypeRef::Container {
+            name: "Stream".to_string(),
+            arguments: vec![PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            }],
+        };
+        let operation = available_operation_mut(&mut canonical);
+        operation.return_value.ty = ContractTypeRef::builtin("void");
+        operation.stream = BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::builtin("string"),
+            item_value_plan: detached_plan(
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+            ),
+        };
+        assign_package_artifact_identities(&mut canonical).unwrap();
+
+        for mutation in 0..6 {
+            let mut invalid = canonical.clone();
+            let operation = available_operation_mut(&mut invalid);
+            match mutation {
+                0 => operation.return_value.ty = ContractTypeRef::builtin("string"),
+                1 => operation.stream = BoundaryStreamContract::Unary,
+                2..=5 => {
+                    let BoundaryStreamContract::ServerStream {
+                        item_value_plan, ..
+                    } = &mut operation.stream
+                    else {
+                        unreachable!()
+                    };
+                    match mutation {
+                        2 => set_plan_owner(item_value_plan, BoundaryValueOwner::Caller),
+                        3 => set_plan_lifetime(item_value_plan, BoundaryValueLifetime::Call),
+                        4 => set_plan_carrier(
+                            item_value_plan,
+                            BoundaryValueCarrier::CallbackCapability,
+                        ),
+                        5 => set_plan_encoding(
+                            item_value_plan,
+                            BoundaryValueEncoding::OpaqueCapability,
+                        ),
+                        _ => unreachable!(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert_all_package_identity_entries_reject(
+                &invalid,
+                &format!("stream mutation {mutation}"),
+            );
+        }
+    }
+
+    #[test]
+    fn rehashed_boundary_semantics_are_still_rejected() {
+        let mut forged = callable_fixture();
+        set_plan_owner(
+            &mut available_operation_mut(&mut forged).parameters[0].value_plan,
+            BoundaryValueOwner::Provider,
+        );
+        let local = projection::local_abi_identity_from_validated(&forged).unwrap();
+        forged.package_local_abi.local_abi_identity = local.clone();
+        let build_projection = projection::build_projection_from_validated(&forged, local).unwrap();
+        forged.package_build_id =
+            projection::build_identity_from_projection(&build_projection).unwrap();
+
+        assert_all_package_identity_entries_reject(
+            &forged,
+            "rehashed noncanonical boundary semantics",
+        );
+    }
+
+    #[test]
     fn callable_parameter_return_and_suspend_mutations_change_local_abi_without_throw_set() {
         let base = callable_fixture();
         let baseline_local = package_artifact_local_abi_identity(&base).unwrap();
@@ -384,10 +598,13 @@ mod tests {
         callable_signature_mut(&mut parameter).parameters[0].ty = PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("integer"),
         };
+        available_operation_mut(&mut parameter).parameters[0].ty =
+            ContractTypeRef::builtin("integer");
         let mut returned = base.clone();
         callable_signature_mut(&mut returned).return_type = PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("bool"),
         };
+        available_operation_mut(&mut returned).return_value.ty = ContractTypeRef::builtin("bool");
         let mut suspended = base.clone();
         callable_signature_mut(&mut suspended).may_suspend = true;
 
@@ -440,6 +657,10 @@ mod tests {
                 },
             }),
         };
+        set_boundary_unavailable(
+            &mut generic,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
+        );
         assign_package_artifact_identities(&mut generic).unwrap();
         let generic_local = generic.package_local_abi.local_abi_identity.clone();
         let generic_build = generic.package_build_id.clone();
@@ -494,6 +715,10 @@ mod tests {
                 name: "T".to_string(),
             },
         };
+        set_boundary_unavailable(
+            &mut artifact,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
+        );
         let callable_id = callable_id_for_path(&artifact, "run");
         let target = artifact.callable_links[&callable_id].target.clone();
         artifact.implementation_links.functions.insert(
@@ -986,10 +1211,18 @@ mod tests {
             &mut string_box,
             applied_package_nominal("Box", vec![TypeRefIr::builtin("string")]),
         );
+        set_boundary_unavailable(
+            &mut string_box,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
+        );
         let mut number_box = callable_fixture();
         set_parameter_local_type(
             &mut number_box,
             applied_package_nominal("Box", vec![TypeRefIr::builtin("number")]),
+        );
+        set_boundary_unavailable(
+            &mut number_box,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
         );
         assert_ne!(
             package_artifact_local_abi_identity(&string_box).unwrap(),
@@ -1011,6 +1244,10 @@ mod tests {
                 )],
             ),
         );
+        set_boundary_unavailable(
+            &mut ordered,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
+        );
         let mut reordered = callable_fixture();
         set_parameter_local_type(
             &mut reordered,
@@ -1021,6 +1258,10 @@ mod tests {
                     vec![TypeRefIr::builtin("number"), TypeRefIr::builtin("string")],
                 )],
             ),
+        );
+        set_boundary_unavailable(
+            &mut reordered,
+            vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
         );
         assert_ne!(
             package_artifact_local_abi_identity(&ordered).unwrap(),
@@ -1266,33 +1507,67 @@ mod tests {
                 },
             },
         );
+        let effects = CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        };
+        let provenance = CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::Fresh],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        };
         artifact.callable_semantic_facts.insert(
             callable_id.clone(),
             CallableSemanticFacts {
-                effects: CallableEffectSummary::Analyzed {
-                    effects: CallableMayEffects {
-                        writes_caller_reachable: false,
-                        returns_caller_alias: false,
-                        throws_caller_alias: false,
-                        escapes_caller_value: false,
-                        requires_same_heap_identity: false,
-                        invokes_unknown_target: false,
-                        may_suspend: false,
-                    },
-                },
-                provenance: CallableProvenanceSummary::Analyzed {
-                    return_origins: vec![ValueProvenance::Fresh],
-                    direct_return_origins: vec![ValueProvenance::Fresh],
-                    throw_origins: Vec::new(),
-                    escape_lanes: Vec::new(),
-                },
+                effects: CallableEffectSummary::Analyzed { effects },
+                provenance: provenance.clone(),
                 resolved_call_targets: BTreeMap::new(),
             },
         );
         artifact.boundary_projections.insert(
             callable_id,
-            BoundaryCallableProjection::Unavailable {
-                reasons: vec![BoundaryUnavailableReason::AnalysisPending],
+            BoundaryCallableProjection::Available {
+                operation_contract: BoundaryOperationContract {
+                    parameters: vec![BoundaryParameter {
+                        name: "value".to_string(),
+                        ty: ContractTypeRef::builtin("string"),
+                        value_plan: detached_plan(
+                            BoundaryValueOwner::Caller,
+                            BoundaryValueLifetime::Call,
+                        ),
+                    }],
+                    return_value: BoundaryReturn {
+                        ty: ContractTypeRef::builtin("string"),
+                        value_plan: detached_plan(
+                            BoundaryValueOwner::Provider,
+                            BoundaryValueLifetime::Call,
+                        ),
+                    },
+                    stream: BoundaryStreamContract::Unary,
+                    callbacks: BoundaryCallbackContract::None,
+                    effect_guarantee: BoundaryEffectGuarantee {
+                        detached_parameters: true,
+                        detached_return: true,
+                        detached_error: true,
+                        no_caller_reachable_mutation: true,
+                        no_caller_value_escape: true,
+                        no_same_heap_identity: true,
+                    },
+                },
+                implementation_requirements: BoundaryImplementationRequirements {
+                    config: Vec::new(),
+                    state: Vec::new(),
+                    native_capabilities: Vec::new(),
+                    runtime_capabilities: Vec::new(),
+                    complete_may_effects: effects,
+                    provenance,
+                },
             },
         );
         assign_package_artifact_identities(&mut artifact).unwrap();
@@ -1631,11 +1906,15 @@ mod tests {
             public_id.clone(),
             artifact.callable_semantic_facts[&implementation_id].clone(),
         );
+        let template = callable_fixture();
         artifact.boundary_projections.insert(
             public_id.clone(),
-            BoundaryCallableProjection::Unavailable {
-                reasons: vec![BoundaryUnavailableReason::AnalysisPending],
-            },
+            template
+                .boundary_projections
+                .values()
+                .next()
+                .unwrap()
+                .clone(),
         );
         assign_package_artifact_identities(&mut artifact).unwrap();
         (artifact, public_id, implementation_id)
@@ -1707,6 +1986,87 @@ mod tests {
             panic!("fixture run must be callable")
         };
         signature
+    }
+
+    fn detached_plan(
+        owner: BoundaryValueOwner,
+        lifetime: BoundaryValueLifetime,
+    ) -> BoundaryValuePlan {
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime,
+        }
+    }
+
+    fn available_operation_mut(artifact: &mut PackageArtifact) -> &mut BoundaryOperationContract {
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = artifact.boundary_projections.values_mut().next().unwrap()
+        else {
+            panic!("fixture boundary projection must be available")
+        };
+        operation_contract
+    }
+
+    fn set_boundary_unavailable(
+        artifact: &mut PackageArtifact,
+        reasons: Vec<BoundaryUnavailableReason>,
+    ) {
+        *artifact.boundary_projections.values_mut().next().unwrap() =
+            BoundaryCallableProjection::Unavailable { reasons };
+    }
+
+    fn set_plan_carrier(plan: &mut BoundaryValuePlan, value: BoundaryValueCarrier) {
+        let BoundaryValuePlan::Linkable { carrier, .. } = plan else {
+            unreachable!()
+        };
+        *carrier = value;
+    }
+
+    fn set_plan_encoding(plan: &mut BoundaryValuePlan, value: BoundaryValueEncoding) {
+        let BoundaryValuePlan::Linkable { encoding, .. } = plan else {
+            unreachable!()
+        };
+        *encoding = value;
+    }
+
+    fn set_plan_owner(plan: &mut BoundaryValuePlan, value: BoundaryValueOwner) {
+        let BoundaryValuePlan::Linkable { owner, .. } = plan else {
+            unreachable!()
+        };
+        *owner = value;
+    }
+
+    fn set_plan_lifetime(plan: &mut BoundaryValuePlan, value: BoundaryValueLifetime) {
+        let BoundaryValuePlan::Linkable { lifetime, .. } = plan else {
+            unreachable!()
+        };
+        *lifetime = value;
+    }
+
+    fn assert_all_package_identity_entries_reject(artifact: &PackageArtifact, label: &str) {
+        macro_rules! assert_invalid {
+            ($result:expr) => {
+                assert!(
+                    matches!(
+                        $result,
+                        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+                    ),
+                    "{label} must be rejected as InvalidPackageArtifact"
+                )
+            };
+        }
+
+        assert_invalid!(package_artifact_local_abi_identity_projection(artifact));
+        assert_invalid!(package_artifact_local_abi_identity(artifact));
+        assert_invalid!(package_artifact_build_identity_projection(artifact));
+        assert_invalid!(package_artifact_build_identity(artifact));
+        assert_invalid!(validate_package_artifact_identities(artifact));
+        assert_invalid!(package_artifact_ref(artifact));
+        let mut assignable = artifact.clone();
+        assert_invalid!(assign_package_artifact_identities(&mut assignable));
     }
 
     fn set_parameter_local_type(artifact: &mut PackageArtifact, local_type: TypeRefIr) {
