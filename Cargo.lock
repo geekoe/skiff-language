@@ -2667,6 +2667,7 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler",
+ "skiff-compiler-core",
  "skiff-compiler-input",
  "skiff-compiler-source",
  "skiff-deployment",

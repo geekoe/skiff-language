@@ -2472,11 +2472,11 @@ fn explicit_test_service_http_entries_are_projected_per_case_without_subject_ing
     );
     assert_eq!(
         fixture.records.contracts[0].service_id,
-        "test.skiff/example.com/http-entry-tests/case-0"
+        "test.skiff/p-915521113db6a611390ef515484b0705/case-0"
     );
     assert_eq!(
         fixture.records.contracts[1].service_id,
-        "test.skiff/example.com/http-entry-tests/case-1"
+        "test.skiff/p-915521113db6a611390ef515484b0705/case-1"
     );
     for deployment in &fixture.records.deployments {
         assert_eq!(deployment.gateway_entries.len(), 2);

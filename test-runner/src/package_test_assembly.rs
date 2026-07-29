@@ -18,6 +18,7 @@ use skiff_artifact_model::{
     ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
+use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::{
     assembly::resolve_runtime_assembly, projection::project_service_deployment,
 };
@@ -97,6 +98,8 @@ fn assemble_package_test_fixture_inner(
         .enumerate()
         .map(|(index, binding)| package_test_gateway_inputs(&overlay, index, binding))
         .collect::<Result<Vec<_>, _>>()?;
+    let service_ids =
+        package_test_service_ids(&overlay.production.package_id, overlay.bindings.len())?;
     let overlay_ref = package_artifact_ref(&overlay.overlay.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let production_ref = package_artifact_ref(&project.package.artifact)
@@ -120,10 +123,14 @@ fn assemble_package_test_fixture_inner(
     let mut contracts = Vec::with_capacity(overlay.bindings.len());
     let mut deployments = Vec::with_capacity(overlay.bindings.len());
     let mut entrypoints = Vec::with_capacity(overlay.bindings.len());
-    for (index, (binding, (gateway_entry_key, gateway_entry, ingress))) in
-        overlay.bindings.iter().zip(gateway_inputs).enumerate()
+    for (index, ((binding, (gateway_entry_key, gateway_entry, ingress)), service_id)) in overlay
+        .bindings
+        .iter()
+        .zip(gateway_inputs)
+        .zip(service_ids)
+        .enumerate()
     {
-        let contract = compile_package_test_contract(&overlay, index)?;
+        let contract = compile_package_test_contract(&overlay, service_id)?;
         let contract_ref = service_contract_ref(&contract)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         let case_scope = package_test_case_scope(run_scope, &assembly_nonce, index, &binding.case);
@@ -210,16 +217,20 @@ fn assemble_package_test_fixture_inner(
 
 fn compile_package_test_contract(
     overlay: &PublishedPackageTestOverlay,
-    index: usize,
+    service_id: String,
 ) -> Result<ServiceContract, CanonicalFixtureError> {
-    canonical_zero_operation_contract(
-        format!(
-            "test.skiff/{}/case-{index}",
-            safe_coordinate(&overlay.production.package_id),
-        ),
+    let contract = canonical_zero_operation_contract(
+        service_id,
         overlay.production.package_version.clone(),
         format!("package tests for {}", overlay.production.package_id),
-    )
+    )?;
+    PublicationId::parse(&contract.service_id).map_err(|error| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "generated package-test service id {} is not canonical: {error}",
+            contract.service_id
+        ))
+    })?;
+    Ok(contract)
 }
 
 pub(crate) fn canonical_zero_operation_contract(
@@ -577,24 +588,69 @@ fn unique_packages(
     Ok(unique.into_values().collect())
 }
 
-fn safe_coordinate(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '/' | '-') {
-                character
-            } else {
-                '-'
-            }
+#[derive(Debug, Clone, Copy)]
+struct PackageTestServiceOrigin<'a> {
+    package_id: &'a str,
+    case_index: usize,
+}
+
+fn package_test_service_ids(
+    package_id: &str,
+    case_count: usize,
+) -> Result<Vec<String>, CanonicalFixtureError> {
+    let origins = (0..case_count)
+        .map(|case_index| PackageTestServiceOrigin {
+            package_id,
+            case_index,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    package_test_service_ids_with_digest(&origins, package_test_package_digest)
+}
+
+fn package_test_package_digest(package_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(package_id.as_bytes());
+    let hash = format!("{:x}", digest.finalize());
+    hash[..32].to_string()
+}
+
+fn package_test_service_ids_with_digest(
+    origins: &[PackageTestServiceOrigin<'_>],
+    package_digest: impl Fn(&str) -> String,
+) -> Result<Vec<String>, CanonicalFixtureError> {
+    let service_ids = origins
+        .iter()
+        .map(|origin| {
+            format!(
+                "test.skiff/p-{}/case-{}",
+                package_digest(origin.package_id),
+                origin.case_index
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut origin_by_service_id = BTreeMap::new();
+    for (origin, service_id) in origins.iter().zip(&service_ids) {
+        if let Some(first) = origin_by_service_id.insert(service_id, origin) {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "generated package-test service id collision between package {} case index {} and package {} case index {}",
+                first.package_id, first.case_index, origin.package_id, origin.case_index
+            )));
+        }
+    }
+    Ok(service_ids)
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::package_test_assembly_nonce;
+    use skiff_compiler_core::id::PublicationId;
+
+    use super::{
+        canonical_zero_operation_contract, package_test_assembly_nonce, package_test_service_ids,
+        package_test_service_ids_with_digest, PackageTestServiceOrigin,
+    };
 
     #[test]
     fn package_test_assembly_nonces_are_unique_under_parallel_allocation() {
@@ -607,5 +663,128 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(nonces.len(), 32);
+    }
+
+    #[test]
+    fn package_test_service_ids_use_a_canonical_digest_coordinate() {
+        assert!(
+            PublicationId::parse("test.skiff/agine.ai/api-tests").is_err(),
+            "the former dotted local segment must remain illegal"
+        );
+
+        let [service_id] = package_test_service_ids("agine.ai/api-tests", 1)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            service_id,
+            "test.skiff/p-df02597bee463b7bd9eb5efe9b37360e/case-0"
+        );
+        let digest = service_id
+            .strip_prefix("test.skiff/p-")
+            .and_then(|suffix| suffix.strip_suffix("/case-0"))
+            .unwrap();
+        assert_eq!(digest.len(), 32);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')),
+            "digest coordinate must match [0-9a-f]{{32}}"
+        );
+        assert_eq!(
+            PublicationId::parse(&service_id).unwrap().as_str(),
+            service_id
+        );
+    }
+
+    #[test]
+    fn package_test_service_ids_are_stable_and_separate_packages_and_cases() {
+        let first = package_test_service_ids("example.com/package", 2).unwrap();
+        assert_eq!(
+            first,
+            package_test_service_ids("example.com/package", 2).unwrap()
+        );
+        assert_ne!(
+            first[0],
+            package_test_service_ids("example.com/other-package", 1).unwrap()[0]
+        );
+        assert_ne!(first[0], first[1]);
+    }
+
+    #[test]
+    fn package_test_service_ids_do_not_encode_version() {
+        let [service_id] = package_test_service_ids("example.com/package", 1)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let first = canonical_zero_operation_contract(
+            service_id.clone(),
+            "1.0.0".to_string(),
+            "first".to_string(),
+        )
+        .unwrap();
+        let second = canonical_zero_operation_contract(
+            service_id,
+            "999.0.0".to_string(),
+            "second".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(first.service_id, second.service_id);
+        assert_ne!(first.contract_version, second.contract_version);
+    }
+
+    #[test]
+    fn package_test_service_ids_bound_arbitrarily_long_package_ids() {
+        let package_id = format!("example.com/{}", "very-long-segment-".repeat(1_000));
+        let [service_id] = package_test_service_ids(&package_id, 1)
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(service_id.len(), 52);
+        assert!(PublicationId::parse(&service_id).is_ok());
+    }
+
+    #[test]
+    fn package_test_service_id_collision_reports_origins_without_digest_input() {
+        let origins = [
+            PackageTestServiceOrigin {
+                package_id: "first.example/package",
+                case_index: 7,
+            },
+            PackageTestServiceOrigin {
+                package_id: "second.example/package",
+                case_index: 7,
+            },
+        ];
+        let digest_input = "test-only-secret-digest-input";
+        let error = package_test_service_ids_with_digest(&origins, |_| {
+            let _captured_without_diagnostic_exposure = digest_input;
+            "00000000000000000000000000000000".to_string()
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("first.example/package"));
+        assert!(error.contains("case index 7"));
+        assert!(error.contains("second.example/package"));
+        assert!(!error.contains(digest_input));
+    }
+
+    #[test]
+    fn every_generated_package_test_contract_has_a_canonical_service_id() {
+        for service_id in package_test_service_ids("agine.ai/api-tests", 16).unwrap() {
+            let contract = canonical_zero_operation_contract(
+                service_id,
+                "2.3.4".to_string(),
+                "canonical parser coverage".to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                PublicationId::parse(&contract.service_id).unwrap().as_str(),
+                contract.service_id
+            );
+        }
     }
 }
