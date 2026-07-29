@@ -59,6 +59,10 @@ pub type HttpCapabilityFuture<'a, T> =
 pub trait HttpClientCapabilityApi: Send + Sync {
     fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> HttpClientCapabilityContext;
 
+    fn is_test_http_self_ingress(&self, _input: &Value) -> CapabilityResult<bool> {
+        Ok(false)
+    }
+
     fn dispatch_http_request<'a>(
         &'a self,
         input: &'a Value,
@@ -103,6 +107,10 @@ impl HttpClientCapabilityContext {
         self.inner
             .dispatch_http_request(input, execution_control)
             .await
+    }
+
+    pub fn is_test_http_self_ingress(&self, input: &Value) -> CapabilityResult<bool> {
+        self.inner.is_test_http_self_ingress(input)
     }
 
     pub fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> Self {

@@ -49,6 +49,10 @@ pub struct RuntimeHttpGatewayExecutionHandles {
 pub trait RuntimeHttpGatewayEvalAdapter: Send + Sync {
     fn runtime_factory(&self) -> EvalRuntimeFactory;
 
+    fn begin_test_effect_execution(
+        &self,
+    ) -> RequestResult<Option<RuntimeHttpGatewayTestEffectExecution>>;
+
     fn execution_context<'a>(
         &'a self,
         parts: RuntimeHttpGatewayEvalExecutionInputParts<'a>,
@@ -56,6 +60,34 @@ pub trait RuntimeHttpGatewayEvalAdapter: Send + Sync {
         interpreter: &'a Interpreter,
         eval_target: &'a RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a>;
+}
+
+trait RuntimeHttpGatewayTestEffectLease: Send + Sync {}
+
+impl<T> RuntimeHttpGatewayTestEffectLease for T where T: Send + Sync {}
+
+/// Internal runtime ownership for a parent test request or one exact nested
+/// HTTP ingress borrowing that parent's inline-effect registry.
+#[doc(hidden)]
+pub struct RuntimeHttpGatewayTestEffectExecution {
+    context: skiff_runtime_eval::TestEffectCaseContext,
+    finalize: bool,
+    _lease: Box<dyn RuntimeHttpGatewayTestEffectLease>,
+}
+
+impl RuntimeHttpGatewayTestEffectExecution {
+    #[doc(hidden)]
+    pub fn new(
+        context: skiff_runtime_eval::TestEffectCaseContext,
+        finalize: bool,
+        lease: impl Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            context,
+            finalize,
+            _lease: Box::new(lease),
+        }
+    }
 }
 
 pub struct RuntimeHttpGatewayEvalExecutionInputParts<'a> {
@@ -84,13 +116,20 @@ pub async fn execute_runtime_http_gateway_request(
     validate_request(target, &header)?;
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
-    let interpreter = if header.test_effects_enabled {
-        Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
-            Default::default(),
-            handles.eval_adapter.runtime_factory(),
-        )
-    } else {
-        Interpreter::for_runtime_assembly(handles.eval_adapter.runtime_factory())
+    let test_effect_execution = handles.eval_adapter.begin_test_effect_execution()?;
+    let interpreter = match test_effect_execution.as_ref() {
+        Some(test_effect_execution) => {
+            Interpreter::for_runtime_assembly_with_test_effect_case_context(
+                test_effect_execution.context.clone(),
+                handles.eval_adapter.runtime_factory(),
+            )
+        }
+        None if header.test_effects_enabled => {
+            return Err(RequestError::Unsupported(
+                "test HTTP ingress did not establish an exact test-effect execution".to_string(),
+            ))
+        }
+        None => Interpreter::for_runtime_assembly(handles.eval_adapter.runtime_factory()),
     };
     let request_context = request_context(target, &header, &body);
     let context = handles.eval_adapter.execution_context(
@@ -158,7 +197,14 @@ pub async fn execute_runtime_http_gateway_request(
                 .map(|()| BoundaryResponse::StreamSent)
         }
     };
-    let finalization_result = interpreter.finalize_test_case().map_err(RequestError::from);
+    let finalization_result = if test_effect_execution
+        .as_ref()
+        .is_some_and(|execution| execution.finalize)
+    {
+        interpreter.finalize_test_case().map_err(RequestError::from)
+    } else {
+        Ok(())
+    };
     match (body_result, finalization_result) {
         (Err(body_error), _) => Err(body_error),
         (Ok(_), Err(finalization_error)) => Err(finalization_error),

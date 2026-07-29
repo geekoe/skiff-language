@@ -67,3 +67,48 @@ RED/GREEN聚焦测试必须覆盖：父double由entry内部消费、子不finali
 
 需要session header/token、Router test route、runtime frame字段、schema bump、并行case共享registry、
 production威胁模型或第二套HTTP client时，返回`TASK_SCOPE_EXPANDED`并附RED链；不得继续实现。
+
+## 6. Zero-worktree preflight result
+
+精确执行baseline：
+
+```text
+commit 45a89dc40dd2f4cffc19296acc9a31065fcc3a37
+tree   e67bfc6553b9a59797b04a4722768ee765529947
+```
+
+结论为`IMPLEMENTATION_REQUIRED`，且最小路径不需要扩大公共契约：
+
+- `runtime/host/src/host/http_client_runtime.rs`在真实HTTP lower之前先匹配inline double；测试模式
+  未命中double时直接拒绝，因此父case当前无法通过普通HTTP进入自己的真实entry；
+- `runtime/request/src/http_gateway_execution.rs`为每个HTTP ingress新建`Interpreter`，普通business
+  HTTP header的`testEffectsEnabled`为`false`，且每个request都无条件
+  `finalize_test_case`，因此child既看不到父registry，也会错误取得finalize ownership；
+- 当前Host没有按exact activation关联父registry，也没有每case active self-ingress slot。
+
+K将现有父test-dispatch frame的`httpRequest.url`改为动态business ingress URL，并把同一origin作为
+保留只读config注入。H只使用父frame的受信origin与当前`ActivationIdentity`：
+
+```text
+parent test-dispatch
+  -> exact activation id + trusted ingress origin注册父registry
+  -> std.http request/stream识别同origin，拒绝reserved headers并加入当前deployment selector
+  -> ordinary Router business HTTP
+  -> exact activation child借用同一registry
+  -> child不finalize；父case唯一finalize
+```
+
+实际production写集收敛为：
+
+```text
+runtime/eval/src/lib.rs
+runtime/request/src/http_gateway_execution.rs
+runtime/host/src/capability_context/**
+runtime/host/src/eval_capability_adapter/**
+runtime/host/src/host/http_client_runtime.rs
+runtime/host/src/host/request_entry/assembly.rs
+runtime/host/src/host/runtime_host.rs
+```
+
+允许为上述调用链增加同目录聚焦tests和机械module声明。Router、compiler、std、File IR、frame/schema、
+test-runner保持NO-OP。

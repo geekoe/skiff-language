@@ -91,19 +91,30 @@ impl HttpClientCapabilityContext {
         input: &Value,
         current_scope: Option<ExecutionScope>,
     ) -> Result<Value> {
-        let request = HttpEffectRequest::new(
+        let mut request = HttpEffectRequest::new(
             TARGET_STD_HTTP_REQUEST,
             self.http(),
             input,
             self.http_options(),
         )?;
+        let self_ingress = self.prepare_test_http_self_ingress(request.input())?;
+        let self_ingress_lease = if let Some(prepared) = self_ingress {
+            let (input, lease) = prepared.into_parts();
+            request.input = input;
+            request.http_options = request.http_options.with_allow_unsafe_targets(true);
+            Some(lease)
+        } else {
+            None
+        };
         let test_effect_doubles = self.test_effect_double_context();
-        if let Some(value) =
-            test_effect_doubles.dispatch_test_effect_double(request.target(), Some(request.input()))
-        {
-            return value;
+        if self_ingress_lease.is_none() {
+            if let Some(value) = test_effect_doubles
+                .dispatch_test_effect_double(request.target(), Some(request.input()))
+            {
+                return value;
+            }
+            test_effect_doubles.require_non_test_mode(request.target())?;
         }
-        test_effect_doubles.require_non_test_mode(request.target())?;
         let output = match current_scope {
             Some(current_scope) => {
                 let primitive_timeout_ms = http_primitive_timeout_ms(request.input());
@@ -134,6 +145,7 @@ impl HttpClientCapabilityContext {
                 .await
             }
         };
+        drop(self_ingress_lease);
         output.and_then(materialize_internal_json)
     }
 
@@ -169,19 +181,30 @@ impl HttpClientCapabilityContext {
                     .to_string(),
             )
         })?;
-        let request = HttpEffectRequest::new(
+        let mut request = HttpEffectRequest::new(
             TARGET_STD_HTTP_STREAM,
             self.http(),
             input,
             self.http_options(),
         )?;
+        let self_ingress = self.prepare_test_http_self_ingress(request.input())?;
+        let self_ingress_lease = if let Some(prepared) = self_ingress {
+            let (input, lease) = prepared.into_parts();
+            request.input = input;
+            request.http_options = request.http_options.with_allow_unsafe_targets(true);
+            Some(lease)
+        } else {
+            None
+        };
         let test_effect_doubles = self.test_effect_double_context();
-        if let Some(value) =
-            test_effect_doubles.dispatch_test_effect_double(request.target(), Some(request.input()))
-        {
-            return value;
+        if self_ingress_lease.is_none() {
+            if let Some(value) = test_effect_doubles
+                .dispatch_test_effect_double(request.target(), Some(request.input()))
+            {
+                return value;
+            }
+            test_effect_doubles.require_non_test_mode(request.target())?;
         }
-        test_effect_doubles.require_non_test_mode(request.target())?;
 
         let stream_cancellation = CancellationToken::new();
         let http_stream = match current_scope {
@@ -219,7 +242,7 @@ impl HttpClientCapabilityContext {
         };
         let (status, headers) = http_stream.handle_metadata();
         let stream = self.stream_runtime().pull_stream_with_cancellation(
-            HttpBodyPullSource::new(http_stream, expected_body_item_type),
+            HttpBodyPullSource::new(http_stream, expected_body_item_type, self_ingress_lease),
             stream_cancellation,
         );
         Ok(HttpBodyStream::handle_value(status, headers, stream))
@@ -411,13 +434,19 @@ struct HttpEventPullSource {
 struct HttpBodyPullSource {
     stream: HttpBodyStream<'static>,
     expected_item_type: RuntimeTypePlan,
+    _test_http_self_ingress: Option<crate::capability_context::TestHttpSelfIngressLease>,
 }
 
 impl HttpBodyPullSource {
-    fn new(stream: HttpBodyStream<'static>, expected_item_type: RuntimeTypePlan) -> Self {
+    fn new(
+        stream: HttpBodyStream<'static>,
+        expected_item_type: RuntimeTypePlan,
+        test_http_self_ingress: Option<crate::capability_context::TestHttpSelfIngressLease>,
+    ) -> Self {
         Self {
             stream,
             expected_item_type,
+            _test_http_self_ingress: test_http_self_ingress,
         }
     }
 }

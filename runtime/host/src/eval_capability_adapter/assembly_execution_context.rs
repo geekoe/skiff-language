@@ -23,6 +23,7 @@ pub(crate) struct RuntimeAssemblyEvalAdapterContextInput {
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) router_session: ConnectionRequestSession,
     pub(crate) http_response_max_bytes: usize,
+    pub(crate) test_http_entries: concrete::TestHttpEntryRegistry,
 }
 
 pub(super) struct RuntimeAssemblyRequestMetadata {
@@ -33,11 +34,12 @@ pub(super) struct RuntimeAssemblyRequestMetadata {
     pub(super) deadline: Option<serde_json::Value>,
     pub(super) trace: serde_json::Value,
     pub(super) test_effects_enabled: bool,
+    pub(super) test_ingress_url: Option<String>,
 }
 
 pub(super) struct RuntimeAssemblyExecutionContext {
     runtime_id: String,
-    activation: Arc<ActivationContext>,
+    pub(super) activation: Arc<ActivationContext>,
     activation_identity: ActivationIdentityControl,
     config: crate::config_view::RuntimeConfigView,
     package_configs: Vec<crate::config_view::RuntimeConfigView>,
@@ -53,7 +55,9 @@ pub(super) struct RuntimeAssemblyExecutionContext {
     connection_requests: Arc<ConnectionRequestRegistry>,
     router_session: ConnectionRequestSession,
     http_response_max_bytes: usize,
-    request: RequestEnvelope,
+    pub(super) test_http_entries: concrete::TestHttpEntryRegistry,
+    pub(super) test_ingress_url: Option<String>,
+    pub(super) request: RequestEnvelope,
     operation: RuntimeOperation,
 }
 
@@ -148,6 +152,8 @@ impl RuntimeAssemblyExecutionContext {
             connection_requests: input.connection_requests,
             router_session: input.router_session,
             http_response_max_bytes: input.http_response_max_bytes,
+            test_http_entries: input.test_http_entries,
+            test_ingress_url: metadata.test_ingress_url,
             request,
             operation,
         })
@@ -171,13 +177,21 @@ impl RuntimeAssemblyExecutionContext {
             &self.request.request_id,
         );
         let file = file_source(self.file_source.clone()).context_for_request(db.clone());
-        let effects = effects(effect_dispatch_context_from_request(
-            &self.request,
-            self.http_response_max_bytes,
-            execution.cancellation_token(),
-            self.telemetry_context.clone(),
-            self.http_options.clone(),
-        ));
+        let effects = effects(
+            effect_dispatch_context_from_request(
+                &self.request,
+                self.http_response_max_bytes,
+                execution.cancellation_token(),
+                self.telemetry_context.clone(),
+                self.http_options.clone(),
+            )
+            .with_test_http_self_ingress(
+                self.test_http_entries.self_ingress_for_execution(
+                    self.activation.activation_id().as_str(),
+                    self.request.test_effects_enabled,
+                ),
+            ),
+        );
         let service_id = self.activation.identity().deployment.service_id.as_str();
         let websocket_entry_id = self
             .activation
