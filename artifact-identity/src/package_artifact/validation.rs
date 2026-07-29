@@ -497,9 +497,16 @@ fn validate_public_callable_link_kinds(
                 implementation_method_targets.insert(coordinate);
             }
             OperationCallableKind::InternalFunction => {
-                if function_targets.contains(&coordinate) || method_targets.contains(&coordinate) {
+                if method_targets.contains(&coordinate) {
                     return invalid_artifact(format!(
-                        "implementation callable {callable_id} uses InternalFunction for an exported implementation target"
+                        "implementation callable {callable_id} uses InternalFunction for an implementation method target"
+                    ));
+                }
+                if function_targets.contains(&coordinate)
+                    && !public_function_targets.contains(&coordinate)
+                {
+                    return invalid_artifact(format!(
+                        "implementation callable {callable_id} shares an exported function target without an exact public function callable"
                     ));
                 }
             }

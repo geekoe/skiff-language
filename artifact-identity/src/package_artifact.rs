@@ -610,6 +610,109 @@ mod tests {
     }
 
     #[test]
+    fn implementation_internal_function_alias_accepts_exact_public_function_coordinate() {
+        let (mut artifact, public_id, implementation_id) =
+            shared_function_internal_callable_fixture();
+        assign_package_artifact_identities(&mut artifact).unwrap();
+        validate_package_artifact_identities(&artifact).unwrap();
+        assert_eq!(
+            artifact.callable_links[&public_id].target.file_ref,
+            artifact.callable_links[&implementation_id].target.file_ref
+        );
+        assert_eq!(
+            artifact.callable_links[&public_id].target.executable_index,
+            artifact.callable_links[&implementation_id]
+                .target
+                .executable_index
+        );
+        assert_eq!(
+            artifact.callable_links[&implementation_id]
+                .target
+                .callable_kind,
+            OperationCallableKind::InternalFunction
+        );
+        assert!(!artifact
+            .package_local_abi
+            .public_symbols
+            .values()
+            .any(|symbol| matches!(
+                symbol,
+                PackageLocalAbiSymbol::Callable { callable_id, .. }
+                    if callable_id == &implementation_id
+            )));
+        assert!(!artifact
+            .boundary_projections
+            .contains_key(&implementation_id));
+    }
+
+    #[test]
+    fn implementation_internal_function_alias_rejects_wrong_identity_surface_owner_and_signature() {
+        let (artifact, public_id, implementation_id) = shared_function_internal_callable_fixture();
+
+        let mut wrong_id = artifact.clone();
+        let PackageLocalAbiSymbol::Callable { callable_id, .. } = wrong_id
+            .package_local_abi
+            .implementation_symbols
+            .get_mut("api.run")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        *callable_id = PackageCallableId::new(format!("{implementation_id}:forged"));
+        assert_invalid_package_artifact(&wrong_id);
+
+        let mut wrong_surface = artifact.clone();
+        wrong_surface.package_local_abi.public_symbols.insert(
+            "top-level:api.run".to_string(),
+            wrong_surface.package_local_abi.implementation_symbols["api.run"].clone(),
+        );
+        assert_invalid_package_artifact(&wrong_surface);
+
+        let mut wrong_owner = artifact.clone();
+        let symbol = wrong_owner
+            .package_local_abi
+            .implementation_symbols
+            .remove("api.run")
+            .unwrap();
+        wrong_owner
+            .package_local_abi
+            .implementation_symbols
+            .insert("other.run".to_string(), symbol);
+        assert_invalid_package_artifact(&wrong_owner);
+
+        let mut wrong_signature = artifact.clone();
+        let PackageLocalAbiSymbol::Callable { signature, .. } = wrong_signature
+            .package_local_abi
+            .implementation_symbols
+            .get_mut("api.run")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        signature.return_type = PackageTypeRef::Local {
+            local_type: TypeRefIr::TypeParam {
+                name: "Missing".to_string(),
+            },
+        };
+        assert_invalid_package_artifact(&wrong_signature);
+
+        let mut missing_public_owner = artifact;
+        missing_public_owner
+            .package_local_abi
+            .public_symbols
+            .remove("run");
+        missing_public_owner.callable_links.remove(&public_id);
+        missing_public_owner
+            .callable_semantic_facts
+            .remove(&public_id);
+        missing_public_owner.boundary_projections.remove(&public_id);
+        let error = package_artifact_build_identity(&missing_public_owner)
+            .expect_err("an exported function coordinate still requires its public callable")
+            .to_string();
+        assert!(error.contains("without an exact public function callable"));
+    }
+
+    #[test]
     fn implementation_only_impl_callable_scope_accepts_exact_shared_executable() {
         let (mut artifact, public_id, implementation_id) =
             implementation_only_impl_callable_fixture();
@@ -1465,6 +1568,40 @@ mod tests {
 
         assign_package_artifact_identities(&mut artifact).unwrap();
         (artifact, implementation_id)
+    }
+
+    fn shared_function_internal_callable_fixture(
+    ) -> (PackageArtifact, PackageCallableId, PackageCallableId) {
+        let mut artifact = callable_fixture();
+        let public_id = callable_id_for_path(&artifact, "run");
+        let implementation_id = PackageCallableId::new(format!(
+            "pkg-callable:{}:top-level:api.run",
+            artifact.package_id
+        ));
+        let PackageLocalAbiSymbol::Callable { signature, .. } =
+            &artifact.package_local_abi.public_symbols["run"]
+        else {
+            unreachable!()
+        };
+        artifact.package_local_abi.implementation_symbols.insert(
+            "api.run".to_string(),
+            PackageLocalAbiSymbol::Callable {
+                callable_id: implementation_id.clone(),
+                signature: signature.clone(),
+            },
+        );
+        let mut link = artifact.callable_links[&public_id].clone();
+        link.callable_id = implementation_id.clone();
+        link.target.callable_abi_id = implementation_id.to_string();
+        link.target.callable_kind = OperationCallableKind::InternalFunction;
+        artifact
+            .callable_links
+            .insert(implementation_id.clone(), link);
+        artifact.callable_semantic_facts.insert(
+            implementation_id.clone(),
+            artifact.callable_semantic_facts[&public_id].clone(),
+        );
+        (artifact, public_id, implementation_id)
     }
 
     fn shared_impl_callable_scope_fixture(
