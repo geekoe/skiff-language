@@ -101,7 +101,8 @@ pub use request_payload::{
     RequestPayloadContextError, RequestPayloadEncoding,
 };
 pub use response::{
-    FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, ResponseError,
+    FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, OrdinaryResponseErrorSource,
+    ResponseError,
 };
 pub use scoped_execution::{
     EffectiveDeadline, ExecutionDeadlineSource, ExecutionScope, ExecutionScopeAccessError,

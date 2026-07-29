@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use super::{
     response_end_to_outbound, response_error_to_outbound, response_event_into_frame,
     runtime_assembly_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
-    OrdinaryResponseErrorSource, OrdinaryResponseEvent, ResponseEndPhase,
+    OrdinaryResponseEvent, ResponseEndPhase,
 };
 use crate::protocol::{
     decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
@@ -17,8 +17,8 @@ use crate::runtime_assembly_request::{
 };
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::{
-    FixedServiceResponseFailure, HttpResponseMetadata, OutboundResponse, ResponseEnd,
-    ResponseError, ResponseEvent,
+    FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource,
+    OutboundResponse, ResponseEnd, ResponseError, ResponseEvent,
 };
 
 struct TestOrdinaryError(ResponseError);

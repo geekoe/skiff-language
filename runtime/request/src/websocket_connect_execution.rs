@@ -11,19 +11,15 @@ use skiff_runtime_eval::{
     RuntimeWebSocketNameValue,
 };
 use skiff_runtime_model::request_heap::RequestHeapLimits;
-use skiff_runtime_transport::{
-    protocol::RUNTIME_FRAME_SCHEMA_VERSION,
-    runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-};
 
 use crate::{
     ExecutionBudget, ExecutionControl, RequestError, RequestResult,
-    RuntimeAssemblyWebSocketConnectTarget,
+    RuntimeAssemblyWebSocketConnectTarget, RuntimeWebSocketConnectIngress,
 };
 
 pub struct RuntimeWebSocketConnectExecutionInput {
     pub target: RuntimeAssemblyWebSocketConnectTarget,
-    pub header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    pub request: RuntimeWebSocketConnectIngress,
     pub cancelled: Arc<AtomicBool>,
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
@@ -47,7 +43,6 @@ pub trait RuntimeWebSocketConnectEvalAdapter: Send + Sync {
 }
 
 pub struct RuntimeWebSocketConnectEvalExecutionInputParts<'a> {
-    pub header: &'a RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     pub execution: ExecutionControl<'a>,
     pub cancellation: CancellationToken,
     pub cancelled: &'a AtomicBool,
@@ -60,19 +55,19 @@ pub async fn execute_runtime_websocket_connect(
 ) -> RequestResult<RuntimeWebSocketConnectResult> {
     let RuntimeWebSocketConnectExecutionInput {
         target,
-        header,
+        request,
         cancelled,
         cancellation,
         execution_budget,
         handles,
     } = input;
-    validate_request(&target, &header)?;
+    validate_request(&target, &request)?;
     if cancelled.load(Ordering::Acquire) {
         return Err(RequestError::Cancelled);
     }
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
-    let interpreter = if header.test_effects_enabled {
+    let interpreter = if request.test_effects_enabled {
         Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
             Default::default(),
             handles.eval_adapter.runtime_factory(),
@@ -82,7 +77,6 @@ pub async fn execute_runtime_websocket_connect(
     };
     let context = handles.eval_adapter.execution_context(
         RuntimeWebSocketConnectEvalExecutionInputParts {
-            header: &header,
             execution,
             cancellation,
             cancelled: cancelled.as_ref(),
@@ -92,9 +86,9 @@ pub async fn execute_runtime_websocket_connect(
         &interpreter,
         target.eval(),
     );
-    let request = eval_request(&header);
+    let eval_request = eval_request(&request);
     let body_result = interpreter
-        .execute_runtime_websocket_connect(context, &request, &target)
+        .execute_runtime_websocket_connect(context, &eval_request, &target)
         .await
         .map_err(RequestError::from);
     let finalization_result = interpreter.finalize_test_case().map_err(RequestError::from);
@@ -107,7 +101,7 @@ pub async fn execute_runtime_websocket_connect(
 
 fn validate_request(
     target: &RuntimeAssemblyWebSocketConnectTarget,
-    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    request: &RuntimeWebSocketConnectIngress,
 ) -> RequestResult<()> {
     validate_request_facts(
         RuntimeWebSocketConnectRequestTargetFacts {
@@ -123,7 +117,7 @@ fn validate_request(
             gateway_entry_identity: target.gateway_entry_identity(),
             websocket_entry_id: target.websocket_entry_id(),
         },
-        header,
+        request,
     )
 }
 
@@ -139,29 +133,18 @@ struct RuntimeWebSocketConnectRequestTargetFacts<'a> {
 
 fn validate_request_facts(
     target: RuntimeWebSocketConnectRequestTargetFacts<'_>,
-    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    request: &RuntimeWebSocketConnectIngress,
 ) -> RequestResult<()> {
-    if header.schema_version != RUNTIME_FRAME_SCHEMA_VERSION
-        || header.frame_type != "request.start"
-        || header.mode != "unary"
-        || header.caller.kind != "gateway"
-        || header.routing.kind != "runtimeAssembly"
-    {
-        return Err(RequestError::protocol(
-            target.gateway_entry_key.as_str(),
-            "WebSocket connect request is not the canonical runtimeAssembly request.start shape",
-        ));
-    }
     let selector = target.selector;
     if selector.protocol != IngressProtocol::WebSocket
         || selector.method.is_some()
-        || selector.path != header.routing.ingress.path
-        || header.routing.assembly_identity != *target.assembly_identity
-        || header.routing.assembly_generation != target.assembly_generation
-        || &header.routing.deployment != target.deployment
-        || header.routing.gateway_entry_identity != *target.gateway_entry_identity
-        || header.websocket_connect.gateway_entry_identity != *target.gateway_entry_identity
-        || header.websocket_connect.websocket_entry_id != *target.websocket_entry_id
+        || selector.path != request.ingress_path
+        || request.pin.assembly_identity != *target.assembly_identity
+        || request.pin.assembly_generation != target.assembly_generation
+        || &request.pin.deployment != target.deployment
+        || request.pin.gateway_entry_identity != *target.gateway_entry_identity
+        || request.connect_gateway_entry_identity != *target.gateway_entry_identity
+        || request.websocket_entry_id != *target.websocket_entry_id
     {
         return Err(RequestError::protocol(
             target.gateway_entry_key.as_str(),
@@ -171,10 +154,7 @@ fn validate_request_facts(
     Ok(())
 }
 
-fn eval_request(
-    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-) -> RuntimeWebSocketConnectRequest {
-    let request = &header.websocket_connect;
+fn eval_request(request: &RuntimeWebSocketConnectIngress) -> RuntimeWebSocketConnectRequest {
     RuntimeWebSocketConnectRequest {
         connection_id: request.connection_id.clone(),
         url: request.url.clone(),
@@ -183,13 +163,11 @@ fn eval_request(
         cookies: name_values(&request.cookies),
         version: request.version.clone(),
         websocket_entry_id: request.websocket_entry_id.clone(),
-        gateway_entry_identity: request.gateway_entry_identity.clone(),
+        gateway_entry_identity: request.connect_gateway_entry_identity.clone(),
     }
 }
 
-fn name_values(
-    values: &[skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader],
-) -> Vec<RuntimeWebSocketNameValue> {
+fn name_values(values: &[crate::HttpNameValue]) -> Vec<RuntimeWebSocketNameValue> {
     values
         .iter()
         .map(|value| RuntimeWebSocketNameValue {
@@ -207,14 +185,6 @@ mod tests {
         GatewayEntryKey, IngressSelector, ServiceDeploymentRef, WebSocketEntryId,
         WEBSOCKET_GATEWAY_ENTRY_KEY,
     };
-    use skiff_runtime_transport::runtime_assembly_request::{
-        RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
-        RuntimeAssemblyWebSocketConnectIngressFrameHeader,
-        RuntimeAssemblyWebSocketConnectIngressProtocol,
-        RuntimeAssemblyWebSocketConnectRequestFrameHeader,
-        RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
-    };
-
     struct Fixture {
         key: GatewayEntryKey,
         selector: IngressSelector,
@@ -222,7 +192,7 @@ mod tests {
         gateway_identity: GatewayEntryIdentity,
         deployment: ServiceDeploymentRef,
         websocket_entry_id: WebSocketEntryId,
-        header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        request: RuntimeWebSocketConnectIngress,
     }
 
     impl Fixture {
@@ -252,44 +222,23 @@ mod tests {
                 method: None,
                 path: "/connect".to_string(),
             };
-            let header = RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                frame_type: "request.start".to_string(),
+            let request = RuntimeWebSocketConnectIngress {
                 request_id: "request-1".to_string(),
-                mode: "unary".to_string(),
-                caller: RuntimeAssemblyRequestCallerFrameHeader {
-                    kind: "gateway".to_string(),
-                },
-                routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
-                    kind: "runtimeAssembly".to_string(),
+                pin: crate::RuntimeGatewayIngressPin {
                     assembly_identity: assembly.clone(),
                     assembly_generation: 7,
                     deployment: deployment.clone(),
                     gateway_entry_identity: gateway_identity.clone(),
-                    ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
-                        protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
-                        method: (),
-                        path: selector.path.clone(),
-                    },
                 },
-                client_session: None,
-                deadline: None,
-                trace: RuntimeAssemblyRequestTraceFrameHeader {
-                    trace_id: "trace-1".to_string(),
-                    span_id: "span-1".to_string(),
-                    parent_span_id: None,
-                    sampled: None,
-                },
-                websocket_connect: RuntimeAssemblyWebSocketConnectRequestFrameHeader {
-                    connection_id: "connection-1".to_string(),
-                    url: "wss://websocket.test/connect".to_string(),
-                    query: Vec::new(),
-                    headers: Vec::new(),
-                    cookies: Vec::new(),
-                    version: None,
-                    websocket_entry_id: websocket_entry_id.clone(),
-                    gateway_entry_identity: gateway_identity.clone(),
-                },
+                ingress_path: selector.path.clone(),
+                connection_id: "connection-1".to_string(),
+                url: "wss://websocket.test/connect".to_string(),
+                query: Vec::new(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                version: None,
+                websocket_entry_id: websocket_entry_id.clone(),
+                connect_gateway_entry_identity: gateway_identity.clone(),
                 test_effects_enabled: false,
             };
             Self {
@@ -299,7 +248,7 @@ mod tests {
                 gateway_identity,
                 deployment,
                 websocket_entry_id,
-                header,
+                request,
             }
         }
 
@@ -317,52 +266,50 @@ mod tests {
     }
 
     #[test]
-    fn websocket_connect_request_header_matches_exact_activation_entry() {
+    fn websocket_connect_request_projection_matches_exact_activation_entry() {
         let fixture = Fixture::new();
-        validate_request_facts(fixture.facts(), &fixture.header)
+        validate_request_facts(fixture.facts(), &fixture.request)
             .expect("exact request facts should validate");
     }
 
     #[test]
-    fn websocket_connect_request_rejects_header_activation_and_generation_mismatches() {
+    fn websocket_connect_request_rejects_projected_activation_and_generation_mismatches() {
         let fixture = Fixture::new();
         let mut mutations = Vec::new();
 
-        let mut wrong_routing_identity = fixture.header.clone();
-        wrong_routing_identity.routing.gateway_entry_identity = GatewayEntryIdentity::parse(
-            format!("skiff-gateway-entry-v2:sha256:{}", "3".repeat(64)),
-        )
+        let mut wrong_routing_identity = fixture.request.clone();
+        wrong_routing_identity.pin.gateway_entry_identity = GatewayEntryIdentity::parse(format!(
+            "skiff-gateway-entry-v2:sha256:{}",
+            "3".repeat(64)
+        ))
         .unwrap();
         mutations.push(wrong_routing_identity);
 
-        let mut wrong_connect_identity = fixture.header.clone();
-        wrong_connect_identity
-            .websocket_connect
-            .gateway_entry_identity = GatewayEntryIdentity::parse(format!(
-            "skiff-gateway-entry-v2:sha256:{}",
-            "4".repeat(64)
-        ))
+        let mut wrong_connect_identity = fixture.request.clone();
+        wrong_connect_identity.connect_gateway_entry_identity = GatewayEntryIdentity::parse(
+            format!("skiff-gateway-entry-v2:sha256:{}", "4".repeat(64)),
+        )
         .unwrap();
         mutations.push(wrong_connect_identity);
 
-        let mut wrong_entry_id = fixture.header.clone();
-        wrong_entry_id.websocket_connect.websocket_entry_id = WebSocketEntryId::parse(format!(
+        let mut wrong_entry_id = fixture.request.clone();
+        wrong_entry_id.websocket_entry_id = WebSocketEntryId::parse(format!(
             "skiff-websocket-entry-v1:sha256:{}",
             "5".repeat(64)
         ))
         .unwrap();
         mutations.push(wrong_entry_id);
 
-        let mut wrong_assembly = fixture.header.clone();
-        wrong_assembly.routing.assembly_identity = AssemblyIdentity::new("assembly:other");
+        let mut wrong_assembly = fixture.request.clone();
+        wrong_assembly.pin.assembly_identity = AssemblyIdentity::new("assembly:other");
         mutations.push(wrong_assembly);
 
-        let mut stale_generation = fixture.header.clone();
-        stale_generation.routing.assembly_generation = 6;
+        let mut stale_generation = fixture.request.clone();
+        stale_generation.pin.assembly_generation = 6;
         mutations.push(stale_generation);
 
-        let mut wrong_deployment = fixture.header.clone();
-        wrong_deployment.routing.deployment.service_id = "service.other".to_string();
+        let mut wrong_deployment = fixture.request.clone();
+        wrong_deployment.pin.deployment.service_id = "service.other".to_string();
         mutations.push(wrong_deployment);
 
         for mutation in mutations {

@@ -1,6 +1,6 @@
 use skiff_runtime_request_contract::{
-    FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, OutboundResponse,
-    ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
+    FixedServiceResponseFailure, HttpNameValue, HttpResponseMetadata, OrdinaryResponseErrorSource,
+    OutboundResponse, ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 
 use crate::{
@@ -49,15 +49,6 @@ pub fn runtime_assembly_websocket_jsonrpc_response_into_frame(
         },
         &payload,
     )
-}
-
-/// Source contract for an error that has already excluded cancellation.
-///
-/// The transport mapper accepts ordinary failures only through this projection;
-/// a cancellation terminal returns `None` and therefore cannot be represented by
-/// [`OrdinaryResponseEvent`].
-pub trait OrdinaryResponseErrorSource {
-    fn ordinary_response_error(&self) -> Option<ResponseError>;
 }
 
 #[derive(Debug, Clone, PartialEq)]

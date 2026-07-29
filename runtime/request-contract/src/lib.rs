@@ -21,6 +21,6 @@ pub use response_event::{
     ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 pub use skiff_runtime_capability_context::{
-    RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
+    OrdinaryResponseErrorSource, RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };

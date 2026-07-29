@@ -14,7 +14,7 @@ pub fn response_error_from_runtime_error(error: &RuntimeError) -> Option<Respons
     })
 }
 
-impl skiff_runtime_transport::response_mapper::OrdinaryResponseErrorSource for RuntimeError {
+impl skiff_runtime_capability_context::OrdinaryResponseErrorSource for RuntimeError {
     fn ordinary_response_error(&self) -> Option<ResponseError> {
         response_error_from_runtime_error(self)
     }

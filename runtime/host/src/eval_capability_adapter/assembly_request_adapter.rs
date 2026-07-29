@@ -162,7 +162,6 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
         eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
         let RuntimeHttpGatewayEvalExecutionInputParts {
-            header: _,
             execution,
             cancellation,
             cancelled: _,
@@ -191,7 +190,6 @@ impl RuntimeWebSocketConnectEvalAdapter for RuntimeAssemblyExecutionContext {
         eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
         let RuntimeWebSocketConnectEvalExecutionInputParts {
-            header: _,
             execution,
             cancellation,
             cancelled: _,

@@ -8,6 +8,7 @@ mod error;
 mod eval_adapter;
 pub mod execution_budget;
 mod execution_control;
+mod gateway_ingress;
 mod http_gateway_execution;
 mod http_gateway_target;
 mod http_ingress;
@@ -46,6 +47,9 @@ pub use eval_adapter::{
 };
 pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
+pub use gateway_ingress::{
+    RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest, RuntimeWebSocketConnectIngress,
+};
 pub use http_gateway_execution::{
     execute_runtime_http_gateway_request, RuntimeHttpGatewayEvalAdapter,
     RuntimeHttpGatewayEvalExecutionInputParts, RuntimeHttpGatewayExecutionHandles,
