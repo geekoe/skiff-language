@@ -19,9 +19,9 @@ mod gateway_ingress;
 mod graph_validation;
 
 use content_validation::{
-    validate_assembly, validate_contract_ref, validate_file_ref, validate_file_ref_path,
-    validate_package_file_targets, validate_package_ref, validate_resource_content,
-    validate_resource_ref_path,
+    validate_assembly, validate_contract_ref, validate_file_content, validate_file_ref,
+    validate_file_ref_path, validate_package_file_targets, validate_package_ref,
+    validate_resource_content, validate_resource_ref_path,
 };
 use gateway_ingress::hydrate_gateway_ingress;
 pub use gateway_ingress::{HydratedGatewayCallable, HydratedGatewayEntry};
@@ -326,14 +326,55 @@ impl HydratedRuntimeAssembly {
 
 pub struct RuntimeAssemblyLoader<'a, R: ?Sized> {
     resolver: &'a R,
+    #[cfg(test)]
+    file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
 }
+
+fn validate_file_ir_identity(file: &FileIrUnit) -> anyhow::Result<()> {
+    skiff_artifact_identity::validate_file_ir_identity(file).map_err(anyhow::Error::from)
+}
+
+#[cfg(test)]
+static FILE_IR_IDENTITY_VALIDATOR: fn(&FileIrUnit) -> anyhow::Result<()> =
+    validate_file_ir_identity;
 
 impl<'a, R> RuntimeAssemblyLoader<'a, R>
 where
     R: RuntimeAssemblyContentResolver + ?Sized,
 {
     pub fn new(resolver: &'a R) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            #[cfg(test)]
+            file_ir_identity_validator: &FILE_IR_IDENTITY_VALIDATOR,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_file_ir_identity_validator(
+        resolver: &'a R,
+        file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
+    ) -> Self {
+        Self {
+            resolver,
+            file_ir_identity_validator,
+        }
+    }
+
+    fn validate_file_content(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &FileIrRef,
+        file: &FileIrUnit,
+    ) -> anyhow::Result<()> {
+        #[cfg(test)]
+        {
+            validate_file_content(package, reference, file, self.file_ir_identity_validator)
+        }
+        #[cfg(not(test))]
+        {
+            validate_file_content(package, reference, file, &validate_file_ir_identity)
+        }
     }
 
     /// Resolve and hydrate one exact immutable assembly reference.
@@ -763,7 +804,7 @@ where
                             reference.file_ir_identity, package_ref.package_build_id
                         )
                     })?;
-                validate_file_ref(package_ref, &reference, &file)?;
+                self.validate_file_content(package_ref, &reference, &file)?;
                 shared_files.insert(reference.file_ir_identity.clone(), Arc::clone(&file));
                 file
             };

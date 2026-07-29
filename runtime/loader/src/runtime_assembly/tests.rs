@@ -85,8 +85,10 @@ struct FixtureResolver {
     additional_contract: Option<(ServiceContractRef, Arc<ServiceContract>)>,
     package_ref: PackageArtifactRef,
     package: Arc<PackageArtifact>,
+    additional_package: Option<(PackageArtifactRef, Arc<PackageArtifact>)>,
     file_ref: FileIrRef,
     file: Arc<FileIrUnit>,
+    additional_files: BTreeMap<String, Arc<FileIrUnit>>,
     resource_ref: PublicationResourceRef,
     resource: Arc<[u8]>,
     package_loads: Cell<usize>,
@@ -157,11 +159,17 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         &self,
         reference: &PackageArtifactRef,
     ) -> anyhow::Result<Arc<PackageArtifact>> {
-        if reference != &self.package_ref {
-            anyhow::bail!("missing package")
+        if reference == &self.package_ref {
+            self.package_loads.set(self.package_loads.get() + 1);
+            return Ok(Arc::clone(&self.package));
         }
-        self.package_loads.set(self.package_loads.get() + 1);
-        Ok(Arc::clone(&self.package))
+        if let Some((additional_ref, package)) = &self.additional_package {
+            if reference == additional_ref {
+                self.package_loads.set(self.package_loads.get() + 1);
+                return Ok(Arc::clone(package));
+            }
+        }
+        anyhow::bail!("missing package")
     }
 
     fn resolve_file_ir(
@@ -169,10 +177,28 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         package: &PackageArtifactRef,
         reference: &FileIrRef,
     ) -> anyhow::Result<Arc<FileIrUnit>> {
-        if package != &self.package_ref || reference != &self.file_ref {
+        let known_package = package == &self.package_ref
+            || self
+                .additional_package
+                .as_ref()
+                .is_some_and(|(additional_ref, _)| package == additional_ref);
+        if !known_package {
             anyhow::bail!("missing File IR")
         }
-        Ok(Arc::clone(&self.file))
+        if reference == &self.file_ref {
+            return Ok(Arc::clone(&self.file));
+        }
+        self.additional_files
+            .get(&reference.file_ir_identity)
+            .filter(|file| {
+                file.module_path == reference.module_path
+                    && reference
+                        .source_ast_hash
+                        .as_ref()
+                        .is_none_or(|hash| hash == &file.source_ast_hash)
+            })
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing File IR"))
     }
 
     fn resolve_static_resource(
@@ -180,7 +206,12 @@ impl RuntimeAssemblyContentResolver for FixtureResolver {
         package: &PackageArtifactRef,
         reference: &PublicationResourceRef,
     ) -> anyhow::Result<Arc<[u8]>> {
-        if package != &self.package_ref || reference != &self.resource_ref {
+        let known_package = package == &self.package_ref
+            || self
+                .additional_package
+                .as_ref()
+                .is_some_and(|(additional_ref, _)| package == additional_ref);
+        if !known_package || reference != &self.resource_ref {
             anyhow::bail!("missing static resource")
         }
         Ok(Arc::clone(&self.resource))
@@ -453,8 +484,10 @@ impl Fixture {
             additional_contract: None,
             package_ref: package_ref(&self.package),
             package: Arc::new(self.package.clone()),
+            additional_package: None,
             file_ref: self.package.files[0].clone(),
             file: Arc::new(self.file.clone()),
+            additional_files: BTreeMap::new(),
             resource_ref: self.package.static_resources[0].clone(),
             resource: Arc::clone(&self.resource),
             package_loads: Cell::new(0),
@@ -558,9 +591,15 @@ impl Fixture {
     }
 
     fn add_http_gateway(&mut self) {
-        let handler = PackageCallableId::new("pkg-callable:gateway:handler");
-        let pre = PackageCallableId::new("pkg-callable:gateway:pre");
-        let guard = PackageCallableId::new("pkg-callable:gateway:guard");
+        let handler = PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_handler",
+        );
+        let pre = PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_pre",
+        );
+        let guard = PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_guard",
+        );
         for (path, callable_id) in [
             ("provider.main.gateway_handler", &handler),
             ("provider.main.gateway_pre", &pre),
@@ -785,6 +824,118 @@ fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
 }
 
 #[test]
+fn file_ir_identity_is_hashed_once_per_unique_identity_per_assembly_load() {
+    let mut fixture = Fixture::new();
+    let mut additional_files = BTreeMap::new();
+    for (module_path, source_ast_hash) in [
+        ("provider.extra_one", "source-hash-extra-one"),
+        ("provider.extra_two", "source-hash-extra-two"),
+    ] {
+        let mut file = FileIrUnit::empty(module_path, source_ast_hash);
+        skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
+        let reference = FileIrRef {
+            file_ir_identity: file.file_ir_identity.clone(),
+            module_path: file.module_path.clone(),
+            artifact_path: None,
+            source_ast_hash: Some(file.source_ast_hash.clone()),
+        };
+        fixture.package.files.push(reference);
+        additional_files.insert(file.file_ir_identity.clone(), Arc::new(file));
+    }
+    fixture.refresh_package_chain();
+
+    let mut second_package = fixture.package.clone();
+    second_package.package_version = "2.0.0".to_string();
+    second_package.static_resources.clear();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut second_package).unwrap();
+    let second_package_ref = package_ref(&second_package);
+
+    let mut second_contract = fixture.contract.clone();
+    second_contract.service_id = "example.health.shared".to_string();
+    let second_operation_id = skiff_artifact_identity::contract_operation_id(
+        &second_contract.service_id,
+        &second_contract.contract_version,
+        "health",
+    )
+    .unwrap();
+    let mut second_descriptor = second_contract.operations.pop_first().unwrap().1;
+    second_descriptor.operation_id = second_operation_id.clone();
+    second_contract
+        .operations
+        .insert(second_operation_id.clone(), second_descriptor);
+    skiff_artifact_identity::assign_service_contract_identities(&mut second_contract).unwrap();
+    let second_contract_ref = contract_ref(&second_contract);
+
+    let mut second_deployment = fixture.deployment.clone();
+    second_deployment.deployment_revision = DeploymentRevision::new("revision-shared-file");
+    second_deployment.implementation = second_package_ref.clone();
+    second_deployment.contract = second_contract_ref.clone();
+    second_deployment.operation_bindings[0].contract_operation_id = second_operation_id;
+    skiff_artifact_identity::assign_service_deployment_identity(&mut second_deployment).unwrap();
+    let second_deployment_ref = skiff_artifact_identity::service_deployment_ref(&second_deployment);
+
+    fixture.assembly.roots.push(second_deployment_ref.clone());
+    fixture
+        .assembly
+        .resolved_deployments
+        .push(second_deployment_ref.clone());
+    fixture
+        .assembly
+        .resolved_contracts
+        .push(second_contract_ref.clone());
+    fixture
+        .assembly
+        .resolved_packages
+        .push(second_package_ref.clone());
+    fixture
+        .assembly
+        .package_link_plan
+        .code_slots
+        .push(PackageCodeSlot {
+            package: second_package_ref.clone(),
+        });
+    fixture
+        .assembly
+        .service_binding_templates
+        .push(ServiceBindingTemplate {
+            activation: second_deployment_ref.clone(),
+            bindings: Vec::new(),
+        });
+    fixture
+        .assembly
+        .activation_templates
+        .push(ActivationTemplate {
+            deployment: second_deployment_ref.clone(),
+            implementation_package_build_id: second_package.package_build_id.clone(),
+            config_literals: Vec::new(),
+            secret_refs: Vec::new(),
+            state_bindings: Vec::new(),
+            resource_bindings: Vec::new(),
+            policy: second_deployment.policy.clone(),
+        });
+    skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
+
+    let mut resolver = fixture.resolver();
+    resolver.additional_deployment = Some((second_deployment_ref, Arc::new(second_deployment)));
+    resolver.additional_contract = Some((second_contract_ref, Arc::new(second_contract)));
+    resolver.additional_package = Some((second_package_ref, Arc::new(second_package)));
+    resolver.additional_files = additional_files;
+
+    let identity_validations = Cell::new(0);
+    let validator = |file: &FileIrUnit| {
+        identity_validations.set(identity_validations.get() + 1);
+        skiff_artifact_identity::validate_file_ir_identity(file).map_err(anyhow::Error::from)
+    };
+    let loader = RuntimeAssemblyLoader::new_with_file_ir_identity_validator(&resolver, &validator);
+
+    loader.load(fixture.assembly.clone()).unwrap();
+    assert_eq!(identity_validations.get(), 3);
+
+    loader.load(fixture.assembly).unwrap();
+    assert_eq!(identity_validations.get(), 6);
+}
+
+#[test]
 fn runtime_assembly_loader_joins_private_gateway_callables_and_shares_entry() {
     let mut fixture = Fixture::new();
     fixture.add_http_gateway();
@@ -921,7 +1072,9 @@ fn runtime_assembly_loader_rejects_gateway_link_and_signature_tamper() {
     let mut nested_id = fixture.resolver();
     Arc::make_mut(&mut nested_id.package)
         .callable_links
-        .get_mut(&PackageCallableId::new("pkg-callable:gateway:handler"))
+        .get_mut(&PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_handler",
+        ))
         .unwrap()
         .callable_id = PackageCallableId::new("pkg-callable:gateway:wrong-nested-id");
     assert!(RuntimeAssemblyLoader::new(&nested_id)
@@ -931,7 +1084,9 @@ fn runtime_assembly_loader_rejects_gateway_link_and_signature_tamper() {
     let mut target = fixture.resolver();
     Arc::make_mut(&mut target.package)
         .callable_links
-        .get_mut(&PackageCallableId::new("pkg-callable:gateway:handler"))
+        .get_mut(&PackageCallableId::new(
+            "pkg-callable:example.health-provider:top-level:provider.main.gateway_handler",
+        ))
         .unwrap()
         .target
         .callable_abi_id = "pkg-callable:gateway:wrong-target".to_string();

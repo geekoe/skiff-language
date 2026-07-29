@@ -73,19 +73,29 @@ pub(super) fn validate_file_ref_path(
     Ok(())
 }
 
+pub(super) fn validate_file_content<V>(
+    package: &PackageArtifactRef,
+    reference: &FileIrRef,
+    file: &FileIrUnit,
+    validate_identity: &V,
+) -> anyhow::Result<()>
+where
+    V: Fn(&FileIrUnit) -> anyhow::Result<()> + ?Sized,
+{
+    validate_identity(file).with_context(|| {
+        format!(
+            "File IR content is invalid for {} in package {}",
+            reference.file_ir_identity, package.package_build_id
+        )
+    })?;
+    validate_file_ref(package, reference, file)
+}
+
 pub(super) fn validate_file_ref(
     package: &PackageArtifactRef,
     reference: &FileIrRef,
     file: &FileIrUnit,
 ) -> anyhow::Result<()> {
-    skiff_artifact_identity::validate_file_ir_identity(file)
-        .map_err(anyhow::Error::from)
-        .with_context(|| {
-            format!(
-                "File IR content is invalid for {} in package {}",
-                reference.file_ir_identity, package.package_build_id
-            )
-        })?;
     if file.file_ir_identity != reference.file_ir_identity
         || file.module_path != reference.module_path
         || reference
