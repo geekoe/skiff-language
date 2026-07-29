@@ -97,11 +97,8 @@ pub fn prepare_package_service_host_fixture(
     let consumer =
         publish_service_package(platform_sources, &consumer_root, artifact_root, environment)?;
 
-    let base_assembly = project_assembly(
-        artifact_root,
-        environment,
-        std::slice::from_ref(&consumer.deployment),
-    )?;
+    let root_deployments = [provider.deployment.clone(), consumer.deployment.clone()];
+    let base_assembly = project_assembly(artifact_root, environment, &root_deployments)?;
 
     Ok(PackageServiceHostFixtureReceipt {
         environment: environment.to_string(),
