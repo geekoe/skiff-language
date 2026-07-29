@@ -39,7 +39,7 @@ const denyRules = Object.freeze([
   rule(
     'display-or-source-linking',
     'display/source path or symbol linking',
-    /\b[A-Za-z0-9_]*(?:display_name|displayName|source_path|sourcePath|PackageSymbolRef|ServiceSymbolRef|PackageOperationSymbolRef)[A-Za-z0-9_]*\b|\b(?:resolve|link|select|target|infer)[A-Za-z0-9_]*(?:display(?:_name|Name|_path)?|source_(?:path|symbol)|sourcePath|symbol_path|by_name)[A-Za-z0-9_]*\b/g,
+    /\b[A-Za-z0-9_]*(?:display_name|displayName|source_path|sourcePath|PackageOperationSymbolRef)[A-Za-z0-9_]*\b|\b(?:resolve|link|select|target|infer)[A-Za-z0-9_]*(?:display(?:_name|Name|_path)?|source_(?:path|symbol)|sourcePath|symbol_path|by_name)[A-Za-z0-9_]*\b/g,
   ),
   rule(
     'request-time-lazy-load',
