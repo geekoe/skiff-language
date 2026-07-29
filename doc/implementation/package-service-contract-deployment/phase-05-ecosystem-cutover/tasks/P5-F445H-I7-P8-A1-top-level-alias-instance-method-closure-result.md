@@ -5,7 +5,9 @@
 ```text
 TASK_SCOPE_EXPANDED
 RED_COMPLETE
+BLOCKED_BY = A1_V_PASS
 A1_COMPLETE = NO
+A1_RESUME_UNBLOCKED = NO
 AGINE_170_RESUME_UNBLOCKED = NO
 DECISION_REQUIRED = NO
 ```
@@ -96,11 +98,13 @@ public surface。
 
 ## 3. Required DAG repair
 
-建议最小新增上游节点：
+已冻结的最小修复链：
 
 ```text
-A1-V artifact identity callable-scope validation
-  -> A1 compiler closure
+A1 RED checkpoint
+  -> D4 validation authority
+  -> A1-V artifact identity callable-scope validation
+  -> A1 compiler resume
   -> Agine 170 resume
 ```
 
@@ -111,6 +115,10 @@ resolved target、receiver-first lowering与五层GREEN。
 
 该扩张是确定性implementation ownership修正，不需要用户设计决策。Runtime、linker、Router、test-runner
 production、Agine源码仍保持NO-OP；P8 stream lane仍无因果关系。
+
+D4和A1-V是A1的显式scope-expansion后继，不把本result升级为A1 PASS。A1-V集成并设置
+`A1_RESUME_UNBLOCKED = YES`后，A1才从新的精确integration commit/tree恢复原五个compiler owner与
+五层GREEN；A1-V不能直接解除Agine 170或J。
 
 ## 4. Write set and handoff
 
