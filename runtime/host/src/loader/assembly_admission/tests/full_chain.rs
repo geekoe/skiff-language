@@ -143,6 +143,10 @@ struct FullChainFixture {
 
 impl FullChainFixture {
     fn new() -> Self {
+        Self::with_consumer_collection(None)
+    }
+
+    fn with_consumer_collection(root_collection: Option<&str>) -> Self {
         let operation_contract = operation_contract();
         let (provider_contract, provider_operation_id) = service_contract(
             "example.phase-three.provider",
@@ -170,6 +174,7 @@ impl FullChainFixture {
             &provider_file,
             operation_contract.clone(),
             None,
+            Vec::new(),
         );
         let provider_package_ref = package_ref(&provider_package);
 
@@ -187,10 +192,16 @@ impl FullChainFixture {
         };
         let consumer_callable_id =
             PackageCallableId::new("pkg-callable:example.phase-three-consumer:check");
-        let consumer_file =
+        let mut consumer_file =
             implementation_file("consumer.main", "check", Some(provider_call.clone()));
+        if let Some(collection_name) = root_collection {
+            insert_db_collection(&mut consumer_file, "ServiceSecret", collection_name);
+        }
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
+        let consumer_state = root_collection
+            .map(|_| vec![database_state_requirement()])
+            .unwrap_or_default();
         let consumer_package = implementation_package(
             "example.phase-three-consumer",
             "check",
@@ -198,6 +209,7 @@ impl FullChainFixture {
             &consumer_file,
             operation_contract,
             Some((provider_requirement, provider_call)),
+            consumer_state,
         );
         let consumer_package_ref = package_ref(&consumer_package);
 
@@ -255,7 +267,15 @@ impl FullChainFixture {
                 ingress: Vec::new(),
                 config_literals: Vec::new(),
                 secret_refs: Vec::new(),
-                state_bindings: Vec::new(),
+                state_bindings: root_collection
+                    .map(|_| {
+                        vec![StateBinding {
+                            requirement_key: "database".to_string(),
+                            kind: StateBindingKind::Database,
+                            namespace: "collection-mapping-fixture".to_string(),
+                        }]
+                    })
+                    .unwrap_or_default(),
                 resource_bindings: Vec::new(),
                 runtime_capability_bindings: Vec::new(),
                 policy: policy(),
@@ -366,7 +386,7 @@ impl CollectionMappingFixture {
         include_colliding_dependency: bool,
         diamond_mapping: Option<BTreeMap<String, String>>,
     ) -> Self {
-        let base = FullChainFixture::new();
+        let base = FullChainFixture::with_consumer_collection(root_collection);
         let consumer_deployment = base
             .resolver
             .deployments
@@ -411,25 +431,13 @@ impl CollectionMappingFixture {
             .find(|(reference, _)| reference == &base.consumer_package_ref)
             .map(|(_, package)| package.as_ref().clone())
             .expect("consumer package");
-        let mut consumer_file = base
+        let consumer_file = base
             .resolver
             .files
             .iter()
             .find(|(reference, _, _)| reference == &base.consumer_package_ref)
             .map(|(_, _, file)| file.as_ref().clone())
             .expect("consumer file");
-        if let Some(collection_name) = root_collection {
-            insert_db_collection(&mut consumer_file, "ServiceSecret", collection_name);
-            replace_package_file(&mut consumer_package, &consumer_file);
-            consumer_package
-                .runtime_requirements
-                .state
-                .push(PackageStateRequirement {
-                    key: "database".to_string(),
-                    kind: StateBindingKind::Database,
-                });
-        }
-
         let mut dependency_file = implementation_file("mapping.store", "noop", None);
         insert_db_collection(&mut dependency_file, "PackageSecret", "package_secret");
         insert_db_collection(&mut dependency_file, "PackageAudit", "package_audit");
@@ -441,14 +449,8 @@ impl CollectionMappingFixture {
             &dependency_file,
             operation_contract(),
             None,
+            vec![database_state_requirement()],
         );
-        dependency_package
-            .runtime_requirements
-            .state
-            .push(PackageStateRequirement {
-                key: "database".to_string(),
-                kind: StateBindingKind::Database,
-            });
         skiff_artifact_identity::assign_package_artifact_identities(&mut dependency_package)
             .unwrap();
         let dependency_ref = package_ref(&dependency_package);
@@ -463,6 +465,7 @@ impl CollectionMappingFixture {
                 &file,
                 operation_contract(),
                 None,
+                Vec::new(),
             );
             package.package_requirements.push(PackageRequirement {
                 alias: "store".to_string(),
@@ -490,14 +493,8 @@ impl CollectionMappingFixture {
                 &file,
                 operation_contract(),
                 None,
+                vec![database_state_requirement()],
             );
-            package
-                .runtime_requirements
-                .state
-                .push(PackageStateRequirement {
-                    key: "database".to_string(),
-                    kind: StateBindingKind::Database,
-                });
             skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
             (file, package)
         });
@@ -731,19 +728,10 @@ fn insert_db_collection(file: &mut FileIrUnit, type_name: &str, collection_name:
     skiff_artifact_identity::assign_file_ir_identity(file).unwrap();
 }
 
-fn replace_package_file(package: &mut PackageArtifact, file: &FileIrUnit) {
-    let old_ref = package.files[0].clone();
-    let new_ref = file_ref(file);
-    package.files[0] = new_ref.clone();
-    for export in package.implementation_links.functions.values_mut() {
-        if export.file == old_ref {
-            export.file = new_ref.clone();
-        }
-    }
-    for fact in package.callable_links.values_mut() {
-        if fact.target.file_ref == old_ref {
-            fact.target.file_ref = new_ref.clone();
-        }
+fn database_state_requirement() -> PackageStateRequirement {
+    PackageStateRequirement {
+        key: "database".to_string(),
+        kind: StateBindingKind::Database,
     }
 }
 
@@ -1315,6 +1303,7 @@ fn implementation_package(
     file: &FileIrUnit,
     operation_contract: BoundaryOperationContract,
     service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
+    state_requirements: Vec<PackageStateRequirement>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
     let entry = file
@@ -1340,6 +1329,18 @@ fn implementation_package(
         });
         service_call_refs.push(service_call);
     }
+    let boundary_state_requirements = state_requirements
+        .iter()
+        .map(|requirement| BoundaryStateRequirement {
+            key: requirement.key.clone(),
+            kind: match requirement.kind {
+                StateBindingKind::Database => BoundaryStateKind::Database,
+                StateBindingKind::Redis => BoundaryStateKind::Redis,
+                StateBindingKind::Actor => BoundaryStateKind::Actor,
+                StateBindingKind::Queue => BoundaryStateKind::Queue,
+            },
+        })
+        .collect();
     let mut package = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: package_id.to_string(),
@@ -1408,7 +1409,7 @@ fn implementation_package(
         service_requirements,
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
+            state: state_requirements,
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -1428,7 +1429,7 @@ fn implementation_package(
                 operation_contract,
                 implementation_requirements: BoundaryImplementationRequirements {
                     config: Vec::new(),
-                    state: Vec::new(),
+                    state: boundary_state_requirements,
                     native_capabilities: Vec::new(),
                     runtime_capabilities: Vec::new(),
                     complete_may_effects: effects,

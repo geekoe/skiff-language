@@ -10,21 +10,15 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    AssemblyActivationServiceDb, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
-    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PackageTypeRef, PublicationResourceRef, RuntimeAssembly,
-    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceIngressKey, TypeRefIr,
+    AssemblyActivationServiceDb, PackageArtifactRef, RuntimeAssembly, ServiceContractRef,
+    ServiceDeploymentRef, ServiceIngressKey,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
 };
 use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
-use skiff_runtime_loader::{
-    FilesystemRuntimeAssemblyContentResolver, RuntimeAssemblyContentResolver,
-    RuntimeAssemblyRecordResolver,
-};
+use skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver;
 use skiff_test_runner::canonical_std_seed::seed_canonical_std;
 use skiff_test_runner::package_service_host_fixture::prepare_package_service_host_fixture;
 use skiff_test_runner::{
@@ -439,13 +433,6 @@ fn websocket_method_routes(
 struct CompiledGatewayFixture {
     assembly: Arc<RuntimeAssembly>,
     artifact_root: PathBuf,
-    deployment_ref: ServiceDeploymentRef,
-    deployment: Arc<ServiceDeployment>,
-    original_root_ref: PackageArtifactRef,
-    root_artifact: Arc<PackageArtifact>,
-    original_std_ref: PackageArtifactRef,
-    std_artifact: Arc<PackageArtifact>,
-    std_schema_index: Arc<PackageSchemaIndex>,
     _temp: TempFixture,
 }
 
@@ -463,112 +450,9 @@ struct StreamArgumentCompiledFixture {
 }
 
 impl CompiledGatewayFixture {
-    fn resolver(&self) -> CompiledGatewayResolver<'_> {
-        CompiledGatewayResolver {
-            inner: FilesystemRuntimeAssemblyContentResolver::open(&self.artifact_root)
-                .expect("gateway filesystem resolver"),
-            fixture: self,
-        }
-    }
-}
-
-struct CompiledGatewayResolver<'a> {
-    inner: FilesystemRuntimeAssemblyContentResolver,
-    fixture: &'a CompiledGatewayFixture,
-}
-
-impl RuntimeAssemblyContentResolver for CompiledGatewayResolver<'_> {
-    fn resolve_deployment(
-        &self,
-        reference: &ServiceDeploymentRef,
-    ) -> anyhow::Result<Arc<ServiceDeployment>> {
-        if reference == &self.fixture.deployment_ref {
-            return Ok(Arc::clone(&self.fixture.deployment));
-        }
-        self.inner.resolve_deployment(reference)
-    }
-
-    fn resolve_contract(
-        &self,
-        reference: &ServiceContractRef,
-    ) -> anyhow::Result<Arc<ServiceContract>> {
-        self.inner.resolve_contract(reference)
-    }
-
-    fn resolve_package_schema_index(
-        &self,
-        reference: &PackageSchemaIndexRef,
-    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
-        if reference == &self.fixture.std_artifact.package_schema_index {
-            return Ok(Arc::clone(&self.fixture.std_schema_index));
-        }
-        self.inner.resolve_package_schema_index(reference)
-    }
-
-    fn resolve_package_schema_type(
-        &self,
-        reference: &PackageSchemaTypeRecordRef,
-    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
-        self.inner.resolve_package_schema_type(reference)
-    }
-
-    fn resolve_package(
-        &self,
-        reference: &PackageArtifactRef,
-    ) -> anyhow::Result<Arc<PackageArtifact>> {
-        if reference == &skiff_artifact_identity::package_artifact_ref(&self.fixture.root_artifact)?
-        {
-            return Ok(Arc::clone(&self.fixture.root_artifact));
-        }
-        if reference == &skiff_artifact_identity::package_artifact_ref(&self.fixture.std_artifact)?
-        {
-            return Ok(Arc::clone(&self.fixture.std_artifact));
-        }
-        self.inner.resolve_package(reference)
-    }
-
-    fn resolve_file_ir(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &FileIrRef,
-    ) -> anyhow::Result<Arc<FileIrUnit>> {
-        let package = if package.package_id == self.fixture.root_artifact.package_id {
-            &self.fixture.original_root_ref
-        } else if package.package_id == self.fixture.std_artifact.package_id {
-            &self.fixture.original_std_ref
-        } else {
-            package
-        };
-        self.inner.resolve_file_ir(package, reference)
-    }
-
-    fn resolve_static_resource(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &PublicationResourceRef,
-    ) -> anyhow::Result<Arc<[u8]>> {
-        let package = if package.package_id == self.fixture.root_artifact.package_id {
-            &self.fixture.original_root_ref
-        } else if package.package_id == self.fixture.std_artifact.package_id {
-            &self.fixture.original_std_ref
-        } else {
-            package
-        };
-        self.inner.resolve_static_resource(package, reference)
-    }
-}
-
-impl RuntimeAssemblyRecordResolver for CompiledGatewayResolver<'_> {
-    fn resolve_runtime_assembly(
-        &self,
-        reference: &RuntimeAssemblyRef,
-    ) -> anyhow::Result<Arc<RuntimeAssembly>> {
-        let fixture_reference =
-            skiff_artifact_identity::runtime_assembly_ref(&self.fixture.assembly)?;
-        if reference == &fixture_reference {
-            return Ok(Arc::clone(&self.fixture.assembly));
-        }
-        self.inner.resolve_runtime_assembly(reference)
+    fn resolver(&self) -> FilesystemRuntimeAssemblyContentResolver {
+        FilesystemRuntimeAssemblyContentResolver::open(&self.artifact_root)
+            .expect("gateway filesystem resolver")
     }
 }
 
@@ -780,7 +664,7 @@ fn compile_fixture_variant(
         serde_json::from_value(output["serviceContractReceipt"]["contract"].clone())
             .expect("gateway contract ref");
     let store = CanonicalArtifactStore::open(&artifact_root).expect("gateway artifact store");
-    let original_deployment = store
+    let deployment = store
         .read_service_deployment(&deployment_ref)
         .expect("gateway deployment");
     let contract = store
@@ -791,7 +675,7 @@ fn compile_fixture_variant(
         .expect("gateway implementation");
     let mut package_refs =
         BTreeMap::from([(implementation.package_build_id.clone(), root_package_ref)]);
-    for binding in &original_deployment.package_bindings {
+    for binding in &deployment.package_bindings {
         package_refs.insert(
             binding.package.package_build_id.clone(),
             binding.package.clone(),
@@ -802,218 +686,26 @@ fn compile_fixture_variant(
         .map(|reference| store.read_package_artifact(reference))
         .collect::<Result<Vec<_>, _>>()
         .expect("gateway package closure");
-    let original_std = packages
-        .iter()
-        .find(|package| package.package_id == "skiff.run/std")
-        .expect("gateway fixture std package");
-    let original_std_ref = skiff_artifact_identity::package_artifact_ref(original_std)
-        .expect("canonical std package ref");
-    let mut std_artifact = original_std.as_ref().clone();
-    let original_std_schema = store
-        .read_package_schema_index(&std_artifact.package_schema_index)
-        .expect("canonical std schema index");
-    localize_std_package_abi_schema_refs(&mut std_artifact, &original_std_schema);
-    let std_schema_types = BTreeMap::new();
-    let std_schema_identity = skiff_artifact_identity::package_schema_index_identity(
-        &std_artifact.package_id,
-        &std_schema_types,
-    )
-    .expect("empty std schema identity");
-    std_artifact.package_schema_index = PackageSchemaIndexRef {
-        package_id: std_artifact.package_id.clone(),
-        package_schema_index_identity: std_schema_identity.clone(),
-    };
-    std_artifact.package_schema_type_records.clear();
-    skiff_artifact_identity::assign_package_artifact_identities(&mut std_artifact)
-        .expect("HTTP fixture std identity");
-    let std_artifact = Arc::new(std_artifact);
-    let std_ref = skiff_artifact_identity::package_artifact_ref(&std_artifact)
-        .expect("schema-neutral std fixture ref");
-    let std_schema_index = Arc::new(PackageSchemaIndex {
-        package_id: std_artifact.package_id.clone(),
-        package_schema_index_identity: std_schema_identity,
-        types: std_schema_types,
-    });
-
-    // The canonical std publication schema currently disagrees with several of its own File IR
-    // declarations. These HTTP probes need std execution code, not its independent service-error
-    // schema roots, so the test resolver retains exact File IR and rewrites only the Package-ABI
-    // nominal references to their equivalent local publication declarations.
-    let original_root_ref =
-        skiff_artifact_identity::package_artifact_ref(&implementation).expect("gateway root ref");
-    let mut root_artifact = implementation.as_ref().clone();
-    for requirement in &mut root_artifact.package_requirements {
-        if requirement.package_id == std_artifact.package_id {
-            requirement.expected_local_abi =
-                std_artifact.package_local_abi.local_abi_identity.clone();
-            if requirement.expected_package_build.is_some() {
-                requirement.expected_package_build = Some(std_artifact.package_build_id.clone());
-            }
-        }
-    }
-    skiff_artifact_identity::assign_package_artifact_identities(&mut root_artifact)
-        .expect("gateway root fixture identity");
-    let root_artifact = Arc::new(root_artifact);
-    let root_ref = skiff_artifact_identity::package_artifact_ref(&root_artifact)
-        .expect("gateway root fixture ref");
-
-    let mut deployment = original_deployment.as_ref().clone();
-    deployment.implementation = root_ref.clone();
-    for binding in &mut deployment.package_bindings {
-        if binding.key.caller_package_build_id == original_root_ref.package_build_id {
-            binding.key.caller_package_build_id = root_ref.package_build_id.clone();
-        }
-        if binding.package == original_std_ref {
-            binding.package = std_ref.clone();
-        }
-    }
-    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
-        .expect("schema-neutral gateway deployment identity");
-    let deployment = Arc::new(deployment);
-    let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
     let package_values = packages
         .iter()
-        .map(|package| {
-            if package.package_id == std_artifact.package_id {
-                std_artifact.as_ref().clone()
-            } else if package.package_id == root_artifact.package_id {
-                root_artifact.as_ref().clone()
-            } else {
-                package.as_ref().clone()
-            }
-        })
+        .map(|package| package.as_ref().clone())
         .collect::<Vec<_>>();
     let root = deployment_ref.clone();
-    let assembly = Arc::new(
-        resolve_runtime_assembly(
-            std::slice::from_ref(&root),
-            std::slice::from_ref(deployment.as_ref()),
-            std::slice::from_ref(contract.as_ref()),
-            &package_values,
-        )
-        .expect("gateway RuntimeAssembly"),
-    );
+    let assembly = resolve_runtime_assembly(
+        std::slice::from_ref(&root),
+        std::slice::from_ref(deployment.as_ref()),
+        std::slice::from_ref(contract.as_ref()),
+        &package_values,
+    )
+    .expect("gateway RuntimeAssembly");
+    store
+        .write_runtime_assembly(&assembly)
+        .expect("gateway RuntimeAssembly record");
+    let assembly = Arc::new(assembly);
     CompiledGatewayFixture {
         assembly,
         artifact_root,
-        deployment_ref,
-        deployment,
-        original_root_ref,
-        root_artifact,
-        original_std_ref,
-        std_artifact,
-        std_schema_index,
         _temp: temp,
-    }
-}
-
-fn localize_std_package_abi_schema_refs(
-    artifact: &mut PackageArtifact,
-    schema: &PackageSchemaIndex,
-) {
-    let local_types = schema
-        .types
-        .values()
-        .map(|entry| {
-            let public_path = entry
-                .public_path
-                .as_deref()
-                .expect("canonical std schema public path");
-            let source_path = public_path.strip_prefix("std.").unwrap_or(public_path);
-            let export =
-                artifact
-                    .implementation_links
-                    .types
-                    .get(source_path)
-                    .or_else(|| artifact.implementation_links.types.get(public_path))
-                    .or_else(|| {
-                        artifact.implementation_links.types.values().find(|export| {
-                            export.symbol == source_path || export.symbol == public_path
-                        })
-                    })
-                    .unwrap_or_else(|| panic!("std schema path {public_path} implementation link"));
-            (
-                entry.package_schema_type_id.clone(),
-                TypeRefIr::PublicationType {
-                    module_path: export.file.module_path.clone(),
-                    type_index: export.type_index,
-                },
-            )
-        })
-        .collect::<BTreeMap<PackageSchemaTypeId, TypeRefIr>>();
-    for symbol in artifact
-        .package_local_abi
-        .public_symbols
-        .values_mut()
-        .chain(
-            artifact
-                .package_local_abi
-                .implementation_symbols
-                .values_mut(),
-        )
-    {
-        match symbol {
-            skiff_artifact_model::PackageLocalAbiSymbol::Callable { signature, .. } => {
-                for parameter in &mut signature.parameters {
-                    localize_package_type_ref(
-                        &mut parameter.ty,
-                        &artifact.package_id,
-                        &local_types,
-                    );
-                }
-                localize_package_type_ref(
-                    &mut signature.return_type,
-                    &artifact.package_id,
-                    &local_types,
-                );
-            }
-            skiff_artifact_model::PackageLocalAbiSymbol::Constant { ty, .. } => {
-                localize_package_type_ref(ty, &artifact.package_id, &local_types);
-            }
-            skiff_artifact_model::PackageLocalAbiSymbol::Type { .. }
-            | skiff_artifact_model::PackageLocalAbiSymbol::PublicInstance { .. } => {}
-        }
-    }
-}
-
-fn localize_package_type_ref(
-    ty: &mut PackageTypeRef,
-    package_id: &str,
-    local_types: &BTreeMap<PackageSchemaTypeId, TypeRefIr>,
-) {
-    match ty {
-        PackageTypeRef::PackageSchema {
-            package_id: owner,
-            package_schema_type_id,
-            ..
-        } if owner == package_id => {
-            *ty = PackageTypeRef::Local {
-                local_type: local_types
-                    .get(package_schema_type_id)
-                    .unwrap_or_else(|| {
-                        panic!("std Package ABI schema type {package_schema_type_id} local link")
-                    })
-                    .clone(),
-            };
-        }
-        PackageTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => {
-            localize_package_type_ref(interface, package_id, local_types);
-            for argument in arguments {
-                localize_package_type_ref(argument, package_id, local_types);
-            }
-        }
-        PackageTypeRef::Container { arguments, .. } => {
-            for argument in arguments {
-                localize_package_type_ref(argument, package_id, local_types);
-            }
-        }
-        PackageTypeRef::Nullable { inner } => {
-            localize_package_type_ref(inner, package_id, local_types);
-        }
-        PackageTypeRef::Local { .. } | PackageTypeRef::PackageSchema { .. } => {}
     }
 }
 
