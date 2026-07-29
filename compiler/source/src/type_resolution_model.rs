@@ -6626,15 +6626,19 @@ mod tests {
             );
         }
 
-        for undeclared in ["String", "Bytes", "std.date.Date"] {
+        for (undeclared, expected_error) in [
+            ("String", "unresolved type"),
+            ("Bytes", "unresolved type"),
+            ("std.date.Date", "unknown compiler-owned type"),
+        ] {
             match model.resolve_type_text(undeclared, &context()) {
                 Ok(resolved) => assert!(
                     !matches!(resolved.ir, TypeRefIr::Builtin { .. }),
                     "{undeclared} must not become an implicit FileIR builtin alias"
                 ),
                 Err(error) => assert!(
-                    error.contains("unresolved type"),
-                    "{undeclared} should fail as unresolved: {error}"
+                    error.contains(expected_error),
+                    "{undeclared} should fail with {expected_error}: {error}"
                 ),
             }
         }

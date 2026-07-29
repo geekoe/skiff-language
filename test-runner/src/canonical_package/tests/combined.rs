@@ -4,6 +4,7 @@ use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
 };
+use skiff_compiler_input::package_config::read_user_package_manifest;
 use skiff_compiler_source::prelude_registry::{
     prelude_identity, PreludeRegistryInitializationError,
 };
@@ -22,9 +23,9 @@ use crate::{
 // Explicit F18 identity probe pins refreshed with the current canonical std
 // source; the production seed consumes the F27A typed receipt instead.
 const EXPECTED_PRELUDE_IDENTITY: &str =
-    "skiff-prelude-v1:sha256:2ebbd0569d4baf3d7dccf07c4326ec62deb5707c11a8d0eb0ac0722d1ee9d3bd";
+    "skiff-prelude-v1:sha256:8ec6c2b3f4411b159d8b1b8dd2d55d036713a2533dd3aba043eb3d7fb020c76e";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:18adfaaf021770af47aafddff46e9e9876df0843700f260cea77651eefcb810d";
+    "skiff-package-build-v10:sha256:c95be59b499a8e16b93bbe1af2a4b113e3c50b3515c60cd745878e0d9a3ca59b";
 
 #[test]
 #[ignore = "merge-only F18A/F18B compiler repair probe"]
@@ -113,9 +114,15 @@ fn p5_f76_contextual_callable_provenance_combined() {
 
     // Compile the shared dependency before its consumers while keeping one
     // canonical store for the complete compile-only graph.
-    for package in ["http-session", "aliyunoss", "track", "openai"] {
+    for package in ["http-session", "aliyunoss", "registry", "track", "openai"] {
         let package_root = packages_root.join(package);
         let test_root = packages_root.join("tests").join(package);
+        let test_manifest = read_user_package_manifest(&test_root.join("package.yml")).unwrap();
+        let subject_dependency = test_manifest
+            .dependencies
+            .iter()
+            .find(|dependency| dependency.effective_alias() == "subject")
+            .unwrap_or_else(|| panic!("{package} test manifest omitted its subject dependency"));
         build_authoring_object(
             &platform_sources,
             AuthoringObject::Package,
@@ -149,11 +156,18 @@ fn p5_f76_contextual_callable_provenance_combined() {
             .unwrap_or_else(|| panic!("{package} test service omitted its subject requirement"));
         assert_eq!(subject.package_id, format!("skiff.run/{package}"));
         assert_eq!(subject.exact_version, "1.0.0");
-        assert_eq!(
-            subject.expected_package_build.as_ref(),
-            Some(&production.package.artifact.package_build_id),
-            "{package} test service must bind the exact top-level subject build"
-        );
+        if subject_dependency.top_level_alias.is_some() {
+            assert_eq!(
+                subject.expected_package_build.as_ref(),
+                Some(&production.package.artifact.package_build_id),
+                "{package} test service with topLevelAlias must bind the exact subject build"
+            );
+        } else {
+            assert_eq!(
+                subject.expected_package_build, None,
+                "{package} test service with only a public alias must not invent an exact top-level subject build"
+            );
+        }
         assert!(project.dependency_packages.iter().any(|dependency| {
             dependency.package_build_id == production.package.artifact.package_build_id
         }));

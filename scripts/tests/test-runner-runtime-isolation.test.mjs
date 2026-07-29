@@ -68,6 +68,7 @@ test('Cargo owns the current ungated integration targets and no recursive wrappe
   assert.deepEqual(targets, [
     { name: 'package_service_contract_deployment' },
     { name: 'canonical_std_seed_bootstrap' },
+    { name: 'http_entry_test_service' },
   ]);
   assert.doesNotMatch(manifest, /runtime-integration-worker/);
   assert.doesNotMatch(manifest, /test_runner_runtime_isolation/);
