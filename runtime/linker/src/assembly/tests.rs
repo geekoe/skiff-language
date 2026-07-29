@@ -1039,7 +1039,7 @@ fn assembly_code_linker_links_required_catch_applied_nominal_exactly() {
     };
     assert_eq!(
         catch_type,
-        LinkedTypeRef::AppliedNominal {
+        &LinkedTypeRef::AppliedNominal {
             base: LinkedNominalTypeRefBase::Address { addr: generic_addr },
             arguments: vec![LinkedTypeRef::Address {
                 addr: argument_addr,
