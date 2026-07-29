@@ -73,7 +73,7 @@ pub fn seed_canonical_std(
         }
     }
 
-    let package = publish_package_artifact_records(&store, &published)
+    let package = publish_package_artifact_records(store.root(), &published)
         .map_err(CanonicalStdSeedError::Authoring)?;
     if current.is_none() {
         match store.compare_and_swap_package_artifact_pointer(None, &candidate) {

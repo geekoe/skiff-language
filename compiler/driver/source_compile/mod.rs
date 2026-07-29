@@ -6,6 +6,7 @@ use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     CompileParsedPackageSourcesInput, PackageSourceModel, SourceDependencyAnalysisInput,
 };
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 #[cfg(test)]
 thread_local! {
@@ -17,11 +18,15 @@ mod canonical_dependencies;
 pub(crate) fn compile(
     input: &PackageCompileInput<'_>,
     resolved_package_schemas: &[ResolvedPackageSchema],
+    canonical_artifact_store: Option<&CanonicalArtifactStore>,
 ) -> Result<skiff_compiler_compiled::CompiledPackage, PackageCompileError> {
     #[cfg(test)]
     TEST_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
-    let canonical_dependencies =
-        canonical_dependencies::source_dependencies(input, resolved_package_schemas)?;
+    let canonical_dependencies = canonical_dependencies::source_dependencies(
+        input,
+        resolved_package_schemas,
+        canonical_artifact_store,
+    )?;
     if let Some(overlay) = &input.package.test_overlay {
         let manifest = &input.package.manifest;
         if overlay.production.package_id != manifest.id.as_str()

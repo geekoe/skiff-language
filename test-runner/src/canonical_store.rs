@@ -176,7 +176,7 @@ fn publish_package(
     package: &PublishedPackageArtifact,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
-    let receipt = publish_package_artifact_records(store, package)
+    let receipt = publish_package_artifact_records(store.root(), package)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     written.extend(
         receipt

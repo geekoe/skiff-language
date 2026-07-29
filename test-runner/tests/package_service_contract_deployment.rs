@@ -2020,7 +2020,7 @@ fn author_test_live_service(root: &Path, artifacts: &Path) -> CanonicalLiveServi
         PackageCompileInput::new(&platform_sources, &source, &aliases, manifest.id.as_str())
             .with_canonical_dependencies(&direct_dependencies, &project.contract_dependencies)
             .with_available_canonical_packages(&project.dependency_packages)
-            .with_canonical_artifact_store(&store)
+            .with_canonical_artifact_root(store.root())
             .for_test_service(),
         &service,
     )
@@ -2042,7 +2042,8 @@ fn author_test_live_service(root: &Path, artifacts: &Path) -> CanonicalLiveServi
     })
     .expect("runtime-live fixed profile must generate a real deployment");
 
-    let package_receipt = publish_package_artifact_records(&store, &compiled.package).unwrap();
+    let package_receipt =
+        publish_package_artifact_records(store.root(), &compiled.package).unwrap();
     store
         .write_service_contract(&compiled.service_api.contract)
         .unwrap();
@@ -3618,7 +3619,7 @@ fn generate_current_websocket_service_fixture(
     let compiled = compile_service_package(
         PackageCompileInput::new(&platform_sources(), &source, &aliases, manifest.id.as_str())
             .with_available_canonical_packages(&available)
-            .with_canonical_artifact_store(&store)
+            .with_canonical_artifact_root(store.root())
             .for_test_service(),
         &service,
     )

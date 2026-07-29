@@ -46,6 +46,7 @@ export function runCratePublicApiSelfTest({ stdout }) {
     'skiff_compiler_source',
     'skiff_compiler_lowering',
     'skiff_syntax',
+    'skiff_deployment',
   ]) {
     assert(
       deniedCrates.has(deniedCrate),
@@ -68,6 +69,22 @@ export function runCratePublicApiSelfTest({ stdout }) {
   assert(
     deniedResult.violations.some((violation) => violation.site.includes('signature input dep')),
     'denied fake rustdoc should cover public function signature checks',
+  );
+  assert(
+    deniedResult.violations.some(
+      (violation) =>
+        violation.crateName === 'skiff_deployment'
+        && violation.site.includes('publish_package_artifact_records signature input store'),
+    ),
+    'deployment storage owner mutation must remain outside compiler public signatures',
+  );
+  assert(
+    deniedResult.violations.some(
+      (violation) =>
+        violation.crateName === 'skiff_deployment'
+        && violation.site.includes('with_canonical_artifact_store signature input store'),
+    ),
+    'deployment storage owner mutation must remain outside compiler public impl methods',
   );
   assert(
     deniedResult.violations.some((violation) => violation.site.includes('impl')),

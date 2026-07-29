@@ -13,6 +13,7 @@ use skiff_compiler_source::{
     PackageDependencyCallableAnalysis, PackageDependencyConstantAnalysis,
     PublicationDbMetadataIndex, SourceDependencyAnalysisInput,
 };
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
     input::compile_input::PackageCompileInput, shared::package_compile_error::PackageCompileError,
@@ -28,6 +29,7 @@ pub(super) struct CanonicalSourceDependencies {
 pub(super) fn source_dependencies(
     input: &PackageCompileInput<'_>,
     resolved_package_schemas: &[ResolvedPackageSchema],
+    canonical_artifact_store: Option<&CanonicalArtifactStore>,
 ) -> Result<CanonicalSourceDependencies, PackageCompileError> {
     let compiler_owned_std =
         compiler_owned_std_artifact(input.package_id, input.available_packages)?;
@@ -36,7 +38,7 @@ pub(super) fn source_dependencies(
         validated_contract_dependencies(input, resolved_package_schemas)?,
     )
     .map_err(dependency_analysis_error)?
-    .with_foreign_db_metadata(foreign_db_metadata(input)?);
+    .with_foreign_db_metadata(foreign_db_metadata(input, canonical_artifact_store)?);
     let mut type_resolution_artifacts = input.dependency_packages.to_vec();
     if let Some(artifact) = compiler_owned_std {
         type_resolution_artifacts.push(artifact.clone());
@@ -49,11 +51,12 @@ pub(super) fn source_dependencies(
 
 fn foreign_db_metadata(
     input: &PackageCompileInput<'_>,
+    canonical_artifact_store: Option<&CanonicalArtifactStore>,
 ) -> Result<PublicationDbMetadataIndex, PackageCompileError> {
     if !input.is_test_service() {
         return Ok(PublicationDbMetadataIndex::default());
     }
-    let Some(store) = input.canonical_artifact_store() else {
+    let Some(store) = canonical_artifact_store else {
         // In-memory compiler unit fixtures may omit a store. A source DB
         // target still fails closed because no foreign attachment is indexed.
         return Ok(PublicationDbMetadataIndex::default());

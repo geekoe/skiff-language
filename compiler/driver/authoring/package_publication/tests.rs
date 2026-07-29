@@ -120,10 +120,10 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
     let second_root = TestDir::new("official-std-records-b");
     let first_store = CanonicalArtifactStore::create(first_root.path()).unwrap();
     let second_store = CanonicalArtifactStore::create(second_root.path()).unwrap();
-    let first = publish_package_artifact_records(&first_store, &published).unwrap();
+    let first = publish_package_artifact_records(first_store.root(), &published).unwrap();
     let first_bytes = record_bytes(first_root.path());
-    let repeated = publish_package_artifact_records(&first_store, &published).unwrap();
-    let second = publish_package_artifact_records(&second_store, &published).unwrap();
+    let repeated = publish_package_artifact_records(first_store.root(), &published).unwrap();
+    let second = publish_package_artifact_records(second_store.root(), &published).unwrap();
 
     assert_eq!(first, repeated);
     assert_eq!(first, second);
@@ -166,13 +166,48 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
 }
 
 #[test]
+fn package_record_writer_creates_a_missing_artifact_root() {
+    let published = repository_std();
+    let base = TestDir::new("record-writer-missing-root");
+    let artifact_root = base.path().join("new-artifacts");
+    assert!(!artifact_root.exists());
+
+    let receipt = publish_package_artifact_records(&artifact_root, &published).unwrap();
+
+    assert!(artifact_root.is_dir());
+    let store = CanonicalArtifactStore::open(&artifact_root).unwrap();
+    assert_eq!(
+        store
+            .read_package_artifact(&receipt.artifact)
+            .unwrap()
+            .package_build_id,
+        published.artifact.package_build_id
+    );
+}
+
+#[test]
+fn package_record_writer_rejects_a_non_directory_artifact_root() {
+    let published = repository_std();
+    let base = TestDir::new("record-writer-file-root");
+    let artifact_root = base.path().join("not-a-directory");
+    fs::write(&artifact_root, "occupied").unwrap();
+
+    let error = publish_package_artifact_records(&artifact_root, &published)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("create artifact root"), "{error}");
+    assert_eq!(fs::read_to_string(artifact_root).unwrap(), "occupied");
+}
+
+#[test]
 fn package_record_writer_validates_the_complete_candidate_before_writing() {
     let mut incomplete = repository_std();
     incomplete.file_ir_units.pop();
     let root = TestDir::new("incomplete-record-candidate");
     let store = CanonicalArtifactStore::create(root.path()).unwrap();
 
-    let error = publish_package_artifact_records(&store, &incomplete)
+    let error = publish_package_artifact_records(store.root(), &incomplete)
         .unwrap_err()
         .to_string();
 
@@ -208,7 +243,7 @@ fn package_record_writer_uses_one_canonical_blob_for_equal_resource_content() {
     let root = TestDir::new("equal-resource-content");
     let store = CanonicalArtifactStore::create(root.path()).unwrap();
 
-    let receipt = publish_package_artifact_records(&store, &published).unwrap();
+    let receipt = publish_package_artifact_records(store.root(), &published).unwrap();
 
     assert_eq!(receipt.resource_record_paths.len(), 2);
     assert_eq!(

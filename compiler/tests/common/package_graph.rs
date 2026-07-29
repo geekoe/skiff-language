@@ -105,11 +105,10 @@ impl<'a> PackageGraphCompiler<'a> {
         self.visiting_set.remove(key);
         let (mut published, service_api) = result?;
         debug_assert!(service_api.is_none());
-        let receipt = publish_package_artifact_records(&self.artifact_store, &published).map_err(
-            |error| PackageProjectCompileError::CanonicalArtifactStore {
+        let receipt = publish_package_artifact_records(self.artifact_store.root(), &published)
+            .map_err(|error| PackageProjectCompileError::CanonicalArtifactStore {
                 message: error.to_string(),
-            },
-        )?;
+            })?;
         published.artifact = self
             .artifact_store
             .read_package_artifact(&receipt.artifact)
@@ -267,7 +266,7 @@ impl<'a> PackageGraphCompiler<'a> {
                 .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
                 .with_available_canonical_packages(&available_artifacts)
                 .with_resolved_package_schemas(&resolved_package_schemas)
-                .with_canonical_artifact_store(&self.artifact_store);
+                .with_canonical_artifact_root(self.artifact_store.root());
         if manifest
             .dependencies
             .iter()

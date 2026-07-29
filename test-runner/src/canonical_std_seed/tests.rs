@@ -97,7 +97,7 @@ fn orphan_records_recover_but_same_identity_different_bytes_never_install_pointe
 
     let orphan = TestRoot::new("orphan");
     let orphan_store = CanonicalArtifactStore::create(orphan.path()).unwrap();
-    let orphan_receipt = publish_package_artifact_records(&orphan_store, &authored).unwrap();
+    let orphan_receipt = publish_package_artifact_records(orphan_store.root(), &authored).unwrap();
     assert!(orphan_store
         .read_package_artifact_pointer(
             &orphan_receipt.artifact.package_id,
@@ -195,7 +195,7 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
         });
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
     let alternative_receipt =
-        publish_package_artifact_records(&different_store, &alternative).unwrap();
+        publish_package_artifact_records(different_store.root(), &alternative).unwrap();
     let alternative_pointer =
         PackageArtifactPointer::new(alternative_receipt.artifact.clone()).unwrap();
     different_store
