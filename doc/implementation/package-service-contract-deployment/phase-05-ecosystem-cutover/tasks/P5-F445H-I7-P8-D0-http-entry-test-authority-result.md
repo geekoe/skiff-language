@@ -63,6 +63,8 @@ D0 authority
        ↓
 T  Skiff合流真实HTTP fixture/probe
        ↓
+S1 PackageDirect→raw HTTP stream registry闭合
+       ↓
 I  AIHub四条case迁移
        ↓
 X  独立验收
@@ -70,8 +72,22 @@ X  独立验收
 J  final hermetic gate
 ```
 
-K/H/R从同一Skiff baseline预检，写集互不重叠。T只能在K/H/R结果合流后建立GREEN证据。I使用精确
-Internals baseline；X/J必须在dispatch时记录两个repo的冻结commit/tree。
+K/H/R从同一Skiff baseline预检，写集互不重叠。T只能在K/H/R结果合流后建立GREEN证据。S1先用
+concrete Host/raw HTTP gateway与wrapper→`PackageDirect` producer交叉fixture建立稳定RED和registry
+identity证据，不能把I观察到的错误文本直接写成已知根因。I使用精确Internals baseline并在S1完成后恢复；
+X/J必须在dispatch时记录两个repo的冻结commit/tree。
+
+## 3.1 P8-S refinement ledger
+
+| 问题 | 当前事实与决定 |
+| --- | --- |
+| 已知根因 | 未知。I的可恢复checkpoint观察到`unknown Stream value`，但现有日志缺少create/lookup两侧registry identity，静态源码也未证明创建了第二个registry |
+| package-local stream | 同一request/assembly内wrapper→`PackageDirect` stream应共享当前request已有registry；必须先由S1真实fixture证明当前实现偏离该规则 |
+| heap关系 | producer/consumer heap可以不同；item由既有`StreamInternalItem`搬运，不能据此要求共享heap或新增stream bridge |
+| service call | 继续使用既有boundary materialization；S1不能把package-local association修复扩张成跨service registry共享 |
+| HTTP父子request | stream registry保持隔离；只共享`TestEffectCaseContext`，wire snapshots在HTTP child当前runtime生成handle |
+| production修改门槛 | S1必须先记录create/lookup registry identity、request generation与stream id，形成稳定RED；没有RED不得修改production |
+| 禁止方案 | 不新增registry、协议、header、schema、compiler、Router、test-runner或测试专用bridge |
 
 ## 4. Preflight result
 
