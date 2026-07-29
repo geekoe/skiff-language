@@ -1061,7 +1061,6 @@ impl RequestHeap {
             InterfaceCarrier::Local { payload, .. } => {
                 self.value_contains_reachable(payload, target, visiting)
             }
-            InterfaceCarrier::Remote { .. } => Ok(false),
             InterfaceCarrier::CallbackCapability(_) => Ok(false),
         }
     }
@@ -1313,15 +1312,6 @@ impl CloneContext {
                 method_table: method_table.clone(),
                 payload: self.clone_value(heap, payload, depth)?,
             },
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-            } => InterfaceCarrier::Remote {
-                dependency_ref: dependency_ref.clone(),
-                public_instance_key: public_instance_key.clone(),
-                operations: operations.clone(),
-            },
             InterfaceCarrier::CallbackCapability(capability) => {
                 InterfaceCarrier::CallbackCapability(capability.clone())
             }
@@ -1455,15 +1445,6 @@ impl CrossHeapCloneContext {
                 concrete_type: concrete_type.clone(),
                 method_table: method_table.clone(),
                 payload: self.clone_value(source, dest, payload, depth)?,
-            },
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-            } => InterfaceCarrier::Remote {
-                dependency_ref: dependency_ref.clone(),
-                public_instance_key: public_instance_key.clone(),
-                operations: operations.clone(),
             },
             InterfaceCarrier::CallbackCapability(capability) => {
                 InterfaceCarrier::CallbackCapability(capability.clone())
@@ -1642,14 +1623,6 @@ fn estimate_interface_value_bytes(value: &InterfaceValue) -> usize {
             .saturating_add(concrete_type.len())
             .saturating_add(estimate_interface_method_table_bytes(method_table))
             .saturating_add(estimate_value_bytes(payload)),
-        InterfaceCarrier::Remote {
-            dependency_ref,
-            public_instance_key,
-            operations,
-        } => base
-            .saturating_add(dependency_ref.len())
-            .saturating_add(public_instance_key.len())
-            .saturating_add(estimate_remote_operation_table_bytes(operations)),
         InterfaceCarrier::CallbackCapability(capability) => base
             .saturating_add(capability.owner_runtime_replica_id().len())
             .saturating_add(capability.owner_activation_id().len())
@@ -1669,19 +1642,6 @@ fn estimate_interface_method_table_bytes(table: &InterfaceMethodTable) -> usize 
                 .saturating_add(INTERFACE_METHOD_SLOT_OVERHEAD_BYTES)
                 .saturating_add(slot.method_abi_id().len())
                 .saturating_add(estimate_interface_method_target_bytes(slot.target()))
-        }))
-}
-
-fn estimate_remote_operation_table_bytes(table: &crate::value::RemoteOperationTable) -> usize {
-    table
-        .id()
-        .len()
-        .saturating_add(table.interface_abi_id().len())
-        .saturating_add(table.slots().iter().fold(0usize, |total, slot| {
-            total
-                .saturating_add(INTERFACE_METHOD_SLOT_OVERHEAD_BYTES)
-                .saturating_add(slot.method_abi_id().len())
-                .saturating_add(slot.operation_abi_id().len())
         }))
 }
 

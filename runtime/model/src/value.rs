@@ -9,7 +9,6 @@ pub type RuntimeString = String;
 pub type RuntimeObjectFields = BTreeMap<RuntimeString, RuntimeValue>;
 pub type RuntimeMap = BTreeMap<RuntimeValueKey, RuntimeValue>;
 pub type InterfaceMethodTableId = RuntimeString;
-pub type RemoteOperationTableId = RuntimeString;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeBytes {
@@ -205,11 +204,6 @@ pub enum InterfaceCarrier {
         method_table: InterfaceMethodTable,
         payload: RuntimeValue,
     },
-    Remote {
-        dependency_ref: RuntimeString,
-        public_instance_key: RuntimeString,
-        operations: RemoteOperationTable,
-    },
     /// Opaque request-scoped route back to the activation that owns a
     /// boundary-capable interface or native adapter.
     ///
@@ -223,7 +217,6 @@ impl InterfaceCarrier {
     pub const fn kind_label(&self) -> &'static str {
         match self {
             Self::Local { .. } => "local",
-            Self::Remote { .. } => "remote",
             Self::CallbackCapability(_) => "callback capability",
         }
     }
@@ -273,68 +266,6 @@ impl CallbackCapabilityCarrier {
 
     pub fn opaque_capability_id(&self) -> &str {
         &self.opaque_capability_id
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteOperationTable {
-    id: RemoteOperationTableId,
-    interface_abi_id: RuntimeString,
-    slots: Vec<RemoteOperationSlot>,
-}
-
-impl RemoteOperationTable {
-    pub fn new(
-        id: RemoteOperationTableId,
-        interface_abi_id: RuntimeString,
-        slots: Vec<RemoteOperationSlot>,
-    ) -> Self {
-        Self {
-            id,
-            interface_abi_id,
-            slots,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn interface_abi_id(&self) -> &str {
-        &self.interface_abi_id
-    }
-
-    pub fn slots(&self) -> &[RemoteOperationSlot] {
-        &self.slots
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteOperationSlot {
-    slot: u32,
-    method_abi_id: RuntimeString,
-    operation_abi_id: RuntimeString,
-}
-
-impl RemoteOperationSlot {
-    pub fn new(slot: u32, method_abi_id: RuntimeString, operation_abi_id: RuntimeString) -> Self {
-        Self {
-            slot,
-            method_abi_id,
-            operation_abi_id,
-        }
-    }
-
-    pub fn slot(&self) -> u32 {
-        self.slot
-    }
-
-    pub fn method_abi_id(&self) -> &str {
-        &self.method_abi_id
-    }
-
-    pub fn operation_abi_id(&self) -> &str {
-        &self.operation_abi_id
     }
 }
 
@@ -825,45 +756,6 @@ mod tests {
         );
         assert_eq!(method_table.slots()[0].slot(), 0);
         assert_eq!(payload, &RuntimeValue::Null);
-
-        let remote_value = InterfaceValue::new(
-            interface.clone(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "svc.reader".to_string(),
-                public_instance_key: "reader#42".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "reader-interface".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        );
-
-        let InterfaceCarrier::Remote {
-            dependency_ref,
-            public_instance_key,
-            operations,
-        } = remote_value.carrier()
-        else {
-            panic!("expected remote interface carrier");
-        };
-        assert_eq!(remote_value.interface(), interface);
-        assert_eq!(
-            remote_value.diagnostic_label(),
-            "any interface reader-interface<string> (remote)"
-        );
-        assert_eq!(dependency_ref, "svc.reader");
-        assert_eq!(public_instance_key, "reader#42");
-        assert_eq!(operations.slots()[0].slot(), 0);
-        assert_eq!(operations.slots()[0].method_abi_id(), "method:reader:read");
-        assert_eq!(
-            operations.slots()[0].operation_abi_id(),
-            "operation:reader:read"
-        );
     }
 
     #[test]

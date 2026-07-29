@@ -19,7 +19,6 @@ pub enum RecoverableBoundaryErrorCode {
     ExpectedTypeMismatch,
     InterfaceConformanceMissing,
     StateInvalid,
-    RemoteCarrierNotPersistable,
     CrossServiceInterfaceCallbackUnavailable,
     CallbackCapabilityNotRecoverable,
     CrossServiceRecoverableBehaviorUnavailable,
@@ -38,7 +37,6 @@ impl RecoverableBoundaryErrorCode {
             Self::ExpectedTypeMismatch => "recoverable_expected_type_mismatch",
             Self::InterfaceConformanceMissing => "recoverable_interface_conformance_missing",
             Self::StateInvalid => "recoverable_state_invalid",
-            Self::RemoteCarrierNotPersistable => "recoverable_remote_carrier_not_persistable",
             Self::CrossServiceInterfaceCallbackUnavailable => {
                 "cross_service_interface_callback_unavailable"
             }

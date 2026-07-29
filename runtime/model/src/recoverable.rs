@@ -338,36 +338,7 @@ pub struct RecoverableField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InterfaceValueState {
-    Local {
-        self_node: Box<RecoverableNode>,
-    },
-    Remote {
-        carrier: RecoverableRemoteInterfaceCarrier,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoverableRemoteInterfaceCarrier {
-    pub dependency_ref: String,
-    pub public_instance_key: String,
-    pub operations: RecoverableRemoteOperationTable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoverableRemoteOperationTable {
-    pub id: String,
-    pub interface_abi_id: String,
-    pub slots: Vec<RecoverableRemoteOperationSlot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoverableRemoteOperationSlot {
-    pub slot: u32,
-    pub method_abi_id: String,
-    pub operation_abi_id: String,
+    Local { self_node: Box<RecoverableNode> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,7 +447,6 @@ impl RecoverableArtifactCollector {
             RecoverableState::InterfaceValue(InterfaceValueState::Local { self_node }) => {
                 self.collect_node(self_node, &format!("{path}.selfNode"));
             }
-            RecoverableState::InterfaceValue(InterfaceValueState::Remote { .. }) => {}
             RecoverableState::NativeHandle(state) => {
                 self.collect_node(&state.durable_state, &format!("{path}.durableState"));
             }
@@ -656,9 +626,6 @@ impl RecoverableValidator<'_> {
             RecoverableState::InterfaceValue(InterfaceValueState::Local { self_node }) => {
                 self.validate_child(self_node, &format!("{path}.selfNode"), depth + 1)?;
             }
-            RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) => {
-                validate_remote_interface_carrier(carrier, path)?;
-            }
             RecoverableState::NativeHandle(state) => {
                 self.validate_child(
                     &state.durable_state,
@@ -788,10 +755,6 @@ impl RecoverableCanonicalEncoder<'_> {
             RecoverableState::InterfaceValue(InterfaceValueState::Local { self_node }) => {
                 self.write_u8(0);
                 self.write_node(self_node, &format!("{path}.selfNode"), depth + 1)?;
-            }
-            RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) => {
-                self.write_u8(1);
-                self.write_remote_interface_carrier(carrier, path)?;
             }
             RecoverableState::NativeHandle(state) => {
                 self.write_node(
@@ -946,39 +909,6 @@ impl RecoverableCanonicalEncoder<'_> {
                 self.write_string(representation_identity, path)?;
                 self.write_map_key(value, path, depth + 1)?;
             }
-        }
-        Ok(())
-    }
-
-    fn write_remote_interface_carrier(
-        &mut self,
-        carrier: &RecoverableRemoteInterfaceCarrier,
-        path: &str,
-    ) -> RecoverableValidationResult {
-        self.write_string(&carrier.dependency_ref, &format!("{path}.dependencyRef"))?;
-        self.write_string(
-            &carrier.public_instance_key,
-            &format!("{path}.publicInstanceKey"),
-        )?;
-        self.write_string(&carrier.operations.id, &format!("{path}.operations.id"))?;
-        self.write_string(
-            &carrier.operations.interface_abi_id,
-            &format!("{path}.operations.interfaceAbiId"),
-        )?;
-        self.write_len(
-            carrier.operations.slots.len(),
-            &format!("{path}.operations.slots"),
-        )?;
-        for (index, slot) in carrier.operations.slots.iter().enumerate() {
-            self.output.extend_from_slice(&slot.slot.to_le_bytes());
-            self.write_string(
-                &slot.method_abi_id,
-                &format!("{path}.operations.slots[{index}].methodAbiId"),
-            )?;
-            self.write_string(
-                &slot.operation_abi_id,
-                &format!("{path}.operations.slots[{index}].operationAbiId"),
-            )?;
         }
         Ok(())
     }
@@ -1185,11 +1115,6 @@ impl RecoverableCanonicalDecoder<'_> {
                         InterfaceValueState::Local { self_node },
                     ))
                 }
-                1 => Ok(RecoverableState::InterfaceValue(
-                    InterfaceValueState::Remote {
-                        carrier: self.read_remote_interface_carrier(path)?,
-                    },
-                )),
                 tag => Err(RecoverableStateInvalid::new(
                     path,
                     format!("unknown interface value state tag {tag}"),
@@ -1342,41 +1267,6 @@ impl RecoverableCanonicalDecoder<'_> {
         }
     }
 
-    fn read_remote_interface_carrier(
-        &mut self,
-        path: &str,
-    ) -> RecoverableValidationResult<RecoverableRemoteInterfaceCarrier> {
-        let dependency_ref = self.read_string(&format!("{path}.dependencyRef"))?;
-        let public_instance_key = self.read_string(&format!("{path}.publicInstanceKey"))?;
-        let id = self.read_string(&format!("{path}.operations.id"))?;
-        let interface_abi_id = self.read_string(&format!("{path}.operations.interfaceAbiId"))?;
-        let len = self.read_len(&format!("{path}.operations.slots"))?;
-        let mut slots = Vec::with_capacity(len);
-        for index in 0..len {
-            let slot_path = format!("{path}.operations.slots[{index}]");
-            let slot = {
-                let bytes = self.read_exact(4, &format!("{slot_path}.slot"))?;
-                u32::from_le_bytes(bytes.try_into().expect("slice length checked"))
-            };
-            let method_abi_id = self.read_string(&format!("{slot_path}.methodAbiId"))?;
-            let operation_abi_id = self.read_string(&format!("{slot_path}.operationAbiId"))?;
-            slots.push(RecoverableRemoteOperationSlot {
-                slot,
-                method_abi_id,
-                operation_abi_id,
-            });
-        }
-        Ok(RecoverableRemoteInterfaceCarrier {
-            dependency_ref,
-            public_instance_key,
-            operations: RecoverableRemoteOperationTable {
-                id,
-                interface_abi_id,
-                slots,
-            },
-        })
-    }
-
     fn read_string(&mut self, path: &str) -> RecoverableValidationResult<String> {
         let bytes = self.read_bytes(path)?;
         String::from_utf8(bytes).map_err(|error| {
@@ -1510,64 +1400,6 @@ fn validate_recoverable_date(epoch_millis: i64, path: &str) -> RecoverableValida
             path,
             "recoverable Date is outside RFC3339 year range 0000..9999",
         ))
-    }
-}
-
-fn validate_remote_interface_carrier(
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    path: &str,
-) -> RecoverableValidationResult {
-    validate_non_empty_string(
-        &carrier.dependency_ref,
-        &format!("{path}.dependencyRef"),
-        "remote InterfaceValue dependencyRef must be non-empty",
-    )?;
-    validate_non_empty_string(
-        &carrier.public_instance_key,
-        &format!("{path}.publicInstanceKey"),
-        "remote InterfaceValue publicInstanceKey must be non-empty",
-    )?;
-    validate_non_empty_string(
-        &carrier.operations.id,
-        &format!("{path}.operations.id"),
-        "remote InterfaceValue operation table id must be non-empty",
-    )?;
-    validate_non_empty_string(
-        &carrier.operations.interface_abi_id,
-        &format!("{path}.operations.interfaceAbiId"),
-        "remote InterfaceValue operation table interfaceAbiId must be non-empty",
-    )?;
-    for (index, slot) in carrier.operations.slots.iter().enumerate() {
-        let slot_path = format!("{path}.operations.slots[{index}]");
-        if usize::try_from(slot.slot).ok() != Some(index) {
-            return Err(RecoverableStateInvalid::new(
-                &slot_path,
-                "remote InterfaceValue operation slot index must match its canonical position",
-            ));
-        }
-        validate_non_empty_string(
-            &slot.method_abi_id,
-            &format!("{slot_path}.methodAbiId"),
-            "remote InterfaceValue operation slot methodAbiId must be non-empty",
-        )?;
-        validate_non_empty_string(
-            &slot.operation_abi_id,
-            &format!("{slot_path}.operationAbiId"),
-            "remote InterfaceValue operation slot operationAbiId must be non-empty",
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_non_empty_string(
-    value: &str,
-    path: &str,
-    message: &'static str,
-) -> RecoverableValidationResult {
-    if value.is_empty() {
-        Err(RecoverableStateInvalid::new(path, message))
-    } else {
-        Ok(())
     }
 }
 
@@ -2057,34 +1889,6 @@ mod tests {
         }
     }
 
-    fn remote_interface_node() -> RecoverableNode {
-        RecoverableNode::plain(
-            RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState::Remote {
-                carrier: RecoverableRemoteInterfaceCarrier {
-                    dependency_ref: "dep:pkg.reader".to_string(),
-                    public_instance_key: "reader#1".to_string(),
-                    operations: RecoverableRemoteOperationTable {
-                        id: "remote:pkg.Reader".to_string(),
-                        interface_abi_id: "pkg.Reader".to_string(),
-                        slots: vec![
-                            RecoverableRemoteOperationSlot {
-                                slot: 0,
-                                method_abi_id: "method:pkg.Reader.read".to_string(),
-                                operation_abi_id: "operation:pkg.Reader.read".to_string(),
-                            },
-                            RecoverableRemoteOperationSlot {
-                                slot: 1,
-                                method_abi_id: "method:pkg.Reader.close".to_string(),
-                                operation_abi_id: "operation:pkg.Reader.close".to_string(),
-                            },
-                        ],
-                    },
-                },
-            }),
-        )
-    }
-
     fn nested_nominal_map_key(representation_count: usize) -> RecoverableMapKey {
         let mut key = RecoverableMapKey::String("leaf".to_string());
         for index in (0..representation_count).rev() {
@@ -2426,71 +2230,25 @@ mod tests {
     }
 
     #[test]
-    fn remote_interface_wrapper_canonical_roundtrip_preserves_carrier_state() {
-        let envelope = RecoverableEnvelope::new(remote_interface_node());
-        let limits = RecoverableValidationLimits::default();
+    fn interface_value_state_rejects_retired_remote_json_variant() {
+        let error = serde_json::from_value::<InterfaceValueState>(serde_json::json!({
+            "kind": "remote",
+            "carrier": {
+                "dependencyRef": "reader",
+                "publicInstanceKey": "default",
+                "operations": {
+                    "id": "remote:reader",
+                    "interfaceAbiId": "pkg.Reader",
+                    "slots": []
+                }
+            }
+        }))
+        .expect_err("retired remote interface state must fail typed deserialization");
 
-        envelope
-            .validate(&limits)
-            .expect("remote InterfaceValue carrier should validate");
-        let bytes = envelope
-            .to_canonical_bytes(&limits)
-            .expect("remote InterfaceValue should canonical encode");
-        let decoded = RecoverableEnvelope::from_canonical_bytes(&bytes, &limits)
-            .expect("remote InterfaceValue should canonical decode");
-
-        assert_eq!(decoded, envelope);
-        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
-            decoded.root.state
-        else {
-            panic!("decoded root should be remote InterfaceValue");
-        };
-        assert_eq!(carrier.dependency_ref, "dep:pkg.reader");
-        assert_eq!(carrier.public_instance_key, "reader#1");
-        assert_eq!(carrier.operations.id, "remote:pkg.Reader");
-        assert_eq!(carrier.operations.interface_abi_id, "pkg.Reader");
-        assert_eq!(carrier.operations.slots[0].slot, 0);
-        assert_eq!(carrier.operations.slots[1].slot, 1);
-    }
-
-    #[test]
-    fn remote_interface_wrapper_rejects_empty_dependency_ref() {
-        let mut envelope = RecoverableEnvelope::new(remote_interface_node());
-        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
-            &mut envelope.root.state
-        else {
-            panic!("expected remote InterfaceValue");
-        };
-        carrier.dependency_ref.clear();
-
-        let error = envelope
-            .validate(&RecoverableValidationLimits::default())
-            .expect_err("empty dependencyRef must fail");
-
-        assert_eq!(error.path(), "$.dependencyRef");
-        assert!(error
-            .message()
-            .contains("remote InterfaceValue dependencyRef must be non-empty"));
-    }
-
-    #[test]
-    fn remote_interface_wrapper_rejects_non_contiguous_operation_slots() {
-        let mut envelope = RecoverableEnvelope::new(remote_interface_node());
-        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
-            &mut envelope.root.state
-        else {
-            panic!("expected remote InterfaceValue");
-        };
-        carrier.operations.slots[1].slot = 3;
-
-        let error = envelope
-            .validate(&RecoverableValidationLimits::default())
-            .expect_err("non-contiguous remote operation slot must fail");
-
-        assert_eq!(error.path(), "$.operations.slots[1]");
-        assert!(error
-            .message()
-            .contains("remote InterfaceValue operation slot index must match"));
+        assert!(
+            error.to_string().contains("unknown variant `remote`"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
