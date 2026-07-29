@@ -1,4 +1,4 @@
-use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, TypeRefIr};
+use skiff_artifact_model::{PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, TypeRefIr};
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, FileAddr, InterfaceDeclIr, LinkedInterfaceInstantiationRef,
     TypeAddr, UnitAddr,
@@ -312,9 +312,25 @@ fn canonical_package_interface_abi_id(
         })?;
     let mut exports = code
         .artifact()
-        .implementation_links
-        .types
+        .package_local_abi
+        .public_symbols
         .iter()
+        .filter(|(_, symbol)| {
+            matches!(
+                symbol,
+                PackageLocalAbiSymbol::Type {
+                    is_interface: true,
+                    ..
+                }
+            )
+        })
+        .filter_map(|(symbol_path, _)| {
+            code.artifact()
+                .implementation_links
+                .types
+                .get(symbol_path)
+                .map(|export| (symbol_path, export))
+        })
         .filter(|(_, export)| {
             export.type_index as usize == type_index
                 && export.file.file_ir_identity == file.file_ir_identity
@@ -340,7 +356,7 @@ fn canonical_package_interface_abi_id(
                 file.file_ir_identity,
                 type_index
             ),
-            expected_kind: "unique package export for exact interface owner",
+            expected_kind: "unique public package interface export at exact owner coordinate",
         });
     }
     if !export.is_interface {

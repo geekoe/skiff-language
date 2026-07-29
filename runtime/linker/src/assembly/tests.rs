@@ -1538,6 +1538,217 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
     );
 }
 
+fn relink_helper_local_interface_with_artifact_mutation(
+    canonical_symbol_path: &str,
+    mutate: impl FnOnce(&mut PackageArtifact),
+) -> anyhow::Result<(String, String, String)> {
+    use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, TypeRefIr};
+    use skiff_runtime_linked_program::{
+        ExprRefIr, HydratedPackageCode, LinkedBoxSourceIr, LinkedExprIr,
+        LinkedInterfaceInstantiationRef, LinkedInterfaceMethodTablePlanIr,
+        LoadedPublicationResource, PublicationResourceTable, SharedPackageLinkedImage,
+    };
+
+    let fixture = CycleFixture::new();
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver).load(fixture.assembly)?;
+    let assembly = Arc::clone(hydrated.assembly());
+    let mut mutate = Some(mutate);
+    let mut packages = Vec::with_capacity(hydrated.code_slots().len());
+    for slot in hydrated.code_slots() {
+        let mut artifact = slot.artifact().as_ref().clone();
+        if artifact.package_id == "example.helper" {
+            mutate.take().expect("helper package mutation")(&mut artifact);
+        }
+        let mut resources = PublicationResourceTable::default();
+        for resource in slot.resources() {
+            resources.insert(
+                resource.reference().path.clone(),
+                LoadedPublicationResource {
+                    meta: resource.reference().clone(),
+                    bytes: Arc::clone(resource.bytes()),
+                },
+            );
+        }
+        packages.push(
+            HydratedPackageCode::new(Arc::new(artifact), slot.files().to_vec(), resources)
+                .with_schema_index(Arc::clone(slot.schema_index()))
+                .with_schema_records(slot.schema_records().clone()),
+        );
+    }
+    assert!(mutate.is_none(), "fixture must contain the helper package");
+    let shared = Arc::new(SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly, packages,
+    )?);
+    let execution = crate::assembly_execution::link_assembly_execution_image(Arc::clone(&shared))?;
+    let helper_slot = shared
+        .code_slots()
+        .iter()
+        .position(|code| code.artifact().package_id == "example.helper")
+        .expect("helper package code slot");
+    let helper_abi = shared.code_slots()[helper_slot]
+        .local_abi_identity()
+        .as_str()
+        .to_string();
+    let canonical_interface_abi_id =
+        skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "example.helper".to_string(),
+                },
+                symbol_path: canonical_symbol_path.to_string(),
+                abi_expectation: Some(helper_abi),
+            },
+        });
+    let local_interface_abi_id =
+        skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::LocalType { type_index: 1 });
+    let interface = LinkedInterfaceInstantiationRef {
+        interface_abi_id: local_interface_abi_id.clone(),
+        canonical_type_args: Vec::new(),
+    };
+    let mut files = execution
+        .code_slots()
+        .iter()
+        .map(|code| code.files().to_vec())
+        .collect::<Vec<_>>();
+    Arc::make_mut(&mut files[helper_slot][0]).executables[0]
+        .body
+        .expressions
+        .push(LinkedExprIr::InterfaceBox {
+            value: ExprRefIr { expression: 0 },
+            interface: interface.clone(),
+            source: LinkedBoxSourceIr::Local {
+                concrete_type: skiff_runtime_linked_program::LinkedTypeRef::LocalType {
+                    type_index: 0,
+                },
+                method_table: LinkedInterfaceMethodTablePlanIr {
+                    interface,
+                    concrete_type: skiff_runtime_linked_program::LinkedTypeRef::LocalType {
+                        type_index: 0,
+                    },
+                    slots: Vec::new(),
+                },
+            },
+        });
+    let linked = crate::assembly_execution::relink_execution_files_for_test(&shared, &files)?;
+    let LinkedExprIr::InterfaceBox { interface, .. } = linked[helper_slot][0].executables[0]
+        .body
+        .expressions
+        .last()
+        .expect("fixture interface box")
+    else {
+        panic!("fixture expression should remain an interface box")
+    };
+    Ok((
+        interface.interface_abi_id.clone(),
+        local_interface_abi_id,
+        canonical_interface_abi_id,
+    ))
+}
+
+#[test]
+fn assembly_execution_uses_public_interface_name_when_implementation_alias_shares_coordinate() {
+    let (actual, _, canonical) =
+        relink_helper_local_interface_with_artifact_mutation("LlmClient", |artifact| {
+            let symbol = artifact
+                .package_local_abi
+                .public_symbols
+                .remove("Reader")
+                .expect("fixture public interface");
+            let export = artifact
+                .implementation_links
+                .types
+                .remove("Reader")
+                .expect("fixture interface link");
+            artifact
+                .package_local_abi
+                .public_symbols
+                .insert("LlmClient".to_string(), symbol.clone());
+            artifact
+                .package_local_abi
+                .implementation_symbols
+                .insert("types.LlmClient".to_string(), symbol);
+            artifact
+                .implementation_links
+                .types
+                .insert("LlmClient".to_string(), export.clone());
+            artifact
+                .implementation_links
+                .types
+                .insert("types.LlmClient".to_string(), export);
+        })
+        .expect("an implementation alias must not compete with its public interface name");
+
+    assert_eq!(actual, canonical);
+}
+
+#[test]
+fn assembly_execution_rejects_two_public_interface_aliases_at_one_coordinate() {
+    let error = relink_helper_local_interface_with_artifact_mutation("Reader", |artifact| {
+        let symbol = artifact.package_local_abi.public_symbols["Reader"].clone();
+        let export = artifact.implementation_links.types["Reader"].clone();
+        artifact
+            .package_local_abi
+            .public_symbols
+            .insert("ReaderAlias".to_string(), symbol);
+        artifact
+            .implementation_links
+            .types
+            .insert("ReaderAlias".to_string(), export);
+    })
+    .expect_err("two public names for one exact interface coordinate must fail closed");
+
+    assert!(
+        format!("{error:#}").contains("unique public package interface export"),
+        "unexpected duplicate public interface error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_preserves_private_interface_owner_spelling() {
+    let (actual, local, _) =
+        relink_helper_local_interface_with_artifact_mutation("Reader", |artifact| {
+            let symbol = artifact
+                .package_local_abi
+                .public_symbols
+                .remove("Reader")
+                .expect("fixture public interface");
+            let export = artifact
+                .implementation_links
+                .types
+                .remove("Reader")
+                .expect("fixture interface link");
+            artifact
+                .package_local_abi
+                .implementation_symbols
+                .insert("types.Reader".to_string(), symbol);
+            artifact
+                .implementation_links
+                .types
+                .insert("types.Reader".to_string(), export);
+        })
+        .expect("a private interface keeps its exact local owner spelling");
+
+    assert_eq!(actual, local);
+}
+
+#[test]
+fn assembly_execution_rejects_public_interface_link_with_non_interface_export() {
+    let error = relink_helper_local_interface_with_artifact_mutation("Reader", |artifact| {
+        artifact
+            .implementation_links
+            .types
+            .get_mut("Reader")
+            .expect("fixture interface link")
+            .is_interface = false;
+    })
+    .expect_err("a public interface link must remain marked as an interface export");
+
+    assert!(
+        format!("{error:#}").contains("package interface export at exact owner coordinate"),
+        "unexpected non-interface export error: {error:#}"
+    );
+}
+
 #[derive(Clone, Copy)]
 enum FixtureInterfaceAbi {
     Helper,
