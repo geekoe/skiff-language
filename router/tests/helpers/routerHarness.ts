@@ -21,7 +21,7 @@ import {
   RuntimeRegistry
 } from '../../src/router/runtimeRegistry.js';
 import { buildActivationLookup } from '../../src/artifacts/activationLookup.js';
-import type { ActivationLookup } from '../../src/artifacts/loadArtifactRoot.js';
+import type { ActivationLookup } from '../../src/artifacts/activationLookup.js';
 
 import {
   DEFAULT_TEST_BUILD_ID,

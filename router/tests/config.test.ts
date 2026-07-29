@@ -12,7 +12,6 @@ import {
 } from '../src/router/config.js';
 
 const tempDirs: string[] = [];
-const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
 const originalDevHomeEnv = process.env.SKIFF_DEV_HOME;
 
 async function writeRouterConfigFixture(path: string, contents: string): Promise<void> {
@@ -38,7 +37,6 @@ async function writeRouterConfigFixture(path: string, contents: string): Promise
 }
 
 beforeEach(() => {
-  delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
   delete process.env.SKIFF_DEV_HOME;
 });
 
@@ -49,7 +47,6 @@ afterEach(async () => {
       await rm(dir, { recursive: true, force: true });
     }
   }
-  restoreEnv('SKIFF_ARTIFACT_IDENTITY_CLI', originalIdentityCliEnv);
   restoreEnv('SKIFF_DEV_HOME', originalDevHomeEnv);
 });
 
@@ -292,58 +289,6 @@ describe('router config', () => {
     ).resolves.toMatchObject({
       devReload: false,
     });
-  });
-
-  it('resolves identity CLI path from config, override, env, and dev fallback', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    await writeRouterConfigFixture(
-      configPath,
-      ['profile: dev', 'identityCliPath: bin/skiff-artifact-identity', ''].join('\n')
-    );
-
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: join(dir, 'bin/skiff-artifact-identity'),
-    });
-
-    await expect(
-      loadRouterConfig(configPath, {
-        identityCliPath: 'override/skiff-artifact-identity',
-      })
-    ).resolves.toMatchObject({
-      identityCliPath: resolve('override/skiff-artifact-identity'),
-    });
-
-    await writeRouterConfigFixture(configPath, ['profile: dev', ''].join('\n'));
-    process.env.SKIFF_ARTIFACT_IDENTITY_CLI = 'env/skiff-artifact-identity';
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: resolve('env/skiff-artifact-identity'),
-    });
-
-    delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
-    const devHome = join(dir, 'dev-home');
-    process.env.SKIFF_DEV_HOME = devHome;
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: join(devHome, 'bin/skiff-artifact-identity'),
-    });
-
-    delete process.env.SKIFF_DEV_HOME;
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: join(resolve('.skiff-instance', 'dev-home'), 'bin/skiff-artifact-identity'),
-    });
-  });
-
-  it('does not use local dev identity CLI fallback in release mode', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    await writeRouterConfigFixture(
-      configPath,
-      ['profile: prod', 'releaseMode: true', ''].join('\n')
-    );
-
-    await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty('identityCliPath');
   });
 
   it('loads telemetry config with router-owned defaults', async () => {

@@ -1,11 +1,40 @@
-import type {
-  ActivationLookup,
-  LoadedRouterArtifacts,
-  ServiceVersionBuildBinding,
-  RuntimeControlMetadata
-} from '../artifacts/loadArtifactRoot.js';
-import { buildActivationLookup } from '../artifacts/activationLookup.js';
+import {
+  buildActivationLookup,
+  type ActivationLookup
+} from '../artifacts/activationLookup.js';
 import type { LoadedManifest } from '../manifest/types.js';
+import type {
+  FileBackendControlConfig,
+  RuntimeConfigActivationPayload,
+  TelemetryControlConfig
+} from '../protocol/envelope.js';
+
+export interface RuntimeControlMetadata {
+  artifactRoots: readonly string[];
+  devReload?: boolean;
+  mode?: 'dev' | 'release';
+  generation?: string;
+  fingerprint?: string;
+  serviceBuilds?: readonly RuntimeControlServiceBuild[];
+  serviceConfig?: RuntimeConfigActivationPayload[];
+  telemetry?: TelemetryControlConfig;
+  fileBackend?: FileBackendControlConfig;
+}
+
+export interface RuntimeControlServiceBuild {
+  buildId: string;
+  pointerBuildId?: string;
+  serviceId: string;
+  sourcePath: string;
+  version?: string;
+}
+
+export interface ServiceVersionBuildBinding {
+  buildId: string;
+  pointerBuildId?: string;
+  serviceId: string;
+  version: string;
+}
 
 export interface RouterActiveSnapshot {
   activationByServiceOperation: ActivationLookup;
@@ -28,17 +57,6 @@ export class RouterActiveSnapshotStore {
   replace(snapshot: RouterActiveSnapshot): void {
     this.snapshot = snapshot;
   }
-}
-
-export function snapshotFromArtifacts(artifacts: LoadedRouterArtifacts): RouterActiveSnapshot {
-  return {
-    activationByServiceOperation: artifacts.activationByServiceOperation,
-    control: artifacts.control,
-    manifest: artifacts.manifest,
-    ...(artifacts.versionByService !== undefined
-      ? { versionByService: artifacts.versionByService }
-      : {})
-  };
 }
 
 export function snapshotFromManifest(manifest: LoadedManifest): RouterActiveSnapshot {

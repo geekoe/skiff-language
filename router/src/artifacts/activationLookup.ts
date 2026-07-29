@@ -1,4 +1,20 @@
-import type { LoadedServiceAssemblyArtifact } from "./types.js";
+import type { SkiffRuntimeManifest } from "../manifest/types.js";
+import type { RuntimeConfigActivationPayload } from "../protocol/envelope.js";
+
+interface ServiceConfigActivation {
+  operationTargets: string[];
+  serviceId: string;
+  payload: RuntimeConfigActivationPayload;
+}
+
+interface ServiceArtifactForActivationLookup {
+  buildId: string;
+  manifestValue: SkiffRuntimeManifest;
+  sourcePath: string;
+  serviceVersion?: string;
+  activation?: ServiceConfigActivation;
+  activations?: ServiceConfigActivation[];
+}
 
 export interface ActivationLookupRequest {
   serviceId: string;
@@ -69,7 +85,7 @@ export function activationLookupKey(
 }
 
 export function buildActivationLookup(
-  artifacts: readonly LoadedServiceAssemblyArtifact[],
+  artifacts: readonly ServiceArtifactForActivationLookup[],
 ): ActivationLookup {
   const lookup = new ActivationLookup();
   for (const artifact of artifacts) {
@@ -88,8 +104,8 @@ export function buildActivationLookup(
 }
 
 export function serviceConfigActivations(
-  artifact: LoadedServiceAssemblyArtifact,
-): readonly NonNullable<LoadedServiceAssemblyArtifact["activation"]>[] {
+  artifact: ServiceArtifactForActivationLookup,
+): readonly ServiceConfigActivation[] {
   if (artifact.activations !== undefined) {
     return artifact.activations;
   }
@@ -97,7 +113,7 @@ export function serviceConfigActivations(
 }
 
 export function validateServingManifestUniqueness(
-  artifacts: readonly LoadedServiceAssemblyArtifact[],
+  artifacts: readonly ServiceArtifactForActivationLookup[],
 ): void {
   const servingByIdentity = new Map<string, string>();
   for (const artifact of artifacts) {

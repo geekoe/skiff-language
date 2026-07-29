@@ -25,8 +25,10 @@ import {
   requestCancelReasonForSituation
 } from '../protocol/cancelReason.js';
 import { isPublicationId } from '../publicationId.js';
-import { buildActivationLookup } from '../artifacts/activationLookup.js';
-import type { ActivationLookup } from '../artifacts/loadArtifactRoot.js';
+import {
+  buildActivationLookup,
+  type ActivationLookup
+} from '../artifacts/activationLookup.js';
 import {
   RouterActiveSnapshotStore,
   type RouterActiveSnapshot

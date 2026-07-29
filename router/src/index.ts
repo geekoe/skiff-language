@@ -1,4 +1,3 @@
-export * from './artifacts/loadArtifactRoot.js';
 export * from './manifest/identity.js';
 export * from './manifest/loadManifest.js';
 export * from './manifest/types.js';
