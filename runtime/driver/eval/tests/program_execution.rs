@@ -61,6 +61,7 @@ const STD_FILE_IMMUTABLE_TYPE_INDEX: usize = 10;
 const STD_FILE_CREATE_OPTIONS_TYPE_INDEX: usize = 11;
 const STD_FILE_INFO_TYPE_INDEX: usize = 12;
 const STD_RESOURCE_INFO_TYPE_INDEX: usize = 13;
+const STD_RESOURCE_ERROR_TYPE_INDEX: usize = 14;
 
 fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capability_adapter::runtime_factory()
@@ -73,9 +74,13 @@ fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
 }
 
 fn local_execution_catch_identity(type_index: usize) -> CatchIdentity {
+    local_execution_catch_identity_for_addr(service_type_addr(type_index))
+}
+
+fn local_execution_catch_identity_for_addr(addr: TypeAddr) -> CatchIdentity {
     CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
         LocalExecutionTypeIdentity {
-            addr: service_type_addr(type_index),
+            addr,
             type_arguments: Vec::new(),
         },
     ))
@@ -1024,9 +1029,9 @@ async fn runtime_program_resource_exists_returns_false_for_invalid_and_missing_p
 
 #[tokio::test]
 async fn runtime_program_resource_text_missing_path_throws_resource_error() {
-    let program = Arc::new(program_with_executable(resource_text_native_executable(
-        "missing.txt",
-    )));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_text_native_executable("missing.txt"),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1034,14 +1039,14 @@ async fn runtime_program_resource_text_missing_path_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for missing resources");
 
-    assert_resource_error(&error, "missing.txt");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
-    let program = Arc::new(program_with_executable(resource_text_native_executable(
-        "./bad",
-    )));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_text_native_executable("./bad"),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1049,12 +1054,13 @@ async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for invalid paths");
 
-    assert_resource_error(&error, "./bad");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
-    let mut program = program_with_executable(resource_text_native_executable("bad.txt"));
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("bad.txt"));
     program.service_resources = resource_table("bad.txt", &[0xff, 0xfe]);
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -1063,7 +1069,7 @@ async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for invalid UTF-8");
 
-    assert_resource_error(&error, "bad.txt");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
@@ -1135,7 +1141,9 @@ async fn runtime_program_resource_json_rejects_stream_return_type() {
 
 #[tokio::test]
 async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
-    let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
+    let mut program = program_with_executable_and_std_builtins(
+        resource_json_object_native_executable("bad.json"),
+    );
     program.service_resources = resource_table("bad.json", &[0xff, 0xfe]);
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -1144,7 +1152,73 @@ async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
         .await
         .expect_err("std.resource.json should throw ResourceError for invalid UTF-8");
 
-    assert_resource_error(&error, "bad.json");
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_bytes_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_bytes_native_executable("missing.bin"),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.bytes should throw ResourceError for missing resources");
+
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_info_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_info_native_executable("missing.bin"),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.info should throw ResourceError for missing resources");
+
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_requires_std_package_type() {
+    let program = Arc::new(program_with_executable(resource_text_native_executable(
+        "missing.txt",
+    )));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("ResourceError projection must require the canonical std package type");
+
+    assert_resource_error_invalid_artifact(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_rejects_wrong_std_type_shape() {
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
+    replace_std_resource_error_type(
+        &mut program,
+        anonymous_type_decl(
+            "std.resource.ResourceError",
+            linked_record_descriptor(vec![("message", linked_builtin_type("string"))]),
+        ),
+    );
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("ResourceError projection must reject a non-canonical std type shape");
+
+    assert_resource_error_invalid_artifact(&error);
 }
 
 #[tokio::test]
@@ -4112,6 +4186,19 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
     }
 }
 
+fn replace_std_resource_error_type(program: &mut RuntimeProgram, declaration: TypeDeclIr) {
+    let addr = std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX);
+    let file = Arc::make_mut(
+        program
+            .package_files
+            .get_mut(0)
+            .and_then(|files| files.get_mut(0))
+            .expect("std package test fixture should have one file"),
+    );
+    file.types[STD_RESOURCE_ERROR_TYPE_INDEX] = declaration.clone();
+    program.types.descriptors.insert(addr, declaration);
+}
+
 fn program_with_executables_and_local_error_type(
     executables: Vec<LinkedExecutable>,
     error_type_name: &str,
@@ -4487,6 +4574,16 @@ fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, Type
                             inner: Box::new(linked_builtin_type("string")),
                         },
                     ),
+                ]),
+            ),
+        ),
+        (
+            "std.resource.ResourceError",
+            anonymous_type_decl(
+                "std.resource.ResourceError",
+                linked_record_descriptor(vec![
+                    ("path", linked_builtin_type("string")),
+                    ("message", linked_builtin_type("string")),
                 ]),
             ),
         ),
@@ -5888,6 +5985,26 @@ fn resource_text_native_executable(path: &str) -> LinkedExecutable {
     )
 }
 
+fn resource_bytes_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "bytes",
+        "std.resource.bytes",
+        path,
+        None,
+        builtin_type("bytes"),
+    )
+}
+
+fn resource_info_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "info",
+        "std.resource.info",
+        path,
+        None,
+        std_http_type_ref(STD_RESOURCE_INFO_TYPE_INDEX),
+    )
+}
+
 fn resource_exists_native_executable(path: &str) -> LinkedExecutable {
     resource_native_executable(
         "exists",
@@ -6054,23 +6171,34 @@ fn builtin_type(name: &str) -> LinkedTypeRef {
     }
 }
 
-fn assert_resource_error(error: &RuntimeError, path: &str) {
-    let payload = error
-        .ordinary_payload()
-        .expect("resource error remains ordinary");
-    assert_eq!(payload.code, "std.resource.ResourceError");
+fn assert_resource_exception(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.resource.ResourceError, got {error:?}");
+    };
+    let expected_site = test_instruction_site();
     assert_eq!(
-        error.ordinary_catch_projection(),
-        None,
-        "ResourceError must stay package-owned even through eval diagnostic wrappers",
+        exception.actual_payload_type(),
+        Some(&local_execution_catch_identity_for_addr(
+            std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
+        ))
     );
+    assert!(exception.request().local_value().is_some());
+    assert_eq!(exception.request().source(), &expected_site);
     assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["path"].as_str()),
-        Some(path),
-        "unexpected payload: {payload:?}"
+        exception.request().stack(),
+        [ExceptionStackFrame::Local {
+            site: expected_site,
+        }]
+    );
+}
+
+fn assert_resource_error_invalid_artifact(error: &RuntimeError) {
+    let RuntimeError::InvalidArtifact(message) = runtime_error_leaf(error) else {
+        panic!("expected invalid ResourceError projection artifact, got {error:?}");
+    };
+    assert!(
+        message.contains("std.resource.ResourceError"),
+        "invalid artifact should identify the required ResourceError type: {message}"
     );
 }
 
