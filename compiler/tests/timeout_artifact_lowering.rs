@@ -65,7 +65,7 @@ function concurrentStatement() -> number {
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(
         file.file_ir_identity,
-        "skiff-file-ir-v10:sha256:29ef7036bb3afdc59352ed7ba211181a5a55f9323d610bb7f9a92709a4f33a87"
+        "skiff-file-ir-v10:sha256:6da942513d7c41ec37b0f486f950c0958b5359212f6b887e6535d0bd6171a24a"
     );
     assert_eq!(
         skiff_artifact_identity::file_ir_identity(file).unwrap(),

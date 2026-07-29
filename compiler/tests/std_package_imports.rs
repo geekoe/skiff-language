@@ -312,14 +312,10 @@ type Marker { request: std.http.HttpRequest }
 
     let log = source_artifact(std, "log.skiff");
     let telemetry = source_artifact(std, "telemetry.skiff");
-    let emit_index = telemetry.unit.declarations.executables["emit"].executable_index;
     assert!(file_contains_call(log, &|target| {
         matches!(
             target,
-            CallTargetIr::PublicationExecutable {
-                module_path,
-                executable_index,
-            } if module_path == "std.telemetry" && *executable_index == emit_index
+            CallTargetIr::Builtin { op } if op == "root.telemetry.emit"
         )
     }));
 

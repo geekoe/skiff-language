@@ -25,7 +25,7 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:c95be59b499a8e16b93bbe1af2a4b113e3c50b3515c60cd745878e0d9a3ca59b";
+    "skiff-package-build-v10:sha256:ad336ae19a76591d79d78ffbbd447e40b839a3198d1e8de9af370ec2ea3106f1";
 const EXPECTED_PRELUDE_ID: &str =
     "skiff-prelude-v1:sha256:8ec6c2b3f4411b159d8b1b8dd2d55d036713a2533dd3aba043eb3d7fb020c76e";
 

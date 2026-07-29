@@ -18,7 +18,7 @@ use common::{
 };
 
 const CURRENT_STD_BUILD: &str =
-    "skiff-package-build-v10:sha256:f87479362f5f659e3a8cd8469360ebd248f185b079b94bdcc03f5f11dc176e80";
+    "skiff-package-build-v10:sha256:ad336ae19a76591d79d78ffbbd447e40b839a3198d1e8de9af370ec2ea3106f1";
 const CURRENT_STD_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:4e370158a4a654c55f0e086509368ebbdf34c5bfb818d5161aca18fcb62711ac";
 const CURRENT_STD_SCHEMA_INDEX: &str =

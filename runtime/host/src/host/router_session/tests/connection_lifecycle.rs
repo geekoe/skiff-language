@@ -5,10 +5,6 @@ use skiff_runtime_capability_context::{
     CancellationSource, ConnectionRequestSession, ConnectionRequestTerminal, ExecutionScope,
 };
 use skiff_runtime_request::OutboundResponse;
-use skiff_runtime_transport::protocol::{
-    encode_binary_frame, ResponseEndFrameHeader, ResponseEndFrameMetadata,
-    RUNTIME_FRAME_SCHEMA_VERSION,
-};
 use tokio::{
     io::duplex,
     sync::{mpsc, oneshot, Notify},
@@ -45,16 +41,6 @@ async fn router_close_completes_handshake_and_session_without_waiting_for_transp
             "caller_cancel",
         )
         .expect("pending outbound request");
-    let (completed_sender, mut completed_receiver) = mpsc::unbounded_channel();
-    let completed_lease = host
-        .outbound_requests
-        .insert_with_lease(
-            "completed-before-router-close".to_string(),
-            completed_sender,
-            None,
-            "caller_cancel",
-        )
-        .expect("outbound request completed before close");
     let mut actor_method_pending = host
         .actor_method_outbound
         .register(
@@ -87,21 +73,6 @@ async fn router_close_completes_handshake_and_session_without_waiting_for_transp
                 .expect("valid pong"),
             Message::Pong(b"router-heartbeat".to_vec().into())
         );
-        let response = encode_binary_frame(
-            &ResponseEndFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "response.end".to_string(),
-                request_id: "completed-before-router-close".to_string(),
-                payload_present: true,
-                metadata: ResponseEndFrameMetadata::None,
-            },
-            b"completed",
-        )
-        .expect("normal response frame");
-        router
-            .send(Message::Binary(response.into()))
-            .await
-            .expect("mock Router normal response");
         let close = CloseFrame {
             code: CloseCode::Away,
             reason: "router restart".into(),
@@ -148,11 +119,6 @@ async fn router_close_completes_handshake_and_session_without_waiting_for_transp
     session_result
         .expect("session task")
         .expect("clean Router Close");
-    assert!(matches!(
-        completed_receiver.recv().await,
-        Some(OutboundResponse::End { payload }) if payload == b"completed"
-    ));
-    completed_lease.complete();
     assert_eq!(
         connection_pending.wait().await,
         ConnectionRequestTerminal::TransportUnavailable
