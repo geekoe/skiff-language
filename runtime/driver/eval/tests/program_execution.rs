@@ -32,8 +32,17 @@ use tokio::time::sleep;
 
 use super::*;
 use crate::eval::InterpreterEnv as Env;
-use skiff_artifact_model::{builtin_receiver_op_by_name, DbMetadataIr, PublicationResourceRef};
-use skiff_runtime_linked_program::{LoadedPublicationResource, PublicationResourceTable};
+use skiff_artifact_model::{
+    builtin_receiver_op_by_name, DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId,
+    PackageLocalAbiIdentity, PublicationResourceRef,
+};
+use skiff_runtime_capability_context::{
+    DbCapabilityTarget, DbCapabilityTargetId, DbProviderTargetMetadata,
+};
+use skiff_runtime_linked_program::{
+    linked::{DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr, TypeDeclarationIr},
+    DbObjectTargetId, LinkedNamedUnionBranch, LoadedPublicationResource, PublicationResourceTable,
+};
 
 const PROTOCOL_OUTBOUND: &str =
     "skiff-service-protocol-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -2494,7 +2503,7 @@ async fn runtime_program_db_rejects_old_dotted_builtin_surface() {
 
 #[tokio::test]
 async fn runtime_program_db_rejects_negative_offset_before_querying() {
-    let program = program_with_executable(db_negative_offset_executable());
+    let program = program_with_thread_db_target(db_negative_offset_executable());
     let service_db = Arc::new(
         skiff_runtime_service_db::ServiceDbRuntime::new(
             "example.com/svc".to_string(),
@@ -2521,7 +2530,7 @@ async fn runtime_program_db_rejects_negative_offset_before_querying() {
 
 #[tokio::test]
 async fn runtime_program_db_rejects_after_pagination_before_querying() {
-    let program = program_with_executable(db_after_executable());
+    let program = program_with_thread_db_target(db_after_executable());
     let service_db = Arc::new(
         skiff_runtime_service_db::ServiceDbRuntime::new(
             "example.com/svc".to_string(),
@@ -2570,7 +2579,6 @@ fn runtime_type_plan_resolves_package_db_object_symbol_from_file_declarations() 
         name: "BrowserSession".to_string(),
         descriptor: db_object_descriptor.clone(),
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     }];
@@ -2653,18 +2661,14 @@ async fn runtime_program_db_query_value_evaluates_conditional_predicates_and_opt
             }
         ])
     );
-    assert_eq!(
-        value["mixed"]["target"],
-        json!({
-            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-            "typeName": "Thread"
-        })
-    );
+    assert_eq!(value["mixed"]["target"], thread_db_target_json());
 }
 
 #[tokio::test]
 async fn runtime_program_db_many_key_selector_is_rejected() {
-    let program = Arc::new(program_with_executable(db_many_key_selector_executable()));
+    let program = Arc::new(program_with_thread_db_target(
+        db_many_key_selector_executable(),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     frame.service_db = Some(
@@ -3450,6 +3454,13 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
     let operation_abi_id = format!("operation:{target}");
     let cancellation = CancellationToken::new();
     let cancelled = cancellation.cancel_flag();
+    let mut request_extra = serde_json::Map::new();
+    request_extra.insert(
+        "trace".to_string(),
+        json!({
+            "traceId": "trace-program"
+        }),
+    );
     ProgramTestInvocation {
         request: RequestEnvelope {
             request_id: "request-program".to_string(),
@@ -3468,7 +3479,7 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
-            extra: serde_json::Map::new(),
+            extra: request_extra,
         },
         operation: RuntimeOperation {
             operation_abi_id: Some(operation_abi_id),
@@ -3956,7 +3967,7 @@ fn db_metadata(mut value: Value) -> Vec<DbMetadataIr> {
     serde_json::from_value(value).expect("test db metadata should decode as typed IR")
 }
 
-fn thread_db_metadata() -> Vec<DbMetadataIr> {
+fn thread_db_metadata() -> Vec<DbProviderTargetMetadata> {
     db_metadata(json!([
         {
             "kind": "object",
@@ -3977,6 +3988,24 @@ fn thread_db_metadata() -> Vec<DbMetadataIr> {
             "indexes": []
         }
     ]))
+    .into_iter()
+    .enumerate()
+    .map(|(index, metadata)| {
+        let type_name = metadata.type_name.clone();
+        let target_id = thread_db_object_target_id(index);
+        DbProviderTargetMetadata {
+            target: DbCapabilityTarget::new(
+                DbCapabilityTargetId {
+                    package_artifact_ref: target_id.package_artifact_ref,
+                    file_ir_ref: target_id.file_ir_ref,
+                    type_index: target_id.type_index,
+                },
+                type_name,
+            ),
+            metadata,
+        }
+    })
+    .collect()
 }
 
 fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgram {
@@ -4275,17 +4304,29 @@ fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, Type
             anonymous_type_decl(
                 "std.http.HttpResponseStreamEvent",
                 LinkedTypeDescriptor::Union {
-                    variants: vec![
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("start")),
-                            ("status", linked_builtin_type("integer")),
-                            ("headers", linked_array_type(header.clone())),
-                        ]),
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("chunk")),
-                            ("value", linked_builtin_type("bytes")),
-                        ]),
-                        linked_record_type(vec![("tag", linked_literal_string("end"))]),
+                    branches: vec![
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "start",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("start")),
+                                ("status", linked_builtin_type("integer")),
+                                ("headers", linked_array_type(header.clone())),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "chunk",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("chunk")),
+                                ("value", linked_builtin_type("bytes")),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "end",
+                            linked_record_type(vec![("tag", linked_literal_string("end"))]),
+                        ),
                     ],
                 },
             ),
@@ -4333,22 +4374,34 @@ fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, Type
             anonymous_type_decl(
                 "std.http.HttpSseEvent",
                 LinkedTypeDescriptor::Union {
-                    variants: vec![
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("response")),
-                            ("status", linked_builtin_type("integer")),
-                            ("headers", linked_array_type(header)),
-                        ]),
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("body")),
-                            ("value", linked_builtin_type("bytes")),
-                        ]),
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("event")),
-                            ("event", linked_nullable_type(linked_builtin_type("string"))),
-                            ("id", linked_nullable_type(linked_builtin_type("string"))),
-                            ("data", linked_builtin_type("string")),
-                        ]),
+                    branches: vec![
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "response",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("response")),
+                                ("status", linked_builtin_type("integer")),
+                                ("headers", linked_array_type(header)),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "body",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("body")),
+                                ("value", linked_builtin_type("bytes")),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "event",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("event")),
+                                ("event", linked_nullable_type(linked_builtin_type("string"))),
+                                ("id", linked_nullable_type(linked_builtin_type("string"))),
+                                ("data", linked_builtin_type("string")),
+                            ]),
+                        ),
                     ],
                 },
             ),
@@ -4458,6 +4511,18 @@ fn linked_record_type(fields: Vec<(&str, LinkedTypeRef)>) -> LinkedTypeRef {
     }
 }
 
+fn linked_discriminated_union_branch(
+    discriminator_field: &str,
+    discriminator_value: &str,
+    payload_type: LinkedTypeRef,
+) -> LinkedNamedUnionBranch {
+    LinkedNamedUnionBranch::SyntheticDiscriminator {
+        payload_type,
+        discriminator_field: discriminator_field.to_string(),
+        discriminator_value: discriminator_value.to_string(),
+    }
+}
+
 fn linked_field_map(fields: Vec<(&str, LinkedTypeRef)>) -> BTreeMap<String, LinkedTypeRef> {
     fields
         .into_iter()
@@ -4541,6 +4606,86 @@ fn package_unit(package_id: &str) -> PackageUnit {
 
 fn program_with_executable(executable: LinkedExecutable) -> RuntimeProgram {
     program_with_executables(vec![executable])
+}
+
+fn program_with_thread_db_target(executable: LinkedExecutable) -> RuntimeProgram {
+    let target_id = thread_db_object_target_id(0);
+    let mut package = PackageUnit::empty(
+        target_id.package_artifact_ref.package_id.clone(),
+        target_id.package_artifact_ref.package_version.clone(),
+        target_id
+            .package_artifact_ref
+            .package_build_id
+            .as_str()
+            .to_string(),
+        target_id
+            .package_artifact_ref
+            .package_local_abi_identity
+            .as_str()
+            .to_string(),
+    );
+    package.files.push(target_id.file_ir_ref.clone());
+
+    let mut file = package_file_unit(
+        &target_id.file_ir_ref.file_ir_identity,
+        &target_id.file_ir_ref.module_path,
+        run_executable(),
+    );
+    file.executables.clear();
+    file.declarations.types.insert(
+        "Thread".to_string(),
+        TypeDeclarationIr {
+            type_index: target_id.type_index,
+            symbol: "Thread".to_string(),
+            source_span: None,
+        },
+    );
+    let thread_type = LinkedTypeRef::DbObjectSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "svc.main".to_string(),
+            symbol: "Thread".to_string(),
+        },
+    };
+    file.declarations.db.insert(
+        "Thread".to_string(),
+        DbDeclarationIr {
+            type_ref: thread_type,
+            type_name: "Thread".to_string(),
+            collection_name: "Thread".to_string(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: linked_builtin_type("string"),
+            },
+            fields: Vec::new(),
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    let declaration = anonymous_type_decl(
+        "Thread",
+        LinkedTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    file.types.push(declaration.clone());
+
+    let mut program = program_with_executable(executable);
+    program.packages.push(Arc::new(package));
+    program.package_files.push(vec![Arc::new(file)]);
+    program.package_resources.push(Default::default());
+    let addr = TypeAddr {
+        unit: UnitAddr::Package(0),
+        file: FileAddr::FileIrIdentity(target_id.file_ir_ref.file_ir_identity.clone()),
+        type_index: target_id.type_index,
+    };
+    program.types.descriptors.insert(addr.clone(), declaration);
+    program
+        .types
+        .exported_types
+        .insert_package(PackageSymbolKey::new(0, "svc.main.Thread"), addr);
+    program
 }
 
 fn executable_body(value: Value) -> LinkedExecutableBody {
@@ -4949,10 +5094,7 @@ fn db_negative_offset_executable() -> LinkedExecutable {
                     "operation": {
                         "op": "find",
                         "many": true,
-                        "target": {
-                            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-                            "typeName": "Thread"
-                        },
+                        "target": thread_db_target_json(),
                         "query": {
                             "order": [
                                 {
@@ -5003,10 +5145,7 @@ fn db_after_executable() -> LinkedExecutable {
                     "operation": {
                         "op": "find",
                         "many": true,
-                        "target": {
-                            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-                            "typeName": "Thread"
-                        },
+                        "target": thread_db_target_json(),
                         "query": {
                             "after": { "expression": 1 }
                         },
@@ -5135,10 +5274,7 @@ fn db_many_key_selector_executable() -> LinkedExecutable {
                     "operation": {
                         "op": "find",
                         "many": true,
-                        "target": {
-                            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-                            "typeName": "Thread"
-                        },
+                        "target": thread_db_target_json(),
                         "selector": { "kind": "key", "value": { "expression": 0 } },
                         "resultType": { "kind": "builtin", "name": "Json" }
                     }
@@ -5210,9 +5346,25 @@ fn db_field_path_json(field: &str) -> Value {
 
 fn thread_db_target_json() -> Value {
     json!({
+        "targetId": thread_db_object_target_id(0),
         "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
         "typeName": "Thread"
     })
+}
+
+fn thread_db_object_target_id(index: usize) -> DbObjectTargetId {
+    DbObjectTargetId {
+        package_artifact_ref: PackageArtifactRef {
+            package_id: format!("test.local/provider-Thread-{index}"),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new(format!("test-build-Thread-{index}")),
+            package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
+                "test-abi-Thread-{index}"
+            )),
+        },
+        file_ir_ref: FileIrRef::new(format!("test-file-Thread-{index}"), "svc.main"),
+        type_index: index,
+    }
 }
 
 fn literal_string_expr(value: &str) -> Value {
@@ -5787,6 +5939,7 @@ fn resource_native_executable(
     return_type: LinkedTypeRef,
 ) -> LinkedExecutable {
     let mut call = json!({
+        "site": test_instruction_site(),
         "target": {
             "kind": "native",
             "target": {
@@ -7516,8 +7669,12 @@ fn catch_builtin_decode_error_throw_with_catch_type_executable(
                 { "kind": "literal", "value": { "kind": "string", "value": "test.decode" } },
                 { "kind": "literal", "value": { "kind": "string", "value": "denied" } },
                 {
-                    "kind": "mapLiteral",
-                    "entries": {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "fields": {
                         "target": { "expression": 0 },
                         "message": { "expression": 1 }
                     }
@@ -7645,8 +7802,12 @@ fn catch_throw_with_type_addrs_executable(
             "expressions": [
                 { "kind": "literal", "value": { "kind": "string", "value": "denied" } },
                 {
-                    "kind": "mapLiteral",
-                    "entries": {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(&throw_type_addr).unwrap()
+                    },
+                    "fields": {
                         "message": { "expression": 0 }
                     }
                 },
@@ -8035,7 +8196,7 @@ fn config_require_string_executable(path: &str) -> LinkedExecutable {
                             { "expression": 0 }
                         ],
                         "typeArgs": {
-                            "T": { "kind": "builtin", "name": "string" }
+                            "T0": { "kind": "builtin", "name": "string" }
                         }
                     }
                 }
