@@ -5612,6 +5612,7 @@ fn thread_db_target_json() -> Value {
 }
 
 fn thread_db_object_target_id(index: usize) -> DbObjectTargetId {
+    let file_ir_identity = format!("test-file-Thread-{index}");
     DbObjectTargetId {
         package_artifact_ref: PackageArtifactRef {
             package_id: format!("test.local/provider-Thread-{index}"),
@@ -5621,7 +5622,12 @@ fn thread_db_object_target_id(index: usize) -> DbObjectTargetId {
                 "test-abi-Thread-{index}"
             )),
         },
-        file_ir_ref: FileIrRef::new(format!("test-file-Thread-{index}"), "svc.main"),
+        file_ir_ref: FileIrRef {
+            source_ast_hash: Some(format!("source:{file_ir_identity}")),
+            file_ir_identity,
+            module_path: "svc.main".to_string(),
+            artifact_path: None,
+        },
         type_index: index,
     }
 }
