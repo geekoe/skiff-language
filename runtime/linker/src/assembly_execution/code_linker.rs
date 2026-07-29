@@ -831,6 +831,9 @@ impl<'a> AssemblyCodeLinker<'a> {
                 }
                 self.addresses
                     .validate_executable_addr(call.executable_addr())?;
+                if let Some(receiver) = call.receiver_const() {
+                    self.addresses.validate_const_addr(receiver)?;
+                }
                 None
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {

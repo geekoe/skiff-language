@@ -6,9 +6,9 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    ActivationRelativeServiceCall, ExecutableAddr, FileAddr, LinkOverlay, LinkedExecutable,
-    LinkedFileUnit, LinkedPackageDirectCall, PackageCodeSlotIndex, PackageSymbolKey,
-    ResolvedSymbol, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageCode,
+    ActivationRelativeServiceCall, ConstAddr, ConstIr, ExecutableAddr, FileAddr, LinkOverlay,
+    LinkedExecutable, LinkedFileUnit, LinkedPackageDirectCall, PackageCodeSlotIndex,
+    PackageSymbolKey, ResolvedSymbol, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageCode,
     SharedPackageImageError, SharedPackageLinkedImage, TypeAddr, UnitAddr,
 };
 
@@ -192,6 +192,44 @@ impl AssemblyExecutionImage {
         self.executable_at(&addr)
     }
 
+    pub fn const_at(&self, addr: &ConstAddr) -> AssemblyExecutionResult<&ConstIr> {
+        let UnitAddr::Package(code_slot) = addr.unit else {
+            return Err(AssemblyExecutionImageError::NonPackageConstAddress { addr: addr.clone() });
+        };
+        let code = self.code_slots.get(code_slot).ok_or_else(|| {
+            AssemblyExecutionImageError::CodeSlotOutOfBounds {
+                code_slot: PackageCodeSlotIndex::new(code_slot),
+                code_slot_count: self.code_slots.len(),
+            }
+        })?;
+        let file_index = match addr.file {
+            FileAddr::LoadedFileIndex(file_index) => file_index,
+            FileAddr::FileIrIdentity(ref identity) => code
+                .files_by_identity
+                .get(identity)
+                .copied()
+                .ok_or_else(|| AssemblyExecutionImageError::FileNotLoaded {
+                    package_build_id: code.package_build_id.clone(),
+                    file_ir_identity: identity.clone(),
+                })?,
+        };
+        let file = code.files.get(file_index).ok_or_else(|| {
+            AssemblyExecutionImageError::FileIndexOutOfBounds {
+                package_build_id: code.package_build_id.clone(),
+                file_index,
+                file_count: code.files.len(),
+            }
+        })?;
+        file.constants.get(addr.const_index).ok_or_else(|| {
+            AssemblyExecutionImageError::ConstIndexOutOfBounds {
+                package_build_id: code.package_build_id.clone(),
+                file_ir_identity: file.file_ir_identity.clone(),
+                const_index: addr.const_index,
+                const_count: file.constants.len(),
+            }
+        })
+    }
+
     pub fn type_addr(
         &self,
         package_build_id: &PackageBuildId,
@@ -241,6 +279,9 @@ impl AssemblyExecutionImage {
             .resolve_package_direct_call(caller_package_build_id, package_ref, package_callable_id)
             .map_err(AssemblyExecutionImageError::SharedImage)?;
         self.executable_at(call.executable_addr())?;
+        if let Some(receiver) = call.receiver_const() {
+            self.const_at(receiver)?;
+        }
         Ok(call)
     }
 
@@ -428,6 +469,9 @@ pub enum AssemblyExecutionImageError {
     NonPackageExecutableAddress {
         addr: ExecutableAddr,
     },
+    NonPackageConstAddress {
+        addr: ConstAddr,
+    },
     PackageFileCountMismatch {
         package_build_id: PackageBuildId,
         expected: usize,
@@ -457,6 +501,12 @@ pub enum AssemblyExecutionImageError {
         file_ir_identity: String,
         executable_index: usize,
         executable_count: usize,
+    },
+    ConstIndexOutOfBounds {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        const_index: usize,
+        const_count: usize,
     },
     TypeIndexOutOfBounds {
         package_build_id: PackageBuildId,
