@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
-use skiff_artifact_model::PackageBuildId;
+use skiff_artifact_model::{
+    PackageBuildId, PackageLocalAbiSymbol, PublicationApiSymbolKind,
+};
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ConstAddr, ConstIr, DbObjectTargetId, ExecutableAddr, FileAddr,
     LinkOverlay, LinkedExecutable, LinkedFileUnit, PackageUnit, PublicationResourceTable,
-    RuntimeProgramResourceView, RuntimeTypeContext, TypeAddr, UnitAddr,
+    ResolvedSymbol, RuntimeProgramResourceView, RuntimeTypeContext, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::ProgramTypeView;
 
@@ -493,6 +495,133 @@ impl<'a> RuntimeExecutionProjection<'a> {
                 .get(slot)
                 .map(|package| package.package_id.as_str()),
             Self::Assembly(projection) => projection.package_id(slot),
+        }
+    }
+
+    pub(crate) fn resolved_package_id_symbol(
+        &self,
+        package_id: &str,
+        symbol: &str,
+    ) -> Option<&ResolvedSymbol> {
+        match self {
+            Self::Legacy(program) => program.resolved_package_id_symbol(package_id, symbol),
+            Self::Assembly(projection) => projection
+                .image()
+                .link_overlay()
+                .resolved_package_id_symbol(package_id, symbol),
+        }
+    }
+
+    pub(crate) fn validate_public_package_type(
+        &self,
+        package_id: &str,
+        symbol: &str,
+        addr: &TypeAddr,
+    ) -> Result<(), RuntimeError> {
+        let UnitAddr::Package(slot) = &addr.unit else {
+            return Err(RuntimeError::InvalidArtifact(
+                "public Package type resolved outside Package code".to_string(),
+            ));
+        };
+        if self.package_id(*slot) != Some(package_id) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "public Package type {package_id}:{symbol} resolved to a different package owner"
+            )));
+        }
+        match self {
+            Self::Assembly(projection) => {
+                let code = projection
+                    .image()
+                    .shared_packages()
+                    .code_slots()
+                    .get(*slot)
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(format!(
+                            "public Package type {package_id}:{symbol} resolved to missing package slot {slot}"
+                        ))
+                    })?;
+                if !matches!(
+                    code.artifact()
+                        .package_local_abi
+                        .public_symbols
+                        .get(symbol),
+                    Some(PackageLocalAbiSymbol::Type { .. })
+                ) {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "Package type {package_id}:{symbol} is not an exact public type symbol"
+                    )));
+                }
+                if !code.artifact().implementation_links.types.contains_key(symbol) {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "public Package type {package_id}:{symbol} has no exact implementation link"
+                    )));
+                }
+                Ok(())
+            }
+            Self::Legacy(program) => {
+                let package = program.packages.get(*slot).ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(format!(
+                        "public Package type {package_id}:{symbol} resolved to missing package slot {slot}"
+                    ))
+                })?;
+                if package.publication_abi.publication_id != package_id {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "public Package type {package_id}:{symbol} has inconsistent ABI owner"
+                    )));
+                }
+                let bindings = package
+                    .publication_abi
+                    .api_bindings
+                    .iter()
+                    .filter(|binding| binding.public_path == symbol)
+                    .collect::<Vec<_>>();
+                let [binding] = bindings.as_slice() else {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "Package type {package_id}:{symbol} does not have exactly one public API binding"
+                    )));
+                };
+                if binding.symbol_kind != PublicationApiSymbolKind::Type {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "Package public symbol {package_id}:{symbol} is not a type"
+                    )));
+                }
+                let implementation = package
+                    .implementation_links
+                    .types
+                    .get(symbol)
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(format!(
+                            "public Package type {package_id}:{symbol} has no exact implementation link"
+                        ))
+                    })?;
+                let FileAddr::LoadedFileIndex(file_index) = addr.file else {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "public Package type did not resolve to a canonical file index".to_string(),
+                    ));
+                };
+                let file = program
+                    .package_files
+                    .get(*slot)
+                    .and_then(|files| files.get(file_index))
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(format!(
+                            "public Package type {package_id}:{symbol} resolved to missing linked file"
+                        ))
+                    })?;
+                if implementation.file.file_ir_identity != file.file_ir_identity
+                    || usize::try_from(implementation.type_index).ok() != Some(addr.type_index)
+                    || binding.source_module_path != file.module_path
+                    || file
+                        .types
+                        .get(addr.type_index)
+                        .is_none_or(|declaration| declaration.name != binding.source_symbol)
+                {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "public Package type {package_id}:{symbol} binding and implementation coordinate disagree"
+                    )));
+                }
+                Ok(())
+            }
         }
     }
 

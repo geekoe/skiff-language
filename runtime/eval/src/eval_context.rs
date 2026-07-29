@@ -32,7 +32,7 @@ use super::{
     env::{Env, Flow},
     exceptions::{
         catch_err, catch_identity_matches, catch_ok, request_exception_for_catch,
-        user_exception_for_catch,
+        request_exception_for_resource_error, user_exception_for_catch,
     },
     flow_completion::FlowCompletionPolicy,
     native_capability::{
@@ -1189,7 +1189,7 @@ impl<'a> EvalContext<'a> {
             {
                 Ok(Some(value)) => return Ok(value),
                 Ok(None) => {}
-                Err(error) => return self.promote_platform_error_at_call(Err(error), &call.site),
+                Err(error) => return self.promote_call_site_error(Err(error), &call.site),
             }
         }
         if let LinkedCallTarget::Executable { addr } = &call.target {
@@ -1395,10 +1395,10 @@ impl<'a> EvalContext<'a> {
                 }
             }
         };
-        self.promote_platform_error_at_call(result, &call.site)
+        self.promote_call_site_error(result, &call.site)
     }
 
-    fn promote_platform_error_at_call(
+    fn promote_call_site_error(
         &mut self,
         result: Result<RuntimeValueCarrier>,
         site: &InstructionSourceSite,
@@ -1412,6 +1412,17 @@ impl<'a> EvalContext<'a> {
         }
         if user_exception_for_catch(&error).is_some() {
             return Err(error);
+        }
+        if let Some(exception) = request_exception_for_resource_error(
+            &error,
+            &self.projection,
+            self.addr,
+            site.clone(),
+            self.context.exception_stack_for_site(site.clone()),
+            || self.context.next_exception_correlation(),
+            self.heap,
+        )? {
+            return Err(RuntimeError::UserException(UserException::new(exception)));
         }
         let Some((identity, _)) = error.ordinary_catch_projection() else {
             return Err(error);
