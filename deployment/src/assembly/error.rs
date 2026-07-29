@@ -52,6 +52,9 @@ pub enum AssemblyResolutionError {
     #[error("package artifact is not present in the candidate set: {0:?}")]
     MissingPackageArtifact(PackageArtifactRef),
 
+    #[error("validated package admissions do not exactly match the assembly candidate packages")]
+    ValidatedPackageAdmissionMismatch,
+
     #[error("package build {expected:?} resolves to candidate {available:?}")]
     PackageReferenceMismatch {
         expected: PackageArtifactRef,

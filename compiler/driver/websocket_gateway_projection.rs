@@ -36,7 +36,7 @@ pub(crate) struct ProjectedWebSocketGateway {
     pub ingress: Vec<DeploymentIngressBinding>,
 }
 
-pub(crate) fn project_websocket_gateway(
+pub(crate) fn project_websocket_gateway_after_package_validation(
     websocket: Option<&WebSocketGatewayDocumentAuthoring>,
     implementation: &PackageArtifact,
     package_closure: &[PackageArtifact],
@@ -45,16 +45,6 @@ pub(crate) fn project_websocket_gateway(
     let Some(authoring) = websocket else {
         return Ok(ProjectedWebSocketGateway::default());
     };
-    for artifact in package_closure
-        .iter()
-        .chain(std::iter::once(implementation))
-    {
-        skiff_artifact_identity::validate_package_artifact_identities(artifact)
-            .map_err(|error| invalid("packageArtifact", error.to_string()))?;
-    }
-    skiff_artifact_identity::validate_package_schema_records(package_schema_records)
-        .map_err(|error| invalid("packageSchemaRecords", error.to_string()))?;
-
     let resolver = ExactCallableResolver::new(implementation);
     let classifier =
         ExactTypeClassifier::new(implementation, package_closure, package_schema_records);

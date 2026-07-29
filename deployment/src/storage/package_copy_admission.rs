@@ -4,23 +4,26 @@ use std::{
     sync::Arc,
 };
 
-use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
     validate_package_artifact_identities, ArtifactRelativePath, PackageArtifactRecordPath,
-    PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
+    PackageFileIrRecordPath, PackageResourceRecordPath, PackageSchemaIndexRecordPath,
+    PackageSchemaTypeRecordPath,
 };
 use skiff_artifact_model::{
-    PackageArtifact, PackageArtifactRef, PackageSchemaIndexRef, PackageSchemaTypeRecordRef,
+    FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndexRef,
+    PackageSchemaTypeRecordRef,
 };
 
 use super::{
     error::{EcosystemStorageError, StorageResult},
     io::{strict_value, typed_from_value, CanonicalArtifactStore},
-    records::{ensure_canonical, raw_package_ref},
+    records::{ensure_canonical, raw_package_ref, validate_file_ref, validate_resource},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidatedPackageRecordKind {
+    FileIr,
+    StaticResource,
     SchemaType,
     SchemaIndex,
     PackageArtifact,
@@ -31,7 +34,6 @@ struct ValidatedPackageRecord {
     kind: ValidatedPackageRecordKind,
     path: ArtifactRelativePath,
     bytes: Arc<[u8]>,
-    sha256: [u8; 32],
     byte_len: u64,
 }
 
@@ -147,7 +149,40 @@ impl CanonicalArtifactStore {
     ) -> StorageResult<ValidatedPackageCopyRecords> {
         let package = self.admit_package_artifact_record(reference)?;
         let schema = self.resolve_package_artifact_schema_after_validation(&package.artifact)?;
-        let mut records = Vec::with_capacity(schema.records.len() + 2);
+        let mut records = Vec::with_capacity(
+            package.artifact.files.len()
+                + package.artifact.static_resources.len()
+                + schema.records.len()
+                + 2,
+        );
+        for file_reference in &package.artifact.files {
+            let path = PackageFileIrRecordPath::new(reference, file_reference)?;
+            let bytes = self.read_bytes(path.as_relative_path())?;
+            let host_path = self.root().join(path.as_relative_path().as_path());
+            let value = strict_value(&host_path, &bytes)?;
+            let file = typed_from_value::<FileIrUnit>(&host_path, value)?;
+            validate_file_ref(&host_path, reference, file_reference, &file)?;
+            ensure_canonical(&host_path, &bytes, &file)?;
+            records.push(validated_package_record(
+                ValidatedPackageRecordKind::FileIr,
+                path.as_relative_path().clone(),
+                bytes,
+            )?);
+        }
+        for resource_reference in &package.artifact.static_resources {
+            let path = PackageResourceRecordPath::new(reference, resource_reference)?;
+            let bytes = self.read_bytes(path.as_relative_path())?;
+            validate_resource(
+                &self.root().join(path.as_relative_path().as_path()),
+                resource_reference,
+                &bytes,
+            )?;
+            records.push(validated_package_record(
+                ValidatedPackageRecordKind::StaticResource,
+                path.as_relative_path().clone(),
+                bytes,
+            )?);
+        }
         for record in schema.records.values() {
             let record_reference = PackageSchemaTypeRecordRef {
                 package_id: record.package_id.clone(),
@@ -247,12 +282,10 @@ fn validated_package_record(
             path: path.as_path().to_path_buf(),
             message: format!("{kind:?} byte length does not fit u64"),
         })?;
-    let sha256 = Sha256::digest(&bytes).into();
     Ok(ValidatedPackageRecord {
         kind,
         path,
         bytes: Arc::from(bytes),
-        sha256,
         byte_len,
     })
 }
@@ -267,6 +300,32 @@ fn validate_package_copy_token(admitted: &ValidatedPackageCopyRecords) -> Storag
     let expected_package_path = PackageArtifactRecordPath::new(&admitted.reference)?;
     let expected_index_path =
         PackageSchemaIndexRecordPath::new(&admitted.artifact.package_schema_index)?;
+    let mut expected_file_paths = admitted
+        .artifact
+        .files
+        .iter()
+        .map(|reference| {
+            Ok(
+                PackageFileIrRecordPath::new(&admitted.reference, reference)?
+                    .as_relative_path()
+                    .as_str()
+                    .to_string(),
+            )
+        })
+        .collect::<StorageResult<BTreeSet<_>>>()?;
+    let mut expected_resource_paths = admitted
+        .artifact
+        .static_resources
+        .iter()
+        .map(|reference| {
+            Ok(
+                PackageResourceRecordPath::new(&admitted.reference, reference)?
+                    .as_relative_path()
+                    .as_str()
+                    .to_string(),
+            )
+        })
+        .collect::<StorageResult<BTreeSet<_>>>()?;
     let mut paths = BTreeSet::new();
     let mut package_records = 0usize;
     let mut index_records = 0usize;
@@ -278,6 +337,22 @@ fn validate_package_copy_token(admitted: &ValidatedPackageCopyRecords) -> Storag
             );
         }
         match record.kind {
+            ValidatedPackageRecordKind::FileIr => {
+                if !expected_file_paths.remove(record.path.as_str()) {
+                    return invalid(
+                        &admitted.source_root,
+                        "validated File IR record path is not declared by the PackageArtifact",
+                    );
+                }
+            }
+            ValidatedPackageRecordKind::StaticResource => {
+                if !expected_resource_paths.remove(record.path.as_str()) {
+                    return invalid(
+                        &admitted.source_root,
+                        "validated static resource path is not declared by the PackageArtifact",
+                    );
+                }
+            }
             ValidatedPackageRecordKind::PackageArtifact => {
                 package_records += 1;
                 if record.path != *expected_package_path.as_relative_path() {
@@ -305,6 +380,12 @@ fn validate_package_copy_token(admitted: &ValidatedPackageCopyRecords) -> Storag
             "validated package copy token must contain exactly one artifact and schema index",
         );
     }
+    if !expected_file_paths.is_empty() || !expected_resource_paths.is_empty() {
+        return invalid(
+            &admitted.source_root,
+            "validated package copy token is missing a declared File IR or static resource",
+        );
+    }
     Ok(())
 }
 
@@ -318,8 +399,7 @@ fn validate_record_fingerprint(
             path: root.join(record.path.as_path()),
             message: format!("{:?} byte length does not fit u64", record.kind),
         })?;
-    let sha256: [u8; 32] = Sha256::digest(bytes).into();
-    if byte_len != record.byte_len || sha256 != record.sha256 || bytes != record.bytes.as_ref() {
+    if byte_len != record.byte_len || bytes != record.bytes.as_ref() {
         return invalid(
             &root.join(record.path.as_path()),
             format!(

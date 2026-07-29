@@ -25,6 +25,8 @@ pub enum ProjectionError {
     },
     #[error("package closure repeats build {build_id}")]
     DuplicatePackageBuild { build_id: PackageBuildId },
+    #[error("validated package admissions do not exactly match the supplied package closure")]
+    ValidatedPackageAdmissionMismatch,
     #[error("implementation package build {build_id} is absent from the artifact closure")]
     MissingImplementation { build_id: PackageBuildId },
     #[error(

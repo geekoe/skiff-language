@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, FileIrRef, PackageArtifact,
     PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
@@ -20,6 +21,66 @@ mod validation;
 
 #[cfg(test)]
 mod public_instance_tests;
+
+/// Opaque, process-local admission for one exact immutable PackageArtifact.
+///
+/// The token owns both the typed artifact and its canonical bytes. Its fields
+/// are private and it has no serialization surface, so downstream projection
+/// code can reuse a successful identity validation without accepting a caller-
+/// manufactured "already validated" flag.
+#[derive(Debug, Clone)]
+pub struct ValidatedPackageArtifact {
+    artifact: Arc<PackageArtifact>,
+    reference: PackageArtifactRef,
+    canonical_bytes: Arc<[u8]>,
+    canonical_sha256: [u8; 32],
+    canonical_byte_len: u64,
+}
+
+impl ValidatedPackageArtifact {
+    pub fn admit(artifact: PackageArtifact) -> Result<Self> {
+        validate_package_artifact_identities(&artifact)?;
+        let reference = declared_package_artifact_ref(&artifact);
+        let canonical_bytes = skiff_canonical_json::canonical_json_bytes(&artifact)
+            .map_err(ArtifactIdentityError::SerializeValidatedPackageArtifact)?;
+        let canonical_byte_len = u64::try_from(canonical_bytes.len()).map_err(|_| {
+            ArtifactIdentityError::InvalidPackageArtifact {
+                message: "canonical PackageArtifact byte length does not fit u64".to_string(),
+            }
+        })?;
+        let canonical_sha256 = Sha256::digest(&canonical_bytes).into();
+        Ok(Self {
+            artifact: Arc::new(artifact),
+            reference,
+            canonical_bytes: Arc::from(canonical_bytes),
+            canonical_sha256,
+            canonical_byte_len,
+        })
+    }
+
+    pub fn admit_clone(artifact: &PackageArtifact) -> Result<Self> {
+        Self::admit(artifact.clone())
+    }
+
+    pub fn artifact(&self) -> &PackageArtifact {
+        &self.artifact
+    }
+
+    pub fn reference(&self) -> &PackageArtifactRef {
+        &self.reference
+    }
+
+    pub fn exactly_matches(&self, artifact: &PackageArtifact) -> bool {
+        self.artifact.as_ref() == artifact
+    }
+
+    pub fn has_same_exact_content(&self, other: &Self) -> bool {
+        self.canonical_byte_len == other.canonical_byte_len
+            && self.canonical_sha256 == other.canonical_sha256
+            && self.canonical_bytes == other.canonical_bytes
+            && self.artifact == other.artifact
+    }
+}
 
 /// Complete canonical preimage of a package-local public ABI identity.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -153,12 +214,16 @@ pub fn validate_package_artifact_identities(artifact: &PackageArtifact) -> Resul
 
 pub fn package_artifact_ref(artifact: &PackageArtifact) -> Result<PackageArtifactRef> {
     validate_package_artifact_identities(artifact)?;
-    Ok(PackageArtifactRef {
+    Ok(declared_package_artifact_ref(artifact))
+}
+
+fn declared_package_artifact_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
+    PackageArtifactRef {
         package_id: artifact.package_id.clone(),
         package_version: artifact.package_version.clone(),
         package_build_id: artifact.package_build_id.clone(),
         package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
-    })
+    }
 }
 
 fn invalid_artifact<T>(message: impl Into<String>) -> Result<T> {
@@ -247,6 +312,23 @@ mod tests {
             validate_package_artifact_identities(&stale_build),
             Err(ArtifactIdentityError::PackageArtifactBuildIdentityMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn validated_package_artifact_owns_one_exact_unforgeable_content_snapshot() {
+        let artifact = fixture();
+        let admitted = ValidatedPackageArtifact::admit_clone(&artifact).unwrap();
+        assert_eq!(
+            admitted.reference(),
+            &package_artifact_ref(&artifact).unwrap()
+        );
+        assert!(admitted.exactly_matches(&artifact));
+        assert!(admitted
+            .has_same_exact_content(&ValidatedPackageArtifact::admit_clone(&artifact).unwrap()));
+
+        let mut changed = artifact;
+        changed.package_version = "2.0.0".to_string();
+        assert!(!admitted.exactly_matches(&changed));
     }
 
     #[test]

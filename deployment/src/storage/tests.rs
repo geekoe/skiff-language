@@ -120,9 +120,45 @@ fn declared_package_ref(artifact: &PackageArtifact) -> skiff_artifact_model::Pac
     }
 }
 
-fn write_empty_package_closure(store: &CanonicalArtifactStore, artifact: &PackageArtifact) {
+fn package_copy_fixture() -> (PackageArtifact, FileIrUnit, Vec<u8>) {
+    use sha2::{Digest, Sha256};
+
+    let mut artifact = package_fixture();
+    let mut file = FileIrUnit::empty("checkpoint.copy", "copy-source-hash");
+    assign_file_ir_identity(&mut file).unwrap();
+    let resource = b"package-copy-resource".to_vec();
+    artifact.files.push(FileIrRef::new(
+        file.file_ir_identity.clone(),
+        file.module_path.clone(),
+    ));
+    artifact
+        .static_resources
+        .push(skiff_artifact_model::PublicationResourceRef {
+            path: "assets/copy.txt".to_string(),
+            sha256: hex::encode(Sha256::digest(&resource)),
+            byte_len: resource.len() as u64,
+            content_type: Some("text/plain".to_string()),
+            artifact_path: None,
+        });
+    assign_package_artifact_identities(&mut artifact).unwrap();
+    (artifact, file, resource)
+}
+
+fn write_package_copy_closure(
+    store: &CanonicalArtifactStore,
+    artifact: &PackageArtifact,
+    file: &FileIrUnit,
+    resource: &[u8],
+) {
+    let reference = package_artifact_ref(artifact).unwrap();
     store
         .write_package_schema_index(&empty_schema_index(artifact))
+        .unwrap();
+    store
+        .write_file_ir(&reference, &artifact.files[0], file)
+        .unwrap();
+    store
+        .write_static_resource(&reference, &artifact.static_resources[0], resource)
         .unwrap();
     store.write_package_artifact(artifact).unwrap();
 }
@@ -132,15 +168,15 @@ fn package_copy_admission_cache_is_content_identity_and_source_exact() {
     let (_source_root, source) = test_store();
     let (_target_root, target) = test_store();
     let (_other_root, other_source) = test_store();
-    let first = package_fixture();
+    let (first, file, resource) = package_copy_fixture();
     let mut second = first.clone();
     second.package_version = "2.0.0".to_string();
     assign_package_artifact_identities(&mut second).unwrap();
     let first_ref = package_artifact_ref(&first).unwrap();
     let second_ref = package_artifact_ref(&second).unwrap();
-    write_empty_package_closure(&source, &first);
-    write_empty_package_closure(&source, &second);
-    write_empty_package_closure(&other_source, &first);
+    write_package_copy_closure(&source, &first, &file, &resource);
+    write_package_copy_closure(&source, &second, &file, &resource);
+    write_package_copy_closure(&other_source, &first, &file, &resource);
 
     let mut cache = PackageArtifactAdmissionCache::default();
     {
@@ -150,6 +186,20 @@ fn package_copy_admission_cache_is_content_identity_and_source_exact() {
             .write_validated_package_copy_records(admitted)
             .unwrap();
     }
+    assert_eq!(
+        target
+            .read_file_ir(&first_ref, &first.files[0])
+            .unwrap()
+            .as_ref(),
+        &file
+    );
+    assert_eq!(
+        target
+            .read_static_resource(&first_ref, &first.static_resources[0])
+            .unwrap()
+            .as_ref(),
+        resource
+    );
     assert_eq!(cache.admission_count(), 1);
     cache.admit(&source, &first_ref).unwrap();
     assert_eq!(
@@ -194,6 +244,33 @@ fn package_copy_admission_cache_is_content_identity_and_source_exact() {
     assert!(cache.admit(&source, &first_ref).is_err());
     assert_eq!(cache.admission_count(), 3);
     fs::write(&schema_host_path, original_schema).unwrap();
+
+    let file_path =
+        skiff_artifact_identity::PackageFileIrRecordPath::new(&first_ref, &first.files[0]).unwrap();
+    let file_host_path = source.root().join(file_path.as_relative_path().as_path());
+    let original_file = fs::read(&file_host_path).unwrap();
+    let mut tampered_file = original_file.clone();
+    tampered_file.push(b'\n');
+    fs::write(&file_host_path, tampered_file).unwrap();
+    assert!(cache.admit(&source, &first_ref).is_err());
+    assert_eq!(cache.admission_count(), 3);
+    fs::write(&file_host_path, original_file).unwrap();
+
+    let resource_path = skiff_artifact_identity::PackageResourceRecordPath::new(
+        &first_ref,
+        &first.static_resources[0],
+    )
+    .unwrap();
+    let resource_host_path = source
+        .root()
+        .join(resource_path.as_relative_path().as_path());
+    let original_resource = fs::read(&resource_host_path).unwrap();
+    let mut tampered_resource = original_resource.clone();
+    tampered_resource.push(b'!');
+    fs::write(&resource_host_path, tampered_resource).unwrap();
+    assert!(cache.admit(&source, &first_ref).is_err());
+    assert_eq!(cache.admission_count(), 3);
+    fs::write(&resource_host_path, original_resource).unwrap();
 
     let target_package_path = target
         .root()

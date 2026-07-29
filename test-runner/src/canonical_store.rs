@@ -1,9 +1,9 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
-use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
+use skiff_artifact_identity::{service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     AssemblyIdentity, PackageArtifact, PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef,
     ServiceContract, ServiceDeployment,
@@ -96,9 +96,8 @@ impl CanonicalTestRecords {
         let owned_packages = self
             .packages
             .iter()
-            .map(|package| package_artifact_ref(&package.artifact))
-            .collect::<Result<BTreeSet<_>, _>>()
-            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+            .map(|package| declared_package_ref(&package.artifact))
+            .collect::<BTreeSet<_>>();
         let owned_contracts = self
             .contracts
             .iter()
@@ -134,7 +133,7 @@ impl CanonicalTestRecords {
         }
 
         for package in &self.packages {
-            publish_package(&target, package, &mut written)?;
+            publish_package(&target, package, session, &mut written)?;
         }
         for contract in &self.contracts {
             written.push(target.write_service_contract(contract)?);
@@ -150,6 +149,7 @@ impl CanonicalTestRecords {
 #[derive(Debug, Default)]
 pub(crate) struct CanonicalPublishSession {
     package_admissions: PackageArtifactAdmissionCache,
+    owned_package_publications: BTreeMap<(PathBuf, PackageArtifactRef), PublishedPackageArtifact>,
 }
 
 fn copy_package(
@@ -160,15 +160,6 @@ fn copy_package(
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
     let admitted = session.package_admissions.admit(source, reference)?;
-    let artifact = admitted.artifact();
-    for file in &artifact.files {
-        let unit = source.read_file_ir(reference, file)?;
-        written.push(target.write_file_ir(reference, file, &unit)?);
-    }
-    for resource in &artifact.static_resources {
-        let bytes = source.read_static_resource(reference, resource)?;
-        written.push(target.write_static_resource(reference, resource, &bytes)?);
-    }
     written.extend(target.write_validated_package_copy_records(admitted)?);
     Ok(())
 }
@@ -176,10 +167,29 @@ fn copy_package(
 fn publish_package(
     store: &CanonicalArtifactStore,
     package: &PublishedPackageArtifact,
+    session: &mut CanonicalPublishSession,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
+    let reference = declared_package_ref(&package.artifact);
+    let key = (store.root().to_path_buf(), reference.clone());
+    if let Some(previous) = session.owned_package_publications.get(&key) {
+        if previous != package {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test-owned package {} reused one exact reference with different emitted content",
+                reference.package_build_id
+            )));
+        }
+        session.package_admissions.admit(store, &reference)?;
+        return Ok(());
+    }
     let receipt = publish_package_artifact_records(store.root(), package)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    if receipt.artifact != reference {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "test-owned package publication receipt changed its declared exact reference"
+                .to_string(),
+        ));
+    }
     written.extend(
         receipt
             .file_ir_record_paths
@@ -188,5 +198,17 @@ fn publish_package(
             .chain(std::iter::once(&receipt.record_path))
             .map(|path| store.root().join(path)),
     );
+    session
+        .owned_package_publications
+        .insert(key, package.clone());
     Ok(())
+}
+
+fn declared_package_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
+    PackageArtifactRef {
+        package_id: artifact.package_id.clone(),
+        package_version: artifact.package_version.clone(),
+        package_build_id: artifact.package_build_id.clone(),
+        package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
+    }
 }

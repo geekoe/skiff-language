@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use skiff_artifact_identity::{package_artifact_ref, service_contract_ref};
+use skiff_artifact_identity::{service_contract_ref, ValidatedPackageArtifact};
 use skiff_artifact_model::{
     ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentPolicy,
     DeploymentRevision, HttpGatewayDocumentAuthoring, MetadataValue, PackageArtifact,
@@ -14,14 +14,17 @@ use skiff_artifact_model::{
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
-use skiff_deployment::projection::{project_service_deployment, ProjectionError};
+use skiff_deployment::projection::{
+    project_service_deployment_with_validated_packages, ProjectionError,
+};
 use thiserror::Error;
 
 use crate::http_gateway_projection::{
-    project_http_gateway, HttpGatewayProjectionError, ProjectedHttpGateway,
+    project_http_gateway_after_package_validation, HttpGatewayProjectionError, ProjectedHttpGateway,
 };
 use crate::websocket_gateway_projection::{
-    project_websocket_gateway, ProjectedWebSocketGateway, WebSocketGatewayProjectionError,
+    project_websocket_gateway_after_package_validation, ProjectedWebSocketGateway,
+    WebSocketGatewayProjectionError,
 };
 
 /// Exact typed inputs used to generate one deployment. There is deliberately no
@@ -65,11 +68,32 @@ pub enum GeneratedServiceDeploymentError {
 pub fn generate_service_deployment(
     input: GeneratedServiceDeploymentInput<'_>,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
+    let implementation =
+        ValidatedPackageArtifact::admit_clone(input.implementation).map_err(identity_error)?;
+    let package_closure = input
+        .package_closure
+        .iter()
+        .map(ValidatedPackageArtifact::admit_clone)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(identity_error)?;
+    generate_service_deployment_with_validated_packages(input, &implementation, &package_closure)
+}
+
+pub fn generate_service_deployment_with_validated_packages(
+    input: GeneratedServiceDeploymentInput<'_>,
+    implementation: &ValidatedPackageArtifact,
+    package_closure: &[ValidatedPackageArtifact],
+) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
+    validate_exact_package_admissions(&input, implementation, package_closure)?;
     validate_exact_api(&input)?;
+    if input.http.is_some() || input.websocket.is_some() {
+        skiff_artifact_identity::validate_package_schema_records(input.package_schema_records)
+            .map_err(identity_error)?;
+    }
     let ProjectedHttpGateway {
         mut gateway_entries,
         mut ingress,
-    } = project_http_gateway(
+    } = project_http_gateway_after_package_validation(
         input.http,
         input.implementation,
         input.package_closure,
@@ -78,7 +102,7 @@ pub fn generate_service_deployment(
     let ProjectedWebSocketGateway {
         gateway_entries: websocket_entries,
         ingress: websocket_ingress,
-    } = project_websocket_gateway(
+    } = project_websocket_gateway_after_package_validation(
         input.websocket,
         input.implementation,
         input.package_closure,
@@ -99,9 +123,9 @@ pub fn generate_service_deployment(
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract: service_contract_ref(&input.service_api.contract).map_err(identity_error)?,
         deployment_revision: generated_revision(&input)?,
-        implementation: package_artifact_ref(input.implementation).map_err(identity_error)?,
+        implementation: implementation.reference().clone(),
         operation_bindings: operation_bindings(&input)?,
-        package_bindings: package_bindings(&input)?,
+        package_bindings: package_bindings(&input, implementation, package_closure)?,
         service_selectors: service_selectors(&input),
         gateway_entries,
         ingress,
@@ -129,21 +153,47 @@ pub fn generate_service_deployment(
         },
     };
     let mut artifacts = input.package_closure.to_vec();
+    let mut validated_artifacts = package_closure.to_vec();
     if !artifacts
         .iter()
         .any(|candidate| candidate.package_build_id == input.implementation.package_build_id)
     {
         artifacts.push(input.implementation.clone());
+        validated_artifacts.push(implementation.clone());
     }
     let contract_schema_records =
         contract_package_schema_records(&input, input.package_schema_records)?;
-    Ok(project_service_deployment(
+    Ok(project_service_deployment_with_validated_packages(
         typed,
         &input.service_api.contract,
         &artifacts,
         &contract_schema_records,
+        &validated_artifacts,
     )
     .map_err(projection_error)?)
+}
+
+fn validate_exact_package_admissions(
+    input: &GeneratedServiceDeploymentInput<'_>,
+    implementation: &ValidatedPackageArtifact,
+    package_closure: &[ValidatedPackageArtifact],
+) -> Result<(), GeneratedServiceDeploymentError> {
+    if !implementation.exactly_matches(input.implementation) {
+        return Err(invalid(
+            "validated implementation PackageArtifact does not match the generated deployment input",
+        ));
+    }
+    if package_closure.len() != input.package_closure.len()
+        || package_closure
+            .iter()
+            .zip(input.package_closure)
+            .any(|(validated, artifact)| !validated.exactly_matches(artifact))
+    {
+        return Err(invalid(
+            "validated package closure does not exactly match the generated deployment input",
+        ));
+    }
+    Ok(())
 }
 
 fn contract_package_schema_records(
@@ -254,6 +304,8 @@ fn operation_bindings(
 
 fn package_bindings(
     input: &GeneratedServiceDeploymentInput<'_>,
+    implementation: &ValidatedPackageArtifact,
+    package_closure: &[ValidatedPackageArtifact],
 ) -> Result<Vec<PackageBinding>, GeneratedServiceDeploymentError> {
     input
         .package_closure
@@ -291,11 +343,46 @@ fn package_bindings(
                     caller_package_build_id: caller.package_build_id.clone(),
                     package_requirement_alias: requirement.alias.clone(),
                 },
-                package: package_artifact_ref(package).map_err(identity_error)?,
+                package: validated_package_reference(
+                    package,
+                    input,
+                    implementation,
+                    package_closure,
+                )?
+                .clone(),
                 collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
         .collect()
+}
+
+fn validated_package_reference<'a>(
+    package: &PackageArtifact,
+    input: &GeneratedServiceDeploymentInput<'_>,
+    implementation: &'a ValidatedPackageArtifact,
+    package_closure: &'a [ValidatedPackageArtifact],
+) -> Result<&'a skiff_artifact_model::PackageArtifactRef, GeneratedServiceDeploymentError> {
+    if package.package_build_id == input.implementation.package_build_id {
+        if implementation.exactly_matches(package) {
+            return Ok(implementation.reference());
+        }
+        return Err(invalid(
+            "validated implementation PackageArtifact content changed after admission",
+        ));
+    }
+    package_closure
+        .iter()
+        .find(|validated| {
+            validated.reference().package_build_id == package.package_build_id
+                && validated.exactly_matches(package)
+        })
+        .map(ValidatedPackageArtifact::reference)
+        .ok_or_else(|| {
+            invalid(format!(
+                "package {} has no exact validated admission",
+                package.package_build_id
+            ))
+        })
 }
 
 fn service_selectors(input: &GeneratedServiceDeploymentInput<'_>) -> Vec<ServiceSelectorBinding> {

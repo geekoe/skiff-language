@@ -511,7 +511,7 @@ fn raw_string(
     Ok(())
 }
 
-fn validate_file_ref(
+pub(super) fn validate_file_ref(
     path: &std::path::Path,
     package: &PackageArtifactRef,
     reference: &FileIrRef,
@@ -536,7 +536,7 @@ fn validate_file_ref(
     Ok(())
 }
 
-fn validate_resource(
+pub(super) fn validate_resource(
     path: &std::path::Path,
     reference: &PublicationResourceRef,
     bytes: &[u8],

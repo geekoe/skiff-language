@@ -38,7 +38,7 @@ pub(crate) struct ProjectedHttpGateway {
     pub ingress: Vec<DeploymentIngressBinding>,
 }
 
-pub(crate) fn project_http_gateway(
+pub(crate) fn project_http_gateway_after_package_validation(
     http: Option<&HttpGatewayDocumentAuthoring>,
     implementation: &PackageArtifact,
     package_closure: &[PackageArtifact],
@@ -47,25 +47,6 @@ pub(crate) fn project_http_gateway(
     let Some(http) = http else {
         return Ok(ProjectedHttpGateway::default());
     };
-    for artifact in package_closure
-        .iter()
-        .chain(std::iter::once(implementation))
-    {
-        skiff_artifact_identity::validate_package_artifact_identities(artifact).map_err(
-            |error| HttpGatewayProjectionError::InvalidEntry {
-                entry: "<package-closure>".to_string(),
-                field: "packageArtifact",
-                message: error.to_string(),
-            },
-        )?;
-    }
-    skiff_artifact_identity::validate_package_schema_records(package_schema_records).map_err(
-        |error| HttpGatewayProjectionError::InvalidEntry {
-            entry: "<schema-closure>".to_string(),
-            field: "packageSchemaRecords",
-            message: error.to_string(),
-        },
-    )?;
     let resolver = ExactCallableResolver::new(implementation);
     let classifier =
         ExactTypeClassifier::new(implementation, package_closure, package_schema_records);

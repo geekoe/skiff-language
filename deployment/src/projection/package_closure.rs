@@ -1,11 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use super::{ProjectionError, ProjectionResult};
 use skiff_artifact_model::{
     PackageArtifact, PackageArtifactRef, PackageBuildId, PackageRequirementKey,
     ServiceDeploymentInput,
 };
-
-use super::{ProjectionError, ProjectionResult};
 
 pub(super) struct PackageClosure<'a> {
     by_build: BTreeMap<PackageBuildId, &'a PackageArtifact>,
@@ -33,7 +32,38 @@ impl<'a> PackageClosure<'a> {
                 });
             }
         }
+        Self::finish_resolve(input, by_build)
+    }
 
+    pub(super) fn resolve_after_validation(
+        input: &ServiceDeploymentInput,
+        artifacts: &'a [PackageArtifact],
+    ) -> ProjectionResult<Self> {
+        Self::resolve_inner(input, artifacts)
+    }
+
+    fn resolve_inner(
+        input: &ServiceDeploymentInput,
+        artifacts: &'a [PackageArtifact],
+    ) -> ProjectionResult<Self> {
+        let mut by_build = BTreeMap::new();
+        for artifact in artifacts {
+            if by_build
+                .insert(artifact.package_build_id.clone(), artifact)
+                .is_some()
+            {
+                return Err(ProjectionError::DuplicatePackageBuild {
+                    build_id: artifact.package_build_id.clone(),
+                });
+            }
+        }
+        Self::finish_resolve(input, by_build)
+    }
+
+    fn finish_resolve(
+        input: &ServiceDeploymentInput,
+        by_build: BTreeMap<PackageBuildId, &'a PackageArtifact>,
+    ) -> ProjectionResult<Self> {
         let implementation = by_build
             .get(&input.implementation.package_build_id)
             .copied()

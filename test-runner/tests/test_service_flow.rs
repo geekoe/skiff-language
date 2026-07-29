@@ -174,8 +174,21 @@ fn multiple_cases_receive_separate_deployments_and_assemblies() {
             .collect::<Vec<_>>(),
         ["skiffTestCase0", "skiffTestCase1", "skiffTestCase0"]
     );
+    let single_case_fixture =
+        assemble_test_service_fixture(&project, &cases[..1], Default::default())
+            .expect("assemble one isolated case");
     let fixture = assemble_test_service_fixture(&project, &cases, Default::default())
         .expect("assemble isolated cases");
+    assert_eq!(
+        fixture.package_identity_admission_count(),
+        single_case_fixture.package_identity_admission_count(),
+        "full PackageArtifact identity admissions depend on the unique closure, not case count"
+    );
+    assert_eq!(
+        fixture.package_identity_admission_count(),
+        project.artifacts().count(),
+        "each unique fixture package is fully admitted exactly once"
+    );
     assert_eq!(fixture.cases.len(), 3);
     for (index, case) in fixture.cases.iter().enumerate() {
         assert_eq!(case.records.deployments.len(), 1);

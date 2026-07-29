@@ -6,8 +6,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
-    assign_service_contract_identities, package_artifact_ref, service_contract_ref,
-    service_deployment_ref,
+    assign_service_contract_identities, service_contract_ref, service_deployment_ref,
+    ValidatedPackageArtifact,
 };
 use skiff_artifact_model::{
     DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision,
@@ -20,7 +20,8 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::{
-    assembly::resolve_runtime_assembly, projection::project_service_deployment,
+    assembly::resolve_runtime_assembly_with_validated_packages,
+    projection::project_service_deployment_with_validated_packages,
 };
 
 use crate::{
@@ -58,9 +59,15 @@ pub struct CanonicalTestServiceCaseFixture {
 pub struct CanonicalTestServiceFixture {
     pub test_service: PackageArtifactRef,
     pub cases: Vec<CanonicalTestServiceCaseFixture>,
+    package_identity_admission_count: usize,
 }
 
 impl CanonicalTestServiceFixture {
+    #[doc(hidden)]
+    pub fn package_identity_admission_count(&self) -> usize {
+        self.package_identity_admission_count
+    }
+
     pub fn publish(
         &self,
         source_artifact_root: &std::path::Path,
@@ -138,12 +145,15 @@ fn assemble_test_service_fixture_inner(
         .enumerate()
         .map(|(index, case)| test_service_gateway_inputs(&project.package.artifact, index, case))
         .collect::<Result<Vec<_>, _>>()?;
-    let test_service_ref = package_artifact_ref(&project.package.artifact)
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-
     let mut deployment_packages = vec![project.package.artifact.clone()];
     deployment_packages.extend(project.dependency_packages.iter().cloned());
-    let package_bindings = canonical_package_bindings(&deployment_packages)?;
+    let validated_deployment_packages = deployment_packages
+        .iter()
+        .map(ValidatedPackageArtifact::admit_clone)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let test_service_ref = validated_deployment_packages[0].reference().clone();
+    let package_bindings = canonical_package_bindings(&validated_deployment_packages)?;
     let service_selectors = test_service_selectors(&deployment_packages, &base)?;
     let state_requirements = test_service_state_requirements(&deployment_packages)?;
     let profile_bindings = selected_profile_bindings(
@@ -155,6 +165,16 @@ fn assemble_test_service_fixture_inner(
     )?;
     let runtime_capability_bindings =
         selected_runtime_capability_bindings(project, &deployment_packages, None);
+    let mut all_packages = deployment_packages.clone();
+    let mut validated_all_packages = validated_deployment_packages.clone();
+    extend_unique_validated_packages(
+        &mut all_packages,
+        &mut validated_all_packages,
+        &base.packages,
+    )?;
+    let package_identity_admission_count = validated_all_packages.len();
+    let validated_implementation = &validated_deployment_packages[0];
+    let validated_dependency_packages = &validated_deployment_packages[1..];
     let mut case_fixtures = Vec::with_capacity(cases.len());
     for (index, ((case, (gateway_entry_key, gateway_entry, ingress)), service_id)) in cases
         .iter()
@@ -167,7 +187,13 @@ fn assemble_test_service_fixture_inner(
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         let case_scope = test_service_case_scope(run_scope, &execution_nonce, index, case);
         let state_bindings = test_service_state_bindings(&state_requirements, &case_scope)?;
-        let generated = http_entry::project(project, &contract, ingress_url)?;
+        let generated = http_entry::project(
+            project,
+            &contract,
+            ingress_url,
+            validated_implementation,
+            validated_dependency_packages,
+        )?;
         let operation_bindings = generated
             .operation_bindings
             .into_iter()
@@ -187,7 +213,7 @@ fn assemble_test_service_fixture_inner(
             )));
         }
         deployment_ingress.extend(ingress.iter().cloned());
-        let deployment = project_service_deployment(
+        let deployment = project_service_deployment_with_validated_packages(
             test_service_deployment_input(
                 &test_profile.service_id,
                 index,
@@ -208,6 +234,7 @@ fn assemble_test_service_fixture_inner(
                 &contract,
                 &project.package.resolved_package_schema_type_records,
             )?,
+            &validated_deployment_packages,
         )
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         let deployment_ref = service_deployment_ref(&deployment);
@@ -216,18 +243,16 @@ fn assemble_test_service_fixture_inner(
                 "test-service case must produce exactly one ingress".to_string(),
             ));
         };
-        let mut all_packages = base.packages.clone();
-        all_packages.extend(deployment_packages.iter().cloned());
-        let all_packages = unique_packages(all_packages)?;
         let mut all_contracts = base.contracts.clone();
         all_contracts.push(contract.clone());
         let mut all_deployments = base.deployments.clone();
         all_deployments.push(deployment.clone());
-        let assembly = resolve_runtime_assembly(
+        let assembly = resolve_runtime_assembly_with_validated_packages(
             std::slice::from_ref(&deployment_ref),
             &all_deployments,
             &all_contracts,
             &all_packages,
+            &validated_all_packages,
         )
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         case_fixtures.push(CanonicalTestServiceCaseFixture {
@@ -252,6 +277,7 @@ fn assemble_test_service_fixture_inner(
     Ok(CanonicalTestServiceFixture {
         test_service: test_service_ref,
         cases: case_fixtures,
+        package_identity_admission_count,
     })
 }
 
@@ -334,15 +360,15 @@ fn test_service_gateway_inputs(
 }
 
 pub(crate) fn canonical_package_bindings(
-    packages: &[PackageArtifact],
+    packages: &[ValidatedPackageArtifact],
 ) -> Result<Vec<PackageBinding>, CanonicalFixtureError> {
     let by_coordinate = packages
         .iter()
         .map(|package| {
             (
                 (
-                    package.package_id.as_str(),
-                    package.package_version.as_str(),
+                    package.artifact().package_id.as_str(),
+                    package.artifact().package_version.as_str(),
                 ),
                 package,
             )
@@ -352,6 +378,7 @@ pub(crate) fn canonical_package_bindings(
         .iter()
         .flat_map(|caller| {
             caller
+                .artifact()
                 .package_requirements
                 .iter()
                 .map(move |requirement| (caller, requirement))
@@ -368,7 +395,9 @@ pub(crate) fn canonical_package_bindings(
                         requirement.package_id, requirement.exact_version
                     ))
                 })?;
-            if dependency.package_local_abi.local_abi_identity != requirement.expected_local_abi {
+            if dependency.artifact().package_local_abi.local_abi_identity
+                != requirement.expected_local_abi
+            {
                 return Err(CanonicalFixtureError::InvalidInput(format!(
                     "canonical dependency {} ABI does not match requirement {}",
                     requirement.package_id, requirement.alias
@@ -376,11 +405,10 @@ pub(crate) fn canonical_package_bindings(
             }
             Ok(PackageBinding {
                 key: PackageRequirementKey {
-                    caller_package_build_id: caller.package_build_id.clone(),
+                    caller_package_build_id: caller.reference().package_build_id.clone(),
                     package_requirement_alias: requirement.alias.clone(),
                 },
-                package: package_artifact_ref(dependency)
-                    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?,
+                package: dependency.reference().clone(),
                 collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
@@ -590,16 +618,35 @@ fn selected_runtime_capability_bindings(
         .collect()
 }
 
-fn unique_packages(
-    packages: Vec<PackageArtifact>,
-) -> Result<Vec<PackageArtifact>, CanonicalFixtureError> {
-    let mut unique = BTreeMap::new();
-    for package in packages {
-        let reference = package_artifact_ref(&package)
+fn extend_unique_validated_packages(
+    packages: &mut Vec<PackageArtifact>,
+    validated: &mut Vec<ValidatedPackageArtifact>,
+    candidates: &[PackageArtifact],
+) -> Result<(), CanonicalFixtureError> {
+    for candidate in candidates {
+        let declared = PackageArtifactRef {
+            package_id: candidate.package_id.clone(),
+            package_version: candidate.package_version.clone(),
+            package_build_id: candidate.package_build_id.clone(),
+            package_local_abi_identity: candidate.package_local_abi.local_abi_identity.clone(),
+        };
+        if let Some(existing) = validated
+            .iter()
+            .find(|existing| existing.reference() == &declared)
+        {
+            if !existing.exactly_matches(candidate) {
+                return Err(CanonicalFixtureError::InvalidInput(format!(
+                    "package reference {declared:?} has conflicting exact content"
+                )));
+            }
+            continue;
+        }
+        let admission = ValidatedPackageArtifact::admit_clone(candidate)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        unique.entry(reference).or_insert(package);
+        packages.push(candidate.clone());
+        validated.push(admission);
     }
-    Ok(unique.into_values().collect())
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]

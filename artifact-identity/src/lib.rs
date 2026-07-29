@@ -72,7 +72,7 @@ pub use package_artifact::{
     package_artifact_build_identity_projection, package_artifact_local_abi_identity,
     package_artifact_local_abi_identity_projection, package_artifact_ref,
     validate_package_artifact_identities, PackageArtifactBuildIdentityProjection,
-    PackageArtifactLocalAbiIdentityProjection,
+    PackageArtifactLocalAbiIdentityProjection, ValidatedPackageArtifact,
 };
 pub use runtime_assembly::{
     assign_runtime_assembly_identity, runtime_assembly_identity,

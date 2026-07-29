@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_identity::{
     service_deployment_ref, validate_package_artifact_identities,
     validate_service_contract_identities, validate_service_deployment_identity,
+    ValidatedPackageArtifact,
 };
 use skiff_artifact_model::{
     PackageArtifact, PackageArtifactRef, PackageBuildId, ServiceContract, ServiceContractRef,
@@ -37,6 +38,26 @@ impl<'a> CandidateIndex<'a> {
         index.index_deployments(deployments)?;
         index.index_contracts(contracts)?;
         index.index_packages(packages)?;
+        Ok(index)
+    }
+
+    pub(super) fn new_with_validated_packages(
+        deployments: &'a [ServiceDeployment],
+        contracts: &'a [ServiceContract],
+        packages: &'a [PackageArtifact],
+        validated_packages: &[ValidatedPackageArtifact],
+    ) -> AssemblyResult<Self> {
+        let mut index = Self {
+            deployments: BTreeMap::new(),
+            providers: BTreeMap::new(),
+            provider_protocols: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+            contract_protocols: BTreeMap::new(),
+            packages: BTreeMap::new(),
+        };
+        index.index_deployments(deployments)?;
+        index.index_contracts(contracts)?;
+        index.index_validated_packages(packages, validated_packages)?;
         Ok(index)
     }
 
@@ -76,18 +97,38 @@ impl<'a> CandidateIndex<'a> {
         for package in packages {
             validate_package_artifact_identities(package)?;
             let reference = package_artifact_ref(package);
-            match self.packages.entry(reference.package_build_id.clone()) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert((reference, package));
-                }
-                std::collections::btree_map::Entry::Occupied(entry) => {
-                    if entry.get().0 != reference {
-                        return Err(AssemblyResolutionError::ConflictingCandidatePackageBuild {
-                            build_id: reference.package_build_id.clone(),
-                            first: entry.get().0.clone(),
-                            second: reference,
-                        });
-                    }
+            self.insert_package(reference, package)?;
+        }
+        Ok(())
+    }
+
+    fn index_validated_packages(
+        &mut self,
+        packages: &'a [PackageArtifact],
+        validated_packages: &[ValidatedPackageArtifact],
+    ) -> AssemblyResult<()> {
+        for (package, validated) in packages.iter().zip(validated_packages) {
+            self.insert_package(validated.reference().clone(), package)?;
+        }
+        Ok(())
+    }
+
+    fn insert_package(
+        &mut self,
+        reference: PackageArtifactRef,
+        package: &'a PackageArtifact,
+    ) -> AssemblyResult<()> {
+        match self.packages.entry(reference.package_build_id.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((reference, package));
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                if entry.get().0 != reference {
+                    return Err(AssemblyResolutionError::ConflictingCandidatePackageBuild {
+                        build_id: reference.package_build_id.clone(),
+                        first: entry.get().0.clone(),
+                        second: reference,
+                    });
                 }
             }
         }
