@@ -3,9 +3,12 @@
 状态：
 
 ```text
-BLOCKED_BY = I
+PASS
 READ_ONLY = YES
 ```
+
+完成结果：
+`P5-F445H-I7-P8-X-independent-http-entry-acceptance-result.md`。
 
 ## 1. Inputs
 
