@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 pub use skiff_runtime_model::type_exports::{
     PackageSymbolKey, RuntimeTypeExports, ServiceSymbolKey,
@@ -10,8 +13,7 @@ use super::{
         LinkedNamedUnionBranch, LinkedNominalTypeRefBase, LinkedTypeDescriptor, LinkedTypeRef,
         LiteralIr, TypeDeclIr,
     },
-    package_unit::PackageUnit,
-    ServiceSymbolRef,
+    RuntimeExecutionPackage, ServiceSymbolRef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -317,10 +319,10 @@ fn literal_to_value(value: &LiteralIr) -> Value {
 pub fn publication_id_for_type_addr<'a>(
     addr: &TypeAddr,
     service_id: &'a str,
-    packages: &'a [PackageUnit],
+    packages: &'a [Arc<RuntimeExecutionPackage>],
 ) -> Option<&'a str> {
     match &addr.unit {
         UnitAddr::Service => Some(service_id),
-        UnitAddr::Package(slot) => packages.get(*slot).map(|p| p.package_id.as_str()),
+        UnitAddr::Package(slot) => packages.get(*slot).map(|package| package.package_id()),
     }
 }

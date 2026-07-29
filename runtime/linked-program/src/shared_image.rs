@@ -122,6 +122,10 @@ impl SharedPackageCode {
         self.artifact.as_ref()
     }
 
+    pub fn artifact_arc(&self) -> Arc<PackageArtifact> {
+        Arc::clone(&self.artifact)
+    }
+
     pub fn files(&self) -> &[Arc<FileIrUnit>] {
         &self.files
     }

@@ -23,6 +23,71 @@ const PACKAGE_LOCAL_ABI: &str =
 const FILE_ID: &str =
     "skiff-file-ir-v9:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+#[test]
+fn runtime_execution_package_binds_exact_artifact_files_and_resources() {
+    let source = artifact_file();
+    let artifact = Arc::new(package_artifact(&source));
+    let linked = Arc::new(linked_file());
+
+    let package = RuntimeExecutionPackage::try_new(
+        PackageCodeSlotIndex::new(0),
+        Arc::clone(&artifact),
+        vec![Arc::clone(&linked)],
+        PublicationResourceTable::default(),
+    )
+    .expect("exact package context should bind");
+
+    assert_eq!(package.artifact(), artifact.as_ref());
+    assert_eq!(package.package_id(), PACKAGE_ID);
+    assert!(Arc::ptr_eq(package.file(FILE_ID).unwrap(), &linked));
+    assert!(package.static_resources().is_empty());
+}
+
+#[test]
+fn runtime_execution_package_rejects_file_fact_mismatch() {
+    let source = artifact_file();
+    let artifact = Arc::new(package_artifact(&source));
+    let mut linked = linked_file();
+    linked.module_path = "substituted".to_string();
+
+    let error = RuntimeExecutionPackage::try_new(
+        PackageCodeSlotIndex::new(0),
+        artifact,
+        vec![Arc::new(linked)],
+        PublicationResourceTable::default(),
+    )
+    .expect_err("module mismatch must fail closed");
+
+    assert!(matches!(
+        error,
+        AssemblyExecutionImageError::ExecutionFileMismatch { file_index: 0, .. }
+    ));
+}
+
+#[test]
+fn runtime_execution_package_rejects_ambiguous_artifact_file_identity() {
+    let source = artifact_file();
+    let mut artifact = package_artifact(&source);
+    artifact.files.push(artifact.files[0].clone());
+    let linked = Arc::new(linked_file());
+
+    let error = RuntimeExecutionPackage::try_new(
+        PackageCodeSlotIndex::new(0),
+        Arc::new(artifact),
+        vec![Arc::clone(&linked), linked],
+        PublicationResourceTable::default(),
+    )
+    .expect_err("duplicate artifact File IR identity must fail closed");
+
+    assert!(matches!(
+        error,
+        AssemblyExecutionImageError::DuplicateArtifactFileRef {
+            ref file_ir_identity,
+            ..
+        } if file_ir_identity == FILE_ID
+    ));
+}
 const FORGED_SOURCE_HASH: &str =
     "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
@@ -292,8 +357,8 @@ fn admit(
     let mut linked_file = linked_file();
     linked_file.executables[0].body.expressions = executable_expressions;
     linked_file.constants[0].body.expressions = constant_expressions;
-    let code = Arc::new(AssemblyPackageExecutionCode::try_new(
-        &shared.code_slots()[0],
+    let code = Arc::new(RuntimeExecutionPackage::try_from_shared(
+        Arc::clone(&shared.code_slots()[0]),
         vec![Arc::new(linked_file)],
     )?);
 

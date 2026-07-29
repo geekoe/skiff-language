@@ -10,8 +10,8 @@ pub use assembly::{
     LinkedServiceBindingTemplate,
 };
 pub use program::{
-    anonymous_type_decl, config_and_effect_metadata_shape, package_config_shape,
-    publication_id_for_type_addr, type_descriptor_to_value, type_ref_to_value, ArtifactFileIrUnit,
+    anonymous_type_decl, config_and_effect_metadata_shape, publication_id_for_type_addr,
+    type_descriptor_to_value, type_ref_to_value, ArtifactFileIrUnit,
     CallIr, ConfigAndEffectMetadata, ConstAddr, ConstExport, ConstIr, DbBodyIr, DbChangeIr,
     DbChangeOpIr, DbIndexDirectionIr, DbLeaseClaimIr, DbLeaseReadIr, DbOpKindIr, DbOperationIr,
     DbOrderIr, DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr, DbSelectorIr,
