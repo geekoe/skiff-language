@@ -22,9 +22,7 @@ use skiff_compiler::{
     CompilerPlatformSources,
 };
 use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
-use skiff_runtime_activation::{
-    ActivationContext, ActivationId, RequestActivationContext, RuntimeActivation,
-};
+use skiff_runtime_activation::{ActivationContext, ActivationId, RequestActivationContext};
 use skiff_runtime_boundary::http::HttpBoundaryResponseStreamEvent;
 use skiff_runtime_capability_context::{
     BinaryHttpRequestContext, DbCapabilityContext, RequestPayloadContext,

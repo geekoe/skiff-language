@@ -15,7 +15,6 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, InstructionSourceSite,
     SyntheticInstructionSiteReason, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::{
     CancellationToken, DbCapabilityContext, ExecutionControl, ExecutionControlApi,
     ExecutionControlResult, ExecutionScope, ExecutionScopeAccessError, FileSourceStreamContext,

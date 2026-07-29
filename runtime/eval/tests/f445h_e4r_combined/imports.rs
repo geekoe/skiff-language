@@ -30,7 +30,6 @@ pub(super) use skiff_compiler::{
 pub(super) use skiff_deployment::{
     assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore,
 };
-pub(super) use skiff_runtime_activation::RuntimeActivation;
 pub(super) use skiff_runtime_boundary::{
     file::{FileCreateOptions, ImmutableFileRef},
     stream::stream_value,

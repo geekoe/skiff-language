@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use skiff_artifact_model::*;
 use skiff_runtime_activation::{
     ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-    RequestActivationContext, RuntimeActivation,
+    RequestActivationContext,
 };
 use skiff_runtime_linked_program::LinkedCallTarget;
 use skiff_runtime_model::{

@@ -15,7 +15,7 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_activation::{
     ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-    RequestActivationContext, RuntimeActivation,
+    RequestActivationContext,
 };
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,

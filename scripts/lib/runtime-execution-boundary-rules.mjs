@@ -104,7 +104,7 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
     );
   }
 
-  checkLegacyServiceEdges(registry, subject, sources, violations);
+  checkRetiredServiceExecution(subject, sources, violations);
 
   if (canonicalOwner) {
     for (const root of subject.zones?.canonicalCallers ?? []) {
@@ -146,30 +146,31 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
   }
 }
 
-function checkLegacyServiceEdges(registry, subject, sources, violations) {
-  const fenceOwner = registry.owners.find(({ role }) => role === 'legacy-service-path-fence');
-  if (!fenceOwner) {
-    return;
-  }
-  const edge = /\bservice_dispatch\s*::\s*call_outbound_service(?:_operation)?\s*\(/g;
-  const fence = new RegExp(
-    `\\b(?:self\\s*\\.\\s*)?${escapeRuntimeExecutionBoundaryRegexp(fenceOwner.symbol)}\\s*\\(`,
-  );
-  for (const source of sourcesWithin(subject.zones?.legacyServiceEdges ?? [], 'rust', sources)) {
-    for (const match of source.identifiers.matchAll(edge)) {
-      const blockStart = enclosingBlockStart(source.identifiers, match.index);
-      const prefix = source.identifiers.slice(blockStart, match.index);
-      if (!fence.test(prefix)) {
-        violations.push(runtimeExecutionBoundaryViolation({
-          id: 'legacy-outbound-service-edge',
-          subject: subject.id,
-          ownerRole: fenceOwner.role,
-          relPath: source.relPath,
-          line: lineNumberAt(source.identifiers, match.index),
-          matched: match[0],
-          detail: 'legacy outbound service edge is not dominated by the assembly fail-closed fence',
-        }));
-      }
+function checkRetiredServiceExecution(subject, sources, violations) {
+  const retiredPatterns = [
+    /\bensure_legacy_service_path_allowed\b/g,
+    /\b(?:pub\s+)?mod\s+service_dispatch\b|\bservice_dispatch\s*::/g,
+    /\b(?:trait|struct|type)\s+(?:OutboundServiceApi|OutboundServiceContext|ServiceDispatchContext)\b/g,
+    /\b(?:RetiredAssemblyOutboundServiceContext|RuntimeOutboundServiceContext|outbound_service_context_from_request|retired_assembly_outbound)\b/g,
+    /\bInterfaceCarrier\s*::\s*Remote\b/g,
+    /\b(?:RequestStartControl|OutboundServiceRequestStart|OutboundStartedRequest)\b/g,
+    /\bOutboundControlMessage\s*::\s*RequestStart\b/g,
+    /\bresponse_(?:start|chunk|end|error)_to_outbound\b/g,
+  ];
+  for (const source of sourcesWithin(
+    subject.zones?.retiredServiceExecution ?? [],
+    'rust',
+    sources,
+  )) {
+    for (const pattern of retiredPatterns) {
+      addPatternViolations(
+        source,
+        pattern,
+        'legacy-runtime-service-execution',
+        subject.id,
+        'retired outbound service execution and remote interface carriers must have zero runtime owners',
+        violations,
+      );
     }
   }
 }
@@ -413,18 +414,6 @@ function rustFunctionCallsOwner(text, declarationIndex, ownerSymbol) {
   return new RegExp(
     `\\b${escapeRuntimeExecutionBoundaryRegexp(ownerSymbol)}\\s*\\(`,
   ).test(text.slice(brace + 1, close));
-}
-
-function enclosingBlockStart(text, index) {
-  const stack = [];
-  for (let cursor = 0; cursor < index; cursor += 1) {
-    if (text[cursor] === '{') {
-      stack.push(cursor + 1);
-    } else if (text[cursor] === '}') {
-      stack.pop();
-    }
-  }
-  return stack.at(-1) ?? 0;
 }
 
 function callRange(text, index) {

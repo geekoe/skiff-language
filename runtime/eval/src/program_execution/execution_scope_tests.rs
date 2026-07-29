@@ -14,7 +14,6 @@ use bytes::Bytes;
 use skiff_artifact_model::{
     AssemblyIdentity, DeploymentRevision, InstructionSourceSite, SyntheticInstructionSiteReason,
 };
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::file::FileCreateOptions;
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorFindControlRequest,

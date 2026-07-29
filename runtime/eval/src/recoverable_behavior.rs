@@ -11,14 +11,13 @@ use skiff_runtime_boundary::{
         RecoverableBehaviorHooks, RecoverableBoundaryCodec, RecoverableEncodedLocalInterfaceSelf,
         RecoverableInterfaceConformanceRequest, RecoverableInterfaceMethodTableRequest,
         RecoverableLocalInterfaceEncodeRequest, RecoverableLocalInterfaceRestoreRequest,
-        RecoverableRemoteInterfaceCarrierRequest, RecoverableRestoredLocalInterfaceSelf,
+        RecoverableRestoredLocalInterfaceSelf,
     },
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedBoxSourceIr, LinkedExprIr, LinkedFileUnit,
     LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr, LinkedNominalTypeRefBase,
-    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedTypeRef,
-    ReceiverCallAbi, TypeAddr, UnitAddr,
+    LinkedTypeRef, ReceiverCallAbi, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -36,8 +35,7 @@ use skiff_runtime_model::{
     runtime_value::{
         InterfaceMethodLiteral, InterfaceMethodSignature, InterfaceMethodSlot,
         InterfaceMethodTable, InterfaceMethodTarget, InterfaceMethodType,
-        InterfaceMethodUnresolvedType, InterfaceReceiverCallAbi, RemoteOperationSlot,
-        RemoteOperationTable,
+        InterfaceMethodUnresolvedType, InterfaceReceiverCallAbi,
     },
 };
 
@@ -64,32 +62,8 @@ struct MethodTableEntry {
     method_table: InterfaceMethodTable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct RemoteOperationSlotKey {
-    slot: u32,
-    method_abi_id: String,
-    operation_abi_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct RemoteOperationTableKey {
-    interface_identity: String,
-    method_projection_identity: String,
-    dependency_ref: String,
-    public_instance_key: String,
-    operation_table_id: String,
-    operation_table_interface_identity: String,
-    operation_slots: Vec<RemoteOperationSlotKey>,
-}
-
-#[derive(Clone)]
-struct RemoteOperationTableEntry {
-    operation_table: RemoteOperationTable,
-}
-
 pub struct EvalRecoverableBehaviorHooks {
     method_tables: HashMap<MethodTableKey, MethodTableEntry>,
-    remote_operation_tables: HashMap<RemoteOperationTableKey, RemoteOperationTableEntry>,
 }
 
 impl EvalRecoverableBehaviorHooks {
@@ -106,7 +80,6 @@ impl EvalRecoverableBehaviorHooks {
     ) -> Result<Self, RuntimeError> {
         let mut hooks = Self {
             method_tables: HashMap::new(),
-            remote_operation_tables: HashMap::new(),
         };
         hooks.index_program(program)?;
         Ok(hooks)
@@ -200,51 +173,10 @@ impl EvalRecoverableBehaviorHooks {
                                 self.method_tables.insert(key, entry);
                             }
                         }
-                        LinkedBoxSourceIr::Remote {
-                            dependency_ref,
-                            public_instance_key,
-                            operations,
-                            ..
-                        } => {
-                            let interface_identity =
-                                linked_interface_instantiation_runtime_id(interface);
-                            let method_projection_identity =
-                                recoverable_interface_projection_identity(interface);
-                            let operation_table = remote_operation_table_from_linked(
-                                dependency_ref,
-                                public_instance_key,
-                                operations,
-                            )?;
-                            if operation_table.interface_abi_id() != interface_identity {
-                                return Err(RuntimeError::InvalidArtifact(format!(
-                                    "InterfaceBox target {} does not match remote operation table interface {}",
-                                    interface_identity,
-                                    operation_table.interface_abi_id()
-                                )));
-                            }
-                            let key = RemoteOperationTableKey::from_runtime_table(
-                                interface_identity,
-                                method_projection_identity,
-                                dependency_ref.clone(),
-                                public_instance_key.clone(),
-                                &operation_table,
-                            );
-                            let entry = RemoteOperationTableEntry { operation_table };
-                            if let Some(existing) = self.remote_operation_tables.get(&key) {
-                                if !remote_operation_tables_runtime_equivalent(
-                                    &existing.operation_table,
-                                    &entry.operation_table,
-                                ) {
-                                    return Err(RuntimeError::InvalidArtifact(format!(
-                                        "recoverable remote interface projection {} for {}/{} has conflicting operation table metadata",
-                                        key.method_projection_identity,
-                                        key.dependency_ref,
-                                        key.public_instance_key
-                                    )));
-                                }
-                            } else {
-                                self.remote_operation_tables.insert(key, entry);
-                            }
+                        LinkedBoxSourceIr::Remote { .. } => {
+                            return Err(RuntimeError::InvalidArtifact(
+                                "legacy remote interface boxing is not recoverable".to_string(),
+                            ));
                         }
                     }
                 }
@@ -291,18 +223,6 @@ impl EvalRecoverableBehaviorHooks {
             concrete_type_identity: request.concrete_type_identity.to_string(),
         };
         self.method_tables.get(&key)
-    }
-
-    fn remote_entry_for_carrier(
-        &self,
-        request: &RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> Option<&RemoteOperationTableEntry> {
-        let key = RemoteOperationTableKey::from_recoverable_carrier(
-            request.interface_identity.to_string(),
-            request.method_projection_identity.to_string(),
-            request.carrier,
-        );
-        self.remote_operation_tables.get(&key)
     }
 }
 
@@ -437,74 +357,6 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
             .entry_for_key(&request)
             .map(|entry| entry.method_table.clone()))
     }
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> BoundaryResult<Option<RemoteOperationTable>> {
-        Ok(self
-            .remote_entry_for_carrier(&request)
-            .map(|entry| entry.operation_table.clone()))
-    }
-}
-
-impl RemoteOperationTableKey {
-    fn from_runtime_table(
-        interface_identity: String,
-        method_projection_identity: String,
-        dependency_ref: String,
-        public_instance_key: String,
-        table: &RemoteOperationTable,
-    ) -> Self {
-        Self {
-            interface_identity,
-            method_projection_identity,
-            dependency_ref,
-            public_instance_key,
-            operation_table_id: table.id().to_string(),
-            operation_table_interface_identity: table.interface_abi_id().to_string(),
-            operation_slots: table
-                .slots()
-                .iter()
-                .map(RemoteOperationSlotKey::from_runtime_slot)
-                .collect(),
-        }
-    }
-
-    fn from_recoverable_carrier(
-        interface_identity: String,
-        method_projection_identity: String,
-        carrier: &skiff_runtime_model::recoverable::RecoverableRemoteInterfaceCarrier,
-    ) -> Self {
-        Self {
-            interface_identity,
-            method_projection_identity,
-            dependency_ref: carrier.dependency_ref.clone(),
-            public_instance_key: carrier.public_instance_key.clone(),
-            operation_table_id: carrier.operations.id.clone(),
-            operation_table_interface_identity: carrier.operations.interface_abi_id.clone(),
-            operation_slots: carrier
-                .operations
-                .slots
-                .iter()
-                .map(|slot| RemoteOperationSlotKey {
-                    slot: slot.slot,
-                    method_abi_id: slot.method_abi_id.clone(),
-                    operation_abi_id: slot.operation_abi_id.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-impl RemoteOperationSlotKey {
-    fn from_runtime_slot(slot: &RemoteOperationSlot) -> Self {
-        Self {
-            slot: slot.slot(),
-            method_abi_id: slot.method_abi_id().to_string(),
-            operation_abi_id: slot.operation_abi_id().to_string(),
-        }
-    }
 }
 
 pub fn interface_method_table_from_linked(
@@ -527,42 +379,6 @@ pub fn interface_method_table_from_linked(
 
 pub fn runtime_interface_method_table_id(interface_id: &str, concrete_type: &str) -> String {
     format!("interface-method-table:{interface_id}:{concrete_type}")
-}
-
-fn remote_operation_table_from_linked(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    operations: &LinkedRemoteOperationTablePlanIr,
-) -> Result<RemoteOperationTable, RuntimeError> {
-    let interface_id = linked_interface_instantiation_runtime_id(&operations.interface);
-    let slots = operations
-        .slots
-        .iter()
-        .map(remote_operation_slot_from_linked)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(RemoteOperationTable::new(
-        remote_operation_table_id(dependency_ref, public_instance_key, &interface_id),
-        interface_id,
-        slots,
-    ))
-}
-
-fn remote_operation_table_id(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    interface_id: &str,
-) -> String {
-    format!("remote-operation-table:{dependency_ref}/{public_instance_key}:{interface_id}")
-}
-
-fn remote_operation_slot_from_linked(
-    slot: &LinkedRemoteOperationSlotPlanIr,
-) -> Result<RemoteOperationSlot, RuntimeError> {
-    Ok(RemoteOperationSlot::new(
-        slot.slot,
-        slot.method_abi_id.clone(),
-        slot.operation_abi_id.clone(),
-    ))
 }
 
 fn interface_method_slot_from_linked(
@@ -707,15 +523,6 @@ fn method_tables_runtime_equivalent(
     right: &InterfaceMethodTable,
 ) -> bool {
     left.interface_abi_id() == right.interface_abi_id() && left.slots() == right.slots()
-}
-
-fn remote_operation_tables_runtime_equivalent(
-    left: &RemoteOperationTable,
-    right: &RemoteOperationTable,
-) -> bool {
-    left.id() == right.id()
-        && left.interface_abi_id() == right.interface_abi_id()
-        && left.slots() == right.slots()
 }
 
 fn local_concrete_restore_key(

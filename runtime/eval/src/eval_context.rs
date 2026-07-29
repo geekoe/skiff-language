@@ -1060,9 +1060,6 @@ impl<'a> EvalContext<'a> {
                     },
                 }
             }
-            InterfaceCarrier::Remote { .. } => Err(RuntimeError::InvalidArtifact(
-                "legacy remote interface carriers are not executable".to_string(),
-            )),
             InterfaceCarrier::CallbackCapability(carrier) => {
                 self.eval_callback_interface_call(call, carrier, method_abi_id, slot, args)
                     .await

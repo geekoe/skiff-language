@@ -45,8 +45,9 @@ export const RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS = Object.freeze([
   expectation('assembly request wire dispatch omitted', 'host-active-assembly-entry-missing'),
   expectation('assembly request route pin omitted', 'host-active-assembly-entry-missing'),
   expectation('active assembly route exact field omitted', 'required-owner-anchor-missing'),
-  expectation('legacy outbound service edge', 'legacy-outbound-service-edge'),
-  expectation('legacy outbound fence omitted', 'legacy-outbound-service-edge'),
+  expectation('legacy outbound service edge', 'legacy-runtime-service-execution'),
+  expectation('legacy remote interface carrier', 'legacy-runtime-service-execution'),
+  expectation('legacy router request-start carrier', 'legacy-runtime-service-execution'),
   expectation('router runtime service relay', 'router-service-relay'),
   expectation('router rejection payload omitted', 'router-service-rejection-incomplete'),
   expectation('router rejection enters registry', 'router-rejection-enters-relay-owner'),
@@ -349,7 +350,7 @@ function mutationMatrix() {
     ),
     mutation(
       'legacy outbound service edge',
-      'legacy-outbound-service-edge',
+      'legacy-runtime-service-execution',
       (root) => append(
         root,
         'runtime/eval/src/eval_context.rs',
@@ -357,13 +358,21 @@ function mutationMatrix() {
       ),
     ),
     mutation(
-      'legacy outbound fence omitted',
-      'legacy-outbound-service-edge',
-      (root) => replace(
+      'legacy remote interface carrier',
+      'legacy-runtime-service-execution',
+      (root) => append(
         root,
         'runtime/eval/src/eval_context.rs',
-        '    self.ensure_legacy_service_path_allowed();',
-        '    let _legacy_path_is_unfenced = self;',
+        '\nfn old_carrier(value: InterfaceCarrier) { if let InterfaceCarrier::Remote { .. } = value {} }\n',
+      ),
+    ),
+    mutation(
+      'legacy router request-start carrier',
+      'legacy-runtime-service-execution',
+      (root) => append(
+        root,
+        'runtime/host/src/host/request_entry.rs',
+        '\nfn old_start(message: OutboundControlMessage) { if let OutboundControlMessage::RequestStart { .. } = message {} }\n',
       ),
     ),
     mutation(
@@ -504,16 +513,7 @@ async function writeSafeFixture(root) {
       root,
       'runtime/eval/src/eval_context.rs',
       [
-        'fn ensure_legacy_service_path_allowed(&self) -> Result<()> {',
-        '    if self.projection.assembly().is_some() {',
-        '        return Err("assembly execution cannot use legacy service path");',
-        '    }',
-        '    Ok(())',
-        '}',
-        'fn legacy_consumer(&self) {',
-        '    self.ensure_legacy_service_path_allowed();',
-        '    service_dispatch::call_outbound_service();',
-        '}',
+        'fn evaluate_current_program() {}',
         '#[cfg(test)]',
         'fn hidden_tls() { tokio::task_local! { static CURRENT_ACTIVATION: u8; } }',
         '',

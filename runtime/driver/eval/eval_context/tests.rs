@@ -9,8 +9,8 @@ use skiff_runtime_host::eval_capability_adapter as eval_capabilities;
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     runtime_value::{
-        HeapNode, InterfaceCarrier, InterfaceValue, RemoteOperationSlot, RemoteOperationTable,
-        RuntimeMap, RuntimeObject, RuntimeValue, RuntimeValueKey,
+        HeapNode, InterfaceCarrier, InterfaceValue, RuntimeMap, RuntimeObject, RuntimeValue,
+        RuntimeValueKey,
     },
 };
 use skiff_runtime_service_db::{DbRequestState, ServiceDbCapabilityHandle};
@@ -23,8 +23,8 @@ use crate::{
     eval::capabilities::StreamRuntime,
     eval::program::{
         ExecutableKind, FileAddr, FileDeclarations, FileLinkTargets, GatewayConfig, LinkOverlay,
-        LinkedExecutableBody, LinkedTypeDescriptor, ParamIr, RuntimeActivation, RuntimeProgram,
-        RuntimeTypeContext, ServiceMeta, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr, UnitAddr,
+        LinkedExecutableBody, LinkedTypeDescriptor, ParamIr, RuntimeProgram, RuntimeTypeContext,
+        ServiceMeta, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr, UnitAddr,
     },
     eval::program_execution::ProgramExecutionInput,
     execution_budget::ExecutionBudget,
@@ -408,40 +408,6 @@ async fn interface_box_remote_source_fails_closed() {
         error
             .to_string()
             .contains("legacy remote interface boxing is not executable"),
-        "unexpected error: {error}"
-    );
-}
-
-#[tokio::test]
-async fn interface_method_remote_carrier_missing_dependency_fails_closed() {
-    let error = call_run_executable_with_args(interface_method_arg_route_executable(), |heap| {
-        let handle = heap
-            .alloc_interface(InterfaceValue::new(
-                "svc.main.Reader".to_string(),
-                InterfaceCarrier::Remote {
-                    dependency_ref: "dep".to_string(),
-                    public_instance_key: "reader".to_string(),
-                    operations: RemoteOperationTable::new(
-                        "remote:reader".to_string(),
-                        "svc.main.Reader".to_string(),
-                        vec![RemoteOperationSlot::new(
-                            0,
-                            READER_READ_METHOD_ABI_ID.to_string(),
-                            "operation:dep:reader.readName".to_string(),
-                        )],
-                    ),
-                },
-            ))
-            .unwrap();
-        vec![RuntimeValue::Heap(handle)]
-    })
-    .await
-    .expect_err("remote carrier dispatch must fail closed without a declared dependency");
-
-    assert!(
-        error
-            .to_string()
-            .contains("legacy remote interface carriers are not executable"),
         "unexpected error: {error}"
     );
 }

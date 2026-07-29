@@ -192,7 +192,7 @@ mod server_stream_fixture {
     use skiff_artifact_model as artifact;
     use skiff_runtime_activation::{
         ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-        ActivationServiceBinding, RequestActivationContext, RuntimeActivation,
+        ActivationServiceBinding, RequestActivationContext,
     };
     use skiff_runtime_capability_context::DbCapabilityContext;
     use skiff_runtime_linked_program::{ExecutableAddr, FileAddr, ServiceMeta, UnitAddr};

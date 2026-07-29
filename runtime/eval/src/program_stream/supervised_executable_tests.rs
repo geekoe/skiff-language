@@ -5,7 +5,6 @@ use std::{
 
 use serde_json::json;
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::type_descriptor::RuntimeTypePlanDescriptorExt;
 use skiff_runtime_capability_context::SupervisedStreamConsumptionLease;
 use skiff_runtime_linked_program::{

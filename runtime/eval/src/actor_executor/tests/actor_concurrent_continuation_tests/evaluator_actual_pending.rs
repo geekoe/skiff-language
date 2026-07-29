@@ -22,9 +22,9 @@ use skiff_runtime_capability_context::{
     CapabilityFuture, CapabilityResult, DbCapabilityContext, FileCapabilityApi,
     FileCapabilityContext, FileCapabilityFuture, FileCapabilitySource, FileCapabilitySourceApi,
     FileChunkSource, FileSourceStreamApi, FileSourceStreamContext, OwnedActorCapabilityContext,
-    RequestEffectDoubleControl, SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem,
-    StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi,
+    SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
+    StreamRuntimeResult, StreamSink, StreamSinkApi,
 };
 use skiff_runtime_linked_program::{
     anonymous_type_decl, CallIr, DbObjectTargetId, DbQueryIr, DbTargetIr, LinkedCallTarget,

@@ -280,7 +280,6 @@ mod tests {
         ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
         ACTOR_RUNTIME_ABI_VERSION_V1,
     };
-    use skiff_runtime_activation::RuntimeActivation;
     use skiff_runtime_linked_program::{
         AssignTargetIr, BlockIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable,
         FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedActorDeclaration,

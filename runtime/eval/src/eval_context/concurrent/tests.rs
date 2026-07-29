@@ -10,7 +10,6 @@ use std::{
 };
 
 use serde_json::Value;
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::{
     CancellationToken, StreamCancelSignal, StreamInternalItem, StreamRuntimeError,
     StreamRuntimeResult, StreamSink, StreamSinkApi,

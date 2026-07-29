@@ -7,7 +7,6 @@ use std::{
 };
 
 use skiff_artifact_model::ContractTypeRef;
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{FileAddr, ServiceMeta, UnitAddr};
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},

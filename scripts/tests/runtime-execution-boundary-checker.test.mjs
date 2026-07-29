@@ -20,7 +20,7 @@ import {
 test('runtime execution boundary checker rejects every hermetic mutation', async () => {
   const matrix = await runRuntimeExecutionBoundarySelfTest();
   assert.deepEqual(matrix, RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS);
-  assert.equal(matrix.length, 33);
+  assert.equal(matrix.length, 34);
   assert.deepEqual(
     new Set(matrix.map(({ expectedId }) => expectedId)),
     new Set([
@@ -45,7 +45,7 @@ test('runtime execution boundary checker rejects every hermetic mutation', async
       'host-request-fallback',
       'host-active-assembly-entry-missing',
       'required-owner-anchor-missing',
-      'legacy-outbound-service-edge',
+      'legacy-runtime-service-execution',
       'router-service-relay',
       'router-service-rejection-incomplete',
       'router-rejection-enters-relay-owner',
@@ -305,11 +305,6 @@ test('production registry names every required subject and owner role exactly on
         'ingress-service-call-adapter',
         'dispatch_ingress_via_in_process_boundary',
         'runtime/eval/src/assembly_execution/ingress.rs',
-      ),
-      owner(
-        'legacy-service-path-fence',
-        'ensure_legacy_service_path_allowed',
-        'runtime/eval/src/eval_context.rs',
       ),
       owner('activation-context', 'ActivationContext'),
       owner('request-generation', 'RequestLifecycle'),

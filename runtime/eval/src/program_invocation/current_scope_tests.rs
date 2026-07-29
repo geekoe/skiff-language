@@ -11,7 +11,6 @@ use std::{
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::http::HttpBoundaryResponseStreamEvent;
 use skiff_runtime_capability_context::{
     CancellationToken, DbCapabilityContext, ExecutionControl, FileSourceStreamContext,
