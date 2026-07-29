@@ -53,6 +53,7 @@ pub(super) struct CycleFixture {
     pub helper_callable: PackageCallableId,
     pub shared_build: PackageBuildId,
     pub helper_build: PackageBuildId,
+    pub helper_abi: PackageLocalAbiIdentity,
     pub shared_file_identity: String,
     pub activation_a: ServiceDeploymentRef,
     pub activation_b: ServiceDeploymentRef,
@@ -115,6 +116,32 @@ impl CycleFixture {
 
         let helper_callable = PackageCallableId::new("pkg-callable:example.helper:entry");
         let mut helper_file = file("helper.main");
+        helper_file.declarations.types.insert(
+            "LocalRecord".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "helper.main.LocalRecord".to_string(),
+                source_span: None,
+            },
+        );
+        helper_file.declarations.db.insert(
+            "LocalRecord".to_string(),
+            skiff_artifact_model::DbDeclarationIr {
+                type_ref: TypeRefIr::LocalType { type_index: 0 },
+                type_name: "LocalRecord".to_string(),
+                collection_name: "helper_local_record".to_string(),
+                kind: skiff_artifact_model::DbObjectKindIr::Object,
+                key: skiff_artifact_model::DbObjectKeyIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                },
+                fields: Vec::new(),
+                retention: None,
+                leases: Vec::new(),
+                indexes: Vec::new(),
+                source_span: None,
+            },
+        );
         let helper_interface_index = helper_file.type_table.len() as u32;
         let helper_interface_operation = InterfaceOperationIr {
             name: "read".to_string(),
@@ -191,6 +218,20 @@ impl CycleFixture {
                 descriptor: Some(TypeDescriptorIr::Interface),
                 type_params: Vec::new(),
                 interface_methods: helper_interface_methods,
+            },
+        );
+        helper.implementation_links.types.insert(
+            "helper.main.LocalRecord".to_string(),
+            TypeExport {
+                file: file_ref(&helper_file),
+                type_index: 0,
+                symbol: "helper.main.LocalRecord".to_string(),
+                is_interface: false,
+                descriptor: Some(TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                }),
+                type_params: Vec::new(),
+                interface_methods: Vec::new(),
             },
         );
         let helper_resource: Arc<[u8]> = Arc::from(b"shared helper resource".as_slice());
@@ -347,7 +388,7 @@ impl CycleFixture {
             exact_version: helper_ref.package_version.clone(),
             expected_local_abi: helper_ref.package_local_abi_identity.clone(),
             collection_name_mapping: BTreeMap::new(),
-            expected_package_build: None,
+            expected_package_build: Some(helper_ref.package_build_id.clone()),
         });
         shared
             .contract_requirements
@@ -494,6 +535,7 @@ impl CycleFixture {
 
         let shared_build = shared.package_build_id.clone();
         let helper_build = helper.package_build_id.clone();
+        let helper_abi = helper.package_local_abi.local_abi_identity.clone();
         let shared_file_identity = shared_file.file_ir_identity.clone();
         let schema_indexes = [&shared, &helper]
             .into_iter()
@@ -550,6 +592,7 @@ impl CycleFixture {
             helper_callable,
             shared_build,
             helper_build,
+            helper_abi,
             shared_file_identity,
             activation_a,
             activation_b,
@@ -685,13 +728,98 @@ impl CycleFixture {
                 executable.file = new_file_ref.clone();
             }
         }
+        let new_file_identity = file.file_ir_identity.clone();
+        self.replace_shared_package(
+            old_build,
+            old_package_ref,
+            package,
+            vec![file],
+            new_file_identity,
+        );
+    }
+
+    pub fn make_local_db_target_ambiguous(&mut self) {
+        let old_build = self.shared_build.clone();
+        let old_file_identity = self.shared_file_identity.clone();
+        let old_package_ref = self
+            .resolver
+            .packages
+            .keys()
+            .find(|reference| reference.package_build_id == old_build)
+            .cloned()
+            .unwrap();
+        let mut primary = self
+            .resolver
+            .files
+            .remove(&(old_build.clone(), old_file_identity.clone()))
+            .unwrap()
+            .as_ref()
+            .clone();
+        attach_local_db_declaration(&mut primary, true);
+        skiff_artifact_identity::assign_file_ir_identity(&mut primary).unwrap();
+        let primary_ref = file_ref(&primary);
+
+        let mut duplicate = file("shared.main");
+        duplicate.source_ast_hash = "source:shared.main:duplicate-db-owner".to_string();
+        attach_local_db_declaration(&mut duplicate, false);
+        skiff_artifact_identity::assign_file_ir_identity(&mut duplicate).unwrap();
+        let duplicate_ref = file_ref(&duplicate);
+
+        let mut package = self
+            .resolver
+            .packages
+            .remove(&old_package_ref)
+            .unwrap()
+            .as_ref()
+            .clone();
+        for reference in &mut package.files {
+            if reference.file_ir_identity == old_file_identity {
+                *reference = primary_ref.clone();
+            }
+        }
+        package.files.push(duplicate_ref);
+        for callable in package.callable_links.values_mut() {
+            if callable.target.file_ref.file_ir_identity == old_file_identity {
+                callable.target.file_ref = primary_ref.clone();
+            }
+        }
+        for executable in package
+            .implementation_links
+            .functions
+            .values_mut()
+            .chain(package.implementation_links.impl_methods.values_mut())
+        {
+            if executable.file.file_ir_identity == old_file_identity {
+                executable.file = primary_ref.clone();
+            }
+        }
+        let primary_identity = primary.file_ir_identity.clone();
+        self.replace_shared_package(
+            old_build,
+            old_package_ref,
+            package,
+            vec![primary, duplicate],
+            primary_identity,
+        );
+    }
+
+    fn replace_shared_package(
+        &mut self,
+        old_build: PackageBuildId,
+        old_package_ref: PackageArtifactRef,
+        mut package: PackageArtifact,
+        files: Vec<FileIrUnit>,
+        primary_file_identity: String,
+    ) {
         skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
         let new_package_ref = package_ref(&package);
         let new_build = package.package_build_id.clone();
-        self.resolver.files.insert(
-            (new_build.clone(), file.file_ir_identity.clone()),
-            Arc::new(file.clone()),
-        );
+        for file in files {
+            self.resolver.files.insert(
+                (new_build.clone(), file.file_ir_identity.clone()),
+                Arc::new(file),
+            );
+        }
         self.resolver
             .packages
             .insert(new_package_ref.clone(), Arc::new(package));
@@ -778,7 +906,7 @@ impl CycleFixture {
         self.activation_a = deployment_refs[&self.activation_a].clone();
         self.activation_b = deployment_refs[&self.activation_b].clone();
         self.shared_build = new_build;
-        self.shared_file_identity = file.file_ir_identity;
+        self.shared_file_identity = primary_file_identity;
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut self.assembly).unwrap();
     }
 }
@@ -1211,6 +1339,63 @@ fn file(module_path: &str) -> FileIrUnit {
         source_span: None,
     });
     file
+}
+
+fn attach_local_db_declaration(file: &mut FileIrUnit, include_target: bool) {
+    file.declarations.types.insert(
+        "LocalRecord".to_string(),
+        TypeDeclarationIr {
+            type_index: 0,
+            symbol: "shared.main.LocalRecord".to_string(),
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        "LocalRecord".to_string(),
+        skiff_artifact_model::DbDeclarationIr {
+            type_ref: TypeRefIr::LocalType { type_index: 0 },
+            type_name: "LocalRecord".to_string(),
+            collection_name: "ambiguous_local_record".to_string(),
+            kind: skiff_artifact_model::DbObjectKindIr::Object,
+            key: skiff_artifact_model::DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: Vec::new(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    if include_target {
+        file.executables[0]
+            .body
+            .expressions
+            .push(ExprIr::DbOperation {
+                operation: skiff_artifact_model::DbOperationIr {
+                    op: skiff_artifact_model::DbOpKindIr::Count,
+                    many: false,
+                    target: skiff_artifact_model::DbTargetIr {
+                        type_ref: TypeRefIr::DbObjectSymbol {
+                            symbol: skiff_artifact_model::ServiceSymbolRef {
+                                module_path: "shared.main".to_string(),
+                                symbol: "LocalRecord".to_string(),
+                            },
+                        },
+                        type_name: "LocalRecord".to_string(),
+                    },
+                    selector: None,
+                    query: None,
+                    projection: None,
+                    body: None,
+                    insert_body: None,
+                    change: None,
+                    result_type: TypeRefIr::builtin("number"),
+                    source_span: None,
+                },
+            });
+    }
 }
 
 fn file_ref(file: &FileIrUnit) -> FileIrRef {

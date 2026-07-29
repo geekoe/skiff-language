@@ -630,6 +630,163 @@ fn assembly_linker_rejects_db_target_without_provider_attachment() {
     );
 }
 
+#[test]
+fn assembly_linker_projects_exact_package_db_target_into_every_execution_carrier() {
+    use skiff_runtime_linked_program::{FileAddr, LinkedExprIr, LinkedTypeRef, UnitAddr};
+
+    let mut fixture = CycleFixture::new();
+    let helper_abi = fixture.helper_abi.to_string();
+    fixture.mutate_shared_file(|file| {
+        attach_local_db_target(file, true);
+        attach_package_db_target_carriers(file, &helper_abi);
+    });
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly)
+        .unwrap();
+    let candidate = link_runtime_assembly(hydrated).unwrap();
+    let image = candidate.execution_image();
+    let (helper_slot, helper_code) = image
+        .code_slots()
+        .iter()
+        .enumerate()
+        .find(|(_, code)| code.package_build_id() == &fixture.helper_build)
+        .unwrap();
+    let (helper_file_index, helper_file) = helper_code
+        .files()
+        .iter()
+        .enumerate()
+        .find(|(_, file)| file.module_path == "helper.main")
+        .unwrap();
+    let shared_file = image
+        .code_slots()
+        .iter()
+        .flat_map(|code| code.files())
+        .find(|file| file.module_path == "shared.main")
+        .unwrap();
+    let helper_artifact_ref = candidate
+        .shared_image()
+        .code_by_build(&fixture.helper_build)
+        .unwrap()
+        .artifact_ref()
+        .clone();
+    let expected_target = skiff_runtime_linked_program::DbObjectTargetId {
+        package_artifact_ref: helper_artifact_ref,
+        file_ir_ref: skiff_artifact_model::FileIrRef {
+            file_ir_identity: helper_file.file_ir_identity.clone(),
+            module_path: helper_file.module_path.clone(),
+            artifact_path: None,
+            source_ast_hash: Some(helper_file.source_ast_hash.clone()),
+        },
+        type_index: 0,
+    };
+    let expected_addr = skiff_runtime_linked_program::TypeAddr {
+        unit: UnitAddr::Package(helper_slot),
+        file: FileAddr::LoadedFileIndex(helper_file_index),
+        type_index: 0,
+    };
+    let targets = shared_file.executables[0]
+        .body
+        .expressions
+        .iter()
+        .rev()
+        .take(4)
+        .map(|expression| match expression {
+            LinkedExprIr::DbOperation { operation } => &operation.target,
+            LinkedExprIr::DbQuery { target, .. } => target,
+            LinkedExprIr::DbLeaseClaim { claim } => &claim.target,
+            LinkedExprIr::DbLeaseRead { read } => &read.target,
+            other => panic!("unexpected DB carrier: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(targets.len(), 4);
+    for target in targets {
+        assert_eq!(target.target_id, expected_target);
+        assert_eq!(
+            target.type_ref,
+            LinkedTypeRef::Address {
+                addr: expected_addr.clone(),
+            }
+        );
+    }
+}
+
+#[test]
+fn assembly_linker_rejects_package_db_target_with_wrong_local_abi() {
+    let mut fixture = CycleFixture::new();
+    fixture.mutate_shared_file(|file| {
+        attach_package_db_target_carriers(file, "wrong-helper-local-abi");
+    });
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly)
+        .unwrap();
+    let error = link_runtime_assembly(hydrated).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("DbTargetAbiExpectationMismatch"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_pipeline_rejects_ambiguous_same_module_local_db_target_before_linking() {
+    let mut fixture = CycleFixture::new();
+    fixture.make_local_db_target_ambiguous();
+    let error = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly)
+        .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("repeats File IR module path shared.main"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_code_linker_rejects_db_target_id_address_mismatch() {
+    let mut fixture = CycleFixture::new();
+    fixture.mutate_shared_file(|file| {
+        attach_local_db_target(file, true);
+        attach_second_local_db_object(file);
+    });
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly)
+        .unwrap();
+    let candidate = link_runtime_assembly(hydrated).unwrap();
+    let mut files = candidate
+        .execution_image()
+        .code_slots()
+        .iter()
+        .map(|code| code.files().to_vec())
+        .collect::<Vec<_>>();
+    let shared_file = files
+        .iter_mut()
+        .flatten()
+        .find(|file| file.module_path == "shared.main")
+        .unwrap();
+    let skiff_runtime_linked_program::LinkedExprIr::DbOperation { operation } =
+        Arc::make_mut(shared_file).executables[0]
+            .body
+            .expressions
+            .last_mut()
+            .unwrap()
+    else {
+        panic!("fixture must end in a linked DB operation")
+    };
+    operation.target.target_id.type_index = 1;
+
+    let error = crate::assembly_execution::relink_execution_files_for_test(
+        candidate.shared_image().as_ref(),
+        &files,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}")
+            .contains("type reference does not match its exact artifact/file/type identity"),
+        "unexpected error: {error:#}"
+    );
+}
+
 fn attach_local_db_target(file: &mut FileIrUnit, include_attachment: bool) {
     file.declarations.types.insert(
         "LocalRecord".to_string(),
@@ -685,6 +842,112 @@ fn attach_local_db_target(file: &mut FileIrUnit, include_attachment: bool) {
                 source_span: None,
             },
         });
+}
+
+fn attach_second_local_db_object(file: &mut FileIrUnit) {
+    let type_index = u32::try_from(file.type_table.len()).unwrap();
+    file.type_table.push(skiff_artifact_model::TypeDeclIr {
+        name: "SecondRecord".to_string(),
+        descriptor: skiff_artifact_model::TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        "SecondRecord".to_string(),
+        skiff_artifact_model::TypeDeclarationIr {
+            type_index,
+            symbol: "SecondRecord".to_string(),
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        "SecondRecord".to_string(),
+        skiff_artifact_model::DbDeclarationIr {
+            type_ref: skiff_artifact_model::TypeRefIr::LocalType { type_index },
+            type_name: "SecondRecord".to_string(),
+            collection_name: "second_record".to_string(),
+            kind: skiff_artifact_model::DbObjectKindIr::Object,
+            key: skiff_artifact_model::DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: skiff_artifact_model::TypeRefIr::builtin("string"),
+            },
+            fields: Vec::new(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+}
+
+fn attach_package_db_target_carriers(file: &mut FileIrUnit, abi_expectation: &str) {
+    let target = skiff_artifact_model::DbTargetIr {
+        type_ref: skiff_artifact_model::TypeRefIr::PackageSymbol {
+            symbol: skiff_artifact_model::PackageSymbolRef {
+                package: skiff_artifact_model::PackageRefIr::Dependency {
+                    dependency_ref: "helper".to_string(),
+                },
+                symbol_path: "helper.main.LocalRecord".to_string(),
+                abi_expectation: Some(abi_expectation.to_string()),
+            },
+        },
+        type_name: "LocalRecord".to_string(),
+    };
+    let query = skiff_artifact_model::DbQueryIr {
+        where_clauses: Vec::new(),
+        order: Vec::new(),
+        limit: None,
+        offset: None,
+        after: None,
+    };
+    file.executables[0].body.expressions.extend([
+        skiff_artifact_model::ExprIr::DbOperation {
+            operation: skiff_artifact_model::DbOperationIr {
+                op: skiff_artifact_model::DbOpKindIr::Count,
+                many: false,
+                target: target.clone(),
+                selector: None,
+                query: None,
+                projection: None,
+                body: None,
+                insert_body: None,
+                change: None,
+                result_type: skiff_artifact_model::TypeRefIr::builtin("number"),
+                source_span: None,
+            },
+        },
+        skiff_artifact_model::ExprIr::DbQuery {
+            query: skiff_artifact_model::DbQueryValueIr {
+                target: target.clone(),
+                query,
+                result_type: skiff_artifact_model::TypeRefIr::builtin("number"),
+                source_span: None,
+            },
+        },
+        skiff_artifact_model::ExprIr::DbLeaseClaim {
+            claim: skiff_artifact_model::DbLeaseClaimIr {
+                target: target.clone(),
+                key: skiff_artifact_model::ExprRefIr { expression: 0 },
+                slot: "lease".to_string(),
+                binding_slot: Some(0),
+                body: "claimBody".to_string(),
+                result_type: skiff_artifact_model::TypeRefIr::builtin("bool"),
+                source_span: None,
+            },
+        },
+        skiff_artifact_model::ExprIr::DbLeaseRead {
+            read: skiff_artifact_model::DbLeaseReadIr {
+                target,
+                key: skiff_artifact_model::ExprRefIr { expression: 0 },
+                slot: "lease".to_string(),
+                result_type: skiff_artifact_model::TypeRefIr::builtin("bool"),
+                source_span: None,
+            },
+        },
+    ]);
 }
 
 fn linked_call(
