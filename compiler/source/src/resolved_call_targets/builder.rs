@@ -487,7 +487,7 @@ impl TargetCollector<'_> {
             }
         }
 
-        if let Expr::Field { object: _, field } = semantic_callee {
+        if let Expr::Field { object, field } = semantic_callee {
             let object_key = ExpressionKey::new(
                 self.module_path,
                 self.owner.clone(),
@@ -500,6 +500,11 @@ impl TargetCollector<'_> {
                 .expression_types
                 .fact(&object_key)
                 .and_then(|fact| fact.ty.as_ref());
+            if let Some(target) =
+                receiver_type.and_then(|ty| self.exact_impl_self_edge_target(object, field, &ty.ir))
+            {
+                return target;
+            }
             if let Some(op) = receiver_type
                 .and_then(|ty| {
                     crate::expression_type_model::runtime_receiver_root_from_type_ref(&ty.ir)
@@ -596,6 +601,49 @@ impl TargetCollector<'_> {
             UnknownCallTargetReason::UnresolvedName
         } else {
             UnknownCallTargetReason::UnsupportedDynamicDispatch
+        })
+    }
+
+    fn exact_impl_self_edge_target(
+        &self,
+        object: &Expr,
+        called_method: &str,
+        receiver_type: &TypeRefIr,
+    ) -> Option<ResolvedCallTarget> {
+        if !matches!(object, Expr::Identifier(name) if name == "self") {
+            return None;
+        }
+        let ExpressionOwnerKey::ImplMethod { type_name, method } = &self.owner else {
+            return None;
+        };
+        if called_method != method {
+            return None;
+        }
+        let expected_source_callable = SourceSymbolKey::new(
+            self.module_path,
+            crate::semantic::impl_method_declaration_name(type_name, method),
+        );
+        let lookup = format!("{type_name}.{method}");
+        let target = self.local_targets.resolve_path(self.module_path, &lookup)?;
+        let ResolvedCallTarget::LocalImplMethod {
+            source_callable,
+            executable_index,
+            ..
+        } = target
+        else {
+            return None;
+        };
+        if source_callable != expected_source_callable {
+            return None;
+        }
+        let receiver_type_arguments = match receiver_type {
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments.clone(),
+            _ => Vec::new(),
+        };
+        Some(ResolvedCallTarget::LocalImplMethod {
+            source_callable,
+            executable_index,
+            receiver_type_arguments,
         })
     }
 }

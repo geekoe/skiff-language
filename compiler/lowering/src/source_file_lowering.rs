@@ -2338,6 +2338,95 @@ mod tests {
     }
 
     #[test]
+    fn rethrow_statement_keeps_following_local_recursive_call_target_aligned() {
+        let unit = lowered_unit(
+            r#"
+              function attempt() -> void {
+                return null
+              }
+
+              function retry(remainingAttempts: integer) -> void {
+                const result = catch<std.db.ConflictError>(attempt())
+                if result.tag == "ok" {
+                  return null
+                }
+                if remainingAttempts == 0 {
+                  const exception = result.exception
+                  rethrow exception
+                }
+                return retry(remainingAttempts)
+              }
+            "#,
+        );
+        let retry_index = unit.declarations.executables["retry"].executable_index;
+        let retry = unit
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == format!("{MODULE}.retry"))
+            .expect("retry executable");
+
+        assert!(
+            retry.body.expressions.iter().any(|expression| matches!(
+                expression,
+                ExprIr::Call { call }
+                    if matches!(
+                        call.target,
+                        CallTargetIr::LocalExecutable { executable_index }
+                            if executable_index == retry_index
+                    )
+            )),
+            "the self-recursive call after rethrow must retain its exact local target"
+        );
+    }
+
+    #[test]
+    fn generic_function_and_impl_self_recursion_use_exact_local_targets() {
+        let unit = lowered_unit(
+            r#"
+              type Box<T> {
+                value: T,
+              }
+
+              function retryValue<T>(value: T, remainingAttempts: integer) -> T {
+                if remainingAttempts == 0 {
+                  return value
+                }
+                return retryValue<T>(value, remainingAttempts)
+              }
+
+              impl Box<T> {
+                function retry(remainingAttempts: integer) -> T {
+                  if remainingAttempts == 0 {
+                    return self.value
+                  }
+                  return self.retry(remainingAttempts)
+                }
+              }
+            "#,
+        );
+        for declaration_name in ["retryValue", "Box<T>.retry"] {
+            let expected_index = unit.declarations.executables[declaration_name].executable_index;
+            let executable = &unit.executables[expected_index as usize];
+            assert!(
+                executable
+                    .body
+                    .expressions
+                    .iter()
+                    .any(|expression| matches!(
+                        expression,
+                        ExprIr::Call { call }
+                            if matches!(
+                                call.target,
+                                CallTargetIr::LocalExecutable { executable_index }
+                                    if executable_index == expected_index
+                            )
+                    )),
+                "`{declaration_name}` must resolve its self-edge to its canonical executable index"
+            );
+        }
+    }
+
+    #[test]
     fn ambiguous_generic_impl_receiver_fails_before_file_ir() {
         let error = lowered_units_result(
             "example.com/ambiguous-generic-impl",

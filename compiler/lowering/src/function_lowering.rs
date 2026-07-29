@@ -668,9 +668,15 @@ impl<'a> FunctionLowerer<'a> {
                     site,
                 }
             }
-            Stmt::Rethrow { exception } => StmtIr::Rethrow {
-                exception_slot: self.exception_slot(exception)?,
-            },
+            Stmt::Rethrow { exception } => {
+                let exception_slot = self.exception_slot(exception)?;
+                // A statement-form rethrow reads an identifier directly from its
+                // slot instead of emitting an ExprIr node. It still occupies one
+                // canonical source ExpressionKey, so consume that key before
+                // lowering any following expression.
+                self.consume_expression_key();
+                StmtIr::Rethrow { exception_slot }
+            }
             Stmt::Spawn { call } => self.lower_spawn_stmt(call)?,
         };
         Ok(self.push_stmt(lowered))
@@ -1771,11 +1777,18 @@ impl<'a> FunctionLowerer<'a> {
             self.module_path,
             self.type_param_scope.clone(),
         );
-        let Some(receiver) = self.type_resolution.local_receiver_method_resolution(
-            &receiver_ty,
-            method_name,
-            &receiver_context,
-        ) else {
+        let (expected_source_callable, expected_receiver_type_arguments) = if let Some(receiver) =
+            self.type_resolution.local_receiver_method_resolution(
+                &receiver_ty,
+                method_name,
+                &receiver_context,
+            ) {
+            (receiver.source_callable, receiver.receiver_type_arguments)
+        } else if let Some(receiver) =
+            self.exact_impl_self_edge_receiver(object, method_name, &receiver_ty)
+        {
+            receiver
+        } else {
             return Ok(None);
         };
         let Some(ResolvedCallTarget::LocalImplMethod {
@@ -1785,16 +1798,14 @@ impl<'a> FunctionLowerer<'a> {
         }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
         else {
             return Err(unsupported(format!(
-                "local receiver method `{}` has no exact typed source target",
-                receiver.source_callable
+                "local receiver method `{expected_source_callable}` has no exact typed source target"
             )));
         };
-        if source_callable != &receiver.source_callable
-            || receiver_type_arguments != &receiver.receiver_type_arguments
+        if source_callable != &expected_source_callable
+            || receiver_type_arguments != &expected_receiver_type_arguments
         {
             return Err(unsupported(format!(
-                "typed local receiver target `{source_callable}` does not match exact receiver method `{}`",
-                receiver.source_callable
+                "typed local receiver target `{source_callable}` does not match exact receiver method `{expected_source_callable}`",
             )));
         }
         let target = self.current_package_executable_target(
@@ -1803,6 +1814,34 @@ impl<'a> FunctionLowerer<'a> {
             "local receiver",
         )?;
         Ok(Some((target, receiver_type_arguments.clone())))
+    }
+
+    fn exact_impl_self_edge_receiver(
+        &self,
+        object: &Expr,
+        called_method: &str,
+        receiver_type: &TypeRefIr,
+    ) -> Option<(SourceSymbolKey, Vec<TypeRefIr>)> {
+        if !matches!(object, Expr::Identifier(name) if name == "self") {
+            return None;
+        }
+        let Some(ExpressionOwnerKey::ImplMethod { type_name, method }) =
+            self.expression_owner.as_ref()
+        else {
+            return None;
+        };
+        if called_method != method {
+            return None;
+        }
+        let source_callable = SourceSymbolKey::new(
+            self.module_path,
+            impl_method_declaration_name(type_name, method),
+        );
+        let receiver_type_arguments = match receiver_type {
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments.clone(),
+            _ => Vec::new(),
+        };
+        Some((source_callable, receiver_type_arguments))
     }
 
     fn resolved_static_current_package_call_target(
