@@ -11,30 +11,19 @@ use std::{
 use skiff_runtime_model::error::{RuntimeErrorPayload, WirePayload};
 use tokio::sync::{mpsc, Notify};
 
-use crate::{response::FixedServiceResponseFailure, HttpResponseMetadata, ResponseError};
+use crate::ResponseError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutboundResponse {
-    Start { http_response: HttpResponseMetadata },
-    Chunk { seq: u64, payload: Vec<u8> },
     End { payload: Vec<u8> },
-    FixedServiceFailure(FixedServiceResponseFailure),
     Error(ResponseError),
 }
 
 impl OutboundResponse {
-    pub fn fixed_service_failure(
-        error: skiff_runtime_model::service_error::OpaqueServiceError,
-    ) -> Self {
-        Self::FixedServiceFailure(FixedServiceResponseFailure::new(error))
-    }
-
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Start { .. } => "response.start",
-            Self::Chunk { .. } => "response.chunk",
             Self::End { .. } => "response.end",
-            Self::FixedServiceFailure(_) | Self::Error(_) => "response.error",
+            Self::Error(_) => "response.error",
         }
     }
 }

@@ -127,7 +127,6 @@ mod tests {
         value::{
             CallbackCapabilityCarrier, HeapNode, InterfaceCarrier, InterfaceValue, RuntimeValue,
         },
-        value::{RemoteOperationSlot, RemoteOperationTable},
     };
 
     #[test]
@@ -136,19 +135,13 @@ mod tests {
         let handle = heap
             .alloc_interface(InterfaceValue::new(
                 "pkg.Reader".to_string(),
-                InterfaceCarrier::Remote {
-                    dependency_ref: "reader-service".to_string(),
-                    public_instance_key: "readers/default".to_string(),
-                    operations: RemoteOperationTable::new(
-                        "remote:reader".to_string(),
-                        "pkg.Reader".to_string(),
-                        vec![RemoteOperationSlot::new(
-                            0,
-                            "method:pkg.Reader:read".to_string(),
-                            "operation:reader:read".to_string(),
-                        )],
-                    ),
-                },
+                InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                    "runtime-a",
+                    "activation-a",
+                    1,
+                    "pkg.Reader",
+                    "reader-default",
+                )),
             ))
             .expect("interface should allocate");
         let value = RuntimeValue::Heap(handle);

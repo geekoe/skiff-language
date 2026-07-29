@@ -12,7 +12,6 @@ pub mod types {
 }
 
 pub use crate::test_support::RuntimeProgram;
-pub use skiff_runtime_activation::RuntimeActivation;
 pub use skiff_runtime_linked_program::LinkedProgramImage as EvalProgramImage;
 pub use skiff_runtime_linked_program::{
     anonymous_type_decl, type_descriptor_to_value, type_ref_to_value, AssignTargetIr, BinaryOpIr,

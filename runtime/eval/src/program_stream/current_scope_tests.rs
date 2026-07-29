@@ -15,7 +15,6 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, InstructionSourceSite,
     SyntheticInstructionSiteReason, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::{
     CancellationToken, DbCapabilityContext, ExecutionControl, ExecutionControlApi,
     ExecutionControlResult, ExecutionScope, ExecutionScopeAccessError, FileSourceStreamContext,
@@ -478,24 +477,8 @@ fn scoped_context<'a>(
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: "skiff.run/f445h-e4r-stream".to_string(),
-                display_name: None,
-                metadata: Default::default(),
-            },
-            version: "1.0.0".to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: Default::default(),
-        }),
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

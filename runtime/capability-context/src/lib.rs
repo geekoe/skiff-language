@@ -10,7 +10,6 @@ mod file;
 mod http;
 mod native_projection;
 mod outbound_control;
-mod outbound_request;
 mod outbound_response;
 mod request_payload;
 mod response;
@@ -83,13 +82,11 @@ pub use outbound_control::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
-    OutboundControlMessage, RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
-    RouterWriterMessage, RuntimeCallerControl, RuntimeClientSessionControl, RuntimeDeadlineControl,
-    RuntimeTraceContextControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
+    OutboundControlMessage, RequestCancelControl, RouterWriterMessage, RuntimeClientSessionControl,
+    RuntimeDeadlineControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
     SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
     WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
 };
-pub use outbound_request::{OutboundServiceRequestStart, OutboundStartedRequest};
 pub use outbound_response::{
     OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,
     OutboundRequestRegistry, OutboundRequestRegistryError, OutboundRequestTerminalSignal,
@@ -620,28 +617,6 @@ mod tests {
                 ..
             } if stable_schema_key == "std.resource.ResourceError"
         ));
-    }
-
-    #[test]
-    fn outbound_fixed_failure_is_distinct_from_generic_response_error() {
-        let fixed = fixed_service_error("response");
-        let exact = fixed.encoded_bytes().to_vec();
-        let response = OutboundResponse::fixed_service_failure(fixed);
-        assert_eq!(response.kind(), "response.error");
-        match response {
-            OutboundResponse::FixedServiceFailure(failure) => {
-                assert_eq!(failure.error().encoded_bytes(), exact)
-            }
-            _ => panic!("fixed response must retain its typed carrier"),
-        }
-
-        let generic = OutboundResponse::Error(ResponseError {
-            code: "std.service.ProviderUnavailableError".to_string(),
-            message: "same text is not classification authority".to_string(),
-            status: None,
-            details: None,
-        });
-        assert!(matches!(generic, OutboundResponse::Error(_)));
     }
 
     #[test]

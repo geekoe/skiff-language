@@ -2,8 +2,7 @@ use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
     ActivationRelativeServiceCall, AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr,
     LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedRemoteOperationSlotPlanIr,
-    LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTestEffectOutcomeIr, LinkedTypeRef,
+    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTestEffectOutcomeIr, LinkedTypeRef,
     NativeTarget, ReceiverCallAbi, UnaryOpIr,
 };
 use skiff_runtime_linked_type_plan::{
@@ -13,8 +12,7 @@ use skiff_runtime_model::{
     request_heap::{deep_clone_runtime_value_carrier_between_heaps, RequestHeap},
     runtime_value::{
         HeapNode, InterfaceCarrier, InterfaceMethodTarget, InterfaceReceiverCallAbi,
-        InterfaceValue, RemoteOperationSlot, RemoteOperationTable, RuntimeValue,
-        RuntimeValueCarrier, RuntimeValueKey,
+        InterfaceValue, RuntimeValue, RuntimeValueCarrier, RuntimeValueKey,
     },
     service_error::{ExceptionStackFrame, RequestException},
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
@@ -213,15 +211,6 @@ impl<'a> EvalContext<'a> {
 
     pub(crate) fn execution_projection(&self) -> &RuntimeExecutionProjection<'a> {
         &self.projection
-    }
-
-    fn ensure_legacy_service_path_allowed(&self, path: &str) -> Result<()> {
-        if self.projection.assembly().is_some() {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "assembly execution cannot use legacy {path}"
-            )));
-        }
-        Ok(())
     }
 
     pub async fn exec_program_executable(&mut self) -> Result<Flow> {
@@ -985,33 +974,10 @@ impl<'a> EvalContext<'a> {
                     payload_identity,
                 )
             }
-            LinkedBoxSourceIr::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-                ..
-            } => {
-                self.ensure_legacy_service_path_allowed("remote interface boxing")?;
-                let table = self.remote_operation_table_from_linked(
-                    dependency_ref,
-                    public_instance_key,
-                    operations,
-                )?;
-                if interface_id != table.interface_abi_id() {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "InterfaceBox target {} does not match remote operation table interface {}",
-                        interface_id,
-                        table.interface_abi_id()
-                    )));
-                }
-                (
-                    InterfaceCarrier::Remote {
-                        dependency_ref: dependency_ref.clone(),
-                        public_instance_key: public_instance_key.clone(),
-                        operations: table,
-                    },
-                    None,
-                )
+            LinkedBoxSourceIr::Remote { .. } => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "legacy remote interface boxing is not executable".to_string(),
+                ))
             }
         };
 
@@ -1023,25 +989,6 @@ impl<'a> EvalContext<'a> {
             )
             .map_err(RuntimeError::from)?;
         Ok(RuntimeValue::Heap(handle).into())
-    }
-
-    fn remote_operation_table_from_linked(
-        &self,
-        dependency_ref: &str,
-        public_instance_key: &str,
-        operations: &LinkedRemoteOperationTablePlanIr,
-    ) -> Result<RemoteOperationTable> {
-        let interface_id = linked_interface_instantiation_runtime_id(&operations.interface);
-        let slots = operations
-            .slots
-            .iter()
-            .map(remote_operation_slot_from_linked)
-            .collect::<Result<Vec<_>>>()?;
-        Ok(RemoteOperationTable::new(
-            remote_operation_table_id(dependency_ref, public_instance_key, &interface_id),
-            interface_id,
-            slots,
-        ))
     }
 
     async fn eval_program_interface_method_call(
@@ -1112,29 +1059,6 @@ impl<'a> EvalContext<'a> {
                         }
                     },
                 }
-            }
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                operations,
-                ..
-            } => {
-                self.ensure_legacy_service_path_allowed("remote interface invocation")?;
-                let slot_index = program_u32_to_usize(slot, "interfaceMethod.slot")?;
-                let Some(remote_slot) = operations.slots().get(slot_index) else {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "RuntimeProgram interface method {method_abi_id} slot {slot} is out of bounds"
-                    )));
-                };
-                if remote_slot.slot() != slot || remote_slot.method_abi_id() != method_abi_id {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "RuntimeProgram interface method {method_abi_id} slot {slot} does not match remote operation table slot {} ({})",
-                        remote_slot.slot(),
-                        remote_slot.method_abi_id()
-                    )));
-                }
-                let operation_abi_id = remote_slot.operation_abi_id().to_string();
-                self.eval_remote_interface_call(dependency_ref, &operation_abi_id, args)
-                    .await
             }
             InterfaceCarrier::CallbackCapability(carrier) => {
                 self.eval_callback_interface_call(call, carrier, method_abi_id, slot, args)
@@ -1284,10 +1208,9 @@ impl<'a> EvalContext<'a> {
             LinkedCallTarget::ActorDispatch { plan } => {
                 self.eval_actor_dispatch(plan, values).await
             }
-            LinkedCallTarget::ServiceDependencySymbol { symbol } => {
-                self.eval_legacy_service_dependency(call, symbol, values)
-                    .await
-            }
+            LinkedCallTarget::ServiceDependencySymbol { .. } => Err(RuntimeError::InvalidArtifact(
+                "legacy service dependency symbols are not executable".to_string(),
+            )),
             LinkedCallTarget::Native { target } => {
                 if is_db_builtin_op(&native_target_name(target)) {
                     return Err(RuntimeError::Unsupported(format!(
@@ -1878,24 +1801,6 @@ fn runtime_type_plans_match(actual: &RuntimeTypePlan, expected: &RuntimeTypePlan
         | (RuntimeTypeNode::Null, RuntimeTypeNode::Null) => true,
         _ => false,
     }
-}
-
-fn remote_operation_table_id(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    interface_id: &str,
-) -> String {
-    format!("remote-operation-table:{dependency_ref}/{public_instance_key}:{interface_id}")
-}
-
-fn remote_operation_slot_from_linked(
-    slot: &LinkedRemoteOperationSlotPlanIr,
-) -> Result<RemoteOperationSlot> {
-    Ok(RemoteOperationSlot::new(
-        slot.slot,
-        slot.method_abi_id.clone(),
-        slot.operation_abi_id.clone(),
-    ))
 }
 
 fn runtime_map_key_snapshot(

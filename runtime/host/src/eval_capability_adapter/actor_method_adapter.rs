@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
-use skiff_runtime_activation::{ActivationContext, RequestActivationContext, RuntimeActivation};
+use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
     Interpreter, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget,
 };
-use skiff_runtime_linked_program::{AssemblyExecutionImage, GatewayConfig, ServiceMeta};
+use skiff_runtime_linked_program::AssemblyExecutionImage;
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_request::{
     ExecutionBudget, OutboundRequestRegistry, RequestEnvelope, RuntimeOperation,
@@ -51,7 +51,6 @@ pub(crate) struct ActorMethodEvalExecution {
     activation_identity: ActivationIdentityControl,
     config: crate::config_view::RuntimeConfigView,
     package_configs: Vec<crate::config_view::RuntimeConfigView>,
-    runtime_activation: Arc<RuntimeActivation>,
     db_source: concrete::DbCapabilitySource,
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
@@ -82,24 +81,6 @@ impl ActorMethodEvalExecution {
             input.execution_image.as_ref(),
             &input.activation.owned_bindings().config_literals,
         )?;
-        let runtime_activation = Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: deployment.service_id.clone(),
-                display_name: None,
-                metadata: Default::default(),
-            },
-            version: deployment.contract_version.clone(),
-            package_configs: package_configs
-                .iter()
-                .map(|config| config.resolved_config_value().clone())
-                .collect(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: GatewayConfig::default(),
-        });
         let target = "actor.method".to_string();
         let request = RequestEnvelope {
             request_id: input.invocation_id,
@@ -141,7 +122,6 @@ impl ActorMethodEvalExecution {
             activation_identity,
             config,
             package_configs,
-            runtime_activation,
             db_source: input.db_source,
             file_source: input.file_source,
             http_options: input.http_options,
@@ -234,13 +214,8 @@ impl ActorMethodEvalExecution {
                 test_effect_doubles.clone(),
             ),
             test_effect_doubles,
-            runtime_activation: Arc::clone(&self.runtime_activation),
             actor: actor.clone(),
             spawn: actor,
-            outbound: retired_assembly_outbound(
-                self.cancellation.clone(),
-                self.request_heap_limits.clone(),
-            ),
             request_heap_limits: self.request_heap_limits.clone(),
         })
         .with_websocket_capability_rebinder(websocket_rebinder(self.router_sender.as_ref()))

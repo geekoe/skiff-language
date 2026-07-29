@@ -8,7 +8,6 @@ use skiff_artifact_model::{
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, GatewayConfig, LinkOverlay, LinkedFileUnit, LinkedProgramImage,
     OperationRouteBinding, PackageCodeSlotIndex, PublicationResourceTable, RuntimeExecutionPackage,
@@ -213,20 +212,6 @@ impl RuntimeProgram {
             operation_receivers: self.operation_receivers.clone(),
             link_overlay: self.link_overlay.clone(),
             types: self.types.clone(),
-        }
-    }
-
-    pub fn activation_view(&self) -> RuntimeActivation {
-        RuntimeActivation {
-            service: self.service.clone(),
-            version: self.version.clone(),
-            package_configs: Vec::new(),
-            service_dependencies: self.service_dependencies.clone(),
-            timeout: self.timeout.clone(),
-            operation_route_bindings: self.operation_route_bindings.clone(),
-            db: self.db.clone(),
-            actors: self.actors.clone(),
-            gateway: self.gateway.clone(),
         }
     }
 }

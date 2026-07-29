@@ -3,7 +3,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use skiff_artifact_model::{
     IngressProtocol, IngressSelector, InstructionSourceSite, SyntheticInstructionSiteReason,
 };
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::{
     CancellationSource, ConnectionRequestRegistry, ConnectionRequestSession,
     ConnectionRequestTerminal, DbCapabilityContext, FileSourceStreamContext,
@@ -16,8 +15,8 @@ use skiff_runtime_eval::{
     EvalRuntimeProgram, EvalRuntimeProgramSource,
 };
 use skiff_runtime_linked_program::{
-    ExecutableAddr, GatewayConfig, LinkOverlay, LinkedFileUnit, PublicationResourceTable,
-    RuntimeExecutionPackage, RuntimeTypeContext, ServiceMeta,
+    ExecutableAddr, LinkOverlay, LinkedFileUnit, PublicationResourceTable, RuntimeExecutionPackage,
+    RuntimeTypeContext,
 };
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_native::capability::NativeWebsocketCapability;
@@ -69,24 +68,6 @@ fn runtime_operation() -> RuntimeOperation {
         service_protocol_identity: Some("service-protocol:f445h-i6-websocket-receipt".to_string()),
         extra: Default::default(),
     }
-}
-
-fn runtime_activation() -> Arc<RuntimeActivation> {
-    Arc::new(RuntimeActivation {
-        service: ServiceMeta {
-            id: "skiff.run/f445h-i6-websocket-receipt".to_string(),
-            display_name: None,
-            metadata: Default::default(),
-        },
-        version: "1.0.0".to_string(),
-        package_configs: Vec::new(),
-        service_dependencies: Vec::new(),
-        timeout: Default::default(),
-        operation_route_bindings: Vec::new(),
-        db: Vec::new(),
-        actors: Vec::new(),
-        gateway: GatewayConfig::default(),
-    })
 }
 
 #[derive(Default)]
@@ -211,13 +192,8 @@ async fn f445h_i6_websocket_scope_native_projection_reaches_real_pending_and_anc
             test_effect_doubles.clone(),
         ),
         test_effect_doubles,
-        runtime_activation: runtime_activation(),
         actor: actor.clone(),
         spawn: actor,
-        outbound: retired_assembly_outbound(
-            execution.cancellation_token(),
-            request_heap_limits.clone(),
-        ),
         request_heap_limits,
     });
 

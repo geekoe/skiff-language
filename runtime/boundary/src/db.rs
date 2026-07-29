@@ -664,11 +664,10 @@ mod tests {
             RuntimeRecoverableTrustBoundary,
         },
         request_heap::RequestHeap,
-        runtime_value::{InterfaceCarrier, InterfaceValue, RemoteOperationTable, RuntimeValue},
+        runtime_value::RuntimeValue,
         type_plan::RuntimeTypeNode,
     };
 
-    use crate::error::{RecoverableBoundaryErrorCode, RuntimeError};
     use crate::{
         db::{
             collection_item_plan_for_path, db_result_decode_plan_from_artifact_type_ref,
@@ -680,7 +679,7 @@ mod tests {
             MONGO_ID_FIELD,
         },
         plan::{BoundaryDirection, BoundaryUse},
-        recoverable::{FailClosedRecoverableBehaviorHooks, RecoverableBoundaryCodec},
+        recoverable::RecoverableBoundaryCodec,
     };
 
     #[test]
@@ -976,43 +975,6 @@ mod tests {
         .expect("plain value should decode for DB envelope lane");
 
         assert_eq!(decoded, value);
-    }
-
-    #[test]
-    fn recoverable_envelope_db_context_rejects_remote_interface_carrier_with_unresolved_expected() {
-        let mut heap = RequestHeap::default();
-        let remote = RuntimeValue::Heap(
-            heap.alloc_interface(InterfaceValue::new(
-                "reader".to_string(),
-                InterfaceCarrier::Remote {
-                    dependency_ref: "dep:llm".to_string(),
-                    public_instance_key: "provider".to_string(),
-                    operations: RemoteOperationTable::new(
-                        "remote:reader".to_string(),
-                        "reader".to_string(),
-                        Vec::new(),
-                    ),
-                },
-            ))
-            .expect("remote interface should allocate"),
-        );
-        let expected = RuntimeRecoverableExpectedTypePlan::unresolved("db envelope field");
-        let context = recoverable_db_context();
-        let hooks = FailClosedRecoverableBehaviorHooks;
-
-        let error = RecoverableBoundaryCodec::encode_with_behavior(
-            &remote, &expected, &context, &heap, &hooks,
-        )
-        .expect_err("remote carrier encode must reject unresolved DB recoverable expected type");
-
-        let RuntimeError::Recoverable(error) = error else {
-            panic!("expected recoverable error");
-        };
-        assert_eq!(
-            error.code(),
-            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
-        );
-        assert!(error.message().contains("recoverable encode"));
     }
 
     #[test]

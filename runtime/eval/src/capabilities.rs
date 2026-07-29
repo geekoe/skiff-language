@@ -7,13 +7,10 @@ use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use serde_json::Value;
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    CancellationToken, ConnectionRequestTerminal, OutboundRequestLease, RequestEffectDoubleControl,
-    WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
+    ConnectionRequestTerminal, WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
 };
-use skiff_runtime_linked_program::ServiceDependencyConstraint;
 use skiff_runtime_model::{
     addr::ExecutableAddr,
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -212,9 +209,8 @@ pub use skiff_runtime_capability_context::{
     FileCapabilityResult, FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource,
     FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
     HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
-    OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
-    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
-    RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
+    OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
+    OwnedExecutionControlApi, RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
     RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnSubmitControlRequest,
     StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup,
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
@@ -446,111 +442,6 @@ impl TestEffectDoubleContext {
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         let any = self.inner.as_ref() as &dyn Any;
         any.downcast_ref()
-    }
-}
-
-pub trait OutboundServiceApi: Send + Sync {
-    fn service_dependencies(&self) -> &[ServiceDependencyConstraint];
-    fn test_effects_enabled(&self) -> bool;
-    fn test_effect_doubles(&self) -> HashMap<String, Vec<RequestEffectDoubleControl>>;
-    fn request_heap(&self) -> RequestHeap;
-    fn effective_timeout_ms(&self, operation_timeout_ms: Option<u64>) -> Option<u64>;
-    fn outbound_deadline_error(&self) -> RuntimeError;
-    fn start_request(
-        &self,
-        start: OutboundServiceRequestStart,
-        payload: Vec<u8>,
-    ) -> Result<OutboundStartedRequest>;
-    #[cfg(any(test, feature = "test-support"))]
-    fn request_start_control_for_test(
-        &self,
-        _start: OutboundServiceRequestStart,
-        _request_id: String,
-    ) -> skiff_runtime_capability_context::RequestStartControl {
-        panic!("request_start_control_for_test is only implemented by test adapters")
-    }
-    fn receive_response<'a>(
-        &'a self,
-        lease: &'a OutboundRequestLease,
-        target: &'a str,
-        receiver: &'a mut skiff_runtime_capability_context::OutboundResponseReceiver,
-        timeout_ms: Option<u64>,
-    ) -> EvalCapabilityFuture<'a, skiff_runtime_capability_context::OutboundResponse>;
-    fn cancel_signal(&self) -> CancellationToken;
-}
-
-#[derive(Clone)]
-pub struct OutboundServiceContext {
-    inner: Arc<dyn OutboundServiceApi>,
-}
-
-pub type ServiceDispatchContext = OutboundServiceContext;
-
-impl OutboundServiceContext {
-    pub fn new<T>(inner: T) -> Self
-    where
-        T: OutboundServiceApi + 'static,
-    {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-
-    pub fn service_dependencies(&self) -> &[ServiceDependencyConstraint] {
-        self.inner.service_dependencies()
-    }
-
-    pub fn test_effects_enabled(&self) -> bool {
-        self.inner.test_effects_enabled()
-    }
-
-    pub fn test_effect_doubles(&self) -> HashMap<String, Vec<RequestEffectDoubleControl>> {
-        self.inner.test_effect_doubles()
-    }
-
-    pub fn request_heap(&self) -> RequestHeap {
-        self.inner.request_heap()
-    }
-
-    pub fn effective_timeout_ms(&self, operation_timeout_ms: Option<u64>) -> Option<u64> {
-        self.inner.effective_timeout_ms(operation_timeout_ms)
-    }
-
-    pub fn outbound_deadline_error(&self) -> RuntimeError {
-        self.inner.outbound_deadline_error()
-    }
-
-    pub fn start_request(
-        &self,
-        start: OutboundServiceRequestStart,
-        payload: Vec<u8>,
-    ) -> Result<OutboundStartedRequest> {
-        self.inner.start_request(start, payload)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn request_start_control_for_test(
-        &self,
-        start: OutboundServiceRequestStart,
-        request_id: String,
-    ) -> skiff_runtime_capability_context::RequestStartControl {
-        self.inner.request_start_control_for_test(start, request_id)
-    }
-
-    pub async fn receive_response(
-        &self,
-        lease: &OutboundRequestLease,
-        target: &str,
-        receiver: &mut skiff_runtime_capability_context::OutboundResponseReceiver,
-        timeout_ms: Option<u64>,
-    ) -> Result<skiff_runtime_capability_context::OutboundResponse> {
-        self.inner
-            .receive_response(lease, target, receiver, timeout_ms)
-            .await
-    }
-
-    pub fn cancel_signal(&self) -> CancellationToken {
-        self.inner.cancel_signal()
     }
 }
 
@@ -814,10 +705,8 @@ pub struct EvalRequestExecutionCapabilities<'a> {
     file_source: FileCapabilitySource,
     websocket: WebsocketCapabilityContext<'a>,
     effects: EffectDispatchContext,
-    runtime_activation: Arc<RuntimeActivation>,
     actor: ActorCapabilityContext<'a>,
     spawn: ActorCapabilityContext<'a>,
-    outbound: OutboundServiceContext,
 }
 
 pub struct EvalRequestProgramExecutionInput {
@@ -836,10 +725,8 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
         file_source: FileCapabilitySource,
         websocket: WebsocketCapabilityContext<'a>,
         effects: EffectDispatchContext,
-        runtime_activation: Arc<RuntimeActivation>,
         actor: ActorCapabilityContext<'a>,
         spawn: ActorCapabilityContext<'a>,
-        outbound: OutboundServiceContext,
     ) -> Self {
         Self {
             execution,
@@ -848,10 +735,8 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
             file_source,
             websocket,
             effects,
-            runtime_activation,
             actor,
             spawn,
-            outbound,
         }
     }
 
@@ -866,10 +751,8 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
             file_source,
             websocket,
             effects,
-            runtime_activation,
             actor,
             spawn,
-            outbound,
         } = self;
         let EvalRequestProgramExecutionInput {
             stream_runtime,
@@ -893,10 +776,8 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
             effects: effects.clone(),
             http_client,
             test_effect_doubles,
-            runtime_activation,
             actor,
             spawn,
-            outbound,
             request_heap_limits,
         }
     }

@@ -7,7 +7,6 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::DbCapabilityContext;
 use skiff_runtime_linked_program::ServiceMeta;
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
@@ -160,24 +159,8 @@ impl DbActorFixture {
                 self.linked.interpreter.test_effect_double_context(),
             ),
             test_effect_doubles: self.linked.interpreter.test_effect_double_context(),
-            runtime_activation: Arc::new(RuntimeActivation {
-                service: ServiceMeta {
-                    id: ACTOR_SERVICE_ID.to_string(),
-                    display_name: None,
-                    metadata: BTreeMap::new(),
-                },
-                version: "1.0.0".to_string(),
-                package_configs: Vec::new(),
-                service_dependencies: Vec::new(),
-                timeout: Default::default(),
-                operation_route_bindings: Vec::new(),
-                db: Vec::new(),
-                actors: Vec::new(),
-                gateway: Default::default(),
-            }),
             actor: actor.clone(),
             spawn: actor,
-            outbound: test_runtime::outbound_context(),
             request_heap_limits: RequestHeapLimits::default(),
         })
         .with_actor_execution_frame(frame)

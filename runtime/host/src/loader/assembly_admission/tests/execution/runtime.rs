@@ -1,13 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
     capabilities::{FileSourceStreamContext, TimeCapabilityContext},
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
     Interpreter, RuntimeAssemblyEvalTarget,
 };
-use skiff_runtime_linked_program::{GatewayConfig, ServiceMeta};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_request::{
     execution_budget::{ExecutionBudget, ExecutionBudgetConfig},
@@ -28,7 +26,8 @@ pub(super) struct TypedExecutionRuntime {
     budget: Arc<ExecutionBudget>,
     config: RuntimeConfigView,
     package_configs: Vec<RuntimeConfigView>,
-    activation: Arc<RuntimeActivation>,
+    service_id: String,
+    service_version: String,
     file_runtime: Arc<FileRuntime>,
     db_request_state: Arc<tokio::sync::Mutex<skiff_runtime_service_db::DbRequestState>>,
     heap_limits: RequestHeapLimits,
@@ -79,21 +78,8 @@ impl TypedExecutionRuntime {
             budget: Arc::new(ExecutionBudget::disabled()),
             config: RuntimeConfigView::empty(),
             package_configs: Vec::new(),
-            activation: Arc::new(RuntimeActivation {
-                service: ServiceMeta {
-                    id: service_id.to_string(),
-                    display_name: None,
-                    metadata: Default::default(),
-                },
-                version: "1.0.0".to_string(),
-                package_configs: Vec::new(),
-                service_dependencies: Vec::new(),
-                timeout: Default::default(),
-                operation_route_bindings: Vec::new(),
-                db: Vec::new(),
-                actors: Vec::new(),
-                gateway: GatewayConfig::default(),
-            }),
+            service_id: service_id.to_string(),
+            service_version: "1.0.0".to_string(),
             file_runtime: Arc::new(FileRuntime::new(
                 None,
                 std::env::temp_dir().join("skiff-phase-four-typed-execution"),
@@ -152,26 +138,13 @@ impl TypedExecutionRuntime {
         );
         let actor = self.actor_factory.actor_from_request(
             "typed-execution-replica",
-            self.activation.service.id.as_str(),
-            self.activation.version.as_str(),
+            self.service_id.as_str(),
+            self.service_version.as_str(),
             &self.request,
             &self.operation,
             None,
             &self.outbound_requests,
             execution.cancellation_token(),
-        );
-        let outbound = eval_capability_adapter::outbound(
-            eval_capability_adapter::outbound_service_context_from_request(
-                &self.request,
-                self.operation.target.as_str(),
-                Arc::clone(&self.budget),
-                execution.cancellation_token(),
-                self.heap_limits.clone(),
-                None,
-                Arc::clone(&self.outbound_requests),
-                &self.activation.service_dependencies,
-                &self.activation.timeout,
-            ),
         );
         ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
@@ -189,7 +162,7 @@ impl TypedExecutionRuntime {
             ),
             time: TimeCapabilityContext::new(execution),
             websocket: eval_capability_adapter::websocket_from_request(
-                self.activation.service.id.as_str(),
+                self.service_id.as_str(),
                 None,
                 None,
             ),
@@ -200,10 +173,8 @@ impl TypedExecutionRuntime {
                 interpreter.test_effect_double_context(),
             ),
             test_effect_doubles: interpreter.test_effect_double_context(),
-            runtime_activation: Arc::clone(&self.activation),
             actor: actor.clone(),
             spawn: actor,
-            outbound,
             request_heap_limits: self.heap_limits.clone(),
         })
         .with_websocket_capability_rebinder(eval_capability_adapter::websocket_rebinder(None))

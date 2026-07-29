@@ -65,9 +65,8 @@ pub use outbound::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
-    OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RequestEffectDoubleControl,
-    RequestStartControl, RouterWriterMessage, RuntimeCallerControl, RuntimeDeadlineControl,
-    RuntimeTraceContextControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
+    OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage,
+    RuntimeDeadlineControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
     SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
 };
 pub use response_event::{

@@ -11,7 +11,6 @@ use std::{
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
-use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::http::HttpBoundaryResponseStreamEvent;
 use skiff_runtime_capability_context::{
     CancellationToken, DbCapabilityContext, ExecutionControl, FileSourceStreamContext,
@@ -144,24 +143,8 @@ fn execution_input<'a>(
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: "skiff.run/f445h-e4r-invocation".to_string(),
-                display_name: None,
-                metadata: Default::default(),
-            },
-            version: "1.0.0".to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: Default::default(),
-        }),
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_runtime::outbound_context(),
         request_heap_limits: RequestHeapLimits::default(),
     }
 }

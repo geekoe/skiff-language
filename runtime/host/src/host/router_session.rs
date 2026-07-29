@@ -27,22 +27,16 @@ use skiff_runtime_transport::{
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
-        decode_response_error_frame, decode_router_bootstrap_frame_header,
-        decode_typed_binary_frame, ActorFindResponseFrameHeader,
-        ActorGetOrCreateResponseFrameHeader, ActorRemoveResponseFrameHeader,
-        ActorReplaceResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-        RequestCancelFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
-        ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
-        RuntimeRegisteredFrameHeader, SpawnClaimResponseFrameHeader,
-        SpawnCompleteResponseFrameHeader, SpawnFailResponseFrameHeader,
-        SpawnRenewResponseFrameHeader, SpawnSubmitResponseFrameHeader, TypedEnvelope,
-        ValidatedResponseErrorFrame,
+        decode_router_bootstrap_frame_header, decode_typed_binary_frame,
+        ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
+        ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
+        ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
+        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
+        SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
+        SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
-    response_mapper::{
-        response_chunk_to_outbound, response_end_to_outbound, response_error_to_outbound,
-        response_start_to_outbound,
-    },
     runtime_assembly_request::decode_runtime_assembly_request_start_frame,
     websocket_generation_lifecycle::WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
 };
@@ -601,65 +595,6 @@ async fn dispatch_router_binary_frame_inner(
         }
         "actor.method.return" | "actor.method.error" | "actor.method.cancel" => {
             dispatch_actor_method_terminal(host, bytes)?;
-        }
-        "response.end" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseEndFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_end_to_outbound(&header, payload));
-            } else {
-                warn!(
-                    event = "runtime.unmatched_outbound_response_end",
-                    request_id = %header.request_id
-                );
-            }
-        }
-        "response.start" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseStartFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if !payload.is_empty() {
-                return Err(RuntimeError::Decode(
-                    "response.start binary frame payload must be empty".to_string(),
-                ));
-            }
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_start_to_outbound(&header));
-            } else {
-                warn!(
-                    event = "runtime.unmatched_outbound_response_start",
-                    request_id = %header.request_id
-                );
-            }
-        }
-        "response.chunk" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseChunkFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_chunk_to_outbound(&header, payload));
-            } else {
-                warn!(
-                    event = "runtime.unmatched_outbound_response_chunk",
-                    request_id = %header.request_id,
-                    payload_bytes = payload.len()
-                );
-            }
-        }
-        "response.error" => {
-            let (header, validated) = decode_response_error_frame(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            let request_id = header.request_id().to_string();
-            let payload = match validated {
-                ValidatedResponseErrorFrame::FixedService(error) => error.into_encoded_bytes(),
-                ValidatedResponseErrorFrame::Control(_) => Vec::new(),
-            };
-            if let Some(sender) = host.outbound_requests.sender(&request_id) {
-                let _ = sender.send(response_error_to_outbound(&header, payload));
-            } else {
-                warn!(
-                    event = "runtime.unmatched_outbound_response_error",
-                    request_id = %request_id
-                );
-            }
         }
         "actor.getOrCreate.response" => {
             let (header, payload) =

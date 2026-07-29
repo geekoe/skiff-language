@@ -21,15 +21,13 @@ use skiff_runtime_host::{
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, ExceptionStackFrame, OpaqueServiceError, ServiceErrorEnvelope,
 };
-use skiff_runtime_request::{OutboundResponse, RequestError};
+use skiff_runtime_request::RequestError;
 use skiff_runtime_transport::{
     protocol::{
         decode_response_error_frame, ResponseErrorFrameHeader, RuntimeErrorFramePayload,
         TelemetryEvent, TelemetryVisibility, ValidatedResponseErrorFrame,
     },
-    response_mapper::{
-        response_error_to_outbound, response_event_into_frame, OrdinaryResponseEvent,
-    },
+    response_mapper::{response_event_into_frame, OrdinaryResponseEvent},
 };
 
 const SCENARIO_JSON: &str = include_str!(
@@ -232,19 +230,14 @@ fn c0_internal_bytes_cross_three_typed_host_wire_hops_and_control_stays_generic(
             OrdinaryResponseEvent::FixedServiceFailure(carrier),
         )
         .expect("Rust v2 fixed frame");
-        let (header, validated) =
+        let (_header, validated) =
             decode_response_error_frame(&frame).expect("dedicated strict response.error decode");
         let ValidatedResponseErrorFrame::FixedService(decoded) = validated else {
             panic!("fixed discriminator must remain fixed");
         };
         assert_eq!(decoded.encoded_bytes(), original_bytes);
-        let outbound = response_error_to_outbound(&header, decoded.into_encoded_bytes());
-        let OutboundResponse::FixedServiceFailure(failure) = outbound else {
-            panic!("dedicated decode must restore the outbound fixed carrier");
-        };
-        assert_eq!(failure.error().encoded_bytes(), original_bytes);
-        forwarded.push(failure.error().encoded_bytes().to_vec());
-        current = failure.into_error();
+        forwarded.push(decoded.encoded_bytes().to_vec());
+        current = decoded;
 
         let raw_frame = String::from_utf8_lossy(&frame);
         for forbidden in [
@@ -283,7 +276,7 @@ fn c0_internal_bytes_cross_three_typed_host_wire_hops_and_control_stays_generic(
             .expect("generic control failure is ordinary"),
     )
     .expect("generic control frame");
-    let (control_header, control_validated) =
+    let (_control_header, control_validated) =
         decode_response_error_frame(&control_frame).expect("dedicated control decode");
     assert!(matches!(
         control_validated,
@@ -292,11 +285,6 @@ fn c0_internal_bytes_cross_three_typed_host_wire_hops_and_control_stays_generic(
             ref message,
             ..
         }) if code == &error.code && message == &error.message
-    ));
-    assert!(matches!(
-        response_error_to_outbound(&control_header, Vec::new()),
-        OutboundResponse::Error(ref response)
-            if response.code == error.code && response.message == error.message
     ));
 }
 

@@ -85,9 +85,6 @@ pub(crate) mod runtime_ops {
 pub(crate) mod runtime_value_view {
     pub(crate) use skiff_runtime_eval::runtime_value_view::*;
 }
-pub(crate) mod service_dispatch {
-    pub(crate) use skiff_runtime_eval::service_dispatch::*;
-}
 pub(crate) mod source_context {
     pub(crate) use skiff_runtime_eval::source_context::*;
 }

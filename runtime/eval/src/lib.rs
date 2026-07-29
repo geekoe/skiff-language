@@ -46,7 +46,6 @@ pub mod runtime_ops;
 pub mod runtime_value_view;
 mod runtime_websocket_connect;
 mod runtime_websocket_jsonrpc;
-pub mod service_dispatch;
 pub mod source_context;
 pub mod spawn_ops;
 pub mod stream_callback;

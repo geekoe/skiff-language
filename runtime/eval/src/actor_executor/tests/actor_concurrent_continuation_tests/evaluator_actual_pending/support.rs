@@ -109,14 +109,12 @@ impl EvaluatorFixture {
 pub(super) fn program_context_with(
     interpreter: &Interpreter,
     actor: ActorCapabilityContext<'static>,
-    outbound: OutboundServiceContext,
     file: FileCapabilityContext,
     db: DbCapabilityContext,
 ) -> ProgramExecutionContext<'static> {
     program_context_with_stream(
         interpreter,
         actor,
-        outbound,
         file,
         db,
         interpreter.stream_runtime.clone(),
@@ -126,7 +124,6 @@ pub(super) fn program_context_with(
 pub(super) fn program_context_with_stream(
     interpreter: &Interpreter,
     actor: ActorCapabilityContext<'static>,
-    outbound: OutboundServiceContext,
     file: FileCapabilityContext,
     db: DbCapabilityContext,
     stream_runtime: StreamRuntime,
@@ -150,24 +147,8 @@ pub(super) fn program_context_with_stream(
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: "skiff.run/counter".to_string(),
-                display_name: None,
-                metadata: BTreeMap::new(),
-            },
-            version: "1.0.0".to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: Default::default(),
-        }),
         actor: actor.clone(),
         spawn: actor,
-        outbound,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }
@@ -224,7 +205,6 @@ pub(super) fn default_program_context(
     program_context_with(
         interpreter,
         test_runtime::actor_context(),
-        test_runtime::outbound_context(),
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
     )
