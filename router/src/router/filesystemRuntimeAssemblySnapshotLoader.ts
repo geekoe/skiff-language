@@ -114,7 +114,7 @@ implements RuntimeAssemblySnapshotLoader {
         const fileIdentity = requiredString(fileRef, 'fileIrIdentity');
         const fileHash = identityHash(
           fileIdentity,
-          'skiff-file-ir-v9:sha256:',
+          'skiff-file-ir-v10:sha256:',
           'fileIrIdentity'
         );
         const file = record(

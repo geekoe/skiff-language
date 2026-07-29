@@ -734,7 +734,7 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v9");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v10");
     assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
@@ -923,6 +923,24 @@ fn call_target_rejects_runtime_only_resolved_executable() {
     assert!(
         err.contains("unknown variant `resolvedExecutable`"),
         "unexpected resolvedExecutable error: {err}"
+    );
+}
+
+#[test]
+fn call_target_rejects_retired_external_service_symbol() {
+    let err = serde_json::from_value::<CallTargetIr>(json!({
+        "kind": "externalServiceSymbol",
+        "symbol": {
+            "modulePath": "internal.worker",
+            "symbol": "drain"
+        }
+    }))
+    .expect_err("artifact CallTargetIr must not accept unresolved source call targets")
+    .to_string();
+
+    assert!(
+        err.contains("unknown variant `externalServiceSymbol`"),
+        "unexpected retired call target error: {err}"
     );
 }
 

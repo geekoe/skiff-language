@@ -919,8 +919,7 @@ impl<'a> AssemblyCodeLinker<'a> {
             LinkedCallTarget::ActorDispatch { .. } => None,
             LinkedCallTarget::InterfaceMethod { .. }
             | LinkedCallTarget::LocalConstReceiverExecutable { .. } => None,
-            LinkedCallTarget::ExternalServiceSymbol { .. }
-            | LinkedCallTarget::ServiceDependencySymbol { .. }
+            LinkedCallTarget::ServiceDependencySymbol { .. }
             | LinkedCallTarget::PackageSymbol { .. } => {
                 anyhow::bail!("assembly execution image rejects legacy symbol-based call targets")
             }

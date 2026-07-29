@@ -39,7 +39,7 @@ mod semantic;
 
 #[test]
 fn suspension_generations_are_atomic_and_unrelated_domains_remain_stable() {
-    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v9:sha256");
+    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v10:sha256");
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
         "skiff-package-artifact-build-identity-v8"

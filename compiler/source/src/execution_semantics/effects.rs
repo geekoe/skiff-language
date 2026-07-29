@@ -265,7 +265,9 @@ impl EffectCollector<'_> {
         match target {
             ResolvedCallTarget::ConfigIntrinsic { .. }
             | ResolvedCallTarget::ReceiverBuiltin { .. } => {}
-            ResolvedCallTarget::LocalFunction { source_callable }
+            ResolvedCallTarget::LocalFunction {
+                source_callable, ..
+            }
             | ResolvedCallTarget::LocalImplMethod {
                 source_callable, ..
             } => {

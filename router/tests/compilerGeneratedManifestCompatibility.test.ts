@@ -26,7 +26,7 @@ describe('compiler generated HTTP gateway compatibility', () => {
         expect(generated.packageValue.files).toEqual([
           expect.objectContaining({
             fileIrIdentity: expect.stringMatching(
-              /^skiff-file-ir-v9:sha256:[0-9a-f]{64}$/
+              /^skiff-file-ir-v10:sha256:[0-9a-f]{64}$/
             ),
           }),
         ]);

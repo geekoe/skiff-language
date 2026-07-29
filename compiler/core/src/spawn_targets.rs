@@ -151,14 +151,6 @@ fn service_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
-        CallTargetIr::ExternalServiceSymbol { symbol } => {
-            let target_identity = format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", symbol.symbol_path());
-            Ok(Some(service_function_spawn_target(
-                file_ir_units,
-                &target_identity,
-                service_protocol_identity,
-            )?))
-        }
         // A direct package call is external to this File IR owner. Assembly
         // resolves its callable identity; spawn projection does not relink it.
         CallTargetIr::PackageCallable { .. } => Ok(None),
@@ -226,16 +218,6 @@ fn package_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
-        CallTargetIr::ExternalServiceSymbol { symbol } => {
-            let symbol_path = symbol.symbol_path();
-            let target_identity = package_handler_target(&package.package_id, &symbol_path);
-            Ok(Some(package_function_spawn_target(
-                package,
-                &target_identity,
-                &symbol_path,
-                service_protocol_identity,
-            )?))
-        }
         // A direct package call is external to this File IR owner. Assembly
         // resolves its callable identity; spawn projection does not relink it.
         CallTargetIr::PackageCallable { .. } => Ok(None),
@@ -248,94 +230,6 @@ fn package_spawn_target_for_call(
         | CallTargetIr::InterfaceMethod { .. }
         | CallTargetIr::ActorMethod { .. } => Ok(None),
     }
-}
-
-fn service_function_spawn_target(
-    file_ir_units: &[FileIrUnit],
-    target_identity: &str,
-    service_protocol_identity: &str,
-) -> Result<SpawnTargetIr> {
-    for unit in file_ir_units {
-        for (declaration_name, declaration) in &unit.declarations.executables {
-            let Some(executable) = unit.executables.get(declaration.executable_index as usize)
-            else {
-                return Err(error(format!(
-                    "spawn target {}.{} points to missing executable index {}",
-                    unit.module_path, declaration_name, declaration.executable_index
-                )));
-            };
-            if executable.kind != ExecutableKind::Function {
-                continue;
-            }
-            if format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", executable.symbol) != target_identity {
-                continue;
-            }
-            return Ok(SpawnTargetIr {
-                target_identity: target_identity.to_string(),
-                kind: SpawnTargetKindIr::Function,
-                executable_target: operation_target_ref(
-                    unit,
-                    declaration_name,
-                    declaration.executable_index,
-                    OperationCallableKind::InternalFunction,
-                ),
-                param_types: executable
-                    .params
-                    .iter()
-                    .map(|param| param.ty.clone())
-                    .collect(),
-                return_type: spawn_function_return_type(target_identity, &executable.return_type)?,
-                service_protocol_identity: service_protocol_identity.to_string(),
-            });
-        }
-    }
-    Err(error(format!(
-        "spawn target {target_identity} does not resolve to a service function"
-    )))
-}
-
-fn package_function_spawn_target(
-    package: &PackageSpawnTargetSource,
-    target_identity: &str,
-    executable_symbol: &str,
-    service_protocol_identity: &str,
-) -> Result<SpawnTargetIr> {
-    for unit in &package.file_ir_units {
-        for (declaration_name, declaration) in &unit.declarations.executables {
-            let Some(executable) = unit.executables.get(declaration.executable_index as usize)
-            else {
-                return Err(error(format!(
-                    "spawn target {}.{} points to missing executable index {}",
-                    unit.module_path, declaration_name, declaration.executable_index
-                )));
-            };
-            if executable.kind != ExecutableKind::Function || executable.symbol != executable_symbol
-            {
-                continue;
-            }
-            return Ok(SpawnTargetIr {
-                target_identity: target_identity.to_string(),
-                kind: SpawnTargetKindIr::Function,
-                executable_target: operation_target_ref(
-                    unit,
-                    declaration_name,
-                    declaration.executable_index,
-                    OperationCallableKind::InternalFunction,
-                ),
-                param_types: executable
-                    .params
-                    .iter()
-                    .map(|param| param.ty.clone())
-                    .collect(),
-                return_type: spawn_function_return_type(target_identity, &executable.return_type)?,
-                service_protocol_identity: service_protocol_identity.to_string(),
-            });
-        }
-    }
-    Err(error(format!(
-        "spawn package target {}.{executable_symbol} does not resolve to a package function",
-        package.package_id
-    )))
 }
 
 fn executable_declaration_for_index(

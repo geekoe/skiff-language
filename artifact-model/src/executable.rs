@@ -785,9 +785,6 @@ pub enum CallTargetIr {
         module_path: String,
         executable_index: u32,
     },
-    ExternalServiceSymbol {
-        symbol: ServiceSymbolRef,
-    },
     ServiceDependencySymbol {
         symbol: ServiceDependencySymbolRef,
     },

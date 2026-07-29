@@ -40,9 +40,8 @@ use super::{
     service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::source_span_ref,
     type_lowering::{
-        is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
-        lower_named_type, lower_type_ref, lower_type_text, package_scoped_root_path,
-        prelude_field_type_text, runtime_receiver_root_from_type_ref, service_symbol_ref,
+        is_official_std_package_ref, is_unknown_type_ref, lower_named_type, lower_type_ref,
+        lower_type_text, prelude_field_type_text, runtime_receiver_root_from_type_ref,
         type_ref_ir_type_text, union_type_ir, TypeLoweringContext,
     },
 };
@@ -727,10 +726,49 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 )
             }
-            CallTargetIr::ExternalServiceSymbol { symbol } => (
-                "function",
-                format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", symbol.symbol_path()),
-            ),
+            CallTargetIr::PublicationExecutable {
+                module_path,
+                executable_index,
+            } => {
+                let symbol = self
+                    .resolved_call_targets
+                    .iter()
+                    .filter_map(|(_, target)| match target {
+                        ResolvedCallTarget::LocalFunction {
+                            source_callable,
+                            executable_index: exact_index,
+                        } if source_callable.module_path() == module_path
+                            && exact_index == executable_index =>
+                        {
+                            Some(source_callable)
+                        }
+                        _ => None,
+                    })
+                    .try_fold(None, |existing: Option<&SourceSymbolKey>, candidate| {
+                        if existing.is_some_and(|existing| existing != candidate) {
+                            Err(CompileError::Semantic(format!(
+                                "spawn target {module_path} executable index {executable_index} maps to more than one typed source callable"
+                            )))
+                        } else {
+                            Ok(Some(candidate))
+                        }
+                    })?
+                    .ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "spawn target {module_path} executable index {executable_index} has no exact typed function source callable"
+                        ))
+                    })?;
+                if symbol.symbol().contains('.') {
+                    return Err(CompileError::Semantic(
+                        "spawn supports function calls; ordinary impl method calls cannot be spawned"
+                            .to_string(),
+                    ));
+                }
+                (
+                    "function",
+                    format!("{SPAWN_FUNCTION_TARGET_PREFIX}{symbol}"),
+                )
+            }
             CallTargetIr::PackageCallable {
                 package_ref,
                 package_callable_id,
@@ -1513,11 +1551,11 @@ impl<'a> FunctionLowerer<'a> {
                 target
             } else {
                 self.consume_static_callee_expression_keys(callee)?;
-                self.lower_static_call_target(callee)?
+                self.lower_static_call_target(expression_key, callee)?
             }
         } else {
             self.consume_static_callee_expression_keys(callee)?;
-            self.lower_static_call_target(callee)?
+            self.lower_static_call_target(expression_key, callee)?
         };
         let lowered_type_arguments = receiver_type_arguments
             .into_iter()
@@ -1742,6 +1780,7 @@ impl<'a> FunctionLowerer<'a> {
         };
         let Some(ResolvedCallTarget::LocalImplMethod {
             source_callable,
+            executable_index,
             receiver_type_arguments,
         }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
         else {
@@ -1758,26 +1797,70 @@ impl<'a> FunctionLowerer<'a> {
                 receiver.source_callable
             )));
         }
-        let target = if source_callable.module_path() == self.module_path {
-            let executable_index = self
+        let target = self.current_package_executable_target(
+            source_callable,
+            *executable_index,
+            "local receiver",
+        )?;
+        Ok(Some((target, receiver_type_arguments.clone())))
+    }
+
+    fn resolved_static_current_package_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(target) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        let (source_callable, executable_index) = match target {
+            ResolvedCallTarget::LocalFunction {
+                source_callable,
+                executable_index,
+            }
+            | ResolvedCallTarget::LocalImplMethod {
+                source_callable,
+                executable_index,
+                ..
+            } => (source_callable, *executable_index),
+            _ => return Ok(None),
+        };
+        self.current_package_executable_target(
+            source_callable,
+            executable_index,
+            "static current-package",
+        )
+        .map(Some)
+    }
+
+    fn current_package_executable_target(
+        &self,
+        source_callable: &SourceSymbolKey,
+        executable_index: u32,
+        context: &str,
+    ) -> Result<CallTargetIr> {
+        if source_callable.module_path() == self.module_path {
+            let exact_index = self
                 .executable_indices
                 .get(source_callable.symbol())
                 .copied()
                 .ok_or_else(|| {
                     unsupported(format!(
-                        "typed local receiver target `{source_callable}` has no local executable"
+                        "typed {context} target `{source_callable}` has no exact local executable"
                     ))
                 })?;
-            CallTargetIr::LocalExecutable { executable_index }
-        } else {
-            CallTargetIr::ExternalServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: source_callable.module_path().to_string(),
-                    symbol: source_callable.symbol().to_string(),
-                },
+            if exact_index != executable_index {
+                return Err(unsupported(format!(
+                    "typed {context} target `{source_callable}` declares executable index {executable_index}, but the canonical local index is {exact_index}"
+                )));
             }
-        };
-        Ok(Some((target, receiver_type_arguments.clone())))
+            Ok(CallTargetIr::LocalExecutable { executable_index })
+        } else {
+            Ok(CallTargetIr::PublicationExecutable {
+                module_path: source_callable.module_path().to_string(),
+                executable_index,
+            })
+        }
     }
 
     fn resolved_receiver_builtin_call_target(
@@ -2023,11 +2106,6 @@ impl<'a> FunctionLowerer<'a> {
             )));
         }
 
-        if let Some(target) = self.lower_static_impl_receiver_call_target(&receiver_ty, method_name)
-        {
-            return Ok(Some(target));
-        }
-
         Err(CompileError::Semantic(format!(
             "receiver method `{method_name}` on `{receiver_text}` must resolve to a local/package executable, receiver builtin op, or interface receiver root"
         )))
@@ -2236,29 +2314,6 @@ impl<'a> FunctionLowerer<'a> {
         .ok()
     }
 
-    fn lower_static_impl_receiver_call_target(
-        &self,
-        receiver_ty: &TypeRefIr,
-        method_name: &str,
-    ) -> Option<CallTargetIr> {
-        match receiver_ty {
-            TypeRefIr::LocalType { .. } => {
-                let type_name = self.local_type_name_for_receiver_type(receiver_ty)?;
-                let executable_index =
-                    self.local_impl_method_executable_index(type_name, method_name)?;
-                Some(CallTargetIr::LocalExecutable { executable_index })
-            }
-            TypeRefIr::ServiceSymbol { symbol } => Some(CallTargetIr::ExternalServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: symbol.module_path.clone(),
-                    symbol: impl_method_declaration_name(&symbol.symbol, method_name),
-                },
-            }),
-            TypeRefIr::PackageSymbol { .. } => None,
-            _ => None,
-        }
-    }
-
     fn is_interface_receiver_method(&self, receiver_ty: &TypeRefIr, method_name: &str) -> bool {
         let Some(symbol) = self.interface_receiver_symbol(receiver_ty) else {
             return false;
@@ -2323,22 +2378,16 @@ impl<'a> FunctionLowerer<'a> {
             .find_map(|(name, index)| (*index == *type_index).then_some(name.as_str()))
     }
 
-    fn lower_static_call_target(&self, callee: &Expr) -> Result<CallTargetIr> {
+    fn lower_static_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        callee: &Expr,
+    ) -> Result<CallTargetIr> {
+        if let Some(target) = self.resolved_static_current_package_call_target(expression_key)? {
+            return Ok(target);
+        }
         let path = expr_path(callee).ok_or_else(|| unsupported_call(callee))?;
         let root = path.split('.').next().unwrap_or(path.as_str());
-        if let Some(service_path) = path.strip_prefix("root.") {
-            if is_official_std_module_path(self.module_path) {
-                return Ok(CallTargetIr::ExternalServiceSymbol {
-                    symbol: service_symbol_ref(
-                        self.module_path,
-                        &package_scoped_root_path(self.module_path, service_path),
-                    ),
-                });
-            }
-            return Ok(CallTargetIr::ExternalServiceSymbol {
-                symbol: service_symbol_ref(self.module_path, service_path),
-            });
-        }
         if let Some(target) = shared_native_alias_target(&path) {
             return Ok(CallTargetIr::Native {
                 target: native_target_from_symbol(target),
@@ -2357,24 +2406,12 @@ impl<'a> FunctionLowerer<'a> {
                 target: native_target_from_symbol(&path),
             });
         }
-        if let Some(executable_index) = self.executable_indices.get(&path) {
-            return Ok(CallTargetIr::LocalExecutable {
-                executable_index: *executable_index,
-            });
-        }
-        if let Some(local_symbol) = path.strip_prefix(&format!("{}.", self.module_path)) {
-            if let Some(executable_index) = self.executable_indices.get(local_symbol) {
-                return Ok(CallTargetIr::LocalExecutable {
-                    executable_index: *executable_index,
-                });
-            }
-        }
         if !path.contains('.') {
             return Err(unsupported_file_ir_callee(&path));
         }
-        Ok(CallTargetIr::ExternalServiceSymbol {
-            symbol: service_symbol_ref(self.module_path, &path),
-        })
+        Err(unsupported(format!(
+            "static call target `{path}` has no exact current-package, package dependency, service call, native, or builtin resolution"
+        )))
     }
 
     fn is_receiver_call(&self, object: &Expr) -> bool {

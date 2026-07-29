@@ -6,6 +6,7 @@ use crate::{
     dependency_analysis::ResolvedDependencyAnalysisTarget,
     parsed_sources::ParsedCompilerSource,
     prelude_registry::prelude_registry,
+    semantic::{ExecutableIndex, SemanticSource},
     shared::{
         ast::{Block, Expr, ForBinding, FunctionDecl, Pattern, Stmt},
         ast_utils::{dependency_source_address_parts, expr_path, walk_expr, walk_stmt, AstVisitor},
@@ -28,11 +29,13 @@ enum LocalCallTarget {
     Function {
         module_path: String,
         function_name: String,
+        executable_index: u32,
     },
     ImplMethod {
         module_path: String,
         type_name: String,
         method_name: String,
+        executable_index: u32,
     },
     ActorMethod {
         actor: SourceSymbolKey,
@@ -70,7 +73,7 @@ pub(super) fn build_resolved_call_targets(
     type_resolution: &TypeResolutionModel,
     dependencies: &SourceDependencyAnalysisInput,
 ) -> Result<ResolvedCallTargetFacts, crate::SourceCompileError> {
-    let local_targets = LocalCallTargetIndex::build(parsed_sources);
+    let local_targets = LocalCallTargetIndex::build(parsed_sources)?;
     let mut targets = BTreeMap::new();
     let mut errors = Vec::new();
     for parsed in parsed_sources
@@ -79,6 +82,20 @@ pub(super) fn build_resolved_call_targets(
     {
         let module_path = parsed.module_path();
         let diagnostic_path = parsed.source().relative_path.display().to_string();
+        for constant in &parsed.ast().consts {
+            collect_const_owner(
+                &diagnostic_path,
+                module_path,
+                constant,
+                &local_targets,
+                expression_sources,
+                expression_types,
+                type_resolution,
+                dependencies,
+                &mut targets,
+                &mut errors,
+            );
+        }
         for function in &parsed.ast().functions {
             if function.is_native || function.is_provider {
                 continue;
@@ -150,6 +167,36 @@ pub(super) fn build_resolved_call_targets(
         })
         .collect();
     Ok(ResolvedCallTargetFacts::from_targets_and_contract_operations(targets, contract_operations))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_const_owner(
+    diagnostic_path: &str,
+    module_path: &str,
+    constant: &crate::shared::ast::ConstDecl,
+    local_targets: &LocalCallTargetIndex,
+    expression_sources: &ExpressionSourceMap,
+    expression_types: &ExpressionTypeModel,
+    type_resolution: &TypeResolutionModel,
+    dependencies: &SourceDependencyAnalysisInput,
+    targets: &mut BTreeMap<ExpressionKey, ResolvedCallTarget>,
+    errors: &mut Vec<String>,
+) {
+    let mut collector = TargetCollector {
+        diagnostic_path,
+        module_path,
+        owner: ExpressionOwnerKey::Const(constant.name.clone()),
+        next_index: 0,
+        local_targets,
+        expression_sources,
+        expression_types,
+        type_resolution,
+        dependencies,
+        value_scope: BTreeSet::new(),
+        targets,
+        errors,
+    };
+    collector.visit_expr(&constant.value);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -468,6 +515,7 @@ impl TargetCollector<'_> {
                 if let Some(target) = self.local_targets.resolve_receiver(&receiver, field) {
                     if let ResolvedCallTarget::LocalImplMethod {
                         source_callable,
+                        executable_index,
                         receiver_type_arguments: _,
                     } = target
                     {
@@ -482,6 +530,7 @@ impl TargetCollector<'_> {
                         }
                         return ResolvedCallTarget::LocalImplMethod {
                             source_callable,
+                            executable_index,
                             receiver_type_arguments: exact.receiver_type_arguments,
                         };
                     }
@@ -581,7 +630,7 @@ fn exact_native_binding_key(path: &str) -> Option<&'static str> {
 }
 
 impl LocalCallTargetIndex {
-    fn build(parsed_sources: &[ParsedCompilerSource]) -> Self {
+    fn build(parsed_sources: &[ParsedCompilerSource]) -> Result<Self, crate::SourceCompileError> {
         let mut index = Self::default();
         let actor_symbols =
             parsed_sources
@@ -598,12 +647,31 @@ impl LocalCallTargetIndex {
             .filter(|parsed| !parsed.source().is_test_file)
         {
             let module_path = parsed.module_path();
+            let semantic_source = SemanticSource::new(
+                parsed.relative_path().display().to_string(),
+                module_path,
+                parsed.ast(),
+                parsed.alias_targets(),
+            );
+            let executable_index =
+                ExecutableIndex::source_index(&semantic_source).map_err(|error| {
+                    crate::SourceCompileError::ContractValidation {
+                        message: format!(
+                        "call target executable index failed for module `{module_path}`: {error}"
+                    ),
+                    }
+                })?;
             for function in &parsed.ast().functions {
+                let exact_index = executable_index
+                    .entry(&function.name)
+                    .expect("the canonical executable index includes every parsed function")
+                    .executable_index;
                 index.insert_path(
                     format!("{module_path}.{}", function.name),
                     LocalCallTarget::Function {
                         module_path: module_path.to_string(),
                         function_name: function.name.clone(),
+                        executable_index: exact_index,
                     },
                 );
             }
@@ -615,6 +683,14 @@ impl LocalCallTargetIndex {
                     implementation.target.as_str(),
                 );
                 for method in &implementation.method_bodies {
+                    let declaration_name = crate::semantic::impl_method_declaration_name(
+                        &implementation.target,
+                        &method.name,
+                    );
+                    let exact_index = executable_index
+                        .entry(&declaration_name)
+                        .expect("the canonical executable index includes every parsed impl method")
+                        .executable_index;
                     let target = if !method.is_static {
                         actor.clone().map(|actor| LocalCallTarget::ActorMethod {
                             actor,
@@ -629,6 +705,7 @@ impl LocalCallTargetIndex {
                         module_path: module_path.to_string(),
                         type_name: implementation.target.clone(),
                         method_name: method.name.clone(),
+                        executable_index: exact_index,
                     });
                     index.insert_path(
                         format!("{module_path}.{}.{}", implementation.target, method.name),
@@ -648,7 +725,7 @@ impl LocalCallTargetIndex {
                 }
             }
         }
-        index
+        Ok(index)
     }
 
     fn insert_path(&mut self, path: String, target: LocalCallTarget) {
@@ -680,18 +757,22 @@ impl LocalCallTarget {
             Self::Function {
                 module_path,
                 function_name,
+                executable_index,
             } => ResolvedCallTarget::LocalFunction {
                 source_callable: SourceSymbolKey::new(module_path, function_name),
+                executable_index,
             },
             Self::ImplMethod {
                 module_path,
                 type_name,
                 method_name,
+                executable_index,
             } => ResolvedCallTarget::LocalImplMethod {
                 source_callable: SourceSymbolKey::new(
                     module_path,
                     crate::semantic::impl_method_declaration_name(&type_name, &method_name),
                 ),
+                executable_index,
                 receiver_type_arguments: Vec::new(),
             },
             Self::ActorMethod {

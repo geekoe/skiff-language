@@ -314,9 +314,6 @@ fn collect_metadata_external_refs(metadata: &MetadataValue, refs: &mut ExternalR
 
 fn collect_call_target_external_refs(target: &CallTargetIr, refs: &mut ExternalRefTable) {
     match target {
-        CallTargetIr::ExternalServiceSymbol { symbol } => {
-            push_unique(&mut refs.service_symbols, symbol.clone());
-        }
         CallTargetIr::ActorMethod { actor, .. } => {
             push_unique(&mut refs.service_symbols, actor.clone());
         }

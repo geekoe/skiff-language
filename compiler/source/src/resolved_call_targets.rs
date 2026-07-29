@@ -14,22 +14,18 @@ mod dependency_diagnostics;
 
 /// Shared typed call-target carrier consumed by source effect analysis and
 /// lowering. It records semantic destination kind before either consumer runs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedCallTarget {
     ConfigIntrinsic {
         intrinsic: ConfigIntrinsic,
     },
     LocalFunction {
         source_callable: SourceSymbolKey,
+        executable_index: u32,
     },
     LocalImplMethod {
         source_callable: SourceSymbolKey,
+        executable_index: u32,
         receiver_type_arguments: Vec<TypeRefIr>,
     },
     ActorMethod {
@@ -48,11 +44,9 @@ pub enum ResolvedCallTarget {
         package_requirement_alias: String,
         /// True only when the source namespace and eventual requirement are
         /// supplied by the compiler-owned package graph rather than package.yml.
-        #[serde(default, skip_serializing_if = "is_false")]
         compiler_owned: bool,
         package_callable_id: PackageCallableId,
         expected_local_abi: PackageLocalAbiIdentity,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         exact_signature: Option<PackageCallableSignature>,
     },
     InterfaceMethod {
@@ -69,16 +63,14 @@ pub enum ResolvedCallTarget {
     },
 }
 
-fn is_false(value: &bool) -> bool {
-    !value
-}
-
 impl ResolvedCallTarget {
     /// Projects current-package targets onto the exact owner key used by
     /// SourceCallableEffectFacts and the T02 SCC graph.
     pub fn source_callable_key(&self) -> Option<SourceSymbolKey> {
         match self {
-            Self::LocalFunction { source_callable }
+            Self::LocalFunction {
+                source_callable, ..
+            }
             | Self::LocalImplMethod {
                 source_callable, ..
             }
@@ -181,226 +173,15 @@ impl ResolvedCallTargetFacts {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use crate::ExpressionOwnerKey;
 
     use super::*;
 
     #[test]
-    fn all_target_kinds_are_explicit_strict_tagged_facts() {
-        let config_intrinsic = ResolvedCallTarget::ConfigIntrinsic {
-            intrinsic: ConfigIntrinsic::Optional,
-        };
-        assert_target_wire(
-            config_intrinsic,
-            json!({
-                "kind": "configIntrinsic",
-                "intrinsic": "optional"
-            }),
-        );
-
-        let local_function = ResolvedCallTarget::LocalFunction {
-            source_callable: SourceSymbolKey::new("api", "run"),
-        };
-        assert_target_wire(
-            local_function,
-            json!({
-                "kind": "localFunction",
-                "sourceCallable": {
-                    "modulePath": "api",
-                    "symbol": "run"
-                }
-            }),
-        );
-
-        let local_impl_method = ResolvedCallTarget::LocalImplMethod {
-            source_callable: SourceSymbolKey::new("api", "Worker.handle"),
-            receiver_type_arguments: Vec::new(),
-        };
-        assert_target_wire(
-            local_impl_method,
-            json!({
-                "kind": "localImplMethod",
-                "sourceCallable": {
-                    "modulePath": "api",
-                    "symbol": "Worker.handle"
-                },
-                "receiverTypeArguments": []
-            }),
-        );
-
-        let method_identity =
-            skiff_artifact_identity::actor_method_identity("api", "Worker", "handle").unwrap();
-        let actor_method = ResolvedCallTarget::ActorMethod {
-            actor: SourceSymbolKey::new("api", "Worker"),
-            source_callable: SourceSymbolKey::new("api", "Worker.handle"),
-            method_name: "handle".to_string(),
-            method_identity: method_identity.clone(),
-        };
-        assert_target_wire(
-            actor_method,
-            json!({
-                "kind": "actorMethod",
-                "actor": {
-                    "modulePath": "api",
-                    "symbol": "Worker"
-                },
-                "sourceCallable": {
-                    "modulePath": "api",
-                    "symbol": "Worker.handle"
-                },
-                "methodName": "handle",
-                "methodIdentity": method_identity.as_str()
-            }),
-        );
-
-        let native = ResolvedCallTarget::NativeFunction {
-            binding_key: "std.string.truncateUtf8Bytes".to_string(),
-        };
-        assert_target_wire(
-            native,
-            json!({
-                "kind": "nativeFunction",
-                "bindingKey": "std.string.truncateUtf8Bytes"
-            }),
-        );
-
-        let receiver = ResolvedCallTarget::ReceiverBuiltin {
-            op: skiff_artifact_model::builtin_receiver_op_by_name("Date", "isBefore")
-                .expect("Date.isBefore receiver target must exist"),
-        };
-        assert_target_wire(
-            receiver,
-            json!({
-                "kind": "receiverBuiltin",
-                "op": {
-                    "receiver": "Date",
-                    "method": "isBefore",
-                    "signatureVersion": 1,
-                    "canonicalKey": "receiver:Date.isBefore@1"
-                }
-            }),
-        );
-
-        let package = ResolvedCallTarget::DependencyPackageFunction {
-            package_requirement_alias: "util".to_string(),
-            compiler_owned: false,
-            package_callable_id: PackageCallableId::new("callable:format"),
-            expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
-            exact_signature: None,
-        };
-        assert_target_wire(
-            package,
-            json!({
-                "kind": "dependencyPackageFunction",
-                "packageRequirementAlias": "util",
-                "packageCallableId": "callable:format",
-                "expectedLocalAbi": "abi:util"
-            }),
-        );
-
-        let contract = ResolvedCallTarget::ContractOperation {
-            contract_requirement: contract_requirement("echo", "protocol:echo"),
-            contract_operation_id: ContractOperationId::new("operation:echo"),
-        };
-        let contract_value = serde_json::to_value(&contract).unwrap();
-        assert_eq!(
-            contract_value,
-            json!({
-                "kind": "contractOperation",
-                "contractRequirement": {
-                    "alias": "echo",
-                    "serviceId": "example.echo",
-                    "contractVersion": "1.0.0",
-                    "expectedProtocolIdentity": "protocol:echo"
-                },
-                "contractOperationId": "operation:echo"
-            })
-        );
-        assert!(contract_value.get("contractRequirementAlias").is_none());
-        assert!(contract_value.get("expectedProtocolIdentity").is_none());
-        let text = contract_value.to_string();
-        for forbidden in [
-            "operationStableKey",
-            "diagnosticText",
-            "providerPackageId",
-            "providerBuildId",
-            "deploymentRevision",
-            "route",
-            "executableTarget",
-        ] {
-            assert!(!text.contains(forbidden));
-        }
-
-        let unknown = ResolvedCallTarget::Unknown {
-            reason: UnknownCallTargetReason::AnalysisPending,
-        };
-        assert_eq!(
-            serde_json::to_value(unknown).unwrap(),
-            json!({ "kind": "unknown", "reason": "analysisPending" })
-        );
-    }
-
-    #[test]
-    fn target_wire_rejects_missing_and_unknown_semantic_fields() {
-        for invalid in [
-            json!({ "kind": "localFunction", "modulePath": "api" }),
-            json!({
-                "kind": "localImplMethod",
-                "modulePath": "api",
-                "typeName": "Worker"
-            }),
-            json!({
-                "kind": "localImplMethod",
-                "sourceCallable": {
-                    "modulePath": "api",
-                    "symbol": "Worker.handle"
-                }
-            }),
-            json!({
-                "kind": "actorMethod",
-                "actor": {
-                    "modulePath": "api",
-                    "symbol": "Worker"
-                },
-                "sourceCallable": {
-                    "modulePath": "api",
-                    "symbol": "Worker.handle"
-                },
-                "methodName": "handle"
-            }),
-            json!({
-                "kind": "dependencyPackageFunction",
-                "packageCallableId": "callable:format",
-                "expectedLocalAbi": "abi:util"
-            }),
-            json!({ "kind": "nativeFunction" }),
-            json!({ "kind": "receiverBuiltin" }),
-            json!({ "kind": "contractOperation", "contractOperationId": "op" }),
-            json!({ "kind": "configIntrinsic" }),
-            json!({ "kind": "configIntrinsic", "intrinsic": "get" }),
-            json!({ "kind": "unknown" }),
-            json!({
-                "kind": "contractOperation",
-                "contractRequirement": {
-                    "alias": "echo",
-                    "serviceId": "example.echo",
-                    "contractVersion": "1.0.0",
-                    "expectedProtocolIdentity": "protocol"
-                },
-                "contractOperationId": "op",
-                "providerBuildId": "forbidden"
-            }),
-        ] {
-            assert!(serde_json::from_value::<ResolvedCallTarget>(invalid).is_err());
-        }
-    }
-
-    #[test]
     fn local_targets_project_to_source_callable_effect_owner_keys() {
         let function = ResolvedCallTarget::LocalFunction {
             source_callable: SourceSymbolKey::new("api", "run"),
+            executable_index: 0,
         };
         assert_eq!(
             function.source_callable_key(),
@@ -409,6 +190,7 @@ mod tests {
 
         let method = ResolvedCallTarget::LocalImplMethod {
             source_callable: SourceSymbolKey::new("workers", "Worker<Job>.handle"),
+            executable_index: 1,
             receiver_type_arguments: vec![TypeRefIr::builtin("string")],
         };
         assert_eq!(
@@ -466,24 +248,5 @@ mod tests {
             ResolvedCallTargetFacts::from_targets(BTreeMap::from([(key.clone(), target.clone())]));
         assert_eq!(facts.target(&key), Some(&target));
         assert_eq!(facts.iter().count(), 1);
-    }
-
-    fn assert_target_wire(target: ResolvedCallTarget, wire: serde_json::Value) {
-        assert_eq!(serde_json::to_value(&target).unwrap(), wire);
-        assert_eq!(
-            serde_json::from_value::<ResolvedCallTarget>(wire).unwrap(),
-            target
-        );
-    }
-
-    fn contract_requirement(alias: &str, protocol: &str) -> ContractRequirement {
-        ContractRequirement {
-            alias: alias.to_string(),
-            service_id: format!("example.{alias}"),
-            contract_version: "1.0.0".to_string(),
-            expected_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new(
-                protocol,
-            ),
-        }
     }
 }

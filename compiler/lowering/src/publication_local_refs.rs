@@ -18,18 +18,11 @@ struct PublicationTypeRefLocation {
     type_index: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PublicationExecutableRefLocation {
-    module_path: String,
-    executable_index: u32,
-}
-
 #[derive(Debug, Default)]
 struct PublicationLocalRefIndex<'a> {
     current_package_id: Option<String>,
     package_dependency_abi_expectations: BTreeMap<String, String>,
     types_by_module_symbol: BTreeMap<(String, String), PublicationTypeRefLocation>,
-    executables_by_module_symbol: BTreeMap<(String, String), PublicationExecutableRefLocation>,
     type_resolution: Option<&'a TypeResolutionModel>,
     alias_expansion_error: RefCell<Option<String>>,
 }
@@ -58,15 +51,6 @@ impl<'a> PublicationLocalRefIndex<'a> {
                     },
                 );
             }
-            for (symbol, declaration) in &unit.declarations.executables {
-                index.executables_by_module_symbol.insert(
-                    (unit.module_path.clone(), symbol.clone()),
-                    PublicationExecutableRefLocation {
-                        module_path: unit.module_path.clone(),
-                        executable_index: declaration.executable_index,
-                    },
-                );
-            }
         }
         index
     }
@@ -77,15 +61,6 @@ impl<'a> PublicationLocalRefIndex<'a> {
         symbol: &str,
     ) -> Option<&PublicationTypeRefLocation> {
         self.types_by_module_symbol
-            .get(&(module_path.to_string(), symbol.to_string()))
-    }
-
-    fn executable_location(
-        &self,
-        module_path: &str,
-        symbol: &str,
-    ) -> Option<&PublicationExecutableRefLocation> {
-        self.executables_by_module_symbol
             .get(&(module_path.to_string(), symbol.to_string()))
     }
 
@@ -363,20 +338,6 @@ fn rewrite_call_target(
     target: &mut CallTargetIr,
 ) {
     match target {
-        CallTargetIr::ExternalServiceSymbol { symbol } => {
-            if let Some(location) = index.executable_location(&symbol.module_path, &symbol.symbol) {
-                if location.module_path == module_path {
-                    *target = CallTargetIr::LocalExecutable {
-                        executable_index: location.executable_index,
-                    };
-                } else {
-                    *target = CallTargetIr::PublicationExecutable {
-                        module_path: location.module_path.clone(),
-                        executable_index: location.executable_index,
-                    };
-                }
-            }
-        }
         CallTargetIr::InterfaceMethod {
             interface,
             method_abi_id,
@@ -809,7 +770,6 @@ mod tests {
                     type_index: 3,
                 },
             )]),
-            executables_by_module_symbol: BTreeMap::new(),
             type_resolution: None,
             alias_expansion_error: RefCell::new(None),
         };

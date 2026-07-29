@@ -82,7 +82,8 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
         matches!(
             target,
             ResolvedCallTarget::LocalFunction {
-                source_callable
+                source_callable,
+                ..
             } if source_callable == &SourceSymbolKey::new("api", "detach")
         )
     }));
@@ -174,7 +175,10 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
             .iter()
             .filter(|(_, target)| matches!(
                 target,
-                ResolvedCallTarget::LocalFunction { source_callable }
+                ResolvedCallTarget::LocalFunction {
+                    source_callable,
+                    ..
+                }
                     if source_callable == &SourceSymbolKey::new("api", "inner")
             ))
             .count()
@@ -483,6 +487,7 @@ fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
             target,
             ResolvedCallTarget::LocalFunction {
                 source_callable,
+                ..
             } if source_callable == &SourceSymbolKey::new("helpers", "detach")
         )
     }));
@@ -747,6 +752,7 @@ fn generic_local_receiver_call_target_carries_exact_receiver_instantiation() {
             ResolvedCallTarget::LocalImplMethod {
                 source_callable,
                 receiver_type_arguments,
+                ..
             } if source_callable == &SourceSymbolKey::new("api", "Box<T>.unwrap")
                 && receiver_type_arguments == &vec![TypeRefIr::builtin("string")]
         )
@@ -3921,6 +3927,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
                 target,
                 ResolvedCallTarget::LocalFunction {
                     source_callable,
+                    ..
                 } if source_callable
                     == &SourceSymbolKey::new("std.effect_test", "customNative")
         )

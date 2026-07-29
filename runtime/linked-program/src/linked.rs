@@ -1281,9 +1281,6 @@ pub enum LinkedCallTarget {
     ActorDispatch {
         plan: LinkedActorMethodDispatchPlan,
     },
-    ExternalServiceSymbol {
-        symbol: ServiceSymbolRef,
-    },
     ServiceDependencySymbol {
         symbol: ServiceDependencySymbolRef,
     },

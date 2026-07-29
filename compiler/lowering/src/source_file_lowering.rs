@@ -43,7 +43,7 @@ use super::{
     suspend_analysis::suspend_index_for_source,
 };
 
-pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
+pub(crate) struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub source: &'a str,
     pub role: &'a str,
     pub package_aliases: &'a BTreeMap<String, Vec<String>>,
@@ -104,12 +104,12 @@ impl<'a> SourceFileLoweringContext<'a> {
     }
 }
 
-pub fn compile_package_source_file_ir_unit(
+pub(crate) fn compile_package_source_file_ir_unit(
     input: PackageSourceLoweringInput<'_, '_, '_>,
 ) -> Result<FileIrUnit> {
     validate_file_ir_unit_role(input.role)?;
     let source_ast_hash = source_ast_hash(input.source)?;
-    let mut unit = lower_source_file_ir_unit(
+    let unit = lower_source_file_ir_unit(
         input.semantic_context,
         source_ast_hash,
         input.package_aliases,
@@ -126,7 +126,6 @@ pub fn compile_package_source_file_ir_unit(
         input.interface_signatures,
         input.service_calls,
     )?;
-    assign_file_ir_identity(&mut unit);
     Ok(unit)
 }
 
@@ -1146,7 +1145,7 @@ mod tests {
               }
             "#,
         );
-        assert_eq!(unit.schema_version, "skiff-file-ir-v9");
+        assert_eq!(unit.schema_version, "skiff-file-ir-v10");
         assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
         assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
@@ -1732,6 +1731,13 @@ mod tests {
         package_id: &str,
         sources: Vec<(&str, &str, &str)>,
     ) -> Vec<FileIrUnit> {
+        lowered_units_result(package_id, sources).expect("publication should lower")
+    }
+
+    fn lowered_units_result(
+        package_id: &str,
+        sources: Vec<(&str, &str, &str)>,
+    ) -> std::result::Result<Vec<FileIrUnit>, String> {
         initialize_test_prelude();
         let root = PathBuf::from("/test");
         let production_sources = sources
@@ -1745,11 +1751,11 @@ mod tests {
                     source_text.to_string(),
                     relative_path,
                 )
-                .expect("test source should parse")
+                .map_err(|error| error.to_string())
             })
-            .collect::<Vec<_>>();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let parsed_sources = parse_publication_sources(&root, &production_sources)
-            .expect("test source facts should build");
+            .map_err(|error| error.to_string())?;
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
         let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
@@ -1763,11 +1769,10 @@ mod tests {
             package_artifacts: None,
             policy: PackageCompilePolicy::new(package_id),
         })
-        .expect("source model should build");
+        .map_err(|error| error.to_string())?;
         crate::lower(&model)
-            .expect("publication should lower")
-            .file_ir_units()
-            .to_vec()
+            .map_err(|error| error.to_string())
+            .map(|lowered| lowered.file_ir_units().to_vec())
     }
 
     fn lowered_unit_with_package_facts(source_text: &str) -> FileIrUnit {
@@ -2167,6 +2172,210 @@ mod tests {
         assert!(runner.link_targets.executables.is_empty());
         assert!(worker.link_targets.types.is_empty());
         assert!(worker.link_targets.executables.is_empty());
+    }
+
+    #[test]
+    fn lowers_cross_module_generic_function_to_exact_publication_executable() {
+        let units = lowered_units(vec![
+            (
+                "internal/worker.skiff",
+                "internal.worker",
+                r#"
+                  function identity<T>(value: T) -> T {
+                    return value
+                  }
+                "#,
+            ),
+            (
+                "internal/runner.skiff",
+                "internal.runner",
+                r#"
+                  function run() -> string {
+                    return root.internal.worker.identity<string>("ok")
+                  }
+                "#,
+            ),
+        ]);
+        let worker = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.worker")
+            .unwrap();
+        let runner = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.runner")
+            .unwrap();
+        let expected_index = worker.declarations.executables["identity"].executable_index;
+        let call = runner
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == "internal.runner.run")
+            .expect("runner executable")
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .expect("generic call should lower");
+        assert!(matches!(
+            call.target,
+            CallTargetIr::PublicationExecutable {
+                ref module_path,
+                executable_index,
+            } if module_path == "internal.worker" && executable_index == expected_index
+        ));
+        assert_eq!(call.type_args["T0"], TypeRefIr::builtin("string"));
+    }
+
+    #[test]
+    fn lowers_cross_module_generic_impl_receiver_to_exact_publication_executable() {
+        let units = lowered_units(vec![
+            (
+                "internal/worker.skiff",
+                "internal.worker",
+                r#"
+                  type Box<T> { value: T }
+
+                  impl Box<T> {
+                    function unwrap() -> T {
+                      return self.value
+                    }
+                  }
+                "#,
+            ),
+            (
+                "internal/runner.skiff",
+                "internal.runner",
+                r#"
+                  function run(box: root.internal.worker.Box<string>) -> string {
+                    return box.unwrap()
+                  }
+                "#,
+            ),
+        ]);
+        let worker = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.worker")
+            .unwrap();
+        let runner = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.runner")
+            .unwrap();
+        let expected_index = worker.declarations.executables["Box<T>.unwrap"].executable_index;
+        let call = runner
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == "internal.runner.run")
+            .expect("runner executable")
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .expect("generic receiver call should lower");
+        assert!(matches!(
+            call.target,
+            CallTargetIr::PublicationExecutable {
+                ref module_path,
+                executable_index,
+            } if module_path == "internal.worker" && executable_index == expected_index
+        ));
+        assert_eq!(call.type_args["T0"], TypeRefIr::builtin("string"));
+    }
+
+    #[test]
+    fn lowers_cross_module_const_initializer_call_to_exact_publication_executable() {
+        let units = lowered_units(vec![
+            (
+                "internal/worker.skiff",
+                "internal.worker",
+                r#"
+                  function label() -> string {
+                    return "worker"
+                  }
+                "#,
+            ),
+            (
+                "internal/runner.skiff",
+                "internal.runner",
+                r#"
+                  const LABEL: string = root.internal.worker.label()
+
+                  function run() -> string {
+                    return LABEL
+                  }
+                "#,
+            ),
+        ]);
+        let worker = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.worker")
+            .unwrap();
+        let runner = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.runner")
+            .unwrap();
+        let expected_index = worker.declarations.executables["label"].executable_index;
+        let call = runner.constants[0]
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .expect("const initializer call should lower");
+        assert!(matches!(
+            call.target,
+            CallTargetIr::PublicationExecutable {
+                ref module_path,
+                executable_index,
+            } if module_path == "internal.worker" && executable_index == expected_index
+        ));
+    }
+
+    #[test]
+    fn ambiguous_generic_impl_receiver_fails_before_file_ir() {
+        let error = lowered_units_result(
+            "example.com/ambiguous-generic-impl",
+            vec![
+                (
+                    "internal/worker.skiff",
+                    "internal.worker",
+                    r#"
+                      type Box<T> { value: T }
+
+                      impl Box<T> {
+                        function unwrap() -> T { return self.value }
+                      }
+
+                      impl Box<U> {
+                        function unwrap() -> U { return self.value }
+                      }
+                    "#,
+                ),
+                (
+                    "internal/runner.skiff",
+                    "internal.runner",
+                    r#"
+                      function run(box: root.internal.worker.Box<string>) -> string {
+                        return box.unwrap()
+                      }
+                    "#,
+                ),
+            ],
+        )
+        .expect_err("ambiguous generic impl receiver must fail closed");
+        assert!(
+            error.contains("duplicate")
+                || error.contains("ambiguous")
+                || error.contains("more than once")
+                || error.contains("no exact typed source target"),
+            "unexpected ambiguity diagnostic: {error}"
+        );
     }
 
     #[test]
@@ -2605,6 +2814,77 @@ mod tests {
         )
     }
 
+    fn lower_local_function_call(
+        targets: &skiff_compiler_source::ResolvedCallTargetFacts,
+    ) -> skiff_syntax::error::Result<FileIrUnit> {
+        initialize_test_prelude();
+        let source = r#"
+          function helper() -> string {
+            return "ok"
+          }
+
+          function run() -> string {
+            return helper()
+          }
+        "#;
+        compile_parsed_source_file_ir_unit_with_lowering_context(
+            parse_source(source)?,
+            source,
+            "internal/any_lowering.skiff",
+            MODULE,
+            "package",
+            &SourceFileLoweringContext {
+                resolved_call_targets: targets,
+                ..SourceFileLoweringContext::none()
+            },
+        )
+    }
+
+    fn local_run_call_expression() -> skiff_compiler_source::ExpressionKey {
+        skiff_compiler_source::ExpressionKey::new(
+            MODULE,
+            skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
+            0,
+        )
+    }
+
+    #[test]
+    fn unresolved_local_function_does_not_fall_back_to_name_lookup() {
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                local_run_call_expression(),
+                skiff_compiler_source::ResolvedCallTarget::Unknown {
+                    reason: skiff_compiler_source::UnknownCallTargetReason::UnresolvedName,
+                },
+            )]));
+        let error = lower_local_function_call(&targets)
+            .expect_err("an unresolved local target must fail before File IR")
+            .to_string();
+        assert!(
+            error.contains("callee `helper` is not resolved"),
+            "unexpected unresolved target diagnostic: {error}"
+        );
+    }
+
+    #[test]
+    fn typed_local_function_index_mismatch_fails_before_file_ir() {
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                local_run_call_expression(),
+                skiff_compiler_source::ResolvedCallTarget::LocalFunction {
+                    source_callable: skiff_compiler_source::SourceSymbolKey::new(MODULE, "helper"),
+                    executable_index: 99,
+                },
+            )]));
+        let error = lower_local_function_call(&targets)
+            .expect_err("a mutated executable index must fail before File IR")
+            .to_string();
+        assert!(
+            error.contains("canonical local index is 0"),
+            "unexpected executable index diagnostic: {error}"
+        );
+    }
+
     #[test]
     fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() {
         let expression = package_call_expression();
@@ -2657,7 +2937,7 @@ mod tests {
         assert!(!wire.contains("operationAbiId"));
         assert!(unit
             .file_ir_identity
-            .starts_with("skiff-file-ir-v9:sha256:"));
+            .starts_with("skiff-file-ir-v10:sha256:"));
     }
 
     #[test]
@@ -2722,7 +3002,6 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("package dependency call `utils/format`"));
         assert!(message.contains("missing ResolvedCallTargetFacts entry"));
-        assert!(!message.contains("ExternalServiceSymbol"));
     }
 
     #[test]
@@ -2740,7 +3019,6 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("package dependency call `utils/format`"));
         assert!(message.contains("Unknown(UnresolvedName)"));
-        assert!(!message.contains("ExternalServiceSymbol"));
     }
 
     #[test]

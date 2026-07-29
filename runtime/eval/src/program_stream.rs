@@ -658,9 +658,7 @@ impl Interpreter {
                     call.clone(),
                 )
             }
-            LinkedCallTarget::LocalExecutable { .. }
-            | LinkedCallTarget::ExternalServiceSymbol { .. }
-            | LinkedCallTarget::PackageSymbol { .. } => {
+            LinkedCallTarget::LocalExecutable { .. } | LinkedCallTarget::PackageSymbol { .. } => {
                 return Err(RuntimeError::InvalidArtifact(format!(
                     "RuntimeProgram call target {} was not linked before execution",
                     program_call_target_kind(&call.target)
