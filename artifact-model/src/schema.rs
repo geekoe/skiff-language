@@ -7,7 +7,7 @@ pub const PACKAGE_TEST_ENTRYPOINT_KIND: &str = "testOnly";
 pub const BUNDLE_SCHEMA_VERSION: &str = "skiff-bundle-v1";
 pub const ARTIFACT_INDEX_SCHEMA_VERSION: &str = "skiff-artifact-index-v1";
 pub const CONTRACT_SCHEMA_ARTIFACT_VERSION: &str = "skiff-contract-schema-v1";
-pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v9";
+pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v10";
 pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v7";
 pub const FILE_IR_OPCODE_TABLE_VERSION: &str = "skiff-opcode-table-v2";
 pub const PUBLICATION_ABI_UNIT_SCHEMA_VERSION: &str = "skiff-publication-abi-unit-v1";
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn suspension_schema_generations_are_atomic_and_unrelated_domains_remain_stable() {
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v9");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v10");
         assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         assert_eq!(
@@ -53,6 +53,7 @@ mod tests {
         assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
 
         for legacy in [
+            "skiff-file-ir-v9",
             "skiff-file-ir-v8",
             "skiff-file-ir-format-v6",
             "skiff-opcode-table-v1",

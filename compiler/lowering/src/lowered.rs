@@ -846,12 +846,6 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
             );
         }
     }
-
-    // link_targets feed the File IR identity hash, so recompute it now that the
-    // closure has settled.
-    for unit in units.iter_mut() {
-        assign_file_ir_identity(unit);
-    }
 }
 
 fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut Vec<(usize, u32)>) {
@@ -871,22 +865,6 @@ fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut V
                 match &call.target {
                     CallTargetIr::LocalExecutable { executable_index } => {
                         executable_seeds.push((unit_index, *executable_index));
-                    }
-                    CallTargetIr::ExternalServiceSymbol { symbol } => {
-                        let Some(target_unit_index) = units
-                            .iter()
-                            .position(|unit| unit.module_path == symbol.module_path)
-                        else {
-                            continue;
-                        };
-                        if let Some(declaration) = units[target_unit_index]
-                            .declarations
-                            .executables
-                            .get(&symbol.symbol)
-                        {
-                            executable_seeds
-                                .push((target_unit_index, declaration.executable_index));
-                        }
                     }
                     CallTargetIr::PublicationExecutable {
                         module_path,

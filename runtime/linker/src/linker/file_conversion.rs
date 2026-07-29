@@ -1288,11 +1288,6 @@ fn linked_call(
                 module_path: module_path.clone(),
                 executable_index: *executable_index,
             },
-            artifact::CallTargetIr::ExternalServiceSymbol { symbol } => {
-                LinkedCallTarget::ExternalServiceSymbol {
-                    symbol: symbol.clone(),
-                }
-            }
             artifact::CallTargetIr::ServiceDependencySymbol { symbol } => {
                 LinkedCallTarget::ServiceDependencySymbol {
                     symbol: symbol.clone(),

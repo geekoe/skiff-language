@@ -131,7 +131,6 @@ pub fn program_call_target_kind(target: &LinkedCallTarget) -> &'static str {
         LinkedCallTarget::LocalExecutable { .. } => "localExecutable",
         LinkedCallTarget::PublicationExecutable { .. } => "publicationExecutable",
         LinkedCallTarget::Executable { .. } => "executable",
-        LinkedCallTarget::ExternalServiceSymbol { .. } => "externalServiceSymbol",
         LinkedCallTarget::ServiceDependencySymbol { .. } => "serviceDependencySymbol",
         LinkedCallTarget::PackageSymbol { .. } => "packageSymbol",
         LinkedCallTarget::PackageDirect { .. } => "packageDirect",

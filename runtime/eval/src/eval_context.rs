@@ -1284,12 +1284,6 @@ impl<'a> EvalContext<'a> {
             LinkedCallTarget::ActorDispatch { plan } => {
                 self.eval_actor_dispatch(plan, values).await
             }
-            LinkedCallTarget::ExternalServiceSymbol { symbol } => {
-                Err(RuntimeError::InvalidArtifact(format!(
-                    "RuntimeProgram external service call {} must use service dependency symbols",
-                    symbol.symbol_path()
-                )))
-            }
             LinkedCallTarget::ServiceDependencySymbol { symbol } => {
                 self.eval_legacy_service_dependency(call, symbol, values)
                     .await

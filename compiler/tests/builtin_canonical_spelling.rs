@@ -18,7 +18,7 @@ use common::{
 };
 
 const CURRENT_STD_BUILD: &str =
-    "skiff-package-build-v10:sha256:c95be59b499a8e16b93bbe1af2a4b113e3c50b3515c60cd745878e0d9a3ca59b";
+    "skiff-package-build-v10:sha256:f87479362f5f659e3a8cd8469360ebd248f185b079b94bdcc03f5f11dc176e80";
 const CURRENT_STD_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:4e370158a4a654c55f0e086509368ebbdf34c5bfb818d5161aca18fcb62711ac";
 const CURRENT_STD_SCHEMA_INDEX: &str =
@@ -26,7 +26,7 @@ const CURRENT_STD_SCHEMA_INDEX: &str =
 const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
 const CURRENT_DB_FILE_IR: &str =
-    "skiff-file-ir-v9:sha256:8f7394facf54b0b5407626e48babe8905535019c50db490f862efea59214b715";
+    "skiff-file-ir-v10:sha256:88c7421a53bea8a67796d100aa7e7d43181e8cd0db021b9929264b9f125d9b7c";
 
 #[test]
 fn declared_source_aliases_emit_only_canonical_file_ir_builtin_names() {

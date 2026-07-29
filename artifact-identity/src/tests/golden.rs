@@ -204,7 +204,7 @@ fn module_split_file_runtime_and_package_test_outputs_match_exact_golden() {
     assert_eq!(
             actual,
             [
-                "skiff-file-ir-v9:sha256:838ab8236b643d4c6cb83389549e17f388f38a2a1334814a28a2728dbb11d149".to_string(),
+                "skiff-file-ir-v10:sha256:5fd80b53132e45fdfde7a559aeb2b992f9e0711729a392192f5d66e2c9b25fba".to_string(),
             "skiff-service-build-v1:sha256:cb378bbbd7ee79cb2bd5fdcbebf3760d0aff65fb70ad8c669ccd7cb854f1aecc".to_string(),
             "skiff-package-test-build-v1:sha256:a2e01416dc3237468567339ca6aa1b2b93df70ab9d0537b9308a4e00cfc4f1d7".to_string(),
             ],

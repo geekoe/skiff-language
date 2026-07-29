@@ -60,12 +60,12 @@ function concurrentStatement() -> number {
     assert_eq!(file.schema_version, FILE_IR_SCHEMA_VERSION);
     assert_eq!(file.ir_format_version, FILE_IR_FORMAT_VERSION);
     assert_eq!(file.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v9");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v10");
     assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(
         file.file_ir_identity,
-        "skiff-file-ir-v9:sha256:29ef7036bb3afdc59352ed7ba211181a5a55f9323d610bb7f9a92709a4f33a87"
+        "skiff-file-ir-v10:sha256:29ef7036bb3afdc59352ed7ba211181a5a55f9323d610bb7f9a92709a4f33a87"
     );
     assert_eq!(
         skiff_artifact_identity::file_ir_identity(file).unwrap(),
