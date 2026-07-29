@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v2';
+const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v3';
 const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v1';
 const ENVIRONMENT_STATE_SCHEMA_VERSION = 'skiff-environment-activation-state-v1';
 const PACKAGE_POINTER_SCHEMA_VERSION = 'skiff-package-artifact-pointer-v1';
 const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v1';
 
-const PRODUCTION_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
-const PRODUCTION_PACKAGE_VERSION = '1.0.0';
+const TEST_SERVICE_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
+const TEST_SERVICE_PACKAGE_VERSION = '1.0.0';
 const STD_PACKAGE_ID = 'skiff.run/std';
 const STD_PACKAGE_VERSION = '1.0.0';
 
@@ -17,11 +18,12 @@ const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v3:sha256:${HASH}$
 const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v10:sha256:${HASH}$`);
 const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v7:sha256:${HASH}$`);
 const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v2:sha256:${HASH}$`);
-const GATEWAY_IDENTITY = new RegExp(`^skiff-gateway-entry-v1:sha256:${HASH}$`);
-const PACKAGE_TEST_GATEWAY_IDENTITY =
-  'skiff-gateway-entry-v1:sha256:cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4';
+const SERVICE_PROTOCOL_IDENTITY = new RegExp(`^skiff-service-protocol-v5:sha256:${HASH}$`);
+const GATEWAY_IDENTITY = new RegExp(`^skiff-gateway-entry-v2:sha256:${HASH}$`);
+const TEST_CASE_GATEWAY_IDENTITY =
+  'skiff-gateway-entry-v2:sha256:b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305';
 const SMOKE_PROBE_GATEWAY_IDENTITY =
-  'skiff-gateway-entry-v1:sha256:adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653';
+  'skiff-gateway-entry-v2:sha256:94d4fb9ed499a8e4717ac6a46eb716a4595445573808f2543b7ea5aeefe83705';
 
 const READINESS_TIMEOUT_MS = 30_000;
 const READINESS_INTERVAL_MS = 100;
@@ -30,8 +32,8 @@ export function readPackageServiceFixtureReceipt(
   stdout,
   expectedEnvironment,
   {
-    packageId = PRODUCTION_PACKAGE_ID,
-    packageVersion = PRODUCTION_PACKAGE_VERSION,
+    packageId = TEST_SERVICE_PACKAGE_ID,
+    packageVersion = TEST_SERVICE_PACKAGE_VERSION,
   } = {},
 ) {
   const receipt = parseJson(stdout, 'ecosystem smoke fixture');
@@ -42,59 +44,64 @@ export function readPackageServiceFixtureReceipt(
 
   const candidate = exactObject(
     receipt.candidate,
-    ['assembly', 'entrypoints', 'overlay', 'overlayRecordPath', 'production'],
+    [
+      'assembly',
+      'contracts',
+      'deployments',
+      'entrypoints',
+      'testService',
+      'testServiceRecordPath',
+    ],
     'fixture candidate',
   );
-  const assembly = runtimeAssemblyRef(candidate.assembly, 'fixture candidate assembly');
-  const production = packageArtifactRef(candidate.production, 'fixture production');
-  const overlay = packageArtifactRef(candidate.overlay, 'fixture overlay');
-  assert.equal(production.packageId, packageId);
-  assert.equal(production.packageVersion, packageVersion);
-  assert.equal(overlay.packageId, production.packageId);
-  assert.equal(overlay.packageVersion, production.packageVersion);
-  assert.notEqual(
-    overlay.packageBuildId,
-    production.packageBuildId,
-    'test overlay must remain a distinct immutable package build',
-  );
+  runtimeAssemblyRef(candidate.assembly, 'fixture candidate assembly');
+  const testService = packageArtifactRef(candidate.testService, 'fixture test service');
+  assert.equal(testService.packageId, packageId);
+  assert.equal(testService.packageVersion, packageVersion);
   assert.equal(
-    candidate.overlayRecordPath,
-    packageRecordPath(overlay),
-    'overlayRecordPath must select the exact overlay PackageArtifact',
+    candidate.testServiceRecordPath,
+    packageRecordPath(testService),
+    'testServiceRecordPath must select the exact ordinary test-service PackageArtifact',
   );
+  assert.ok(Array.isArray(candidate.contracts), 'fixture candidate contracts must be an array');
+  assert.equal(candidate.contracts.length, 1, 'single-case fixture must publish one contract');
+  const contract = serviceContractRef(candidate.contracts[0], 'fixture test-service contract');
+  assert.ok(Array.isArray(candidate.deployments), 'fixture candidate deployments must be an array');
+  assert.equal(candidate.deployments.length, 1, 'single-case fixture must publish one deployment');
+  const deployment = serviceDeploymentRef(
+    candidate.deployments[0],
+    'fixture test-service deployment',
+  );
+  assert.equal(contract.serviceId, testCaseServiceId(packageId, 0));
+  assert.equal(contract.contractVersion, packageVersion);
+  assert.equal(deployment.serviceId, contract.serviceId);
+  assert.equal(deployment.contractVersion, contract.contractVersion);
 
   assert.ok(Array.isArray(candidate.entrypoints), 'fixture candidate entrypoints must be an array');
   assert.equal(candidate.entrypoints.length, 2, 'fixture candidate must publish exactly 2 HTTP entrypoints');
-  const [packageTest, unary] = candidate.entrypoints;
-  httpEntrypoint(packageTest, {
+  const [testCase, unary] = candidate.entrypoints;
+  httpEntrypoint(testCase, {
     key: 'run',
-    identity: PACKAGE_TEST_GATEWAY_IDENTITY,
+    identity: TEST_CASE_GATEWAY_IDENTITY,
     selector: {
       protocol: 'http',
-      host: 'case-0.package-test.skiff.localhost',
       method: 'POST',
-      path: '/__skiff/package-test/0',
+      path: '/__skiff/test/0',
     },
-    serviceId: `test.skiff/${safeCoordinate(packageId)}/case-0`,
-    contractVersion: packageVersion,
-    deploymentRevision: `test-${identityHash(overlay.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
+    deployment,
   });
   httpEntrypoint(unary, {
     key: 'probe',
     identity: SMOKE_PROBE_GATEWAY_IDENTITY,
     selector: {
       protocol: 'http',
-      host: 'ecosystem-smoke.skiff.localhost',
       method: 'POST',
       path: '/probe',
     },
-    serviceId: 'test.skiff/ecosystem-smoke',
-    contractVersion: '1.0.0',
-    deploymentRevision:
-      `smoke-${identityHash(production.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
+    deployment,
   });
   assert.notEqual(
-    packageTest.gatewayEntryIdentity,
+    testCase.gatewayEntryIdentity,
     unary.gatewayEntryIdentity,
     'Null -> Null and Null -> String gateway surfaces must not share an identity',
   );
@@ -313,12 +320,10 @@ function httpEntrypoint(value, expected) {
   assert.match(value.gatewayEntryIdentity ?? '', GATEWAY_IDENTITY);
   assert.equal(value.gatewayEntryIdentity, expected.identity);
   assert.equal(value.mode, 'unary');
-  exactObject(value.selector, ['host', 'method', 'path', 'protocol'], `${expected.key} selector`);
+  exactObject(value.selector, ['method', 'path', 'protocol'], `${expected.key} selector`);
   assert.deepEqual(value.selector, expected.selector);
   const deployment = serviceDeploymentRef(value.deployment, `${expected.key} deployment`);
-  assert.equal(deployment.serviceId, expected.serviceId);
-  assert.equal(deployment.contractVersion, expected.contractVersion);
-  assert.equal(deployment.deploymentRevision, expected.deploymentRevision);
+  assert.deepEqual(deployment, expected.deployment);
   return value;
 }
 
@@ -345,6 +350,18 @@ function serviceDeploymentRef(value, label) {
   assert.equal(typeof value.contractVersion, 'string');
   assert.equal(typeof value.deploymentRevision, 'string');
   assert.match(value.deploymentArtifactIdentity ?? '', DEPLOYMENT_IDENTITY);
+  return value;
+}
+
+function serviceContractRef(value, label) {
+  exactObject(
+    value,
+    ['contractVersion', 'serviceId', 'serviceProtocolIdentity'],
+    label,
+  );
+  assert.equal(typeof value.serviceId, 'string');
+  assert.equal(typeof value.contractVersion, 'string');
+  assert.match(value.serviceProtocolIdentity ?? '', SERVICE_PROTOCOL_IDENTITY);
   return value;
 }
 
@@ -381,12 +398,9 @@ function coordinateSegment(value) {
   return value.replaceAll('.', '~d').replaceAll('/', '~s');
 }
 
-function safeCoordinate(value) {
-  return [...value]
-    .map((character) => (
-      /[A-Za-z0-9./-]/.test(character) ? character : '-'
-    ))
-    .join('');
+function testCaseServiceId(packageId, caseIndex) {
+  const digest = createHash('sha256').update(packageId).digest('hex').slice(0, 32);
+  return `test.skiff/p-${digest}/case-${caseIndex}`;
 }
 
 function identityHash(value, pattern) {

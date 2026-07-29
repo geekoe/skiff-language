@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   lstat,
@@ -409,8 +410,7 @@ function assemblyRecord(fixture, bootstrap) {
     resolvedDeployments: [],
     resolvedContracts: [],
     resolvedPackages: [
-      fixture.candidate.production,
-      fixture.candidate.overlay,
+      fixture.candidate.testService,
       bootstrap.bootstrap.std.package.artifact,
     ],
     packageLinkPlan: { codeSlots: [], packageLinks: [] },
@@ -418,11 +418,7 @@ function assemblyRecord(fixture, bootstrap) {
     activationTemplates: [
       {
         implementationPackageBuildId:
-          fixture.candidate.production.packageBuildId,
-      },
-      {
-        implementationPackageBuildId:
-          fixture.candidate.overlay.packageBuildId,
+          fixture.candidate.testService.packageBuildId,
       },
     ],
     gatewayIngress: [],
@@ -432,12 +428,16 @@ function assemblyRecord(fixture, bootstrap) {
 function validI02SpawnSubmitFixtureReceipt(environment) {
   const fixture = structuredClone(validSmokeFixtureReceipt(environment));
   const packageId = 'test.skiff/package-service-i02-spawn-submit';
-  fixture.candidate.production.packageId = packageId;
-  fixture.candidate.overlay.packageId = packageId;
-  fixture.candidate.overlayRecordPath = fixture.candidate.overlayRecordPath
+  fixture.candidate.testService.packageId = packageId;
+  fixture.candidate.testServiceRecordPath = fixture.candidate.testServiceRecordPath
     .replace('package-service-websocket-smoke', 'package-service-i02-spawn-submit');
-  fixture.candidate.entrypoints[0].deployment.serviceId =
-    `test.skiff/${packageId}/case-0`;
+  const serviceId =
+    `test.skiff/p-${createHash('sha256').update(packageId).digest('hex').slice(0, 32)}/case-0`;
+  fixture.candidate.contracts[0].serviceId = serviceId;
+  fixture.candidate.deployments[0].serviceId = serviceId;
+  for (const entrypoint of fixture.candidate.entrypoints) {
+    entrypoint.deployment.serviceId = serviceId;
+  }
   return fixture;
 }
 

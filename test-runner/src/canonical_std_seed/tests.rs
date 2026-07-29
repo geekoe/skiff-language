@@ -9,7 +9,7 @@ use std::{
 use skiff_artifact_identity::{
     assign_package_artifact_identities, package_artifact_ref, PackageArtifactPointerPath,
 };
-use skiff_artifact_model::PackageRuntimeCapabilityRequirement;
+use skiff_artifact_model::{BoundaryCallableProjection, PackageRuntimeCapabilityRequirement};
 use skiff_compiler::authoring::{author_official_std_package, publish_package_artifact_records};
 use skiff_deployment::storage::{CanonicalArtifactStore, PackageArtifactPointer};
 
@@ -193,6 +193,19 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
             capability: "canonical-std-seed-test".to_string(),
             required_version: "1".to_string(),
         });
+    for projection in alternative.artifact.boundary_projections.values_mut() {
+        if let BoundaryCallableProjection::Available {
+            implementation_requirements,
+            ..
+        } = projection
+        {
+            implementation_requirements
+                .runtime_capabilities
+                .push("canonical-std-seed-test".to_string());
+            implementation_requirements.runtime_capabilities.sort();
+            implementation_requirements.runtime_capabilities.dedup();
+        }
+    }
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
     let alternative_receipt =
         publish_package_artifact_records(&different_store, &alternative).unwrap();

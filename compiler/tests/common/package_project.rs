@@ -120,6 +120,13 @@ pub fn compile_package_project(
 pub fn compile_service_package_project(
     root: &Path,
 ) -> Result<(PublishedPackageProject, ServiceApiProjection), PackageProjectCompileError> {
+    compile_service_package_project_with_contract_dependencies(root, &BTreeMap::new())
+}
+
+pub fn compile_service_package_project_with_contract_dependencies(
+    root: &Path,
+    contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+) -> Result<(PublishedPackageProject, ServiceApiProjection), PackageProjectCompileError> {
     let store = root.join(LOCAL_PACKAGE_STORE);
     let package_dirs = PackageResolutionDirs {
         package_dirs: store.is_dir().then_some(store).into_iter().collect(),
@@ -134,7 +141,6 @@ pub fn compile_service_package_project(
         &package_dirs,
         &root_manifest.dependencies,
     )?;
-    let contract_dependencies = BTreeMap::new();
     let resolved_package_schemas = BTreeMap::new();
     let artifact_store = CanonicalArtifactStore::create(
         root.join(".skiff-compiler-test-artifacts"),
@@ -145,7 +151,7 @@ pub fn compile_service_package_project(
     let mut graph = PackageGraphCompiler::new(
         &platform_sources,
         manifests,
-        &contract_dependencies,
+        contract_dependencies,
         &resolved_package_schemas,
         artifact_store,
     );

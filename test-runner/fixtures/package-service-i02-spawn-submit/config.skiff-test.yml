@@ -4,4 +4,4 @@ quota:
   memoryBytes: 268435456
 principal: service:test.skiff/package-service-i02-spawn-submit
 lifecycle:
-  maxConcurrency: 1
+  maxConcurrency: 2

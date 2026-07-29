@@ -389,7 +389,7 @@ async function runIdentityCommand(state, manifestRoot, platformRoot) {
   const { deps, sharedTarget, signal } = state;
   const outcome = await deps.runCommand('cargo', [
     'test', '--locked', '--manifest-path', join(manifestRoot, 'test-runner', 'Cargo.toml'),
-    '--test', 'package_service_contract_deployment',
+    '--test', 'test_service_flow',
     'platform_source_identity_probe', '-vv', '--', '--ignored', '--exact', '--nocapture',
   ], {
     cwd: manifestRoot,

@@ -10,13 +10,13 @@ use skiff_artifact_identity::{
     service_deployment_ref,
 };
 use skiff_artifact_model::{
-    ContractDiagnosticText, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentRevision, GatewayDispatchMode, GatewayEntryIdentity,
-    GatewayEntryKey, GatewayExternalSchema, IngressProtocol, IngressSelector, PackageArtifact,
-    PackageArtifactRef, PackageBinding, PackageRequirementKey, RuntimeCapabilityBinding,
-    ServiceContract, ServiceDeployment, ServiceDeploymentInput, ServiceProtocolIdentity,
+    DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
+    IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding,
+    PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord, RuntimeCapabilityBinding,
+    ServiceContract, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
     ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::{
@@ -28,19 +28,18 @@ use crate::{
     canonical_package::CanonicalPackageProject,
     canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
     canonical_test_gateway::canonical_typed_null_gateway,
-    test_discovery::PackageTestCase,
-    test_overlay::PublishedPackageTestOverlay,
+    test_discovery::TestServiceCase,
 };
 
-static PACKAGE_TEST_ASSEMBLY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TEST_SERVICE_EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 mod http_entry;
 mod profile;
 
 use profile::{selected_profile_bindings, SelectedProfileBindings};
 
 #[derive(Debug, Clone)]
-pub struct CanonicalPackageTestEntrypoint {
-    pub case: PackageTestCase,
+pub struct CanonicalTestServiceEntrypoint {
+    pub case: TestServiceCase,
     pub selector: IngressSelector,
     pub deployment: skiff_artifact_model::ServiceDeploymentRef,
     pub gateway_entry_key: GatewayEntryKey,
@@ -49,108 +48,150 @@ pub struct CanonicalPackageTestEntrypoint {
 }
 
 #[derive(Debug, Clone)]
-pub struct CanonicalPackageTestFixture {
-    pub production: PackageArtifactRef,
-    pub overlay: PackageArtifactRef,
+pub struct CanonicalTestServiceCaseFixture {
+    pub contract: skiff_artifact_model::ServiceContractRef,
     pub records: CanonicalTestRecords,
-    pub entrypoints: Vec<CanonicalPackageTestEntrypoint>,
+    pub entrypoint: CanonicalTestServiceEntrypoint,
 }
 
-pub fn assemble_package_test_fixture(
+#[derive(Debug, Clone)]
+pub struct CanonicalTestServiceFixture {
+    pub test_service: PackageArtifactRef,
+    pub cases: Vec<CanonicalTestServiceCaseFixture>,
+}
+
+impl CanonicalTestServiceFixture {
+    pub fn publish(
+        &self,
+        source_artifact_root: &std::path::Path,
+        runtime_artifact_root: &std::path::Path,
+    ) -> Result<Vec<std::path::PathBuf>, CanonicalFixtureError> {
+        let mut written = Vec::new();
+        for case in &self.cases {
+            written.extend(
+                case.records
+                    .publish(source_artifact_root, runtime_artifact_root)?,
+            );
+        }
+        written.sort();
+        written.dedup();
+        Ok(written)
+    }
+}
+
+pub fn assemble_test_service_fixture(
     project: &CanonicalPackageProject,
-    overlay: PublishedPackageTestOverlay,
+    cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
-) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    let scope = format!("fixture:{}", overlay.overlay.artifact.package_build_id);
-    assemble_package_test_fixture_inner(project, overlay, base, &scope, None)
+) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
+    let scope = format!("fixture:{}", project.package.artifact.package_build_id);
+    assemble_test_service_fixture_inner(project, cases, base, &scope, None)
 }
 
-pub fn assemble_package_test_fixture_for_run(
+pub fn assemble_test_service_fixture_for_run(
     project: &CanonicalPackageProject,
-    overlay: PublishedPackageTestOverlay,
+    cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
     run_scope: &str,
-) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    assemble_package_test_fixture_inner(project, overlay, base, run_scope, None)
+) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
+    assemble_test_service_fixture_inner(project, cases, base, run_scope, None)
 }
 
-pub fn assemble_package_test_fixture_for_run_with_ingress(
+pub fn assemble_test_service_fixture_for_run_with_ingress(
     project: &CanonicalPackageProject,
-    overlay: PublishedPackageTestOverlay,
+    cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
     run_scope: &str,
     ingress_url: &str,
-) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    assemble_package_test_fixture_inner(project, overlay, base, run_scope, Some(ingress_url))
+) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
+    assemble_test_service_fixture_inner(project, cases, base, run_scope, Some(ingress_url))
 }
 
-fn assemble_package_test_fixture_inner(
+fn assemble_test_service_fixture_inner(
     project: &CanonicalPackageProject,
-    overlay: PublishedPackageTestOverlay,
+    cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
     run_scope: &str,
     ingress_url: Option<&str>,
-) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
-    let assembly_nonce = package_test_assembly_nonce()?;
-    let gateway_inputs = overlay
-        .bindings
+) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
+    if cases.is_empty() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "test service fixture requires at least one discovered case".to_string(),
+        ));
+    }
+    let test_profile = project.test_service_profile.as_ref().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "test execution requires service.yml kind: test and config.skiff-test.yml".to_string(),
+        )
+    })?;
+    let service_api = project.service_api.as_ref().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "compiled test service omitted its ordinary service API projection".to_string(),
+        )
+    })?;
+    let execution_nonce = test_service_execution_nonce()?;
+    let service_ids = test_service_case_ids(&project.package.artifact.package_id, cases.len())?;
+    let gateway_inputs = cases
         .iter()
         .enumerate()
-        .map(|(index, binding)| package_test_gateway_inputs(&overlay, index, binding))
+        .map(|(index, case)| test_service_gateway_inputs(&project.package.artifact, index, case))
         .collect::<Result<Vec<_>, _>>()?;
-    let service_ids =
-        package_test_service_ids(&overlay.production.package_id, overlay.bindings.len())?;
-    let overlay_ref = package_artifact_ref(&overlay.overlay.artifact)
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let production_ref = package_artifact_ref(&project.package.artifact)
+    let test_service_ref = package_artifact_ref(&project.package.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
 
-    let mut deployment_packages = vec![overlay.overlay.artifact.clone()];
-    deployment_packages.extend(overlay.dependency_packages.iter().cloned());
+    let mut deployment_packages = vec![project.package.artifact.clone()];
+    deployment_packages.extend(project.dependency_packages.iter().cloned());
     let package_bindings = canonical_package_bindings(&deployment_packages)?;
-    let service_selectors = package_test_service_selectors(&deployment_packages, &base)?;
-    let owner = binding_owner(&base, &production_ref)?;
-    let state_requirements = package_test_state_requirements(&deployment_packages)?;
+    let service_selectors = test_service_selectors(&deployment_packages, &base)?;
+    let state_requirements = test_service_state_requirements(&deployment_packages)?;
     let profile_bindings = selected_profile_bindings(
         project,
-        &overlay.overlay.artifact,
+        &project.package.artifact,
         &state_requirements,
-        owner,
+        None,
         ingress_url,
     )?;
     let runtime_capability_bindings =
-        selected_runtime_capability_bindings(project, &deployment_packages, owner);
-    let mut contracts = Vec::with_capacity(overlay.bindings.len());
-    let mut deployments = Vec::with_capacity(overlay.bindings.len());
-    let mut entrypoints = Vec::with_capacity(overlay.bindings.len());
-    for (index, ((binding, (gateway_entry_key, gateway_entry, ingress)), service_id)) in overlay
-        .bindings
+        selected_runtime_capability_bindings(project, &deployment_packages, None);
+    let mut case_fixtures = Vec::with_capacity(cases.len());
+    for (index, ((case, (gateway_entry_key, gateway_entry, ingress)), service_id)) in cases
         .iter()
         .zip(gateway_inputs)
         .zip(service_ids)
         .enumerate()
     {
-        let contract = compile_package_test_contract(&overlay, service_id)?;
+        let contract = specialize_test_service_contract(&service_api.contract, service_id)?;
         let contract_ref = service_contract_ref(&contract)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        let case_scope = package_test_case_scope(run_scope, &assembly_nonce, index, &binding.case);
-        let state_bindings = package_test_state_bindings(&state_requirements, &case_scope)?;
-        let (mut gateway_entries, mut deployment_ingress) =
-            http_entry::project(project, &overlay, &contract, ingress_url)?;
+        let case_scope = test_service_case_scope(run_scope, &execution_nonce, index, case);
+        let state_bindings = test_service_state_bindings(&state_requirements, &case_scope)?;
+        let generated = http_entry::project(project, &contract, ingress_url)?;
+        let operation_bindings = generated
+            .operation_bindings
+            .into_iter()
+            .map(|binding| ServiceDeploymentOperationInput {
+                contract_operation_id: binding.contract_operation_id,
+                package_callable_id: binding.package_callable_id,
+            })
+            .collect();
+        let mut gateway_entries = generated.gateway_entries;
+        let mut deployment_ingress = generated.ingress;
         if gateway_entries
             .insert(gateway_entry_key.clone(), gateway_entry.clone())
             .is_some()
         {
             return Err(CanonicalFixtureError::InvalidInput(format!(
-                "test service http.yml entry key {gateway_entry_key} conflicts with the package-test control entry"
+                "test service external manifest entry key {gateway_entry_key} conflicts with the runner-owned case entry"
             )));
         }
         deployment_ingress.extend(ingress.iter().cloned());
         let deployment = project_service_deployment(
-            package_test_deployment_input(
-                &overlay,
+            test_service_deployment_input(
+                &test_profile.service_id,
+                index,
                 contract_ref.clone(),
-                overlay_ref.clone(),
+                test_service_ref.clone(),
+                operation_bindings,
                 package_bindings.clone(),
                 service_selectors.clone(),
                 gateway_entries,
@@ -161,105 +202,107 @@ fn assemble_package_test_fixture_inner(
             ),
             &contract,
             &deployment_packages,
-            &BTreeMap::new(),
+            &contract_package_schema_records(
+                &contract,
+                &project.package.resolved_package_schema_type_records,
+            )?,
         )
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         let deployment_ref = service_deployment_ref(&deployment);
         let [ingress] = ingress.as_slice() else {
             return Err(CanonicalFixtureError::InvalidInput(
-                "package-test case must produce exactly one ingress".to_string(),
+                "test-service case must produce exactly one ingress".to_string(),
             ));
         };
-        entrypoints.push(CanonicalPackageTestEntrypoint {
-            selector: ingress.selector.clone(),
-            case: binding.case.clone(),
-            deployment: deployment_ref,
-            gateway_entry_key,
-            gateway_entry_identity: gateway_entry.gateway_entry_identity,
-            mode: GatewayDispatchMode::Unary,
+        let mut all_packages = base.packages.clone();
+        all_packages.extend(deployment_packages.iter().cloned());
+        let all_packages = unique_packages(all_packages)?;
+        let mut all_contracts = base.contracts.clone();
+        all_contracts.push(contract.clone());
+        let mut all_deployments = base.deployments.clone();
+        all_deployments.push(deployment.clone());
+        let assembly = resolve_runtime_assembly(
+            std::slice::from_ref(&deployment_ref),
+            &all_deployments,
+            &all_contracts,
+            &all_packages,
+        )
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        case_fixtures.push(CanonicalTestServiceCaseFixture {
+            contract: contract_ref,
+            records: CanonicalTestRecords {
+                packages: vec![project.package.clone()],
+                contracts: vec![contract.clone()],
+                deployments: vec![deployment],
+                assembly,
+                base_assembly: base.assembly.clone(),
+            },
+            entrypoint: CanonicalTestServiceEntrypoint {
+                selector: ingress.selector.clone(),
+                case: case.clone(),
+                deployment: deployment_ref,
+                gateway_entry_key,
+                gateway_entry_identity: gateway_entry.gateway_entry_identity,
+                mode: GatewayDispatchMode::Unary,
+            },
         });
-        contracts.push(contract);
-        deployments.push(deployment);
     }
-
-    let mut all_packages = base.packages.clone();
-    all_packages.push(project.package.artifact.clone());
-    all_packages.extend(deployment_packages.iter().cloned());
-    all_packages = unique_packages(all_packages)?;
-    let mut all_contracts = base.contracts.clone();
-    all_contracts.extend(contracts.iter().cloned());
-    let mut all_deployments = base.deployments.clone();
-    all_deployments.extend(deployments.iter().cloned());
-    // The base assembly supplies immutable provider/binding candidates, not
-    // additional roots. Keeping its production subject root would load both
-    // the production Package and the test overlay for the same Package ID,
-    // which is neither isolated nor a valid execution image.
-    let roots = deployments
-        .iter()
-        .map(service_deployment_ref)
-        .collect::<Vec<_>>();
-    let assembly =
-        resolve_runtime_assembly(&roots, &all_deployments, &all_contracts, &all_packages)
-            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    Ok(CanonicalPackageTestFixture {
-        production: overlay.production,
-        overlay: overlay_ref,
-        records: CanonicalTestRecords {
-            packages: vec![project.package.clone(), overlay.overlay],
-            contracts,
-            deployments,
-            assembly,
-            base_assembly: base.assembly,
-        },
-        entrypoints,
+    Ok(CanonicalTestServiceFixture {
+        test_service: test_service_ref,
+        cases: case_fixtures,
     })
 }
 
-fn compile_package_test_contract(
-    overlay: &PublishedPackageTestOverlay,
-    service_id: String,
-) -> Result<ServiceContract, CanonicalFixtureError> {
-    let contract = canonical_zero_operation_contract(
-        service_id,
-        overlay.production.package_version.clone(),
-        format!("package tests for {}", overlay.production.package_id),
-    )?;
-    PublicationId::parse(&contract.service_id).map_err(|error| {
-        CanonicalFixtureError::InvalidInput(format!(
-            "generated package-test service id {} is not canonical: {error}",
-            contract.service_id
-        ))
-    })?;
-    Ok(contract)
+fn contract_package_schema_records(
+    contract: &ServiceContract,
+    available: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+) -> Result<BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>, CanonicalFixtureError> {
+    contract
+        .package_type_requirements
+        .iter()
+        .flat_map(|requirement| {
+            requirement
+                .required_type_ids
+                .iter()
+                .map(move |type_id| (&requirement.package_id, type_id))
+        })
+        .map(|(expected_owner, type_id)| {
+            let record = available.get(type_id).ok_or_else(|| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "test-service contract requires unavailable Package schema record {type_id}"
+                ))
+            })?;
+            if &record.package_id != expected_owner {
+                return Err(CanonicalFixtureError::InvalidInput(format!(
+                    "test-service contract Package schema record {type_id} expected owner {expected_owner}, got {}",
+                    record.package_id
+                )));
+            }
+            Ok((type_id.clone(), record.clone()))
+        })
+        .collect()
 }
 
-pub(crate) fn canonical_zero_operation_contract(
+fn specialize_test_service_contract(
+    ordinary: &ServiceContract,
     service_id: String,
-    contract_version: String,
-    diagnostic_service: String,
 ) -> Result<ServiceContract, CanonicalFixtureError> {
-    let mut contract = ServiceContract {
-        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
-        service_id,
-        contract_version,
-        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
-        operations: BTreeMap::new(),
-        package_type_requirements: Vec::new(),
-        diagnostic_text: ContractDiagnosticText {
-            service: diagnostic_service,
-            operations: BTreeMap::new(),
-            types: BTreeMap::new(),
-        },
-    };
+    PublicationId::parse(&service_id).map_err(|error| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "generated test-service case id {service_id} is not canonical: {error}"
+        ))
+    })?;
+    let mut contract = ordinary.clone();
+    contract.service_id = service_id;
     assign_service_contract_identities(&mut contract)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     Ok(contract)
 }
 
-fn package_test_gateway_inputs(
-    overlay: &PublishedPackageTestOverlay,
+fn test_service_gateway_inputs(
+    implementation: &PackageArtifact,
     index: usize,
-    binding: &crate::test_overlay::PackageTestOverlayBinding,
+    case: &TestServiceCase,
 ) -> Result<
     (
         GatewayEntryKey,
@@ -270,23 +313,10 @@ fn package_test_gateway_inputs(
 > {
     let key = GatewayEntryKey::parse("run")
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let entry = canonical_typed_null_gateway(
-        &overlay.overlay.artifact,
-        &binding.gateway_selector,
-        GatewayExternalSchema::Null,
-    )
-    .map_err(CanonicalFixtureError::InvalidInput)?;
-    let handler = entry.handler.as_ref().ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(
-            "package-test HTTP gateway is missing its required handler".to_string(),
-        )
-    })?;
-    if handler != &binding.gateway_callable_id {
-        return Err(CanonicalFixtureError::InvalidInput(format!(
-            "package-test gateway handler {} does not match overlay binding {}",
-            handler, binding.gateway_callable_id
-        )));
-    }
+    let selector = format!("{}.{}Gateway", case.module_path, case.function_name);
+    let entry =
+        canonical_typed_null_gateway(implementation, &selector, GatewayExternalSchema::Null)
+            .map_err(CanonicalFixtureError::InvalidInput)?;
     Ok((
         key.clone(),
         entry,
@@ -294,7 +324,7 @@ fn package_test_gateway_inputs(
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
                 method: Some("POST".to_string()),
-                path: format!("/__skiff/package-test/{index}"),
+                path: format!("/__skiff/test/{index}"),
             },
             gateway_entry_key: key,
         }],
@@ -355,7 +385,7 @@ pub(crate) fn canonical_package_bindings(
         .collect()
 }
 
-fn package_test_service_selectors(
+fn test_service_selectors(
     packages: &[PackageArtifact],
     base: &CanonicalBaseAssembly,
 ) -> Result<Vec<ServiceSelectorBinding>, CanonicalFixtureError> {
@@ -391,31 +421,13 @@ fn package_test_service_selectors(
         .collect()
 }
 
-fn binding_owner<'a>(
-    base: &'a CanonicalBaseAssembly,
-    production: &PackageArtifactRef,
-) -> Result<Option<&'a ServiceDeployment>, CanonicalFixtureError> {
-    let owners = base
-        .deployments
-        .iter()
-        .filter(|deployment| &deployment.implementation == production)
-        .collect::<Vec<_>>();
-    match owners.as_slice() {
-        [] => Ok(None),
-        [owner] => Ok(Some(*owner)),
-        many => Err(CanonicalFixtureError::InvalidInput(format!(
-            "base assembly has {} binding owners for production package {}",
-            many.len(),
-            production.package_build_id
-        ))),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-fn package_test_deployment_input(
-    overlay: &PublishedPackageTestOverlay,
+fn test_service_deployment_input(
+    service_id: &str,
+    case_index: usize,
     contract: skiff_artifact_model::ServiceContractRef,
     implementation: PackageArtifactRef,
+    operation_bindings: Vec<ServiceDeploymentOperationInput>,
     package_bindings: Vec<PackageBinding>,
     service_selectors: Vec<ServiceSelectorBinding>,
     gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
@@ -429,7 +441,7 @@ fn package_test_deployment_input(
         .as_str()
         .rsplit(':')
         .next()
-        .unwrap_or("overlay");
+        .unwrap_or("test-service");
     let SelectedProfileBindings {
         config_literals,
         secret_refs,
@@ -439,9 +451,9 @@ fn package_test_deployment_input(
     ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract,
-        deployment_revision: DeploymentRevision::new(format!("test-{revision}")),
+        deployment_revision: DeploymentRevision::new(format!("test-{revision}-case-{case_index}")),
         implementation,
-        operation_bindings: Vec::new(),
+        operation_bindings,
         package_bindings,
         service_selectors,
         gateway_entries,
@@ -453,7 +465,7 @@ fn package_test_deployment_input(
         runtime_capability_bindings,
         policy,
         diagnostic_text: DeploymentDiagnosticText {
-            display_name: format!("package tests for {}", overlay.production.package_id),
+            display_name: format!("{service_id} case {case_index}"),
             notes: BTreeMap::from([
                 ("configOwner".to_string(), "test deployment".to_string()),
                 ("stateOwner".to_string(), "test deployment".to_string()),
@@ -463,7 +475,7 @@ fn package_test_deployment_input(
     }
 }
 
-fn package_test_state_requirements(
+fn test_service_state_requirements(
     packages: &[PackageArtifact],
 ) -> Result<BTreeMap<String, StateBindingKind>, CanonicalFixtureError> {
     let mut requirements = BTreeMap::<String, StateBindingKind>::new();
@@ -472,7 +484,7 @@ fn package_test_state_requirements(
             match requirements.get(&requirement.key) {
                 Some(kind) if kind != &requirement.kind => {
                     return Err(CanonicalFixtureError::InvalidInput(format!(
-                        "package-test state requirement {} has conflicting kinds {:?} and {:?}",
+                        "test-service state requirement {} has conflicting kinds {:?} and {:?}",
                         requirement.key, kind, requirement.kind
                     )));
                 }
@@ -486,43 +498,43 @@ fn package_test_state_requirements(
     Ok(requirements)
 }
 
-fn package_test_state_bindings(
+fn test_service_state_bindings(
     requirements: &BTreeMap<String, StateBindingKind>,
     run_scope: &str,
 ) -> Result<Vec<StateBinding>, CanonicalFixtureError> {
     if run_scope.is_empty() {
         return Err(CanonicalFixtureError::InvalidInput(
-            "package-test state run scope must be non-empty".to_string(),
+            "test-service state run scope must be non-empty".to_string(),
         ));
     }
     Ok(requirements
         .iter()
         .map(|(requirement_key, kind)| StateBinding {
-            namespace: package_test_state_namespace(run_scope, requirement_key, *kind),
+            namespace: test_service_state_namespace(run_scope, requirement_key, *kind),
             requirement_key: requirement_key.clone(),
             kind: *kind,
         })
         .collect())
 }
 
-fn package_test_assembly_nonce() -> Result<String, CanonicalFixtureError> {
+fn test_service_execution_nonce() -> Result<String, CanonicalFixtureError> {
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|error| {
             CanonicalFixtureError::InvalidInput(format!(
-                "package-test clock is before the Unix epoch: {error}"
+                "test-service clock is before the Unix epoch: {error}"
             ))
         })?
         .as_nanos();
-    let sequence = PACKAGE_TEST_ASSEMBLY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let sequence = TEST_SERVICE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     Ok(format!("{}-{timestamp}-{sequence}", std::process::id()))
 }
 
-fn package_test_case_scope(
+fn test_service_case_scope(
     run_scope: &str,
     assembly_nonce: &str,
     index: usize,
-    case: &PackageTestCase,
+    case: &TestServiceCase,
 ) -> String {
     format!(
         "{run_scope}\0execution:{assembly_nonce}\0case:{index}\0{}::{}",
@@ -530,13 +542,13 @@ fn package_test_case_scope(
     )
 }
 
-fn package_test_state_namespace(
+fn test_service_state_namespace(
     run_scope: &str,
     requirement_key: &str,
     kind: StateBindingKind,
 ) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"skiff-package-test-state-v1\0");
+    digest.update(b"skiff-test-service-state-v1\0");
     digest.update(run_scope.as_bytes());
     digest.update(b"\0");
     if kind != StateBindingKind::Database {
@@ -589,33 +601,33 @@ fn unique_packages(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PackageTestServiceOrigin<'a> {
+struct TestServiceCaseOrigin<'a> {
     package_id: &'a str,
     case_index: usize,
 }
 
-fn package_test_service_ids(
+fn test_service_case_ids(
     package_id: &str,
     case_count: usize,
 ) -> Result<Vec<String>, CanonicalFixtureError> {
     let origins = (0..case_count)
-        .map(|case_index| PackageTestServiceOrigin {
+        .map(|case_index| TestServiceCaseOrigin {
             package_id,
             case_index,
         })
         .collect::<Vec<_>>();
-    package_test_service_ids_with_digest(&origins, package_test_package_digest)
+    test_service_case_ids_with_digest(&origins, test_service_package_digest)
 }
 
-fn package_test_package_digest(package_id: &str) -> String {
+fn test_service_package_digest(package_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(package_id.as_bytes());
     let hash = format!("{:x}", digest.finalize());
     hash[..32].to_string()
 }
 
-fn package_test_service_ids_with_digest(
-    origins: &[PackageTestServiceOrigin<'_>],
+fn test_service_case_ids_with_digest(
+    origins: &[TestServiceCaseOrigin<'_>],
     package_digest: impl Fn(&str) -> String,
 ) -> Result<Vec<String>, CanonicalFixtureError> {
     let service_ids = origins
@@ -628,12 +640,11 @@ fn package_test_service_ids_with_digest(
             )
         })
         .collect::<Vec<_>>();
-
     let mut origin_by_service_id = BTreeMap::new();
     for (origin, service_id) in origins.iter().zip(&service_ids) {
         if let Some(first) = origin_by_service_id.insert(service_id, origin) {
             return Err(CanonicalFixtureError::InvalidInput(format!(
-                "generated package-test service id collision between package {} case index {} and package {} case index {}",
+                "generated test-service id collision between package {} case index {} and package {} case index {}",
                 first.package_id, first.case_index, origin.package_id, origin.case_index
             )));
         }
@@ -645,17 +656,15 @@ fn package_test_service_ids_with_digest(
 mod tests {
     use std::collections::BTreeSet;
 
-    use skiff_compiler_core::id::PublicationId;
-
     use super::{
-        canonical_zero_operation_contract, package_test_assembly_nonce, package_test_service_ids,
-        package_test_service_ids_with_digest, PackageTestServiceOrigin,
+        test_service_case_ids, test_service_case_ids_with_digest, test_service_execution_nonce,
+        TestServiceCaseOrigin,
     };
 
     #[test]
-    fn package_test_assembly_nonces_are_unique_under_parallel_allocation() {
+    fn test_service_execution_nonces_are_unique_under_parallel_allocation() {
         let handles = (0..32)
-            .map(|_| std::thread::spawn(package_test_assembly_nonce))
+            .map(|_| std::thread::spawn(test_service_execution_nonce))
             .collect::<Vec<_>>();
         let nonces = handles
             .into_iter()
@@ -666,13 +675,8 @@ mod tests {
     }
 
     #[test]
-    fn package_test_service_ids_use_a_canonical_digest_coordinate() {
-        assert!(
-            PublicationId::parse("test.skiff/agine.ai/api-tests").is_err(),
-            "the former dotted local segment must remain illegal"
-        );
-
-        let [service_id] = package_test_service_ids("agine.ai/api-tests", 1)
+    fn case_ids_use_the_canonical_package_digest_coordinate() {
+        let [service_id] = test_service_case_ids("agine.ai/api-tests", 1)
             .unwrap()
             .try_into()
             .unwrap();
@@ -680,111 +684,30 @@ mod tests {
             service_id,
             "test.skiff/p-df02597bee463b7bd9eb5efe9b37360e/case-0"
         );
-        let digest = service_id
-            .strip_prefix("test.skiff/p-")
-            .and_then(|suffix| suffix.strip_suffix("/case-0"))
-            .unwrap();
-        assert_eq!(digest.len(), 32);
-        assert!(
-            digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')),
-            "digest coordinate must match [0-9a-f]{{32}}"
-        );
-        assert_eq!(
-            PublicationId::parse(&service_id).unwrap().as_str(),
-            service_id
-        );
     }
 
     #[test]
-    fn package_test_service_ids_are_stable_and_separate_packages_and_cases() {
-        let first = package_test_service_ids("example.com/package", 2).unwrap();
-        assert_eq!(
-            first,
-            package_test_service_ids("example.com/package", 2).unwrap()
-        );
-        assert_ne!(
-            first[0],
-            package_test_service_ids("example.com/other-package", 1).unwrap()[0]
-        );
-        assert_ne!(first[0], first[1]);
-    }
-
-    #[test]
-    fn package_test_service_ids_do_not_encode_version() {
-        let [service_id] = package_test_service_ids("example.com/package", 1)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let first = canonical_zero_operation_contract(
-            service_id.clone(),
-            "1.0.0".to_string(),
-            "first".to_string(),
-        )
-        .unwrap();
-        let second = canonical_zero_operation_contract(
-            service_id,
-            "999.0.0".to_string(),
-            "second".to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(first.service_id, second.service_id);
-        assert_ne!(first.contract_version, second.contract_version);
-    }
-
-    #[test]
-    fn package_test_service_ids_bound_arbitrarily_long_package_ids() {
-        let package_id = format!("example.com/{}", "very-long-segment-".repeat(1_000));
-        let [service_id] = package_test_service_ids(&package_id, 1)
-            .unwrap()
-            .try_into()
-            .unwrap();
-
-        assert_eq!(service_id.len(), 52);
-        assert!(PublicationId::parse(&service_id).is_ok());
-    }
-
-    #[test]
-    fn package_test_service_id_collision_reports_origins_without_digest_input() {
+    fn case_id_collision_reports_both_origins_without_digest_input() {
         let origins = [
-            PackageTestServiceOrigin {
+            TestServiceCaseOrigin {
                 package_id: "first.example/package",
                 case_index: 7,
             },
-            PackageTestServiceOrigin {
+            TestServiceCaseOrigin {
                 package_id: "second.example/package",
                 case_index: 7,
             },
         ];
         let digest_input = "test-only-secret-digest-input";
-        let error = package_test_service_ids_with_digest(&origins, |_| {
+        let error = test_service_case_ids_with_digest(&origins, |_| {
             let _captured_without_diagnostic_exposure = digest_input;
             "00000000000000000000000000000000".to_string()
         })
         .unwrap_err()
         .to_string();
-
         assert!(error.contains("first.example/package"));
-        assert!(error.contains("case index 7"));
         assert!(error.contains("second.example/package"));
+        assert!(error.contains("case index 7"));
         assert!(!error.contains(digest_input));
-    }
-
-    #[test]
-    fn every_generated_package_test_contract_has_a_canonical_service_id() {
-        for service_id in package_test_service_ids("agine.ai/api-tests", 16).unwrap() {
-            let contract = canonical_zero_operation_contract(
-                service_id,
-                "2.3.4".to_string(),
-                "canonical parser coverage".to_string(),
-            )
-            .unwrap();
-            assert_eq!(
-                PublicationId::parse(&contract.service_id).unwrap().as_str(),
-                contract.service_id
-            );
-        }
     }
 }

@@ -4,4 +4,4 @@ quota:
   memoryBytes: 268435456
 principal: service:test.skiff/package-service-websocket-smoke
 lifecycle:
-  maxConcurrency: 1
+  maxConcurrency: 2

@@ -1,8 +1,7 @@
 //! Canonical package/service test infrastructure.
 //!
-//! Production package source is compiled once into an immutable `PackageArtifact`.
-//! Test overlays are separate package builds and canonical service tests are assembled
-//! from code-free contracts, source-free deployments, and a `RuntimeAssembly`.
+//! A `kind: test` service compiles into an ordinary immutable `PackageArtifact`.
+//! Each selected case receives an isolated ordinary deployment and runtime assembly.
 
 use std::{
     fs,
@@ -17,13 +16,11 @@ pub mod canonical_package;
 pub mod canonical_std_seed;
 pub mod canonical_store;
 mod canonical_test_gateway;
-pub mod ecosystem_smoke_fixture;
 mod inline_effects;
 pub mod package_service_host_fixture;
-pub mod package_test_assembly;
 pub mod runtime_execution;
 pub mod test_discovery;
-pub mod test_overlay;
+pub mod test_service_fixture;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkiffTestSummary {
@@ -150,7 +147,7 @@ pub fn run_skiff_tests_with_options(
         artifact_root,
     )?;
     let cases =
-        canonical_fixture::discover_package_test_cases(input, &package_root, metadata.is_file())?;
+        canonical_fixture::discover_test_service_cases(input, &package_root, metadata.is_file())?;
     if cases.is_empty() {
         return Ok(SkiffTestSummary {
             passed: 0,
@@ -158,6 +155,13 @@ pub fn run_skiff_tests_with_options(
             failed: 0,
             results: Vec::new(),
         });
+    }
+    if project.test_service_profile.is_none() {
+        return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(
+            "test execution requires service.yml kind: test and config.skiff-test.yml; package test overlays are unsupported"
+                .to_string(),
+        )
+        .into());
     }
 
     // Execution is deliberately all-or-nothing: a source compile is not reported as a passed

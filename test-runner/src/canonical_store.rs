@@ -131,20 +131,6 @@ impl CanonicalTestRecords {
         written.push(target.write_runtime_assembly(&self.assembly)?);
         Ok(written)
     }
-
-    pub fn assert_production_package_unchanged(
-        before: &PackageArtifactRef,
-        after: &PublishedPackageArtifact,
-    ) -> Result<(), CanonicalFixtureError> {
-        let after = package_artifact_ref(&after.artifact)
-            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        if before != &after {
-            return Err(CanonicalFixtureError::InvalidInput(
-                "test overlay rewrote production PackageArtifact identity".to_string(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 fn copy_package(

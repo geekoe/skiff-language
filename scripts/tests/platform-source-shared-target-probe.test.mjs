@@ -960,7 +960,7 @@ function fakeArtifacts(targetRoot, {
     structure(join(deps, 'libskiff_compiler_source-b.rlib')),
     structure(join(deps, 'libskiff_compiler-c.rlib')),
     {
-      path: join(deps, 'package_service_contract_deployment-d'),
+      path: join(deps, 'test_service_flow-d'),
       sha256: fakeSha('identity'),
       mtimeMs: 1,
       size: 1,

@@ -1,78 +1,70 @@
+import { createHash } from 'node:crypto';
+
 const identity = (prefix, character) => `${prefix}:${character.repeat(64)}`;
 
 export const smokeFixtureIdentities = Object.freeze({
   assembly: identity('skiff-runtime-assembly-v3:sha256', 'a'),
   bootstrapAssembly: identity('skiff-runtime-assembly-v3:sha256', '0'),
-  productionBuild: identity('skiff-package-build-v10:sha256', '1'),
-  productionAbi: identity('skiff-package-local-abi-v7:sha256', '2'),
-  overlayBuild: identity('skiff-package-build-v10:sha256', '3'),
-  overlayAbi: identity('skiff-package-local-abi-v7:sha256', '4'),
-  packageTestDeployment: identity('skiff-deployment-artifact-v2:sha256', '7'),
-  smokeDeployment: identity('skiff-deployment-artifact-v2:sha256', '8'),
+  testServiceBuild: identity('skiff-package-build-v10:sha256', '1'),
+  testServiceAbi: identity('skiff-package-local-abi-v7:sha256', '2'),
+  testServiceProtocol: identity('skiff-service-protocol-v5:sha256', '3'),
+  testServiceDeployment: identity('skiff-deployment-artifact-v2:sha256', '7'),
   packageTestGateway:
-    'skiff-gateway-entry-v1:sha256:cfcfced94f984612809ce837f81e975016b09f206925389d95e925e087fc32d4',
+    'skiff-gateway-entry-v2:sha256:b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305',
   smokeProbeGateway:
-    'skiff-gateway-entry-v1:sha256:adfaa17c077af0388f2b5751bbe4b9ba392ec647f5ce33022c8e8ec83eaf6653',
+    'skiff-gateway-entry-v2:sha256:94d4fb9ed499a8e4717ac6a46eb716a4595445573808f2543b7ea5aeefe83705',
   stdAbi: identity('skiff-package-local-abi-v7:sha256', 'd'),
 });
 
 export function validSmokeFixtureReceipt(environment) {
-  const production = {
+  const testService = {
     packageId: 'test.skiff/package-service-websocket-smoke',
     packageVersion: '1.0.0',
-    packageBuildId: smokeFixtureIdentities.productionBuild,
-    packageLocalAbiIdentity: smokeFixtureIdentities.productionAbi,
+    packageBuildId: smokeFixtureIdentities.testServiceBuild,
+    packageLocalAbiIdentity: smokeFixtureIdentities.testServiceAbi,
   };
-  const overlay = {
-    packageId: production.packageId,
-    packageVersion: production.packageVersion,
-    packageBuildId: smokeFixtureIdentities.overlayBuild,
-    packageLocalAbiIdentity: smokeFixtureIdentities.overlayAbi,
-  };
-  const packageTestDeployment = {
-    serviceId:
-      'test.skiff/test.skiff/package-service-websocket-smoke/case-0',
+  const serviceId = testCaseServiceId(testService.packageId, 0);
+  const contract = {
+    serviceId,
     contractVersion: '1.0.0',
-    deploymentRevision: `test-${hash(smokeFixtureIdentities.overlayBuild)}`,
-    deploymentArtifactIdentity: smokeFixtureIdentities.packageTestDeployment,
+    serviceProtocolIdentity: smokeFixtureIdentities.testServiceProtocol,
   };
-  const smokeDeployment = {
-    serviceId: 'test.skiff/ecosystem-smoke',
+  const deployment = {
+    serviceId,
     contractVersion: '1.0.0',
-    deploymentRevision: `smoke-${hash(smokeFixtureIdentities.productionBuild)}`,
-    deploymentArtifactIdentity: smokeFixtureIdentities.smokeDeployment,
+    deploymentRevision: `test-${hash(smokeFixtureIdentities.testServiceBuild)}-case-0`,
+    deploymentArtifactIdentity: smokeFixtureIdentities.testServiceDeployment,
   };
   return {
-    schemaVersion: 'skiff-package-service-smoke-fixture-v2',
+    schemaVersion: 'skiff-package-service-smoke-fixture-v3',
     environment,
     bootstrap: null,
     candidate: {
       assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
-      production,
-      overlay,
-      overlayRecordPath:
-        `records/package-artifacts/test~dskiff~spackage-service-websocket-smoke/1.0.0/${hash(overlay.packageBuildId)}/package.json`,
+      testService,
+      testServiceRecordPath:
+        `records/package-artifacts/test~dskiff~spackage-service-websocket-smoke/1.0.0/${hash(testService.packageBuildId)}/package.json`,
+      contracts: [contract],
+      deployments: [deployment],
       entrypoints: [
         {
-          deployment: packageTestDeployment,
+          deployment,
           gatewayEntryKey: 'run',
           gatewayEntryIdentity: smokeFixtureIdentities.packageTestGateway,
           mode: 'unary',
           selector: {
             protocol: 'http',
-            host: 'case-0.package-test.skiff.localhost',
             method: 'POST',
-            path: '/__skiff/package-test/0',
+            path: '/__skiff/test/0',
           },
         },
         {
-          deployment: smokeDeployment,
+          deployment,
           gatewayEntryKey: 'probe',
           gatewayEntryIdentity: smokeFixtureIdentities.smokeProbeGateway,
           mode: 'unary',
           selector: {
             protocol: 'http',
-            host: 'ecosystem-smoke.skiff.localhost',
             method: 'POST',
             path: '/probe',
           },
@@ -184,4 +176,9 @@ export function readyAssemblyHealth(environment, overrides = {}) {
 
 function hash(identityValue) {
   return identityValue.slice(identityValue.lastIndexOf(':') + 1);
+}
+
+function testCaseServiceId(packageId, caseIndex) {
+  const digest = createHash('sha256').update(packageId).digest('hex').slice(0, 32);
+  return `test.skiff/p-${digest}/case-${caseIndex}`;
 }

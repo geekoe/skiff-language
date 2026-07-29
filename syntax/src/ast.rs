@@ -487,7 +487,7 @@ pub enum ForBinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
-    /// Compiler-owned test-overlay statement. The parser never produces this
+    /// Compiler-owned test-service statement. The parser never produces this
     /// variant from source text.
     CompilerTestEffectRegister {
         target: String,

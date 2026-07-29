@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skiff_artifact_model::PackageArtifact;
+use skiff_artifact_model::{PackageArtifact, ServiceAuthoringKind};
 use skiff_compiler::{
     authoring::publish_package_artifact_records, compile_package, compile_service_package,
     CompiledServicePackage, PackageCompileInput, PackageContractCompileDependency,
@@ -14,7 +14,9 @@ use skiff_compiler::{
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
     package_config::{package_alias_bindings, PackageManifest, PackageManifestKey},
-    package_sources::{read_official_package_sources, read_package_sources},
+    package_sources::{
+        read_official_package_sources, read_package_sources, read_test_service_package_sources,
+    },
     read_publication_resources, CompilerPlatformSources, ManifestOwner, ServicePackageRoot,
 };
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
@@ -214,7 +216,9 @@ impl<'a> PackageGraphCompiler<'a> {
             .map(|(_, package)| package.artifact.clone())
             .collect::<Vec<_>>();
 
-        let package = read_package_source_input(self.platform_sources, manifest)?;
+        let test_service =
+            service_root.is_some_and(|root| root.service.kind == ServiceAuthoringKind::Test);
+        let package = read_package_source_input(self.platform_sources, manifest, test_service)?;
         let package_id = manifest.id.to_string();
         let aliases = package_alias_bindings(&manifest.dependencies, &self.manifests);
         let available_artifacts = self
@@ -268,10 +272,11 @@ impl<'a> PackageGraphCompiler<'a> {
                 .with_available_canonical_packages(&available_artifacts)
                 .with_resolved_package_schemas(&resolved_package_schemas)
                 .with_canonical_artifact_store(&self.artifact_store);
-        if manifest
-            .dependencies
-            .iter()
-            .any(|dependency| dependency.top_level_alias.is_some())
+        if service_root.is_some_and(|root| root.service.kind == ServiceAuthoringKind::Test)
+            || manifest
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.top_level_alias.is_some())
         {
             input = input.for_test_service();
         }
@@ -288,11 +293,15 @@ impl<'a> PackageGraphCompiler<'a> {
 fn read_package_source_input(
     platform_sources: &CompilerPlatformSources,
     manifest: &PackageManifest,
+    test_service: bool,
 ) -> Result<PackageSourceInput, PackageProjectCompileError> {
     let root = package_root(manifest)?;
     let raw_sources = match manifest.provenance.owner {
         ManifestOwner::CompilerStandardPackage => {
             read_official_package_sources(platform_sources, manifest)?
+        }
+        ManifestOwner::UserOrBuiltinPackage if test_service => {
+            read_test_service_package_sources(manifest, &root)?
         }
         ManifestOwner::UserOrBuiltinPackage => read_package_sources(manifest, &root)?,
     };

@@ -1,4 +1,4 @@
-//! Compatibility-free facade over focused package-test fixture owners.
+//! Compatibility-free facade over focused test-service fixture owners.
 
 use std::{fmt, io};
 
@@ -9,11 +9,12 @@ use thiserror::Error;
 use crate::SkiffTestResult;
 
 pub use crate::canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords};
-pub use crate::package_test_assembly::{
-    assemble_package_test_fixture, CanonicalPackageTestEntrypoint, CanonicalPackageTestFixture,
-};
 pub use crate::runtime_execution::run_package_cases;
-pub use crate::test_discovery::{discover_package_test_cases, PackageTestCase};
+pub use crate::test_discovery::{discover_test_service_cases, TestServiceCase};
+pub use crate::test_service_fixture::{
+    assemble_test_service_fixture, CanonicalTestServiceCaseFixture, CanonicalTestServiceEntrypoint,
+    CanonicalTestServiceFixture,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpPhase {
@@ -50,8 +51,6 @@ pub enum CanonicalFixtureError {
     },
     #[error(transparent)]
     Storage(#[from] EcosystemStorageError),
-    #[error(transparent)]
-    Overlay(Box<crate::test_overlay::PackageTestOverlayError>),
     #[error(
         "HTTP {phase} failed for {target}: kind={kind:?} raw_errno={raw_os_error:?} \
          elapsed={elapsed_ms}ms deadline={deadline_ms}ms: {source}"
@@ -84,10 +83,4 @@ pub enum CanonicalFixtureError {
     },
     #[error("invalid canonical fixture: {0}")]
     InvalidInput(String),
-}
-
-impl From<crate::test_overlay::PackageTestOverlayError> for CanonicalFixtureError {
-    fn from(source: crate::test_overlay::PackageTestOverlayError) -> Self {
-        Self::Overlay(Box::new(source))
-    }
 }

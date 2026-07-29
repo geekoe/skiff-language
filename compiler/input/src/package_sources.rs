@@ -17,12 +17,32 @@ use crate::{
         source_path_for_api_source_module,
     },
     source_tree::{SourceTree, SourceTreeFile},
+    test_rules::module_relative_path_for_test_file,
     CompilerPlatformSources, ManifestOwner, ResolvedPackage,
 };
 
 pub fn read_package_sources(
     manifest: &PackageManifest,
     package_root: &Path,
+) -> Result<RawPackagePublicationSources, InputAssemblyError> {
+    read_user_package_sources(manifest, package_root, false)
+}
+
+/// Reads the explicit source surface for a `service.yml kind: test` compile.
+///
+/// Ordinary package/service authoring must use [`read_package_sources`], which
+/// excludes `*.test.skiff` before reading or parsing it.
+pub fn read_test_service_package_sources(
+    manifest: &PackageManifest,
+    package_root: &Path,
+) -> Result<RawPackagePublicationSources, InputAssemblyError> {
+    read_user_package_sources(manifest, package_root, true)
+}
+
+fn read_user_package_sources(
+    manifest: &PackageManifest,
+    package_root: &Path,
+    include_test_sources: bool,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
     if manifest.provenance.owner == ManifestOwner::CompilerStandardPackage
         || is_official_aggregate_package(manifest.id.as_str())
@@ -37,6 +57,7 @@ pub fn read_package_sources(
         package_root,
         |entry| entry.source_module_hint().to_string(),
         module_path_for_package_source,
+        include_test_sources,
     )
 }
 
@@ -66,6 +87,7 @@ pub fn read_official_package_sources(
             let module_path = module_path_for_package_source(relative_path);
             official_package_source_module_path(manifest.id.as_str(), &module_path)
         },
+        false,
     )
 }
 
@@ -91,6 +113,7 @@ fn read_package_sources_with_module_path(
     package_root: &Path,
     module_path_for_api_source: impl Fn(&PackageApiEntry) -> String,
     module_path_for_private_source: impl Fn(&Path) -> String,
+    include_test_sources: bool,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
     read_package_sources_with_module_path_and_extra_sources(
         manifest,
@@ -99,6 +122,7 @@ fn read_package_sources_with_module_path(
         None,
         module_path_for_api_source,
         module_path_for_private_source,
+        include_test_sources,
     )
 }
 
@@ -109,6 +133,7 @@ fn read_package_sources_with_module_path_and_extra_sources(
     trusted_source_root: Option<&Path>,
     module_path_for_api_source: impl Fn(&PackageApiEntry) -> String,
     module_path_for_private_source: impl Fn(&Path) -> String,
+    include_test_sources: bool,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
     let mut paths = Vec::new();
     collect_package_source_paths_with_trust(
@@ -119,6 +144,7 @@ fn read_package_sources_with_module_path_and_extra_sources(
     )?;
     let mut source_paths = paths
         .into_iter()
+        .filter(|relative_path| include_test_sources || !is_test_skiff_file(relative_path))
         .map(|relative_path| PackageSourcePath {
             root: package_root.to_path_buf(),
             relative_path,
@@ -172,6 +198,10 @@ fn read_package_sources_with_module_path_and_extra_sources(
     let files = source_paths
         .into_iter()
         .map(|source_path| {
+            let is_test_file = is_test_skiff_file(&source_path.relative_path);
+            if !is_test_file {
+                reject_reserved_test_module_segment(&source_path.relative_path)?;
+            }
             let full_path = source_path.root.join(&source_path.relative_path);
             let read_path = if trusted_source_root.is_some() {
                 canonical_contained_source_path(&source_path.root, &full_path)?
@@ -198,13 +228,18 @@ fn read_package_sources_with_module_path_and_extra_sources(
                     source_path.relative_path.clone(),
                     PackageSourceVisibility::Private,
                 );
-                module_path_for_private_source(&source_path.relative_path)
+                let module_relative_path = if is_test_file {
+                    module_relative_path_for_test_file(&source_path.relative_path)
+                } else {
+                    source_path.relative_path.clone()
+                };
+                module_path_for_private_source(&module_relative_path)
             };
             Ok(CompilerRawSourceFile {
                 meta: RawSourceFileMeta {
                     relative_path: source_path.relative_path,
                     module_path,
-                    is_test_file: false,
+                    is_test_file,
                     is_generated: false,
                 },
                 text,
@@ -218,6 +253,20 @@ fn read_package_sources_with_module_path_and_extra_sources(
         files,
         visibility_by_path,
     )
+}
+
+fn reject_reserved_test_module_segment(relative_path: &Path) -> Result<(), InputAssemblyError> {
+    let implementation_module_path = module_path_for_package_source(relative_path);
+    if implementation_module_path
+        .split('.')
+        .any(|segment| segment == "__test")
+    {
+        return Err(validation_error(vec![format!(
+            "production source {} uses reserved compiler test module segment __test",
+            relative_path.display()
+        )]));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -383,7 +432,6 @@ fn collect_package_source_paths_with_trust(
         } else if path
             .extension()
             .is_some_and(|extension| extension == "skiff")
-            && !is_test_skiff_file(&path)
         {
             paths.push(
                 path.strip_prefix(package_root)

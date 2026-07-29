@@ -30,10 +30,10 @@ export async function runActorFullChainAcceptance({
         { cwd: checkout, env: isolatedEnv, signal },
       );
       const receipt = JSON.parse(outcome.stdout);
-      assert.equal(receipt.schemaVersion, 'skiff-package-service-smoke-fixture-v1');
-      assert.equal(receipt.candidate.production.packageId, 'test.skiff/actor-full-chain-acceptance');
+      assert.equal(receipt.schemaVersion, 'skiff-package-service-smoke-fixture-v3');
+      assert.equal(receipt.candidate.testService.packageId, 'test.skiff/actor-full-chain-acceptance');
       const unary = receipt.candidate.entrypoints.find(
-        (entrypoint) => entrypoint.kind === 'unary' && entrypoint.name === 'marker',
+        (entrypoint) => entrypoint.gatewayEntryKey === 'probe',
       );
       assert.ok(unary, 'Actor fixture must publish its real unary marker');
       const activation = await requestAssemblyActivation({
@@ -79,10 +79,15 @@ export async function runActorFullChainAcceptance({
 }
 
 async function invokeUnary(routerHttpUrl, entrypoint, signal) {
+  const { selector, deployment } = entrypoint;
+  assert.equal(selector.protocol, 'http');
   const response = await new Promise((resolveResponse, rejectResponse) => {
-    const request = requestHttp(`${routerHttpUrl}${entrypoint.path}`, {
-      method: entrypoint.method,
-      headers: { Host: entrypoint.host },
+    const request = requestHttp(`${routerHttpUrl}${selector.path}`, {
+      method: selector.method,
+      headers: {
+        'x-skiff-service': deployment.serviceId,
+        'x-skiff-version': deployment.contractVersion,
+      },
       signal,
     }, resolveResponse);
     request.once('error', rejectResponse);

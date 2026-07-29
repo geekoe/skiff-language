@@ -1,20 +1,18 @@
 use std::{env, path::PathBuf, process};
 
 use serde_json::json;
-use skiff_artifact_identity::{
-    package_artifact_ref, runtime_assembly_ref, PackageArtifactRecordPath,
-};
+use skiff_artifact_identity::{runtime_assembly_ref, PackageArtifactRecordPath};
 use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, RuntimeAssembly, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    AssemblyIdentity, CanonicalPackageLinkPlan, GatewayDispatchMode, RuntimeAssembly,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationState};
 use skiff_test_runner::{
-    canonical_fixture::discover_package_test_cases, canonical_package::compile_package_project,
-    canonical_std_seed::seed_canonical_std,
-    ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
+    canonical_fixture::discover_test_service_cases,
+    canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
     package_service_host_fixture::prepare_package_service_host_fixture,
-    test_overlay::compile_package_test_overlay,
+    test_service_fixture::assemble_test_service_fixture,
 };
 
 const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
@@ -198,23 +196,23 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing package root"))?;
 
     seed_canonical_std(&args.platform_sources, &args.artifact_root)?;
-    let project =
-        compile_package_project(&args.platform_sources, &package_root, &args.artifact_root)?;
-    let cases = discover_package_test_cases(&package_root, &package_root, false)?;
-    if cases.is_empty() {
-        anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
-    }
-    let overlay = compile_package_test_overlay(
+    let project = compile_package_project_for_test(
         &args.platform_sources,
         &package_root,
         &args.artifact_root,
-        &project,
-        &cases,
     )?;
-    let fixture = assemble_ecosystem_smoke_fixture(&project, overlay)?;
-    fixture
-        .records
-        .publish(&args.artifact_root, &args.artifact_root)?;
+    let cases = discover_test_service_cases(&package_root, &package_root, false)?;
+    if cases.is_empty() {
+        anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
+    }
+    let fixture = assemble_test_service_fixture(&project, &cases, Default::default())?;
+    let [case] = fixture.cases.as_slice() else {
+        anyhow::bail!(
+            "smoke fixture requires exactly one test case, found {}",
+            fixture.cases.len()
+        );
+    };
+    fixture.publish(&args.artifact_root, &args.artifact_root)?;
 
     let store = CanonicalArtifactStore::open(&args.artifact_root)?;
     let bootstrap = if args.initialize_environment {
@@ -223,36 +221,65 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         None
     };
 
-    let assembly = runtime_assembly_ref(&fixture.records.assembly)?;
-    let overlay_record_path = PackageArtifactRecordPath::new(&fixture.overlay)?.to_string();
-    let production = package_artifact_ref(&project.package.artifact)?;
+    let assembly = runtime_assembly_ref(&case.records.assembly)?;
+    let test_service_record_path =
+        PackageArtifactRecordPath::new(&fixture.test_service)?.to_string();
+    let test_entrypoint = &case.entrypoint;
+    let deployment = case
+        .records
+        .deployments
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("smoke fixture case omitted its ordinary deployment"))?;
+    let probe_ingress = deployment
+        .ingress
+        .iter()
+        .find(|binding| binding.selector.path == "/probe")
+        .ok_or_else(|| anyhow::anyhow!("smoke fixture service must declare /probe in http.yml"))?;
+    let probe_entry = deployment
+        .gateway_entries
+        .get(&probe_ingress.gateway_entry_key)
+        .ok_or_else(|| anyhow::anyhow!("smoke fixture /probe ingress has no gateway entry"))?;
+    let deployment_ref = skiff_artifact_identity::service_deployment_ref(deployment);
     let entrypoints = vec![
         json!({
-            "deployment": fixture.package_test.deployment,
-            "gatewayEntryKey": fixture.package_test.gateway_entry_key,
-            "gatewayEntryIdentity": fixture.package_test.gateway_entry_identity,
-            "mode": fixture.package_test.mode,
-            "selector": fixture.package_test.selector,
+            "deployment": test_entrypoint.deployment,
+            "gatewayEntryKey": test_entrypoint.gateway_entry_key,
+            "gatewayEntryIdentity": test_entrypoint.gateway_entry_identity,
+            "mode": test_entrypoint.mode,
+            "selector": test_entrypoint.selector,
         }),
         json!({
-            "deployment": fixture.unary.deployment,
-            "gatewayEntryKey": fixture.unary.gateway_entry_key,
-            "gatewayEntryIdentity": fixture.unary.gateway_entry_identity,
-            "mode": fixture.unary.mode,
-            "selector": fixture.unary.selector,
+            "deployment": deployment_ref,
+            "gatewayEntryKey": probe_ingress.gateway_entry_key,
+            "gatewayEntryIdentity": probe_entry.gateway_entry_identity,
+            "mode": GatewayDispatchMode::Unary,
+            "selector": probe_ingress.selector,
         }),
     ];
+    let contracts = case
+        .records
+        .contracts
+        .iter()
+        .map(skiff_artifact_identity::service_contract_ref)
+        .collect::<Result<Vec<_>, _>>()?;
+    let deployments = case
+        .records
+        .deployments
+        .iter()
+        .map(skiff_artifact_identity::service_deployment_ref)
+        .collect::<Vec<_>>();
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schemaVersion": "skiff-package-service-smoke-fixture-v2",
+            "schemaVersion": "skiff-package-service-smoke-fixture-v3",
             "environment": args.environment,
             "bootstrap": bootstrap,
             "candidate": {
                 "assembly": assembly,
-                "production": production,
-                "overlay": fixture.overlay,
-                "overlayRecordPath": overlay_record_path,
+                "testService": fixture.test_service,
+                "testServiceRecordPath": test_service_record_path,
+                "contracts": contracts,
+                "deployments": deployments,
                 "entrypoints": entrypoints,
             },
         }))?

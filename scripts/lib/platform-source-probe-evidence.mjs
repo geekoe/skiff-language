@@ -331,7 +331,7 @@ function storedArtifactIsValid(entry) {
 function artifactTraits(path, debugRoot) {
   const name = basename(path);
   const depInfo = name.endsWith('.d')
-    && /(?:skiff[-_](?:compiler|test[-_]runner|package[-_]service[-_]smoke[-_]fixture)|package_service_contract_deployment)/
+    && /(?:skiff[-_](?:compiler|test[-_]runner|package[-_]service[-_]smoke[-_]fixture)|test_service_flow)/
       .test(name);
   if (depInfo) {
     return {
@@ -347,7 +347,7 @@ function artifactTraits(path, debugRoot) {
     || name === 'skiff-test-runner'
     || name === 'skiff-package-service-smoke-fixture'
     || /^libskiff_compiler(?:_input|_source)?-[^.]+\.rlib$/.test(name);
-  const identityTest = /^package_service_contract_deployment-[^.]+$/.test(name);
+  const identityTest = /^test_service_flow-[^.]+$/.test(name);
   if (!structureSubject && !identityTest) return null;
   return {
     classification: identityTest

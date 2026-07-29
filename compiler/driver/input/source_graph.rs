@@ -1,7 +1,5 @@
 use crate::input::{PublicationManifest, PublicationResourceInput, SourceTree};
 
-use skiff_artifact_model::PackageArtifactRef;
-use skiff_compiler_source::source_graph::CompilerSourceFile;
 pub use skiff_compiler_source::source_graph::PublicationSourceGraph;
 
 /// Parsed package code and manifest facts consumed by one PackageCompileInput.
@@ -14,17 +12,6 @@ pub struct PackageSourceInput {
     pub(crate) source_tree: SourceTree,
     pub(crate) source_graph: PublicationSourceGraph,
     pub(crate) resources: Vec<PublicationResourceInput>,
-    pub(crate) test_overlay: Option<PackageTestOverlayInput>,
-}
-
-/// Compiler-internal test overlay. It binds private transformed test functions
-/// to the exact already-published production coordinate whose source graph is
-/// being compiled; it is not a package dependency or a publication surface.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct PackageTestOverlayInput {
-    pub production: PackageArtifactRef,
-    pub private_sources: Vec<CompilerSourceFile>,
 }
 
 impl PackageSourceInput {
@@ -39,21 +26,7 @@ impl PackageSourceInput {
             source_tree,
             source_graph,
             resources,
-            test_overlay: None,
         }
-    }
-
-    #[doc(hidden)]
-    pub fn with_test_overlay(
-        mut self,
-        production: PackageArtifactRef,
-        private_sources: Vec<CompilerSourceFile>,
-    ) -> Self {
-        self.test_overlay = Some(PackageTestOverlayInput {
-            production,
-            private_sources,
-        });
-        self
     }
 
     pub fn manifest(&self) -> &PublicationManifest {
@@ -66,18 +39,6 @@ impl PackageSourceInput {
 
     pub fn resources(&self) -> &[PublicationResourceInput] {
         &self.resources
-    }
-
-    pub(crate) fn production_sources(&self) -> Vec<CompilerSourceFile> {
-        self.source_graph.production_files()
-    }
-
-    pub(crate) fn compile_sources(&self) -> Vec<CompilerSourceFile> {
-        let mut sources = self.production_sources();
-        if let Some(overlay) = &self.test_overlay {
-            sources.extend(overlay.private_sources.iter().cloned());
-        }
-        sources
     }
 }
 

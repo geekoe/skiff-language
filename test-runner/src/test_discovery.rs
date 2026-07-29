@@ -8,7 +8,7 @@ use skiff_syntax::{ast::SourceFile, parser::parse_source};
 use crate::canonical_fixture::CanonicalFixtureError;
 
 #[derive(Debug, Clone)]
-pub struct PackageTestCase {
+pub struct TestServiceCase {
     /// Stable compiler/runner join key. It deliberately does not contain the
     /// user-facing test name, so renaming a case cannot orphan its effect plan.
     pub case_identity: String,
@@ -21,11 +21,11 @@ pub struct PackageTestCase {
     pub source_ast: SourceFile,
 }
 
-pub fn discover_package_test_cases(
+pub fn discover_test_service_cases(
     input: &Path,
     package_root: &Path,
     input_is_file: bool,
-) -> Result<Vec<PackageTestCase>, CanonicalFixtureError> {
+) -> Result<Vec<TestServiceCase>, CanonicalFixtureError> {
     let mut files = Vec::new();
     if input_is_file {
         if is_test_file(input) {
@@ -56,12 +56,12 @@ pub fn discover_package_test_cases(
         for (test_index, test) in source_ast.tests.iter().enumerate() {
             if input_is_file || default_run {
                 let case_identity = canonical_case_identity(&module_path, test_index);
-                cases.push(PackageTestCase {
+                cases.push(TestServiceCase {
                     case_identity: case_identity.clone(),
                     relative_path: relative_path.clone(),
                     module_path: module_path.clone(),
                     name: test.name.clone(),
-                    function_name: format!("skiffTestCase{}", cases.len()),
+                    function_name: format!("skiffTestCase{test_index}"),
                     test_index,
                     source_text: source_text.clone(),
                     source_ast: source_ast.clone(),

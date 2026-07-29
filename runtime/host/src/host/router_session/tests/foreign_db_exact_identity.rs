@@ -42,9 +42,8 @@ use skiff_runtime_transport::{
 };
 use skiff_test_runner::{
     canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
-    canonical_store::CanonicalBaseAssembly,
-    package_test_assembly::assemble_package_test_fixture_for_run,
-    test_discovery::discover_package_test_cases, test_overlay::compile_package_test_overlay,
+    canonical_store::CanonicalBaseAssembly, test_discovery::discover_test_service_cases,
+    test_service_fixture::assemble_test_service_fixture_for_run,
 };
 use tokio::sync::mpsc;
 
@@ -433,26 +432,25 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
     write_test_service(&tests);
 
     let project = compile_package_project_for_test(&platform, &tests, &source_artifacts).unwrap();
-    let cases = discover_package_test_cases(&tests, &tests, false).unwrap();
+    let cases = discover_test_service_cases(&tests, &tests, false).unwrap();
     assert_eq!(cases.len(), 1);
-    let overlay =
-        compile_package_test_overlay(&platform, &tests, &source_artifacts, &project, &cases)
-            .unwrap();
-    let package_fixture = assemble_package_test_fixture_for_run(
+    let test_fixture = assemble_test_service_fixture_for_run(
         &project,
-        overlay,
+        &cases,
         CanonicalBaseAssembly::default(),
         "p3x-foreign-db",
     )
     .unwrap();
-    package_fixture
-        .records
+    test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
         .unwrap();
+    let [case_fixture] = test_fixture.cases.as_slice() else {
+        panic!("one compiled test case must produce one case fixture")
+    };
 
     let store = CanonicalArtifactStore::open(&runtime_artifacts).unwrap();
     let assembly_ref =
-        skiff_artifact_identity::runtime_assembly_ref(&package_fixture.records.assembly).unwrap();
+        skiff_artifact_identity::runtime_assembly_ref(&case_fixture.records.assembly).unwrap();
     store.read_runtime_assembly(&assembly_ref).unwrap();
     let provider = ExactDbProvider::default();
     let host = RuntimeHost::new(RuntimeConfig {
@@ -479,9 +477,7 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
         .await
         .unwrap();
 
-    let [entrypoint] = package_fixture.entrypoints.as_slice() else {
-        panic!("one compiled test case must produce one entrypoint")
-    };
+    let entrypoint = &case_fixture.entrypoint;
     let route = host
         .lookup_active_assembly_request_route(&ServiceIngressKey {
             deployment: entrypoint.deployment.clone(),
@@ -532,7 +528,7 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
     super::dispatch_router_binary_frame_with_http_response_max(&host, &frame, &sender, 1024)
         .await
         .unwrap();
-    let terminal = receiver.recv().await.expect("one package-test terminal");
+    let terminal = receiver.recv().await.expect("one test-service terminal");
     match terminal {
         RouterWriterMessage::Binary(frame) => {
             if let Ok((end, payload)) = decode_typed_binary_frame::<ResponseEndFrameHeader>(&frame)
@@ -551,7 +547,7 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
                 );
             }
         }
-        other => panic!("unexpected package-test terminal {other:?}"),
+        other => panic!("unexpected test-service terminal {other:?}"),
     }
 
     let inputs = provider.inputs.lock().unwrap();
