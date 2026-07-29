@@ -1,4 +1,9 @@
-use std::{env, path::PathBuf, process};
+use std::{
+    env,
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use skiff_compiler::CompilerPlatformSources;
 use skiff_test_runner::{
@@ -7,19 +12,33 @@ use skiff_test_runner::{
 
 const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
-fn main() {
-    if let Err(message) = run() {
-        eprintln!("error: {message}");
-        eprintln!("{USAGE}");
-        process::exit(1);
-    }
+fn main() -> ExitCode {
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut stdout = stdout.lock();
+    let mut stderr = stderr.lock();
+    ExitCode::from(finish(run(&mut stdout), &mut stdout, &mut stderr))
 }
 
-fn run() -> Result<(), String> {
-    let Some(args) = parse_args()? else {
+fn finish(result: Result<(), String>, stdout: &mut impl Write, stderr: &mut impl Write) -> u8 {
+    let failed = match result {
+        Ok(()) => false,
+        Err(message) => {
+            let _ = writeln!(stderr, "error: {message}");
+            let _ = writeln!(stderr, "{USAGE}");
+            true
+        }
+    };
+    let stdout_flush_failed = stdout.flush().is_err();
+    let stderr_flush_failed = stderr.flush().is_err();
+    u8::from(failed || stdout_flush_failed || stderr_flush_failed)
+}
+
+fn run(stdout: &mut impl Write) -> Result<(), String> {
+    let Some(args) = parse_args(stdout)? else {
         return Ok(());
     };
-    execute(args)
+    execute(args, stdout)
 }
 
 struct CliArgs {
@@ -44,13 +63,14 @@ struct RawCliArgs {
     require_tests: bool,
 }
 
-fn parse_args() -> Result<Option<CliArgs>, String> {
+fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
     let mut parsed = RawCliArgs::default();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                println!("{USAGE}");
+                writeln!(stdout, "{USAGE}")
+                    .map_err(|error| format!("failed to write test output: {error}"))?;
                 return Ok(None);
             }
             "--artifact-root" => {
@@ -189,9 +209,18 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     })
 }
 
-fn execute(args: CliArgs) -> Result<(), String> {
+fn execute(args: CliArgs, stdout: &mut impl Write) -> Result<(), String> {
     let summary = run_skiff_tests_with_options(&args.input, &args.options)
         .map_err(|error| error.to_string())?;
+    report_summary(&summary, args.deny_skips, args.require_tests, stdout)
+}
+
+fn report_summary(
+    summary: &skiff_test_runner::SkiffTestSummary,
+    deny_skips: bool,
+    require_tests: bool,
+    stdout: &mut impl Write,
+) -> Result<(), String> {
     for result in &summary.results {
         let status = if result.skipped {
             "SKIP"
@@ -200,15 +229,17 @@ fn execute(args: CliArgs) -> Result<(), String> {
         } else {
             "FAIL"
         };
-        println!("{status} {}::{}", result.module_path, result.name);
+        writeln!(stdout, "{status} {}::{}", result.module_path, result.name)
+            .map_err(|error| format!("failed to write test output: {error}"))?;
         if let Some(message) = &result.message {
-            println!("  {message}");
+            writeln!(stdout, "  {message}")
+                .map_err(|error| format!("failed to write test output: {error}"))?;
         }
     }
-    if args.require_tests && summary.results.is_empty() {
+    if require_tests && summary.results.is_empty() {
         return Err("--require-tests requires at least one test".to_string());
     }
-    if args.deny_skips && summary.skipped != 0 {
+    if deny_skips && summary.skipped != 0 {
         return Err(format!(
             "--deny-skips forbids {} skipped test(s)",
             summary.skipped
@@ -217,10 +248,12 @@ fn execute(args: CliArgs) -> Result<(), String> {
     if summary.failed != 0 {
         return Err(format!("{} test(s) failed", summary.failed));
     }
-    println!(
+    writeln!(
+        stdout,
         "test result: ok. {} passed; {} failed",
         summary.passed, summary.failed
-    );
+    )
+    .map_err(|error| format!("failed to write test output: {error}"))?;
     Ok(())
 }
 
@@ -274,3 +307,7 @@ fn validate_environment(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "main/tests.rs"]
+mod tests;
