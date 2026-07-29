@@ -117,8 +117,8 @@ impl EvalRecoverableBehaviorHooks {
         program: &RuntimeExecutionProjection<'_>,
     ) -> Result<(), RuntimeError> {
         self.index_files(program, UnitAddr::Service, program.service_files())?;
-        for (package_slot, files) in program.package_files().iter().enumerate() {
-            self.index_files(program, UnitAddr::Package(package_slot), files)?;
+        for (package_slot, package) in program.packages().iter().enumerate() {
+            self.index_files(program, UnitAddr::Package(package_slot), package.files())?;
         }
         Ok(())
     }
@@ -748,7 +748,7 @@ fn local_concrete_owner(
                     "recoverable local concrete owner package slot {slot} is not loaded"
                 ))
             })?;
-            if (0..program.package_files().len())
+            if (0..program.packages().len())
                 .filter(|candidate| program.package_id(*candidate) == Some(package_id))
                 .take(2)
                 .count()
@@ -862,7 +862,9 @@ fn recoverable_hook_error(
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use skiff_runtime_linked_program::{LinkOverlay, PackageUnit, RuntimeTypeContext, UnitAddr};
+    use skiff_runtime_linked_program::{
+        LinkOverlay, RuntimeExecutionPackage, RuntimeTypeContext, UnitAddr,
+    };
 
     use super::{local_concrete_owner, EvalRecoverableBehaviorHooks};
     use crate::{error::RuntimeError, invocation::EvalProgramProjection};
@@ -870,8 +872,7 @@ mod tests {
     const PACKAGE_ID: &str = "skiff.test/shared";
 
     struct DuplicatePackageProgram {
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<skiff_runtime_linked_program::LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         spawn_routes: HashMap<String, skiff_runtime_linked_program::ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
@@ -881,20 +882,19 @@ mod tests {
         fn new() -> Self {
             Self {
                 packages: vec![
-                    Arc::new(PackageUnit::empty(
+                    crate::test_support::runtime_execution_package_fixture(
                         PACKAGE_ID,
-                        "1.0.0",
-                        "package-build:first",
-                        "package-abi:test",
-                    )),
-                    Arc::new(PackageUnit::empty(
+                        0,
+                        Vec::new(),
+                        Default::default(),
+                    ),
+                    crate::test_support::runtime_execution_package_fixture(
                         PACKAGE_ID,
-                        "2.0.0",
-                        "package-build:second",
-                        "package-abi:test",
-                    )),
+                        1,
+                        Vec::new(),
+                        Default::default(),
+                    ),
                 ],
-                package_files: vec![Vec::new(), Vec::new()],
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext::default(),
@@ -906,7 +906,6 @@ mod tests {
                 "skiff.test/service",
                 &[],
                 &self.packages,
-                &self.package_files,
                 &self.spawn_routes,
                 &self.link_overlay,
                 &self.types,

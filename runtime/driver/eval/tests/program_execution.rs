@@ -34,8 +34,8 @@ use super::*;
 use crate::eval::InterpreterEnv as Env;
 use skiff_artifact_model::{
     builtin_receiver_op_by_name, DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId,
-    PackageLocalAbiIdentity, PublicationApiBinding, PublicationApiSymbolKind,
-    PublicationResourceRef, TypeExport,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PublicationResourceRef, TypeDescriptorIr,
+    TypeExport,
 };
 use skiff_runtime_capability_context::{
     DbCapabilityTarget, DbCapabilityTargetId, DbProviderTargetMetadata,
@@ -43,6 +43,7 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_linked_program::{
     linked::{DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr, TypeDeclarationIr},
     DbObjectTargetId, LinkedNamedUnionBranch, LoadedPublicationResource, PublicationResourceTable,
+    RuntimeExecutionPackage,
 };
 
 const PROTOCOL_OUTBOUND: &str =
@@ -95,10 +96,9 @@ use crate::{
         ExecutableKind, ExprRefIr, FileAddr, FileDeclarations, FileLinkTargets, GatewayConfig,
         LinkOverlay, LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr,
         LinkedFileUnit, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-        MetadataValue, NativeTarget, PackageUnit, ParamIr, ResolvedSymbol, RuntimeActivation,
-        RuntimeProgram, RuntimeTypeContext, ServiceDependencyConstraint,
-        ServiceDependencySymbolRef, ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr,
-        TypeAddr, TypeDeclIr, UnitAddr,
+        MetadataValue, NativeTarget, ParamIr, ResolvedSymbol, RuntimeActivation, RuntimeProgram,
+        RuntimeTypeContext, ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta,
+        ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr, TypeAddr, TypeDeclIr, UnitAddr,
     },
     eval::{
         capabilities::{OutboundServiceContext, StreamPoll, StreamRuntime, TypedStreamSink},
@@ -661,7 +661,7 @@ async fn runtime_program_executes_package_function_call() {
         package_call_executable(),
         package_echo_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    replace_single_package(&mut program, "example.com/pkg", Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -700,9 +700,12 @@ async fn runtime_program_stream_variable_crosses_nested_package_producers() {
     package_file
         .executables
         .push(package_string_stream_forwarder_executable(1, None));
-    program.packages = vec![Arc::new(package_unit("example.com/stream-forwarders"))];
-    program.package_files = vec![vec![Arc::new(package_file)]];
-    program.package_resources = vec![Default::default()];
+    program.packages = vec![runtime_package(
+        "example.com/stream-forwarders",
+        0,
+        vec![Arc::new(package_file)],
+        Default::default(),
+    )];
 
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -723,7 +726,7 @@ async fn runtime_program_executes_package_function_call_by_package_id_ref() {
         })),
         package_echo_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    replace_single_package(&mut program, "example.com/pkg", Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -755,7 +758,7 @@ async fn runtime_program_executes_package_function_call_by_dependency_ref() {
         })),
         package_echo_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    replace_single_package(&mut program, "example.com/pkg", Default::default());
     program
         .link_overlay
         .package_slots_by_dependency_ref
@@ -784,7 +787,7 @@ async fn runtime_program_substitutes_package_generic_type_args_for_native_wrappe
         package_generic_json_decode_call_executable(),
         generic_json_decode_native_wrapper_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("skiff.run/std"))];
+    replace_single_package(&mut program, "skiff.run/std", Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -812,7 +815,7 @@ async fn runtime_program_substitutes_generic_type_args_for_config_native_wrapper
         package_generic_config_require_call_executable(),
         generic_config_require_wrapper_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/config"))];
+    replace_single_package(&mut program, "example.com/config", Default::default());
 
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let mut frame = test_invocation("svc.main.run");
@@ -1269,15 +1272,15 @@ async fn runtime_program_resource_error_rejects_wrong_std_type_shape() {
 async fn runtime_program_resource_error_rejects_std_implementation_only_type() {
     let mut program =
         program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
-    Arc::make_mut(
-        program
-            .packages
-            .get_mut(0)
-            .expect("std package test fixture"),
-    )
-    .publication_abi
-    .api_bindings
-    .clear();
+    let package = program.packages.first().expect("std package test fixture");
+    let mut artifact = package.artifact().clone();
+    artifact.package_local_abi.public_symbols.clear();
+    program.packages[0] = crate::eval::test_support::runtime_execution_package_from_artifact(
+        0,
+        artifact,
+        package.files().to_vec(),
+        package.static_resources().clone(),
+    );
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1294,9 +1297,12 @@ async fn runtime_program_resource_package_call_site_reads_package_resource() {
         service_calls_package_resource_text_executable(),
         resource_text_native_executable("prompts/system.md"),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
     program.service_resources = resource_table("prompts/system.md", b"service text");
-    program.package_resources = vec![resource_table("prompts/system.md", b"package text")];
+    replace_single_package(
+        &mut program,
+        "example.com/pkg",
+        resource_table("prompts/system.md", b"package text"),
+    );
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1311,22 +1317,27 @@ async fn runtime_program_resource_package_call_site_reads_package_resource() {
 async fn runtime_program_config_reads_called_package_slot_scope() {
     let mut program = program_with_executable(run_executable());
     program.packages = vec![
-        Arc::new(package_unit("skiff.run/track")),
-        Arc::new(package_unit("skiff.run/http-session")),
+        runtime_package(
+            "skiff.run/track",
+            0,
+            vec![Arc::new(package_file_unit(
+                "file:track",
+                "track.main",
+                package_call_config_reader_executable(),
+            ))],
+            Default::default(),
+        ),
+        runtime_package(
+            "skiff.run/http-session",
+            1,
+            vec![Arc::new(package_file_unit(
+                "file:http-session",
+                "httpSession.main",
+                config_require_string_executable("sessionSecret"),
+            ))],
+            Default::default(),
+        ),
     ];
-    program.package_files = vec![
-        vec![Arc::new(package_file_unit(
-            "file:track",
-            "track.main",
-            package_call_config_reader_executable(),
-        ))],
-        vec![Arc::new(package_file_unit(
-            "file:http-session",
-            "httpSession.main",
-            config_require_string_executable("sessionSecret"),
-        ))],
-    ];
-    program.package_resources = vec![Default::default(), Default::default()];
     let target = "package.skiff.run%2Ftrack.record";
     program
         .routes
@@ -2710,9 +2721,12 @@ fn runtime_type_plan_resolves_package_db_object_symbol_from_file_declarations() 
         implements: Vec::new(),
         source_span: None,
     }];
-    program.packages = vec![Arc::new(package_unit("skiff.run/http-session"))];
-    program.package_files = vec![vec![Arc::new(package_file)]];
-    program.package_resources = vec![Default::default()];
+    program.packages = vec![runtime_package(
+        "skiff.run/http-session",
+        0,
+        vec![Arc::new(package_file)],
+        Default::default(),
+    )];
     program.types.descriptors.insert(
         TypeAddr {
             unit: UnitAddr::Package(0),
@@ -4163,9 +4177,7 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
             external_refs: Default::default(),
         })],
         packages: Vec::new(),
-        package_files: Vec::new(),
         service_resources: Default::default(),
-        package_resources: Vec::new(),
         service_dependencies: Vec::new(),
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
@@ -4220,17 +4232,28 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
         artifact_path: None,
         source_ast_hash: Some(std_file.source_ast_hash.clone()),
     };
-    let mut std_package = package_unit("skiff.run/std");
-    std_package.files.push(std_file_ref.clone());
-    std_package
-        .publication_abi
-        .api_bindings
-        .push(PublicationApiBinding {
-            public_path: "std.resource.ResourceError".to_string(),
-            source_module_path: std_file.module_path.clone(),
-            source_symbol: "ResourceError".to_string(),
-            symbol_kind: PublicationApiSymbolKind::Type,
-        });
+    let resources = PublicationResourceTable::default();
+    let mut std_package = crate::eval::test_support::runtime_execution_package_artifact_fixture(
+        "skiff.run/std",
+        "1.0.0",
+        "skiff.run/std:build",
+        "skiff.run/std:abi",
+        &[Arc::clone(&std_file)],
+        &resources,
+    );
+    std_package.package_local_abi.public_symbols.insert(
+        "std.resource.ResourceError".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:std.resource.ResourceError".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            is_alias: false,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    );
     std_package.implementation_links.types.insert(
         "std.resource.ResourceError".to_string(),
         TypeExport {
@@ -4243,8 +4266,14 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
             interface_methods: Vec::new(),
         },
     );
-    program.packages.push(Arc::new(std_package));
-    program.package_resources.push(Default::default());
+    program.packages.push(
+        crate::eval::test_support::runtime_execution_package_from_artifact(
+            package_slot,
+            std_package,
+            vec![Arc::clone(&std_file)],
+            resources,
+        ),
+    );
     program
         .link_overlay
         .package_slots_by_id
@@ -4253,7 +4282,6 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
         .link_overlay
         .package_slots_by_dependency_ref
         .insert("std".to_string(), package_slot);
-    program.package_files.push(vec![std_file]);
     for (index, (symbol_path, declaration)) in declarations.into_iter().enumerate() {
         let addr = std_http_type_addr_for_package(package_slot, index);
         program.types.descriptors.insert(addr.clone(), declaration);
@@ -4278,14 +4306,19 @@ fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
 
 fn replace_std_resource_error_type(program: &mut RuntimeProgram, declaration: TypeDeclIr) {
     let addr = std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX);
+    let package = program.packages.first().expect("std package test fixture");
+    let mut files = package.files().to_vec();
     let file = Arc::make_mut(
-        program
-            .package_files
-            .get_mut(0)
-            .and_then(|files| files.get_mut(0))
+        files
+            .first_mut()
             .expect("std package test fixture should have one file"),
     );
     file.types[STD_RESOURCE_ERROR_TYPE_INDEX] = declaration.clone();
+    let artifact = package.artifact().clone();
+    let resources = package.static_resources().clone();
+    program.packages[0] = crate::eval::test_support::runtime_execution_package_from_artifact(
+        0, artifact, files, resources,
+    );
     program.types.descriptors.insert(addr, declaration);
 }
 
@@ -4758,7 +4791,7 @@ fn program_with_service_and_package_executables(
     package_executable: LinkedExecutable,
 ) -> RuntimeProgram {
     let mut program = program_with_executable(service_executable);
-    program.package_files = vec![vec![Arc::new(LinkedFileUnit {
+    let linked_file = Arc::new(LinkedFileUnit {
         schema_version: "skiff-file-ir-v3".to_string(),
         file_ir_identity: "file:pkg".to_string(),
         source_ast_hash: "source:pkg".to_string(),
@@ -4773,17 +4806,42 @@ fn program_with_service_and_package_executables(
         constants: Vec::new(),
         executables: vec![package_executable],
         external_refs: Default::default(),
-    })]];
+    });
+    program.packages = vec![runtime_package(
+        "skiff.test/package-placeholder",
+        0,
+        vec![linked_file],
+        Default::default(),
+    )];
     program
 }
 
-fn package_unit(package_id: &str) -> PackageUnit {
-    PackageUnit::empty(
+fn runtime_package(
+    package_id: &str,
+    code_slot: usize,
+    files: Vec<Arc<LinkedFileUnit>>,
+    static_resources: PublicationResourceTable,
+) -> Arc<RuntimeExecutionPackage> {
+    crate::eval::test_support::runtime_execution_package_fixture(
         package_id,
-        "1.0.0",
-        format!("{package_id}:build"),
-        format!("{package_id}:abi"),
+        code_slot,
+        files,
+        static_resources,
     )
+}
+
+fn replace_single_package(
+    program: &mut RuntimeProgram,
+    package_id: &str,
+    static_resources: PublicationResourceTable,
+) {
+    let files = program
+        .packages
+        .first()
+        .expect("single-package fixture must install linked package code")
+        .files()
+        .to_vec();
+    program.packages = vec![runtime_package(package_id, 0, files, static_resources)];
 }
 
 fn program_with_executable(executable: LinkedExecutable) -> RuntimeProgram {
@@ -4816,22 +4874,6 @@ fn install_run_result_type(program: &mut RuntimeProgram) {
 
 fn program_with_thread_db_target(executable: LinkedExecutable) -> RuntimeProgram {
     let target_id = thread_db_object_target_id(0);
-    let mut package = PackageUnit::empty(
-        target_id.package_artifact_ref.package_id.clone(),
-        target_id.package_artifact_ref.package_version.clone(),
-        target_id
-            .package_artifact_ref
-            .package_build_id
-            .as_str()
-            .to_string(),
-        target_id
-            .package_artifact_ref
-            .package_local_abi_identity
-            .as_str()
-            .to_string(),
-    );
-    package.files.push(target_id.file_ir_ref.clone());
-
     let mut file = package_file_unit(
         &target_id.file_ir_ref.file_ir_identity,
         &target_id.file_ir_ref.module_path,
@@ -4878,9 +4920,20 @@ fn program_with_thread_db_target(executable: LinkedExecutable) -> RuntimeProgram
     file.types.push(declaration.clone());
 
     let mut program = program_with_executable(executable);
-    program.packages.push(Arc::new(package));
-    program.package_files.push(vec![Arc::new(file)]);
-    program.package_resources.push(Default::default());
+    program.packages.push(
+        crate::eval::test_support::runtime_execution_package_fixture_with_identity(
+            &target_id.package_artifact_ref.package_id,
+            &target_id.package_artifact_ref.package_version,
+            target_id.package_artifact_ref.package_build_id.as_str(),
+            target_id
+                .package_artifact_ref
+                .package_local_abi_identity
+                .as_str(),
+            0,
+            vec![Arc::new(file)],
+            Default::default(),
+        ),
+    );
     let addr = TypeAddr {
         unit: UnitAddr::Package(0),
         file: FileAddr::FileIrIdentity(target_id.file_ir_ref.file_ir_identity.clone()),

@@ -18,8 +18,10 @@ pub(super) use serde_json::Value;
 pub(super) use sha2::{Digest, Sha256};
 pub(super) use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, InstructionSourceSite,
-    PackageSchemaIndex, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    SyntheticInstructionSiteReason, ACTOR_RUNTIME_ABI_VERSION_V1,
+    PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, SyntheticInstructionSiteReason,
+    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 pub(super) use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -75,9 +77,10 @@ pub(super) use skiff_runtime_linked_program::{
     LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedCallTarget,
     LinkedConcurrentLaneIr, LinkedConcurrentPlanIr, LinkedExecutable, LinkedExecutableBody,
     LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr, LinkedTypeDescriptor,
-    LinkedTypeRef, LiteralIr, NativeTarget, PackageSymbolKey, PackageUnit,
-    PublicationResourceTable, RuntimeTypeContext, ServiceDependencyConstraint, ServiceMeta, SlotIr,
-    SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr, UnitAddr,
+    LinkedTypeRef, LiteralIr, NativeTarget, PackageCodeSlotIndex, PackageSymbolKey,
+    PublicationResourceTable, RuntimeExecutionPackage, RuntimeTypeContext,
+    ServiceDependencyConstraint, ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr,
+    TypeAddr, UnitAddr,
 };
 pub(super) use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},

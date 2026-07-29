@@ -2551,6 +2551,7 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
+ "skiff-runtime-linked-program",
  "skiff-runtime-model",
  "skiff-runtime-native-contract",
  "thiserror",

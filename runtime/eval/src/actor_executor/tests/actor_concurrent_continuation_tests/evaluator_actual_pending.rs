@@ -42,8 +42,8 @@ use skiff_runtime_linked_program::{
     anonymous_type_decl, CallIr, DbObjectTargetId, DbQueryIr, DbTargetIr, LinkedCallTarget,
     LinkedExecutableBody, LinkedInterfaceInstantiationRef, LinkedRemoteOperationSlotPlanIr,
     LinkedRemoteOperationTablePlanIr, LinkedTypeDescriptor, NativeTarget, PackageSymbolKey,
-    PackageUnit, ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta, SlotIr,
-    SlotLayoutIr, TypeAddr,
+    ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta, SlotIr, SlotLayoutIr,
+    TypeAddr,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,

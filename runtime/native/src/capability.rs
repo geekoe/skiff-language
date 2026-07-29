@@ -9,8 +9,9 @@ use skiff_runtime_capability_context::{
     FileCapabilityFuture, FileChunkFuture, FileChunkSource, OwnedExecutionControl,
     StreamConsumerCleanup,
 };
+use skiff_runtime_linked_program::RuntimeExecutionResourceView;
 use skiff_runtime_model::addr::ExecutableAddr;
-use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
+use skiff_runtime_model::PublicationResourceTable;
 
 use crate::error::Result;
 use crate::runtime_value_facade::{
@@ -197,15 +198,12 @@ pub trait NativeTelemetryCapability {
 }
 
 pub trait NativeResourceCapability {
-    fn resources(&self) -> RuntimeProgramResourceView<'_>;
+    fn resources(&self) -> RuntimeExecutionResourceView<'_>;
 }
 
 impl NativeResourceCapability for () {
-    fn resources(&self) -> RuntimeProgramResourceView<'_> {
-        static EMPTY: OnceLock<(PublicationResourceTable, Vec<PublicationResourceTable>)> =
-            OnceLock::new();
-        let (service_resources, package_resources) =
-            EMPTY.get_or_init(|| (PublicationResourceTable::default(), Vec::new()));
-        RuntimeProgramResourceView::new(service_resources, package_resources)
+    fn resources(&self) -> RuntimeExecutionResourceView<'_> {
+        static EMPTY: OnceLock<PublicationResourceTable> = OnceLock::new();
+        RuntimeExecutionResourceView::new(EMPTY.get_or_init(PublicationResourceTable::default), &[])
     }
 }

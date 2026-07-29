@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use skiff_artifact_model::{PackageBuildId, PackageLocalAbiSymbol, PublicationApiSymbolKind};
+use skiff_artifact_model::{PackageBuildId, PackageLocalAbiSymbol};
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ConstAddr, ConstIr, DbObjectTargetId, ExecutableAddr, FileAddr,
-    LinkOverlay, LinkedExecutable, LinkedFileUnit, PackageUnit, PublicationResourceTable,
-    ResolvedSymbol, RuntimeProgramResourceView, RuntimeTypeContext, TypeAddr, UnitAddr,
+    LinkOverlay, LinkedExecutable, LinkedFileUnit, PublicationResourceTable, ResolvedSymbol,
+    RuntimeExecutionPackage, RuntimeExecutionResourceView, RuntimeTypeContext, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::ProgramTypeView;
 
@@ -26,40 +26,14 @@ pub(crate) struct RuntimeAssemblyExecutionProjection {
 
 impl RuntimeAssemblyExecutionProjection {
     pub(crate) fn from_image(image: Arc<AssemblyExecutionImage>) -> Self {
-        let package_files = image
-            .code_slots()
-            .iter()
-            .map(|code| code.files().to_vec())
-            .collect();
-        let package_resources = image
-            .shared_packages()
-            .code_slots()
-            .iter()
-            .map(|code| code.static_resources().clone())
-            .collect();
-        let packages = image
-            .shared_packages()
-            .code_slots()
-            .iter()
-            .map(|code| {
-                let artifact = code.artifact();
-                Arc::new(PackageUnit::empty(
-                    artifact.package_id.clone(),
-                    artifact.package_version.clone(),
-                    artifact.package_build_id.to_string(),
-                    artifact.package_local_abi.local_abi_identity.to_string(),
-                ))
-            })
-            .collect();
+        let packages = image.execution_packages().to_vec();
         let link_overlay = image.link_overlay().clone();
         Self {
             image,
             storage: Arc::new(AssemblyProjectionStorage {
                 service_files: Vec::new(),
                 packages,
-                package_files,
                 service_resources: PublicationResourceTable::default(),
-                package_resources,
                 link_overlay,
             }),
         }
@@ -77,29 +51,24 @@ impl RuntimeAssemblyExecutionProjection {
         ProgramTypeView::new(
             &self.storage.service_files,
             &self.storage.packages,
-            &self.storage.package_files,
             &self.storage.link_overlay,
             self.image.types(),
         )
     }
 
-    pub(crate) fn resource_view(&self) -> RuntimeProgramResourceView<'_> {
-        RuntimeProgramResourceView::new(
-            &self.storage.service_resources,
-            &self.storage.package_resources,
-        )
+    pub(crate) fn resource_view(&self) -> RuntimeExecutionResourceView<'_> {
+        RuntimeExecutionResourceView::new(&self.storage.service_resources, &self.storage.packages)
     }
 
-    pub(crate) fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
-        &self.storage.package_files
+    pub(crate) fn packages(&self) -> &[Arc<RuntimeExecutionPackage>] {
+        &self.storage.packages
     }
 
     pub(crate) fn package_id(&self, slot: usize) -> Option<&str> {
         self.image
-            .shared_packages()
-            .code_slots()
+            .execution_packages()
             .get(slot)
-            .map(|code| code.artifact().package_id.as_str())
+            .map(|package| package.package_id())
     }
 
     pub(crate) fn package_schema_records(&self, unit: &UnitAddr) -> Option<&PackageSchemaRecords> {
@@ -110,7 +79,7 @@ impl RuntimeAssemblyExecutionProjection {
             .shared_packages()
             .code_slots()
             .get(*slot)
-            .map(|code| code.schema_records())
+            .map(|package| package.schema_records())
     }
 
     fn resolve_db_target(
@@ -162,9 +131,9 @@ impl RuntimeAssemblyExecutionProjection {
         };
         let file = self
             .storage
-            .package_files
+            .packages
             .get(slot)
-            .and_then(|files| files.get(file_index))
+            .and_then(|package| package.files().get(file_index))
             .ok_or_else(|| {
                 RuntimeError::InvalidArtifact("DB target linked file is not loaded".to_string())
             })?;
@@ -192,7 +161,7 @@ impl RuntimeAssemblyExecutionProjection {
                 "assembly execution cannot resolve a legacy service unit".to_string(),
             ));
         };
-        let code = self.image.code_slots().get(*slot).ok_or_else(|| {
+        let code = self.image.execution_packages().get(*slot).ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!(
                 "assembly package code slot {slot} is out of bounds"
             ))
@@ -273,7 +242,7 @@ impl RuntimeAssemblyExecutionProjection {
             ));
         };
         self.image
-            .code_slots()
+            .execution_packages()
             .get(*slot)
             .map(|code| code.package_build_id())
             .ok_or_else(|| {
@@ -286,10 +255,8 @@ impl RuntimeAssemblyExecutionProjection {
 
 struct AssemblyProjectionStorage {
     service_files: Vec<Arc<LinkedFileUnit>>,
-    packages: Vec<Arc<PackageUnit>>,
-    package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+    packages: Vec<Arc<RuntimeExecutionPackage>>,
     service_resources: PublicationResourceTable,
-    package_resources: Vec<PublicationResourceTable>,
     link_overlay: LinkOverlay,
 }
 
@@ -458,7 +425,7 @@ impl<'a> RuntimeExecutionProjection<'a> {
         }
     }
 
-    pub(crate) fn resource_view(&self) -> RuntimeProgramResourceView<'_> {
+    pub(crate) fn resource_view(&self) -> RuntimeExecutionResourceView<'_> {
         match self {
             Self::Legacy(program) => program.resource_view(),
             Self::Assembly(projection) => projection.resource_view(),
@@ -479,10 +446,10 @@ impl<'a> RuntimeExecutionProjection<'a> {
         }
     }
 
-    pub(crate) fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
+    pub(crate) fn packages(&self) -> &[Arc<RuntimeExecutionPackage>] {
         match self {
-            Self::Legacy(program) => program.package_files,
-            Self::Assembly(projection) => projection.package_files(),
+            Self::Legacy(program) => program.packages,
+            Self::Assembly(projection) => projection.packages(),
         }
     }
 
@@ -491,7 +458,7 @@ impl<'a> RuntimeExecutionProjection<'a> {
             Self::Legacy(program) => program
                 .packages
                 .get(slot)
-                .map(|package| package.package_id.as_str()),
+                .map(|package| package.package_id()),
             Self::Assembly(projection) => projection.package_id(slot),
         }
     }
@@ -526,103 +493,50 @@ impl<'a> RuntimeExecutionProjection<'a> {
                 "public Package type {package_id}:{symbol} resolved to a different package owner"
             )));
         }
-        match self {
-            Self::Assembly(projection) => {
-                let code = projection
-                    .image()
-                    .shared_packages()
-                    .code_slots()
-                    .get(*slot)
-                    .ok_or_else(|| {
-                        RuntimeError::InvalidArtifact(format!(
-                            "public Package type {package_id}:{symbol} resolved to missing package slot {slot}"
-                        ))
-                    })?;
-                if !matches!(
-                    code.artifact().package_local_abi.public_symbols.get(symbol),
-                    Some(PackageLocalAbiSymbol::Type { .. })
-                ) {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "Package type {package_id}:{symbol} is not an exact public type symbol"
-                    )));
-                }
-                if !code
-                    .artifact()
-                    .implementation_links
-                    .types
-                    .contains_key(symbol)
-                {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "public Package type {package_id}:{symbol} has no exact implementation link"
-                    )));
-                }
-                Ok(())
-            }
-            Self::Legacy(program) => {
-                let package = program.packages.get(*slot).ok_or_else(|| {
-                    RuntimeError::InvalidArtifact(format!(
-                        "public Package type {package_id}:{symbol} resolved to missing package slot {slot}"
-                    ))
-                })?;
-                if package.publication_abi.publication_id != package_id {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "public Package type {package_id}:{symbol} has inconsistent ABI owner"
-                    )));
-                }
-                let bindings = package
-                    .publication_abi
-                    .api_bindings
-                    .iter()
-                    .filter(|binding| binding.public_path == symbol)
-                    .collect::<Vec<_>>();
-                let [binding] = bindings.as_slice() else {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "Package type {package_id}:{symbol} does not have exactly one public API binding"
-                    )));
-                };
-                if binding.symbol_kind != PublicationApiSymbolKind::Type {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "Package public symbol {package_id}:{symbol} is not a type"
-                    )));
-                }
-                let implementation = package
-                    .implementation_links
-                    .types
-                    .get(symbol)
-                    .ok_or_else(|| {
-                        RuntimeError::InvalidArtifact(format!(
-                            "public Package type {package_id}:{symbol} has no exact implementation link"
-                        ))
-                    })?;
-                let FileAddr::LoadedFileIndex(file_index) = addr.file else {
-                    return Err(RuntimeError::InvalidArtifact(
-                        "public Package type did not resolve to a canonical file index".to_string(),
-                    ));
-                };
-                let file = program
-                    .package_files
-                    .get(*slot)
-                    .and_then(|files| files.get(file_index))
-                    .ok_or_else(|| {
-                        RuntimeError::InvalidArtifact(format!(
-                            "public Package type {package_id}:{symbol} resolved to missing linked file"
-                        ))
-                    })?;
-                if implementation.file.file_ir_identity != file.file_ir_identity
-                    || usize::try_from(implementation.type_index).ok() != Some(addr.type_index)
-                    || binding.source_module_path != file.module_path
-                    || file
-                        .types
-                        .get(addr.type_index)
-                        .is_none_or(|declaration| declaration.name != binding.source_symbol)
-                {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "public Package type {package_id}:{symbol} binding and implementation coordinate disagree"
-                    )));
-                }
-                Ok(())
-            }
+        let package = self.packages().get(*slot).ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "public Package type {package_id}:{symbol} resolved to missing package slot {slot}"
+            ))
+        })?;
+        if !matches!(
+            package
+                .artifact()
+                .package_local_abi
+                .public_symbols
+                .get(symbol),
+            Some(PackageLocalAbiSymbol::Type { .. })
+        ) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "Package type {package_id}:{symbol} is not an exact public type symbol"
+            )));
         }
+        let implementation = package
+            .implementation_links()
+            .types
+            .get(symbol)
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "public Package type {package_id}:{symbol} has no exact implementation link"
+                ))
+            })?;
+        let FileAddr::LoadedFileIndex(file_index) = addr.file else {
+            return Err(RuntimeError::InvalidArtifact(
+                "public Package type did not resolve to a canonical file index".to_string(),
+            ));
+        };
+        let file = package.files().get(file_index).ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "public Package type {package_id}:{symbol} resolved to missing linked file"
+            ))
+        })?;
+        if implementation.file.file_ir_identity != file.file_ir_identity
+            || usize::try_from(implementation.type_index).ok() != Some(addr.type_index)
+        {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "public Package type {package_id}:{symbol} binding and implementation coordinate disagree"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn resolve_db_target(
@@ -633,15 +547,12 @@ impl<'a> RuntimeExecutionProjection<'a> {
             Self::Assembly(projection) => projection.resolve_db_target(target),
             Self::Legacy(program) => {
                 let mut packages = program.packages.iter().enumerate().filter(|(_, package)| {
-                    package.package_id == target.package_artifact_ref.package_id
-                        && package.version == target.package_artifact_ref.package_version
-                        && package.build_identity
-                            == target.package_artifact_ref.package_build_id.as_str()
-                        && package.abi_identity
-                            == target
-                                .package_artifact_ref
-                                .package_local_abi_identity
-                                .as_str()
+                    let artifact = package.artifact();
+                    artifact.package_id == target.package_artifact_ref.package_id
+                        && artifact.package_version == target.package_artifact_ref.package_version
+                        && artifact.package_build_id == target.package_artifact_ref.package_build_id
+                        && artifact.package_local_abi.local_abi_identity
+                            == target.package_artifact_ref.package_local_abi_identity
                 });
                 let (slot, package) = packages.next().ok_or_else(|| {
                     RuntimeError::InvalidArtifact(
@@ -654,6 +565,7 @@ impl<'a> RuntimeExecutionProjection<'a> {
                     ));
                 }
                 let mut file_refs = package
+                    .artifact()
                     .files
                     .iter()
                     .filter(|reference| **reference == target.file_ir_ref);
@@ -668,10 +580,10 @@ impl<'a> RuntimeExecutionProjection<'a> {
                     ));
                 }
                 let mut files = program
-                    .package_files
+                    .packages
                     .get(slot)
                     .into_iter()
-                    .flatten()
+                    .flat_map(|package| package.files())
                     .filter(|file| {
                         file.file_ir_identity == target.file_ir_ref.file_ir_identity
                             && file.module_path == target.file_ir_ref.module_path
@@ -978,7 +890,7 @@ mod tests {
     fn db_target_declaration_alias_tampering_stays_fail_closed() {
         let (image, _) = compiler_shaped_projection_image();
         let projection = RuntimeAssemblyExecutionProjection::from_image(image);
-        let file = projection.storage.package_files[0][0].as_ref();
+        let file = projection.storage.packages[0].files()[0].as_ref();
         let addr = TypeAddr {
             unit: UnitAddr::Package(0),
             file: FileAddr::LoadedFileIndex(0),

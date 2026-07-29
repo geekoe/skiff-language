@@ -18,9 +18,8 @@ use skiff_runtime_linked_program::{
     anonymous_type_decl, BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr,
     ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedCallTarget,
     LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedStmtIr,
-    LinkedTypeDescriptor, LinkedTypeRef, NativeTarget, PackageSymbolKey, PackageUnit,
-    PublicationResourceTable, RuntimeTypeContext, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr,
-    TypeAddr, UnitAddr,
+    LinkedTypeDescriptor, LinkedTypeRef, NativeTarget, PackageSymbolKey, PublicationResourceTable,
+    RuntimeTypeContext, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr, UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -114,9 +113,7 @@ impl LinkedTimeoutFixture {
             "skiff.run/f445h-e4r-timeout",
             vec![Arc::clone(&file)],
             Vec::new(),
-            Vec::new(),
             PublicationResourceTable::default(),
-            Vec::new(),
             Default::default(),
             LinkOverlay::default(),
             RuntimeTypeContext::default(),
@@ -198,15 +195,13 @@ impl LinkedTimeoutFixture {
         let program = Arc::new(EvalRuntimeProgram::new(
             "skiff.run/f445h-e4r-timeout",
             vec![Arc::clone(&self.file)],
-            vec![Arc::new(PackageUnit::empty(
+            vec![crate::test_support::runtime_execution_package_fixture(
                 "skiff.run/std",
-                "1.0.0",
-                "skiff.run/std:build:f445h-e4r-timeout",
-                "skiff.run/std:abi:f445h-e4r-timeout",
-            ))],
-            vec![vec![std_file]],
+                0,
+                vec![std_file],
+                PublicationResourceTable::default(),
+            )],
             PublicationResourceTable::default(),
-            vec![PublicationResourceTable::default()],
             Default::default(),
             overlay,
             types,

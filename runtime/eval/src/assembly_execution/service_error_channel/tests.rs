@@ -1407,7 +1407,7 @@ fn unchecked_reverse_lookup_image(
     Arc::new(
         AssemblyExecutionImage::try_new(
             shared,
-            baseline.code_slots().to_vec(),
+            baseline.execution_packages().to_vec(),
             types,
             Arc::new(ServiceErrorTypeIndex::default()),
         )

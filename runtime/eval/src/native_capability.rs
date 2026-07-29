@@ -78,7 +78,7 @@ impl<'a> RuntimeNativeResourceCapabilityContext<'a> {
 impl skiff_runtime_native::capability::NativeResourceCapability
     for RuntimeNativeResourceCapabilityContext<'_>
 {
-    fn resources(&self) -> skiff_runtime_linked_program::RuntimeProgramResourceView<'_> {
+    fn resources(&self) -> skiff_runtime_linked_program::RuntimeExecutionResourceView<'_> {
         self.projection.resource_view()
     }
 }

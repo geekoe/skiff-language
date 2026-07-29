@@ -97,7 +97,7 @@ pub use runtime_websocket_jsonrpc::{
 };
 
 use skiff_runtime_linked_program::{
-    ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
+    ExecutableAddr, LinkOverlay, LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap, runtime_value::RuntimeValue, type_plan::RuntimeTypePlan,
@@ -118,10 +118,8 @@ pub use capabilities::TestEffectDouble;
 pub struct EvalRuntimeProgram {
     pub service_id: String,
     pub service_files: Vec<Arc<LinkedFileUnit>>,
-    pub packages: Vec<Arc<PackageUnit>>,
-    pub package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+    pub packages: Vec<Arc<RuntimeExecutionPackage>>,
     pub service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-    pub package_resources: Vec<skiff_runtime_linked_program::PublicationResourceTable>,
     pub spawn_routes: HashMap<String, ExecutableAddr>,
     pub link_overlay: LinkOverlay,
     pub types: RuntimeTypeContext,
@@ -132,13 +130,9 @@ pub trait EvalRuntimeProgramSource {
 
     fn service_files(&self) -> &[Arc<LinkedFileUnit>];
 
-    fn packages(&self) -> &[Arc<PackageUnit>];
-
-    fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>];
+    fn packages(&self) -> &[Arc<RuntimeExecutionPackage>];
 
     fn service_resources(&self) -> &skiff_runtime_linked_program::PublicationResourceTable;
-
-    fn package_resources(&self) -> &[skiff_runtime_linked_program::PublicationResourceTable];
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr>;
 
@@ -151,10 +145,8 @@ impl EvalRuntimeProgram {
     fn new(
         service_id: impl Into<String>,
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-        package_resources: Vec<skiff_runtime_linked_program::PublicationResourceTable>,
         spawn_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
@@ -163,9 +155,7 @@ impl EvalRuntimeProgram {
             service_id: service_id.into(),
             service_files,
             packages,
-            package_files,
             service_resources,
-            package_resources,
             spawn_routes,
             link_overlay,
             types,
@@ -177,9 +167,7 @@ impl EvalRuntimeProgram {
             source.service_id(),
             source.service_files().to_vec(),
             source.packages().to_vec(),
-            source.package_files().to_vec(),
             source.service_resources().clone(),
-            source.package_resources().to_vec(),
             source.spawn_routes().clone(),
             source.link_overlay().clone(),
             source.types().clone(),
@@ -191,19 +179,17 @@ impl EvalRuntimeProgram {
             &self.service_id,
             &self.service_files,
             &self.packages,
-            &self.package_files,
             &self.service_resources,
-            &self.package_resources,
             &self.spawn_routes,
             &self.link_overlay,
             &self.types,
         )
     }
 
-    pub fn resource_view(&self) -> skiff_runtime_linked_program::RuntimeProgramResourceView<'_> {
-        skiff_runtime_linked_program::RuntimeProgramResourceView::new(
+    pub fn resource_view(&self) -> skiff_runtime_linked_program::RuntimeExecutionResourceView<'_> {
+        skiff_runtime_linked_program::RuntimeExecutionResourceView::new(
             &self.service_resources,
-            &self.package_resources,
+            &self.packages,
         )
     }
 }
@@ -217,20 +203,12 @@ impl EvalRuntimeProgramSource for EvalRuntimeProgram {
         &self.service_files
     }
 
-    fn packages(&self) -> &[Arc<PackageUnit>] {
+    fn packages(&self) -> &[Arc<RuntimeExecutionPackage>] {
         &self.packages
-    }
-
-    fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
-        &self.package_files
     }
 
     fn service_resources(&self) -> &skiff_runtime_linked_program::PublicationResourceTable {
         &self.service_resources
-    }
-
-    fn package_resources(&self) -> &[skiff_runtime_linked_program::PublicationResourceTable] {
-        &self.package_resources
     }
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {

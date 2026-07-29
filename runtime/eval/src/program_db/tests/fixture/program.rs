@@ -15,9 +15,8 @@ use skiff_runtime_linked_program::{
     ExecutableKind, ExprRefIr, ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets,
     LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
     LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTypeRef, PackageUnit,
-    PublicationResourceTable, RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr,
-    SourceMapDto, StmtRefIr, UnitAddr,
+    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTypeRef, PublicationResourceTable,
+    RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
 };
 
 use crate::{actor_executor_test_runtime as test_runtime, EvalRuntimeProgram, Interpreter};
@@ -51,13 +50,15 @@ impl LinkedDbActorFixture {
     pub(in crate::program_db::tests) fn new() -> Self {
         let ir = fixture_ir();
         let file = linked_file(&ir);
-        let mut package = PackageUnit::empty(
+        let package = crate::test_support::runtime_execution_package_fixture_with_identity(
             DB_PACKAGE_ID,
             DB_PACKAGE_VERSION,
             DB_PACKAGE_BUILD,
             DB_PACKAGE_ABI,
+            0,
+            vec![Arc::clone(&file)],
+            PublicationResourceTable::default(),
         );
-        package.files.push(db_file_ref());
         let addr = ExecutableAddr {
             unit: UnitAddr::Service,
             file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
@@ -66,10 +67,8 @@ impl LinkedDbActorFixture {
         let program = Arc::new(EvalRuntimeProgram::new(
             ACTOR_SERVICE_ID,
             vec![Arc::clone(&file)],
-            vec![Arc::new(package)],
-            vec![vec![Arc::clone(&file)]],
+            vec![package],
             PublicationResourceTable::default(),
-            Vec::new(),
             HashMap::new(),
             LinkOverlay::default(),
             RuntimeTypeContext::default(),

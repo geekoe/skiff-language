@@ -942,7 +942,7 @@ fn standard_type_symbol_for_addr(addr: &TypeAddr, program: ProgramTypeView<'_>) 
     };
     let slot = *slot;
     let package = program.packages.get(slot)?;
-    if package.package_id != "skiff.run/std" {
+    if package.package_id() != "skiff.run/std" {
         return None;
     }
     let file = package_file_for_addr(program, slot, &addr.file)?;
@@ -958,7 +958,7 @@ fn package_file_for_addr<'a>(
     slot: usize,
     file_addr: &FileAddr,
 ) -> Option<&'a LinkedFileUnit> {
-    let files = program.package_files.get(slot)?;
+    let files = program.packages.get(slot)?.files();
     match file_addr {
         FileAddr::LoadedFileIndex(index) => files.get(*index).map(AsRef::as_ref),
         FileAddr::FileIrIdentity(identity) => files
@@ -974,13 +974,14 @@ mod tests {
 
     use super::*;
     use skiff_artifact_model::{SourcePosition, SourceSpanRef};
-    use skiff_runtime_linked_program::{LinkOverlay, PackageUnit, RuntimeTypeContext, TypeDeclIr};
+    use skiff_runtime_linked_program::{
+        LinkOverlay, RuntimeExecutionPackage, RuntimeTypeContext, TypeDeclIr,
+    };
     use skiff_runtime_model::runtime_value::{HeapNode, RuntimeValue};
 
     struct TestProgramTypeView {
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
     }
@@ -990,7 +991,6 @@ mod tests {
             Self {
                 service_files: Vec::new(),
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext::default(),
             }
@@ -1000,7 +1000,6 @@ mod tests {
             ProgramTypeView::new(
                 &self.service_files,
                 &self.packages,
-                &self.package_files,
                 &self.link_overlay,
                 &self.types,
             )

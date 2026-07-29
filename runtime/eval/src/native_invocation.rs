@@ -390,7 +390,12 @@ fn actor_declaration_for_symbol<'a>(
     let mut matches = program
         .service_files
         .iter()
-        .chain(program.package_files.iter().flatten())
+        .chain(
+            program
+                .packages
+                .iter()
+                .flat_map(|package| package.files().iter()),
+        )
         .flat_map(|file| file.actor_declarations.iter())
         .filter(|declaration| declaration.actor_type == *symbol);
     let declaration = matches.next().ok_or_else(|| {
@@ -420,11 +425,15 @@ fn actor_declaration_for_owner<'a>(
 ) -> Result<&'a LinkedActorDeclaration> {
     let files = match &owner.unit {
         UnitAddr::Service => program.service_files,
-        UnitAddr::Package(slot) => program.package_files.get(*slot).ok_or_else(|| {
-            RuntimeError::InvalidArtifact(format!(
-                "actor declaration owner package slot {slot} is not loaded"
-            ))
-        })?,
+        UnitAddr::Package(slot) => program
+            .packages
+            .get(*slot)
+            .map(|package| package.files())
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "actor declaration owner package slot {slot} is not loaded"
+                ))
+            })?,
     };
     let file = match &owner.file {
         FileAddr::LoadedFileIndex(index) => files.get(*index),
@@ -516,13 +525,17 @@ mod actor_declaration_resolution_tests {
             file: FileAddr::LoadedFileIndex(0),
             actor_symbol: "DocHub".to_string(),
         };
-        let package_files = vec![vec![Arc::new(actor_file(&owner))]];
-        let packages = Vec::new();
+        let linked_files = vec![Arc::new(actor_file(&owner))];
+        let packages = vec![crate::test_support::runtime_execution_package_fixture(
+            "skiff.test/actors",
+            0,
+            linked_files,
+            Default::default(),
+        )];
         let service_files = Vec::new();
         let overlay = LinkOverlay::default();
         let types = RuntimeTypeContext::default();
-        let program =
-            ProgramTypeView::new(&service_files, &packages, &package_files, &overlay, &types);
+        let program = ProgramTypeView::new(&service_files, &packages, &overlay, &types);
 
         let declaration =
             actor_declaration_for_owner(program, &owner).expect("exact owner resolves");
@@ -705,9 +718,7 @@ mod tests {
         let image = EvalProgramImage {
             service_files: Vec::new(),
             packages: Vec::new(),
-            package_files: Vec::new(),
             service_resources: Default::default(),
-            package_resources: Vec::new(),
             routes: std::collections::HashMap::new(),
             spawn_routes: std::collections::HashMap::new(),
             operations: std::collections::HashMap::new(),
@@ -722,7 +733,7 @@ mod tests {
         EvalProgramImage {
             service_files: Vec::new(),
             packages: Vec::new(),
-            package_files: Vec::new(),
+            service_resources: Default::default(),
             routes: std::collections::HashMap::new(),
             spawn_routes: std::collections::HashMap::new(),
             operations: std::collections::HashMap::new(),
@@ -737,9 +748,7 @@ mod tests {
             "skiff.test/native",
             program.service_files.clone(),
             program.packages.clone(),
-            program.package_files.clone(),
             program.service_resources.clone(),
-            program.package_resources.clone(),
             program.spawn_routes.clone(),
             program.link_overlay.clone(),
             program.types.clone(),
@@ -906,7 +915,7 @@ mod tests {
         let program = EvalProgramImage {
             service_files: Vec::new(),
             packages: Vec::new(),
-            package_files: Vec::new(),
+            service_resources: Default::default(),
             routes: std::collections::HashMap::new(),
             spawn_routes: std::collections::HashMap::new(),
             operations: std::collections::HashMap::new(),

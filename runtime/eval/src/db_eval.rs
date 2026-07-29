@@ -919,8 +919,9 @@ mod tests {
         linked::{DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr},
         types::anonymous_type_decl,
         ExecutableAddr, FileAddr, FileDeclarations, FileLinkTargets, LinkedFileUnit,
-        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef, PackageUnit,
-        RuntimeTypeContext, ServiceSymbolKey, ServiceSymbolRef, TypeAddr, UnitAddr,
+        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef,
+        RuntimeExecutionPackage, RuntimeTypeContext, ServiceSymbolKey, ServiceSymbolRef, TypeAddr,
+        UnitAddr,
     };
     use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView};
 
@@ -941,29 +942,28 @@ mod tests {
         );
 
         let service_files: Vec<Arc<LinkedFileUnit>> = Vec::new();
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files = vec![vec![
+        let linked_files = vec![
             Arc::new(model_file_with_db_field(
                 "AgentRun",
                 "runtimeBindings",
                 service_symbol_type("tools", "AgentRuntimeBindings"),
             )),
             Arc::new(empty_file("runner")),
-        ]];
+        ];
+        let packages = vec![crate::test_support::runtime_execution_package_fixture(
+            "skiff.test/db-model",
+            0,
+            linked_files.clone(),
+            Default::default(),
+        )];
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::package(0, 1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
         let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
-            &package_files[0][0].declarations.db["AgentRun"],
+            &linked_files[0].declarations.db["AgentRun"],
             &ctx,
         )
         .expect("package DB declaration field plans");
@@ -998,18 +998,11 @@ mod tests {
             )),
             Arc::new(empty_file("thread")),
         ];
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::service(1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
         let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
@@ -1057,18 +1050,11 @@ mod tests {
             )),
             Arc::new(empty_file("runner")),
         ];
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::service(1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
         let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
@@ -1090,18 +1076,11 @@ mod tests {
             Arc::new(model_file_with_db_field("AgentRun", "title", string_type())),
             Arc::new(empty_file("runner")),
         ];
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::service(1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
         let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
