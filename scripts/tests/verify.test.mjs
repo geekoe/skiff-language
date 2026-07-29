@@ -159,6 +159,13 @@ test('compiler boundary selector is canonical and deduplicated across checks com
     combined.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
     1,
   );
+
+  const compiler = await buildVerifyPlan({ root, selectors: ['compiler'] });
+  assert.equal(
+    compiler.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    1,
+  );
+  assert.equal(compiler.phases.filter((phase) => phase.command === 'cargo').length, 1);
 });
 
 test('runtime artifact boundary checker belongs to the runtime subject without duplicating Cargo', async () => {
@@ -186,7 +193,7 @@ test('runtime artifact boundary checker belongs to the runtime subject without d
   assert.equal(plan.phases.filter((phase) => phase.command === 'cargo').length, 1);
 });
 
-test('runtime execution boundary checker belongs exactly once to checks', async () => {
+test('runtime execution and eval error boundary checkers belong to runtime and deduplicate with checks', async () => {
   const checks = await buildVerifyPlan({ root, selectors: ['checks'] });
   const executionPhases = checks.phases.filter((phase) =>
     phase.args.includes('scripts/check-runtime-execution-boundaries.mjs'));
@@ -194,24 +201,48 @@ test('runtime execution boundary checker belongs exactly once to checks', async 
     executionPhases.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
     [
       {
-        id: 'checks:runtime-execution-boundaries',
+        id: 'implementation:runtime:execution-boundaries',
         command: 'node',
         args: ['scripts/check-runtime-execution-boundaries.mjs'],
-        kind: 'default verify',
+        kind: 'implementation:runtime',
       },
     ],
   );
 
   const runtime = await buildVerifyPlan({ root, selectors: ['runtime'] });
-  assert.equal(
-    runtime.phases.some((phase) =>
-      phase.args.includes('scripts/check-runtime-execution-boundaries.mjs')),
-    false,
+  assert.deepEqual(
+    runtime.phases
+      .filter((phase) =>
+        phase.args.includes('scripts/check-runtime-execution-boundaries.mjs')
+        || phase.args.includes('scripts/check-runtime-eval-error-boundary.mjs'))
+      .map(({ id, kind }) => ({ id, kind })),
+    [
+      {
+        id: 'implementation:runtime:execution-boundaries',
+        kind: 'implementation:runtime',
+      },
+      {
+        id: 'implementation:runtime:eval-error-boundary',
+        kind: 'implementation:runtime',
+      },
+    ],
   );
   assert.equal(
     runtime.phases.filter((phase) =>
       phase.args.includes('scripts/check-runtime-artifact-boundaries.mjs')).length,
     2,
+  );
+
+  const combined = await buildVerifyPlan({ root, selectors: ['checks', 'runtime'] });
+  assert.equal(
+    combined.phases.filter((phase) =>
+      phase.args.includes('scripts/check-runtime-execution-boundaries.mjs')).length,
+    1,
+  );
+  assert.equal(
+    combined.phases.filter((phase) =>
+      phase.args.includes('scripts/check-runtime-eval-error-boundary.mjs')).length,
+    1,
   );
 });
 
