@@ -3454,6 +3454,13 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
     let operation_abi_id = format!("operation:{target}");
     let cancellation = CancellationToken::new();
     let cancelled = cancellation.cancel_flag();
+    let mut request_extra = serde_json::Map::new();
+    request_extra.insert(
+        "trace".to_string(),
+        json!({
+            "traceId": "trace-program"
+        }),
+    );
     ProgramTestInvocation {
         request: RequestEnvelope {
             request_id: "request-program".to_string(),
@@ -3472,7 +3479,7 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
-            extra: serde_json::Map::new(),
+            extra: request_extra,
         },
         operation: RuntimeOperation {
             operation_abi_id: Some(operation_abi_id),
@@ -7662,8 +7669,12 @@ fn catch_builtin_decode_error_throw_with_catch_type_executable(
                 { "kind": "literal", "value": { "kind": "string", "value": "test.decode" } },
                 { "kind": "literal", "value": { "kind": "string", "value": "denied" } },
                 {
-                    "kind": "mapLiteral",
-                    "entries": {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "fields": {
                         "target": { "expression": 0 },
                         "message": { "expression": 1 }
                     }
@@ -7791,8 +7802,12 @@ fn catch_throw_with_type_addrs_executable(
             "expressions": [
                 { "kind": "literal", "value": { "kind": "string", "value": "denied" } },
                 {
-                    "kind": "mapLiteral",
-                    "entries": {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(&throw_type_addr).unwrap()
+                    },
+                    "fields": {
                         "message": { "expression": 0 }
                     }
                 },
