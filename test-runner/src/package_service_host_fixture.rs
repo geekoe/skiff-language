@@ -2,11 +2,10 @@ use std::{fs, path::Path};
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    PackageArtifactRef, RuntimeAssemblyAuthoring, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef,
+    PackageArtifactRef, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_compiler::{
-    authoring::{build_authoring_object, AuthoringObject},
+    authoring::{build_authoring_object, project_runtime_assembly, AuthoringObject},
     CompilerPlatformSources,
 };
 
@@ -98,15 +97,10 @@ pub fn prepare_package_service_host_fixture(
     let consumer =
         publish_service_package(platform_sources, &consumer_root, artifact_root, environment)?;
 
-    let base_assembly = publish_assembly(
-        platform_sources,
-        &work_root.join("base-assembly"),
+    let base_assembly = project_assembly(
         artifact_root,
-        &RuntimeAssemblyAuthoring {
-            environment: environment.to_string(),
-            root_deployments: vec![consumer.deployment.clone()],
-        },
         environment,
+        std::slice::from_ref(&consumer.deployment),
     )?;
 
     Ok(PackageServiceHostFixtureReceipt {
@@ -209,25 +203,13 @@ fn publish_package(
     )?)
 }
 
-fn publish_assembly(
-    platform_sources: &CompilerPlatformSources,
-    root: &Path,
+fn project_assembly(
     artifact_root: &Path,
-    input: &RuntimeAssemblyAuthoring,
     environment: &str,
+    root_deployments: &[ServiceDeploymentRef],
 ) -> anyhow::Result<RuntimeAssemblyRef> {
-    fs::create_dir_all(root)?;
-    fs::write(
-        root.join("assembly.yml"),
-        format!("{}\n", serde_json::to_string_pretty(input)?),
-    )?;
-    let receipt = author(
-        platform_sources,
-        AuthoringObject::Assembly,
-        root,
-        artifact_root,
-        environment,
-    )?;
+    let receipt = project_runtime_assembly(artifact_root, environment, root_deployments, true)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(serde_json::from_value(
         receipt["runtimeAssemblyReceipt"]["assembly"].clone(),
     )?)
