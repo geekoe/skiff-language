@@ -208,7 +208,7 @@ impl EvalContext<'_> {
             call,
             target,
         )?;
-        let return_plan = invocation.return_plan()?.clone();
+        let return_plan = prepared_native_return_plan(&invocation)?;
         let native_capability_context = project_runtime_execution_native_capability_context(
             &self.context,
             self.projection.clone(),
@@ -236,6 +236,33 @@ impl EvalContext<'_> {
                     .map_err(RuntimeError::from)?
             }
         };
-        runtime_carrier_for_plan(value, &return_plan, "native return", self.heap)
+        materialize_prepared_native_return(value, return_plan.as_ref(), self.heap)
+    }
+}
+
+fn prepared_native_return_plan(
+    invocation: &skiff_runtime_native::dispatch::RuntimeNativeInvocation,
+) -> Result<Option<RuntimeTypePlan>> {
+    if invocation.binding_key() == "std.json.encode" && invocation.plan().is_none() {
+        return Ok(None);
+    }
+    Ok(Some(invocation.return_plan()?.clone()))
+}
+
+fn materialize_prepared_native_return(
+    value: RuntimeValue,
+    return_plan: Option<&RuntimeTypePlan>,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    match return_plan {
+        Some(return_plan) => runtime_carrier_for_plan(value, return_plan, "native return", heap),
+        None => match value {
+            RuntimeValue::String(value) => Ok(RuntimeValueCarrier::unidentified(
+                RuntimeValue::String(value),
+            )),
+            _ => Err(RuntimeError::InvalidArtifact(
+                "plan-free std.json.encode returned a non-string value".to_string(),
+            )),
+        },
     }
 }
