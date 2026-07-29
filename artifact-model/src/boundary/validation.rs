@@ -4,14 +4,15 @@ use std::{
 };
 
 use crate::{
-    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryConfigRequirement,
-    BoundaryEffectGuarantee, BoundaryImplementationRequirements, BoundaryOperationContract,
-    BoundaryParameter, BoundaryReturn, BoundaryStateKind, BoundaryStateRequirement,
-    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact,
-    ContractLiteral, ContractTypeRef, LiteralIr, PackageArtifact, PackageCallableId,
-    PackageCallableSignature, PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageTypeRef,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
+    BoundaryCallbackLifetime, BoundaryConfigRequirement, BoundaryEffectGuarantee,
+    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryParameter,
+    BoundaryReturn, BoundaryStateKind, BoundaryStateRequirement, BoundaryStreamContract,
+    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, ContractLiteral,
+    ContractTypeRef, LiteralIr, PackageArtifact, PackageCallableId, PackageCallableSignature,
+    PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaTypeRef, PackageTypeRef,
     StateBindingKind, TypeRefIr, ValueEscapeLane, ValueProvenance,
 };
 
@@ -100,41 +101,67 @@ pub fn validate_package_boundary_projections(
 pub fn validate_boundary_operation_contract(
     contract: &BoundaryOperationContract,
 ) -> Result<(), BoundaryProjectionValidationError> {
+    let operation_lifetime = match &contract.stream {
+        BoundaryStreamContract::Unary => BoundaryValueLifetime::Request,
+        BoundaryStreamContract::ServerStream { .. } => BoundaryValueLifetime::Stream,
+        BoundaryStreamContract::Unsupported { .. } => {
+            return Err(BoundaryProjectionValidationError::new(
+                "available boundary operation cannot contain an unsupported stream contract",
+            ));
+        }
+    };
+    let mut callback_interfaces = BTreeSet::new();
     for (index, parameter) in contract.parameters.iter().enumerate() {
-        validate_canonical_plan(
+        validate_canonical_position(
+            &parameter.ty,
             &parameter.value_plan,
             BoundaryValueOwner::Caller,
             BoundaryValueLifetime::Call,
+            operation_lifetime,
             &format!("parameter #{index}"),
+            &mut callback_interfaces,
         )?;
     }
-    validate_canonical_plan(
+    validate_canonical_position(
+        &contract.return_value.ty,
         &contract.return_value.value_plan,
         BoundaryValueOwner::Provider,
         BoundaryValueLifetime::Call,
+        operation_lifetime,
         "return value",
+        &mut callback_interfaces,
     )?;
     match &contract.stream {
-        BoundaryStreamContract::Unary => Ok(()),
+        BoundaryStreamContract::Unary => {}
         BoundaryStreamContract::ServerStream {
-            item_value_plan, ..
+            item_type,
+            item_value_plan,
         } => {
             if contract.return_value.ty != ContractTypeRef::builtin("void") {
                 return Err(BoundaryProjectionValidationError::new(
                     "server-stream return sentinel must be exactly builtin void",
                 ));
             }
-            validate_canonical_plan(
+            validate_canonical_position(
+                item_type,
                 item_value_plan,
                 BoundaryValueOwner::Provider,
                 BoundaryValueLifetime::Stream,
+                BoundaryValueLifetime::Stream,
                 "server-stream item",
-            )
+                &mut callback_interfaces,
+            )?;
         }
-        BoundaryStreamContract::Unsupported { .. } => Err(BoundaryProjectionValidationError::new(
-            "available boundary operation cannot contain an unsupported stream contract",
-        )),
+        BoundaryStreamContract::Unsupported { .. } => unreachable!("rejected above"),
     }
+    let expected_callbacks = canonical_callback_contract(callback_interfaces, operation_lifetime);
+    if contract.callbacks != expected_callbacks {
+        return Err(BoundaryProjectionValidationError::new(format!(
+            "callback declaration is not canonical for operation value positions; expected={expected_callbacks:?}, actual={:?}",
+            contract.callbacks
+        )));
+    }
+    Ok(())
 }
 
 fn validate_boundary_callable_projection(
@@ -163,27 +190,114 @@ fn validate_boundary_callable_projection(
     )))
 }
 
-fn validate_canonical_plan(
+/// Canonical classification for one exact contract value position.
+///
+/// A callback capability is enabled only by a top-level, non-generic
+/// `any I` whose interface is an exact Package schema reference. A direct
+/// Package schema reference remains ordinary detached data even when its
+/// descriptor happens to be a callback interface. Nested or generic
+/// existential shapes fail closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundaryCallbackPosition {
+    Detached,
+    Exact {
+        interface_type: PackageSchemaTypeRef,
+    },
+    Unsupported,
+}
+
+pub fn classify_boundary_callback_position(ty: &ContractTypeRef) -> BoundaryCallbackPosition {
+    match ty {
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            let ContractTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+            } = interface.as_ref()
+            else {
+                return BoundaryCallbackPosition::Unsupported;
+            };
+            if !arguments.is_empty() {
+                return BoundaryCallbackPosition::Unsupported;
+            }
+            BoundaryCallbackPosition::Exact {
+                interface_type: PackageSchemaTypeRef {
+                    package_id: package_id.clone(),
+                    stable_schema_key: stable_schema_key.clone(),
+                    package_schema_type_id: package_schema_type_id.clone(),
+                },
+            }
+        }
+        _ if contains_any_interface(ty) => BoundaryCallbackPosition::Unsupported,
+        _ => BoundaryCallbackPosition::Detached,
+    }
+}
+
+fn contains_any_interface(ty: &ContractTypeRef) -> bool {
+    match ty {
+        ContractTypeRef::AnyInterface { .. } => true,
+        ContractTypeRef::Builtin { arguments, .. }
+        | ContractTypeRef::StructuralUnion {
+            variants: arguments,
+        } => arguments.iter().any(contains_any_interface),
+        ContractTypeRef::Record { fields } => fields.values().any(contains_any_interface),
+        ContractTypeRef::Nullable { inner } => contains_any_interface(inner),
+        ContractTypeRef::PackageSchema { .. }
+        | ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Literal { .. } => false,
+    }
+}
+
+fn validate_canonical_position(
+    ty: &ContractTypeRef,
     plan: &BoundaryValuePlan,
-    expected_owner: BoundaryValueOwner,
-    expected_lifetime: BoundaryValueLifetime,
+    detached_owner: BoundaryValueOwner,
+    detached_lifetime: BoundaryValueLifetime,
+    callback_lifetime: BoundaryValueLifetime,
     location: &str,
+    callback_interfaces: &mut BTreeSet<PackageSchemaTypeRef>,
 ) -> Result<(), BoundaryProjectionValidationError> {
-    match plan {
-        BoundaryValuePlan::Linkable {
-            carrier: BoundaryValueCarrier::DetachedValueGraph,
-            encoding: BoundaryValueEncoding::CanonicalValue,
-            owner,
-            lifetime,
-        } if *owner == expected_owner && *lifetime == expected_lifetime => Ok(()),
-        BoundaryValuePlan::Unsupported { .. } => Err(BoundaryProjectionValidationError::new(
-            format!("{location} cannot use an unsupported boundary value plan"),
-        )),
-        BoundaryValuePlan::Linkable { .. } => Err(BoundaryProjectionValidationError::new(
-            format!(
-                "{location} must use DetachedValueGraph/CanonicalValue with {expected_owner:?} ownership and {expected_lifetime:?} lifetime"
-            ),
-        )),
+    let expected = match classify_boundary_callback_position(ty) {
+        BoundaryCallbackPosition::Detached => detached_plan(detached_owner, detached_lifetime),
+        BoundaryCallbackPosition::Exact { interface_type } => {
+            callback_interfaces.insert(interface_type);
+            callback_plan(callback_lifetime)
+        }
+        BoundaryCallbackPosition::Unsupported => {
+            return Err(BoundaryProjectionValidationError::new(format!(
+                "{location} uses a nested, generic, or non-package callback interface shape"
+            )));
+        }
+    };
+    if plan == &expected {
+        Ok(())
+    } else {
+        Err(BoundaryProjectionValidationError::new(format!(
+            "{location} value plan is not canonical; expected={expected:?}, actual={plan:?}"
+        )))
+    }
+}
+
+fn canonical_callback_contract(
+    interfaces: BTreeSet<PackageSchemaTypeRef>,
+    lifetime: BoundaryValueLifetime,
+) -> BoundaryCallbackContract {
+    if interfaces.is_empty() {
+        return BoundaryCallbackContract::None;
+    }
+    BoundaryCallbackContract::RequestScoped {
+        interface_types: interfaces.into_iter().collect(),
+        lifetime: match lifetime {
+            BoundaryValueLifetime::Stream => BoundaryCallbackLifetime::Stream,
+            BoundaryValueLifetime::Request => BoundaryCallbackLifetime::TopLevelRequest,
+            BoundaryValueLifetime::Call => {
+                unreachable!("callback capabilities never use call lifetime")
+            }
+        },
+        expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
     }
 }
 
@@ -221,18 +335,31 @@ fn project_operation_contract(
     signature: &PackageCallableSignature,
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) -> Option<BoundaryOperationContract> {
+    let is_server_stream = package_stream_item(&signature.return_type).is_some();
+    let callback_lifetime = if is_server_stream {
+        BoundaryValueLifetime::Stream
+    } else {
+        BoundaryValueLifetime::Request
+    };
+    let mut callback_interfaces = BTreeSet::new();
     let parameters = signature
         .parameters
         .iter()
         .filter_map(|parameter| {
             project_package_type(&parameter.ty)
-                .map(|ty| BoundaryParameter {
-                    name: parameter.name.clone(),
-                    ty,
-                    value_plan: detached_plan(
+                .and_then(|ty| {
+                    let value_plan = canonical_projected_plan(
+                        &ty,
                         BoundaryValueOwner::Caller,
                         BoundaryValueLifetime::Call,
-                    ),
+                        callback_lifetime,
+                        &mut callback_interfaces,
+                    )?;
+                    Ok(BoundaryParameter {
+                        name: parameter.name.clone(),
+                        ty,
+                        value_plan,
+                    })
                 })
                 .map_err(|reason| push_reason(reasons, reason))
                 .ok()
@@ -244,12 +371,44 @@ fn project_operation_contract(
     if parameters.len() != signature.parameters.len() || return_projection.is_none() {
         return None;
     }
-    let (return_value, stream) = return_projection.expect("return projection was checked");
+    let (mut return_value, mut stream) = return_projection.expect("return projection was checked");
+    return_value.value_plan = match canonical_projected_plan(
+        &return_value.ty,
+        BoundaryValueOwner::Provider,
+        BoundaryValueLifetime::Call,
+        callback_lifetime,
+        &mut callback_interfaces,
+    ) {
+        Ok(plan) => plan,
+        Err(reason) => {
+            push_reason(reasons, reason);
+            return None;
+        }
+    };
+    if let BoundaryStreamContract::ServerStream {
+        item_type,
+        item_value_plan,
+    } = &mut stream
+    {
+        *item_value_plan = match canonical_projected_plan(
+            item_type,
+            BoundaryValueOwner::Provider,
+            BoundaryValueLifetime::Stream,
+            BoundaryValueLifetime::Stream,
+            &mut callback_interfaces,
+        ) {
+            Ok(plan) => plan,
+            Err(reason) => {
+                push_reason(reasons, reason);
+                return None;
+            }
+        };
+    }
     Some(BoundaryOperationContract {
         parameters,
         return_value,
         stream,
-        callbacks: BoundaryCallbackContract::None,
+        callbacks: canonical_callback_contract(callback_interfaces, callback_lifetime),
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -309,6 +468,20 @@ fn project_return(
             BoundaryStreamContract::Unary,
         ),
     })
+}
+
+fn package_stream_item(ty: &PackageTypeRef) -> Option<()> {
+    match ty {
+        PackageTypeRef::Container { name, arguments }
+            if name == "Stream" && arguments.len() == 1 =>
+        {
+            Some(())
+        }
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::Builtin { name, args },
+        } if name == "Stream" && args.len() == 1 => Some(()),
+        _ => None,
+    }
 }
 
 fn project_package_type(ty: &PackageTypeRef) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
@@ -434,6 +607,34 @@ fn detached_plan(owner: BoundaryValueOwner, lifetime: BoundaryValueLifetime) -> 
         encoding: BoundaryValueEncoding::CanonicalValue,
         owner,
         lifetime,
+    }
+}
+
+fn callback_plan(lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
+    BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::CallbackCapability,
+        encoding: BoundaryValueEncoding::OpaqueCapability,
+        owner: BoundaryValueOwner::CapabilityOwner,
+        lifetime,
+    }
+}
+
+fn canonical_projected_plan(
+    ty: &ContractTypeRef,
+    detached_owner: BoundaryValueOwner,
+    detached_lifetime: BoundaryValueLifetime,
+    callback_lifetime: BoundaryValueLifetime,
+    callback_interfaces: &mut BTreeSet<PackageSchemaTypeRef>,
+) -> Result<BoundaryValuePlan, BoundaryUnavailableReason> {
+    match classify_boundary_callback_position(ty) {
+        BoundaryCallbackPosition::Detached => Ok(detached_plan(detached_owner, detached_lifetime)),
+        BoundaryCallbackPosition::Exact { interface_type } => {
+            callback_interfaces.insert(interface_type);
+            Ok(callback_plan(callback_lifetime))
+        }
+        BoundaryCallbackPosition::Unsupported => {
+            Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
+        }
     }
 }
 
@@ -1077,6 +1278,202 @@ mod tests {
     }
 
     #[test]
+    fn exact_non_generic_any_interface_is_the_only_callback_position() {
+        let interface = PackageSchemaTypeRef {
+            package_id: "example.pkg".to_string(),
+            stable_schema_key: "api.Reader".to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new("type:reader"),
+        };
+        let interface_type = ContractTypeRef::package_schema(
+            interface.package_id.clone(),
+            interface.stable_schema_key.clone(),
+            interface.package_schema_type_id.clone(),
+        );
+        let exact = ContractTypeRef::AnyInterface {
+            interface: Box::new(interface_type.clone()),
+            arguments: Vec::new(),
+        };
+        assert_eq!(
+            classify_boundary_callback_position(&exact),
+            BoundaryCallbackPosition::Exact {
+                interface_type: interface
+            }
+        );
+        assert_eq!(
+            classify_boundary_callback_position(&interface_type),
+            BoundaryCallbackPosition::Detached,
+            "a direct PackageSchema is data, not an implicit callback"
+        );
+        assert_eq!(
+            classify_boundary_callback_position(&ContractTypeRef::Builtin {
+                name: "Array".to_string(),
+                arguments: vec![exact.clone()],
+            }),
+            BoundaryCallbackPosition::Unsupported
+        );
+        assert_eq!(
+            classify_boundary_callback_position(&ContractTypeRef::AnyInterface {
+                interface: Box::new(interface_type),
+                arguments: vec![ContractTypeRef::builtin("string")],
+            }),
+            BoundaryCallbackPosition::Unsupported
+        );
+    }
+
+    #[test]
+    fn unary_any_interface_rederives_request_scoped_callback_contract_exactly() {
+        let signature = callback_signature(PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("string"),
+        });
+        let projection = canonical_boundary_callable_projection(
+            &signature,
+            &safe_facts(),
+            &empty_runtime_requirements(),
+        );
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = projection
+        else {
+            panic!("exact non-generic any I parameter must be boundary available")
+        };
+        assert_eq!(
+            operation_contract.parameters[0].value_plan,
+            callback_plan(BoundaryValueLifetime::Request)
+        );
+        assert_eq!(
+            operation_contract.callbacks,
+            BoundaryCallbackContract::RequestScoped {
+                interface_types: vec![callback_interface_ref()],
+                lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+                expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+            }
+        );
+        assert!(validate_boundary_operation_contract(&operation_contract).is_ok());
+
+        for mutation in 0..6 {
+            let mut invalid = operation_contract.clone();
+            match mutation {
+                0 => set_plan_carrier(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueCarrier::DetachedValueGraph,
+                ),
+                1 => set_plan_encoding(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueEncoding::CanonicalValue,
+                ),
+                2 => set_plan_owner(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueOwner::Caller,
+                ),
+                3 => set_plan_lifetime(
+                    &mut invalid.parameters[0].value_plan,
+                    BoundaryValueLifetime::Call,
+                ),
+                4 => invalid.callbacks = BoundaryCallbackContract::None,
+                5 => {
+                    let BoundaryCallbackContract::RequestScoped {
+                        expiration_error, ..
+                    } = &mut invalid.callbacks
+                    else {
+                        unreachable!()
+                    };
+                    *expiration_error = BoundaryCallbackExpirationError::CapabilityUnavailable;
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_boundary_operation_contract(&invalid).is_err(),
+                "callback contract mutation {mutation} must fail exact validation"
+            );
+        }
+    }
+
+    #[test]
+    fn server_stream_extends_every_exact_callback_position_to_stream_lifetime() {
+        let callback = callback_package_type();
+        let signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![PackageCallableParameter {
+                name: "callback".to_string(),
+                ty: callback.clone(),
+            }],
+            return_type: PackageTypeRef::Container {
+                name: "Stream".to_string(),
+                arguments: vec![callback],
+            },
+            may_suspend: true,
+        };
+        let projection = canonical_boundary_callable_projection(
+            &signature,
+            &safe_facts(),
+            &empty_runtime_requirements(),
+        );
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = projection
+        else {
+            panic!("exact any I stream positions must be boundary available")
+        };
+        assert_eq!(
+            operation_contract.parameters[0].value_plan,
+            callback_plan(BoundaryValueLifetime::Stream)
+        );
+        let BoundaryStreamContract::ServerStream {
+            item_value_plan, ..
+        } = &operation_contract.stream
+        else {
+            panic!("fixture must project a server stream")
+        };
+        assert_eq!(
+            item_value_plan,
+            &callback_plan(BoundaryValueLifetime::Stream)
+        );
+        assert_eq!(
+            operation_contract.callbacks,
+            BoundaryCallbackContract::RequestScoped {
+                interface_types: vec![callback_interface_ref()],
+                lifetime: BoundaryCallbackLifetime::Stream,
+                expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+            }
+        );
+        assert!(validate_boundary_operation_contract(&operation_contract).is_ok());
+    }
+
+    #[test]
+    fn nested_and_generic_any_interface_positions_remain_unavailable() {
+        let callback = callback_package_type();
+        for parameter_type in [
+            PackageTypeRef::Container {
+                name: "Array".to_string(),
+                arguments: vec![callback.clone()],
+            },
+            PackageTypeRef::AnyInterface {
+                interface: Box::new(PackageTypeRef::PackageSchema {
+                    package_id: "example.pkg".to_string(),
+                    stable_schema_key: "api.Reader".to_string(),
+                    package_schema_type_id: PackageSchemaTypeId::new("type:reader"),
+                }),
+                arguments: vec![PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                }],
+            },
+        ] {
+            let mut signature = unary_signature();
+            signature.parameters[0].ty = parameter_type;
+            assert_eq!(
+                canonical_boundary_callable_projection(
+                    &signature,
+                    &safe_facts(),
+                    &empty_runtime_requirements(),
+                ),
+                BoundaryCallableProjection::Unavailable {
+                    reasons: vec![BoundaryUnavailableReason::CallbackAdapterUnavailable]
+                }
+            );
+        }
+    }
+
+    #[test]
     fn unavailable_reasons_are_nonempty_exact_and_canonical() {
         let mut signature = unary_signature();
         signature.parameters[0].ty = PackageTypeRef::Local {
@@ -1243,6 +1640,37 @@ mod tests {
                 package_schema_type_id: PackageSchemaTypeId::new("type:result"),
             },
             may_suspend: false,
+        }
+    }
+
+    fn callback_signature(return_type: PackageTypeRef) -> PackageCallableSignature {
+        PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![PackageCallableParameter {
+                name: "callback".to_string(),
+                ty: callback_package_type(),
+            }],
+            return_type,
+            may_suspend: true,
+        }
+    }
+
+    fn callback_package_type() -> PackageTypeRef {
+        PackageTypeRef::AnyInterface {
+            interface: Box::new(PackageTypeRef::PackageSchema {
+                package_id: "example.pkg".to_string(),
+                stable_schema_key: "api.Reader".to_string(),
+                package_schema_type_id: PackageSchemaTypeId::new("type:reader"),
+            }),
+            arguments: Vec::new(),
+        }
+    }
+
+    fn callback_interface_ref() -> PackageSchemaTypeRef {
+        PackageSchemaTypeRef {
+            package_id: "example.pkg".to_string(),
+            stable_schema_key: "api.Reader".to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new("type:reader"),
         }
     }
 
