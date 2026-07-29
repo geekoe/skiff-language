@@ -651,7 +651,12 @@ impl Interpreter {
                         return Ok(None);
                     }
                 }
-                (target.executable_addr().clone(), None, None, call.clone())
+                (
+                    target.executable_addr().clone(),
+                    target.receiver_const().cloned(),
+                    None,
+                    call.clone(),
+                )
             }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::ExternalServiceSymbol { .. }

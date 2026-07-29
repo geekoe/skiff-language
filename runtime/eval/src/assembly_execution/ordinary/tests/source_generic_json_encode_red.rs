@@ -91,6 +91,26 @@ async fn run_compiler_linked_generic_std_json_encode_red() {
         RuntimeValue::String("decoded".to_string()),
         "the existing generic std.json.decode substitution path must remain a GREEN control",
     );
+    assert_eq!(
+        linked.execute("leftValue").await.unwrap(),
+        RuntimeValue::String("left".to_string()),
+        "a zero-argument public-instance method must receive its exact const receiver",
+    );
+    assert_eq!(
+        linked.execute("rightValue").await.unwrap(),
+        RuntimeValue::String("right".to_string()),
+        "two public consts sharing one impl must not share receiver values",
+    );
+    assert_eq!(
+        linked.execute("leftTag").await.unwrap(),
+        RuntimeValue::String("left-tag".to_string()),
+        "one public instance must dispatch methods from each listed interface",
+    );
+    assert_eq!(
+        linked.execute("leftItems").await.unwrap(),
+        RuntimeValue::String("leftleft".to_string()),
+        "a generic package-direct public-instance stream must inject self and complete normally",
+    );
 
     let mut failures = Vec::new();
     for symbol in ["encodeLocal", "encodePackage", "encodeNested"] {
@@ -451,7 +471,18 @@ fn write_model_package(root: &Path) {
     .expect("model package manifest");
     fs::write(
         root.join("api.yml"),
-        "PublicPayload: main.PublicPayload\nmakePublic: main.makePublic\n",
+        r#"PublicPayload: main.PublicPayload
+makePublic: main.makePublic
+left:
+  const: root.main.left
+  interfaces:
+    - root.main.ValueApi
+    - root.main.TagApi
+right:
+  const: root.main.right
+  interfaces:
+    - root.main.ValueApi
+"#,
     )
     .expect("model package API");
     fs::write(
@@ -464,6 +495,39 @@ fn write_model_package(root: &Path) {
 function makePublic() -> PublicPayload {
   return PublicPayload { id: "package", count: 2 }
 }
+
+interface ValueApi {
+  function value(self: Self) -> string
+  function items(self: Self) -> Stream<string>
+}
+
+interface TagApi {
+  function tag(self: Self) -> string
+}
+
+type Named<T> implements ValueApi, TagApi {
+  payload: T,
+  valueLabel: string,
+}
+
+impl Named<T> {
+  function value() -> string {
+    return self.valueLabel
+  }
+
+  function items() -> Stream<string> {
+    emit(self.valueLabel)
+    emit(self.valueLabel)
+    return null
+  }
+
+  function tag() -> string {
+    return self.valueLabel.concat("-tag")
+  }
+}
+
+const left: Named<integer> = Named<integer> { payload: 1, valueLabel: "left" }
+const right: Named<boolean> = Named<boolean> { payload: true, valueLabel: "right" }
 "#,
     )
     .expect("model package source");
@@ -480,7 +544,7 @@ fn write_consumer_package(root: &Path) {
     .expect("consumer package manifest");
     fs::write(
         root.join("api.yml"),
-        "encodeLocal: main.encodeLocal\nencodePackage: main.encodePackage\nencodeNested: main.encodeNested\nconcreteEncodeControl: main.concreteEncodeControl\ngenericDecodeControl: main.genericDecodeControl\n",
+        "encodeLocal: main.encodeLocal\nencodePackage: main.encodePackage\nencodeNested: main.encodeNested\nconcreteEncodeControl: main.concreteEncodeControl\ngenericDecodeControl: main.genericDecodeControl\nleftValue: main.leftValue\nrightValue: main.rightValue\nleftTag: main.leftTag\nleftItems: main.leftItems\n",
     )
     .expect("consumer package API");
     fs::write(
@@ -520,6 +584,26 @@ function concreteEncodeControl() -> Json {
 
 function genericDecodeControl() -> Json {
   return genericDecode<Json>("\"decoded\"")
+}
+
+function leftValue() -> string {
+  return models/left.value()
+}
+
+function rightValue() -> string {
+  return models/right.value()
+}
+
+function leftTag() -> string {
+  return models/left.tag()
+}
+
+function leftItems() -> string {
+  let output = ""
+  for item in models/left.items() {
+    output = output.concat(item)
+  }
+  return output
 }
 "#,
     )
