@@ -590,6 +590,18 @@ impl Default for DbCapabilitySource {
 
 pub trait DbProviderFactory: Send + Sync {
     fn build(&self, input: DbProviderBuildInput) -> DbCapabilityResult<DbCapabilitySource>;
+
+    /// Reconciles provider-owned storage required by one whole assembly candidate.
+    ///
+    /// The caller supplies every exact activation input together so a provider can reject
+    /// cross-version physical-schema conflicts before performing any storage I/O. Providers
+    /// without provisioned storage keep the default no-op and are still validated by `build`.
+    fn provision<'a>(
+        &'a self,
+        _inputs: Vec<DbProviderBuildInput>,
+    ) -> DbCapabilityFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[derive(Clone)]
@@ -632,6 +644,29 @@ impl DbProviderSource {
             ));
         };
         factory.build(input)
+    }
+
+    pub fn provision<'a>(
+        &'a self,
+        inputs: Vec<DbProviderBuildInput>,
+    ) -> DbCapabilityFuture<'a, ()> {
+        let Some(factory) = &self.factory else {
+            let target = inputs
+                .first()
+                .map(|input| input.service_id.clone())
+                .unwrap_or_else(|| "serviceDb".to_string());
+            return Box::pin(async move {
+                if inputs.is_empty() {
+                    Ok(())
+                } else {
+                    Err(DbCapabilityError::provider_unavailable(
+                        target,
+                        "serviceDb provider is not configured for this runtime host",
+                    ))
+                }
+            });
+        };
+        factory.provision(inputs)
     }
 
     #[cfg(any(test, feature = "test-support"))]
