@@ -10,6 +10,7 @@ import {
   parseObjectArgs,
   renderAuthoringResult,
   requestAssemblyActivation,
+  runConfigSnapshotAuthoring,
   runCompilerAuthoring,
 } from '../lib/package-service-authoring.mjs';
 import {
@@ -254,6 +255,27 @@ test('assembly activation requires and parses an exact config snapshot reference
       '4',
     ]),
     /exact RuntimeConfigSnapshotRef/,
+  );
+});
+
+test('config snapshot production requires a canonical target environment distinct from profile', async () => {
+  const base = {
+    skiffRoot,
+    artifactRoot: '/tmp/artifacts',
+    profile: 'dev',
+    assemblyRecord: 'records/assembly.json',
+    sources: [{
+      root: '/tmp/service',
+      deployment: rootDeployment,
+    }],
+  };
+  await assert.rejects(
+    runConfigSnapshotAuthoring(base),
+    /explicit canonical target environment/,
+  );
+  await assert.rejects(
+    runConfigSnapshotAuthoring({ ...base, environment: '..' }),
+    /explicit canonical target environment/,
   );
 });
 

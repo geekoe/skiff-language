@@ -87,9 +87,10 @@ pub fn assemble_test_service_fixture(
     project: &CanonicalPackageProject,
     cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
+    target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     let scope = test_service_execution_nonce()?;
-    assemble_test_service_fixture_inner(project, cases, base, &scope, None)
+    assemble_test_service_fixture_inner(project, cases, base, &scope, None, target_environment)
 }
 
 pub fn assemble_test_service_fixture_for_run(
@@ -97,8 +98,9 @@ pub fn assemble_test_service_fixture_for_run(
     cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
     run_scope: &str,
+    target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
-    assemble_test_service_fixture_inner(project, cases, base, run_scope, None)
+    assemble_test_service_fixture_inner(project, cases, base, run_scope, None, target_environment)
 }
 
 pub fn assemble_test_service_fixture_for_run_with_ingress(
@@ -107,8 +109,16 @@ pub fn assemble_test_service_fixture_for_run_with_ingress(
     base: CanonicalBaseAssembly,
     run_scope: &str,
     ingress_url: &str,
+    target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
-    assemble_test_service_fixture_inner(project, cases, base, run_scope, Some(ingress_url))
+    assemble_test_service_fixture_inner(
+        project,
+        cases,
+        base,
+        run_scope,
+        Some(ingress_url),
+        target_environment,
+    )
 }
 
 fn assemble_test_service_fixture_inner(
@@ -117,6 +127,7 @@ fn assemble_test_service_fixture_inner(
     base: CanonicalBaseAssembly,
     run_scope: &str,
     ingress_url: Option<&str>,
+    target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     if cases.is_empty() {
         return Err(CanonicalFixtureError::InvalidInput(
@@ -271,6 +282,7 @@ fn assemble_test_service_fixture_inner(
         &deployment_packages,
         &base,
         ingress_url,
+        target_environment,
     )?;
     let assembly_deployments = assembly
         .resolved_deployments
@@ -319,6 +331,7 @@ fn test_service_config_snapshot(
     packages: &[PackageArtifact],
     base: &CanonicalBaseAssembly,
     ingress_url: Option<&str>,
+    target_environment: &str,
 ) -> Result<skiff_runtime_config_snapshot::RuntimeConfigSnapshot, CanonicalFixtureError> {
     if base.assembly.is_some() != base.config_snapshot.is_some() {
         return Err(CanonicalFixtureError::InvalidInput(
@@ -360,14 +373,10 @@ fn test_service_config_snapshot(
             packages: package_inputs.clone(),
         })
         .collect();
-    let base_deployments = base
-        .config_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.deployments().to_vec())
-        .unwrap_or_default();
     project_runtime_config_snapshot_with_base(
+        target_environment,
         new_runtime_config_snapshot_ref(),
-        base_deployments,
+        base.config_snapshot.as_ref(),
         inputs,
     )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))

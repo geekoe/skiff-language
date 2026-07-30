@@ -72,6 +72,7 @@ fn package(build: &str, config: Value) -> RuntimeConfigPackage {
 
 fn snapshot() -> RuntimeConfigSnapshot {
     RuntimeConfigSnapshot::new(
+        "dev",
         fixed_ref(),
         vec![
             RuntimeConfigDeployment::new(
@@ -124,6 +125,8 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
         value["schemaVersion"],
         RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION
     );
+    assert_eq!(value["environment"], "dev");
+    assert_eq!(record.environment(), "dev");
     assert!(value.get("assembly").is_none());
     assert!(value.get("assemblyRef").is_none());
     assert!(value.get("assemblyIdentity").is_none());
@@ -136,6 +139,22 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
     let mut unknown = value.clone();
     unknown["plaintext"] = json!("must reject");
     assert!(serde_json::from_value::<RuntimeConfigSnapshot>(unknown).is_err());
+
+    let mut missing_environment = value.clone();
+    missing_environment
+        .as_object_mut()
+        .unwrap()
+        .remove("environment");
+    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(missing_environment).is_err());
+
+    let mut legacy_schema = value.clone();
+    legacy_schema["schemaVersion"] = json!("skiff-runtime-config-snapshot-record-v1");
+    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(legacy_schema).is_err());
+
+    let mut invalid_environment = value.clone();
+    invalid_environment["environment"] = json!("..");
+    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(invalid_environment).is_err());
+    assert!(RuntimeConfigSnapshot::new("..", fixed_ref(), Vec::new()).is_err());
 
     let mut reversed = value.clone();
     reversed["deployments"].as_array_mut().unwrap().reverse();
@@ -155,7 +174,8 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
     assert!(serde_json::from_value::<RuntimeConfigSnapshot>(package_duplicate).is_err());
 
     let duplicate_nested_key = br#"{
-        "schemaVersion":"skiff-runtime-config-snapshot-record-v1",
+        "schemaVersion":"skiff-runtime-config-snapshot-record-v2",
+        "environment":"dev",
         "snapshot":{"snapshotId":"skiff-runtime-config-snapshot-v1:0123456789abcdef0123456789abcdef"},
         "deployments":[{
             "deployment":{
@@ -208,7 +228,7 @@ fn record_rejects_depth_and_collection_limits() {
             .unwrap()
         })
         .collect();
-    assert!(RuntimeConfigSnapshot::new(fixed_ref(), deployments).is_err());
+    assert!(RuntimeConfigSnapshot::new("dev", fixed_ref(), deployments).is_err());
 }
 
 #[test]
@@ -241,6 +261,23 @@ fn secure_store_publishes_once_reads_strictly_and_resolves() {
         store.publish(&record),
         Err(RuntimeConfigSnapshotError::AlreadyExists { .. })
     ));
+
+    let production = RuntimeConfigSnapshot::new(
+        "prod",
+        new_runtime_config_snapshot_ref(),
+        record.deployments().to_vec(),
+    )
+    .unwrap();
+    store.publish(&production).unwrap();
+    assert_eq!(
+        store.read(production.snapshot_ref()).unwrap().environment(),
+        "prod"
+    );
+    assert!(!production
+        .snapshot_ref()
+        .snapshot_id
+        .as_str()
+        .contains("prod"));
 }
 
 #[test]
@@ -271,7 +308,7 @@ fn secure_store_rejects_symlinks_nonregular_files_permissions_and_duplicate_json
     assert!(store.read(&fixed_ref()).is_err());
 
     fs::remove_file(&path).unwrap();
-    let duplicate = br#"{"schemaVersion":"skiff-runtime-config-snapshot-record-v1","snapshot":{"snapshotId":"skiff-runtime-config-snapshot-v1:0123456789abcdef0123456789abcdef"},"deployments":[{"deployment":{"serviceId":"a","contractVersion":"1.0.0","deploymentRevision":"dev","deploymentArtifactIdentity":"skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"packages":[{"packageBuildId":"build-a","config":{"same":1,"same":2}}]}]}"#;
+    let duplicate = br#"{"schemaVersion":"skiff-runtime-config-snapshot-record-v2","environment":"dev","snapshot":{"snapshotId":"skiff-runtime-config-snapshot-v1:0123456789abcdef0123456789abcdef"},"deployments":[{"deployment":{"serviceId":"a","contractVersion":"1.0.0","deploymentRevision":"dev","deploymentArtifactIdentity":"skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"packages":[{"packageBuildId":"build-a","config":{"same":1,"same":2}}]}]}"#;
     fs::write(&path, duplicate).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(store.read(&fixed_ref()).is_err());

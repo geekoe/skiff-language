@@ -209,7 +209,8 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     if cases.is_empty() {
         anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
     }
-    let fixture = assemble_test_service_fixture(&project, &cases, Default::default())?;
+    let fixture =
+        assemble_test_service_fixture(&project, &cases, Default::default(), &args.environment)?;
     let [case] = fixture.cases.as_slice() else {
         anyhow::bail!(
             "smoke fixture requires exactly one test case, found {}",
@@ -315,7 +316,8 @@ fn initialize_empty_environment(
     store.write_runtime_assembly(&empty)?;
     let reference = runtime_assembly_ref(&empty)?;
     let config_snapshot_ref = new_runtime_config_snapshot_ref();
-    let config_snapshot = RuntimeConfigSnapshot::new(config_snapshot_ref.clone(), Vec::new())?;
+    let config_snapshot =
+        RuntimeConfigSnapshot::new(environment, config_snapshot_ref.clone(), Vec::new())?;
     RuntimeConfigSnapshotStore::create(store.root().join("runtime-config"))?
         .publish(&config_snapshot)?;
     store.initialize_environment_activation(&EnvironmentActivationState::initial(

@@ -48,6 +48,7 @@ pub fn run_package_cases(
         source_artifact_root,
         options.base_assembly.as_deref(),
         options.base_config_snapshot.as_deref(),
+        &options.target_environment,
     )?;
     let run_scope = test_service_run_scope()?;
     let ingress_url = options.ingress_url.as_deref().ok_or_else(|| {
@@ -62,6 +63,7 @@ pub fn run_package_cases(
         base,
         &run_scope,
         ingress_url,
+        &options.target_environment,
     )?;
     fixture.publish(source_artifact_root, runtime_artifact_root)?;
     let shared_records = fixture.records.clone();

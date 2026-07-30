@@ -211,6 +211,7 @@ export async function runCompilerAuthoring({
 export async function runConfigSnapshotAuthoring({
   skiffRoot,
   artifactRoot,
+  environment,
   profile,
   assemblyRecord,
   sources,
@@ -220,6 +221,14 @@ export async function runConfigSnapshotAuthoring({
   }
   if (typeof profile !== 'string' || profile.length === 0) {
     throw new Error('config snapshot authoring requires an explicit profile');
+  }
+  if (
+    typeof environment !== 'string'
+    || environment === '.'
+    || environment === '..'
+    || !activationEnvironmentPattern.test(environment)
+  ) {
+    throw new Error('config snapshot authoring requires an explicit canonical target environment');
   }
   if (typeof assemblyRecord !== 'string' || assemblyRecord.length === 0) {
     throw new Error('config snapshot authoring requires the RuntimeAssembly record path');
@@ -237,6 +246,8 @@ export async function runConfigSnapshotAuthoring({
     artifactRoot,
     '--assembly-record',
     assemblyRecord,
+    '--environment',
+    environment,
     '--profile',
     profile,
   ];

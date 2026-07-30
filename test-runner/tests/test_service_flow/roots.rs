@@ -57,7 +57,7 @@ fn ordinary_test_service_resolves_public_private_and_test_local_roots_together()
     }
 
     let cases = discover_test_service_cases(&service, &service, false).expect("discover test case");
-    let fixture = assemble_test_service_fixture(&project, &cases, Default::default())
+    let fixture = assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
         .expect("root-resolved test service must assemble through the ordinary service path");
     assert_eq!(fixture.cases.len(), 1);
 }
@@ -113,7 +113,7 @@ fn runner_owned_private_gateway_rejects_missing_wrong_signature_and_public_leak(
         .package_local_abi
         .implementation_symbols
         .remove(&gateway_selector);
-    let error = assemble_test_service_fixture(&missing, &cases, Default::default())
+    let error = assemble_test_service_fixture(&missing, &cases, Default::default(), "skiff-test")
         .expect_err("missing runner gateway must fail closed")
         .to_string();
     assert!(
@@ -133,9 +133,10 @@ fn runner_owned_private_gateway_rejects_missing_wrong_signature_and_public_leak(
         panic!("generated runner gateway must be callable");
     };
     signature.parameters.clear();
-    let error = assemble_test_service_fixture(&wrong_signature, &cases, Default::default())
-        .expect_err("wrong runner gateway signature must fail closed")
-        .to_string();
+    let error =
+        assemble_test_service_fixture(&wrong_signature, &cases, Default::default(), "skiff-test")
+            .expect_err("wrong runner gateway signature must fail closed")
+            .to_string();
     assert!(error.contains("must have exact signature"), "{error}");
 
     let mut public_leak = project;
@@ -151,9 +152,10 @@ fn runner_owned_private_gateway_rejects_missing_wrong_signature_and_public_leak(
         .package_local_abi
         .public_symbols
         .insert("leakedGateway".to_string(), leaked);
-    let error = assemble_test_service_fixture(&public_leak, &cases, Default::default())
-        .expect_err("a public runner gateway must fail closed")
-        .to_string();
+    let error =
+        assemble_test_service_fixture(&public_leak, &cases, Default::default(), "skiff-test")
+            .expect_err("a public runner gateway must fail closed")
+            .to_string();
     assert!(
         error.contains("must not enter the package public API"),
         "{error}"

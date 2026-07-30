@@ -29,6 +29,7 @@ fn package_id_root_config_isolated_by_exact_case_deployment() {
         Default::default(),
         "execution-one",
         "http://127.0.0.1:46100",
+        "skiff-test",
     )
     .expect("assemble first execution");
     let second = assemble_test_service_fixture_for_run_with_ingress(
@@ -37,10 +38,12 @@ fn package_id_root_config_isolated_by_exact_case_deployment() {
         Default::default(),
         "execution-two",
         "http://127.0.0.1:46100",
+        "skiff-test",
     )
     .expect("assemble second execution");
 
     assert_eq!(first.records.config_snapshot.deployments().len(), 3);
+    assert_eq!(first.records.config_snapshot.environment(), "skiff-test");
     let first_deployments = first
         .records
         .config_snapshot
@@ -144,6 +147,7 @@ fn assemble_service(service: &Path, artifacts: &Path) -> Result<(), String> {
         Default::default(),
         "negative-execution",
         "http://127.0.0.1:46100",
+        "skiff-test",
     )
     .map(|_| ())
     .map_err(|error| error.to_string())

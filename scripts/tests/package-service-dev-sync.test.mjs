@@ -188,6 +188,7 @@ test('dev sync has one package phase and consumes generated service receipts bef
     },
     configSnapshotRunner: async (input) => {
       events.push(`snapshot:${input.profile}`);
+      assert.equal(input.environment, 'dev');
       assert.deepEqual(input.sources, [{
         root: fixture.roots.find(({ root }) => basename(root) === 'service').root,
         deployment: dummyDeploymentRef,

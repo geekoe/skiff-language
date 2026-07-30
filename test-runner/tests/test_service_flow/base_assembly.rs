@@ -70,8 +70,13 @@ fn ordinary_test_service_loads_exact_transitive_store_closure_and_ignores_decoy_
 
     let cases =
         discover_test_service_cases(&service, &service, false).expect("discover ordinary case");
-    let fixture = assemble_test_service_fixture(&project, &cases, CanonicalBaseAssembly::default())
-        .expect("assemble exact transitive package graph");
+    let fixture = assemble_test_service_fixture(
+        &project,
+        &cases,
+        CanonicalBaseAssembly::default(),
+        "skiff-test",
+    )
+    .expect("assemble exact transitive package graph");
     assert_eq!(fixture.cases.len(), 1);
     let leaf = project
         .dependency_packages
@@ -129,10 +134,23 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
         "base-test",
     )
     .expect("publish the production provider closure and base assembly");
+    let cross_environment = CanonicalBaseAssembly::load(
+        &artifacts,
+        Some(receipt.base_assembly.assembly_identity.as_str()),
+        Some(receipt.base_config_snapshot.snapshot_id.as_str()),
+        "other-test",
+    )
+    .expect_err("base config snapshot must not cross activation environments")
+    .to_string();
+    assert!(
+        cross_environment.contains("does not match target environment"),
+        "{cross_environment}"
+    );
     let base = CanonicalBaseAssembly::load(
         &artifacts,
         Some(receipt.base_assembly.assembly_identity.as_str()),
         Some(receipt.base_config_snapshot.snapshot_id.as_str()),
+        "base-test",
     )
     .expect("load exact base assembly");
     assert_eq!(
@@ -207,6 +225,7 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
         &project,
         std::slice::from_ref(&first_case),
         CanonicalBaseAssembly::default(),
+        "base-test",
     )
     .expect_err("service requirements must fail before activation without a base assembly")
     .to_string();
@@ -215,8 +234,13 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
         "{missing_base}"
     );
 
-    let fixture = assemble_test_service_fixture(&project, std::slice::from_ref(&first_case), base)
-        .expect("assemble the ordinary test service with its base closure");
+    let fixture = assemble_test_service_fixture(
+        &project,
+        std::slice::from_ref(&first_case),
+        base,
+        "base-test",
+    )
+    .expect("assemble the ordinary test service with its base closure");
     assert_eq!(fixture.cases.len(), 1);
     let [deployment] = fixture.records.deployments.as_slice() else {
         panic!("one selected case must produce one ordinary deployment")

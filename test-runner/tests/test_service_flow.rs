@@ -99,7 +99,7 @@ fn kind_test_compiles_and_assembles_only_ordinary_service_artifacts() {
             .collect::<Vec<_>>()
     );
 
-    let fixture = assemble_test_service_fixture(&project, &cases, Default::default())
+    let fixture = assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
         .expect("assemble ordinary service cases");
     assert_eq!(
         fixture.test_service,
@@ -171,9 +171,9 @@ fn multiple_cases_receive_separate_deployments_in_one_shared_assembly() {
         ["skiffTestCase0", "skiffTestCase1", "skiffTestCase0"]
     );
     let single_case_fixture =
-        assemble_test_service_fixture(&project, &cases[..1], Default::default())
+        assemble_test_service_fixture(&project, &cases[..1], Default::default(), "skiff-test")
             .expect("assemble one isolated case");
-    let fixture = assemble_test_service_fixture(&project, &cases, Default::default())
+    let fixture = assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
         .expect("assemble isolated cases");
     assert_eq!(
         fixture.package_identity_admission_count(),
@@ -287,7 +287,7 @@ fn source_tests_without_kind_test_service_are_not_an_execution_surface() {
     assert!(project.test_service_profile.is_none());
     let cases =
         discover_test_service_cases(&package, &package, false).expect("discover legacy source");
-    let error = assemble_test_service_fixture(&project, &cases, Default::default())
+    let error = assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
         .expect_err("runner must not recreate a package overlay")
         .to_string();
     assert!(error.contains("service.yml kind: test"));

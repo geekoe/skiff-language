@@ -30,6 +30,7 @@ impl CanonicalBaseAssembly {
         artifact_root: &Path,
         identity: Option<&str>,
         config_snapshot_id: Option<&str>,
+        target_environment: &str,
     ) -> Result<Self, CanonicalFixtureError> {
         let (Some(identity), Some(config_snapshot_id)) = (identity, config_snapshot_id) else {
             if identity.is_none() && config_snapshot_id.is_none() {
@@ -70,6 +71,13 @@ impl CanonicalBaseAssembly {
             RuntimeConfigSnapshotStore::open(artifact_root.join("runtime-config"))
                 .and_then(|store| store.read(&config_snapshot_ref))
                 .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        if config_snapshot.environment() != target_environment {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "base config snapshot environment {:?} does not match target environment {:?}",
+                config_snapshot.environment(),
+                target_environment
+            )));
+        }
         let expected = assembly
             .resolved_deployments
             .iter()

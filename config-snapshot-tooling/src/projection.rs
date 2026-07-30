@@ -31,17 +31,31 @@ pub struct ConfigSnapshotDeploymentInput {
 }
 
 pub fn project_runtime_config_snapshot(
+    environment: &str,
     snapshot: RuntimeConfigSnapshotRef,
     inputs: Vec<ConfigSnapshotDeploymentInput>,
 ) -> ConfigSnapshotToolingResult<RuntimeConfigSnapshot> {
-    project_runtime_config_snapshot_with_base(snapshot, Vec::new(), inputs)
+    project_runtime_config_snapshot_with_base(environment, snapshot, None, inputs)
 }
 
 pub fn project_runtime_config_snapshot_with_base(
+    environment: &str,
     snapshot: RuntimeConfigSnapshotRef,
-    mut base: Vec<RuntimeConfigDeployment>,
+    base: Option<&RuntimeConfigSnapshot>,
     mut inputs: Vec<ConfigSnapshotDeploymentInput>,
 ) -> ConfigSnapshotToolingResult<RuntimeConfigSnapshot> {
+    if let Some(base) = base {
+        if base.environment() != environment {
+            return Err(invalid(
+                "<projection>",
+                format!(
+                    "base config snapshot environment {:?} does not match target environment {:?}",
+                    base.environment(),
+                    environment
+                ),
+            ));
+        }
+    }
     inputs.sort_by(|left, right| left.deployment.cmp(&right.deployment));
     ensure_unique(
         inputs.iter().map(|input| &input.deployment),
@@ -52,14 +66,18 @@ pub fn project_runtime_config_snapshot_with_base(
         .into_iter()
         .map(project_deployment)
         .collect::<ConfigSnapshotToolingResult<Vec<_>>>()?;
-    deployments.append(&mut base);
+    deployments.extend(
+        base.into_iter()
+            .flat_map(RuntimeConfigSnapshot::deployments)
+            .cloned(),
+    );
     deployments.sort_by(|left, right| left.deployment().cmp(right.deployment()));
     ensure_unique(
         deployments.iter().map(RuntimeConfigDeployment::deployment),
         "<projection>",
         "deployment",
     )?;
-    RuntimeConfigSnapshot::new(snapshot, deployments).map_err(Into::into)
+    RuntimeConfigSnapshot::new(environment, snapshot, deployments).map_err(Into::into)
 }
 
 fn project_deployment(
@@ -241,6 +259,8 @@ mod tests {
         ConfigSnapshotDeploymentInput, ConfigSnapshotPackageInput,
     };
 
+    const ENVIRONMENT: &str = "test";
+
     #[test]
     fn projection_validates_required_optional_types_unknown_packages_and_nested_conflicts() {
         let valid = input(
@@ -250,12 +270,23 @@ mod tests {
                 "nested": {"count": 2}
             }),
         );
-        let snapshot = project_runtime_config_snapshot(snapshot_ref(), vec![valid]).unwrap();
+        let snapshot =
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![valid]).unwrap();
         assert_eq!(snapshot.package_count(), 1);
+        assert_eq!(snapshot.environment(), ENVIRONMENT);
+
+        assert!(project_runtime_config_snapshot(
+            "..",
+            snapshot_ref(),
+            vec![input("service-a", json!({"required": "yes"}))],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("environment"));
 
         let missing = input("service-a", json!({"nested": {"count": 2}}));
         assert!(
-            project_runtime_config_snapshot(snapshot_ref(), vec![missing])
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![missing])
                 .unwrap_err()
                 .to_string()
                 .contains("missing required")
@@ -263,7 +294,7 @@ mod tests {
 
         let mismatch = input("service-a", json!({"required": 1, "nested": {"count": 2}}));
         assert!(
-            project_runtime_config_snapshot(snapshot_ref(), vec![mismatch])
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![mismatch])
                 .unwrap_err()
                 .to_string()
                 .contains("must be string")
@@ -274,7 +305,7 @@ mod tests {
             json!({"required": "yes", "nested": "not-an-object"}),
         );
         assert!(
-            project_runtime_config_snapshot(snapshot_ref(), vec![conflict])
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![conflict])
                 .unwrap_err()
                 .to_string()
                 .contains("nested below a non-object")
@@ -285,7 +316,7 @@ mod tests {
             .config
             .insert("packages".to_string(), BTreeMap::new());
         assert!(
-            project_runtime_config_snapshot(snapshot_ref(), vec![unknown])
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![unknown])
                 .unwrap_err()
                 .to_string()
                 .contains("outside the exact deployment closure")
@@ -296,7 +327,9 @@ mod tests {
     fn same_build_is_isolated_across_deployments_and_duplicate_builds_are_rejected_within_one() {
         let left = input("service-a", json!({"required": "left"}));
         let right = input("service-b", json!({"required": "right"}));
-        let snapshot = project_runtime_config_snapshot(snapshot_ref(), vec![right, left]).unwrap();
+        let snapshot =
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![right, left])
+                .unwrap();
         let values = snapshot
             .deployments()
             .iter()
@@ -312,7 +345,7 @@ mod tests {
         let mut duplicate = input("service-a", json!({"required": "left"}));
         duplicate.packages.push(duplicate.packages[0].clone());
         assert!(
-            project_runtime_config_snapshot(snapshot_ref(), vec![duplicate])
+            project_runtime_config_snapshot(ENVIRONMENT, snapshot_ref(), vec![duplicate])
                 .unwrap_err()
                 .to_string()
                 .contains("Package build appears more than once")
@@ -326,37 +359,51 @@ mod tests {
                 package_build_id: PackageBuildId::new("other-build"),
                 requirements: Vec::new(),
             });
-        assert!(
-            project_runtime_config_snapshot(snapshot_ref(), vec![conflicting_builds])
-                .unwrap_err()
-                .to_string()
-                .contains("Package ID appears more than once")
-        );
+        assert!(project_runtime_config_snapshot(
+            ENVIRONMENT,
+            snapshot_ref(),
+            vec![conflicting_builds]
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("Package ID appears more than once"));
     }
 
     #[test]
     fn combined_projection_preserves_base_deployments_and_rejects_overlap() {
         let base_snapshot = project_runtime_config_snapshot(
+            ENVIRONMENT,
             snapshot_ref(),
             vec![input("service-a", json!({"required": "base"}))],
         )
         .unwrap();
-        let base = base_snapshot.deployments().to_vec();
         let combined = project_runtime_config_snapshot_with_base(
+            ENVIRONMENT,
             snapshot_ref(),
-            base.clone(),
+            Some(&base_snapshot),
             vec![input("service-b", json!({"required": "test"}))],
         )
         .unwrap();
         assert_eq!(combined.deployments().len(), 2);
         assert!(project_runtime_config_snapshot_with_base(
+            ENVIRONMENT,
             snapshot_ref(),
-            base,
+            Some(&base_snapshot),
             vec![input("service-a", json!({"required": "overlap"}))],
         )
         .unwrap_err()
         .to_string()
         .contains("deployment appears more than once"));
+
+        assert!(project_runtime_config_snapshot_with_base(
+            "prod",
+            snapshot_ref(),
+            Some(&base_snapshot),
+            vec![input("service-b", json!({"required": "test"}))],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not match target environment"));
     }
 
     fn input(service_id: &str, config: Value) -> ConfigSnapshotDeploymentInput {

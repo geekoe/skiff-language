@@ -169,6 +169,7 @@ export async function runDevSyncOnce({
   const snapshotResult = await configSnapshotRunner({
     skiffRoot: compilerRoot,
     artifactRoot,
+    environment,
     profile: environment,
     assemblyRecord: assemblyReceipt.recordPath,
     sources: serviceConfigSources,

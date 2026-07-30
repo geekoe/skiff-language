@@ -203,6 +203,7 @@ fn project_config_snapshot(
             >>()?;
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
+            environment: profile.to_string(),
             profile: profile.to_string(),
             assembly,
             package_artifacts,

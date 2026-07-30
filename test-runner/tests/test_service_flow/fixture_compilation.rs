@@ -89,8 +89,9 @@ fn checked_in_test_services_compile_and_assemble_through_the_ordinary_service_fl
         let cases = discover_test_service_cases(&fixture_root, &fixture_root, false)
             .unwrap_or_else(|error| panic!("{fixture_name} discovery failed: {error}"));
         assert_eq!(cases.len(), 1, "{fixture_name}");
-        let assembled = assemble_test_service_fixture(&project, &cases, Default::default())
-            .unwrap_or_else(|error| panic!("{fixture_name} assembly failed: {error}"));
+        let assembled =
+            assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
+                .unwrap_or_else(|error| panic!("{fixture_name} assembly failed: {error}"));
         assert_eq!(assembled.cases.len(), 1, "{fixture_name}");
         let case = &assembled.cases[0];
         let [contract] = assembled.records.contracts.as_slice() else {
