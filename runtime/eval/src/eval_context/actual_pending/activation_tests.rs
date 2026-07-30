@@ -420,6 +420,18 @@ mod server_stream_fixture {
         interpreter: &Interpreter,
         target: RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
+        execution_context_with_stream_runtime(
+            interpreter,
+            target,
+            interpreter.stream_runtime.clone(),
+        )
+    }
+
+    pub(super) fn execution_context_with_stream_runtime<'a>(
+        interpreter: &Interpreter,
+        target: RuntimeAssemblyEvalTarget,
+        stream_runtime: crate::capabilities::StreamRuntime,
+    ) -> ProgramExecutionContext<'a> {
         let execution = test_runtime::execution_control();
         let effects = test_runtime::effects_context();
         ProgramExecutionContext::new(ProgramExecutionInput {
@@ -427,15 +439,13 @@ mod server_stream_fixture {
             config: test_runtime::config_context(),
             db: DbCapabilityContext::unavailable(),
             file: test_runtime::file_context(),
-            file_source_stream: test_runtime::file_source_stream_context(
-                interpreter.stream_runtime.clone(),
-            ),
+            file_source_stream: test_runtime::file_source_stream_context(stream_runtime.clone()),
             time: TimeCapabilityContext::new(execution),
             websocket: test_runtime::websocket_context(),
             effects: effects.clone(),
             http_client: effects.http_client_context(
                 interpreter.http_options.clone(),
-                interpreter.stream_runtime.clone(),
+                stream_runtime,
                 interpreter.test_effect_double_context(),
             ),
             test_effect_doubles: interpreter.test_effect_double_context(),
@@ -895,6 +905,113 @@ async fn f445h_e4r_stream_activation_public_instance_receiver_executes_after_syn
     })
     .await
     .expect("provider stream task converges after End");
+}
+
+#[tokio::test]
+async fn inline_service_effect_stream_uses_the_current_context_runtime() {
+    use crate::test_effect_registry::{
+        RegisteredTestEffect, RegisteredTestEffectOutcome, TestEffectTarget,
+    };
+    use skiff_runtime_model::type_plan::{RuntimeTypeNode, RuntimeTypePlan};
+
+    let fixture = server_stream_fixture::fixture();
+    let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
+        Default::default(),
+        test_runtime::runtime_factory(),
+    );
+    let projection = RuntimeAssemblyExecutionProjection::from_image(Arc::clone(
+        fixture.target.execution_image(),
+    ));
+    let caller = projection
+        .resolve_executable(&fixture.caller_addr)
+        .expect("linked activation stream caller");
+    let call = caller
+        .executable
+        .body
+        .expressions
+        .iter()
+        .find_map(|expression| match expression {
+            LinkedExprIr::Call { call }
+                if matches!(
+                    call.target,
+                    LinkedCallTarget::ActivationRelativeService { .. }
+                ) =>
+            {
+                Some(call.clone())
+            }
+            _ => None,
+        })
+        .expect("activation-relative server stream call");
+    let LinkedCallTarget::ActivationRelativeService { instruction } = &call.target else {
+        unreachable!("call target was filtered above");
+    };
+    interpreter.runtime_test_effects.register(
+        TestEffectTarget::contract_operation(
+            instruction.operation_id().clone(),
+            instruction.expected_protocol_identity().clone(),
+        ),
+        RegisteredTestEffect {
+            expect: None,
+            step_expect: None,
+            outcome: RegisteredTestEffectOutcome::Stream {
+                values: vec![serde_json::json!("first"), serde_json::json!("second")],
+                item_plan: RuntimeTypePlan::synthetic_named_builtin(
+                    "string",
+                    RuntimeTypeNode::String,
+                    vec![],
+                ),
+            },
+        },
+    );
+    let context_stream_runtime = test_runtime::runtime_factory().stream_runtime();
+    let context = server_stream_fixture::execution_context_with_stream_runtime(
+        &interpreter,
+        fixture.target,
+        context_stream_runtime.clone(),
+    );
+    let mut heap = RequestHeap::default();
+    let mut env = Env::new();
+    let mut eval = EvalContext::new(
+        &interpreter,
+        context,
+        &mut heap,
+        &mut env,
+        &caller.addr,
+        caller.file.as_ref(),
+        caller.executable,
+    )
+    .expect("activation stream evaluator");
+
+    let stream = eval
+        .eval_program_call(&call)
+        .await
+        .expect("service effect should materialize a stream");
+    let stream = crate::runtime_ops::runtime_to_wire(stream.value(), &*eval.heap)
+        .expect("service effect stream wire handle");
+    assert!(matches!(
+        context_stream_runtime
+            .next(&stream)
+            .await
+            .expect("first context-owned service effect item"),
+        StreamPoll::Item(value) if value == serde_json::json!("first")
+    ));
+    assert!(matches!(
+        context_stream_runtime
+            .next(&stream)
+            .await
+            .expect("second context-owned service effect item"),
+        StreamPoll::Item(value) if value == serde_json::json!("second")
+    ));
+    assert!(matches!(
+        context_stream_runtime
+            .next(&stream)
+            .await
+            .expect("context-owned service effect terminal"),
+        StreamPoll::End
+    ));
+    interpreter
+        .finalize_test_case()
+        .expect("service stream outcome should be consumed");
 }
 
 #[tokio::test]
