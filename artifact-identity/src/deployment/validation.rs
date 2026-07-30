@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    validate_gateway_adapter_args, ConfigLiteralBinding, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterSource,
-    GatewayEntryKey, GatewayProtocolSurface, PackageArtifactRef, PackageBinding, ResourceBinding,
-    RuntimeCapabilityBinding, SecretRefBinding, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceDeploymentRef, ServiceSelectorBinding, StateBinding,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    validate_gateway_adapter_args, DeploymentGatewayEntry, DeploymentIngressBinding,
+    DeploymentPolicy, DeploymentRevision, GatewayAdapterSource, GatewayEntryKey,
+    GatewayProtocolSurface, PackageArtifactRef, PackageBinding, ResourceBinding,
+    RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
+    ServiceDeploymentRef, ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::{gateway_entry_identity, ArtifactIdentityError, Result};
@@ -45,9 +45,6 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
         &input.service_selectors,
         &input.gateway_entries,
         &input.ingress,
-        &input.config_literals,
-        &input.secret_refs,
-        &input.state_bindings,
         &input.resource_bindings,
         &input.runtime_capability_bindings,
         &input.policy,
@@ -88,9 +85,6 @@ pub fn validate_service_deployment_surface(deployment: &ServiceDeployment) -> Re
         &deployment.service_selectors,
         &deployment.gateway_entries,
         &deployment.ingress,
-        &deployment.config_literals,
-        &deployment.secret_refs,
-        &deployment.state_bindings,
         &deployment.resource_bindings,
         &deployment.runtime_capability_bindings,
         &deployment.policy,
@@ -104,9 +98,6 @@ fn validate_shared_bindings(
     service_selectors: &[ServiceSelectorBinding],
     gateway_entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: &[DeploymentIngressBinding],
-    config_literals: &[ConfigLiteralBinding],
-    secret_refs: &[SecretRefBinding],
-    state_bindings: &[StateBinding],
     resource_bindings: &[ResourceBinding],
     runtime_capability_bindings: &[RuntimeCapabilityBinding],
     policy: &DeploymentPolicy,
@@ -115,13 +106,7 @@ fn validate_shared_bindings(
     validate_service_selectors(service_selectors, &packages)?;
     validate_gateway_entries(gateway_entries)?;
     validate_ingress_bindings(ingress, gateway_entries)?;
-    validate_activation_inputs(
-        config_literals,
-        secret_refs,
-        state_bindings,
-        resource_bindings,
-        runtime_capability_bindings,
-    )?;
+    validate_activation_inputs(resource_bindings, runtime_capability_bindings)?;
     validate_policy(policy)
 }
 
@@ -415,38 +400,9 @@ fn validate_gateway_entries(
 }
 
 fn validate_activation_inputs(
-    config_literals: &[ConfigLiteralBinding],
-    secret_refs: &[SecretRefBinding],
-    state_bindings: &[StateBinding],
     resource_bindings: &[ResourceBinding],
     runtime_capability_bindings: &[RuntimeCapabilityBinding],
 ) -> Result<()> {
-    let mut config_paths = BTreeSet::new();
-    for binding in config_literals {
-        require_non_empty("config literal path", &binding.path)?;
-        if !config_paths.insert(binding.path.as_str()) {
-            return invalid_deployment(format!("duplicate config literal path {}", binding.path));
-        }
-    }
-    for binding in secret_refs {
-        require_non_empty("secret path", &binding.path)?;
-        require_non_empty("secretRef", &binding.secret_ref)?;
-        if !config_paths.insert(binding.path.as_str()) {
-            return invalid_deployment(format!(
-                "config/secret path {} has more than one binding",
-                binding.path
-            ));
-        }
-    }
-    validate_unique_named(
-        state_bindings
-            .iter()
-            .map(|binding| binding.requirement_key.as_str()),
-        "state requirement",
-    )?;
-    for binding in state_bindings {
-        require_non_empty("state namespace", &binding.namespace)?;
-    }
     validate_unique_named(
         resource_bindings
             .iter()

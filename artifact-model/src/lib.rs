@@ -94,8 +94,9 @@ pub use compile_identity::{
     GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 pub use compile_requirements::{
-    ContractRequirement, PackageConfigRequirement, PackageRequirement, PackageResourceRequirement,
-    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, PackageStateRequirement,
+    canonicalize_package_config_requirements, ContractRequirement, PackageConfigAccess,
+    PackageConfigRequirement, PackageConfigRequirementMergeError, PackageRequirement,
+    PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
     ServiceCallRef, ServiceRequirement,
 };
 pub use config::{
@@ -111,18 +112,17 @@ pub use contract_types::{
     PackageSchemaTypeRecordRef, PackageSchemaTypeRef, PackageTypeRef, PackageTypeRequirement,
 };
 pub use deployment::{
-    ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, GatewayAdapterPlan,
-    IngressProtocol, IngressSelector, PackageArtifactRef, PackageBinding, PackageRequirementKey,
-    ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceDeploymentRef, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
-    StateBindingKind,
+    DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding,
+    DeploymentOperationBinding, DeploymentPolicy, GatewayAdapterPlan, IngressProtocol,
+    IngressSelector, PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding,
+    ResourcePolicy, RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceDeploymentRef,
+    ServiceRequirementKey, ServiceSelectorBinding,
 };
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
-    HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring, ServiceAuthoringKind,
-    ServiceConfigProfileAuthoring, ServiceManifestAuthoring, WebSocketConnectAuthoring,
+    HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring, RuntimeConfigSourceAuthoring,
+    ServiceAuthoringKind, ServiceManifestAuthoring, WebSocketConnectAuthoring,
     WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
     DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
     DEPENDENCY_ALIAS_RESERVED_VECTORS,

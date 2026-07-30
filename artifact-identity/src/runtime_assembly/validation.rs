@@ -294,23 +294,6 @@ fn validate_activation_template(
             template.implementation_package_build_id
         ));
     }
-    validate_unique_paths(
-        template
-            .config_literals
-            .iter()
-            .map(|binding| binding.path.as_str()),
-        template
-            .secret_refs
-            .iter()
-            .map(|binding| binding.path.as_str()),
-    )?;
-    validate_unique_names(
-        template
-            .state_bindings
-            .iter()
-            .map(|binding| binding.requirement_key.as_str()),
-        "activation state binding",
-    )?;
     validate_unique_names(
         template
             .resource_bindings
@@ -369,22 +352,6 @@ fn validate_empty_closure(assembly: &RuntimeAssembly) -> Result<()> {
     } else {
         invalid_assembly("an assembly with no roots must have an empty resolved closure")
     }
-}
-
-fn validate_unique_paths<'a>(
-    config: impl IntoIterator<Item = &'a str>,
-    secrets: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
-    let mut paths = BTreeSet::new();
-    for path in config.into_iter().chain(secrets) {
-        if path.trim().is_empty() {
-            return invalid_assembly("activation config/secret path must not be empty");
-        }
-        if !paths.insert(path) {
-            return invalid_assembly(format!("duplicate activation config/secret path {path}"));
-        }
-    }
-    Ok(())
 }
 
 fn validate_unique_names<'a>(names: impl IntoIterator<Item = &'a str>, label: &str) -> Result<()> {

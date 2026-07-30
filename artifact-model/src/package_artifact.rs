@@ -242,7 +242,6 @@ mod tests {
             "serviceRequirements": [],
             "runtimeRequirements": {
                 "config": [],
-                "state": [],
                 "resources": [],
                 "runtimeCapabilities": []
             },
@@ -252,6 +251,10 @@ mod tests {
         });
         serde_json::from_value::<PackageArtifact>(value.clone())
             .expect("complete strict package artifact wire");
+
+        let mut retired_state = value.clone();
+        retired_state["runtimeRequirements"]["state"] = json!([]);
+        assert!(serde_json::from_value::<PackageArtifact>(retired_state).is_err());
 
         for forbidden in ["publicationAbi", "packageUnit", "serviceUnit"] {
             let mut invalid = value.clone();

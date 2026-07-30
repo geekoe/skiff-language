@@ -243,10 +243,11 @@ mod tests {
         ContractOperationId, ContractRequirement, ContractTypeRef, ExecutableExport,
         ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
         NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageCallableLinkFact,
-        PackageCallableParameter, PackageCallableSignature, PackageImplementationLinks,
-        PackageRefIr, PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr,
-        ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr,
-        TypeExport, TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        PackageCallableParameter, PackageCallableSignature, PackageConfigAccess,
+        PackageConfigRequirement, PackageImplementationLinks, PackageRefIr, PackageRequirement,
+        PackageSymbolRef, PackageTypeRef, ParamIr, ServiceProtocolIdentity, ServiceRequirement,
+        ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -312,6 +313,37 @@ mod tests {
             validate_package_artifact_identities(&stale_build),
             Err(ArtifactIdentityError::PackageArtifactBuildIdentityMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn package_identity_requires_one_canonical_config_access_per_path() {
+        let mut duplicate = fixture();
+        duplicate.runtime_requirements.config = vec![
+            PackageConfigRequirement {
+                path: "provider.apiKey".to_string(),
+                access: PackageConfigAccess::Presence,
+            },
+            PackageConfigRequirement {
+                path: "provider.apiKey".to_string(),
+                access: PackageConfigAccess::Required {
+                    value_type: "string".to_string(),
+                },
+            },
+        ];
+        assert!(matches!(
+            validate_package_artifact_identities(&duplicate),
+            Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+        ));
+
+        let mut canonical = fixture();
+        canonical.runtime_requirements.config = vec![PackageConfigRequirement {
+            path: "provider.apiKey".to_string(),
+            access: PackageConfigAccess::Required {
+                value_type: "string".to_string(),
+            },
+        }];
+        assign_package_artifact_identities(&mut canonical).unwrap();
+        validate_package_artifact_identities(&canonical).unwrap();
     }
 
     #[test]
@@ -1532,7 +1564,6 @@ mod tests {
             service_requirements: Vec::new(),
             runtime_requirements: PackageRuntimeRequirements {
                 config: Vec::new(),
-                state: Vec::new(),
                 resources: Vec::new(),
                 runtime_capabilities: Vec::new(),
             },

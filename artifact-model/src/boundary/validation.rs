@@ -13,7 +13,7 @@ use crate::{
     CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, ContractLiteral,
     ContractTypeRef, LiteralIr, PackageArtifact, PackageCallableId, PackageCallableSignature,
     PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaTypeRef, PackageTypeRef,
-    StateBindingKind, TypeRefIr, ValueEscapeLane, ValueProvenance,
+    TypeRefIr, ValueEscapeLane, ValueProvenance,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -927,34 +927,27 @@ fn implementation_requirements(
     let mut config = runtime
         .config
         .iter()
-        .map(|requirement| BoundaryConfigRequirement {
-            path: requirement.path.clone(),
-            value_type: requirement.value_type.clone(),
-            required: requirement.required,
+        .filter_map(|requirement| {
+            let (value_type, required) = match &requirement.access {
+                crate::PackageConfigAccess::Presence => return None,
+                crate::PackageConfigAccess::Optional { value_type } => (value_type, false),
+                crate::PackageConfigAccess::Required { value_type } => (value_type, true),
+            };
+            Some(BoundaryConfigRequirement {
+                path: requirement.path.clone(),
+                value_type: value_type.clone(),
+                required,
+            })
         })
         .collect::<Vec<_>>();
     config.sort_by(|left, right| left.path.cmp(&right.path));
     let mut state = runtime
-        .state
+        .resources
         .iter()
         .map(|requirement| BoundaryStateRequirement {
             key: requirement.key.clone(),
-            kind: match requirement.kind {
-                StateBindingKind::Database => BoundaryStateKind::Database,
-                StateBindingKind::Redis => BoundaryStateKind::Redis,
-                StateBindingKind::Actor => BoundaryStateKind::Actor,
-                StateBindingKind::Queue => BoundaryStateKind::Queue,
-            },
+            kind: BoundaryStateKind::ExternalResource,
         })
-        .chain(
-            runtime
-                .resources
-                .iter()
-                .map(|requirement| BoundaryStateRequirement {
-                    key: requirement.key.clone(),
-                    kind: BoundaryStateKind::ExternalResource,
-                }),
-        )
         .collect::<Vec<_>>();
     state.sort_by(|left, right| left.key.cmp(&right.key));
     let mut runtime_capabilities = runtime
@@ -1790,7 +1783,6 @@ mod tests {
     fn empty_runtime_requirements() -> PackageRuntimeRequirements {
         PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         }

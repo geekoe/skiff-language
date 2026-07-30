@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision, GatewayAdapterArg,
     GatewayAdapterKind, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    MetadataValue, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    ServiceProtocolIdentity,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
 };
 
 /// Exact, path-free reference to one immutable package artifact.
@@ -169,37 +168,6 @@ where
     deserializer.deserialize_map(GatewayEntriesVisitor)
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigLiteralBinding {
-    pub path: String,
-    pub value: MetadataValue,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SecretRefBinding {
-    pub path: String,
-    pub secret_ref: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StateBindingKind {
-    Database,
-    Redis,
-    Actor,
-    Queue,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StateBinding {
-    pub requirement_key: String,
-    pub kind: StateBindingKind,
-    pub namespace: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceBinding {
@@ -253,9 +221,6 @@ pub struct ServiceDeploymentInput {
     #[serde(deserialize_with = "deserialize_gateway_entries")]
     pub gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     pub ingress: Vec<DeploymentIngressBinding>,
-    pub config_literals: Vec<ConfigLiteralBinding>,
-    pub secret_refs: Vec<SecretRefBinding>,
-    pub state_bindings: Vec<StateBinding>,
     pub resource_bindings: Vec<ResourceBinding>,
     pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
     pub policy: DeploymentPolicy,
@@ -277,9 +242,6 @@ pub struct ServiceDeployment {
     #[serde(deserialize_with = "deserialize_gateway_entries")]
     pub gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     pub ingress: Vec<DeploymentIngressBinding>,
-    pub config_literals: Vec<ConfigLiteralBinding>,
-    pub secret_refs: Vec<SecretRefBinding>,
-    pub state_bindings: Vec<StateBinding>,
     pub resource_bindings: Vec<ResourceBinding>,
     pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
     pub policy: DeploymentPolicy,
@@ -346,5 +308,54 @@ mod tests {
         let mut unknown = canonical;
         unknown["sourcePath"] = json!("echo");
         assert!(serde_json::from_value::<ServiceDeploymentOperationInput>(unknown).is_err());
+    }
+
+    #[test]
+    fn service_deployment_rejects_retired_runtime_config_and_state_fields() {
+        let deployment = ServiceDeployment {
+            schema_version: crate::SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+            contract: ServiceContractRef {
+                service_id: "example.com/users".to_string(),
+                contract_version: "1.0.0".to_string(),
+                service_protocol_identity: ServiceProtocolIdentity::new("protocol"),
+            },
+            deployment_revision: DeploymentRevision::new("revision"),
+            deployment_artifact_identity: DeploymentArtifactIdentity::new("identity"),
+            implementation: PackageArtifactRef {
+                package_id: "example.com/users".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new("build"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+            },
+            operation_bindings: Vec::new(),
+            package_bindings: Vec::new(),
+            service_selectors: Vec::new(),
+            gateway_entries: BTreeMap::new(),
+            ingress: Vec::new(),
+            resource_bindings: Vec::new(),
+            runtime_capability_bindings: Vec::new(),
+            policy: DeploymentPolicy {
+                timeout_ms: None,
+                resources: ResourcePolicy {
+                    cpu_millis: 100,
+                    memory_bytes: 1_048_576,
+                },
+                principal: "service:example.com/users".to_string(),
+            },
+            diagnostic_text: DeploymentDiagnosticText {
+                display_name: "users".to_string(),
+                notes: BTreeMap::new(),
+            },
+        };
+        let canonical = serde_json::to_value(deployment).unwrap();
+
+        for field in ["configLiterals", "secretRefs", "stateBindings"] {
+            let mut retired = canonical.clone();
+            retired[field] = json!([]);
+            assert!(
+                serde_json::from_value::<ServiceDeployment>(retired).is_err(),
+                "{field} unexpectedly survived the deployment hard cut"
+            );
+        }
     }
 }

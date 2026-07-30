@@ -205,25 +205,47 @@ pub struct ServiceManifestAuthoring {
     pub service_calls: Vec<String>,
 }
 
-/// One environment profile. Profiles bind already-declared runtime
-/// requirements and never own code dependencies.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceConfigProfileAuthoring {
-    #[serde(default)]
-    pub config: serde_json::Value,
-    #[serde(default)]
-    pub secrets: serde_json::Value,
-    #[serde(default)]
-    pub state: serde_json::Value,
-    #[serde(default)]
-    pub resources: serde_json::Value,
-    #[serde(default)]
-    pub timeout: serde_json::Value,
-    #[serde(default)]
-    pub quota: serde_json::Value,
-    #[serde(default)]
-    pub principal: serde_json::Value,
+/// One runtime-config source file. Its root is the canonical Package ID map;
+/// a service's own package uses the same key space as every dependency.
+///
+/// Package ID syntax is validated by compiler input. This shared wire owner
+/// enforces the structural `/` separator so retired profile wrappers cannot
+/// silently become package keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct RuntimeConfigSourceAuthoring {
+    packages: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+}
+
+impl RuntimeConfigSourceAuthoring {
+    pub fn packages(&self) -> &BTreeMap<String, BTreeMap<String, serde_json::Value>> {
+        &self.packages
+    }
+
+    pub fn into_packages(self) -> BTreeMap<String, BTreeMap<String, serde_json::Value>> {
+        self.packages
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeConfigSourceAuthoring {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let packages =
+            BTreeMap::<String, BTreeMap<String, serde_json::Value>>::deserialize(deserializer)?;
+        if let Some(package_id) = packages.keys().find(|package_id| {
+            let Some((authority, local_path)) = package_id.split_once('/') else {
+                return true;
+            };
+            authority.is_empty() || local_path.is_empty()
+        }) {
+            return Err(serde::de::Error::custom(format!(
+                "runtime config root key {package_id:?} must be a canonical Package ID"
+            )));
+        }
+        Ok(Self { packages })
+    }
 }
 
 #[cfg(test)]
@@ -297,13 +319,46 @@ mod tests {
     }
 
     #[test]
-    fn service_config_profile_rejects_retired_lifecycle() {
-        assert!(
-            serde_yaml::from_str::<ServiceConfigProfileAuthoring>(
-                "quota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:users\nlifecycle: {}\n"
-            )
-            .is_err()
+    fn runtime_config_source_is_a_package_id_root_map_without_profile_wrappers() {
+        let source = serde_yaml::from_str::<RuntimeConfigSourceAuthoring>(
+            r#"
+agine.ai/api:
+  model: default
+skiff.run/http-session:
+  cookieName: agine_session
+  maxAgeSeconds: 2592000
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            source.packages()["skiff.run/http-session"]["cookieName"],
+            serde_json::json!("agine_session")
         );
+        assert_eq!(
+            serde_json::to_value(source).unwrap(),
+            serde_json::json!({
+                "agine.ai/api": { "model": "default" },
+                "skiff.run/http-session": {
+                    "cookieName": "agine_session",
+                    "maxAgeSeconds": 2592000
+                }
+            })
+        );
+
+        for retired in [
+            "config: {}\n",
+            "secrets: {}\n",
+            "state: {}\n",
+            "resources: {}\n",
+            "timeout: {}\n",
+            "quota: {}\n",
+            "principal: {}\n",
+        ] {
+            assert!(
+                serde_yaml::from_str::<RuntimeConfigSourceAuthoring>(retired).is_err(),
+                "{retired:?} unexpectedly survived as a runtime config root"
+            );
+        }
     }
 
     #[test]

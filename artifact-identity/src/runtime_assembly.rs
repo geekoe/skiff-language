@@ -168,9 +168,6 @@ mod tests {
             activation_templates: vec![ActivationTemplate {
                 deployment: deployment.clone(),
                 implementation_package_build_id: PackageBuildId::new("package-build"),
-                config_literals: Vec::new(),
-                secret_refs: Vec::new(),
-                state_bindings: Vec::new(),
                 resource_bindings: Vec::new(),
                 policy: DeploymentPolicy {
                     timeout_ms: Some(1000),

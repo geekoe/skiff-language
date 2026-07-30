@@ -3,10 +3,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::{
-    ConfigLiteralBinding, DeploymentArtifactIdentity, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    GatewayEntryKey, ResourceBinding, RuntimeCapabilityBinding, SecretRefBinding,
-    ServiceDeployment, ServiceDeploymentRef, StateBinding,
+    DeploymentArtifactIdentity, DeploymentGatewayEntry, DeploymentIngressBinding,
+    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, GatewayEntryKey,
+    ResourceBinding, RuntimeCapabilityBinding, ServiceDeployment, ServiceDeploymentRef,
 };
 
 mod normalization;
@@ -36,9 +35,6 @@ pub struct DeploymentArtifactIdentityProjection {
     service_selectors: Value,
     gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: Vec<DeploymentIngressBinding>,
-    config_literals: Vec<ConfigLiteralBinding>,
-    secret_refs: Vec<SecretRefBinding>,
-    state_bindings: Vec<StateBinding>,
     resource_bindings: Vec<ResourceBinding>,
     runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
     policy: DeploymentPolicy,
@@ -71,9 +67,6 @@ pub fn service_deployment_identity_projection(
         )?,
         gateway_entries: deployment.gateway_entries.clone(),
         ingress: deployment.ingress.clone(),
-        config_literals: deployment.config_literals.clone(),
-        secret_refs: deployment.secret_refs.clone(),
-        state_bindings: deployment.state_bindings.clone(),
         resource_bindings: deployment.resource_bindings.clone(),
         runtime_capability_bindings: deployment.runtime_capability_bindings.clone(),
         policy: deployment.policy.clone(),

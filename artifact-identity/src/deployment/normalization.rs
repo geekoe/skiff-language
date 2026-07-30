@@ -1,4 +1,4 @@
-use skiff_artifact_model::{ConfigLiteralBinding, ResourceBinding, SecretRefBinding, StateBinding};
+use skiff_artifact_model::ResourceBinding;
 
 use super::DeploymentArtifactIdentityProjection;
 
@@ -11,9 +11,6 @@ pub(super) fn normalize_projection(projection: &mut DeploymentArtifactIdentityPr
     projection
         .ingress
         .sort_by(|left, right| left.selector.cmp(&right.selector));
-    normalize_config_literals(&mut projection.config_literals);
-    normalize_secret_refs(&mut projection.secret_refs);
-    normalize_state_bindings(&mut projection.state_bindings);
     normalize_resource_bindings(&mut projection.resource_bindings);
     projection
         .runtime_capability_bindings
@@ -28,18 +25,6 @@ fn sort_json_array(value: &mut serde_json::Value) {
     if let serde_json::Value::Array(values) = value {
         values.sort_by_key(|value| serde_json::to_string(value).expect("JSON value serializes"));
     }
-}
-
-pub(crate) fn normalize_config_literals(bindings: &mut [ConfigLiteralBinding]) {
-    bindings.sort_by(|left, right| left.path.cmp(&right.path));
-}
-
-pub(crate) fn normalize_secret_refs(bindings: &mut [SecretRefBinding]) {
-    bindings.sort_by(|left, right| left.path.cmp(&right.path));
-}
-
-pub(crate) fn normalize_state_bindings(bindings: &mut [StateBinding]) {
-    bindings.sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
 }
 
 pub(crate) fn normalize_resource_bindings(bindings: &mut [ResourceBinding]) {

@@ -6,7 +6,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{compile_requirements::PackageConfigRequirement, metadata::MetadataValue};
+use crate::{
+    compile_requirements::{PackageConfigAccess, PackageConfigRequirement},
+    metadata::MetadataValue,
+};
 
 pub const CONFIG_SHAPE_SCHEMA_VERSION: &str = "skiff-config-shape-v1";
 
@@ -91,17 +94,21 @@ pub fn config_shape_from_package_requirements(
                 path: requirement.path.clone(),
             });
         }
-        let ty =
-            ConfigShapeValueType::try_from(requirement.value_type.as_str()).map_err(|source| {
-                PackageConfigShapeError::InvalidValueType {
-                    path: requirement.path.clone(),
-                    source,
-                }
-            })?;
+        let (value_type, required) = match &requirement.access {
+            PackageConfigAccess::Presence => continue,
+            PackageConfigAccess::Optional { value_type } => (value_type, false),
+            PackageConfigAccess::Required { value_type } => (value_type, true),
+        };
+        let ty = ConfigShapeValueType::try_from(value_type.as_str()).map_err(|source| {
+            PackageConfigShapeError::InvalidValueType {
+                path: requirement.path.clone(),
+                source,
+            }
+        })?;
         entries.push(ConfigShapeEntry {
             path: requirement.path.clone(),
             ty,
-            required: requirement.required,
+            required,
         });
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
@@ -251,7 +258,7 @@ impl std::error::Error for ConfigShapeSchemaVersionError {}
 mod tests {
     use serde_json::json;
 
-    use crate::PackageConfigRequirement;
+    use crate::{PackageConfigAccess, PackageConfigRequirement};
 
     use super::{
         config_shape_from_package_requirements, ConfigShape, ConfigShapeEntry,
@@ -299,13 +306,19 @@ mod tests {
         let shape = config_shape_from_package_requirements(&[
             PackageConfigRequirement {
                 path: "service.token".to_string(),
-                value_type: "string".to_string(),
-                required: true,
+                access: PackageConfigAccess::Required {
+                    value_type: "string".to_string(),
+                },
             },
             PackageConfigRequirement {
                 path: "service.timeout".to_string(),
-                value_type: "number".to_string(),
-                required: false,
+                access: PackageConfigAccess::Optional {
+                    value_type: "number".to_string(),
+                },
+            },
+            PackageConfigRequirement {
+                path: "service.present".to_string(),
+                access: PackageConfigAccess::Presence,
             },
         ])
         .expect("valid package requirements");
@@ -331,8 +344,9 @@ mod tests {
     fn package_requirements_fail_closed_on_invalid_type_and_duplicate_path() {
         let invalid_type = config_shape_from_package_requirements(&[PackageConfigRequirement {
             path: "service.token".to_string(),
-            value_type: "bytes".to_string(),
-            required: true,
+            access: PackageConfigAccess::Required {
+                value_type: "bytes".to_string(),
+            },
         }])
         .expect_err("unsupported value type must fail");
         assert!(matches!(
@@ -344,13 +358,13 @@ mod tests {
         let duplicate = config_shape_from_package_requirements(&[
             PackageConfigRequirement {
                 path: "service.token".to_string(),
-                value_type: "string".to_string(),
-                required: true,
+                access: PackageConfigAccess::Required {
+                    value_type: "string".to_string(),
+                },
             },
             PackageConfigRequirement {
                 path: "service.token".to_string(),
-                value_type: "string".to_string(),
-                required: false,
+                access: PackageConfigAccess::Presence,
             },
         ])
         .expect_err("duplicate path must fail");

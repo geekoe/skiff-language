@@ -604,21 +604,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'ConfigLiteralBinding',
-    requiredFields: Object.freeze(['path', 'value']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'SecretRefBinding',
-    requiredFields: Object.freeze(['path', 'secret_ref']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'StateBinding',
-    requiredFields: Object.freeze(['requirement_key', 'kind', 'namespace']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
     typeName: 'ResourceBinding',
     requiredFields: Object.freeze(['requirement_key', 'capability', 'resource_ref']),
   }),
@@ -655,9 +640,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'service_selectors',
       'gateway_entries',
       'ingress',
-      'config_literals',
-      'secret_refs',
-      'state_bindings',
       'resource_bindings',
       'runtime_capability_bindings',
       'policy',
@@ -678,9 +660,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'service_selectors',
       'gateway_entries',
       'ingress',
-      'config_literals',
-      'secret_refs',
-      'state_bindings',
       'resource_bindings',
       'runtime_capability_bindings',
       'policy',
@@ -713,9 +692,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
     requiredFields: Object.freeze([
       'deployment',
       'implementation_package_build_id',
-      'config_literals',
-      'secret_refs',
-      'state_bindings',
       'resource_bindings',
       'policy',
     ]),
@@ -757,11 +733,6 @@ const canonicalDeploymentAssemblyEnums = Object.freeze([
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'IngressProtocol',
     variants: Object.freeze(['Http', 'WebSocket']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'StateBindingKind',
-    variants: Object.freeze(['Database', 'Redis', 'Actor', 'Queue']),
   }),
 ]);
 const canonicalBoundaryContractPaths = Object.freeze({
@@ -1588,14 +1559,6 @@ pub struct DeploymentIngressBinding {
   pub selector: IngressSelector, pub gateway_entry_key: GatewayEntryKey,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigLiteralBinding { pub path: String, pub value: Value }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SecretRefBinding { pub path: String, pub secret_ref: String }
-#[serde(rename_all = "camelCase")]
-pub enum StateBindingKind { Database, Redis, Actor, Queue, }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StateBinding { pub requirement_key: String, pub kind: Kind, pub namespace: String }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceBinding {
   pub requirement_key: String, pub capability: String, pub resource_ref: String,
 }
@@ -1614,8 +1577,7 @@ pub struct ServiceDeploymentInput {
   pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
   pub implementation: Ref, pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
   pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
-  pub config_literals: Vec<Config>,
-  pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
+  pub resource_bindings: Vec<Resource>,
   pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1624,8 +1586,7 @@ pub struct ServiceDeployment {
   pub deployment_artifact_identity: Identity, pub implementation: Ref,
   pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
   pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
-  pub config_literals: Vec<Config>,
-  pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
+  pub resource_bindings: Vec<Resource>,
   pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
 }
 `;
@@ -1646,7 +1607,6 @@ pub struct ServiceBindingTemplate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationTemplate {
   pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
-  pub config_literals: Vec<Config>, pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>,
   pub resource_bindings: Vec<Resource>, pub policy: Policy,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1674,7 +1634,6 @@ pub struct ServiceBindingTemplate {
   const canonicalActivationTemplateText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationTemplate {
   pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
-  pub config_literals: Vec<Config>, pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>,
   pub resource_bindings: Vec<Resource>, pub policy: Policy,
 }
 `;

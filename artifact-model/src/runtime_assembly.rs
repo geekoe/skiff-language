@@ -1,10 +1,10 @@
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::{
-    validate_runtime_assembly_identity, AssemblyIdentity, ConfigLiteralBinding,
-    ContractOperationId, DeploymentPolicy, GatewayEntryIdentity, GatewayEntryKey, IngressSelector,
-    PackageArtifactRef, PackageBinding, PackageBuildId, ResourceBinding, SecretRefBinding,
-    ServiceContractRef, ServiceDeploymentRef, ServiceRequirementKey, StateBinding,
+    validate_runtime_assembly_identity, AssemblyIdentity, ContractOperationId, DeploymentPolicy,
+    GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageArtifactRef, PackageBinding,
+    PackageBuildId, ResourceBinding, ServiceContractRef, ServiceDeploymentRef,
+    ServiceRequirementKey,
 };
 
 /// Exact reference to one immutable RuntimeAssembly record.
@@ -64,15 +64,12 @@ pub struct ServiceBindingTemplate {
     pub bindings: Vec<ResolvedServiceBinding>,
 }
 
-/// Deployment-owned values and state handles used to create one ActivationContext.
+/// Deployment-owned non-config inputs used to create one ActivationContext.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationTemplate {
     pub deployment: ServiceDeploymentRef,
     pub implementation_package_build_id: PackageBuildId,
-    pub config_literals: Vec<ConfigLiteralBinding>,
-    pub secret_refs: Vec<SecretRefBinding>,
-    pub state_bindings: Vec<StateBinding>,
     pub resource_bindings: Vec<ResourceBinding>,
     pub policy: DeploymentPolicy,
 }
@@ -230,5 +227,37 @@ mod tests {
         let mut legacy = current;
         legacy["host"] = json!("api.example.test");
         assert!(serde_json::from_value::<IngressSelector>(legacy).is_err());
+    }
+
+    #[test]
+    fn activation_template_rejects_retired_runtime_config_and_state_fields() {
+        let template = ActivationTemplate {
+            deployment: ServiceDeploymentRef {
+                service_id: "example.com/users".to_string(),
+                contract_version: "1.0.0".to_string(),
+                deployment_revision: "revision".into(),
+                deployment_artifact_identity: "deployment".into(),
+            },
+            implementation_package_build_id: PackageBuildId::new("build"),
+            resource_bindings: Vec::new(),
+            policy: DeploymentPolicy {
+                timeout_ms: None,
+                resources: crate::ResourcePolicy {
+                    cpu_millis: 100,
+                    memory_bytes: 1_048_576,
+                },
+                principal: "service:example.com/users".to_string(),
+            },
+        };
+        let canonical = serde_json::to_value(template).unwrap();
+
+        for field in ["configLiterals", "secretRefs", "stateBindings"] {
+            let mut retired = canonical.clone();
+            retired[field] = json!([]);
+            assert!(
+                serde_json::from_value::<ActivationTemplate>(retired).is_err(),
+                "{field} unexpectedly survived the activation template hard cut"
+            );
+        }
     }
 }
