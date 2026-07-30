@@ -1086,7 +1086,10 @@ mod tests {
             ("std.bytes", &["DecodeError"]),
             ("std.number", &["DecodeError"]),
             ("std.json", &["DecodeError"]),
-            ("std.db", &["ConflictError", "DecodeError"]),
+            (
+                "std.db",
+                &["ConflictError", "ConstraintError", "DecodeError"],
+            ),
             ("std.file", &["FileError"]),
             ("std.resource", &["ResourceError"]),
             ("std.time", &["DecodeError"]),

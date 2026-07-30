@@ -265,11 +265,12 @@ type Marker { request: std.http.HttpRequest }
         CallableEffectSummary::Analyzed { .. }
     ));
 
-    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 93);
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 94);
     for public_path in [
         "std.bytes.DecodeError",
         "std.crypto.sha256",
         "std.db.ConflictError",
+        "std.db.ConstraintError",
         "std.file.ImmutableFile",
         "std.http.HttpRequest",
         "std.http.json",
@@ -349,6 +350,7 @@ function check() -> bool {
   const exactNumber = std.number.assertSafeInteger(1)
   const timeResult = catch<std.time.DecodeError>(null)
   const dbResult = catch<std.db.ConflictError>(null)
+  const constraintResult = catch<std.db.ConstraintError>(null)
   return exactNumber == 1
 }
 "#,
@@ -368,6 +370,7 @@ function check() -> bool {
         "std.number.DecodeError",
         "std.time.DecodeError",
         "std.db.ConflictError",
+        "std.db.ConstraintError",
     ] {
         assert!(file_contains_std_package_type(main, symbol_path));
     }

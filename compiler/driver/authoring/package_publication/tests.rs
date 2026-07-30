@@ -25,7 +25,7 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:9802729fd2a245746a020efd7056d2855b0d6044bce6bdd0f99cbb9e5a0e4fac";
+    "skiff-package-build-v10:sha256:6d3e424d7e4c1c191fc50bb21d7500a63a8c56d38f63de5d9150a8657c973ca1";
 const EXPECTED_PRELUDE_ID: &str =
     "skiff-prelude-v1:sha256:8ec6c2b3f4411b159d8b1b8dd2d55d036713a2533dd3aba043eb3d7fb020c76e";
 
@@ -54,6 +54,11 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         .package_local_abi
         .public_symbols
         .contains_key("std.websocket.WebSocketConnectResult"));
+    assert!(published
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .contains_key("std.db.ConstraintError"));
     for removed in [
         "std.websocket.TextConnectionMessage",
         "std.websocket.BinaryConnectionMessage",

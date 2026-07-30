@@ -90,6 +90,14 @@ fn platform_registry_round_trips_exact_identity_payloads() {
             json!({"target": "std.db", "message": "conflict", "retryable": true}),
         ),
         (
+            PlatformBuiltinErrorIdentity::DbConstraint,
+            json!({
+                "kind": "unique",
+                "packageId": "example.com/accounts",
+                "collection": "user",
+            }),
+        ),
+        (
             PlatformBuiltinErrorIdentity::Http,
             json!({"message": "upstream", "detail": {"status": 503}}),
         ),
@@ -99,6 +107,33 @@ fn platform_registry_round_trips_exact_identity_payloads() {
         assert_eq!(
             decode_platform_payload(identity, &encoded).expect("decode"),
             payload
+        );
+    }
+}
+
+#[test]
+fn database_constraint_platform_payload_rejects_backend_details_and_retry_hints() {
+    for payload in [
+        json!({
+            "kind": "unique",
+            "packageId": "example.com/accounts",
+            "collection": "user",
+            "retryable": false,
+        }),
+        json!({
+            "kind": "unique",
+            "packageId": "example.com/accounts",
+            "collection": "user",
+            "index": "_id_",
+        }),
+        json!({
+            "kind": "future",
+            "packageId": "example.com/accounts",
+            "collection": "user",
+        }),
+    ] {
+        assert!(
+            encode_platform_payload(PlatformBuiltinErrorIdentity::DbConstraint, &payload).is_err()
         );
     }
 }

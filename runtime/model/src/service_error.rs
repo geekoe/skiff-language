@@ -71,6 +71,8 @@ pub enum PlatformBuiltinErrorIdentity {
     JsonDecode,
     #[serde(rename = "std.db.ConflictError")]
     DbConflict,
+    #[serde(rename = "std.db.ConstraintError")]
+    DbConstraint,
     #[serde(rename = "std.db.DecodeError")]
     DbDecode,
     #[serde(rename = "std.file.FileError")]
@@ -94,6 +96,7 @@ impl PlatformBuiltinErrorIdentity {
             "std.number.DecodeError" => Self::NumberDecode,
             "std.json.DecodeError" => Self::JsonDecode,
             "std.db.ConflictError" => Self::DbConflict,
+            "std.db.ConstraintError" => Self::DbConstraint,
             "std.db.DecodeError" => Self::DbDecode,
             "std.file.FileError" => Self::File,
             "std.time.DecodeError" => Self::TimeDecode,
@@ -112,6 +115,7 @@ impl PlatformBuiltinErrorIdentity {
             Self::NumberDecode => "std.number.DecodeError",
             Self::JsonDecode => "std.json.DecodeError",
             Self::DbConflict => "std.db.ConflictError",
+            Self::DbConstraint => "std.db.ConstraintError",
             Self::DbDecode => "std.db.DecodeError",
             Self::File => "std.file.FileError",
             Self::TimeDecode => "std.time.DecodeError",
@@ -733,6 +737,21 @@ mod tests {
         assert_eq!(
             PlatformBuiltinErrorIdentity::from_symbol("CancelError"),
             None
+        );
+    }
+
+    #[test]
+    fn database_constraint_platform_identity_round_trips_exactly() {
+        let identity = PlatformBuiltinErrorIdentity::DbConstraint;
+
+        assert_eq!(identity.symbol(), "std.db.ConstraintError");
+        assert_eq!(
+            PlatformBuiltinErrorIdentity::from_symbol("std.db.ConstraintError"),
+            Some(identity)
+        );
+        assert_eq!(
+            serde_json::to_string(&identity).unwrap(),
+            r#""std.db.ConstraintError""#
         );
     }
 

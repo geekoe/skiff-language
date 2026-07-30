@@ -12,7 +12,9 @@ use skiff_runtime_capability_context::{
     DbOrderDirection, DbOrderEntry, DbProviderTargetMetadata, FieldPath, ServiceDbChange,
 };
 
-use crate::{service_storage_collection_name, DbEncryptionCipher, Result, ServiceDbError};
+use crate::{
+    service_storage_collection_name, DbConstraintTarget, DbEncryptionCipher, Result, ServiceDbError,
+};
 
 #[derive(Clone)]
 pub struct ServiceDbMetadata {
@@ -24,7 +26,10 @@ pub struct ServiceDbMetadata {
 pub struct DbCollectionMetadata {
     pub target_key: String,
     pub type_name: String,
+    pub package_id: String,
+    pub logical_collection_name: String,
     pub collection_name: String,
+    constraint_target: DbConstraintTarget,
     pub key_field: String,
     pub key_ty: Option<db_boundary::DbBoundaryValuePlan>,
     pub storage_environment: String,
@@ -44,7 +49,8 @@ impl fmt::Debug for DbCollectionMetadata {
         formatter
             .debug_struct("DbCollectionMetadata")
             .field("type_name", &self.type_name)
-            .field("collection_name", &self.collection_name)
+            .field("package_id", &self.package_id)
+            .field("logical_collection_name", &self.logical_collection_name)
             .field("key_field", &self.key_field)
             .field("fields", &self.fields)
             .finish_non_exhaustive()
@@ -192,11 +198,14 @@ impl DbCollectionMetadata {
             &ir.type_name,
             format!("runtime program db[{index}].typeName"),
         )?;
-        let collection_name = required_typed_string(
+        let logical_collection_name = required_typed_string(
             &ir.collection_name,
             format!("runtime program db[{index}].collectionName"),
         )?;
-        let collection_name = service_storage_collection_name(package_id, &collection_name)?;
+        let collection_name =
+            service_storage_collection_name(package_id, &logical_collection_name)?;
+        let constraint_target =
+            DbConstraintTarget::new(package_id.to_string(), logical_collection_name.clone())?;
         let key = parse_object_key(ir.key.as_ref(), index)?;
         let fields = parse_fields(&ir.fields, index)?;
         let leases = parse_leases(&ir.leases, index)?;
@@ -208,7 +217,10 @@ impl DbCollectionMetadata {
                 .map(|module_path| format!("{module_path}.{type_name}"))
                 .unwrap_or_else(|| type_name.clone()),
             type_name,
+            package_id: package_id.to_string(),
+            logical_collection_name,
             collection_name,
+            constraint_target,
             key_field: key.name,
             key_ty: key.ty,
             storage_environment: storage_environment.to_string(),
@@ -226,6 +238,10 @@ impl DbCollectionMetadata {
         })?;
         metadata.validate_encrypted_storage(index)?;
         Ok(metadata)
+    }
+
+    pub fn constraint_target(&self) -> &DbConstraintTarget {
+        &self.constraint_target
     }
 
     pub fn has_encrypted_fields(&self) -> bool {

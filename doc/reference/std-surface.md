@@ -56,10 +56,11 @@ decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes
 
 `std.db.ConflictError` 表示可重试的数据库写冲突或 transient transaction conflict。runtime 不会自动重放 transaction；调用方只应在确认整个重试边界不含外部副作用且具备幂等性时显式重试。该错误只暴露稳定、脱敏的 `target`、`message` 和 `retryable` 字段。
 
-`std.db.ConstraintError`表示业务写入违反已经生效的数据库约束。当前来源是唯一索引冲突，固定为
-`{ target: "std.db", message: "database constraint violated", retryable: false }`。它不暴露后端错误、
-database/collection/physical index name、冲突key或业务值；相同输入重试不会改变结果。activation期间创建
-唯一索引发现已有重复值也使用同一脱敏constraint分类拒绝candidate，但该控制面失败不进入业务`catch`。
+`std.db.ConstraintError`表示数据库约束拒绝一次写入，不能作为transaction conflict重试。第一版
+`kind`只会是`"unique"`；错误只暴露`kind`、声明DB object的Package ID和源码声明的logical
+collection identity。它不暴露Mongo原始消息、物理collection名、物理索引名或冲突值。activation期间
+创建唯一索引发现已有重复值也使用同一脱敏constraint分类拒绝candidate，但该控制面失败不进入业务
+`catch`。
 
 provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 provider runtime 不可用。
 

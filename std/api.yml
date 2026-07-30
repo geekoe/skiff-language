@@ -8,6 +8,7 @@ bytes:
   DecodeError: bytes.DecodeError
 db:
   ConflictError: db.ConflictError
+  ConstraintError: db.ConstraintError
   DecodeError: db.DecodeError
 number:
   DecodeError: number.DecodeError

@@ -1139,6 +1139,20 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
             Some("std.db.ConflictError"),
         ),
         (
+            "service-db unique constraint",
+            Box::new(skiff_runtime_service_db::ServiceDbError::Constraint(
+                skiff_runtime_service_db::DbConstraintViolation::unique(
+                    skiff_runtime_service_db::DbConstraintTarget::new(
+                        "example.com/accounts",
+                        "user",
+                    )
+                    .unwrap(),
+                ),
+            )),
+            "std.db.ConstraintError",
+            Some("std.db.ConstraintError"),
+        ),
+        (
             "service-db BsonSer",
             Box::new(skiff_runtime_service_db::ServiceDbError::BsonSer(
                 serde::ser::Error::custom("bson encode failed"),

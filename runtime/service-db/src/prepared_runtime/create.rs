@@ -91,6 +91,9 @@ impl PreparedCreate {
         runtime: &ServiceDbRuntime,
         mut session: Option<&mut ClientSession>,
     ) -> Result<CompletedCreate> {
+        let binding = runtime
+            .metadata
+            .collection_for_target_key(&self.type_name)?;
         runtime
             .persist_recoverable_artifact_retention_roots(&self.roots, session.as_deref_mut())
             .await?;
@@ -99,7 +102,8 @@ impl PreparedCreate {
             .mongo_executor(&self.collection_name, session)
             .await?
             .insert_one(self.document)
-            .await?;
+            .await
+            .map_err(|error| error.classify_write_constraint(binding.constraint_target()))?;
         Ok(CompletedCreate {
             type_name: self.type_name,
             document: result_document,

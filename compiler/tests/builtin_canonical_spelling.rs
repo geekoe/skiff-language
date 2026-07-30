@@ -18,15 +18,17 @@ use common::{
 };
 
 const CURRENT_STD_BUILD: &str =
-    "skiff-package-build-v10:sha256:9802729fd2a245746a020efd7056d2855b0d6044bce6bdd0f99cbb9e5a0e4fac";
+    "skiff-package-build-v10:sha256:6d3e424d7e4c1c191fc50bb21d7500a63a8c56d38f63de5d9150a8657c973ca1";
 const CURRENT_STD_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:4e370158a4a654c55f0e086509368ebbdf34c5bfb818d5161aca18fcb62711ac";
+    "skiff-package-local-abi-v7:sha256:8c787b445bd1778725635f2b9a93b41e914b4ef102b3c70684fa8d8065ed3a54";
 const CURRENT_STD_SCHEMA_INDEX: &str =
-    "skiff-package-schema-index-v1:sha256:26b7640548d50a600c5e04e0b61851eb66d43b34bca65c26da99bacec2a7f577";
+    "skiff-package-schema-index-v1:sha256:a5cd6c2f4490ef48e9f024ced96670df6d1de86d3470ccf783eb54eb002fe06b";
 const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
+const CURRENT_CONSTRAINT_ERROR_SCHEMA: &str =
+    "skiff-package-schema-type-v2:sha256:839e01e4a6bf20be055d48fde8fa4e518099f3345e9c9321f05020b85a8f5f68";
 const CURRENT_DB_FILE_IR: &str =
-    "skiff-file-ir-v10:sha256:88c7421a53bea8a67796d100aa7e7d43181e8cd0db021b9929264b9f125d9b7c";
+    "skiff-file-ir-v10:sha256:f0c9c20a5e5e484aab1f05ead028349ca2db03e1f9417c7182dbfdd6128baa56";
 
 #[test]
 fn declared_source_aliases_emit_only_canonical_file_ir_builtin_names() {
@@ -115,7 +117,7 @@ function check(flag: boolean) -> bool {
         "canonical bool must remain present in emitted artifacts"
     );
 
-    assert_fresh_std_conflict_error_is_canonical(&project);
+    assert_fresh_std_database_errors_are_canonical(&project);
 }
 
 #[test]
@@ -321,7 +323,7 @@ fn initialize_test_prelude_registry() {
     .expect("prelude registry should initialize");
 }
 
-fn assert_fresh_std_conflict_error_is_canonical(
+fn assert_fresh_std_database_errors_are_canonical(
     project: &common::package_project::PublishedPackageProject,
 ) {
     let std = project
@@ -373,6 +375,58 @@ fn assert_fresh_std_conflict_error_is_canonical(
         schema_entry.package_schema_type_id.as_str(),
         CURRENT_CONFLICT_ERROR_SCHEMA
     );
+
+    let constraint = db
+        .unit
+        .type_table
+        .iter()
+        .find(|ty| ty.name == "ConstraintError")
+        .expect("std.db.ConstraintError should be emitted");
+    for field in ["kind", "packageId", "collection"] {
+        assert_eq!(
+            record_field(&constraint.descriptor, field),
+            &TypeRefIr::builtin("string")
+        );
+    }
+    let implementation = std.artifact.implementation_links.types["std.db.ConstraintError"]
+        .descriptor
+        .as_ref()
+        .expect("ConstraintError implementation link should carry its descriptor");
+    for field in ["kind", "packageId", "collection"] {
+        assert_eq!(
+            record_field(implementation, field),
+            &TypeRefIr::builtin("string")
+        );
+    }
+    for symbols in [
+        &std.artifact.package_local_abi.public_symbols,
+        &std.artifact.package_local_abi.implementation_symbols,
+    ] {
+        let PackageLocalAbiSymbol::Type { descriptor, .. } = &symbols["std.db.ConstraintError"]
+        else {
+            panic!("ConstraintError should be a Local ABI type");
+        };
+        for field in ["kind", "packageId", "collection"] {
+            assert_eq!(
+                record_field(descriptor, field),
+                &TypeRefIr::builtin("string")
+            );
+        }
+    }
+    let schema_entry = &std.package_schema_index.types["std.db.ConstraintError"];
+    let schema_record = &std.package_schema_type_records[&schema_entry.package_schema_type_id];
+    let ContractTypeDescriptor::Record { fields } = &schema_record.canonical_descriptor.descriptor
+    else {
+        panic!("ConstraintError PackageSchema should be a record");
+    };
+    for field in ["kind", "packageId", "collection"] {
+        assert_eq!(fields[field], ContractTypeRef::builtin("string"));
+    }
+    assert_eq!(
+        schema_entry.package_schema_type_id.as_str(),
+        CURRENT_CONSTRAINT_ERROR_SCHEMA
+    );
+
     assert_eq!(
         std.package_schema_index
             .package_schema_index_identity

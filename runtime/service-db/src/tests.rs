@@ -311,6 +311,66 @@ fn service_db_write_conflict_is_a_sanitized_catchable_db_error() {
 }
 
 #[test]
+fn service_db_duplicate_key_is_a_non_retryable_sanitized_constraint_error() {
+    let error: MongoError = MongoErrorKind::Write(WriteFailure::WriteError(mongo_write_error(
+        11000,
+        "DuplicateKey-secret-physical-index",
+    )))
+    .into();
+    let target = DbConstraintTarget::new("example.com/accounts", "user").unwrap();
+    let error = ServiceDbError::Mongo(error).classify_write_constraint(&target);
+    let payload = error.payload();
+
+    assert!(matches!(
+        &error,
+        ServiceDbError::Constraint(violation)
+            if violation.kind() == DbConstraintKind::Unique
+                && violation.target() == &target
+    ));
+    assert_eq!(payload.code, "std.db.ConstraintError");
+    assert_eq!(payload.message, "database constraint rejected the write");
+    assert_eq!(
+        payload.details,
+        Some(json!({
+            "kind": "unique",
+            "packageId": "example.com/accounts",
+            "collection": "user",
+        }))
+    );
+    assert!(!payload.message.contains("DuplicateKey"));
+    assert!(!payload.message.contains("physical-index"));
+    assert!(!payload
+        .details
+        .as_ref()
+        .is_some_and(|details| details.get("retryable").is_some()));
+    assert_eq!(
+        WirePayload::catch_projection(&error),
+        Some((
+            skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity::DbConstraint
+                .catch_identity(),
+            json!({
+                "kind": "unique",
+                "packageId": "example.com/accounts",
+                "collection": "user",
+            }),
+        ))
+    );
+}
+
+#[test]
+fn service_db_non_duplicate_write_error_is_not_a_constraint_error() {
+    let error: MongoError = MongoErrorKind::Write(WriteFailure::WriteError(mongo_write_error(
+        112,
+        "WriteConflict",
+    )))
+    .into();
+    let target = DbConstraintTarget::new("example.com/accounts", "user").unwrap();
+    let error = ServiceDbError::Mongo(error).classify_write_constraint(&target);
+
+    assert!(matches!(error, ServiceDbError::Mongo(_)));
+}
+
+#[test]
 fn service_db_non_conflict_mongo_error_keeps_platform_error_behavior() {
     let error = ServiceDbError::Mongo(mongo_command_error(113, "ConflictingOperationInProgress"));
     let payload = error.payload();

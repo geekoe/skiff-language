@@ -8,3 +8,9 @@ type ConflictError {
   message: string,
   retryable: boolean,
 }
+
+type ConstraintError {
+  kind: string,
+  packageId: string,
+  collection: string,
+}

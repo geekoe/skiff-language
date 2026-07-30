@@ -924,6 +924,7 @@ fn admitted_platform_builtin(identity: PlatformBuiltinErrorIdentity) -> bool {
             | PlatformBuiltinErrorIdentity::NumberDecode
             | PlatformBuiltinErrorIdentity::JsonDecode
             | PlatformBuiltinErrorIdentity::DbConflict
+            | PlatformBuiltinErrorIdentity::DbConstraint
             | PlatformBuiltinErrorIdentity::DbDecode
             | PlatformBuiltinErrorIdentity::File
             | PlatformBuiltinErrorIdentity::TimeDecode

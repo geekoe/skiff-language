@@ -326,6 +326,10 @@ const result = db transaction value {
   `std.db.ConflictError { target: "std.db", message: string, retryable: true }`；错误消息是稳定、
   脱敏的 DB 冲突说明，不包含 Mongo 原始详情。调用方只应在确认整个重试边界不包含外部副作用时
   显式重试。
+- insert、update、upsert触发唯一约束时归一为不可重试的
+  `std.db.ConstraintError { kind: "unique", packageId: string, collection: string }`。
+  `collection`是源码声明的logical collection identity；错误不包含Mongo原始消息、物理collection、
+  物理索引名或冲突值，也不归类为`std.db.ConflictError`。
 
 transaction 内不应执行外部副作用或长时间工作，例如 HTTP、LLM、service call、actor call、`spawn` 或 `db claim`。actor routing、spawn 提交和外部副作用不随 DB rollback 回滚。
 

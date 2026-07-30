@@ -194,7 +194,10 @@ impl PreparedUpdate {
                         },
                         update,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        error.classify_write_constraint(binding.constraint_target())
+                    })?;
                 if document.is_none() {
                     runtime
                         .assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)

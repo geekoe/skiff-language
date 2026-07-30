@@ -1132,6 +1132,7 @@ fn admitted_platform_identity(identity: PlatformBuiltinErrorIdentity) -> bool {
             | PlatformBuiltinErrorIdentity::NumberDecode
             | PlatformBuiltinErrorIdentity::JsonDecode
             | PlatformBuiltinErrorIdentity::DbConflict
+            | PlatformBuiltinErrorIdentity::DbConstraint
             | PlatformBuiltinErrorIdentity::DbDecode
             | PlatformBuiltinErrorIdentity::File
             | PlatformBuiltinErrorIdentity::TimeDecode
@@ -1412,6 +1413,15 @@ fn validate_platform_payload(
             if !object["retryable"].is_boolean() {
                 return Err("retryable must be a boolean".to_string());
             }
+        }
+        PlatformBuiltinErrorIdentity::DbConstraint => {
+            exact_fields(object, &["collection", "kind", "packageId"])?;
+            let kind = string_field(object, "kind")?;
+            if kind != "unique" {
+                return Err("database constraint kind is not canonical".to_string());
+            }
+            string_field(object, "packageId")?;
+            string_field(object, "collection")?;
         }
         PlatformBuiltinErrorIdentity::ServiceProviderUnavailable => {
             exact_fields(object, &["reason", "target"])?;

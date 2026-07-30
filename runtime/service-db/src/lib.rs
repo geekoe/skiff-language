@@ -49,7 +49,9 @@ pub use encryption::{
     DbEncryptedFieldContext, DbEncryptionCipher, DbEncryptionError, DbEncryptionKeyring,
     DbEncryptionKeyringError, SERVICE_DB_ENCRYPTION_KEYRING_FORMAT,
 };
-pub use error::{Result, ServiceDbError};
+pub use error::{
+    DbConstraintKind, DbConstraintTarget, DbConstraintViolation, Result, ServiceDbError,
+};
 pub use provider::MongoServiceDbProviderFactory;
 pub use storage_identity::service_storage_collection_name;
 use storage_identity::{service_storage_database_name, validate_service_database_name};
@@ -463,7 +465,8 @@ impl ServiceDbRuntime {
                 },
                 update,
             )
-            .await?;
+            .await
+            .map_err(|error| error.classify_write_constraint(binding.constraint_target()))?;
         if document.is_none() {
             self.assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)
                 .await?;
@@ -555,7 +558,10 @@ impl ServiceDbRuntime {
                 })
                 .await?
         };
-        let result = executor.update_many(guarded_filter, update).await?;
+        let result = executor
+            .update_many(guarded_filter, update)
+            .await
+            .map_err(|error| error.classify_write_constraint(binding.constraint_target()))?;
         self.delete_skiff_files_by_plan(
             cascade_plan_for_changed_documents(&old_documents, &change, &cascade_paths),
             executor.session_mut(),
@@ -607,7 +613,10 @@ impl ServiceDbRuntime {
             if executor.has_session() {
                 let result = executor
                     .update_one_upsert(guarded_filter.clone(), update)
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        error.classify_write_constraint(binding.constraint_target())
+                    })?;
                 let value = executor
                     .find_one(MongoFindOnePlan {
                         filter: guarded_filter,
@@ -631,14 +640,18 @@ impl ServiceDbRuntime {
                             .await?
                             .is_none()
                         {
-                            return Err(error.into());
+                            return Err(ServiceDbError::from(error)
+                                .classify_write_constraint(binding.constraint_target()));
                         }
                         let retry_update = update_without_set_on_insert(&update);
                         if let Some(retry_update) = retry_update {
                             let retry_result = collection
                                 .update_one(guarded_filter.clone(), retry_update)
                                 .await
-                                .map_err(ServiceDbError::from)?;
+                                .map_err(ServiceDbError::from)
+                                .map_err(|error| {
+                                    error.classify_write_constraint(binding.constraint_target())
+                                })?;
                             if retry_result.matched_count == 0 {
                                 let mut retry_executor =
                                     self.mongo_executor(&binding.collection_name, None).await?;
@@ -664,7 +677,10 @@ impl ServiceDbRuntime {
                             serde_json::json!({ "value": value, "inserted": false }),
                         ));
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(error) => {
+                        return Err(ServiceDbError::from(error)
+                            .classify_write_constraint(binding.constraint_target()));
+                    }
                 };
                 let value = self.find_one_by_key(type_name, key, None, None).await?;
                 (result.upserted_id.is_some(), value)
@@ -751,7 +767,8 @@ impl ServiceDbRuntime {
                 },
                 replacement.clone(),
             )
-            .await?;
+            .await
+            .map_err(|error| error.classify_write_constraint(binding.constraint_target()))?;
         if document.is_none() {
             self.assert_lease_guards_live(binding, &filter, lease_guards, &mut executor)
                 .await?;
@@ -954,7 +971,8 @@ impl ServiceDbRuntime {
         self.mongo_executor(&binding.collection_name, session)
             .await?
             .insert_one(document)
-            .await?;
+            .await
+            .map_err(|error| error.classify_write_constraint(binding.constraint_target()))?;
         Ok(materialized)
     }
 
@@ -1422,7 +1440,8 @@ impl ServiceDbRuntime {
             .mongo_executor(&binding.collection_name, session)
             .await?
             .insert_many(documents)
-            .await?;
+            .await
+            .map_err(|error| error.classify_write_constraint(binding.constraint_target()))?;
         Ok(result.inserted_ids.len() as u64)
     }
 }
