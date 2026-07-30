@@ -7,6 +7,10 @@
 
 这些规则是当前部署/runtime拓扑，不是语言类型或Package API语义。
 
+开发态managed watch对动态root集合、Router committed generation与activation CAS的长期契约见
+[`managed-dev-watch.md`](managed-dev-watch.md)。本文只负责watch最终提交的assembly/snapshot pair在
+Router/Runtime中的含义。
+
 ## 第一版 Assembly 放置
 
 第一版每个environment只有一个active RuntimeAssembly，root set是该环境由操作面选择的全部active

@@ -63,10 +63,14 @@ combined gate、跨仓库证据或R446。
 4. **Runtime wire**
    - Router↔Runtime frame统一为`skiff-runtime-frame-v3`；
    - producer、reader、strict validator、fixture与文档同代更新，不保留v2兼容reader。
-5. **Final evidence**
+5. **Managed dev watch**
+   - 按[`P5-F447-managed-dev-watch-convergence.md`](P5-F447-managed-dev-watch-convergence.md)完成registry
+     v2、dynamic input、last-known-good、bounded retry与health-derived CAS；
+   - 配置只走RuntimeConfigSnapshot，不恢复旧YAML复制；F447聚焦验收不执行stable rollout。
+6. **Final evidence**
    - 在上述实现合流后的同一精确候选上运行受影响聚焦测试、必要combined gate、跨仓库non-live、
      stable cold activation与Agine chat smoke；
-   - 再交由全新只读R446 owner验收。
+   - R447先验收managed watch，再交由全新只读R446 owner执行terminal验收。
 
 主线程已经按上述四个实现owner派发代码任务。它们完成、合流及重验前，本文件不得改为`PASS`。
 

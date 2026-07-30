@@ -133,6 +133,31 @@ skiff service dev registry list
 skiff service dev registry remove <root-or-service-id>
 ```
 
+The registry is a live watch input, not startup-only configuration. A running
+managed watch reloads it on every poll, so add, remove, and environment changes
+do not require restarting the watch process. Registry entries persist their
+root role and service ID; removing a root still works after its directory has
+already been deleted. A malformed or temporarily missing registry keeps the
+last-known-good activation and retries—it is never interpreted as an empty
+registry. Explicitly removing the final valid service instead commits a
+canonical empty assembly/config-snapshot pair and withdraws the previous dev
+services.
+
+Before its first activation, managed watch reads the Router's exact committed
+environment/generation from `/__router/health`; it never assumes generation
+zero. Activation remains a CAS. On a conflict the watch rereads health, treats
+an already-committed exact target pair as success, and otherwise retries only
+from an observed newer generation. Build, snapshot publication, and activation
+must all succeed before the input fingerprint is marked successful. Transient
+failures retry after 1, 2, 4, 8, 16, and at most 30 seconds; a new input
+fingerprint replaces the pending retry immediately.
+
+The canonical command path is `skiff service dev registry`. The retired
+`skiff dev registry` spelling is not accepted.
+
+The exact registry, fingerprint, retry, and CAS contract is defined in
+[`managed-dev-watch.md`](../doc/architecture/managed-dev-watch.md).
+
 ## Language Instance CLI
 
 When developing the Skiff language repository itself, use an instance selected

@@ -35,6 +35,12 @@ environment + serviceId，不引入platformId；Router↔Runtime frame统一为v
 [`P5-F446-closure-result.md`](tasks/P5-F446-closure-result.md)，不得把implementation checkpoint写成R446
 PASS。
 
+2026-07-30 managed dev watch复核：外部审阅的六项中，固定generation、静态registry、失败不重试和
+registry remove四项成立；配置YAML复制结论已被RuntimeConfigSnapshot取代，Runtime spawn负向测试也已迁移
+到link-time owner。F447按
+[`managed-dev-watch.md`](../../../architecture/managed-dev-watch.md)硬切registry v2、dynamic input、
+last-known-good、bounded retry与health-derived activation CAS；不扩到stable rollout。
+
 ## 输入
 
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 和完整 InProcessBoundary 生产路径。

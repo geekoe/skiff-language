@@ -207,7 +207,11 @@ Phase 05当前实现把普通config literal编进ServiceDeployment，把secret�
 | F446C | [Activation/runtime service DB cutover](tasks/P5-F446C-activation-runtime-service-db.md) | F446A + F446B | Router/Runtime generation、ConfigView、DB owner |
 | F446D | [Test runner and ecosystem migration](tasks/P5-F446D-test-runner-ecosystem-migration.md) | F446B + F446C DTO checkpoint | runner、official/internals authoring与stable inputs |
 | F446 closure | [Current closure status](tasks/P5-F446-closure-result.md) | F446A–D implementation checkpoints | 草稿；记录新发现的schema/runtime遗漏与实现owner，不是验收 |
-| R446 | [Unified config/service DB acceptance](tasks/P5-R446-unified-config-service-db-acceptance.md) | F446A–D integrated | 独立验收与反向搜索 |
+| F447 | [Managed dev watch convergence](tasks/P5-F447-managed-dev-watch-convergence.md) | F446 config snapshot + activation exact pair | registry v2、dynamic input、CAS recovery与retry |
+| F447A | [Registry v2 and canonical CLI](tasks/P5-F447A-registry-v2-canonical-cli.md) | F447 authority | persistence、structural/live split、remove semantics |
+| F447B | [Dynamic watch and CAS recovery](tasks/P5-F447B-dynamic-watch-cas-recovery.md) | F447A DTO + current activation pair | dynamic input、last-known-good、retry、empty pair |
+| R447 | [Managed dev watch acceptance](tasks/P5-R447-managed-dev-watch-acceptance.md) | F447A/B integrated | 独立状态机/CLI/失败矩阵验收，不执行stable rollout |
+| R446 | [Unified config/service DB acceptance](tasks/P5-R446-unified-config-service-db-acceptance.md) | F446A–D integrated + R447 PASS | 独立验收、反向搜索与terminal stable证据 |
 
 ## 1. 基线与已关闭的实现决策
 
