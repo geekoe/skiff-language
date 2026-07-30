@@ -37,7 +37,7 @@ pub(crate) struct ActiveAssemblyContextSet {
 }
 
 impl ActiveAssemblyContextSet {
-    pub(crate) fn from_candidate(
+    pub(crate) async fn from_candidate(
         candidate: &AssemblyLinkedCandidate,
         generation: u64,
         runtime_replica_id: &str,
@@ -63,6 +63,23 @@ impl ActiveAssemblyContextSet {
         .into_iter()
         .map(|(deployment, views)| (deployment, Arc::new(views)))
         .collect();
+        let runtime_program_db_by_deployment = candidate_db_metadata(candidate)?;
+        let db_inputs = candidate_db_provider_inputs(
+            candidate,
+            &runtime_program_db_by_deployment,
+            service_db,
+            environment,
+        )?;
+        // This is intentionally one provider call for the whole candidate. Services can have
+        // multiple exact deployments in one generation while sharing one system database, so
+        // per-activation reconciliation would miss cross-version collection/index conflicts.
+        if !db_inputs.is_empty() {
+            db_provider
+                .provision(db_inputs)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+                .context("whole-assembly service DB index provisioning failed")?;
+        }
         let mut db_sources = BTreeMap::new();
         let mut websocket_entries = BTreeMap::new();
         for (deployment, linked) in candidate.activations() {
@@ -95,8 +112,15 @@ impl ActiveAssemblyContextSet {
                     deployment
                 )
             })?;
-            let runtime_program_db =
-                activation_db_metadata(candidate, linked.implementation_package_build_id())?;
+            let runtime_program_db = runtime_program_db_by_deployment
+                .get(deployment)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "activation {:?} has no whole-candidate DB metadata projection",
+                        deployment
+                    )
+                })?;
             let db_source = if runtime_program_db.is_empty() {
                 DbCapabilitySource::unavailable()
             } else {
@@ -263,6 +287,66 @@ impl ActiveAssemblyContextSet {
     ) -> Option<AdmittedPackageSchemaRecords> {
         self.schema_records.get(contract).cloned()
     }
+}
+
+fn candidate_db_provider_inputs(
+    candidate: &AssemblyLinkedCandidate,
+    runtime_program_db_by_deployment: &BTreeMap<
+        ServiceDeploymentRef,
+        Vec<DbProviderTargetMetadata>,
+    >,
+    service_db: Option<&AssemblyActivationServiceDb>,
+    environment: Option<&str>,
+) -> anyhow::Result<Vec<DbProviderBuildInput>> {
+    let mut inputs = Vec::new();
+    for (deployment, _) in candidate.activations() {
+        let runtime_program_db = runtime_program_db_by_deployment
+            .get(deployment)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "activation {:?} has no whole-candidate DB metadata projection",
+                    deployment
+                )
+            })?;
+        if runtime_program_db.is_empty() {
+            continue;
+        }
+        let environment = environment.ok_or_else(|| {
+            anyhow::anyhow!(
+                "activation {:?} with DB metadata requires a trusted environment",
+                deployment
+            )
+        })?;
+        skiff_artifact_model::validate_activation_environment(environment)
+            .map_err(anyhow::Error::msg)?;
+        let provider = service_db.ok_or_else(|| {
+            anyhow::anyhow!(
+                "activation {:?} requires Router-supplied serviceDb",
+                deployment
+            )
+        })?;
+        inputs.push(DbProviderBuildInput {
+            environment: environment.to_string(),
+            service_id: deployment.service_id.clone(),
+            config: DbProviderConfig::mongo(provider.mongo_url.as_str())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            runtime_program_db,
+        });
+    }
+    Ok(inputs)
+}
+
+fn candidate_db_metadata(
+    candidate: &AssemblyLinkedCandidate,
+) -> anyhow::Result<BTreeMap<ServiceDeploymentRef, Vec<DbProviderTargetMetadata>>> {
+    candidate
+        .activations()
+        .map(|(deployment, linked)| {
+            activation_db_metadata(candidate, linked.implementation_package_build_id())
+                .map(|metadata| (deployment.clone(), metadata))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]

@@ -577,7 +577,9 @@ impl AssemblyAdmissionController {
             service_db,
             environment,
             config_snapshot,
-        ) {
+        )
+        .await
+        {
             Ok(contexts) => Arc::new(contexts),
             Err(error) => {
                 self.fail_candidate(generation, identity, AssemblyCandidateStage::Admit)?;

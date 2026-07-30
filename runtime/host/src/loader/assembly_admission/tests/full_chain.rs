@@ -15,6 +15,8 @@ use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for
 
 use super::super::*;
 
+mod db_index_provisioning;
+
 struct CountingResolver {
     assembly: Arc<RuntimeAssembly>,
     deployments: Vec<(ServiceDeploymentRef, Arc<ServiceDeployment>)>,
