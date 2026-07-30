@@ -42,7 +42,7 @@ fn contract_typed_executables_preserve_package_nominal_execution_identity() {
         );
     }
 
-    let request_type = package_nominal_request_type();
+    let request_type = package_nominal_request_type(&without_external_symbol);
     let wrapper = executable(&baseline.unit.executables, "wrapper");
     assert_eq!(wrapper.params.len(), 2);
     assert_eq!(wrapper.params[0].name, "label");
@@ -116,8 +116,8 @@ impl Adapter {
     );
     assert_eq!(relay.params.len(), 1);
     assert_eq!(relay.params[0].name, "request");
-    assert_eq!(relay.params[0].ty, package_nominal_request_type());
-    assert_eq!(relay.return_type, package_nominal_request_type());
+    assert_eq!(relay.params[0].ty, package_nominal_request_type(&project));
+    assert_eq!(relay.return_type, package_nominal_request_type(&project));
     assert!(main.unit.external_refs.service_symbols.is_empty());
     assert_schema_dependency_requirement(&project);
 }
@@ -239,14 +239,24 @@ fn assert_execution_signature_eq(left: &ExecutableIr, right: &ExecutableIr) {
     assert_eq!(left.may_suspend, right.may_suspend);
 }
 
-fn package_nominal_request_type() -> TypeRefIr {
+fn package_nominal_request_type(
+    project: &common::package_project::PublishedPackageProject,
+) -> TypeRefIr {
+    let abi_expectation = project
+        .dependency(SCHEMA_PACKAGE_ID, VERSION)
+        .expect("canonical schema owner must remain in the dependency closure")
+        .artifact
+        .package_local_abi
+        .local_abi_identity
+        .as_str()
+        .to_string();
     TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::PackageId {
                 package_id: SCHEMA_PACKAGE_ID.to_string(),
             },
             symbol_path: REQUEST_SCHEMA_KEY.to_string(),
-            abi_expectation: None,
+            abi_expectation: Some(abi_expectation),
         },
     }
 }

@@ -50,8 +50,14 @@ pub fn produce_runtime_config_snapshot(
     let store_root = artifact_root.join("runtime-config");
     let store = RuntimeConfigSnapshotStore::create(&store_root)?;
     let published = store.publish(&snapshot)?;
+    let canonical_artifact_root = std::fs::canonicalize(artifact_root).map_err(|error| {
+        invalid(
+            artifact_root,
+            format!("failed to resolve artifact root: {error}"),
+        )
+    })?;
     let record_path = published
-        .strip_prefix(artifact_root)
+        .strip_prefix(&canonical_artifact_root)
         .map_err(|_| invalid(&published, "snapshot record escaped artifact root"))?
         .to_path_buf();
     Ok(ConfigSnapshotProductionReceipt {

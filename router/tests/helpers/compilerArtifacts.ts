@@ -52,7 +52,7 @@ export interface CompilerGeneratedArtifactRoot {
 export interface CurrentScopeCompilerGeneratedArtifactRoot {
   root: string;
   receipt: {
-    schemaVersion: 'skiff-package-service-host-fixture-v1';
+    schemaVersion: 'skiff-package-service-host-fixture-v2';
     environment: string;
     contracts: {
       payments: Record<string, string>;
@@ -68,6 +68,7 @@ export interface CurrentScopeCompilerGeneratedArtifactRoot {
       consumer: Record<string, string>;
     };
     baseAssembly: { assemblyIdentity: string };
+    baseConfigSnapshot: { snapshotId: string };
   };
 }
 
@@ -145,7 +146,7 @@ export async function writeCurrentScopeCompilerGeneratedArtifactRoot(
   const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as
     CurrentScopeCompilerGeneratedArtifactRoot['receipt'];
   if (
-    receipt.schemaVersion !== 'skiff-package-service-host-fixture-v1' ||
+    receipt.schemaVersion !== 'skiff-package-service-host-fixture-v2' ||
     receipt.environment !== environment ||
     typeof receipt.baseAssembly?.assemblyIdentity !== 'string'
   ) {

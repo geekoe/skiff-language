@@ -166,9 +166,16 @@ fn prepare_service_root(
 ) -> anyhow::Result<std::path::PathBuf> {
     copy_fixture_tree(source, target)?;
     if configured {
+        let package_manifest = fs::read_to_string(target.join("package.yml"))?;
+        let package_id = package_manifest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("id:"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("fixture package.yml must declare a string id"))?;
         fs::write(
             target.join(format!("config.{environment}.yml")),
-            "\"example.com/consumer\":\n  app:\n    token: owned-by-base\n",
+            format!("\"{package_id}\":\n  app:\n    token: owned-by-base\n"),
         )?;
     }
     Ok(target.to_path_buf())
@@ -182,14 +189,18 @@ fn project_config_snapshot(
 ) -> anyhow::Result<RuntimeConfigSnapshotRef> {
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let assembly = store.read_runtime_assembly(assembly_ref)?.as_ref().clone();
-    let package_artifacts = assembly
-        .resolved_packages
-        .iter()
-        .map(|reference| {
-            let artifact = store.read_package_artifact(reference)?.as_ref().clone();
-            Ok((reference.clone(), artifact))
-        })
-        .collect::<Result<BTreeMap<PackageArtifactRef, PackageArtifact>, _>>()?;
+    let package_artifacts =
+        assembly
+            .resolved_packages
+            .iter()
+            .map(|reference| {
+                store
+                    .read_package_artifact(reference)
+                    .map(|artifact| (reference.clone(), artifact.as_ref().clone()))
+            })
+            .collect::<skiff_deployment::storage::StorageResult<
+                BTreeMap<PackageArtifactRef, PackageArtifact>,
+            >>()?;
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
             profile: profile.to_string(),

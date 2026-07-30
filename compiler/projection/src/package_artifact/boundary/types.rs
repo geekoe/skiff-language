@@ -1461,13 +1461,16 @@ mod tests {
             super::super::eligibility::normalize_reasons(&mut reasons);
             assert_eq!(
                 reasons,
-                if index == 2 {
-                    vec![
+                match index {
+                    1 => vec![
+                        BoundaryUnavailableReason::UnsupportedBoundaryType,
+                        BoundaryUnavailableReason::UnsupportedStream,
+                    ],
+                    2 => vec![
                         BoundaryUnavailableReason::CallbackAdapterUnavailable,
                         BoundaryUnavailableReason::UnsupportedBoundaryType,
-                    ]
-                } else {
-                    vec![BoundaryUnavailableReason::UnsupportedBoundaryType]
+                    ],
+                    _ => vec![BoundaryUnavailableReason::UnsupportedBoundaryType],
                 }
             );
         }

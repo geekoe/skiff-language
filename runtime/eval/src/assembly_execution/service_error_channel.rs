@@ -1422,12 +1422,6 @@ fn validate_platform_payload(
             exact_fields(object, &["detail", "message"])?;
             string_field(object, "message")?;
         }
-        identity => {
-            return Err(format!(
-                "platform identity {} is not admitted by the service error channel",
-                identity.symbol()
-            ));
-        }
     }
     Ok(())
 }

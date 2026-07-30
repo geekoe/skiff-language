@@ -784,16 +784,7 @@ packages:
         "id: example.com/foreign-db-tests\nkind: test\n",
     )
     .unwrap();
-    fs::write(
-        root.join("config.skiff-test.yml"),
-        r#"timeout: 30000
-quota:
-  cpuMillis: 100
-  memoryBytes: 67108864
-principal: service:example.com/foreign-db-tests
-"#,
-    )
-    .unwrap();
+    fs::write(root.join("config.skiff-test.yml"), "{}\n").unwrap();
     fs::write(
         root.join("main.test.skiff"),
         r#"import std

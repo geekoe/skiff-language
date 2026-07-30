@@ -505,28 +505,17 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     });
   });
 
-  it('uses the smaller platform and deployment timeout for both deadline and cancel timer', async () => {
-    const cases: Array<{
-      platformCapMs: number;
-      deploymentTimeoutMs?: number;
-      expectedMs: number;
-    }> = [
-      { platformCapMs: 200, deploymentTimeoutMs: 40, expectedMs: 40 },
-      { platformCapMs: 50, expectedMs: 50 },
-      { platformCapMs: 30, deploymentTimeoutMs: 200, expectedMs: 30 }
-    ];
+  it('uses the platform request timeout for both deadline and cancel timer', async () => {
+    const cases = [200, 50, 30];
 
-    for (const [index, timeoutCase] of cases.entries()) {
+    for (const [index, requestTimeoutMs] of cases.entries()) {
       const binding: RuntimeAssemblyIngressBinding = {
         ...BINDING,
-        gatewayEntryKey: `timeout-${index}`,
-        ...(timeoutCase.deploymentTimeoutMs === undefined
-          ? {}
-          : { timeoutMs: timeoutCase.deploymentTimeoutMs })
+        gatewayEntryKey: `timeout-${index}`
       };
       const fixture = await createFixture({
         binding,
-        requestTimeoutMs: timeoutCase.platformCapMs
+        requestTimeoutMs
       });
       const finishPending = spyOnFinishPending(fixture.dispatcher);
       const response = sendHttp(fixture.httpUrl, new Uint8Array());
@@ -537,9 +526,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
         requestFrame.header
       );
       if (!validation.ok) throw new Error(validation.error);
-      expect(validation.envelope.deadline?.timeoutMs).toBe(
-        timeoutCase.expectedMs
-      );
+      expect(validation.envelope.deadline?.timeoutMs).toBe(requestTimeoutMs);
       const cancelObservation = observeRequestCancels(
         fixture.runtime,
         validation.envelope.requestId
@@ -550,7 +537,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       expect(JSON.parse(completed.body.toString())).toMatchObject({
         error: {
           code: 'TimeoutError',
-          message: `Runtime did not respond within ${timeoutCase.expectedMs}ms`
+          message: `Runtime did not respond within ${requestTimeoutMs}ms`
         }
       });
       expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
@@ -1418,6 +1405,10 @@ async function createFixture(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     replicaId: RUNTIME_ID
   }));
   await until(() => assemblyRegistry.healthyParticipantReplicaIds().includes(RUNTIME_ID));

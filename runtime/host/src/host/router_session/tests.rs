@@ -129,7 +129,10 @@ async fn text_json_router_control_is_rejected_on_runtime_websocket() {
     )
     .expect_err("text JSON router.control should fail closed");
 
-    assert!(matches!(error, RuntimeError::Decode(_)));
+    assert!(
+        matches!(error, RuntimeError::Decode(_)),
+        "unexpected error: {error:?}"
+    );
     assert!(error
         .to_string()
         .contains("text protocol messages are not supported on runtime WebSocket"));

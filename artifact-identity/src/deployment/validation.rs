@@ -477,17 +477,6 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
     Ok(())
 }
 
-fn validate_unique_named<'a>(values: impl IntoIterator<Item = &'a str>, label: &str) -> Result<()> {
-    let mut seen = BTreeSet::new();
-    for value in values {
-        require_non_empty(label, value)?;
-        if !seen.insert(value) {
-            return invalid_deployment(format!("duplicate {label} {value}"));
-        }
-    }
-    Ok(())
-}
-
 fn require_non_empty(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         return invalid_deployment(format!("{label} must be a non-empty string"));

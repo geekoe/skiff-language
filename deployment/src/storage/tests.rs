@@ -18,8 +18,9 @@ use skiff_artifact_model::{
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractDiagnosticText, FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, ServiceContract,
-    ServiceProtocolIdentity, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, RuntimeConfigSnapshotId,
+    RuntimeConfigSnapshotRef, ServiceContract, ServiceProtocolIdentity,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -57,6 +58,16 @@ fn test_store() -> (TestRoot, CanonicalArtifactStore) {
     let temp = TestRoot::new();
     let store = CanonicalArtifactStore::create(temp.path()).expect("artifact store");
     (temp, store)
+}
+
+fn config_snapshot_ref(hex: char) -> RuntimeConfigSnapshotRef {
+    RuntimeConfigSnapshotRef {
+        snapshot_id: RuntimeConfigSnapshotId::parse(format!(
+            "skiff-runtime-config-snapshot-v1:{}",
+            hex.to_string().repeat(32)
+        ))
+        .unwrap(),
+    }
 }
 
 fn package_fixture() -> PackageArtifact {
@@ -617,7 +628,14 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
     let committed_ref = runtime_assembly_ref(&committed_assembly).unwrap();
     let candidate_ref = runtime_assembly_ref(&candidate_assembly).unwrap();
 
-    let initial = EnvironmentActivationState::initial("test", 7, committed_ref.clone());
+    let committed_config = config_snapshot_ref('a');
+    let candidate_config = config_snapshot_ref('b');
+    let initial = EnvironmentActivationState::initial(
+        "test",
+        7,
+        committed_ref.clone(),
+        committed_config.clone(),
+    );
     store.initialize_environment_activation(&initial).unwrap();
     let committed_bytes = skiff_canonical_json::canonical_json_bytes(&initial.committed).unwrap();
     let state_path = EnvironmentActivationStatePath::new("test").unwrap();
@@ -636,6 +654,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             7,
             7,
             candidate_ref.clone(),
+            candidate_config.clone(),
             vec!["replica-a".to_string()],
         )
         .is_err());
@@ -651,6 +670,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
                     "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ),
             },
+            candidate_config.clone(),
             vec!["replica-a".to_string()],
         )
         .is_err());
@@ -663,6 +683,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             7,
             8,
             candidate_ref.clone(),
+            candidate_config.clone(),
             vec!["replica-b".to_string(), "replica-a".to_string()],
         )
         .unwrap();
@@ -678,6 +699,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             6,
             7,
             candidate_ref.clone(),
+            candidate_config.clone(),
             vec!["replica-a".to_string()],
         )
         .is_err());
@@ -688,8 +710,21 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             7,
             8,
             &candidate_ref,
+            &candidate_config,
             &["replica-a".to_string(), "replica-b".to_string()],
             &["replica-a".to_string()],
+        )
+        .is_err());
+    assert!(store
+        .commit_environment_activation(
+            "test",
+            "activation-8",
+            7,
+            8,
+            &candidate_ref,
+            &config_snapshot_ref('c'),
+            &["replica-a".to_string(), "replica-b".to_string()],
+            &["replica-a".to_string(), "replica-b".to_string()],
         )
         .is_err());
 
@@ -738,6 +773,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             7,
             8,
             candidate_ref.clone(),
+            candidate_config.clone(),
             vec!["replica-a".to_string(), "replica-b".to_string()],
         )
         .unwrap();
@@ -748,6 +784,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             7,
             8,
             &candidate_ref,
+            &candidate_config,
             &["replica-b".to_string(), "replica-a".to_string()],
             &["replica-b".to_string(), "replica-a".to_string()],
         )
@@ -760,15 +797,42 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
     );
     assert_eq!(
         store
-            .commit_environment_activation("test", "activation-8b", 7, 8, &candidate_ref, &[], &[],)
+            .commit_environment_activation(
+                "test",
+                "activation-8b",
+                7,
+                8,
+                &candidate_ref,
+                &candidate_config,
+                &[],
+                &[],
+            )
             .unwrap(),
         committed,
         "post-commit notification replay must be idempotent"
     );
     assert!(store
-        .commit_environment_activation("test", "activation-8b", 6, 8, &candidate_ref, &[], &[],)
+        .commit_environment_activation(
+            "test",
+            "activation-8b",
+            6,
+            8,
+            &candidate_ref,
+            &candidate_config,
+            &[],
+            &[],
+        )
         .is_err());
     assert!(store
-        .commit_environment_activation("test", "", 7, 8, &candidate_ref, &[], &[],)
+        .commit_environment_activation(
+            "test",
+            "",
+            7,
+            8,
+            &candidate_ref,
+            &candidate_config,
+            &[],
+            &[],
+        )
         .is_err());
 }

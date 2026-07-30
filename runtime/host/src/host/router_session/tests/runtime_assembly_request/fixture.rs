@@ -548,18 +548,18 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
         .expect("exact current-scope RuntimeAssembly");
     assert_eq!(
         receipt.base_assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:91d6b18aaa34d8ebe35c78e28dbfaa98cae0e6075aceedfe4cc2bbda03f4ceb3"
+        "skiff-runtime-assembly-v3:sha256:4ed675a9eb08804abb50d82ec10e1411a2d86c653ff3156d84db2b13b58fa047"
     );
     assert_eq!(
         receipt.consumer_package.package_build_id.as_str(),
-        "skiff-package-build-v10:sha256:aae3bc279027081667992b0881772f5fcee397c7443156403a5c1651c6f57c54"
+        "skiff-package-build-v10:sha256:88d17f8e17a8fbabed5d4345da2366022d16275f53605530329d01341bb9a56a"
     );
     assert_eq!(
         receipt
             .consumer_deployment
             .deployment_artifact_identity
             .as_str(),
-        "skiff-deployment-artifact-v4:sha256:7bc876f2bf851045bad8079fd9ce0977aeecbb3886f69de9bef28529fa6e501a"
+        "skiff-deployment-artifact-v4:sha256:8782192ec30ddef61d3cf285b6d5efdcd031ef8fd2594bf6e5454d2dd81466ad"
     );
     CurrentScopeCompiledFixture {
         assembly,
@@ -777,14 +777,9 @@ fn write_service_fixture(
     replacement: bool,
 ) {
     fs::create_dir_all(root).expect("gateway fixture directory");
-    let state = if with_database {
-        "state:\n  database:\n    kind: database\n"
-    } else {
-        ""
-    };
     fs::write(
         root.join("package.yml"),
-        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n{state}"),
+        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
     )
     .expect("gateway package manifest");
     let api = if replacement {
@@ -899,18 +894,7 @@ jsonRpc:
         "path: /socket\n"
     };
     fs::write(root.join("websocket.yml"), websocket).expect("gateway WebSocket manifest");
-    let config = match (with_database, replacement) {
-        (true, true) => {
-            "state:\n  database:\n    kind: database\n    namespace: pinned-route-b\ntimeout: 2200\nquota: { cpuMillis: 200, memoryBytes: 2097152 }\nprincipal: service:pinned-route-b\n"
-        }
-        (true, false) => {
-            "state:\n  database:\n    kind: database\n    namespace: pinned-route-a\ntimeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\n"
-        }
-        (false, _) => {
-            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\n"
-        }
-    };
-    fs::write(root.join("config.dev.yml"), config).expect("gateway config");
+    fs::write(root.join("config.dev.yml"), "{}\n").expect("gateway config");
     let database_source = if with_database {
         "\ntype PinnedRouteRecord { id: string }\ndb object PinnedRouteRecord { primary key(id) }\n"
     } else {

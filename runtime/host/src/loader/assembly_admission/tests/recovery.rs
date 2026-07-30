@@ -5,6 +5,8 @@ use std::sync::{
 
 use skiff_artifact_model::*;
 
+use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for_assembly;
+
 use super::{super::*, empty_assembly};
 
 struct EmptyRecordResolver {

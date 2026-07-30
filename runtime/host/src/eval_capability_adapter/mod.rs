@@ -30,12 +30,12 @@ use skiff_runtime_eval::{
     error::{Result, RuntimeError},
 };
 use skiff_runtime_model::{
-    request_heap::{RequestHeap, RequestHeapLimits},
+    request_heap::RequestHeap,
     runtime_value::{ActorRef, RuntimeValue},
 };
 use skiff_runtime_request::{
-    invocation_context_from_request, request_deadline_ms, OutboundRequestRegistry,
-    RequestEffectDouble, RequestEnvelope, RuntimeOperation,
+    invocation_context_from_request, request_deadline_ms, OutboundRequestRegistry, RequestEnvelope,
+    RuntimeOperation,
 };
 
 mod actor;

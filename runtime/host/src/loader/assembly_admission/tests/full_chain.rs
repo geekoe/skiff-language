@@ -11,6 +11,8 @@ use skiff_deployment::{
     assembly::resolve_runtime_assembly, projection::project_service_deployment,
 };
 
+use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for_assembly;
+
 use super::super::*;
 
 struct CountingResolver {
@@ -218,7 +220,31 @@ impl FullChainFixture {
             Some((provider_requirement, provider_call)),
         );
         if let Some(requirement) = consumer_config {
+            let boundary_requirement = match &requirement.access {
+                PackageConfigAccess::Presence => None,
+                PackageConfigAccess::Optional { value_type } => Some(BoundaryConfigRequirement {
+                    path: requirement.path.clone(),
+                    value_type: value_type.clone(),
+                    required: false,
+                }),
+                PackageConfigAccess::Required { value_type } => Some(BoundaryConfigRequirement {
+                    path: requirement.path.clone(),
+                    value_type: value_type.clone(),
+                    required: true,
+                }),
+            };
             consumer_package.runtime_requirements.config = vec![requirement];
+            let BoundaryCallableProjection::Available {
+                implementation_requirements,
+                ..
+            } = consumer_package
+                .boundary_projections
+                .get_mut(&consumer_callable_id)
+                .expect("consumer callable projection")
+            else {
+                unreachable!("consumer fixture projection must be available")
+            };
+            implementation_requirements.config = boundary_requirement.into_iter().collect();
             skiff_artifact_identity::assign_package_artifact_identities(&mut consumer_package)
                 .unwrap();
         }
@@ -957,7 +983,10 @@ async fn config_snapshot_requires_exact_deployment_and_package_partitions_before
             )
             .await
             .expect_err("non-exact config snapshot must fail before activation");
-        assert!(error.to_string().contains("do not exactly match"));
+        assert!(
+            format!("{error:#}").contains("do not exactly match"),
+            "unexpected error: {error:#}"
+        );
         assert!(controller.active().unwrap().is_none());
     }
 }
@@ -1001,9 +1030,10 @@ async fn config_snapshot_validates_required_types_and_isolates_deployment_views(
             )
             .await
             .expect_err("missing or mistyped required config must fail admission");
+        let message = format!("{error:#}");
         assert!(
-            error.to_string().contains("required value is missing")
-                || error.to_string().contains("must be a string")
+            message.contains("required value is missing") || message.contains("must be a string"),
+            "unexpected error: {message}"
         );
         assert!(controller.active().unwrap().is_none());
     }
@@ -1263,7 +1293,10 @@ async fn reachable_db_metadata_requires_router_supplied_service_db() {
         .await
         .expect_err("DB metadata without Router serviceDb must fail closed");
 
-    assert!(error.to_string().contains("Router-supplied serviceDb"));
+    assert!(
+        format!("{error:#}").contains("Router-supplied serviceDb"),
+        "unexpected error: {error:#}"
+    );
     assert!(controller.active().unwrap().is_none());
 }
 
@@ -1700,11 +1733,7 @@ fn implementation_package(
         package_requirements: Vec::new(),
         contract_requirements,
         service_requirements,
-        runtime_requirements: PackageRuntimeRequirements {
-            config: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
-        },
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::from([(
             callable_id.clone(),
             CallableSemanticFacts {
@@ -1723,7 +1752,6 @@ fn implementation_package(
                     config: Vec::new(),
                     state: Vec::new(),
                     native_capabilities: Vec::new(),
-                    runtime_capabilities: Vec::new(),
                     complete_may_effects: effects,
                     provenance,
                 },

@@ -14,7 +14,7 @@ use skiff_compiler_source::{
 const DIRECT_PROVIDER_ID: &str = "example.com/interface-provider";
 const DIRECT_PROVIDER_VERSION: &str = "1.0.0";
 const DIRECT_PROVIDER_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:35b128a897b252ecfbd3968d62f5143043732282ece73e16403333c335d406aa";
+    "skiff-package-build-v10:sha256:f28e5aa0bbc8f2173c694b7f2be3cd11b16d437ec0e412959e872cf5837e04ad";
 const DIRECT_PROVIDER_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:82ea616167b1673ed2a21aed42e51d0bbc214c9995375d2a0cd487c17c509261";
 

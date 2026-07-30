@@ -569,13 +569,6 @@ fn finish_control_response(
                 reason: error.message,
             })
         }
-        Some(other) => {
-            let _ = lease.cancel("unexpected_control_response");
-            Err(RuntimeError::ProviderUnavailable {
-                target: target.to_string(),
-                reason: format!("control RPC received {}", other.kind()),
-            })
-        }
         None => {
             let _ = lease.cancel("response_channel_closed");
             Err(RuntimeError::ProviderUnavailable {

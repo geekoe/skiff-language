@@ -95,8 +95,14 @@ fn materializer_preserves_canonical_config_requirements_without_a_second_shape_o
     assert_eq!(
         materialized.published.value["runtimeRequirements"]["config"],
         serde_json::json!([
-            { "path": "app.timeout", "valueType": "number", "required": false },
-            { "path": "app.token", "valueType": "string", "required": true }
+            {
+                "path": "app.timeout",
+                "access": { "kind": "optional", "valueType": "number" }
+            },
+            {
+                "path": "app.token",
+                "access": { "kind": "required", "valueType": "string" }
+            }
         ])
     );
     assert!(materialized.published.value.get("configShape").is_none());

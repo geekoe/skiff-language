@@ -458,14 +458,13 @@ fn tampered_activation_template_fails_before_a_partial_candidate_exists() {
     let mut fixture = CycleFixture::new();
     fixture.assembly.activation_templates[0].implementation_package_build_id =
         PackageBuildId::new("tampered");
-    skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
-
-    let error = RuntimeAssemblyLoader::new(&fixture.resolver)
-        .load(fixture.assembly)
+    let error = skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly)
         .unwrap_err();
 
     assert!(
-        error.to_string().contains("activation template"),
+        error
+            .to_string()
+            .contains("activation implementation package"),
         "unexpected error: {error:#}"
     );
 }

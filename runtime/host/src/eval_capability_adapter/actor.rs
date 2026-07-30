@@ -595,7 +595,6 @@ mod tests {
     use skiff_runtime_transport::actor_method::{
         decode_actor_method_frame, ActorMethodCancelReason, ActorMethodFrame,
     };
-    use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
     use tokio::time::{timeout, Duration};
 
     const BUILD_ID: &str =

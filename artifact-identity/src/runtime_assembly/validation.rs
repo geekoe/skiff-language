@@ -347,16 +347,3 @@ fn validate_empty_closure(assembly: &RuntimeAssembly) -> Result<()> {
         invalid_assembly("an assembly with no roots must have an empty resolved closure")
     }
 }
-
-fn validate_unique_names<'a>(names: impl IntoIterator<Item = &'a str>, label: &str) -> Result<()> {
-    let mut seen = BTreeSet::new();
-    for name in names {
-        if name.trim().is_empty() {
-            return invalid_assembly(format!("{label} key must not be empty"));
-        }
-        if !seen.insert(name) {
-            return invalid_assembly(format!("duplicate {label} {name}"));
-        }
-    }
-    Ok(())
-}

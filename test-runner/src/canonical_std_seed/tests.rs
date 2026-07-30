@@ -192,11 +192,30 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
         .next()
         .cloned()
         .expect("std exports at least one public symbol");
-    alternative
+    let removed_symbol = alternative
         .artifact
         .package_local_abi
         .public_symbols
-        .remove(&first_public_symbol);
+        .remove(&first_public_symbol)
+        .expect("selected public symbol must exist");
+    if let skiff_artifact_model::PackageLocalAbiSymbol::Callable { callable_id, .. } =
+        removed_symbol
+    {
+        alternative.artifact.callable_links.remove(&callable_id);
+        alternative
+            .artifact
+            .callable_semantic_facts
+            .remove(&callable_id);
+        alternative
+            .artifact
+            .boundary_projections
+            .remove(&callable_id);
+        alternative
+            .artifact
+            .implementation_links
+            .functions
+            .remove(&first_public_symbol);
+    }
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
     let alternative_receipt =
         publish_package_artifact_records(different_store.root(), &alternative).unwrap();

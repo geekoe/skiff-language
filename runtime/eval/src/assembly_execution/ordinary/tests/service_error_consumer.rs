@@ -1899,11 +1899,7 @@ fn file_reference(file: &FileIrUnit) -> FileIrRef {
 }
 
 fn empty_runtime_requirements() -> PackageRuntimeRequirements {
-    PackageRuntimeRequirements {
-        config: Vec::new(),
-        resources: Vec::new(),
-        runtime_capabilities: Vec::new(),
-    }
+    PackageRuntimeRequirements { config: Vec::new() }
 }
 
 fn detached_value_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {

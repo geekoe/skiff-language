@@ -369,11 +369,7 @@ impl Fixture {
             package_requirements: Vec::new(),
             contract_requirements: Vec::new(),
             service_requirements: Vec::new(),
-            runtime_requirements: PackageRuntimeRequirements {
-                config: Vec::new(),
-                resources: Vec::new(),
-                runtime_capabilities: Vec::new(),
-            },
+            runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
             callable_semantic_facts: BTreeMap::from([(
                 callable_id.clone(),
                 CallableSemanticFacts {
@@ -390,7 +386,6 @@ impl Fixture {
                         config: Vec::new(),
                         state: Vec::new(),
                         native_capabilities: Vec::new(),
-                        runtime_capabilities: Vec::new(),
                         complete_may_effects: effects,
                         provenance,
                     },

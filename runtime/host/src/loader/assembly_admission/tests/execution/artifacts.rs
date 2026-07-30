@@ -1845,11 +1845,7 @@ fn implementation_package(
         package_requirements,
         contract_requirements,
         service_requirements,
-        runtime_requirements: PackageRuntimeRequirements {
-            config: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
-        },
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::from([(
             callable_id.clone(),
             CallableSemanticFacts {
@@ -1868,7 +1864,6 @@ fn implementation_package(
                     config: Vec::new(),
                     state: Vec::new(),
                     native_capabilities: Vec::new(),
-                    runtime_capabilities: Vec::new(),
                     complete_may_effects: effects,
                     provenance,
                 },
