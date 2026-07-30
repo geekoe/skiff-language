@@ -48,7 +48,16 @@ last-known-good、bounded retry与health-derived activation CAS；不扩到stabl
 generation-pinned原子rebind：provider/callback是仅有入口，provider获得自己的
 config/DB/file/actor/spawn/WebSocket/telemetry与fresh heap，原request保留deadline、内部停止、
 trace/lifecycle/stream/test等事实；missing exact context不查latest，escaping stream继续pin旧generation。
-R448 PASS前R446保持pending。
+R448 PASS前R446保持pending；R448 PASS也不替代下述R449前置。
+
+2026-07-30 service DB index复核：File IR虽然已有普通/unique index metadata，但Runtime没有创建或验证
+Mongo index，现有service DB实际只有`_id_`，unique约束没有生效；partial index还错误地把raw source AST
+投影到Runtime。F449按
+[`db-capability-architecture.md`](../../../architecture/db-capability-architecture.md)在candidate
+prepare/cold recovery、prepared ACK前协调同service全部version的exact index plan：missing additive create，
+exact pass，managed changed/removed fail closed，unmanaged与`_id_`保留；partial index改为compiler拒绝。
+本机迁移只保留Agent定义/设置及credential/key/upstream，聊天/session/run/tool/interaction历史不迁移，
+旧库与备份保留。R449 PASS前F448、F446与R446继续保持pending。
 
 ## 输入
 
@@ -81,6 +90,8 @@ R448 PASS前R446保持pending。
   顶层权限不传递，consumer不复制DB metadata，linked/runtime按artifact+file+type index精确选择。
 - 同一stateful package的direct/transitive diamond在exact build与完整resolved mapping canonical相同时只
   激活一个collection projection/metadata owner；其它mapping/build/root冲突失败。
+- Runtime在prepared ACK前真实建立并验证普通/unique service DB index；同service多version合并无冲突，
+  partial index不进入artifact/runtime，unique duplicate只产生脱敏不可重试constraint错误。
 
 ## 实现批次
 

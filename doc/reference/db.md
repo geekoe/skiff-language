@@ -2,7 +2,8 @@
 
 本文负责：稳定描述 Skiff service-owned database 的用户可见语言规则，包括 `db object`、读写操作、query block、projection、返回类型、transaction、lease、数据库归属、encrypted storage mapping 和当前不支持事项。
 
-本文不负责：compiler lowering、runtime Mongo adapter、artifact DTO、索引 rollout、schema migration、跨 service 数据复制、actor / queue / timer 调度和实现迁移计划。
+本文不负责：compiler lowering、runtime Mongo adapter、artifact DTO、索引 physical name、schema migration、
+跨 service 数据复制、actor / queue / timer 调度和实现迁移计划。
 
 ## 1. Data Model
 
@@ -73,6 +74,43 @@ activation environment与serviceId共同定界；不另设`platformId`。开发�
 选择database/namespace；同一service中的所有Package共享该数据库，同时每个DB target继续使用精确
 PackageArtifact/File IR/type identity。不同Package可以使用相同裸collection名字而不共享storage；
 跨service数据库访问禁止。
+
+### 1.2 Index
+
+`db object`可以声明普通索引和唯一索引：
+
+```skiff
+db object User {
+  name "user"
+  primary key(id)
+  index byCreated(createdAt desc)
+  unique index byEmail(email asc)
+}
+```
+
+规则：
+
+- `index`默认是非唯一索引；`unique index`要求所有已有和后续document在该key上唯一。
+- 一个索引至少包含一个field；复合索引的field顺序和每个`asc` / `desc`方向都有语义。
+- 索引名在当前`db object`内唯一，是稳定logical identity，不是Mongo physical index name。
+- index field path复用本文件统一的stored field path policy。Compiler必须像query、projection和order一样
+  验证path；encrypted field、recoverable-envelope内部、动态shape和其它不可查询path不能进入索引。
+- 索引的字符串比较和排序使用binary/simple collation；locale-aware、case-insensitive或作者自定义
+  collation当前不支持。
+- primary key由平台映射到后端主键索引，作者不重复声明或管理底层`_id`索引。
+- 带`where`条件的partial index当前不支持，compiler必须直接拒绝。源码predicate不能以未类型化AST或
+  Mongo filter形式进入artifact或Runtime；未来需要partial index时必须先定义封闭的typed predicate IR。
+
+Runtime只会在当前service完整DB plan已经满足后接纳activation。新增普通或唯一索引可以由平台以幂等方式
+创建；更改或删除已受管索引需要显式schema migration，不能在activation时静默drop/rebuild。一个candidate
+同时包含同service多个version时，Runtime先合并并验证它们的索引声明；同一logical index identity出现不同
+定义会拒绝activation。
+
+违反已生效唯一索引的业务写入抛出
+`std.db.ConstraintError { target: "std.db", message: "database constraint violated", retryable: false }`。
+该错误不包含Mongo错误文本、database/collection/physical index name、冲突key或业务值。若Runtime为已有
+数据创建唯一索引时发现重复值，candidate prepare同样以脱敏、不可重试的constraint分类失败；由于service
+request尚未开始，该失败不进入业务`catch`。
 
 ## 2. Field Paths And Contextual Keywords
 

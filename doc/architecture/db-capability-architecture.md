@@ -194,9 +194,57 @@ Mongo-specific responsibilities stay below this boundary:
 
 Skiff runtime above the store talks in service DB commands and business JSON, not Mongo documents.
 
+### Exact Service DB Index Plan
+
+Runtime admission从candidate的exact linked DB metadata为每个service建立一份完整`ServiceDbIndexPlan`。
+该plan不是新的artifact，也不从运行中的request或Mongo反向推断。它按以下顺序形成：
+
+1. 对candidate中同一`(storage domain, environment, serviceId)`的全部deployment/version收集DB metadata；
+2. 按系统physical collection identity合并collection；
+3. 同一logical index identity且field、顺序、方向、unique和collation完全相同时去重；
+4. 同名index定义不同、collection metadata owner冲突、physical encoding collision或同Package ID不同
+   exact build时，在任何Mongo mutation前拒绝candidate；
+5. 不同logical index identity形成并集，使同service并存version看到同一个兼容DB plan。
+
+每个受管index的physical name由系统对
+`(packageId, logical collection identity, logical index identity)`做稳定、无碰撞、满足Mongo限制的编码。
+源码index name、Package version/build、service version、dependency alias、edge path和runtime replica都
+不能直接成为physical name。`_id_`是Mongo内建主键索引，不进入受管plan，也不参与removed检查。
+
+Index field path必须复用canonical DB field policy和physical field mapper，不能另写一套dot-path parser。
+encrypted、recoverable-envelope内部、动态shape及其它不允许query/order的path同样不允许index。所有受管
+index固定使用Mongo simple/binary collation；collation是canonical definition的一部分。
+
+在candidate prepare和cold recovery中，每个Runtime replica都必须在发布activation context或返回prepared
+ACK之前协调完整plan：
+
+- 缺少的受管index：additive、幂等创建；
+- physical name与canonical definition精确一致：通过；
+- 已有受管index同名但keys、方向、unique或collation变化：fail closed；
+- 数据库中存在但candidate完整plan已不再声明的受管index：fail closed；
+- 非Skiff受管index：保留且忽略，不能自动drop；
+- Mongo `_id_`：保留且忽略。
+
+多replica并发协调必须收敛到同一结果：重复的exact create视为幂等成功；任一replica观察到定义冲突或创建后
+复读不一致都拒绝prepare。Runtime不在activation中drop、rename或background rebuild受管index。索引变更与
+删除必须由显式migration先完成，再提交能通过exact admission的新candidate。
+
+创建unique index时发现历史duplicate，以及业务写入触发duplicate key，统一映射为脱敏、不可重试的
+`std.db.ConstraintError`分类；不得泄漏Mongo code/message、database、collection、physical index、key
+pattern或业务值。业务request中的约束冲突可被用户捕获；prepare/cold recovery中的冲突只作为sanitized
+activation rejection。其它Mongo错误继续映射到既有平台/内部错误边界，不能伪装成constraint。
+
+Partial index不属于当前架构。Compiler遇到index `where`必须报静态错误；File IR、runtime projection、
+linked DB metadata和store command均不得携带raw source AST或Mongo predicate。未来若支持partial index，
+必须先设计可类型检查、canonical identity稳定、可在artifact boundary验证的封闭typed predicate IR。
+
 ## Router And Activation
 
 Router / platform activation injects `serviceDb.mongoUrl`. Source files and service config do not contain the real DB URL.
+
+Router仍是prepare/commit/abort coordinator，但不解析index metadata。Runtime participant只有在exact assembly、
+config snapshot、service DB identity和上述完整index plan全部admit并协调成功后才能返回prepared ACK。
+Cold recovery执行同一plan比较与协调，不能因为数据库中已有某些index就跳过candidate验证。
 
 `package.yml state`、`PackageRuntimeRequirements.state`、`StateBinding`和deployment state binding都不是DB
 capability的一部分。Runtime仅在精确activation闭包含DB metadata时按需创建service DB handle；没有DB

@@ -1255,6 +1255,23 @@ logical collection identity重命名需要显式迁移。
 引用dependency的精确DB metadata，实际读写仍落当前generated test service的数据库，不能打开provider
 service数据库。Redis、queue或其它外部系统将来使用独立capability，不保留通用`state`枚举占位。
 
+Runtime从exact provider DB metadata为每个
+`(trusted storage domain, environment, serviceId)`建立完整service DB index plan。同一candidate内该service
+的全部version必须先合并验证：同logical index identity定义完全相同则去重，不同则在任何storage mutation前
+拒绝；其余不同名字的index取并集。Index physical name由系统稳定编码Package ID、logical collection
+identity与logical index identity，不包含version/build/alias/edge/replica。index field path复用统一DB
+field policy和physical mapper，受管index固定simple/binary collation。
+
+Candidate prepare和cold recovery都必须在activation context publish与prepared ACK前协调整个plan。
+missing受管index做additive幂等创建，exact definition通过；changed或从完整plan removed的受管index
+fail closed，不自动drop/rebuild；unmanaged index和Mongo `_id_`保留并忽略。每个replica执行相同协调，
+并发exact create必须幂等收敛。Unique duplicate映射为脱敏、不可重试的`std.db.ConstraintError`分类；
+普通Mongo细节不得越过adapter边界。
+
+Partial index当前不支持。Compiler必须拒绝index `where`；File IR、runtime projection、linked metadata和
+store command均不得携带raw Source AST predicate。未来支持必须先定义独立typed predicate IR，不保留当前
+未执行语义的兼容字段。
+
 Service profile没有`lifecycle`配置面；旧`maxConcurrency`和`idleTimeoutMs`均删除，出现`lifecycle`
 必须fail closed。`DeploymentPolicy`和`ResourcePolicy`整体删除；ServiceDeploymentInput、
 ServiceDeployment、ActivationTemplate、RuntimeAssembly和artifact identity都不拥有或复制service级

@@ -66,6 +66,16 @@ Router先把frame绑定到发送者的exact assembly registration，再按active
   fact时fail closed；
 - actor/spawn response按同一request与sender correlation返回，Router不恢复service/build inference。
 
+Candidate prepare与cold recovery还必须在每个service的activation context publish、prepared ACK或恢复成功
+之前，完成exact service DB index plan协调。Runtime先把candidate中同一storage domain/environment/service
+identity下的全部version合成一份plan；同logical index不同定义在任何DB mutation前失败。每个replica可并发
+幂等创建missing index，但必须复读并确认canonical keys、direction、unique与simple/binary collation精确
+一致。已有受管index发生change或从完整plan中removed时fail closed；非受管index与Mongo `_id_`保留并忽略。
+Router只接收prepared/rejected结果，不读取Mongo metadata，也不能替Runtime伪造index readiness。
+
+完整index owner、physical naming、错误与partial-index边界见
+[`db-capability-architecture.md`](db-capability-architecture.md) “Exact Service DB Index Plan”。
+
 ### Activation execution owner switch
 
 Runtime必须同时保留当前active generation和仍被request、stream、WebSocket或callback pin住的draining

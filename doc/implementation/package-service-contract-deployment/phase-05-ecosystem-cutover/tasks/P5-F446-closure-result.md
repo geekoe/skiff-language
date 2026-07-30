@@ -17,6 +17,8 @@
   [`P5-F446D-test-runner-ecosystem-migration.md`](P5-F446D-test-runner-ecosystem-migration.md)
 - 新发现的activation owner closure：
   [`P5-F448-activation-owner-switch-atomic-rebind.md`](P5-F448-activation-owner-switch-atomic-rebind.md)
+- 新发现的service DB index closure：
+  [`P5-F449-service-db-index-admission-and-migration.md`](P5-F449-service-db-index-admission-and-migration.md)
 - 当前参考：
   [`config.md`](../../../../reference/config.md)、
   [`db.md`](../../../../reference/db.md)、
@@ -78,13 +80,21 @@ combined gate、跨仓库证据或R446。
      test effect/case capability与heap limits保持request-scoped；
    - provider fresh heap/boundary materialization、static resource projection、ActorRef显式owner、
      caller actor frame隔离及escaping stream旧generation pin均有动态证据。
-7. **Final evidence**
+7. **Service DB indexes and migration**
+   - 普通/unique index在prepare与cold recovery、prepared ACK前按同service全部version的完整plan协调；
+   - missing additive create、exact pass、managed changed/removed fail closed、unmanaged与`_id_`保留，
+     multi-replica exact create幂等；
+   - partial index compiler拒绝，artifact/runtime raw `where` AST全链删除；
+   - unique duplicate只产生脱敏不可重试`std.db.ConstraintError`分类；
+   - 本机旧库只迁移Agent定义/设置和credential/key/upstream；聊天/session/run/tool/interaction不迁移，
+     v1 encrypted field重写为v2，旧库和备份保留。
+8. **Final evidence**
    - 在上述实现合流后的同一精确候选上运行受影响聚焦测试、必要combined gate、跨仓库non-live、
      stable cold activation与Agine chat smoke；
-   - R447先验收managed watch，R448独立验收activation owner switch，再交由全新只读R446 owner执行
-     terminal验收。
+   - R447先验收managed watch，R448独立验收activation owner switch，R449独立验收index/migration，再交由
+     全新只读R446 owner执行terminal验收。
 
-主线程已经为上述实现缺口派发代码任务。它们完成、合流并通过R447/R448前，本文件不得改为`PASS`。
+主线程已经为上述实现缺口派发代码任务。它们完成、合流并通过R447/R448/R449前，本文件不得改为`PASS`。
 
 ## Closed Secret Source Decision
 

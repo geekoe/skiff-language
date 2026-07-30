@@ -2,8 +2,8 @@
 
 ## Role
 
-独立只读验收F446A–D、F447与F448 exact integration candidate。R447和R448必须已经各自在同一候选上
-PASS。先核验共同验收矩阵与跨仓库commit/tree，再按风险选择聚焦probe；同一代码状态已有昂贵完整gate时
+独立只读验收F446A–D、F447、F448与F449 exact integration candidate。R447、R448和R449必须已经各自在
+同一候选上PASS。先核验共同验收矩阵与跨仓库commit/tree，再按风险选择聚焦probe；同一代码状态已有昂贵完整gate时
 不机械重跑。
 
 ## Blocking Checks
@@ -24,6 +24,13 @@ PASS。先核验共同验收矩阵与跨仓库commit/tree，再按风险选择�
 - provider使用fresh heap和boundary materialization，caller actor frame不进入provider，ActorRef显式owner
   不改写，Package静态资源随RuntimeExecutionProjection，escaping stream保持旧generation pin；
 - exact activation context缺失/歧义时fail closed，不读取latest、ambient或thread-local current service；
+- 普通/unique DB index在prepare/cold recovery和prepared ACK前按同service全部version完整plan协调；
+  missing additive create、exact pass、managed changed/removed fail closed、unmanaged与`_id_`保留，
+  multi-replica exact create幂等且不发布partial prepared context；
+- partial index由compiler拒绝，artifact/runtime无raw `where` AST；unique duplicate使用脱敏不可重试
+  `std.db.ConstraintError`，不泄漏Mongo/database/collection/index/key/value；
+- filtered migration只保留Agent定义/设置和credential/key/upstream，聊天/session/run/tool/interaction不
+  进入目标；v1 secret重写为v2，旧库及迁移前备份仍保留；
 - POSIX secret source未提交、是普通非symlink文件、mode精确`0600`且读取前检查；复制/暂存文件在使用前
   已是`0600`，snapshot store目录/文件为`0700`/`0600`，验收输出不泄漏内容；
 - 无POSIX mode平台要么有明确可验证的owner-only/link-substitution等价边界，要么fail closed；

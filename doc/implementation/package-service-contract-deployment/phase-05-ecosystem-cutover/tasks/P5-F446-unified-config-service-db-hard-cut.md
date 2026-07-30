@@ -32,6 +32,9 @@ F446D test-runner + ecosystem migration
 F448 activation owner switch atomic rebind
              |
              v
+F449 service DB index admission + migration
+             |
+             v
 R446 independent acceptance
 ```
 
@@ -39,6 +42,8 @@ F446A先建立共享DTO/identity checkpoint。F446B不能在tooling内复制临�
 checkpoint，不能让Runtime读取source YAML或latest目录。F446D可以把Skiff test-runner与外部仓库迁移拆成
 不同repo worktree并行，但必须消费同一格式，不得增加兼容parser。F448负责在F446 activation事实之上把
 service provider/callback的owner切换收敛为原子操作；它不能引入latest fallback或第二套snapshot reader。
+F449负责让DB index metadata在prepare/cold recovery成为真实storage约束，并完成受控filtered migration；
+它不能把partial index raw AST带回artifact/runtime，也不能自动drop受管index。
 
 ## Common Acceptance
 
@@ -70,6 +75,10 @@ service provider/callback的owner切换收敛为原子操作；它不能引入la
     deadline/内部停止/time/generation/lifecycle/trace/error/request identity/stream/test/heap limits；
     provider fresh heap、ActorRef显式owner、caller actor frame隔离与escaping old-generation stream均有
     证据。
+15. 普通/unique index在prepared ACK前按同service完整plan协调；multi-version同定义合并、不同定义拒绝，
+    missing additive create，managed changed/removed fail closed，unmanaged与`_id_`保留。
+16. partial index在compiler明确拒绝且artifact/runtime无raw predicate AST；unique duplicate映射为脱敏、
+    不可重试的`std.db.ConstraintError`，迁移只保留已确认的定义/设置/credential数据并保留旧库与备份。
 
 当前实现状态与剩余闭合项见
 [`P5-F446-closure-result.md`](P5-F446-closure-result.md)。该文档在R446独立验收前保持草稿状态。
