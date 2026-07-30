@@ -16,7 +16,7 @@ use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
 };
-use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_capability_context::{
     DbCapabilityContext, DbCapabilityContextApi, DbCapabilityError, DbCapabilityFactory,
     DbCapabilityFuture, DbCapabilityLeaseHandle, DbCapabilityLeaseHold, DbCapabilityResult,
@@ -467,33 +467,7 @@ async fn shared_test_assembly_isolation() {
         .iter()
         .map(|case| case.entrypoint.deployment.clone())
         .collect::<Vec<_>>();
-    let deployments = test_fixture
-        .cases
-        .iter()
-        .flat_map(|case| case.records.deployments.iter().cloned())
-        .collect::<Vec<_>>();
-    let contracts = test_fixture
-        .cases
-        .iter()
-        .flat_map(|case| case.records.contracts.iter().cloned())
-        .collect::<Vec<_>>();
-    let package_refs = test_fixture
-        .cases
-        .iter()
-        .flat_map(|case| case.records.assembly.resolved_packages.iter().cloned())
-        .collect::<BTreeSet<_>>();
-    let packages = package_refs
-        .iter()
-        .map(|reference| {
-            store
-                .read_package_artifact(reference)
-                .unwrap()
-                .as_ref()
-                .clone()
-        })
-        .collect::<Vec<_>>();
-    let shared_assembly =
-        resolve_runtime_assembly(&roots, &deployments, &contracts, &packages).unwrap();
+    let shared_assembly = test_fixture.records.assembly.clone();
     let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&shared_assembly).unwrap();
     store.write_runtime_assembly(&shared_assembly).unwrap();
     store.read_runtime_assembly(&assembly_ref).unwrap();

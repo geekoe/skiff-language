@@ -169,13 +169,9 @@ fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
     test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
         .expect("spawn-submit runtime records");
-    let case = test_fixture
-        .cases
-        .into_iter()
-        .next()
-        .expect("spawn-submit fixture has one case");
+    let assembly = Arc::new(test_fixture.records.assembly.clone());
     CurrentScopeCompiledFixture {
-        assembly: Arc::new(case.records.assembly),
+        assembly,
         artifact_root: runtime_artifacts,
         _temp: temp,
     }
@@ -634,13 +630,14 @@ fn compile_stream_argument_fixture() -> StreamArgumentCompiledFixture {
     test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
         .expect("stream-argument runtime records");
+    let assembly = Arc::new(test_fixture.records.assembly.clone());
     let first_case = test_fixture
         .cases
         .into_iter()
         .next()
         .expect("stream-argument fixture has six cases");
     StreamArgumentCompiledFixture {
-        assembly: Arc::new(first_case.records.assembly),
+        assembly,
         artifact_root: runtime_artifacts,
         entrypoint: first_case.entrypoint,
         _temp: temp,

@@ -55,7 +55,6 @@ pub struct CanonicalTestServiceEntrypoint {
 pub struct CanonicalTestServiceCaseFixture {
     pub contract: skiff_artifact_model::ServiceContractRef,
     pub entrypoint: CanonicalTestServiceEntrypoint,
-    pub(crate) records: Arc<CanonicalTestRecords>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,7 +280,6 @@ fn assemble_test_service_fixture_inner(
         .map(|(contract, entrypoint)| CanonicalTestServiceCaseFixture {
             contract,
             entrypoint,
-            records: Arc::clone(&records),
         })
         .collect();
     Ok(CanonicalTestServiceFixture {
