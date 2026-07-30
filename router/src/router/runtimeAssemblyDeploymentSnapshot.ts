@@ -661,15 +661,7 @@ function decodeDeploymentPolicy(
   positiveSafeInteger(resources.cpuMillis, `${label}.resources.cpuMillis`);
   positiveSafeInteger(resources.memoryBytes, `${label}.resources.memoryBytes`);
   const activation = exactObject(value.activation, `${label}.activation`);
-  exactFields(
-    activation,
-    ['maxConcurrency', 'idleTimeoutMs'],
-    `${label}.activation`
-  );
-  positiveSafeInteger(
-    activation.maxConcurrency,
-    `${label}.activation.maxConcurrency`
-  );
+  exactFields(activation, ['idleTimeoutMs'], `${label}.activation`);
   if (activation.idleTimeoutMs !== null) {
     positiveSafeInteger(
       activation.idleTimeoutMs,

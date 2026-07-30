@@ -555,6 +555,12 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
       mutate: (fixture: Fixture) => {
         fixture.deployments[1]!.policy.timeoutMs = null;
       }
+    },
+    {
+      name: 'legacy activation maxConcurrency',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[1]!.policy.activation.maxConcurrency = 8;
+      }
     }
   ])('rejects invalid deployment mode or policy: $name', async ({ mutate }) => {
     const root = await fixtureRoot();
@@ -851,7 +857,7 @@ function deployment(
     policy: {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
-      activation: { maxConcurrency: 8, idleTimeoutMs: null },
+      activation: { idleTimeoutMs: null },
       principal: 'service:skiff.run/echo'
     },
     diagnosticText: { displayName: gatewayEntryKey, notes: {} }
