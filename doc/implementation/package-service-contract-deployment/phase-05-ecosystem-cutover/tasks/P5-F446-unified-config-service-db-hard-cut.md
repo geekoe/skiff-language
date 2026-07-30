@@ -54,3 +54,5 @@ checkpoint，不能让Runtime读取source YAML或latest目录。F446D可以把Sk
    打开provider DB。
 9. official/internals/stable authoring不再含state、secret ref、timeout、quota、principal或resource占位值。
 10. 旧artifact/profile直接拒绝；没有dual read/write、ambient env或latest-config fallback。
+11. `DeploymentPolicy`、`ResourcePolicy`和deployment/activation `policy` wire为零；external business
+    request只使用Router operator配置的`requestTimeoutMs`，service profile、deployment和assembly不能覆盖。

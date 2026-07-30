@@ -103,11 +103,10 @@ mod tests {
     use serde_json::json;
     use skiff_artifact_model::{
         ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity,
-        DeploymentPolicy, DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey,
-        GatewayIngressBinding, IngressProtocol, IngressSelector, PackageArtifactRef,
-        PackageBuildId, PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly,
-        RuntimeAssemblyRef, ServiceBindingTemplate, ServiceDeploymentRef,
-        GATEWAY_ENTRY_IDENTITY_PREFIX, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+        DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey, GatewayIngressBinding,
+        IngressProtocol, IngressSelector, PackageArtifactRef, PackageBuildId, PackageCodeSlot,
+        PackageLocalAbiIdentity, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
+        ServiceDeploymentRef, GATEWAY_ENTRY_IDENTITY_PREFIX, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -169,14 +168,6 @@ mod tests {
                 deployment: deployment.clone(),
                 implementation_package_build_id: PackageBuildId::new("package-build"),
                 resource_bindings: Vec::new(),
-                policy: DeploymentPolicy {
-                    timeout_ms: Some(1000),
-                    resources: ResourcePolicy {
-                        cpu_millis: 100,
-                        memory_bytes: 1024,
-                    },
-                    principal: "gateway-test".to_string(),
-                },
             }],
             gateway_ingress: vec![binding("/users"), binding("/users/alias")],
         };

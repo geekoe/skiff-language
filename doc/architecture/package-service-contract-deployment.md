@@ -1206,20 +1206,21 @@ Package/schema/collection identity；跨service DB访问禁止。service重命�
 service数据库。Redis、queue或其它外部系统将来使用独立capability，不保留通用`state`枚举占位。
 
 Service profile没有`lifecycle`配置面；旧`maxConcurrency`和`idleTimeoutMs`均删除，出现`lifecycle`
-必须fail closed。`DeploymentPolicy`不包含`activation`，ServiceDeployment、DeploymentArtifact、
-RuntimeAssembly和artifact identity都不得复制并发或空闲超时。初期唯一并发配置是`router.yml`现有
-`runtime`段的required正安全整数`maxConcurrency`，Router按每条Runtime WebSocket连接统一限制所有普通
-pending request；Actor/control frame不计。该门禁不做动态CPU、内存或数据库资源估算，满载立即overload
-且不排队。
+必须fail closed。`DeploymentPolicy`和`ResourcePolicy`整体删除；ServiceDeploymentInput、
+ServiceDeployment、ActivationTemplate、RuntimeAssembly和artifact identity都不拥有或复制service级
+timeout、CPU、内存、quota、principal、并发或空闲超时。初期唯一并发配置是`router.yml`现有`runtime`
+段的required正安全整数`maxConcurrency`，Router按每条Runtime WebSocket连接统一限制所有普通pending
+request；Actor/control frame不计。该门禁不做动态CPU、内存或数据库资源估算，满载立即overload且不排队。
 
-业务配置文件不拥有`state`、`principal`、`quota`、`resources`或deployment `timeout`。当前没有生效平台
-消费者的这些profile字段全部删除；不能为了满足schema填占位值。未来CPU、memory、quota或principal等
-operator policy必须由operator-owned独立配置设计，不得塞回Package业务配置或ServiceDeployment。
+业务配置文件不拥有`state`、`principal`、`quota`、`resources`或deployment `timeout`。这些旧profile
+字段全部删除；不能为了满足schema填占位值。未来CPU、memory、quota或principal等operator policy必须由
+operator-owned独立配置设计，不得塞回Package业务配置或ServiceDeployment。
 
-Router实例的`requestTimeoutMs`只定义external business request的平台上限。它不得参与
+Router实例的`requestTimeoutMs`是external business request唯一的service外部请求截止时间来源；service
+配置、ServiceDeployment和RuntimeAssembly不能收紧、放宽或伪造它。它不得参与
 RuntimeAssembly resolve/load/link/admit、participant prepare ACK、
 activation commit/abort或WebSocket generation release。Assembly activation是控制面事务，不是一个
-service request；把业务request deadline复用为activation deadline会让部署耗时被service policy意外改变。
+service request；把业务request deadline复用为activation deadline会让部署耗时被错误的业务配置影响。
 
 tooling从精确PackageArtifact、生成的ServiceContract及闭合dependency resolution投影
 ServiceDeployment；另从所选profile三层文件和同一exact closure构造RuntimeConfigSnapshot。profile不得

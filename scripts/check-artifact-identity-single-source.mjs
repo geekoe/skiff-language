@@ -614,16 +614,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'ResourcePolicy',
-    requiredFields: Object.freeze(['cpu_millis', 'memory_bytes']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'DeploymentPolicy',
-    requiredFields: Object.freeze(['timeout_ms', 'resources', 'principal']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
     typeName: 'DeploymentDiagnosticText',
     requiredFields: Object.freeze(['display_name', 'notes']),
   }),
@@ -642,7 +632,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'ingress',
       'resource_bindings',
       'runtime_capability_bindings',
-      'policy',
       'diagnostic_text',
     ]),
   }),
@@ -662,7 +651,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'ingress',
       'resource_bindings',
       'runtime_capability_bindings',
-      'policy',
       'diagnostic_text',
     ]),
   }),
@@ -693,7 +681,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'deployment',
       'implementation_package_build_id',
       'resource_bindings',
-      'policy',
     ]),
   }),
   Object.freeze({
@@ -1565,12 +1552,6 @@ pub struct ResourceBinding {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeCapabilityBinding { pub capability: String, pub version: String }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResourcePolicy { pub cpu_millis: u32, pub memory_bytes: u64 }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DeploymentPolicy {
-  pub timeout_ms: Option<u64>, pub resources: ResourcePolicy, pub principal: String,
-}
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentDiagnosticText { pub display_name: String, pub notes: Map }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceDeploymentInput {
@@ -1578,7 +1559,7 @@ pub struct ServiceDeploymentInput {
   pub implementation: Ref, pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
   pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
   pub resource_bindings: Vec<Resource>,
-  pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
+  pub runtime_capability_bindings: Vec<Capability>, pub diagnostic_text: Text,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceDeployment {
@@ -1587,7 +1568,7 @@ pub struct ServiceDeployment {
   pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
   pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
   pub resource_bindings: Vec<Resource>,
-  pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
+  pub runtime_capability_bindings: Vec<Capability>, pub diagnostic_text: Text,
 }
 `;
   const canonicalAssemblyText = `
@@ -1607,7 +1588,7 @@ pub struct ServiceBindingTemplate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationTemplate {
   pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
-  pub resource_bindings: Vec<Resource>, pub policy: Policy,
+  pub resource_bindings: Vec<Resource>,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayIngressBinding {
@@ -1634,7 +1615,7 @@ pub struct ServiceBindingTemplate {
   const canonicalActivationTemplateText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationTemplate {
   pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
-  pub resource_bindings: Vec<Resource>, pub policy: Policy,
+  pub resource_bindings: Vec<Resource>,
 }
 `;
   const canonicalIdentityText = canonicalDeploymentAssemblyIdentityNewtypes
@@ -1657,11 +1638,21 @@ pub struct ActivationTemplate {
       expectedFailures: 0,
     },
     {
-      name: 'rejects retired activation policy in deployment policy',
+      name: 'rejects retired deployment policy field',
       files: canonicalDeploymentAssemblyFiles({
-        deployment: canonicalDeploymentText.replace(
-          'pub resources: ResourcePolicy, pub principal:',
-          'pub resources: ResourcePolicy, pub activation: ActivationPolicy, pub principal:',
+        deployment: canonicalDeploymentText.replaceAll(
+          'pub runtime_capability_bindings: Vec<Capability>, pub diagnostic_text: Text,',
+          'pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,',
+        ),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects retired activation template policy field',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText.replace(
+          'pub resource_bindings: Vec<Resource>,',
+          'pub resource_bindings: Vec<Resource>, pub policy: Policy,',
         ),
       }),
       expectedFailures: 1,
@@ -1791,8 +1782,8 @@ pub struct ServiceDeploymentOperationInput {
       name: 'rejects legacy aggregate embedded in deployment',
       files: canonicalDeploymentAssemblyFiles({
         deployment: canonicalDeploymentText.replace(
-          'pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,',
-          'pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text, pub legacy: ServiceUnit,',
+          'pub runtime_capability_bindings: Vec<Capability>, pub diagnostic_text: Text,',
+          'pub runtime_capability_bindings: Vec<Capability>, pub diagnostic_text: Text, pub legacy: ServiceUnit,',
         ),
       }),
       expectedFailures: 2,

@@ -114,11 +114,11 @@ pub use contract_types::{
 };
 pub use deployment::{
     DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentPolicy, GatewayAdapterPlan, IngressProtocol,
-    IngressSelector, PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding,
-    ResourcePolicy, RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceDeploymentRef,
-    ServiceRequirementKey, ServiceSelectorBinding,
+    DeploymentOperationBinding, GatewayAdapterPlan, IngressProtocol, IngressSelector,
+    PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding,
+    RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
+    ServiceDeploymentOperationInput, ServiceDeploymentRef, ServiceRequirementKey,
+    ServiceSelectorBinding,
 };
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,

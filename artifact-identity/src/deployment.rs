@@ -4,8 +4,8 @@ use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::{
     DeploymentArtifactIdentity, DeploymentGatewayEntry, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, GatewayEntryKey,
-    ResourceBinding, RuntimeCapabilityBinding, ServiceDeployment, ServiceDeploymentRef,
+    DeploymentOperationBinding, DeploymentRevision, GatewayEntryKey, ResourceBinding,
+    RuntimeCapabilityBinding, ServiceDeployment, ServiceDeploymentRef,
 };
 
 mod normalization;
@@ -37,7 +37,6 @@ pub struct DeploymentArtifactIdentityProjection {
     ingress: Vec<DeploymentIngressBinding>,
     resource_bindings: Vec<ResourceBinding>,
     runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
-    policy: DeploymentPolicy,
 }
 
 /// Return the canonical identity preimage. Diagnostic text and the declared identity are excluded.
@@ -69,7 +68,6 @@ pub fn service_deployment_identity_projection(
         ingress: deployment.ingress.clone(),
         resource_bindings: deployment.resource_bindings.clone(),
         runtime_capability_bindings: deployment.runtime_capability_bindings.clone(),
-        policy: deployment.policy.clone(),
     };
     normalization::normalize_projection(&mut projection);
     Ok(projection)

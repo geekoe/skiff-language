@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterArg,
-    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
-    GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    DeploymentIngressBinding, DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind,
+    GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
     GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector, PackageArtifactRef,
-    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, ResourcePolicy, ServiceContractRef,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, ServiceContractRef,
     ServiceDeployment, ServiceDeploymentInput, ServiceProtocolIdentity,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     WEBSOCKET_GATEWAY_ENTRY_KEY,
@@ -193,14 +193,6 @@ fn deployment_with(kind: GatewayAdapterKind) -> ServiceDeployment {
         ingress: vec![selector("/gateway", key)],
         resource_bindings: Vec::new(),
         runtime_capability_bindings: Vec::new(),
-        policy: DeploymentPolicy {
-            timeout_ms: None,
-            resources: ResourcePolicy {
-                cpu_millis: 1,
-                memory_bytes: 1,
-            },
-            principal: "service:example.service".to_string(),
-        },
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Gateway deployment".to_string(),
             notes: BTreeMap::new(),
@@ -287,9 +279,29 @@ fn input_from(deployment: &ServiceDeployment) -> ServiceDeploymentInput {
         ingress: deployment.ingress.clone(),
         resource_bindings: deployment.resource_bindings.clone(),
         runtime_capability_bindings: deployment.runtime_capability_bindings.clone(),
-        policy: deployment.policy.clone(),
         diagnostic_text: deployment.diagnostic_text.clone(),
     }
+}
+
+#[test]
+fn deployment_and_input_wire_reject_retired_policy() {
+    let deployment = deployment_with(GatewayAdapterKind::TypedJson);
+    let policy = serde_json::json!({
+        "timeoutMs": 1000,
+        "resources": {
+            "cpuMillis": 100,
+            "memoryBytes": 1048576
+        },
+        "principal": "service:example.service"
+    });
+
+    let mut deployment_wire = serde_json::to_value(&deployment).unwrap();
+    deployment_wire["policy"] = policy.clone();
+    assert!(serde_json::from_value::<ServiceDeployment>(deployment_wire).is_err());
+
+    let mut input_wire = serde_json::to_value(input_from(&deployment)).unwrap();
+    input_wire["policy"] = policy;
+    assert!(serde_json::from_value::<ServiceDeploymentInput>(input_wire).is_err());
 }
 
 #[test]

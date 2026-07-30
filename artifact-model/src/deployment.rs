@@ -183,22 +183,6 @@ pub struct RuntimeCapabilityBinding {
     pub version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResourcePolicy {
-    pub cpu_millis: u32,
-    pub memory_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DeploymentPolicy {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    pub resources: ResourcePolicy,
-    pub principal: String,
-}
-
 /// Non-semantic text retained for diagnostics and excluded from identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -223,7 +207,6 @@ pub struct ServiceDeploymentInput {
     pub ingress: Vec<DeploymentIngressBinding>,
     pub resource_bindings: Vec<ResourceBinding>,
     pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
-    pub policy: DeploymentPolicy,
     pub diagnostic_text: DeploymentDiagnosticText,
 }
 
@@ -244,7 +227,6 @@ pub struct ServiceDeployment {
     pub ingress: Vec<DeploymentIngressBinding>,
     pub resource_bindings: Vec<ResourceBinding>,
     pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
-    pub policy: DeploymentPolicy,
     pub diagnostic_text: DeploymentDiagnosticText,
 }
 
@@ -253,23 +235,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn deployment_policy_rejects_retired_activation() {
-        let canonical = json!({
-            "resources": {
-                "cpuMillis": 100,
-                "memoryBytes": 1048576
-            },
-            "principal": "service:example.com/users"
-        });
-        let decoded = serde_json::from_value::<DeploymentPolicy>(canonical.clone()).unwrap();
-        assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
-
-        let mut retired = canonical;
-        retired["activation"] = json!({"idleTimeoutMs": null});
-        assert!(serde_json::from_value::<DeploymentPolicy>(retired).is_err());
-    }
 
     #[test]
     fn service_deployment_operation_input_requires_exact_callable_id() {
@@ -311,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn service_deployment_rejects_retired_runtime_config_and_state_fields() {
+    fn service_deployment_rejects_retired_runtime_config_state_and_policy_fields() {
         let deployment = ServiceDeployment {
             schema_version: crate::SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
             contract: ServiceContractRef {
@@ -334,14 +299,6 @@ mod tests {
             ingress: Vec::new(),
             resource_bindings: Vec::new(),
             runtime_capability_bindings: Vec::new(),
-            policy: DeploymentPolicy {
-                timeout_ms: None,
-                resources: ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "service:example.com/users".to_string(),
-            },
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "users".to_string(),
                 notes: BTreeMap::new(),
@@ -349,7 +306,7 @@ mod tests {
         };
         let canonical = serde_json::to_value(deployment).unwrap();
 
-        for field in ["configLiterals", "secretRefs", "stateBindings"] {
+        for field in ["configLiterals", "secretRefs", "stateBindings", "policy"] {
             let mut retired = canonical.clone();
             retired[field] = json!([]);
             assert!(

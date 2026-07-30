@@ -44,7 +44,9 @@ serviceCalls:
 - `config*`文件只包含以canonical Package ID分区的业务配置；`timeout`、`quota`、`principal`、
   `resources`、`state`、数据库名及连接都不是service profile字段，也不投影进ServiceDeployment。
 - Service没有`lifecycle`配置面；旧`maxConcurrency`、`idleTimeoutMs`与deployment `timeout`字段均非法。
-  并发只属于Router的Runtime连接级平台门禁。未来平台policy/resource必须由operator-owned独立配置拥有。
+  `DeploymentPolicy`和`ResourcePolicy`不存在；并发只属于Router的Runtime连接级平台门禁，external
+  business request只使用Router operator配置的`requestTimeoutMs`。未来平台policy/resource必须由
+  operator-owned独立配置拥有。
 - `kind: test`的profile按testing reference固定为`skiff-test`，使用`config.skiff-test.yml`及可选的
   ignored `config.skiff-test.secret.yml`；live target environment不改变该profile。
 

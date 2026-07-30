@@ -104,9 +104,10 @@ RuntimeAssembly。冷恢复必须读取generation钉住的精确assembly ref和s
 这些文件只保存Package业务配置值，不保存平台部署策略。数据库名、数据库连接、principal、quota、
 CPU/内存resource limit、runtime并发、activation timeout和request timeout都不属于本schema。
 
-当前没有生效消费者的`state`、`principal`、`quota`、`resources`和deployment `timeout` profile字段必须
-删除，不能为了满足artifact schema填写占位值。未来平台policy或resource配置必须由operator-owned独立
-配置拥有，不能塞回Package业务配置文件。
+`state`、`principal`、`quota`、`resources`和deployment `timeout`不是合法profile字段，不能为了满足
+artifact schema填写占位值。`DeploymentPolicy`和`ResourcePolicy`不存在；external business request只受
+Router operator配置的`requestTimeoutMs`平台上限约束，service配置不能覆盖。未来平台policy或resource
+配置必须由operator-owned独立配置拥有，不能塞回Package业务配置文件。
 
 这里删除的是service profile中的平台`resources` binding，不是`package.yml.resources`声明的Package静态
 资源；静态资源仍随PackageArtifact发布。

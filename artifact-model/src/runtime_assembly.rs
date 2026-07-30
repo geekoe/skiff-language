@@ -1,7 +1,7 @@
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::{
-    validate_runtime_assembly_identity, AssemblyIdentity, ContractOperationId, DeploymentPolicy,
+    validate_runtime_assembly_identity, AssemblyIdentity, ContractOperationId,
     GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageArtifactRef, PackageBinding,
     PackageBuildId, ResourceBinding, ServiceContractRef, ServiceDeploymentRef,
     ServiceRequirementKey,
@@ -71,7 +71,6 @@ pub struct ActivationTemplate {
     pub deployment: ServiceDeploymentRef,
     pub implementation_package_build_id: PackageBuildId,
     pub resource_bindings: Vec<ResourceBinding>,
-    pub policy: DeploymentPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_template_rejects_retired_runtime_config_and_state_fields() {
+    fn activation_template_rejects_retired_runtime_config_state_and_policy_fields() {
         let template = ActivationTemplate {
             deployment: ServiceDeploymentRef {
                 service_id: "example.com/users".to_string(),
@@ -240,18 +239,10 @@ mod tests {
             },
             implementation_package_build_id: PackageBuildId::new("build"),
             resource_bindings: Vec::new(),
-            policy: DeploymentPolicy {
-                timeout_ms: None,
-                resources: crate::ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "service:example.com/users".to_string(),
-            },
         };
         let canonical = serde_json::to_value(template).unwrap();
 
-        for field in ["configLiterals", "secretRefs", "stateBindings"] {
+        for field in ["configLiterals", "secretRefs", "stateBindings", "policy"] {
             let mut retired = canonical.clone();
             retired[field] = json!([]);
             assert!(
