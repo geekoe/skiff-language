@@ -9,7 +9,8 @@ import type {
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestStartFrameHeader,
-  RuntimeAssemblyRequestStartFrameWireHeader
+  RuntimeAssemblyRequestStartFrameWireHeader,
+  RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
 } from '../protocol/runtimeAssemblyRequest.js';
 import {
   validateRuntimeAssemblyRequestStartFrameWireHeader
@@ -566,7 +567,7 @@ function validateAssemblyRequest(
     return new ServiceProtocolBoundaryError(validation.error);
   }
   const request = validation.envelope;
-  if (!('httpRequest' in request)) {
+  if (!('httpRequest' in request) && !('websocketConnect' in request)) {
     return new ServiceProtocolBoundaryError(
       'active RuntimeAssembly dispatch does not accept internally derived spawn requests'
     );
@@ -576,7 +577,7 @@ function validateAssemblyRequest(
       'active RuntimeAssembly dispatch rejects test effect controls'
     );
   }
-  return validateAssemblyRequestFacts(request, active);
+  return validateAssemblyGatewayRequestFacts(request, active);
 }
 
 function validateAssemblyTestRequest(
@@ -598,11 +599,13 @@ function validateAssemblyTestRequest(
       'test RuntimeAssembly dispatch requires test effects enabled'
     );
   }
-  return validateAssemblyRequestFacts(request, active);
+  return validateAssemblyGatewayRequestFacts(request, active);
 }
 
-function validateAssemblyRequestFacts(
-  request: RuntimeAssemblyRequestStartFrameHeader,
+function validateAssemblyGatewayRequestFacts(
+  request:
+    | RuntimeAssemblyRequestStartFrameHeader
+    | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
   active: RouterActiveAssemblySnapshot
 ): ServiceProtocolBoundaryError | undefined {
   if (
@@ -615,12 +618,16 @@ function validateAssemblyRequestFacts(
   }
   let canonicalIngress: typeof request.routing.ingress;
   try {
-    canonicalIngress = {
-      ...request.routing.ingress,
-      method: request.routing.ingress.method.toUpperCase()
-    };
-    if (canonicalIngress.method !== request.routing.ingress.method) {
-      throw new Error('request ingress is not canonical');
+    if (request.routing.ingress.protocol === 'http') {
+      canonicalIngress = {
+        ...request.routing.ingress,
+        method: request.routing.ingress.method.toUpperCase()
+      };
+      if (canonicalIngress.method !== request.routing.ingress.method) {
+        throw new Error('request ingress is not canonical');
+      }
+    } else {
+      canonicalIngress = { ...request.routing.ingress };
     }
     runtimeAssemblyIngressKey(canonicalIngress);
   } catch {
@@ -657,7 +664,14 @@ function validateAssemblyRequestFacts(
       'only rawHttp gateway bindings may use serverStream mode'
     );
   }
-  return validateAssemblyHttpRequest(request, canonicalIngress);
+  if ('httpRequest' in request) {
+    return validateAssemblyHttpRequest(request, request.routing.ingress);
+  }
+  return validateAssemblyWebSocketConnectRequest(
+    request,
+    binding,
+    request.routing.ingress
+  );
 }
 
 function validateAssemblyHttpRequest(
@@ -681,6 +695,36 @@ function validateAssemblyHttpRequest(
   } catch {
     return new ServiceProtocolBoundaryError(
       'request does not carry matching canonical RuntimeAssembly HTTP ingress metadata'
+    );
+  }
+  return undefined;
+}
+
+function validateAssemblyWebSocketConnectRequest(
+  request: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  binding: RuntimeAssemblyIngressBinding,
+  ingress: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader['routing']['ingress']
+): ServiceProtocolBoundaryError | undefined {
+  try {
+    const requestUrl = new URL(request.websocketConnect.url);
+    if (
+      binding.adapterKind !== 'websocketConnect' ||
+      binding.websocketEntryId === undefined ||
+      binding.websocketEntryId !== request.websocketConnect.websocketEntryId ||
+      request.websocketConnect.gatewayEntryIdentity !==
+        request.routing.gatewayEntryIdentity ||
+      requestUrl.protocol !== 'ws:' ||
+      requestUrl.username !== '' ||
+      requestUrl.password !== '' ||
+      requestUrl.hash !== '' ||
+      requestUrl.pathname !== ingress.path ||
+      canonicalHttpHost(requestUrl.host) !== requestUrl.host
+    ) {
+      throw new Error('WebSocket connect metadata does not match routing ingress');
+    }
+  } catch {
+    return new ServiceProtocolBoundaryError(
+      'request does not carry matching canonical RuntimeAssembly WebSocket ingress metadata'
     );
   }
   return undefined;

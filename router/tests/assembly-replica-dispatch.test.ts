@@ -1,11 +1,15 @@
 import WebSocket from 'ws';
 import { expect, it, vi } from 'vitest';
 
+import { RUNTIME_FRAME_SCHEMA_VERSION } from '../src/protocol/envelope.js';
 import { assemblyHttpRequestHeader } from '../src/router/assemblyHttpGateway.js';
 import {
   runtimeFrameHeaderFixtures,
   validateRuntimeAssemblyRequestStartFrameHeader
 } from '../src/protocol/runtimeProtocol.js';
+import type {
+  RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+} from '../src/protocol/runtimeAssemblyRequest.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import {
   ProviderUnavailableError,
@@ -24,6 +28,8 @@ const PROTOCOL = `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
 const PACKAGE_BUILD_ID = `skiff-package-build-v10:sha256:${'f'.repeat(64)}`;
 const CURRENT_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'e'.repeat(64)}`;
+const WEBSOCKET_ENTRY_ID =
+  `skiff-websocket-entry-v1:sha256:${'b'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
   selector: { protocol: 'http', method: 'GET', path: '/v1/models' },
   deployment: {
@@ -166,6 +172,47 @@ it('skips saturated assembly replicas without hiding them from actor control', (
   );
 });
 
+it('selects an authenticated replica for an exact WebSocket root connect', () => {
+  const webSocketBinding: RuntimeAssemblyIngressBinding = {
+    selector: { protocol: 'webSocket', method: null, path: '/ws' },
+    deployment: { ...binding.deployment },
+    gatewayEntryKey: 'connect',
+    gatewayEntryIdentity: CURRENT_GATEWAY_ENTRY_IDENTITY,
+    adapterKind: 'websocketConnect',
+    operationMode: 'unary',
+    handler: 'package-callable-connect',
+    websocketEntryId: WEBSOCKET_ENTRY_ID
+  };
+  const snapshots = new RouterActiveAssemblySnapshotStore();
+  snapshots.replace(snapshot(1, ASSEMBLY_A, webSocketBinding));
+  const registry = new AssemblyRuntimeRegistry(snapshots);
+  const runtime = fakeSocket();
+  register(registry, runtime, 'replica-websocket', 1, ASSEMBLY_A);
+  const request = webSocketConnectRequest();
+
+  expect(registry.pickDispatchConnection(request)).toMatchObject({
+    runtimeId: 'replica-websocket',
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      deployment: webSocketBinding.deployment,
+      buildId: PACKAGE_BUILD_ID,
+      serviceProtocolIdentity: PROTOCOL
+    },
+    ws: runtime
+  });
+  expect(
+    registry.pickDispatchConnection({
+      ...request,
+      websocketConnect: {
+        ...request.websocketConnect,
+        websocketEntryId:
+          `skiff-websocket-entry-v1:sha256:${'9'.repeat(64)}`
+      }
+    })
+  ).toBeInstanceOf(ServiceProtocolBoundaryError);
+});
+
 function httpRequest() {
   return {
     method: 'GET',
@@ -176,23 +223,56 @@ function httpRequest() {
   };
 }
 
-function snapshot(generation: number, assemblyIdentity: string): RouterActiveAssemblySnapshot {
+function snapshot(
+  generation: number,
+  assemblyIdentity: string,
+  ingressBinding: RuntimeAssemblyIngressBinding = binding
+): RouterActiveAssemblySnapshot {
   return {
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
-    resolvedDeployments: [binding.deployment],
+    resolvedDeployments: [ingressBinding.deployment],
     resolvedContracts: [{
-      serviceId: binding.deployment.serviceId,
-      contractVersion: binding.deployment.contractVersion,
+      serviceId: ingressBinding.deployment.serviceId,
+      contractVersion: ingressBinding.deployment.contractVersion,
       serviceProtocolIdentity: PROTOCOL
     }],
     deploymentRuntimeBindings: [{
-      deployment: binding.deployment,
+      deployment: ingressBinding.deployment,
       packageBuildId: PACKAGE_BUILD_ID,
       timeoutMs: 1000
     }],
-    ingress: new RuntimeAssemblyIngressIndex([binding])
+    ingress: new RuntimeAssemblyIngressIndex([ingressBinding])
+  };
+}
+
+function webSocketConnectRequest(): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+  return {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'request.start',
+    requestId: 'request-websocket-connect',
+    mode: 'unary',
+    caller: { kind: 'gateway' },
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      deployment: { ...binding.deployment },
+      gatewayEntryIdentity: CURRENT_GATEWAY_ENTRY_IDENTITY,
+      ingress: { protocol: 'webSocket', method: null, path: '/ws' }
+    },
+    trace: { traceId: 'trace-websocket', spanId: 'span-websocket' },
+    websocketConnect: {
+      connectionId: 'connection-websocket',
+      url: 'ws://agine.localhost/ws',
+      query: [],
+      headers: [],
+      cookies: [],
+      websocketEntryId: WEBSOCKET_ENTRY_ID,
+      gatewayEntryIdentity: CURRENT_GATEWAY_ENTRY_IDENTITY
+    },
+    testEffectsEnabled: false
   };
 }
 
