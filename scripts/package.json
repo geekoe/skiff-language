@@ -8,6 +8,7 @@
   },
   "scripts": {
     "skiff": "node skiff.mjs",
+    "local-ingress": "node local-ingress.mjs",
     "dev-sync": "node skiff-dev-sync.mjs",
     "dev-sync:check": "node skiff-dev-sync.mjs --check --root ../compiler/tests/fixtures/router-websocket-fixture",
     "dev-sync:check-sync": "node verify.mjs --only scripts-dev-sync",
