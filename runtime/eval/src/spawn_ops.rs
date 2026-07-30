@@ -27,6 +27,7 @@ use super::{eval_context::EvalContext, program_ir::program_expression_ref};
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1:sha256:";
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
+const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v10:sha256:";
 
 /// Resolves one Router-authenticated direct-spawn target only from the immutable route index
 /// validated while the exact active assembly image was linked.
@@ -170,7 +171,8 @@ pub async fn submit_spawn_statement(
 
 fn spawn_submit_build_id(request_build_id: &str) -> Option<String> {
     (request_build_id.starts_with(SERVICE_BUILD_IDENTITY_PREFIX)
-        || request_build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX))
+        || request_build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX)
+        || request_build_id.starts_with(PACKAGE_BUILD_IDENTITY_PREFIX))
     .then(|| request_build_id.to_string())
 }
 
@@ -187,7 +189,7 @@ fn current_activation_identity(
 
 #[cfg(test)]
 mod spawn_activation_identity_tests {
-    use super::{current_activation_identity, RuntimeError};
+    use super::{current_activation_identity, spawn_submit_build_id, RuntimeError};
 
     #[test]
     fn spawn_submit_rejects_missing_current_activation_before_control_send() {
@@ -195,6 +197,14 @@ mod spawn_activation_identity_tests {
             current_activation_identity(None),
             Err(RuntimeError::Protocol { .. })
         ));
+    }
+
+    #[test]
+    fn spawn_submit_preserves_canonical_assembly_package_build_identity() {
+        let build_id =
+            "skiff-package-build-v10:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert_eq!(spawn_submit_build_id(build_id).as_deref(), Some(build_id));
+        assert_eq!(spawn_submit_build_id("legacy-build"), None);
     }
 }
 

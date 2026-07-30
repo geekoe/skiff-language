@@ -57,6 +57,12 @@ pub struct RuntimeAssemblyRequestStartFrameHeader {
     pub http_request: RuntimeAssemblyHttpRequestFrameHeader,
     #[serde(default)]
     pub test_effects_enabled: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_test_case_capability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub test_case_capability: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -544,6 +550,11 @@ pub fn decode_runtime_assembly_request_start_frame(
             if spawn.request_id.is_empty() {
                 return Err(TransportError::decode(
                     "invalid runtimeAssembly spawn request.start frame: requestId must be non-empty",
+                ));
+            }
+            if spawn.test_effects_enabled != spawn.test_case_capability.is_some() {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly spawn request.start frame: testEffectsEnabled must match testCaseCapability presence",
                 ));
             }
         }

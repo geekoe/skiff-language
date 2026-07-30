@@ -108,20 +108,27 @@ fn build_spawn_routes(
                     }
                     let route_target = format!("function:{}", executable.executable().symbol);
                     let canonical_addr = executable.addr().clone();
-                    if let Some(existing) =
-                        routes.insert(route_target.clone(), canonical_addr.clone())
-                    {
-                        if existing != canonical_addr {
-                            anyhow::bail!(
-                                "canonical spawn route {route_target} resolves to more than one executable"
-                            );
-                        }
-                    }
+                    insert_spawn_route(&mut routes, route_target, canonical_addr)?;
                 }
             }
         }
     }
     Ok(routes)
+}
+
+fn insert_spawn_route(
+    routes: &mut BTreeMap<String, ExecutableAddr>,
+    target: String,
+    addr: ExecutableAddr,
+) -> anyhow::Result<()> {
+    if let Some(existing) = routes.get(&target) {
+        if existing != &addr {
+            anyhow::bail!("canonical spawn route {target} resolves to more than one executable");
+        }
+        return Ok(());
+    }
+    routes.insert(target, addr);
+    Ok(())
 }
 
 fn convert_canonical_files(
@@ -190,4 +197,36 @@ pub(crate) fn relink_execution_files_for_test(
     files: &[Vec<Arc<LinkedFileUnit>>],
 ) -> anyhow::Result<Vec<Vec<Arc<LinkedFileUnit>>>> {
     code_linker::link_execution_files(shared, files)
+}
+
+#[cfg(test)]
+mod spawn_route_tests {
+    use super::*;
+    use skiff_runtime_linked_program::{FileAddr, UnitAddr};
+
+    fn addr(executable: usize) -> ExecutableAddr {
+        ExecutableAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            executable,
+        }
+    }
+
+    #[test]
+    fn repeated_exact_spawn_route_is_idempotent() {
+        let mut routes = BTreeMap::new();
+        insert_spawn_route(&mut routes, "function:run".to_string(), addr(1)).unwrap();
+        insert_spawn_route(&mut routes, "function:run".to_string(), addr(1)).unwrap();
+        assert_eq!(routes.get("function:run"), Some(&addr(1)));
+    }
+
+    #[test]
+    fn duplicate_spawn_target_with_different_address_fails_linking() {
+        let mut routes = BTreeMap::new();
+        insert_spawn_route(&mut routes, "function:run".to_string(), addr(1)).unwrap();
+        let error =
+            insert_spawn_route(&mut routes, "function:run".to_string(), addr(2)).unwrap_err();
+        assert!(error.to_string().contains("more than one executable"));
+        assert_eq!(routes.get("function:run"), Some(&addr(1)));
+    }
 }

@@ -483,6 +483,12 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
                 .to_string(),
         ));
     }
+    if header.test_effects_enabled != header.test_case_capability.is_some() {
+        return Err(RuntimeError::Decode(
+            "canonical HTTP testEffectsEnabled must be true exactly when testCaseCapability is present"
+                .to_string(),
+        ));
+    }
     let ingress = &header.routing.ingress;
     let request = &header.http_request;
     if request.method != ingress.method || request.path != ingress.path {

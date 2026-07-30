@@ -39,7 +39,7 @@ pub(crate) fn http_gateway_eval_adapter(
             .header
             .test_effects_enabled
             .then_some(input.header.http_request.url),
-        None,
+        input.header.test_case_capability,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
