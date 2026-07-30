@@ -635,7 +635,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'ActivationPolicy',
-    requiredFields: Object.freeze(['max_concurrency', 'idle_timeout_ms']),
+    requiredFields: Object.freeze(['idle_timeout_ms']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -1609,7 +1609,7 @@ pub struct RuntimeCapabilityBinding { pub capability: String, pub version: Strin
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourcePolicy { pub cpu_millis: u32, pub memory_bytes: u64 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationPolicy { pub max_concurrency: u32, pub idle_timeout_ms: Option<u64> }
+pub struct ActivationPolicy { pub idle_timeout_ms: Option<u64> }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentPolicy {
   pub timeout_ms: Option<u64>, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
@@ -1704,6 +1704,16 @@ pub struct ActivationTemplate {
       name: 'accepts canonical deployment and assembly owners',
       files: canonicalDeploymentAssemblyFiles(),
       expectedFailures: 0,
+    },
+    {
+      name: 'rejects Router-owned concurrency in deployment activation policy',
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          'pub struct ActivationPolicy { pub idle_timeout_ms:',
+          'pub struct ActivationPolicy { pub max_concurrency: u32, pub idle_timeout_ms:',
+        ),
+      }),
+      expectedFailures: 1,
     },
     {
       name: 'rejects renamed canonical assembly field',
