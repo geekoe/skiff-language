@@ -11,8 +11,9 @@
 - service、version、build、activation 和 Runtime replica 全部继承经过认证的父 request；
 - Router 只在同一 Runtime WebSocket 上派发，不重新选择 replica，也不从 ambient registration
   猜 service/build；
-- 新 request 复用现有 `request.start`、普通 pending owner、并发容量、active tracking、deadline、
-  `response.end` / `response.error` terminal 和断连清理；
+- 新 request 复用现有 `request.start`、普通 pending owner、该Runtime连接的
+  `router.yml.runtime.maxConcurrency`统一容量、active tracking、deadline、`response.end` /
+  `response.error` terminal 和断连清理；
 - Router 建立 pending owner并把 `request.start` 成功交给选定连接后返回 typed submitted receipt；
   不新增 spawn 专用 start/accepted frame，目标函数结果也不返回给父 request；
 - 无匹配 Runtime、父 request 已终结、来源连接不匹配、admission 关闭或容量不足时，submit 直接失败；
@@ -58,3 +59,8 @@ spawn-worker lifecycle 都应删除，而不是迁移到 RuntimeAssembly。
   artifact或业务 surface。
 
 本决策不新增 artifact schema、deployment projection或用户配置。
+
+`runtime.maxConcurrency`只存在于Router实例配置，不进入Runtime bootstrap。HTTP unary/stream、
+WebSocket connect/JSON-RPC、service call、package-test root和direct-spawn derived request共享每条
+Runtime WebSocket连接的同一pending上限；Actor/control frame暂不计。Service profile中的
+`lifecycle.maxConcurrency`必须删除，不能用spawn专用固定池代替。

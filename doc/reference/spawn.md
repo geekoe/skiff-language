@@ -31,7 +31,9 @@ spawn runThreadDrain(threadId)
   精确钉死提交方当前 service、version、build 和 activation，不经过持久队列、claim 或后台 worker。
 - 提交方只等待 Router 为新 request 建立普通 pending owner，并把现有 `request.start` 成功交给该
   Runtime 连接；随后 `spawn` 语句立即完成，不等待目标函数执行结果。没有匹配的同一 Runtime、
-  Runtime 已关闭 admission 或超过并发容量时，提交失败。
+  Runtime 已关闭 admission，或该连接的`router.yml.runtime.maxConcurrency`统一pending容量已满时，提交
+  失败。父request和所有direct-spawn derived request占用同一个连接级容量；没有spawn专用并发池、
+  service级`maxConcurrency`或排队。
 - `spawn` 是 same-build 执行语义：spawned call 必须由与提交方相同 service/version/build 的 runtime 执行。这个约束属于
   Router 对父 request 的认证和派生 request admission，不属于 recoverable args payload。
 - args recoverable payload 不承载 `artifact_identity`、`build_id`、service version、package version 或 activation identity。

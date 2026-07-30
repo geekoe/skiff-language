@@ -87,6 +87,31 @@ canonical相同，只激活一个collection projection和metadata owner；同bui
 同一physical target、或dependency/root collection冲突都fail closed。Test service的state binding只取自
 `config.skiff-test.yml`，不能从dependency path数量推导。
 
+### Runtime连接并发门禁
+
+初期并发门禁只由Router静态配置，不做CPU、内存、数据库或其他动态资源admission。`router.yml`必须在
+现有`runtime`段提供正的安全整数：
+
+```yaml
+runtime:
+  path: /runtime
+  port: 4001
+  maxConcurrency: 128
+```
+
+`runtime.maxConcurrency`是每条Runtime WebSocket连接统一的普通request上限。Router把已经交给该连接、
+尚未terminal的HTTP unary/stream、WebSocket connect、WebSocket JSON-RPC、service call、
+package-test root和direct-spawn derived request都计入同一个pending计数。`response.end`、
+`response.error`、cancel/timeout收束或连接断开会释放计数；Actor与其他control frame不计入。
+
+未绑定的请求可以选择另一条仍有容量的合格Runtime连接；已经钉死连接或generation的请求不能为了绕过
+容量而迁移。目标连接已满且没有其他合法选择时，Router立即返回overload，不排队、不重试，也不创建
+新的pending。多条Runtime连接分别应用同一个配置值，各自独立计数。
+
+Service源码、`service.yml`、`config.<profile>.yml`、ServiceDeployment和RuntimeAssembly都不能声明、
+复制或覆盖并发上限。特别是`lifecycle.maxConcurrency`非法；并发门禁不属于service ABI、artifact identity
+或Runtime bootstrap wire。
+
 ## 4. Runtime identities
 
 Runtime 依赖稳定 identity 做路由、drain、观测和测试替身匹配。
