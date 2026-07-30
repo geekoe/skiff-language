@@ -221,11 +221,11 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         None
     };
 
-    let assembly = runtime_assembly_ref(&case.records.assembly)?;
+    let assembly = runtime_assembly_ref(&fixture.records.assembly)?;
     let test_service_record_path =
         PackageArtifactRecordPath::new(&fixture.test_service)?.to_string();
     let test_entrypoint = &case.entrypoint;
-    let deployment = case
+    let deployment = fixture
         .records
         .deployments
         .first()
@@ -256,13 +256,13 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
             "selector": probe_ingress.selector,
         }),
     ];
-    let contracts = case
+    let contracts = fixture
         .records
         .contracts
         .iter()
         .map(skiff_artifact_identity::service_contract_ref)
         .collect::<Result<Vec<_>, _>>()?;
-    let deployments = case
+    let deployments = fixture
         .records
         .deployments
         .iter()

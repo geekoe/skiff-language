@@ -93,10 +93,10 @@ fn checked_in_test_services_compile_and_assemble_through_the_ordinary_service_fl
             .unwrap_or_else(|error| panic!("{fixture_name} assembly failed: {error}"));
         assert_eq!(assembled.cases.len(), 1, "{fixture_name}");
         let case = &assembled.cases[0];
-        let [contract] = case.records.contracts.as_slice() else {
+        let [contract] = assembled.records.contracts.as_slice() else {
             panic!("{fixture_name} must assemble one specialized ordinary contract")
         };
-        let [deployment] = case.records.deployments.as_slice() else {
+        let [deployment] = assembled.records.deployments.as_slice() else {
             panic!("{fixture_name} must assemble one ordinary deployment")
         };
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -106,16 +107,16 @@ fn kind_test_compiles_and_assembles_only_ordinary_service_artifacts() {
     );
     assert_eq!(fixture.cases.len(), 1);
     let case = &fixture.cases[0];
-    assert_eq!(case.records.packages.len(), 1);
-    assert_eq!(case.records.contracts.len(), 1);
-    assert_eq!(case.records.deployments.len(), 1);
-    assert_eq!(case.records.assembly.roots.len(), 1);
+    assert_eq!(fixture.records.packages.len(), 1);
+    assert_eq!(fixture.records.contracts.len(), 1);
+    assert_eq!(fixture.records.deployments.len(), 1);
+    assert_eq!(fixture.records.assembly.roots.len(), 1);
     assert_eq!(
         case.entrypoint.gateway_entry_key,
         GatewayEntryKey::parse("run").unwrap()
     );
     assert_eq!(case.entrypoint.selector.path, "/__skiff/test/0");
-    let deployment = &case.records.deployments[0];
+    let deployment = &fixture.records.deployments[0];
     assert_eq!(case.contract.service_id, deployment.contract.service_id);
     assert!(case.contract.service_id.starts_with("test.skiff/p-"));
     assert_ne!(case.contract.service_id, profile.service_id);
@@ -130,7 +131,7 @@ fn kind_test_compiles_and_assembles_only_ordinary_service_artifacts() {
 }
 
 #[test]
-fn multiple_cases_receive_separate_deployments_and_assemblies() {
+fn multiple_cases_receive_separate_deployments_in_one_shared_assembly() {
     let root = TestRoot::new("case-isolation");
     let artifacts = root.path().join("artifacts");
     let runtime_artifacts = root.path().join("runtime-artifacts");
@@ -190,35 +191,79 @@ fn multiple_cases_receive_separate_deployments_and_assemblies() {
         "each unique fixture package is fully admitted exactly once"
     );
     assert_eq!(fixture.cases.len(), 3);
+    assert_eq!(fixture.records.packages.len(), 1);
+    assert_eq!(fixture.records.contracts.len(), 3);
+    assert_eq!(fixture.records.deployments.len(), 3);
+    assert_eq!(fixture.records.assembly.roots.len(), 3);
+    let roots = fixture
+        .records
+        .assembly
+        .roots
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let revisions = fixture
+        .records
+        .deployments
+        .iter()
+        .map(|deployment| deployment.deployment_revision.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(revisions.len(), 3);
     for (index, case) in fixture.cases.iter().enumerate() {
-        assert_eq!(case.records.deployments.len(), 1);
-        assert_eq!(case.records.assembly.roots.len(), 1);
         assert_eq!(
             case.entrypoint.selector.path,
             format!("/__skiff/test/{index}")
         );
+        assert!(roots.contains(&case.entrypoint.deployment));
+        let matching_deployments = fixture
+            .records
+            .deployments
+            .iter()
+            .filter(|deployment| {
+                skiff_artifact_identity::service_deployment_ref(deployment)
+                    == case.entrypoint.deployment
+            })
+            .collect::<Vec<_>>();
+        let [deployment] = matching_deployments.as_slice() else {
+            panic!("case {index} entrypoint must map to exactly one deployment")
+        };
+        assert_eq!(deployment.contract, case.contract);
+        let gateway = deployment
+            .gateway_entries
+            .get(&case.entrypoint.gateway_entry_key)
+            .expect("case entrypoint gateway");
+        assert_eq!(
+            gateway.gateway_entry_identity,
+            case.entrypoint.gateway_entry_identity
+        );
+        assert!(deployment.ingress.iter().any(|ingress| {
+            ingress.selector == case.entrypoint.selector
+                && ingress.gateway_entry_key == case.entrypoint.gateway_entry_key
+        }));
     }
     assert_ne!(
         fixture.cases[0].entrypoint.deployment,
         fixture.cases[1].entrypoint.deployment
     );
     assert_ne!(fixture.cases[0].contract, fixture.cases[1].contract);
-    assert_ne!(
-        fixture.cases[0].records.assembly.assembly_identity,
-        fixture.cases[1].records.assembly.assembly_identity
-    );
+    assert!(fixture
+        .records
+        .deployments
+        .windows(2)
+        .all(|pair| pair[0].config_literals == pair[1].config_literals
+            && pair[0].secret_refs == pair[1].secret_refs
+            && pair[0].resource_bindings == pair[1].resource_bindings
+            && pair[0].policy == pair[1].policy));
     fixture
         .publish(&artifacts, &runtime_artifacts)
-        .expect("multi-case publish reuses admitted external package records");
+        .expect("multi-case publish writes the shared canonical records");
     let runtime_store =
         CanonicalArtifactStore::open(&runtime_artifacts).expect("runtime artifact store");
-    for case in &fixture.cases {
-        runtime_store
-            .read_runtime_assembly(&skiff_artifact_model::RuntimeAssemblyRef {
-                assembly_identity: case.records.assembly.assembly_identity.clone(),
-            })
-            .expect("every case assembly remains independently published");
-    }
+    runtime_store
+        .read_runtime_assembly(&skiff_artifact_model::RuntimeAssemblyRef {
+            assembly_identity: fixture.records.assembly.assembly_identity.clone(),
+        })
+        .expect("the shared multi-case assembly is published once");
 }
 
 #[test]

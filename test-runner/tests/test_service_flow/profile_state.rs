@@ -32,9 +32,15 @@ fn fixed_profile_projects_config_secret_policy_and_typed_isolated_state() {
 
     let mut first_namespaces = BTreeSet::new();
     for case in &first.cases {
-        let [deployment] = case.records.deployments.as_slice() else {
-            panic!("each case must own one deployment")
-        };
+        let deployment = first
+            .records
+            .deployments
+            .iter()
+            .find(|deployment| {
+                skiff_artifact_identity::service_deployment_ref(deployment)
+                    == case.entrypoint.deployment
+            })
+            .expect("each case entrypoint must map to one deployment");
         assert_eq!(
             deployment.config_literals,
             vec![skiff_artifact_model::ConfigLiteralBinding {
@@ -89,9 +95,10 @@ fn fixed_profile_projects_config_secret_policy_and_typed_isolated_state() {
     );
 
     let second_namespaces = second
-        .cases
+        .records
+        .deployments
         .iter()
-        .flat_map(|case| &case.records.deployments[0].state_bindings)
+        .flat_map(|deployment| &deployment.state_bindings)
         .map(|binding| binding.namespace.as_str())
         .collect::<BTreeSet<_>>();
     assert!(

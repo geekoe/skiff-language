@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::SystemTime,
 };
 
@@ -27,7 +30,7 @@ use skiff_deployment::{
 use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::CanonicalPackageProject,
-    canonical_store::{CanonicalBaseAssembly, CanonicalPublishSession, CanonicalTestRecords},
+    canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
     canonical_test_gateway::canonical_typed_null_gateway,
     test_discovery::TestServiceCase,
 };
@@ -51,13 +54,14 @@ pub struct CanonicalTestServiceEntrypoint {
 #[derive(Debug, Clone)]
 pub struct CanonicalTestServiceCaseFixture {
     pub contract: skiff_artifact_model::ServiceContractRef,
-    pub records: CanonicalTestRecords,
     pub entrypoint: CanonicalTestServiceEntrypoint,
+    pub(crate) records: Arc<CanonicalTestRecords>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CanonicalTestServiceFixture {
     pub test_service: PackageArtifactRef,
+    pub records: Arc<CanonicalTestRecords>,
     pub cases: Vec<CanonicalTestServiceCaseFixture>,
     package_identity_admission_count: usize,
 }
@@ -73,18 +77,8 @@ impl CanonicalTestServiceFixture {
         source_artifact_root: &std::path::Path,
         runtime_artifact_root: &std::path::Path,
     ) -> Result<Vec<std::path::PathBuf>, CanonicalFixtureError> {
-        let mut written = Vec::new();
-        let mut session = CanonicalPublishSession::default();
-        for case in &self.cases {
-            written.extend(case.records.publish_with_session(
-                source_artifact_root,
-                runtime_artifact_root,
-                &mut session,
-            )?);
-        }
-        written.sort();
-        written.dedup();
-        Ok(written)
+        self.records
+            .publish(source_artifact_root, runtime_artifact_root)
     }
 }
 
@@ -175,7 +169,9 @@ fn assemble_test_service_fixture_inner(
     let package_identity_admission_count = validated_all_packages.len();
     let validated_implementation = &validated_deployment_packages[0];
     let validated_dependency_packages = &validated_deployment_packages[1..];
-    let mut case_fixtures = Vec::with_capacity(cases.len());
+    let mut case_entries = Vec::with_capacity(cases.len());
+    let mut contracts = Vec::with_capacity(cases.len());
+    let mut deployments = Vec::with_capacity(cases.len());
     for (index, ((case, (gateway_entry_key, gateway_entry, ingress)), service_id)) in cases
         .iter()
         .zip(gateway_inputs)
@@ -243,28 +239,11 @@ fn assemble_test_service_fixture_inner(
                 "test-service case must produce exactly one ingress".to_string(),
             ));
         };
-        let mut all_contracts = base.contracts.clone();
-        all_contracts.push(contract.clone());
-        let mut all_deployments = base.deployments.clone();
-        all_deployments.push(deployment.clone());
-        let assembly = resolve_runtime_assembly_with_validated_packages(
-            std::slice::from_ref(&deployment_ref),
-            &all_deployments,
-            &all_contracts,
-            &all_packages,
-            &validated_all_packages,
-        )
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        case_fixtures.push(CanonicalTestServiceCaseFixture {
-            contract: contract_ref,
-            records: CanonicalTestRecords {
-                packages: vec![project.package.clone()],
-                contracts: vec![contract.clone()],
-                deployments: vec![deployment],
-                assembly,
-                base_assembly: base.assembly.clone(),
-            },
-            entrypoint: CanonicalTestServiceEntrypoint {
+        contracts.push(contract);
+        deployments.push(deployment);
+        case_entries.push((
+            contract_ref,
+            CanonicalTestServiceEntrypoint {
                 selector: ingress.selector.clone(),
                 case: case.clone(),
                 deployment: deployment_ref,
@@ -272,10 +251,42 @@ fn assemble_test_service_fixture_inner(
                 gateway_entry_identity: gateway_entry.gateway_entry_identity,
                 mode: GatewayDispatchMode::Unary,
             },
-        });
+        ));
     }
+    let roots = case_entries
+        .iter()
+        .map(|(_, entrypoint)| entrypoint.deployment.clone())
+        .collect::<Vec<_>>();
+    let mut all_contracts = base.contracts.clone();
+    all_contracts.extend(contracts.iter().cloned());
+    let mut all_deployments = base.deployments.clone();
+    all_deployments.extend(deployments.iter().cloned());
+    let assembly = resolve_runtime_assembly_with_validated_packages(
+        &roots,
+        &all_deployments,
+        &all_contracts,
+        &all_packages,
+        &validated_all_packages,
+    )
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let records = Arc::new(CanonicalTestRecords {
+        packages: vec![project.package.clone()],
+        contracts,
+        deployments,
+        assembly,
+        base_assembly: base.assembly.clone(),
+    });
+    let case_fixtures = case_entries
+        .into_iter()
+        .map(|(contract, entrypoint)| CanonicalTestServiceCaseFixture {
+            contract,
+            entrypoint,
+            records: Arc::clone(&records),
+        })
+        .collect();
     Ok(CanonicalTestServiceFixture {
         test_service: test_service_ref,
+        records,
         cases: case_fixtures,
         package_identity_admission_count,
     })
