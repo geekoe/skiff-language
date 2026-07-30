@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context;
-use serde_json::{Map, Value};
 use skiff_artifact_model::{PackageBuildId, PackageRequirementKey, ServiceDeploymentRef};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 use skiff_runtime_linker::AssemblyLinkedCandidate;
@@ -61,7 +60,7 @@ pub(crate) fn materialize_snapshot_config(
         let package_values = partition
             .packages()
             .iter()
-            .map(|package| (package.package_build_id().clone(), package.config()))
+            .map(|package| (package.package_build_id().clone(), package))
             .collect::<BTreeMap<_, _>>();
         if package_values.keys().cloned().collect::<BTreeSet<_>>() != closure {
             anyhow::bail!(
@@ -78,7 +77,7 @@ pub(crate) fn materialize_snapshot_config(
                     package.code_slot().index()
                 );
             }
-            let Some(values) = package_values.get(package.package_build_id()) else {
+            let Some(config) = package_values.get(package.package_build_id()) else {
                 package_views.push(RuntimeConfigView::empty());
                 continue;
             };
@@ -91,20 +90,16 @@ pub(crate) fn materialize_snapshot_config(
                     package.package_build_id()
                 )
             })?;
-            let value = Value::Object(
-                values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect::<Map<_, _>>(),
-            );
             package_views.push(
-                RuntimeConfigView::from_resolved_config(value, shape).with_context(|| {
+                RuntimeConfigView::from_resolved_config(config.config_value(), shape).with_context(
+                    || {
                     format!(
                         "RuntimeConfigSnapshot deployment {:?} does not satisfy Package {} config requirements",
                         deployment,
                         package.package_build_id()
                     )
-                })?,
+                    },
+                )?,
             );
         }
         let implementation_slot = image
