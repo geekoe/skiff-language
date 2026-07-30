@@ -755,7 +755,7 @@ function putOwned(id: string, tags: Array<string>) -> void {
     );
     package.write(
         "package.yml",
-        "id: example.com/database-boundary-provenance\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
+        "id: example.com/database-boundary-provenance\nversion: 1.0.0\n",
     );
     let project =
         compile_package_project_with_contract_dependencies(package.path(), &BTreeMap::new())

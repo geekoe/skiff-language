@@ -274,7 +274,6 @@ fn package(
         "serviceRequirements": [],
         "runtimeRequirements": {
             "config": [],
-            "state": [],
             "resources": [],
             "runtimeCapabilities": []
         },

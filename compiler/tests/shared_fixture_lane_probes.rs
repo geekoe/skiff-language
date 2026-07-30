@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    CallableEffectSummary, ContractTypeRef,
+    CallableEffectSummary, ContractTypeRef, PackageConfigAccess,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
@@ -65,7 +65,10 @@ fn config_db_resource_lane_exposes_package_artifact_projection() {
         .runtime_requirements
         .config
         .iter()
-        .any(|requirement| requirement.path == "probe.token" && requirement.required));
+        .any(|requirement| {
+            requirement.path == "probe.token"
+                && matches!(requirement.access, PackageConfigAccess::Required { .. })
+        }));
     assert_eq!(
         main.unit
             .declarations
@@ -167,9 +170,6 @@ fn write_representative_package_project(temp: &TestDir) {
         "package.yml",
         r#"id: example.com/probe-app
 version: 1.0.0
-state:
-  database:
-    kind: database
 packages:
   - id: example.com/probe-dependency
     version: 1.0.0

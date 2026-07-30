@@ -1052,9 +1052,6 @@ fn package_string_receiver_facts_flow_through_config_and_db_body() {
         r#"
 id: example.com/example
 version: 1.0.0
-state:
-  database:
-    kind: database
 "#,
     )
     .unwrap();
@@ -1971,7 +1968,7 @@ fn compile_package_file_ir(
 ) -> Result<PublishedFileIrArtifact, PackageProjectCompileError> {
     let temp = TestDir::new("skiff-compiler", "runtime-slots-package");
     let package_manifest = if source.contains("db object ") {
-        "id: example.com/runtime-slots\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n"
+        "id: example.com/runtime-slots\nversion: 1.0.0\n"
     } else {
         "id: example.com/runtime-slots\nversion: 1.0.0\n"
     };

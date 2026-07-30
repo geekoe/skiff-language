@@ -4,7 +4,6 @@ use common::{
     package_project::{compile_service_package_project, PublishedPackageProject},
     TestDir,
 };
-use serde_json::json;
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey,
     GatewayExternalSchema, GatewayProtocolSurface, GatewayWebSocketDownlinkFrame,

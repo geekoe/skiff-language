@@ -966,7 +966,7 @@ function matrix(rows: Array<providerImpl/model.Session>) -> bool {
     fs::create_dir_all(&provider).unwrap();
     fs::write(
         provider.join("package.yml"),
-        "id: example.com/provider\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
+        "id: example.com/provider\nversion: 1.0.0\n",
     )
     .unwrap();
     fs::write(provider.join("api.yml"), "Session: model.Session\n").unwrap();

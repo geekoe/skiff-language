@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     config::ConfigMetadataFacts,
@@ -141,8 +140,6 @@ pub struct PackageDependencyConstraint {
     pub id: String,
     pub version: String,
     pub alias: String,
-    #[serde(default, skip_serializing_if = "dependency_config_is_empty")]
-    pub config: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -198,8 +195,4 @@ pub struct ConfigAndEffectMetadata {
     /// This required typed leaf makes "no operations" distinct from omitted
     /// effect analysis. The outer struct is only a transport envelope.
     pub effects: CallableEffectFacts,
-}
-
-fn dependency_config_is_empty(value: &Value) -> bool {
-    matches!(value, Value::Null)
 }
