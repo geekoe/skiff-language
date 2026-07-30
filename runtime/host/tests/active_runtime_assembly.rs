@@ -358,7 +358,7 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
     let assembly = Arc::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
     let resolver = EmptyAssemblyResolver { assembly };
-    let (config_snapshot, config_resolver) = empty_snapshot();
+    let (config_snapshot, config_resolver) = empty_snapshot("prod");
     let first = runtime_host("runtime-a");
     let second = runtime_host("runtime-b");
 

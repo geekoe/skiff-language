@@ -1064,7 +1064,8 @@ fn object_metadata_rejects_duplicate_logical_collection_identity_within_package(
         .collect::<Vec<_>>();
 
     let error = ServiceDbMetadata::from_runtime_program_db(&entries)
-        .expect_err("duplicate Package logical collection identity must fail");
+        .err()
+        .expect("duplicate Package logical collection identity must fail");
     assert!(
         error
             .to_string()
@@ -1109,7 +1110,8 @@ fn object_metadata_rejects_one_package_id_resolved_to_different_builds() {
         .collect::<Vec<_>>();
 
     let error = ServiceDbMetadata::from_runtime_program_db(&entries)
-        .expect_err("one Package ID cannot select different builds");
+        .err()
+        .expect("one Package ID cannot select different builds");
     assert!(
         error
             .to_string()

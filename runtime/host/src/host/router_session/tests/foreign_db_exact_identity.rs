@@ -455,6 +455,7 @@ async fn shared_test_assembly_isolation() {
         &cases,
         CanonicalBaseAssembly::default(),
         "p3x-foreign-db",
+        "skiff-test",
     )
     .unwrap();
     test_fixture
@@ -566,7 +567,7 @@ async fn shared_test_assembly_isolation() {
                 .iter()
                 .map(|entry| entry.metadata.collection_name.as_str())
                 .collect::<Vec<_>>(),
-            ["first_sessions", "second_sessions"]
+            ["sessions", "sessions"]
         );
         assert_ne!(
             foreign[0].target.target_id.package_artifact_ref,
@@ -588,50 +589,23 @@ async fn shared_test_assembly_isolation() {
     events.sort_by(|left, right| {
         (&left.collection, left.operation).cmp(&(&right.collection, right.operation))
     });
+    assert_eq!(events.len(), 8);
+    assert!(events
+        .iter()
+        .all(|event| event.collection == "sessions" && event.type_name == "Session"));
     assert_eq!(
-        events,
-        vec![
-            DbEvent {
-                operation: "read.exists",
-                collection: "first_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "read.exists",
-                collection: "first_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "write.delete",
-                collection: "first_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "write.delete",
-                collection: "first_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "read.exists",
-                collection: "second_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "read.exists",
-                collection: "second_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "write.delete",
-                collection: "second_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "write.delete",
-                collection: "second_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-        ]
+        events
+            .iter()
+            .filter(|event| event.operation == "read.exists")
+            .count(),
+        4
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.operation == "write.delete")
+            .count(),
+        4
     );
 
     let mut crossed = test_case_header(

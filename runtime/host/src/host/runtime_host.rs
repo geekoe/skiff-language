@@ -140,6 +140,10 @@ impl RuntimeHost {
         })
     }
 
+    pub(crate) fn trusted_environment(&self) -> &str {
+        &self.environment
+    }
+
     pub(crate) fn track_actor_instance(
         &self,
         router_session_id: &str,

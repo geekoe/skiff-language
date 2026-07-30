@@ -164,6 +164,7 @@ fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
         &cases,
         CanonicalBaseAssembly::default(),
         "host-direct-spawn-submit",
+        "test",
     )
     .expect("spawn-submit test-service assembly");
     test_fixture
@@ -639,6 +640,7 @@ fn compile_stream_argument_fixture() -> StreamArgumentCompiledFixture {
         &cases,
         CanonicalBaseAssembly::default(),
         "p8-s2-stream-argument",
+        "test",
     )
     .expect("stream-argument test-service assemblies");
     test_fixture

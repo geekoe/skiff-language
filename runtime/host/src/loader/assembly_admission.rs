@@ -838,7 +838,7 @@ impl RuntimeHost {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
-        if activation_control_environment(&control) != self.environment {
+        if activation_control_environment(&control) != self.trusted_environment() {
             anyhow::bail!(
                 "assembly activation environment does not match Runtime trusted environment"
             );

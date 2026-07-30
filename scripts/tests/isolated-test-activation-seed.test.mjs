@@ -33,6 +33,7 @@ test('activation seed is v2 and resolves the exact secure config snapshot record
   try {
     const recordPath = await writeSecureSnapshotRecord(
       artifactRoot,
+      environment,
       configSnapshot,
     );
     assert.equal(
@@ -67,7 +68,8 @@ test('activation seed is v2 and resolves the exact secure config snapshot record
     );
 
     await writeFile(recordPath, JSON.stringify({
-      schemaVersion: 'skiff-runtime-config-snapshot-record-v1',
+      schemaVersion: 'skiff-runtime-config-snapshot-record-v2',
+      environment,
       snapshot: configSnapshot,
       deployments: [],
     }));
@@ -137,7 +139,11 @@ function bootstrapReceipt({ environment, assemblyIdentity, configSnapshot }) {
   };
 }
 
-async function writeSecureSnapshotRecord(artifactRoot, configSnapshot) {
+async function writeSecureSnapshotRecord(
+  artifactRoot,
+  environment,
+  configSnapshot,
+) {
   const snapshotsRoot = join(artifactRoot, 'runtime-config', 'snapshots');
   await mkdir(snapshotsRoot, { mode: 0o700, recursive: true });
   await chmod(join(artifactRoot, 'runtime-config'), 0o700);
@@ -145,7 +151,8 @@ async function writeSecureSnapshotRecord(artifactRoot, configSnapshot) {
   const recordPath =
     isolatedConfigSnapshotRecordPath(artifactRoot, configSnapshot);
   await writeFile(recordPath, JSON.stringify({
-    schemaVersion: 'skiff-runtime-config-snapshot-record-v1',
+    schemaVersion: 'skiff-runtime-config-snapshot-record-v2',
+    environment,
     snapshot: configSnapshot,
     deployments: [],
   }), { mode: 0o600 });

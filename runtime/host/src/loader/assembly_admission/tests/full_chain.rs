@@ -398,7 +398,7 @@ impl CollectionIdentityFixture {
     }
 
     fn build(
-        mapping: BTreeMap<String, String>,
+        _mapping: BTreeMap<String, String>,
         root_collection: Option<&str>,
         include_colliding_dependency: bool,
         diamond_mapping: Option<BTreeMap<String, String>>,
@@ -471,7 +471,7 @@ impl CollectionIdentityFixture {
             .unwrap();
         let dependency_ref = package_ref(&dependency_package);
 
-        let diamond_subject = diamond_mapping.as_ref().map(|mapping| {
+        let diamond_subject = diamond_mapping.as_ref().map(|_| {
             let file = implementation_file("mapping.subject", "noop", None);
             let callable = PackageCallableId::new("pkg-callable:example.mapping-subject:noop");
             let mut package = implementation_package(

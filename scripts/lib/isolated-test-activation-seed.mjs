@@ -7,7 +7,7 @@ const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION =
 const BOOTSTRAP_RECEIPT_SCHEMA_VERSION =
   'skiff-package-service-bootstrap-v2';
 const CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION =
-  'skiff-runtime-config-snapshot-record-v1';
+  'skiff-runtime-config-snapshot-record-v2';
 const ASSEMBLY_IDENTITY_PATTERN =
   /^skiff-runtime-assembly-v3:sha256:[a-f0-9]{64}$/;
 const CONFIG_SNAPSHOT_ID_PATTERN =
@@ -58,7 +58,11 @@ export async function buildIsolatedActivationState({
       'isolated bootstrap cannot initialize the generation-zero activation tuple',
     );
   }
-  await validateSecureConfigSnapshotRecord(artifactRoot, configSnapshot);
+  await validateSecureConfigSnapshotRecord(
+    artifactRoot,
+    environment,
+    configSnapshot,
+  );
   return {
     schemaVersion: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
     environment,
@@ -84,7 +88,11 @@ export function isolatedConfigSnapshotRecordPath(artifactRoot, configSnapshot) {
   );
 }
 
-async function validateSecureConfigSnapshotRecord(artifactRoot, configSnapshot) {
+async function validateSecureConfigSnapshotRecord(
+  artifactRoot,
+  environment,
+  configSnapshot,
+) {
   const storeRoot = join(artifactRoot, 'runtime-config');
   const snapshotsRoot = join(storeRoot, 'snapshots');
   const recordPath = isolatedConfigSnapshotRecordPath(
@@ -117,11 +125,12 @@ async function validateSecureConfigSnapshotRecord(artifactRoot, configSnapshot) 
   }
   exactObject(
     record,
-    ['deployments', 'schemaVersion', 'snapshot'],
+    ['deployments', 'environment', 'schemaVersion', 'snapshot'],
     'isolated bootstrap config snapshot record',
   );
   if (
     record.schemaVersion !== CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION
+    || record.environment !== environment
     || !Array.isArray(record.deployments)
     || record.snapshot?.snapshotId !== configSnapshot.snapshotId
   ) {
