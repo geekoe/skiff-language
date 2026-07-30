@@ -1495,7 +1495,12 @@ async function createFixture(
     bootstrap: {
       artifactsPath: '/tmp/skiff-test-artifacts',
       serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' },
-      http: { maxResponseBytes: 67108864 }
+      http: { maxResponseBytes: 67108864 },
+      activation: {
+        environment: 'test',
+        generation: initial.generation,
+        assembly: { assemblyIdentity: initial.assemblyIdentity }
+      }
     }
   });
   const coordinator = new AssemblyActivationCoordinator({

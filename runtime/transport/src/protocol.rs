@@ -4,8 +4,8 @@ use crate::TransportError;
 use serde::{de, de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
-    validate_activation_generation, validate_activation_token, validate_runtime_assembly_identity,
-    ConfigShape,
+    validate_activation_environment, validate_activation_generation, validate_activation_token,
+    validate_runtime_assembly_identity, ConfigShape, RuntimeAssemblyRef,
 };
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::RuntimeClientSessionControl;
@@ -285,6 +285,14 @@ pub struct RouterBootstrapHttpFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapActivationFrameHeader {
+    pub environment: String,
+    pub generation: u64,
+    pub assembly: RuntimeAssemblyRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouterBootstrapFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
@@ -292,6 +300,7 @@ pub struct RouterBootstrapFrameHeader {
     pub artifacts_path: String,
     pub service_db: RouterBootstrapServiceDbFrameHeader,
     pub http: RouterBootstrapHttpFrameHeader,
+    pub activation: RouterBootstrapActivationFrameHeader,
 }
 
 pub fn decode_router_bootstrap_frame_header(
@@ -328,6 +337,14 @@ pub fn decode_router_bootstrap_frame_header(
             "invalid router.bootstrap frame header: http.maxResponseBytes must be a positive safe integer",
         ));
     }
+    validate_activation_environment(&header.activation.environment).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid router.bootstrap frame header: activation.environment {error}"
+        ))
+    })?;
+    validate_activation_generation(header.activation.generation, "activation.generation").map_err(
+        |error| TransportError::decode(format!("invalid router.bootstrap frame header: {error}")),
+    )?;
     Ok(header)
 }
 

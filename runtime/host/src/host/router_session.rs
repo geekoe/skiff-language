@@ -167,7 +167,24 @@ where
 struct ConnectionBootstrap {
     resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
     service_db: skiff_artifact_model::AssemblyActivationServiceDb,
+    activation: skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader,
     max_response_bytes: usize,
+}
+
+#[cfg(test)]
+fn test_bootstrap_activation(
+) -> skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader {
+    serde_json::from_value(serde_json::json!({
+        "environment": "test",
+        "generation": 0,
+        "assembly": {
+            "assemblyIdentity": format!(
+                "skiff-runtime-assembly-v3:sha256:{}",
+                "a".repeat(64)
+            )
+        }
+    }))
+    .expect("test bootstrap activation must decode")
 }
 
 fn decode_connection_bootstrap(
@@ -193,6 +210,7 @@ fn decode_connection_bootstrap(
     Ok(ConnectionBootstrap {
         resolver,
         service_db,
+        activation: header.activation,
         max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
             RuntimeError::Decode(
                 "router.bootstrap http.maxResponseBytes exceeds Runtime address space".to_string(),
@@ -328,6 +346,7 @@ async fn dispatch_router_binary_frame(
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
+        activation: test_bootstrap_activation(),
         max_response_bytes: 67_108_864,
     });
     dispatch_router_binary_frame_inner(
@@ -359,6 +378,7 @@ async fn dispatch_router_binary_frame_with_http_response_max(
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
+        activation: test_bootstrap_activation(),
         max_response_bytes,
     });
     dispatch_router_binary_frame_inner(
@@ -409,8 +429,14 @@ async fn dispatch_router_binary_frame_inner(
                 ));
             }
             let installed = decode_connection_bootstrap(typed, &payload)?;
-            host.recover_durable_committed(&installed.resolver, &installed.service_db)
-                .await?;
+            host.recover_durable_committed(
+                &installed.activation.environment,
+                installed.activation.generation,
+                &installed.activation.assembly,
+                &installed.resolver,
+                &installed.service_db,
+            )
+            .await?;
             host.queue_connection_registration(sender.clone())?;
             *bootstrap = Some(installed);
         }

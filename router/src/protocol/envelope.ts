@@ -247,11 +247,20 @@ export interface RouterBootstrapHttp {
   maxResponseBytes: number;
 }
 
+export interface RouterBootstrapActivation {
+  environment: string;
+  generation: number;
+  assembly: {
+    assemblyIdentity: string;
+  };
+}
+
 export interface RouterBootstrapEnvelope {
   type: 'router.bootstrap';
   artifactsPath: string;
   serviceDb: RouterBootstrapServiceDb;
   http: RouterBootstrapHttp;
+  activation: RouterBootstrapActivation;
 }
 
 export type RouterBootstrapFrameHeader = RuntimeFrameHeaderBase<'router.bootstrap'> &

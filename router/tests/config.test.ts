@@ -176,10 +176,19 @@ describe('router config', () => {
     );
 
     const config = await loadRouterConfig(configPath);
-    expect(runtimeBootstrapForRouterConfig(config)).toEqual({
+    const activation = {
+      environment: 'test',
+      generation: 7,
+      assembly: {
+        assemblyIdentity:
+          `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+      }
+    };
+    expect(runtimeBootstrapForRouterConfig(config, activation)).toEqual({
       artifactsPath: join(dir, 'artifacts'),
       serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff' },
-      http: { maxResponseBytes: 222 }
+      http: { maxResponseBytes: 222 },
+      activation
     });
   });
 

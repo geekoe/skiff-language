@@ -93,7 +93,14 @@ const actorDisconnect = new ActorRuntimeDisconnectController(
 const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
   assemblyRegistry: registry,
-  bootstrap: runtimeBootstrapForRouterConfig(config),
+  bootstrap: () => {
+    const active = snapshots.get();
+    return runtimeBootstrapForRouterConfig(config, {
+      environment: active.environment,
+      generation: active.generation,
+      assembly: { ...active.assembly }
+    });
+  },
   actorRuntimeDisconnect: actorDisconnect,
 });
 const actorCatalog = new RuntimeAssemblyActorMethodCatalog(snapshots);

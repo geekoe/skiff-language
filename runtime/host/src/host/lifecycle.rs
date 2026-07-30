@@ -42,9 +42,18 @@ impl RuntimeHost {
 
     pub(super) async fn recover_durable_committed(
         &self,
+        environment: &str,
+        generation: u64,
+        assembly: &skiff_artifact_model::RuntimeAssemblyRef,
         resolver: &skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
         service_db: &skiff_artifact_model::AssemblyActivationServiceDb,
     ) -> Result<()> {
+        if environment != self.environment {
+            return Err(RuntimeError::invalid_artifact(format!(
+                "router bootstrap activation environment {environment} does not match Runtime environment {}",
+                self.environment
+            )));
+        }
         self.assembly_admission
             .discard_transient_for_reconnect()
             .map_err(|error| {
@@ -52,19 +61,11 @@ impl RuntimeHost {
                     "committed recovery staging reset failed: {error}"
                 ))
             })?;
-        let state = resolver
-            .store()
-            .read_environment_activation(&self.environment)
-            .map_err(|error| {
-                RuntimeError::invalid_artifact(format!(
-                    "committed activation recovery failed: {error}"
-                ))
-            })?;
         self.assembly_admission
             .recover_committed(
-                &state.environment,
-                state.committed.generation,
-                &state.committed.assembly,
+                environment,
+                generation,
+                assembly,
                 resolver,
                 Some(service_db),
             )

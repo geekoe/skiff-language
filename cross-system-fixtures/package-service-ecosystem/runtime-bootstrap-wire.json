@@ -11,6 +11,13 @@
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
+        "activation": {
+          "environment": "prod",
+          "generation": 7,
+          "assembly": {
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
         "http": {
           "maxResponseBytes": 67108864
         }

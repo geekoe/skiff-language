@@ -7,6 +7,7 @@ import {
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS,
   type FileBackendControlConfig,
+  type RouterBootstrapActivation,
   type RouterBootstrapEnvelope,
   type RuntimeServiceDbConfigInput,
   type TelemetryControlConfig,
@@ -61,12 +62,14 @@ export interface RouterConfigOverrides {
 }
 
 export function runtimeBootstrapForRouterConfig(
-  config: RouterConfig
+  config: RouterConfig,
+  activation: RouterBootstrapActivation
 ): Omit<RouterBootstrapEnvelope, 'type'> {
   return {
     artifactsPath: config.artifactsPath,
     serviceDb: config.serviceDb,
-    http: { maxResponseBytes: config.httpMaxResponseBytes }
+    http: { maxResponseBytes: config.httpMaxResponseBytes },
+    activation
   };
 }
 

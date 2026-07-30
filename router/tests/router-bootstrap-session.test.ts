@@ -87,7 +87,15 @@ describe('Router runtime bootstrap session', () => {
       bootstrap: {
         artifactsPath: '/srv/skiff/artifacts',
         serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
-        http: { maxResponseBytes: 2097152 }
+        http: { maxResponseBytes: 2097152 },
+        activation: {
+          environment: 'test',
+          generation: 7,
+          assembly: {
+            assemblyIdentity:
+              `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+          }
+        }
       }
     });
     endpoints.push(endpoint);
@@ -112,7 +120,15 @@ describe('Router runtime bootstrap session', () => {
         type: 'router.bootstrap',
         artifactsPath: '/srv/skiff/artifacts',
         serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
-        http: { maxResponseBytes: 2097152 }
+        http: { maxResponseBytes: 2097152 },
+        activation: {
+          environment: 'test',
+          generation: 7,
+          assembly: {
+            assemblyIdentity:
+              `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+          }
+        }
       }
     ]);
 
@@ -136,6 +152,72 @@ describe('Router runtime bootstrap session', () => {
       typeof frame === 'object' && frame !== null && 'type' in frame &&
       frame.type === 'router.bootstrap'
     )).toHaveLength(1);
+  });
+
+  it('reads the active committed tuple for each Runtime connection', async () => {
+    const registry = new RuntimeRegistry();
+    let generation = 7;
+    const endpoint = new RuntimeEndpoint({
+      registry,
+      bootstrap: () => ({
+        artifactsPath: '/srv/skiff/artifacts',
+        serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
+        http: { maxResponseBytes: 2097152 },
+        activation: {
+          environment: 'test',
+          generation,
+          assembly: {
+            assemblyIdentity:
+              `skiff-runtime-assembly-v3:sha256:${(generation === 7 ? 'a' : 'b').repeat(64)}`
+          }
+        }
+      })
+    });
+    endpoints.push(endpoint);
+    endpoint.setDispatcher(new RuntimeDispatcher({
+      registry,
+      frameSender: endpoint,
+      maxConcurrency: 64
+    }));
+    const listening = await endpoint.listen({ port: 0 });
+
+    const first = new WebSocket(listening.url);
+    sockets.push(first);
+    const firstFrames: unknown[] = [];
+    first.on('message', (data) => {
+      firstFrames.push(decodeRuntimeFrame(data).header);
+    });
+    await waitFor(() => firstFrames.length === 1);
+    expect(firstFrames[0]).toMatchObject({
+      type: 'router.bootstrap',
+      activation: {
+        generation: 7,
+        assembly: {
+          assemblyIdentity:
+            `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+        }
+      }
+    });
+    first.close();
+
+    generation = 8;
+    const second = new WebSocket(listening.url);
+    sockets.push(second);
+    const secondFrames: unknown[] = [];
+    second.on('message', (data) => {
+      secondFrames.push(decodeRuntimeFrame(data).header);
+    });
+    await waitFor(() => secondFrames.length === 1);
+    expect(secondFrames[0]).toMatchObject({
+      type: 'router.bootstrap',
+      activation: {
+        generation: 8,
+        assembly: {
+          assemblyIdentity:
+            `skiff-runtime-assembly-v3:sha256:${'b'.repeat(64)}`
+        }
+      }
+    });
   });
 });
 

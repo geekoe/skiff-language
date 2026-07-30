@@ -2206,6 +2206,14 @@ export const runtimeFrameHeaderFixtures = {
     serviceDb: {
       mongoUrl: 'mongodb://mongo.internal:27017/skiff?replicaSet=rs0'
     },
+    activation: {
+      environment: 'prod',
+      generation: 7,
+      assembly: {
+        assemblyIdentity:
+          `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+      }
+    },
     http: {
       maxResponseBytes: 67108864
     }
@@ -3269,7 +3277,8 @@ function validateRouterBootstrap(envelope: Record<string, unknown>): string | nu
     'type',
     'artifactsPath',
     'serviceDb',
-    'http'
+    'http',
+    'activation'
   ]);
   if (fieldsError !== null) {
     return fieldsError;
@@ -3295,6 +3304,55 @@ function validateRouterBootstrap(envelope: Record<string, unknown>): string | nu
     : 'invalid router.bootstrap envelope: serviceDb.mongoUrl must be a non-empty string';
   if (serviceDbError !== null) {
     return serviceDbError;
+  }
+  if (!isRecord(envelope.activation)) {
+    return 'invalid router.bootstrap envelope: activation must be an object';
+  }
+  const activationFieldsError = rejectUnsupportedObjectFields(
+    envelope.activation,
+    'router.bootstrap',
+    'activation',
+    ['environment', 'generation', 'assembly']
+  );
+  if (activationFieldsError !== null) {
+    return activationFieldsError;
+  }
+  if (
+    typeof envelope.activation.environment !== 'string' ||
+    envelope.activation.environment.length === 0 ||
+    envelope.activation.environment.length > 200 ||
+    envelope.activation.environment === '.' ||
+    envelope.activation.environment === '..' ||
+    !/^[A-Za-z0-9._-]+$/.test(envelope.activation.environment)
+  ) {
+    return 'invalid router.bootstrap envelope: activation.environment must be 1-200 ASCII letters, digits, dot, dash, or underscore and must not be . or ..';
+  }
+  if (
+    typeof envelope.activation.generation !== 'number' ||
+    !Number.isSafeInteger(envelope.activation.generation) ||
+    envelope.activation.generation < 0
+  ) {
+    return 'invalid router.bootstrap envelope: activation.generation must be a non-negative safe integer';
+  }
+  if (!isRecord(envelope.activation.assembly)) {
+    return 'invalid router.bootstrap envelope: activation.assembly must be an object';
+  }
+  const activationAssemblyFieldsError = rejectUnsupportedObjectFields(
+    envelope.activation.assembly,
+    'router.bootstrap',
+    'activation.assembly',
+    ['assemblyIdentity']
+  );
+  if (activationAssemblyFieldsError !== null) {
+    return activationAssemblyFieldsError;
+  }
+  if (
+    typeof envelope.activation.assembly.assemblyIdentity !== 'string' ||
+    !/^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/.test(
+      envelope.activation.assembly.assemblyIdentity
+    )
+  ) {
+    return 'invalid router.bootstrap envelope: activation.assembly.assemblyIdentity must be a canonical RuntimeAssembly identity';
   }
   if (!isRecord(envelope.http)) {
     return 'invalid router.bootstrap envelope: http must be an object';

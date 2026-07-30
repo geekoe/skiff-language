@@ -75,6 +75,8 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
                 assert_eq!(header.artifacts_path, "/opt/skiff/artifacts");
                 assert!(!header.service_db.mongo_url.is_empty());
                 assert_eq!(header.http.max_response_bytes, 67_108_864);
+                assert_eq!(header.activation.environment, "prod");
+                assert_eq!(header.activation.generation, 7);
             }
             "reject" => assert!(
                 result.is_err(),
@@ -1236,6 +1238,16 @@ fn router_bootstrap_rejects_previous_runtime_frame_generation() {
         "artifactsPath": "/tmp/skiff-artifacts",
         "serviceDb": {
             "mongoUrl": "mongodb://127.0.0.1:27017/?replicaSet=rs0"
+        },
+        "activation": {
+            "environment": "test",
+            "generation": 7,
+            "assembly": {
+                "assemblyIdentity": format!(
+                    "skiff-runtime-assembly-v3:sha256:{}",
+                    "a".repeat(64)
+                )
+            }
         },
         "http": {
             "maxResponseBytes": 1024

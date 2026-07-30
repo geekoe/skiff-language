@@ -255,6 +255,16 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
             "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
             "artifactsPath": artifact_path,
             "serviceDb": { "mongoUrl": "mongodb://router-owned" },
+            "activation": {
+                "environment": "test",
+                "generation": 7,
+                "assembly": {
+                    "assemblyIdentity": format!(
+                        "skiff-runtime-assembly-v3:sha256:{}",
+                        "a".repeat(64)
+                    )
+                }
+            },
             "http": { "maxResponseBytes": 67108864 }
         }))
         .expect("bootstrap fields should decode"),
@@ -272,6 +282,12 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
     assert_eq!(
         bootstrap.service_db.mongo_url,
         "mongodb://router-owned".to_string()
+    );
+    assert_eq!(bootstrap.activation.environment, "test");
+    assert_eq!(bootstrap.activation.generation, 7);
+    assert_eq!(
+        bootstrap.activation.assembly.assembly_identity.as_str(),
+        format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64))
     );
     assert_eq!(bootstrap.max_response_bytes, 67_108_864);
 }
@@ -621,6 +637,7 @@ async fn duplicate_connection_bootstrap_fails_closed() {
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
+        activation: super::test_bootstrap_activation(),
         max_response_bytes: 67_108_864,
     });
     let frame = encode_binary_frame(
@@ -629,6 +646,16 @@ async fn duplicate_connection_bootstrap_fails_closed() {
             "type": "router.bootstrap",
             "artifactsPath": artifact_path,
             "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:27017" },
+            "activation": {
+                "environment": "test",
+                "generation": 0,
+                "assembly": {
+                    "assemblyIdentity": format!(
+                        "skiff-runtime-assembly-v3:sha256:{}",
+                        "a".repeat(64)
+                    )
+                }
+            },
             "http": { "maxResponseBytes": 67108864 }
         }),
         &[],
@@ -665,6 +692,7 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://bootstrap-owner".to_string(),
         },
+        activation: super::test_bootstrap_activation(),
         max_response_bytes: 67_108_864,
     });
     let mut activation = serde_json::to_value(assembly_activation_control("prepare"))

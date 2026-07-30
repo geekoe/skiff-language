@@ -219,11 +219,15 @@ export interface RuntimeActorMethodRouter {
 export type RuntimeEndpointOptions = RuntimeEndpointBaseOptions & (
   | {
       assemblyRegistry: AssemblyRuntimeRegistry;
-      bootstrap: Omit<RouterBootstrapEnvelope, 'type'>;
+      bootstrap:
+        | Omit<RouterBootstrapEnvelope, 'type'>
+        | (() => Omit<RouterBootstrapEnvelope, 'type'>);
     }
   | {
       assemblyRegistry?: undefined;
-      bootstrap?: Omit<RouterBootstrapEnvelope, 'type'>;
+      bootstrap?:
+        | Omit<RouterBootstrapEnvelope, 'type'>
+        | (() => Omit<RouterBootstrapEnvelope, 'type'>);
     }
 );
 
@@ -325,10 +329,14 @@ export class RuntimeEndpoint
         `skiff-runtime-session-v1:opaque:${this.nextRuntimeSessionToken++}`
       );
       if (this.options.bootstrap !== undefined) {
+        const bootstrap =
+          typeof this.options.bootstrap === 'function'
+            ? this.options.bootstrap()
+            : this.options.bootstrap;
         this.sendFrame(ws, {
           schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
           type: 'router.bootstrap',
-          ...this.options.bootstrap
+          ...bootstrap
         });
       }
       if (this.control) {
