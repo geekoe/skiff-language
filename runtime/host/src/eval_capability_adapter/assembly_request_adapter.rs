@@ -208,43 +208,52 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
         Option<skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution>,
     > {
         let activation_id = self.activation.activation_id().as_str();
-        let execution = if self.request.test_effects_enabled {
+        if let Some(capability) = self.test_case_capability.as_deref() {
+            if !self.request.test_effects_enabled {
+                return Err(skiff_runtime_request::RequestError::Unsupported(
+                    "test case capability cannot be used when test effects are disabled"
+                        .to_string(),
+                ));
+            }
             let ingress_url = self.test_ingress_url.as_deref().ok_or_else(|| {
                 skiff_runtime_request::RequestError::Unsupported(
                     "test HTTP ingress is missing its trusted ingress URL".to_string(),
                 )
             })?;
-            Some(
-                self.test_http_entries
-                    .begin_parent(
-                        activation_id.to_string(),
-                        ingress_url,
-                        self.activation.identity().deployment.clone(),
-                    )
-                    .map_err(|error| {
-                        skiff_runtime_request::RequestError::Unsupported(error.to_string())
-                    })?,
-            )
-        } else {
-            self.test_http_entries.borrow_child(activation_id)
-        };
-        Ok(execution.map(|execution| {
-            let effects = execution.effects();
-            if execution.finalize() {
-                let finalization_effects = effects.clone();
+            let lease = self
+                .test_http_entries
+                .begin_root_case(
+                    capability,
+                    self.request.request_id.clone(),
+                    activation_id.to_string(),
+                    ingress_url,
+                    self.activation.identity().deployment.clone(),
+                )
+                .map_err(|error| {
+                    skiff_runtime_request::RequestError::Unsupported(error.to_string())
+                })?;
+            let effects = lease.effects();
+            return Ok(Some(
                 skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::root(
                     effects,
-                    async move {
-                        let result = finalization_effects.finalize();
-                        drop(execution);
-                        result
-                    },
-                )
-            } else {
-                skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::nested(
-                    effects, execution,
-                )
-            }
+                    lease.finalize(),
+                ),
+            ));
+        }
+        if self.request.test_effects_enabled {
+            return Err(skiff_runtime_request::RequestError::Unsupported(
+                "test HTTP ingress is missing its opaque test case capability".to_string(),
+            ));
+        }
+        let execution = self
+            .test_http_entries
+            .begin_nested_http(activation_id, self.request.request_id.clone())
+            .map_err(|error| skiff_runtime_request::RequestError::Unsupported(error.to_string()))?;
+        Ok(execution.map(|lease| {
+            skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::nested(
+                lease.effects(),
+                lease,
+            )
         }))
     }
 

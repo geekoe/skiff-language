@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -265,6 +265,11 @@ impl TestCaseRegistry {
         (owner.cases.len(), owner.requests.len())
     }
 
+    #[cfg(test)]
+    fn owner_weak(&self) -> std::sync::Weak<Mutex<TestCaseRegistryOwner>> {
+        Arc::downgrade(&self.owner)
+    }
+
     pub(crate) fn self_ingress_for_request(
         &self,
         request_id: &str,
@@ -278,6 +283,37 @@ impl TestCaseRegistry {
         Some(TestHttpSelfIngressContext {
             state: Arc::clone(&state.http),
         })
+    }
+
+    pub(crate) fn begin_nested_http(
+        &self,
+        activation_id: &str,
+        request_id: String,
+    ) -> Result<Option<TestCaseDerivedLease>> {
+        let capability = {
+            let owner = self
+                .owner
+                .lock()
+                .expect("test case registry owner lock poisoned");
+            let mut active = owner
+                .cases
+                .values()
+                .filter(|state| {
+                    state.http.activation_id == activation_id
+                        && state.http.active_self_ingress.load(Ordering::Acquire)
+                })
+                .map(|state| state.capability.clone());
+            let Some(capability) = active.next() else {
+                return Ok(None);
+            };
+            if active.next().is_some() {
+                return Err(RuntimeError::Unsupported(format!(
+                    "multiple test cases have active self-ingress for activation {activation_id}"
+                )));
+            }
+            capability
+        };
+        self.begin_derived(&capability.0, request_id).map(Some)
     }
 }
 
@@ -405,7 +441,6 @@ impl Drop for TestCaseDerivedLease {
 
 #[derive(Clone, Default)]
 pub(crate) struct TestHttpEntryRegistry {
-    entries: Arc<Mutex<HashMap<String, Arc<TestHttpEntryState>>>>,
     test_cases: TestCaseRegistry,
 }
 
@@ -442,130 +477,12 @@ impl TestHttpEntryRegistry {
         self.test_cases.self_ingress_for_request(request_id)
     }
 
-    pub(crate) fn begin_parent(
-        &self,
-        activation_id: String,
-        ingress_url: &str,
-        deployment: ServiceDeploymentRef,
-    ) -> Result<TestHttpEntryExecution> {
-        let origin = canonical_http_origin(ingress_url)?;
-        let state = Arc::new(TestHttpEntryState {
-            activation_id: activation_id.clone(),
-            origin,
-            deployment,
-            effects: TestEffectCaseContext::default(),
-            active_self_ingress: AtomicBool::new(false),
-        });
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("test HTTP entry registry lock poisoned");
-        match entries.entry(activation_id.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(Arc::clone(&state));
-            }
-            Entry::Occupied(_) => {
-                return Err(RuntimeError::Unsupported(format!(
-                    "test case already has an active parent request for activation {activation_id}"
-                )));
-            }
-        }
-        Ok(TestHttpEntryExecution {
-            effects: state.effects.clone(),
-            finalize: true,
-            _lease: TestHttpEntryExecutionLease::Parent {
-                registry: self.clone(),
-                activation_id,
-                state,
-            },
-        })
-    }
-
-    pub(crate) fn borrow_child(&self, activation_id: &str) -> Option<TestHttpEntryExecution> {
-        let state = self
-            .entries
-            .lock()
-            .expect("test HTTP entry registry lock poisoned")
-            .get(activation_id)
-            .cloned()?;
-        if !state.active_self_ingress.load(Ordering::Acquire) {
-            return None;
-        }
-        Some(TestHttpEntryExecution {
-            effects: state.effects.clone(),
-            finalize: false,
-            _lease: TestHttpEntryExecutionLease::Child { _state: state },
-        })
-    }
-
-    pub(crate) fn self_ingress_for_execution(
+    pub(crate) fn begin_nested_http(
         &self,
         activation_id: &str,
-        parent: bool,
-    ) -> Option<TestHttpSelfIngressContext> {
-        let state = self
-            .entries
-            .lock()
-            .expect("test HTTP entry registry lock poisoned")
-            .get(activation_id)
-            .cloned()?;
-        if !parent && !state.active_self_ingress.load(Ordering::Acquire) {
-            return None;
-        }
-        Some(TestHttpSelfIngressContext { state })
-    }
-
-    fn remove_parent(&self, activation_id: &str, state: &Arc<TestHttpEntryState>) {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("test HTTP entry registry lock poisoned");
-        if entries
-            .get(activation_id)
-            .is_some_and(|active| Arc::ptr_eq(active, state))
-        {
-            entries.remove(activation_id);
-        }
-    }
-}
-
-pub(crate) struct TestHttpEntryExecution {
-    effects: TestEffectCaseContext,
-    finalize: bool,
-    _lease: TestHttpEntryExecutionLease,
-}
-
-impl TestHttpEntryExecution {
-    pub(crate) fn effects(&self) -> TestEffectCaseContext {
-        self.effects.clone()
-    }
-
-    pub(crate) fn finalize(&self) -> bool {
-        self.finalize
-    }
-}
-
-enum TestHttpEntryExecutionLease {
-    Parent {
-        registry: TestHttpEntryRegistry,
-        activation_id: String,
-        state: Arc<TestHttpEntryState>,
-    },
-    Child {
-        _state: Arc<TestHttpEntryState>,
-    },
-}
-
-impl Drop for TestHttpEntryExecutionLease {
-    fn drop(&mut self) {
-        match self {
-            Self::Parent {
-                registry,
-                activation_id,
-                state,
-            } => registry.remove_parent(activation_id, state),
-            Self::Child { .. } => {}
-        }
+        request_id: String,
+    ) -> Result<Option<TestCaseDerivedLease>> {
+        self.test_cases.begin_nested_http(activation_id, request_id)
     }
 }
 
@@ -718,22 +635,22 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn self_ingress_injects_exact_selector_and_releases_sequential_slot() {
+    #[tokio::test]
+    async fn self_ingress_injects_exact_selector_and_releases_sequential_slot() {
         let registry = TestHttpEntryRegistry::default();
-        let parent = registry
-            .begin_parent(
+        let root = registry
+            .begin_root_case(
+                "case-a",
+                "root-a".to_string(),
                 "activation-a".to_string(),
                 "http://127.0.0.1:44100/test-case",
                 deployment(),
             )
             .unwrap();
-        assert!(parent.finalize());
-        let context = registry
-            .self_ingress_for_execution("activation-a", true)
-            .unwrap();
+        let context = registry.self_ingress_for_request("root-a").unwrap();
         assert!(registry
-            .self_ingress_for_execution("activation-a", false)
+            .begin_nested_http("activation-a", "before-active".to_string())
+            .unwrap()
             .is_none());
         let first = context
             .prepare(&json!({
@@ -743,11 +660,12 @@ mod tests {
             }))
             .unwrap()
             .unwrap();
-        let child = registry.borrow_child("activation-a").unwrap();
-        assert!(!child.finalize());
-        assert!(registry
-            .self_ingress_for_execution("activation-a", false)
-            .is_some());
+        let child = registry
+            .begin_nested_http("activation-a", "child-a".to_string())
+            .unwrap()
+            .unwrap();
+        assert!(root.same_case_as(&child));
+        assert!(registry.self_ingress_for_request("child-a").is_some());
         let concurrent_error = context
             .prepare(&json!({
                 "method": "GET",
@@ -766,32 +684,32 @@ mod tests {
             .iter()
             .any(|header| { header == &json!({"name": "x-skiff-version", "value": "1.0.0"}) }));
         drop(first);
-        assert!(context
+        drop(child);
+        let second = context
             .prepare(&json!({
                 "method": "GET",
                 "url": "http://127.0.0.1:44100/other",
             }))
             .unwrap()
-            .is_some());
-        drop(parent);
-        assert!(registry
-            .self_ingress_for_execution("activation-a", true)
-            .is_none());
+            .unwrap();
+        drop(second);
+        root.finalize().await.unwrap();
+        assert_eq!(registry.test_cases.owner_counts(), (0, 0));
     }
 
     #[test]
     fn non_self_origin_is_not_claimed_and_reserved_headers_fail_case_insensitively() {
         let registry = TestHttpEntryRegistry::default();
-        let _parent = registry
-            .begin_parent(
+        let _root = registry
+            .begin_root_case(
+                "case-a",
+                "root-a".to_string(),
                 "activation-a".to_string(),
                 "http://127.0.0.1:44100/test-case",
                 deployment(),
             )
             .unwrap();
-        let context = registry
-            .self_ingress_for_execution("activation-a", true)
-            .unwrap();
+        let context = registry.self_ingress_for_request("root-a").unwrap();
         assert!(context
             .prepare(&json!({
                 "method": "GET",
@@ -826,38 +744,48 @@ mod tests {
     }
 
     #[test]
-    fn exact_activation_keeps_one_parent_without_replacing_it_on_duplicate_begin() {
+    fn exact_capability_rejects_duplicate_but_allows_parallel_activation_cases() {
         let registry = TestHttpEntryRegistry::default();
-        let parent = registry
-            .begin_parent(
+        let root = registry
+            .begin_root_case(
+                "case-a",
+                "root-a".to_string(),
                 "activation-a".to_string(),
                 "http://127.0.0.1:44100/test-case",
                 deployment(),
             )
             .unwrap();
         let duplicate = registry
-            .begin_parent(
+            .begin_root_case(
+                "case-a",
+                "root-b".to_string(),
                 "activation-a".to_string(),
                 "http://127.0.0.1:44101/test-case",
                 deployment(),
             )
             .err()
             .expect("duplicate parent must fail");
-        assert!(duplicate.to_string().contains("active parent request"));
-        assert!(registry.borrow_child("activation-a").is_none());
-        assert!(registry.borrow_child("activation-b").is_none());
-        assert!(registry
-            .self_ingress_for_execution("activation-a", true)
-            .unwrap()
-            .matches(&json!({"url": "http://127.0.0.1:44100/entry"})));
-        drop(parent);
-        assert!(registry
-            .begin_parent(
+        assert!(duplicate.to_string().contains("already registered"));
+        let parallel = registry
+            .begin_root_case(
+                "case-b",
+                "root-b".to_string(),
                 "activation-a".to_string(),
                 "http://127.0.0.1:44101/test-case",
                 deployment(),
             )
-            .is_ok());
+            .unwrap();
+        assert!(registry
+            .self_ingress_for_request("root-a")
+            .unwrap()
+            .matches(&json!({"url": "http://127.0.0.1:44100/entry"})));
+        assert!(registry
+            .self_ingress_for_request("root-b")
+            .unwrap()
+            .matches(&json!({"url": "http://127.0.0.1:44101/entry"})));
+        drop(root);
+        drop(parallel);
+        assert_eq!(registry.test_cases.owner_counts(), (0, 0));
     }
 
     #[tokio::test]
@@ -906,6 +834,62 @@ mod tests {
         root_b.finalize().await.unwrap();
         assert!(!registry.test_cases.contains_capability("case-a"));
         assert!(!registry.test_cases.contains_capability("case-b"));
+    }
+
+    #[test]
+    fn concurrent_self_ingress_on_one_activation_fails_closed_instead_of_crossing_cases() {
+        let registry = TestHttpEntryRegistry::default();
+        let root_a = registry
+            .begin_root_case(
+                "case-a",
+                "root-a".to_string(),
+                "activation-shared".to_string(),
+                "http://127.0.0.1:44100/test-case",
+                deployment(),
+            )
+            .unwrap();
+        let root_b = registry
+            .begin_root_case(
+                "case-b",
+                "root-b".to_string(),
+                "activation-shared".to_string(),
+                "http://127.0.0.1:44100/test-case",
+                deployment(),
+            )
+            .unwrap();
+        let active_a = registry
+            .self_ingress_for_request("root-a")
+            .unwrap()
+            .prepare(&json!({
+                "method": "GET",
+                "url": "http://127.0.0.1:44100/a",
+            }))
+            .unwrap()
+            .unwrap();
+        let active_b = registry
+            .self_ingress_for_request("root-b")
+            .unwrap()
+            .prepare(&json!({
+                "method": "GET",
+                "url": "http://127.0.0.1:44100/b",
+            }))
+            .unwrap()
+            .unwrap();
+
+        let error = registry
+            .begin_nested_http("activation-shared", "ambiguous-child".to_string())
+            .err()
+            .expect("ambiguous nested ingress must fail closed");
+        assert!(error
+            .to_string()
+            .contains("multiple test cases have active self-ingress"));
+        assert_eq!(registry.test_cases.owner_counts(), (2, 2));
+
+        drop(active_a);
+        drop(active_b);
+        drop(root_a);
+        drop(root_b);
+        assert_eq!(registry.test_cases.owner_counts(), (0, 0));
     }
 
     #[tokio::test]
@@ -1085,6 +1069,31 @@ mod tests {
         assert!(!registry.test_cases.contains_capability("case-drop"));
         assert_eq!(state.finalization_count.load(Ordering::Acquire), 1);
         assert_eq!(registry.test_cases.owner_counts(), (0, 0));
+    }
+
+    #[test]
+    fn dropping_host_registry_releases_owner_after_live_request_leases_end() {
+        let registry = TestHttpEntryRegistry::default();
+        let owner = registry.test_cases.owner_weak();
+        let root = registry
+            .begin_root_case(
+                "case-host-drop",
+                "root".to_string(),
+                "activation-a".to_string(),
+                "http://127.0.0.1:44100/test-case",
+                deployment(),
+            )
+            .unwrap();
+        let child = registry
+            .begin_derived("case-host-drop", "child".to_string())
+            .unwrap();
+
+        drop(registry);
+        assert!(owner.upgrade().is_some());
+        drop(root);
+        assert!(owner.upgrade().is_some());
+        drop(child);
+        assert!(owner.upgrade().is_none());
     }
 
     fn deployment() -> ServiceDeploymentRef {
