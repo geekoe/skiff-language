@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import {
+  DEFAULT_GENERATED_ROUTER_RUNTIME_MAX_CONCURRENCY,
   renderRouterConfig,
   renderRuntimeConfig,
 } from '../lib/runtime-stack-config.mjs';
@@ -27,6 +28,7 @@ const routerConfig = {
   httpMaxRequestBytes: 67108864,
   httpMaxResponseBytes: 8388608,
   runtimePort: 4101,
+  runtimeMaxConcurrency: 17,
   serviceDbMongoUrl: 'mongodb://127.0.0.1:27017/skiff',
 };
 
@@ -50,8 +52,29 @@ test('router config renders an explicit environment', () => {
   assert.match(rendered, /^  maxRequestBytes: 67108864$/m);
   assert.match(rendered, /^  maxResponseBytes: 8388608$/m);
   assert.match(rendered, /^activation:\n  prepareTimeoutMs: 120000$/m);
+  assert.match(rendered, /^runtime:\n  port: 4101\n  path: \/runtime\n  maxConcurrency: 17$/m);
   assert.doesNotMatch(rendered, /bodyLimitBytes/);
   assert.doesNotMatch(rendered, /^artifactRoots?:/m);
+});
+
+test('router config generator owns one default runtime concurrency and always emits it', () => {
+  const { runtimeMaxConcurrency: _value, ...withoutConcurrency } = routerConfig;
+  const rendered = renderRouterConfig(withoutConcurrency);
+
+  assert.equal(DEFAULT_GENERATED_ROUTER_RUNTIME_MAX_CONCURRENCY, 128);
+  assert.match(
+    rendered,
+    new RegExp(`^  maxConcurrency: ${DEFAULT_GENERATED_ROUTER_RUNTIME_MAX_CONCURRENCY}$`, 'm'),
+  );
+});
+
+test('router config rejects invalid explicit runtime concurrency', () => {
+  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '128']) {
+    assert.throws(
+      () => renderRouterConfig({ ...routerConfig, runtimeMaxConcurrency: value }),
+      /router runtime\.maxConcurrency must be a positive safe integer/,
+    );
+  }
 });
 
 test('router config requires an explicit positive activation prepare budget', () => {
@@ -140,6 +163,7 @@ test('runtime config renders one exact environment without deployment bootstrap 
   assert.equal(rendered.match(/^environment:/gm)?.length, 1);
   assert.doesNotMatch(rendered, /^artifactRoots?:/m);
   assert.doesNotMatch(rendered, /mongoUrl/);
+  assert.doesNotMatch(rendered, /maxConcurrency/);
 });
 
 test('runtime config fails closed on missing or empty environment', () => {
@@ -185,11 +209,13 @@ test('local dev config writes bootstrap ownership only to router', async () => {
     assert.match(rendered, /^environment: "dev"$/m);
     assert.doesNotMatch(rendered, /^artifactRoots?:/m);
     assert.doesNotMatch(rendered, /mongoUrl/);
+    assert.doesNotMatch(rendered, /maxConcurrency/);
     assert.match(router, new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'));
     assert.match(router, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\//m);
     assert.match(router, /^  maxRequestBytes: 67108864$/m);
     assert.match(router, /^  maxResponseBytes: 8388608$/m);
     assert.match(router, /^activation:\n  prepareTimeoutMs: 130000$/m);
+    assert.match(router, /^runtime:\n  port: 4001\n  path: \/runtime\n  maxConcurrency: 128$/m);
     assert.doesNotMatch(router, /bodyLimitBytes/);
     assert.doesNotMatch(router, /^artifactRoots?:/m);
     assert.match(

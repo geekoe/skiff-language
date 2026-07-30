@@ -20,7 +20,10 @@ test('runtime config renders an optional host keyring mount path', () => {
     environment: 'prod',
   };
 
-  assert.doesNotMatch(renderRuntimeConfig(common), /serviceDb|keyringFile|maxRequestBytes|maxResponseBytes/);
+  assert.doesNotMatch(
+    renderRuntimeConfig(common),
+    /serviceDb|keyringFile|maxRequestBytes|maxResponseBytes|maxConcurrency/,
+  );
   assert.match(
     renderRuntimeConfig({
       ...common,
@@ -40,7 +43,10 @@ test('deploy CLI writes only the remote keyring path to runtime.yml', async () =
     assert.match(result.runtimeConfig, /^environment: "prod"$/m);
     assert.doesNotMatch(result.runtimeConfig, /^artifactRoots?:/m);
     assert.doesNotMatch(result.runtimeConfig, /mongoUrl/);
-    assert.doesNotMatch(result.runtimeConfig, /maxRequestBytes|maxResponseBytes|bodyLimitBytes/);
+    assert.doesNotMatch(
+      result.runtimeConfig,
+      /maxRequestBytes|maxResponseBytes|maxConcurrency|bodyLimitBytes/,
+    );
     assert.match(result.runtimeConfig, new RegExp(`keyringFile: ${JSON.stringify(mountPath)}`));
 
     const summary = JSON.parse(result.stdout);
@@ -174,6 +180,10 @@ test('router deploy provisions the manifest compiler and writes only supported P
     assert.match(result.routerConfig, /^  maxRequestBytes: 67108864$/m);
     assert.match(result.routerConfig, /^  maxResponseBytes: 8388608$/m);
     assert.match(result.routerConfig, /^activation:\n  prepareTimeoutMs: 120000$/m);
+    assert.match(
+      result.routerConfig,
+      /^runtime:\n  port: 4001\n  path: \/runtime\n  maxConcurrency: 128$/m,
+    );
     assert.doesNotMatch(result.routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(result.routerConfig, /^artifactRoots?:/m);
     assert.match(

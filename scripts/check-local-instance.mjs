@@ -72,8 +72,15 @@ try {
   assert.match(routerConfigText, /^  mongoUrl: /m);
   assert.match(routerConfigText, /^  maxRequestBytes: 67108864$/m);
   assert.match(routerConfigText, /^  maxResponseBytes: 8388608$/m);
+  assert.match(
+    routerConfigText,
+    /^runtime:\n  port: 4101\n  path: \/runtime\n  maxConcurrency: 128$/m,
+  );
   assert.doesNotMatch(routerConfigText, /bodyLimitBytes/);
-  assert.doesNotMatch(runtimeConfigText, /maxRequestBytes|maxResponseBytes|bodyLimitBytes/);
+  assert.doesNotMatch(
+    runtimeConfigText,
+    /maxRequestBytes|maxResponseBytes|maxConcurrency|bodyLimitBytes/,
+  );
   assert.doesNotMatch(routerConfigText, /^artifactRoots?:/m);
   assert.doesNotMatch(runtimeConfigText, /^artifactRoots?:/m);
   assert.doesNotMatch(runtimeConfigText, /mongoUrl/);
