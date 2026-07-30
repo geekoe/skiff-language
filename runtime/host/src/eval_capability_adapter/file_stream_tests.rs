@@ -209,6 +209,64 @@ fn assert_deadline(error: FileCapabilityError) {
 }
 
 #[tokio::test]
+async fn cloned_request_stream_owner_keeps_scope_open_until_last_clone_drops() {
+    let concrete_runtime = concrete::StreamRuntime::default();
+    let runtime =
+        capability_contract::StreamRuntime::new(RuntimeStreamRuntime(concrete_runtime.clone()));
+    let (runtime, owner) = runtime.request_scope(47);
+    let escaping_owner = owner.clone();
+    let (stream, sink) = runtime.channel_stream();
+    sink.send(json!("still-owned"))
+        .await
+        .expect("request stream item");
+
+    drop(owner);
+
+    assert_eq!(concrete_runtime.active_stream_count_in_scope(47), 1);
+    assert!(matches!(
+        runtime.next(&stream).await.expect("stream remains registered"),
+        capability_contract::StreamPoll::Item(value) if value == json!("still-owned")
+    ));
+
+    drop(escaping_owner);
+
+    assert_eq!(concrete_runtime.active_stream_count_in_scope(47), 0);
+    assert!(runtime
+        .next(&stream)
+        .await
+        .expect_err("last owner clone closes the request scope")
+        .to_string()
+        .contains("unknown Stream value"));
+}
+
+#[tokio::test]
+async fn detached_stream_task_can_retain_the_selected_request_scope() {
+    let concrete_runtime = concrete::StreamRuntime::default();
+    let runtime =
+        capability_contract::StreamRuntime::new(RuntimeStreamRuntime(concrete_runtime.clone()));
+    let (runtime, request_owner) = runtime.request_scope(48);
+    let task_owner = runtime
+        .retain_request_scope()
+        .expect("scoped runtime can open a detached task owner");
+    let (stream, sink) = runtime.channel_stream();
+    sink.send(json!("task-owned"))
+        .await
+        .expect("request stream item");
+
+    drop(request_owner);
+
+    assert_eq!(concrete_runtime.active_stream_count_in_scope(48), 1);
+    assert!(matches!(
+        runtime.next(&stream).await.expect("task owner retains scope"),
+        capability_contract::StreamPoll::Item(value) if value == json!("task-owned")
+    ));
+
+    drop(task_owner);
+
+    assert_eq!(concrete_runtime.active_stream_count_in_scope(48), 0);
+}
+
+#[tokio::test]
 async fn f445h_i6_file_scope_direct_ready_has_no_residual_owner() {
     let (_cancellation, execution, scope) = TestExecution::request(None);
     let output = scoped_file_future(

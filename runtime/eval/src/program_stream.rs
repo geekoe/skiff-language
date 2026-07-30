@@ -24,7 +24,10 @@ use skiff_runtime_model::{
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink, TypedStreamSink},
+    capabilities::{
+        StreamCancelSignal, StreamPoll, StreamRuntime, StreamRuntimeOwner, StreamSink,
+        TypedStreamSink,
+    },
     env::{Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
@@ -280,6 +283,7 @@ impl Interpreter {
         producer_env.current_stream_item_type = Some(item_type.clone());
         let prepared = StreamProducerExecution {
             stream_runtime,
+            _stream_runtime_owner: None,
             stream_value,
             cancel_signal,
             item_type,
@@ -592,6 +596,7 @@ impl Interpreter {
         producer_env.current_stream_item_type = Some(producer.item_type.clone());
         Ok(StreamProducerExecution {
             stream_runtime,
+            _stream_runtime_owner: None,
             stream_value,
             cancel_signal,
             item_type: producer.item_type,
@@ -878,6 +883,7 @@ impl PreparedNativeStreamProducer {
 
 pub struct StreamProducerExecution {
     stream_runtime: StreamRuntime,
+    _stream_runtime_owner: Option<StreamRuntimeOwner>,
     stream_value: Value,
     cancel_signal: StreamCancelSignal,
     item_type: RuntimeTypePlan,
@@ -895,6 +901,12 @@ pub struct StreamProducerExecution {
 impl StreamProducerExecution {
     fn cancel(&self) {
         self.stream_runtime.cancel(&self.stream_value);
+    }
+
+    fn retain_request_scope(&mut self) {
+        if self._stream_runtime_owner.is_none() {
+            self._stream_runtime_owner = self.stream_runtime.retain_request_scope();
+        }
     }
 }
 
@@ -1014,8 +1026,9 @@ fn spawn_stream_producer(
     interpreter: &Interpreter,
     owned_context: Arc<OwnedProgramExecutionContext>,
     caller_addr: ExecutableAddr,
-    producer: StreamProducerExecution,
+    mut producer: StreamProducerExecution,
 ) {
+    producer.retain_request_scope();
     let interpreter = interpreter.clone_for_stream_producer();
     tokio::spawn(async move {
         run_stream_producer_task(&interpreter, &owned_context, &caller_addr, producer).await;
@@ -1034,6 +1047,7 @@ async fn run_stream_producer_task(
     producer: StreamProducerExecution,
 ) {
     let StreamProducerExecution {
+        _stream_runtime_owner,
         arg_producers,
         mut producer_heap,
         producer_env,

@@ -665,7 +665,15 @@ pub struct StreamRuntime {
     request_generation: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct StreamRuntimeOwner {
+    // Context clones and detached stream tasks share one close authority.
+    // Independently opened request scopes still receive distinct leases and
+    // therefore retain the concrete runtime's nested-owner accounting.
+    lease: Arc<StreamRuntimeOwnerLease>,
+}
+
+struct StreamRuntimeOwnerLease {
     inner: Arc<dyn StreamRuntimeApi>,
     target: StreamRuntimeOwnerTarget,
 }
@@ -774,21 +782,45 @@ impl StreamRuntime {
                 request_generation: scoped_generation,
             },
             StreamRuntimeOwner {
-                inner: self.inner.clone(),
-                target: if opened {
-                    StreamRuntimeOwnerTarget::Request(request_generation)
-                } else {
-                    StreamRuntimeOwnerTarget::Noop
-                },
+                lease: Arc::new(StreamRuntimeOwnerLease {
+                    inner: self.inner.clone(),
+                    target: if opened {
+                        StreamRuntimeOwnerTarget::Request(request_generation)
+                    } else {
+                        StreamRuntimeOwnerTarget::Noop
+                    },
+                }),
             },
         )
     }
 
     pub fn owner(&self) -> StreamRuntimeOwner {
         StreamRuntimeOwner {
-            inner: self.inner.clone(),
-            target: StreamRuntimeOwnerTarget::Root,
+            lease: Arc::new(StreamRuntimeOwnerLease {
+                inner: self.inner.clone(),
+                target: StreamRuntimeOwnerTarget::Root,
+            }),
         }
+    }
+
+    /// Opens one additional owner for the already-selected request scope.
+    ///
+    /// Detached producer tasks call this only when they are about to spawn, so
+    /// a parked-but-never-driven producer cannot keep a request registry alive.
+    pub fn retain_request_scope(&self) -> Option<StreamRuntimeOwner> {
+        self.request_generation.map(|request_generation| {
+            let opened = self.inner.open_request_scope(request_generation);
+            StreamRuntimeOwner {
+                lease: Arc::new(StreamRuntimeOwnerLease {
+                    inner: self.inner.clone(),
+                    target: if opened {
+                        StreamRuntimeOwnerTarget::Request(request_generation)
+                    } else {
+                        StreamRuntimeOwnerTarget::Noop
+                    },
+                }),
+            }
+        })
     }
 
     pub fn request_scope_generation(&self) -> Option<u64> {
@@ -801,7 +833,7 @@ impl StreamRuntime {
     }
 }
 
-impl Drop for StreamRuntimeOwner {
+impl Drop for StreamRuntimeOwnerLease {
     fn drop(&mut self) {
         match self.target {
             StreamRuntimeOwnerTarget::Root => self.inner.close_owner(),
@@ -817,7 +849,7 @@ impl fmt::Debug for StreamRuntimeOwner {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("StreamRuntimeOwner")
-            .field("target", &self.target)
+            .field("target", &self.lease.target)
             .finish_non_exhaustive()
     }
 }

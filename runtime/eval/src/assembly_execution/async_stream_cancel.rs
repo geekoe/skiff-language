@@ -237,8 +237,8 @@ fn start_provider_stream(
         context.env,
         &call.type_args,
     )?;
-    let provider_stream_runtime_owner = provider_context.take_stream_runtime_owner();
     let owned_provider = Arc::new(OwnedProgramExecutionContext::capture(&provider_context));
+    let provider_stream_runtime_owner = provider_context.take_stream_runtime_owner();
     let stream_runtime = context.context.stream_runtime();
     let (stream_value, concrete_sink) = stream_runtime.channel_stream_with_lifetime(
         StreamLifetimeGuard::new(ProviderStreamLifetime { _lease: lease }),

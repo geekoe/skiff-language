@@ -116,7 +116,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             exception_trace_id: self.exception_trace_id.clone(),
             exception_error_sequence: self.exception_error_sequence.clone(),
             local_call_stack: self.local_call_stack.clone(),
-            _stream_runtime_owner: None,
+            _stream_runtime_owner: self._stream_runtime_owner.clone(),
         }
     }
 }
@@ -314,6 +314,10 @@ impl<'a> ProgramExecutionContext<'a> {
         self._stream_runtime_owner.take()
     }
 
+    pub(crate) fn stream_runtime_owner(&self) -> Option<StreamRuntimeOwner> {
+        self._stream_runtime_owner.clone()
+    }
+
     pub fn runtime_assembly_target(
         &self,
     ) -> std::result::Result<&RuntimeAssemblyEvalTarget, RuntimeAssemblyEvalSeamError> {
@@ -375,6 +379,7 @@ pub struct OwnedProgramExecutionContext {
     db: DbCapabilityContext,
     file_source: FileCapabilitySource,
     stream_runtime: StreamRuntime,
+    _stream_runtime_owner: Option<StreamRuntimeOwner>,
     websocket: OwnedWebsocketCapabilityContext,
     websocket_rebinder: Option<WebsocketCapabilityRebinder>,
     effects: EffectDispatchContext,
@@ -402,6 +407,7 @@ impl OwnedProgramExecutionContext {
             db: context.db.clone(),
             file_source: context.file.source(),
             stream_runtime: context.file_source_stream.stream_runtime_handle(),
+            _stream_runtime_owner: context.stream_runtime_owner(),
             websocket: context.websocket.owned(),
             websocket_rebinder: context.websocket_rebinder.clone(),
             effects: context.effects.clone(),
@@ -448,10 +454,12 @@ impl OwnedProgramExecutionContext {
         context.websocket_rebinder = self.websocket_rebinder.clone();
         context.exception_error_sequence = self.exception_error_sequence.clone();
         context.local_call_stack = self.local_call_stack.clone();
-        match &self.runtime_assembly_target {
+        let mut context = match &self.runtime_assembly_target {
             Some(target) => context.with_runtime_assembly_target(target.clone()),
             None => context,
-        }
+        };
+        context._stream_runtime_owner = self._stream_runtime_owner.clone();
+        context
     }
 }
 
@@ -724,13 +732,12 @@ impl Interpreter {
     /// [`RuntimeAssemblyEvalTarget`]; absence is a structured error and never selects legacy.
     pub async fn execute_runtime_assembly_addr(
         &self,
-        mut context: ProgramExecutionContext<'_>,
+        context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         addr: &ExecutableAddr,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
         context.runtime_assembly_target()?;
-        let _stream_runtime_owner = context.take_stream_runtime_owner();
         self.call_program_executable(
             context,
             heap,
