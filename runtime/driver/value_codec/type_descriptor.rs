@@ -11,6 +11,3 @@ pub(crate) use skiff_runtime_linked_program::ResolvedSymbol;
 pub(crate) use skiff_runtime_linked_type_plan::{
     Error as RuntimeError, PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt,
 };
-
-#[cfg(test)]
-mod tests;

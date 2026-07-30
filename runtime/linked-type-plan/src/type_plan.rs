@@ -2,9 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::error::{Error as RuntimeError, Result};
 use skiff_runtime_linked_program::{
-    ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, LinkedProgramImage,
-    LinkedTypeDescriptor, LinkedTypeRef, LiteralIr, PackageRefIr, PackageSymbolRef, PackageUnit,
-    ResolvedSymbol, RuntimeTypeContext, ServiceSymbolRef, TypeAddr, TypeDeclIr, UnitAddr,
+    ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, LinkedNamedUnionBranch,
+    LinkedNominalTypeRefBase, LinkedProgramImage, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
+    PackageRefIr, PackageSymbolRef, ResolvedSymbol, RuntimeExecutionPackage, RuntimeTypeContext,
+    ServiceSymbolRef, TypeAddr, TypeDeclIr, UnitAddr,
 };
 use skiff_runtime_model::recoverable::{
     RuntimeRecoverableExpectedAnyInterfacePlan, RuntimeRecoverableExpectedRecordFieldPlan,
@@ -38,8 +39,7 @@ pub use skiff_runtime_model::type_plan::{
 #[derive(Clone, Copy)]
 pub struct ProgramTypeView<'a> {
     pub service_files: &'a [Arc<LinkedFileUnit>],
-    pub packages: &'a [Arc<PackageUnit>],
-    pub package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+    pub packages: &'a [Arc<RuntimeExecutionPackage>],
     pub link_overlay: &'a LinkOverlay,
     pub types: &'a RuntimeTypeContext,
 }
@@ -47,15 +47,13 @@ pub struct ProgramTypeView<'a> {
 impl<'a> ProgramTypeView<'a> {
     pub fn new(
         service_files: &'a [Arc<LinkedFileUnit>],
-        packages: &'a [Arc<PackageUnit>],
-        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+        packages: &'a [Arc<RuntimeExecutionPackage>],
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
     ) -> Self {
         Self {
             service_files,
             packages,
-            package_files,
             link_overlay,
             types,
         }
@@ -65,7 +63,6 @@ impl<'a> ProgramTypeView<'a> {
         Self::new(
             &program.service_files,
             &program.packages,
-            &program.package_files,
             &program.link_overlay,
             &program.types,
         )
@@ -82,6 +79,71 @@ impl<'a> From<&'a Arc<LinkedProgramImage>> for ProgramTypeView<'a> {
     fn from(program: &'a Arc<LinkedProgramImage>) -> Self {
         Self::from_linked_image(program.as_ref())
     }
+}
+
+impl<'a> ProgramTypeView<'a> {
+    fn package_files(self, slot: usize) -> Option<&'a [Arc<LinkedFileUnit>]> {
+        self.packages.get(slot).map(|package| package.files())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_runtime_package(
+    slot: usize,
+    package_id: &str,
+    files: Vec<Arc<LinkedFileUnit>>,
+) -> Arc<RuntimeExecutionPackage> {
+    let file_refs = files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "fileIrIdentity": file.file_ir_identity,
+                "modulePath": file.module_path,
+                "sourceAstHash": file.source_ast_hash,
+            })
+        })
+        .collect::<Vec<_>>();
+    let artifact = serde_json::from_value(serde_json::json!({
+        "schemaVersion": "skiff-package-artifact-v9",
+        "packageId": package_id,
+        "packageVersion": "1.0.0",
+        "packageBuildId": format!("test-build:{slot}:{package_id}"),
+        "files": file_refs,
+        "staticResources": [],
+        "packageLocalAbi": {
+            "localAbiIdentity": format!("test-abi:{slot}:{package_id}"),
+            "publicSymbols": {}
+        },
+        "packageSchemaIndex": {
+            "packageId": package_id,
+            "packageSchemaIndexIdentity": format!("test-schema:{slot}:{package_id}")
+        },
+        "packageSchemaTypeRecords": {},
+        "implementationLinks": {},
+        "callableLinks": {},
+        "packageRequirements": [],
+        "contractRequirements": [],
+        "serviceRequirements": [],
+        "runtimeRequirements": {
+            "config": [],
+            "state": [],
+            "resources": [],
+            "runtimeCapabilities": []
+        },
+        "callableSemanticFacts": {},
+        "boundaryProjections": {},
+        "serviceCallRefs": []
+    }))
+    .expect("test package artifact");
+    Arc::new(
+        RuntimeExecutionPackage::try_new(
+            skiff_runtime_linked_program::PackageCodeSlotIndex::new(slot),
+            Arc::new(artifact),
+            files,
+            Default::default(),
+        )
+        .expect("test runtime package context"),
+    )
 }
 
 #[allow(dead_code)]
@@ -167,10 +229,9 @@ impl<'a> PlanContext<'a> {
         }
     }
 
-    /// Returns a copy of this context with no substitutions in scope, used when
-    /// recursing into a position the JSON substitution pass does not descend
-    /// into (record `fields` object map, alias `target`, descriptor union
-    /// `variants`).
+    /// Returns a copy of this context with no substitutions in scope. Applied
+    /// nominal and type-parameter replacements use it only after recursively
+    /// closing the replacement against the current frame.
     fn without_substitutions(&self) -> PlanContext<'a> {
         PlanContext {
             program: self.program,
@@ -263,7 +324,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         use skiff_artifact_model::TypeRefIr;
 
         let node = match type_ref {
-            TypeRefIr::Native { name, args } => Self::artifact_builtin_node(name, args)?,
+            TypeRefIr::Builtin { name, args } => Self::artifact_builtin_node(name, args)?,
             TypeRefIr::Record { fields } => RuntimeTypeNode::Record {
                 fields: fields
                     .iter()
@@ -290,12 +351,19 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
             TypeRefIr::Literal {
                 value: LiteralIr::String { value },
             } => RuntimeTypeNode::LiteralString(value.clone()),
+            TypeRefIr::AppliedNominal { .. } => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "artifact applied nominal must be linked before building an execution type plan"
+                        .to_string(),
+                ));
+            }
             TypeRefIr::Literal { .. }
             | TypeRefIr::AnyInterface { .. }
             | TypeRefIr::LocalType { .. }
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::PackageSchema { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::TypeParam { .. }
             | TypeRefIr::Function { .. } => RuntimeTypeNode::Unknown,
@@ -337,7 +405,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         use skiff_artifact_model::TypeRefIr;
 
         let node = match type_ref {
-            TypeRefIr::Native { name, args } => {
+            TypeRefIr::Builtin { name, args } => {
                 Self::artifact_builtin_node_in_program(name, args, ctx)?
             }
             TypeRefIr::Record { fields } => RuntimeTypeNode::Record {
@@ -371,6 +439,13 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                     symbol: symbol.clone(),
                 };
                 return Self::from_linked_nested_ref(&linked, ctx);
+            }
+            TypeRefIr::PackageSchema { .. } => RuntimeTypeNode::Unknown,
+            TypeRefIr::AppliedNominal { .. } => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "artifact applied nominal must be linked before building an execution type plan"
+                        .to_string(),
+                ));
             }
             TypeRefIr::Literal { .. }
             | TypeRefIr::AnyInterface { .. }
@@ -564,6 +639,14 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                     None => return Ok(unknown_plan_for_type_ref(type_ref)),
                 }
             }
+            LinkedTypeRef::AppliedNominal { base, arguments } => {
+                return applied_nominal_plan(base, arguments, ctx);
+            }
+            LinkedTypeRef::PackageSchema { .. } => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "PackageSchema is not admitted in executable linked type plans".to_string(),
+                ));
+            }
             // A bound type parameter expands to the plan its JSON replacement
             // Value would yield; an unbound one falls through to Unknown via the
             // bridge, exactly as the JSON path leaves it unresolved.
@@ -571,7 +654,9 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                 if let Some(bound) = ctx.substitution(name) {
                     return Self::from_linked_substituted(bound, ctx);
                 }
-                return Ok(unknown_plan_for_type_ref(type_ref));
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "linked type plan contains unbound type parameter {name}"
+                )));
             }
             LinkedTypeRef::DbObjectSymbol { symbol } => {
                 match program_db_object_type_addr(ctx.program, &ctx.current_addr.unit, symbol)? {
@@ -594,24 +679,13 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         })
     }
 
-    /// Resolves a bound type-parameter to the plan its legacy replacement would
-    /// yield.
+    /// Closes a bound type parameter recursively before producing a plan.
     ///
-    /// `call_type_substitutions` stores each binding as a caller-normalized
-    /// `LinkedTypeRef`. The legacy descriptor fallback materializes that ref at
-    /// replacement time and clones it in place without recursively applying the
-    /// current substitution frame to the replacement internals.
-    ///
-    /// We reproduce that by recursing `from_linked` on the bound ref at a fresh
-    /// depth and without the current call's bindings in scope: the param itself
-    /// must not re-expand (so `T -> List<T>` terminates with the inner `T`
-    /// unbound -> Unknown), and sibling bindings are not applied inside the
-    /// cloned replacement.
+    /// The closed replacement is evaluated without the old substitution frame,
+    /// so no type parameter can accidentally be rebound after closure.
     fn from_linked_substituted(bound: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self> {
-        Self::from_linked(
-            bound,
-            &PlanContext::from_type_view(ctx.program, ctx.current_addr),
-        )
+        let substituted = close_linked_type_ref(bound, ctx.substitutions)?;
+        Self::from_linked(&substituted, &ctx.without_substitutions())
     }
 
     /// Resolves a ref that pointed at `addr`: if the descriptor is interned,
@@ -631,16 +705,15 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
     }
 
     fn from_linked_declaration(declaration: &TypeDeclIr, ctx: &PlanContext) -> Result<Self> {
-        let mut plan = Self::from_linked_descriptor(&declaration.descriptor, ctx)?;
-        plan.label = declaration.name.clone();
-        plan.named_type_name = Some(declaration.name.clone());
-        if let RuntimeTypeNode::Record {
-            boundary_record_kind,
-            ..
-        } = &mut plan.node
-        {
-            *boundary_record_kind = Some(declaration.name.clone());
+        if !declaration.type_params.is_empty() {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "generic nominal {} requires an applied nominal wrapper with {} arguments",
+                declaration.name,
+                declaration.type_params.len()
+            )));
         }
+        let mut plan = Self::from_linked_descriptor(&declaration.descriptor, ctx)?;
+        apply_nominal_owner_context(&mut plan, &declaration.name);
         Ok(plan)
     }
 
@@ -657,18 +730,13 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
             return Ok(unknown_plan_for_descriptor(descriptor));
         }
         let node = match descriptor {
-            // Descriptor `fields` serialise as a JSON object map, which the JSON
-            // substitution pass never descends into -> drop substitutions.
             LinkedTypeDescriptor::Record { fields } => RuntimeTypeNode::Record {
                 fields: fields
                     .iter()
                     .map(|(name, field_ty)| {
                         Ok(RuntimeRecordFieldPlan {
                             name: name.clone(),
-                            ty: Self::from_linked_ref(
-                                field_ty,
-                                &ctx.without_substitutions().deeper_by(2),
-                            )?,
+                            ty: Self::from_linked_ref(field_ty, &ctx.deeper_by(2))?,
                             required: !matches!(field_ty, LinkedTypeRef::Nullable { .. }),
                             identity: None,
                         })
@@ -676,25 +744,25 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                     .collect::<Result<Vec<_>>>()?,
                 boundary_record_kind: None,
             },
-            // Alias serialises its child under `target`, which the JSON
-            // substitution pass does not handle (it only knows `inner`) -> drop.
-            LinkedTypeDescriptor::Alias { target } => RuntimeTypeNode::Alias(Box::new(
-                Self::from_linked_ref(target, &ctx.without_substitutions().deeper_by(1))?,
-            )),
-            // Descriptor union serialises its children under `variants`, which
-            // the JSON substitution pass does not handle (it knows only the
-            // inline-union `items` key) -> drop substitutions.
-            LinkedTypeDescriptor::Union { variants } => RuntimeTypeNode::Union(
-                variants
+            LinkedTypeDescriptor::Representation { representation } => {
+                RuntimeTypeNode::Representation {
+                    type_name: "representation".to_string(),
+                    payload: Box::new(Self::from_linked_ref(representation, &ctx.deeper_by(1))?),
+                }
+            }
+            LinkedTypeDescriptor::Alias { target } => {
+                RuntimeTypeNode::Alias(Box::new(Self::from_linked_ref(target, &ctx.deeper_by(1))?))
+            }
+            LinkedTypeDescriptor::Union { branches } => RuntimeTypeNode::Union(
+                branches
                     .iter()
-                    .map(|item| {
-                        Self::from_linked_ref(item, &ctx.without_substitutions().deeper_by(2))
-                    })
+                    .map(|branch| linked_named_union_branch_plan(branch, &ctx.deeper_by(2)))
                     .collect::<Result<Vec<_>>>()?,
             ),
-            // `external` descriptors are not recognised by from_descriptor.
-            LinkedTypeDescriptor::Native { .. } => {
-                return Ok(unknown_plan_for_descriptor(descriptor));
+            LinkedTypeDescriptor::Interface => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "interface declaration cannot be materialized as a value type plan".to_string(),
+                ));
             }
         };
         Ok(Self {
@@ -837,6 +905,322 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
     }
 }
 
+fn applied_nominal_plan(
+    base: &LinkedNominalTypeRefBase,
+    arguments: &[LinkedTypeRef],
+    ctx: &PlanContext<'_>,
+) -> Result<RuntimeTypePlan> {
+    if arguments.is_empty() {
+        return Err(RuntimeError::InvalidArtifact(
+            "applied nominal type ref arguments must be non-empty".to_string(),
+        ));
+    }
+    let addr = match base {
+        LinkedNominalTypeRefBase::Address { addr } => addr,
+        LinkedNominalTypeRefBase::PackageSchema { .. } => {
+            return Err(RuntimeError::InvalidArtifact(
+                "applied PackageSchema is not admitted in executable linked type plans".to_string(),
+            ));
+        }
+        unresolved => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "applied nominal base {} was not linked to an exact address",
+                linked_nominal_base_kind(unresolved)
+            )));
+        }
+    };
+    let declaration = ctx.program.types.declaration(addr).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "applied nominal type address {addr} is not interned"
+        ))
+    })?;
+    if !matches!(
+        declaration.descriptor,
+        LinkedTypeDescriptor::Record { .. }
+            | LinkedTypeDescriptor::Representation { .. }
+            | LinkedTypeDescriptor::Union { .. }
+    ) {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "applied nominal {} targets {} instead of record, representation, or named union",
+            declaration.name,
+            linked_type_descriptor_label(&declaration.descriptor)
+        )));
+    }
+    let expected = declaration.type_params.len();
+    if expected == 0 || arguments.len() != expected {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "applied nominal {} has arity {}, expected {}",
+            declaration.name,
+            arguments.len(),
+            expected
+        )));
+    }
+
+    let closed_arguments = arguments
+        .iter()
+        .map(|argument| close_linked_type_ref(argument, ctx.substitutions))
+        .collect::<Result<Vec<_>>>()?;
+    let substitutions = declaration
+        .type_params
+        .iter()
+        .cloned()
+        .zip(closed_arguments.iter().cloned())
+        .collect::<BTreeMap<_, _>>();
+    let descriptor = instantiate_linked_descriptor(&declaration.descriptor, &substitutions)?;
+    let applied = LinkedTypeRef::AppliedNominal {
+        base: LinkedNominalTypeRefBase::Address { addr: addr.clone() },
+        arguments: closed_arguments,
+    };
+    let owner_context = format!(
+        "{}<{}>",
+        declaration.name,
+        linked_type_ref_runtime_key(&applied)
+    );
+    let mut plan =
+        RuntimeTypePlan::from_linked_descriptor(&descriptor, &ctx.without_substitutions())?;
+    apply_nominal_owner_context(&mut plan, &owner_context);
+    Ok(plan)
+}
+
+fn linked_nominal_base_kind(base: &LinkedNominalTypeRefBase) -> &'static str {
+    match base {
+        LinkedNominalTypeRefBase::LocalType { .. } => "localType",
+        LinkedNominalTypeRefBase::PublicationType { .. } => "publicationType",
+        LinkedNominalTypeRefBase::ServiceSymbol { .. } => "serviceSymbol",
+        LinkedNominalTypeRefBase::PackageSymbol { .. } => "packageSymbol",
+        LinkedNominalTypeRefBase::PackageSchema { .. } => "packageSchema",
+        LinkedNominalTypeRefBase::Address { .. } => "address",
+    }
+}
+
+fn close_linked_type_ref(
+    type_ref: &LinkedTypeRef,
+    substitutions: Option<&BTreeMap<String, LinkedTypeRef>>,
+) -> Result<LinkedTypeRef> {
+    close_linked_type_ref_inner(type_ref, substitutions, &mut Vec::new())
+}
+
+fn close_linked_type_ref_inner(
+    type_ref: &LinkedTypeRef,
+    substitutions: Option<&BTreeMap<String, LinkedTypeRef>>,
+    resolving: &mut Vec<String>,
+) -> Result<LinkedTypeRef> {
+    Ok(match type_ref {
+        LinkedTypeRef::TypeParam { name } => {
+            let bound = substitutions
+                .and_then(|bindings| bindings.get(name))
+                .ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(format!(
+                        "linked type plan contains unbound type parameter {name}"
+                    ))
+                })?;
+            if resolving.iter().any(|active| active == name) {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "linked type substitution cycle contains type parameter {name}"
+                )));
+            }
+            resolving.push(name.clone());
+            let closed = close_linked_type_ref_inner(bound, substitutions, resolving)?;
+            resolving.pop();
+            closed
+        }
+        LinkedTypeRef::Native { name, args } => LinkedTypeRef::Native {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|argument| close_linked_type_ref_inner(argument, substitutions, resolving))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        LinkedTypeRef::AppliedNominal { base, arguments } => {
+            if arguments.is_empty() {
+                return Err(RuntimeError::InvalidArtifact(
+                    "applied nominal type ref arguments must be non-empty".to_string(),
+                ));
+            }
+            LinkedTypeRef::AppliedNominal {
+                base: base.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| close_linked_type_ref_inner(argument, substitutions, resolving))
+                    .collect::<Result<Vec<_>>>()?,
+            }
+        }
+        LinkedTypeRef::Record { fields } => LinkedTypeRef::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| {
+                    Ok((
+                        name.clone(),
+                        close_linked_type_ref_inner(field, substitutions, resolving)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?,
+        },
+        LinkedTypeRef::Union { items } => LinkedTypeRef::Union {
+            items: items
+                .iter()
+                .map(|item| close_linked_type_ref_inner(item, substitutions, resolving))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        LinkedTypeRef::Nullable { inner } => LinkedTypeRef::Nullable {
+            inner: Box::new(close_linked_type_ref_inner(
+                inner,
+                substitutions,
+                resolving,
+            )?),
+        },
+        LinkedTypeRef::AnyInterface { interface } => LinkedTypeRef::AnyInterface {
+            interface: skiff_runtime_linked_program::LinkedInterfaceInstantiationRef {
+                interface_abi_id: interface.interface_abi_id.clone(),
+                canonical_type_args: interface
+                    .canonical_type_args
+                    .iter()
+                    .map(|argument| close_linked_type_ref_inner(argument, substitutions, resolving))
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        },
+        LinkedTypeRef::Function {
+            params,
+            return_type,
+        } => LinkedTypeRef::Function {
+            params: params
+                .iter()
+                .map(|parameter| {
+                    Ok(skiff_runtime_linked_program::FunctionTypeParamIr {
+                        name: parameter.name.clone(),
+                        ty: close_linked_type_ref_inner(&parameter.ty, substitutions, resolving)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            return_type: Box::new(close_linked_type_ref_inner(
+                return_type,
+                substitutions,
+                resolving,
+            )?),
+        },
+        LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
+        | LinkedTypeRef::ServiceSymbol { .. }
+        | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
+        | LinkedTypeRef::Address { .. }
+        | LinkedTypeRef::Literal { .. }
+        | LinkedTypeRef::DbObjectSymbol { .. } => type_ref.clone(),
+    })
+}
+
+fn instantiate_linked_descriptor(
+    descriptor: &LinkedTypeDescriptor,
+    substitutions: &BTreeMap<String, LinkedTypeRef>,
+) -> Result<LinkedTypeDescriptor> {
+    Ok(match descriptor {
+        LinkedTypeDescriptor::Record { fields } => LinkedTypeDescriptor::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| {
+                    Ok((
+                        name.clone(),
+                        close_linked_type_ref(field, Some(substitutions))?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?,
+        },
+        LinkedTypeDescriptor::Representation { representation } => {
+            LinkedTypeDescriptor::Representation {
+                representation: close_linked_type_ref(representation, Some(substitutions))?,
+            }
+        }
+        LinkedTypeDescriptor::Union { branches } => LinkedTypeDescriptor::Union {
+            branches: branches
+                .iter()
+                .map(|branch| instantiate_linked_union_branch(branch, substitutions))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        LinkedTypeDescriptor::Alias { target } => LinkedTypeDescriptor::Alias {
+            target: close_linked_type_ref(target, Some(substitutions))?,
+        },
+        LinkedTypeDescriptor::Interface => LinkedTypeDescriptor::Interface,
+    })
+}
+
+fn instantiate_linked_union_branch(
+    branch: &LinkedNamedUnionBranch,
+    substitutions: &BTreeMap<String, LinkedTypeRef>,
+) -> Result<LinkedNamedUnionBranch> {
+    Ok(match branch {
+        LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => {
+            LinkedNamedUnionBranch::ConcreteNominal {
+                nominal_type: close_linked_type_ref(nominal_type, Some(substitutions))?,
+            }
+        }
+        LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } => LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type: close_linked_type_ref(payload_type, Some(substitutions))?,
+            discriminator_field: discriminator_field.clone(),
+            discriminator_value: discriminator_value.clone(),
+        },
+        LinkedNamedUnionBranch::Literal { value } => LinkedNamedUnionBranch::Literal {
+            value: value.clone(),
+        },
+    })
+}
+
+fn linked_named_union_branch_plan(
+    branch: &LinkedNamedUnionBranch,
+    ctx: &PlanContext<'_>,
+) -> Result<RuntimeTypePlan> {
+    let (mut plan, branch_context) = match branch {
+        LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => (
+            RuntimeTypePlan::from_linked_ref(nominal_type, ctx)?,
+            "concreteNominal".to_string(),
+        ),
+        LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } => (
+            RuntimeTypePlan::from_linked_ref(payload_type, ctx)?,
+            format!("syntheticDiscriminator:{discriminator_field}={discriminator_value}"),
+        ),
+        LinkedNamedUnionBranch::Literal { value } => (
+            RuntimeTypePlan::from_linked_ref(
+                &LinkedTypeRef::Literal {
+                    value: value.clone(),
+                },
+                ctx,
+            )?,
+            "literal".to_string(),
+        ),
+    };
+    plan.label = format!("{branch_context}:{}", plan.label);
+    Ok(plan)
+}
+
+fn apply_nominal_owner_context(plan: &mut RuntimeTypePlan, owner_context: &str) {
+    plan.label = owner_context.to_string();
+    plan.named_type_name = Some(owner_context.to_string());
+    match &mut plan.node {
+        RuntimeTypeNode::Record {
+            boundary_record_kind,
+            ..
+        } => {
+            *boundary_record_kind = Some(owner_context.to_string());
+        }
+        RuntimeTypeNode::Representation { type_name, .. } => {
+            *type_name = owner_context.to_string();
+        }
+        RuntimeTypeNode::Union(branches) => {
+            for (index, branch) in branches.iter_mut().enumerate() {
+                branch.label = format!("{owner_context}::branch[{index}]::{}", branch.label);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl RuntimeRecoverableExpectedTypePlanLinkedExt for RuntimeRecoverableExpectedTypePlan {
     fn from_linked(type_ref: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self> {
         recoverable_expected_from_linked(type_ref, ctx)
@@ -893,7 +1277,7 @@ pub fn linked_interface_instantiation_runtime_id(
 }
 
 pub fn linked_type_ref_runtime_key(type_ref: &LinkedTypeRef) -> String {
-    sorted_json_string(serde_json::to_value(type_ref).unwrap_or_else(|_| serde_json::Value::Null))
+    sorted_json_string(skiff_runtime_linked_program::type_ref_to_value(type_ref))
 }
 
 /// Stable recoverable interface projection identity for an expected `any I`.
@@ -944,7 +1328,8 @@ fn recoverable_expected_from_linked_ref(
     match type_ref {
         LinkedTypeRef::TypeParam { name } => {
             if let Some(bound) = ctx.substitution(name) {
-                return recoverable_expected_from_linked_ref(bound, &ctx.without_substitutions());
+                let closed = close_linked_type_ref(bound, ctx.substitutions)?;
+                return recoverable_expected_from_linked_ref(&closed, &ctx.without_substitutions());
             }
         }
         LinkedTypeRef::Address { addr } => {
@@ -992,6 +1377,13 @@ fn recoverable_expected_from_linked_declaration(
     declaration: &TypeDeclIr,
     ctx: &PlanContext,
 ) -> Result<RuntimeRecoverableExpectedTypePlan> {
+    if !declaration.type_params.is_empty() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "generic nominal {} requires an applied nominal wrapper with {} arguments",
+            declaration.name,
+            declaration.type_params.len()
+        )));
+    }
     let mut expected = recoverable_expected_from_linked_descriptor(&declaration.descriptor, ctx)?;
     expected.label = declaration.name.clone();
     if let RuntimeRecoverableExpectedTypeNode::Record {
@@ -1000,6 +1392,11 @@ fn recoverable_expected_from_linked_declaration(
     } = &mut expected.node
     {
         *boundary_record_kind = Some(declaration.name.clone());
+    }
+    if let RuntimeRecoverableExpectedTypeNode::Union { items } = &mut expected.node {
+        for (index, branch) in items.iter_mut().enumerate() {
+            branch.label = format!("{}::branch[{index}]::{}", declaration.name, branch.label);
+        }
     }
     Ok(expected)
 }
@@ -1019,35 +1416,40 @@ fn recoverable_expected_from_linked_descriptor(
                 .map(|(name, field_ty)| {
                     Ok(RuntimeRecoverableExpectedRecordFieldPlan {
                         name: name.clone(),
-                        ty: recoverable_expected_from_linked_ref(
-                            field_ty,
-                            &ctx.without_substitutions().deeper_by(2),
-                        )?,
+                        ty: recoverable_expected_from_linked_ref(field_ty, &ctx.deeper_by(2))?,
                         required: !matches!(field_ty, LinkedTypeRef::Nullable { .. }),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
             boundary_record_kind: None,
         },
+        LinkedTypeDescriptor::Representation { .. } => {
+            let runtime_plan = RuntimeTypePlan::from_linked_descriptor(descriptor, ctx)?;
+            return Ok(
+                RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
+                    &runtime_plan,
+                ),
+            );
+        }
         LinkedTypeDescriptor::Alias { target } => RuntimeRecoverableExpectedTypeNode::Alias {
             target: Box::new(recoverable_expected_from_linked_ref(
                 target,
-                &ctx.without_substitutions().deeper_by(1),
+                &ctx.deeper_by(1),
             )?),
         },
-        LinkedTypeDescriptor::Union { variants } => RuntimeRecoverableExpectedTypeNode::Union {
-            items: variants
+        LinkedTypeDescriptor::Union { branches } => RuntimeRecoverableExpectedTypeNode::Union {
+            items: branches
                 .iter()
-                .map(|item| {
-                    recoverable_expected_from_linked_ref(
-                        item,
-                        &ctx.without_substitutions().deeper_by(2),
-                    )
+                .map(|branch| {
+                    recoverable_expected_from_linked_union_branch(branch, &ctx.deeper_by(2))
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
-        LinkedTypeDescriptor::Native { .. } => {
-            return Ok(unresolved_recoverable_expected_from_descriptor(descriptor));
+        LinkedTypeDescriptor::Interface => {
+            return Err(RuntimeError::InvalidArtifact(
+                "interface declaration cannot be materialized as a recoverable value type plan"
+                    .to_string(),
+            ));
         }
     };
     Ok(RuntimeRecoverableExpectedTypePlan {
@@ -1055,6 +1457,37 @@ fn recoverable_expected_from_linked_descriptor(
         identity: None,
         node,
     })
+}
+
+fn recoverable_expected_from_linked_union_branch(
+    branch: &LinkedNamedUnionBranch,
+    ctx: &PlanContext<'_>,
+) -> Result<RuntimeRecoverableExpectedTypePlan> {
+    let (mut plan, branch_context) = match branch {
+        LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => (
+            recoverable_expected_from_linked_ref(nominal_type, ctx)?,
+            "concreteNominal".to_string(),
+        ),
+        LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } => (
+            recoverable_expected_from_linked_ref(payload_type, ctx)?,
+            format!("syntheticDiscriminator:{discriminator_field}={discriminator_value}"),
+        ),
+        LinkedNamedUnionBranch::Literal { value } => (
+            recoverable_expected_from_linked_ref(
+                &LinkedTypeRef::Literal {
+                    value: value.clone(),
+                },
+                ctx,
+            )?,
+            "literal".to_string(),
+        ),
+    };
+    plan.label = format!("{branch_context}:{}", plan.label);
+    Ok(plan)
 }
 
 fn recoverable_expected_node_from_linked(
@@ -1069,10 +1502,7 @@ fn recoverable_expected_node_from_linked(
                 .map(|(name, field_ty)| {
                     Ok(RuntimeRecoverableExpectedRecordFieldPlan {
                         name: name.clone(),
-                        ty: recoverable_expected_from_linked_ref(
-                            field_ty,
-                            &ctx.without_substitutions().deeper_by(2),
-                        )?,
+                        ty: recoverable_expected_from_linked_ref(field_ty, &ctx.deeper_by(2))?,
                         required: !matches!(field_ty, LinkedTypeRef::Nullable { .. }),
                     })
                 })
@@ -1109,23 +1539,26 @@ fn recoverable_expected_node_from_linked(
         },
         LinkedTypeRef::TypeParam { name } => {
             if let Some(bound) = ctx.substitution(name) {
+                let closed = close_linked_type_ref(bound, ctx.substitutions)?;
                 return Ok(recoverable_expected_from_linked_ref(
-                    bound,
+                    &closed,
                     &ctx.without_substitutions(),
                 )?
                 .node);
             }
-            RuntimeRecoverableExpectedTypeNode::Unresolved {
-                diagnostic_label: format!("typeParam {name}"),
-            }
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "recoverable linked type plan contains unbound type parameter {name}"
+            )));
         }
         LinkedTypeRef::Function { .. }
         | LinkedTypeRef::DbObjectSymbol { .. }
+        | LinkedTypeRef::AppliedNominal { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::LocalType { .. }
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
-        | LinkedTypeRef::PackageSymbol { .. } => {
+        | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. } => {
             let runtime_plan = RuntimeTypePlan::from_linked(type_ref, ctx)?;
             return Ok(
                 RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
@@ -1221,6 +1654,8 @@ fn linked_type_ref_kind(type_ref: &LinkedTypeRef) -> &'static str {
         LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
+        LinkedTypeRef::PackageSchema { .. } => "packageSchema",
+        LinkedTypeRef::AppliedNominal { .. } => "appliedNominal",
         LinkedTypeRef::Address { .. } => "address",
         LinkedTypeRef::Native { .. } => "builtin",
         LinkedTypeRef::Record { .. } => "record",
@@ -1241,6 +1676,8 @@ fn linked_type_ref_label(type_ref: &LinkedTypeRef) -> &'static str {
         LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
+        LinkedTypeRef::PackageSchema { .. } => "packageSchema",
+        LinkedTypeRef::AppliedNominal { .. } => "appliedNominal",
         LinkedTypeRef::Address { .. } => "address",
         LinkedTypeRef::Record { .. } => "record",
         LinkedTypeRef::Union { .. } => "union",
@@ -1263,20 +1700,23 @@ fn linked_type_ref_named_type_name(type_ref: &LinkedTypeRef) -> Option<String> {
 fn linked_type_descriptor_label(descriptor: &LinkedTypeDescriptor) -> &'static str {
     match descriptor {
         LinkedTypeDescriptor::Record { .. } => "record",
+        LinkedTypeDescriptor::Representation { .. } => "representation",
         LinkedTypeDescriptor::Alias { .. } => "alias",
         LinkedTypeDescriptor::Union { .. } => "union",
-        LinkedTypeDescriptor::Native { .. } => "external",
+        LinkedTypeDescriptor::Interface => "interface",
     }
 }
 
 fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'static str {
     use skiff_artifact_model::TypeRefIr;
     match type_ref {
-        TypeRefIr::Native { .. } => "builtin",
+        TypeRefIr::Builtin { .. } => "builtin",
         TypeRefIr::LocalType { .. } => "localType",
         TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
         TypeRefIr::PackageSymbol { .. } => "packageSymbol",
+        TypeRefIr::PackageSchema { .. } => "packageSchema",
+        TypeRefIr::AppliedNominal { .. } => "appliedNominal",
         TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
         TypeRefIr::Record { .. } => "record",
         TypeRefIr::Union { .. } => "union",
@@ -1290,7 +1730,7 @@ fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'stat
 
 fn artifact_type_ref_named_type_name(type_ref: &skiff_artifact_model::TypeRefIr) -> Option<String> {
     match type_ref {
-        skiff_artifact_model::TypeRefIr::Native { name, .. } => Some(name.clone()),
+        skiff_artifact_model::TypeRefIr::Builtin { name, .. } => Some(name.clone()),
         _ => None,
     }
 }
@@ -1331,7 +1771,7 @@ fn program_db_object_type_addr(
             }))
         }
         UnitAddr::Package(slot) => {
-            let Some(files) = program.package_files.get(*slot) else {
+            let Some(files) = program.package_files(*slot) else {
                 return Ok(None);
             };
             program_local_type_addr(files, unit, symbol)
@@ -1347,7 +1787,7 @@ fn program_publication_type_addr(
 ) -> Option<TypeAddr> {
     let files = match unit {
         UnitAddr::Service => program.service_files,
-        UnitAddr::Package(slot) => program.package_files.get(*slot)?.as_slice(),
+        UnitAddr::Package(slot) => program.package_files(*slot)?,
     };
     let (file_index, file) = files
         .iter()
@@ -1378,7 +1818,7 @@ fn program_service_symbol_type_addr(
     let UnitAddr::Package(slot) = unit else {
         return Ok(None);
     };
-    let Some(files) = program.package_files.get(*slot) else {
+    let Some(files) = program.package_files(*slot) else {
         return Ok(None);
     };
     program_local_type_addr(files, unit, symbol)
@@ -1468,26 +1908,6 @@ fn std_field(name: &str, ty: RuntimeTypePlan) -> RuntimeRecordFieldPlan {
     }
 }
 
-enum StdRuntimeTypeArg<'a> {
-    Artifact(&'a skiff_artifact_model::TypeRefIr),
-    ArtifactInProgram(&'a skiff_artifact_model::TypeRefIr, &'a PlanContext<'a>),
-    Linked(&'a LinkedTypeRef, &'a PlanContext<'a>),
-}
-
-impl StdRuntimeTypeArg<'_> {
-    fn plan(&self) -> Result<RuntimeTypePlan> {
-        match self {
-            Self::Artifact(type_ref) => RuntimeTypePlan::from_artifact_type_ref(type_ref),
-            Self::ArtifactInProgram(type_ref, ctx) => {
-                RuntimeTypePlan::from_artifact_type_ref_in_program_ref(type_ref, ctx)
-            }
-            Self::Linked(type_ref, ctx) => {
-                RuntimeTypePlan::from_linked_ref(type_ref, &ctx.deeper_by(2))
-            }
-        }
-    }
-}
-
 fn leaf_string_plan() -> RuntimeTypePlan {
     leaf_builtin_plan("string", RuntimeTypeNode::String)
 }
@@ -1510,10 +1930,6 @@ fn std_record_plan(name: &str, fields: Vec<RuntimeRecordFieldPlan>) -> RuntimeTy
     )
 }
 
-fn std_union_plan(name: &str, items: Vec<RuntimeTypePlan>) -> RuntimeTypePlan {
-    builtin_plan(name, RuntimeTypeNode::Union(items))
-}
-
 fn std_nullable_plan(inner: RuntimeTypePlan) -> RuntimeTypePlan {
     RuntimeTypePlan {
         label: "nullable".to_string(),
@@ -1529,15 +1945,6 @@ fn std_array_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
 
 fn std_stream_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
     builtin_plan("Stream", RuntimeTypeNode::Stream(Box::new(item)))
-}
-
-fn std_literal_string_plan(value: &str) -> RuntimeTypePlan {
-    RuntimeTypePlan {
-        label: "literal".to_string(),
-        named_type_name: None,
-        identity: RuntimeTypeIdentityPlan::default(),
-        node: RuntimeTypeNode::LiteralString(value.to_string()),
-    }
 }
 
 fn std_http_header_plan() -> RuntimeTypePlan {
@@ -1585,171 +1992,18 @@ fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
     )
 }
 
-fn std_websocket_connection_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnection",
-        vec![
-            std_field("id", leaf_string_plan()),
-            std_field("businessIdentity", std_nullable_plan(leaf_string_plan())),
-            std_field("context", context),
-        ],
-    )
-}
-
-fn std_websocket_text_message_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.TextConnectionMessage",
-        vec![
-            std_field("tag", std_literal_string_plan("text")),
-            std_field("text", leaf_string_plan()),
-        ],
-    )
-}
-
-fn std_websocket_binary_message_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.BinaryConnectionMessage",
-        vec![
-            std_field("tag", std_literal_string_plan("binary")),
-            std_field("base64", leaf_string_plan()),
-        ],
-    )
-}
-
-fn std_websocket_connection_message_plan() -> RuntimeTypePlan {
-    builtin_plan(
-        "std.websocket.ConnectionMessage",
-        RuntimeTypeNode::Representation {
-            type_name: "std.websocket.ConnectionMessage".to_string(),
-            payload: Box::new(std_union_plan(
-                "std.websocket.ConnectionMessage",
-                vec![
-                    std_websocket_text_message_plan(),
-                    std_websocket_binary_message_plan(),
-                ],
-            )),
-        },
-    )
-}
-
-fn std_websocket_connect_result_plan(name: &str, context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_union_plan(
-        name,
-        vec![
-            std_record_plan(
-                "std.websocket.WebSocketConnectAccept",
-                vec![
-                    std_field("tag", std_literal_string_plan("accept")),
-                    std_field("context", context),
-                    std_field("businessIdentity", std_nullable_plan(leaf_string_plan())),
-                    std_field(
-                        "connectionPolicy",
-                        std_nullable_plan(std_websocket_connection_policy_plan()),
-                    ),
-                ],
-            ),
-            std_record_plan(
-                "std.websocket.WebSocketConnectReject",
-                vec![
-                    std_field("tag", std_literal_string_plan("reject")),
-                    std_field("code", leaf_integer_plan()),
-                    std_field("reason", leaf_string_plan()),
-                ],
-            ),
-        ],
-    )
-}
-
-fn std_websocket_connection_policy_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnectionPolicy",
-        vec![
-            std_field("maxConnections", leaf_integer_plan()),
-            std_field(
-                "overflow",
-                std_union_plan(
-                    "std.websocket.WebSocketConnectionPolicy.overflow",
-                    vec![
-                        std_literal_string_plan("close-oldest"),
-                        std_literal_string_plan("reject-new"),
-                    ],
-                ),
-            ),
-            std_field("closeCode", std_nullable_plan(leaf_integer_plan())),
-            std_field("closeReason", std_nullable_plan(leaf_string_plan())),
-        ],
-    )
-}
-
-fn std_websocket_receive_event_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketReceiveEvent",
-        vec![
-            std_field("connection", std_websocket_connection_plan(context)),
-            std_field("message", std_websocket_connection_message_plan()),
-        ],
-    )
-}
-
-fn std_runtime_builtin_node(
-    name: &str,
-    args: &[StdRuntimeTypeArg<'_>],
-) -> Option<Result<RuntimeTypeNode>> {
+fn std_runtime_builtin_node(name: &str, arg_count: usize) -> Option<Result<RuntimeTypeNode>> {
     let root = type_name_root(name);
     let bare = bare_type_name(root);
     let node = match bare {
-        "HttpClientRequest" if args.is_empty() && root == "std.http.HttpClientRequest" => {
+        "HttpClientRequest" if arg_count == 0 && root == "std.http.HttpClientRequest" => {
             std_http_client_request_plan().node
         }
-        "HttpClientResponse" if args.is_empty() && root == "std.http.HttpClientResponse" => {
+        "HttpClientResponse" if arg_count == 0 && root == "std.http.HttpClientResponse" => {
             std_http_client_response_plan().node
         }
-        "HttpClientStreamHandle"
-            if args.is_empty() && root == "std.http.HttpClientStreamHandle" =>
-        {
+        "HttpClientStreamHandle" if arg_count == 0 && root == "std.http.HttpClientStreamHandle" => {
             std_http_client_stream_handle_plan().node
-        }
-        "ConnectionMessage" if args.is_empty() && root == "std.websocket.ConnectionMessage" => {
-            std_websocket_connection_message_plan().node
-        }
-        "WebSocketConnection"
-            if args.len() == 1
-                && matches!(
-                    root,
-                    "WebSocketConnection" | "std.websocket.WebSocketConnection"
-                ) =>
-        {
-            let context = match args[0].plan() {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_connection_plan(context).node
-        }
-        "WebSocketConnectResult"
-            if args.len() == 1
-                && matches!(
-                    root,
-                    "WebSocketConnectResult" | "std.websocket.WebSocketConnectResult"
-                ) =>
-        {
-            let context = match args[0].plan() {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_connect_result_plan(root, context).node
-        }
-        "WebSocketReceiveEvent"
-            if args.len() == 1
-                && matches!(
-                    root,
-                    "WebSocketReceiveEvent" | "std.websocket.WebSocketReceiveEvent"
-                ) =>
-        {
-            let context = match args[0].plan() {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_receive_event_plan(context).node
         }
         _ => return None,
     };
@@ -1760,38 +2014,26 @@ fn std_runtime_builtin_node_from_artifact_parts(
     name: &str,
     args: &[skiff_artifact_model::TypeRefIr],
 ) -> Option<Result<RuntimeTypeNode>> {
-    let args = args
-        .iter()
-        .map(StdRuntimeTypeArg::Artifact)
-        .collect::<Vec<_>>();
-    std_runtime_builtin_node(name, &args)
+    std_runtime_builtin_node(name, args.len())
 }
 
-fn std_runtime_builtin_node_from_artifact_parts_in_program<'a>(
+fn std_runtime_builtin_node_from_artifact_parts_in_program(
     name: &str,
-    args: &'a [skiff_artifact_model::TypeRefIr],
-    ctx: &'a PlanContext<'a>,
+    args: &[skiff_artifact_model::TypeRefIr],
+    _ctx: &PlanContext<'_>,
 ) -> Option<Result<RuntimeTypeNode>> {
-    let args = args
-        .iter()
-        .map(|arg| StdRuntimeTypeArg::ArtifactInProgram(arg, ctx))
-        .collect::<Vec<_>>();
-    std_runtime_builtin_node(name, &args)
+    std_runtime_builtin_node(name, args.len())
 }
 
-fn std_runtime_builtin_node_from_linked_parts<'a>(
+fn std_runtime_builtin_node_from_linked_parts(
     name: &str,
-    args: &'a [LinkedTypeRef],
-    ctx: &'a PlanContext<'a>,
+    args: &[LinkedTypeRef],
+    _ctx: &PlanContext<'_>,
 ) -> Option<Result<RuntimeTypeNode>> {
-    let args = args
-        .iter()
-        .map(|arg| StdRuntimeTypeArg::Linked(arg, ctx))
-        .collect::<Vec<_>>();
-    std_runtime_builtin_node(name, &args)
+    std_runtime_builtin_node(name, args.len())
 }
 
-pub(crate) fn native_builtin_fallback_plan(name: &str) -> Result<RuntimeTypePlan> {
+pub(crate) fn native_builtin_plan(name: &str) -> Result<RuntimeTypePlan> {
     if name == "Duration" || name == "std.time.Duration" {
         return Ok(RuntimeTypePlan {
             label: "representation".to_string(),
@@ -1803,24 +2045,26 @@ pub(crate) fn native_builtin_fallback_plan(name: &str) -> Result<RuntimeTypePlan
             },
         });
     }
-    if let Some(node) = std_runtime_builtin_node(name, &[]) {
+    if let Some(node) = std_runtime_builtin_node(name, 0) {
         return Ok(builtin_plan(name, node?));
     }
-    Ok(builtin_plan(
-        name,
-        match bare_type_name(name) {
-            "Json" => RuntimeTypeNode::Json,
-            "JsonObject" => RuntimeTypeNode::JsonObject,
-            "bytes" => RuntimeTypeNode::Bytes,
-            "Date" => RuntimeTypeNode::Date,
-            "string" => RuntimeTypeNode::String,
-            "bool" | "boolean" => RuntimeTypeNode::Bool,
-            "integer" => RuntimeTypeNode::Integer,
-            "number" => RuntimeTypeNode::Number,
-            "null" | "void" => RuntimeTypeNode::Null,
-            _ => RuntimeTypeNode::Unknown,
-        },
-    ))
+    let node = match bare_type_name(name) {
+        "Json" => RuntimeTypeNode::Json,
+        "JsonObject" => RuntimeTypeNode::JsonObject,
+        "bytes" => RuntimeTypeNode::Bytes,
+        "Date" => RuntimeTypeNode::Date,
+        "string" => RuntimeTypeNode::String,
+        "bool" | "boolean" => RuntimeTypeNode::Bool,
+        "integer" => RuntimeTypeNode::Integer,
+        "number" => RuntimeTypeNode::Number,
+        "null" | "void" => RuntimeTypeNode::Null,
+        _ => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "native signature references unknown builtin type {name}"
+            )))
+        }
+    };
+    Ok(builtin_plan(name, node))
 }
 
 fn db_result_node_from_parts(
@@ -1994,20 +2238,19 @@ fn db_result_node_from_linked_parts(
 mod recoverable_expected_plan_tests {
     use std::{collections::BTreeMap, sync::Arc};
 
-    use skiff_runtime_linked_program::{LinkedInterfaceInstantiationRef, PackageUnit};
+    use skiff_runtime_linked_program::{LinkedInterfaceInstantiationRef, RuntimeExecutionPackage};
 
     use super::*;
 
     fn empty_ctx<'a>(
         service_files: &'a [Arc<LinkedFileUnit>],
-        packages: &'a [Arc<PackageUnit>],
-        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+        packages: &'a [Arc<RuntimeExecutionPackage>],
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
         addr: &'a ExecutableAddr,
     ) -> PlanContext<'a> {
         PlanContext::from_type_view(
-            ProgramTypeView::new(service_files, packages, package_files, link_overlay, types),
+            ProgramTypeView::new(service_files, packages, link_overlay, types),
             addr,
         )
     }
@@ -2020,21 +2263,23 @@ mod recoverable_expected_plan_tests {
     }
 
     #[test]
+    fn native_builtin_plan_rejects_unknown_builtin_instead_of_using_opaque_fallback() {
+        let error = native_builtin_plan("example.Unknown")
+            .expect_err("unknown native signature builtin must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("native signature references unknown builtin type example.Unknown"));
+    }
+
+    #[test]
     fn linked_recoverable_expected_plan_preserves_nested_any_interface() {
         let service_files = Vec::new();
         let packages = Vec::new();
-        let package_files = Vec::new();
         let link_overlay = LinkOverlay::default();
         let types = RuntimeTypeContext::default();
         let addr = ExecutableAddr::service(0, 0);
-        let ctx = empty_ctx(
-            &service_files,
-            &packages,
-            &package_files,
-            &link_overlay,
-            &types,
-            &addr,
-        );
+        let ctx = empty_ctx(&service_files, &packages, &link_overlay, &types, &addr);
         let interface = LinkedInterfaceInstantiationRef {
             interface_abi_id: "pkg.ToolProvider".to_string(),
             canonical_type_args: Vec::new(),
@@ -2087,5 +2332,357 @@ mod recoverable_expected_plan_tests {
         });
 
         assert_eq!(sorted_json_string(value), r#"{"a":1.0,"z":2}"#);
+    }
+}
+
+#[cfg(test)]
+mod applied_nominal_type_plan_tests {
+    use std::sync::Arc;
+
+    use skiff_runtime_linked_program::{
+        FileAddr, LinkedNamedUnionBranch, LinkedNominalTypeRefBase, TypeDeclIr,
+    };
+
+    use super::*;
+
+    fn builtin(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    fn type_param(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::TypeParam {
+            name: name.to_string(),
+        }
+    }
+
+    fn addr(type_index: usize) -> TypeAddr {
+        addr_in(0, type_index)
+    }
+
+    fn addr_in(package_slot: usize, type_index: usize) -> TypeAddr {
+        TypeAddr {
+            unit: UnitAddr::Package(package_slot),
+            file: FileAddr::LoadedFileIndex(0),
+            type_index,
+        }
+    }
+
+    fn applied(type_index: usize, arguments: Vec<LinkedTypeRef>) -> LinkedTypeRef {
+        LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address {
+                addr: addr(type_index),
+            },
+            arguments,
+        }
+    }
+
+    fn declaration(
+        name: &str,
+        type_params: &[&str],
+        descriptor: LinkedTypeDescriptor,
+    ) -> TypeDeclIr {
+        TypeDeclIr {
+            name: name.to_string(),
+            descriptor,
+            type_params: type_params
+                .iter()
+                .map(|parameter| (*parameter).to_string())
+                .collect(),
+            implements: Vec::new(),
+            source_span: None,
+        }
+    }
+
+    fn type_context() -> RuntimeTypeContext {
+        let mut types = RuntimeTypeContext::default();
+        types.descriptors.insert(
+            addr(0),
+            declaration(
+                "Box",
+                &["T"],
+                LinkedTypeDescriptor::Record {
+                    fields: BTreeMap::from([("value".to_string(), type_param("T"))]),
+                },
+            ),
+        );
+        types.descriptors.insert(
+            addr(1),
+            declaration(
+                "Outer",
+                &["T"],
+                LinkedTypeDescriptor::Record {
+                    fields: BTreeMap::from([(
+                        "inner".to_string(),
+                        applied(0, vec![type_param("T")]),
+                    )]),
+                },
+            ),
+        );
+        types.descriptors.insert(
+            addr(2),
+            declaration(
+                "Wrapped",
+                &["T"],
+                LinkedTypeDescriptor::Representation {
+                    representation: type_param("T"),
+                },
+            ),
+        );
+        types.descriptors.insert(
+            addr(3),
+            declaration(
+                "Choice",
+                &["T"],
+                LinkedTypeDescriptor::Union {
+                    branches: vec![
+                        LinkedNamedUnionBranch::ConcreteNominal {
+                            nominal_type: applied(0, vec![type_param("T")]),
+                        },
+                        LinkedNamedUnionBranch::SyntheticDiscriminator {
+                            payload_type: type_param("T"),
+                            discriminator_field: "kind".to_string(),
+                            discriminator_value: "value".to_string(),
+                        },
+                        LinkedNamedUnionBranch::Literal {
+                            value: LiteralIr::String {
+                                value: "none".to_string(),
+                            },
+                        },
+                    ],
+                },
+            ),
+        );
+        types.descriptors.insert(
+            addr(4),
+            declaration(
+                "BoxAlias",
+                &[],
+                LinkedTypeDescriptor::Alias {
+                    target: applied(0, vec![builtin("string")]),
+                },
+            ),
+        );
+        types.descriptors.insert(
+            addr(5),
+            declaration("NotAValue", &["T"], LinkedTypeDescriptor::Interface),
+        );
+        types.descriptors.insert(
+            addr_in(1, 0),
+            declaration(
+                "Wrapped",
+                &["T"],
+                LinkedTypeDescriptor::Representation {
+                    representation: type_param("T"),
+                },
+            ),
+        );
+        types
+    }
+
+    fn with_context<T>(types: &RuntimeTypeContext, test: impl FnOnce(&PlanContext<'_>) -> T) -> T {
+        let service_files: Vec<Arc<LinkedFileUnit>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
+        let overlay = LinkOverlay::default();
+        let current = ExecutableAddr::package(0, 0, 0);
+        let context = PlanContext::from_type_view(
+            ProgramTypeView::new(&service_files, &packages, &overlay, types),
+            &current,
+        );
+        test(&context)
+    }
+
+    #[test]
+    fn applied_nominal_arguments_produce_distinct_instantiated_record_facts() {
+        let types = type_context();
+        with_context(&types, |ctx| {
+            let string_plan =
+                RuntimeTypePlan::from_linked(&applied(0, vec![builtin("string")]), ctx).unwrap();
+            let number_plan =
+                RuntimeTypePlan::from_linked(&applied(0, vec![builtin("number")]), ctx).unwrap();
+
+            assert_ne!(string_plan.label, number_plan.label);
+            let RuntimeTypeNode::Record {
+                fields: string_fields,
+                ..
+            } = string_plan.node
+            else {
+                panic!("Box<string> must instantiate as a record")
+            };
+            let RuntimeTypeNode::Record {
+                fields: number_fields,
+                ..
+            } = number_plan.node
+            else {
+                panic!("Box<number> must instantiate as a record")
+            };
+            assert!(matches!(string_fields[0].ty.node, RuntimeTypeNode::String));
+            assert!(matches!(number_fields[0].ty.node, RuntimeTypeNode::Number));
+        });
+    }
+
+    #[test]
+    fn nested_applied_nominal_recursively_substitutes_arguments() {
+        let types = type_context();
+        with_context(&types, |ctx| {
+            let plan =
+                RuntimeTypePlan::from_linked(&applied(1, vec![builtin("string")]), ctx).unwrap();
+            let RuntimeTypeNode::Record { fields, .. } = plan.node else {
+                panic!("Outer<string> must instantiate as a record")
+            };
+            let RuntimeTypeNode::Record {
+                fields: inner_fields,
+                ..
+            } = &fields[0].ty.node
+            else {
+                panic!("nested Box<string> must remain a record plan")
+            };
+            assert!(matches!(inner_fields[0].ty.node, RuntimeTypeNode::String));
+        });
+    }
+
+    #[test]
+    fn generic_representation_and_named_union_keep_applied_owner_context() {
+        let types = type_context();
+        with_context(&types, |ctx| {
+            let representation =
+                RuntimeTypePlan::from_linked(&applied(2, vec![builtin("string")]), ctx).unwrap();
+            let RuntimeTypeNode::Representation { type_name, payload } = representation.node else {
+                panic!("generic representation must remain a representation")
+            };
+            assert_eq!(type_name, representation.label);
+            assert!(matches!(payload.node, RuntimeTypeNode::String));
+
+            let string_union =
+                RuntimeTypePlan::from_linked(&applied(3, vec![builtin("string")]), ctx).unwrap();
+            let number_union =
+                RuntimeTypePlan::from_linked(&applied(3, vec![builtin("number")]), ctx).unwrap();
+            assert_ne!(string_union.label, number_union.label);
+
+            let RuntimeTypeNode::Union(string_branches) = &string_union.node else {
+                panic!("generic named union must remain a union")
+            };
+            let RuntimeTypeNode::Union(number_branches) = &number_union.node else {
+                panic!("generic named union must remain a union")
+            };
+            assert_eq!(string_branches.len(), 3);
+            assert_eq!(number_branches.len(), 3);
+            assert!(string_branches
+                .iter()
+                .all(|branch| branch.label.starts_with(&string_union.label)));
+            assert!(number_branches
+                .iter()
+                .all(|branch| branch.label.starts_with(&number_union.label)));
+            assert!(string_branches
+                .iter()
+                .zip(number_branches)
+                .all(|(string_branch, number_branch)| string_branch.label != number_branch.label));
+            assert!(string_branches[0].label.contains("concreteNominal"));
+            assert!(string_branches[1]
+                .label
+                .contains("syntheticDiscriminator:kind=value"));
+            assert!(string_branches[2].label.contains("literal"));
+        });
+    }
+
+    #[test]
+    fn representation_targets_produce_plans_from_exact_owner_and_argument_keys() {
+        let types = type_context();
+        with_context(&types, |ctx| {
+            let local_string = applied(2, vec![builtin("string")]);
+            let local_number = applied(2, vec![builtin("number")]);
+            let external_string = LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::Address {
+                    addr: addr_in(1, 0),
+                },
+                arguments: vec![builtin("string")],
+            };
+
+            let local_string_key = linked_type_ref_runtime_key(&local_string);
+            let local_number_key = linked_type_ref_runtime_key(&local_number);
+            let external_string_key = linked_type_ref_runtime_key(&external_string);
+            assert_ne!(local_string_key, local_number_key);
+            assert_ne!(local_string_key, external_string_key);
+
+            let local_string_plan = RuntimeTypePlan::from_linked(&local_string, ctx).unwrap();
+            let local_number_plan = RuntimeTypePlan::from_linked(&local_number, ctx).unwrap();
+            let external_string_plan = RuntimeTypePlan::from_linked(&external_string, ctx).unwrap();
+            for plan in [
+                &local_string_plan,
+                &local_number_plan,
+                &external_string_plan,
+            ] {
+                assert!(matches!(plan.node, RuntimeTypeNode::Representation { .. }));
+            }
+            assert_ne!(local_string_plan.label, local_number_plan.label);
+            assert_ne!(local_string_plan.label, external_string_plan.label);
+            assert!(local_string_plan.label.contains(&local_string_key));
+            assert!(local_number_plan.label.contains(&local_number_key));
+            assert!(external_string_plan.label.contains(&external_string_key));
+        });
+    }
+
+    #[test]
+    fn plain_alias_expands_but_applied_admission_fails_closed() {
+        let types = type_context();
+        with_context(&types, |ctx| {
+            let alias =
+                RuntimeTypePlan::from_linked(&LinkedTypeRef::Address { addr: addr(4) }, ctx)
+                    .unwrap();
+            let RuntimeTypeNode::Alias(target) = alias.node else {
+                panic!("plain alias must remain an alias plan")
+            };
+            let RuntimeTypeNode::Record { fields, .. } = target.node else {
+                panic!("alias target applied nominal must expand to its record plan")
+            };
+            assert!(matches!(fields[0].ty.node, RuntimeTypeNode::String));
+
+            for (ty, expected) in [
+                (
+                    LinkedTypeRef::AppliedNominal {
+                        base: LinkedNominalTypeRefBase::Address { addr: addr(0) },
+                        arguments: Vec::new(),
+                    },
+                    "non-empty",
+                ),
+                (
+                    applied(0, vec![builtin("string"), builtin("number")]),
+                    "arity 2, expected 1",
+                ),
+                (applied(5, vec![builtin("string")]), "targets interface"),
+                (
+                    applied(0, vec![type_param("Missing")]),
+                    "unbound type parameter Missing",
+                ),
+                (
+                    LinkedTypeRef::AppliedNominal {
+                        base: LinkedNominalTypeRefBase::LocalType { type_index: 0 },
+                        arguments: vec![builtin("string")],
+                    },
+                    "was not linked to an exact address",
+                ),
+                (applied(99, vec![builtin("string")]), "is not interned"),
+                (
+                    LinkedTypeRef::AppliedNominal {
+                        base: LinkedNominalTypeRefBase::PackageSchema {
+                            package_id: "example.models".to_string(),
+                            stable_schema_key: "Box".to_string(),
+                            package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId::new(
+                                "schema:box",
+                            ),
+                        },
+                        arguments: vec![builtin("string")],
+                    },
+                    "applied PackageSchema is not admitted",
+                ),
+            ] {
+                let error = RuntimeTypePlan::from_linked(&ty, ctx)
+                    .err()
+                    .expect("invalid applied nominal must fail closed");
+                assert!(error.to_string().contains(expected), "{error}");
+            }
+        });
     }
 }

@@ -9,8 +9,8 @@ use skiff_runtime_host::eval_capability_adapter as eval_capabilities;
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     runtime_value::{
-        HeapNode, InterfaceCarrier, InterfaceValue, RemoteOperationSlot, RemoteOperationTable,
-        RuntimeMap, RuntimeObject, RuntimeValue, RuntimeValueKey,
+        HeapNode, InterfaceCarrier, InterfaceValue, RuntimeMap, RuntimeObject, RuntimeValue,
+        RuntimeValueKey,
     },
 };
 use skiff_runtime_service_db::{DbRequestState, ServiceDbCapabilityHandle};
@@ -23,8 +23,8 @@ use crate::{
     eval::capabilities::StreamRuntime,
     eval::program::{
         ExecutableKind, FileAddr, FileDeclarations, FileLinkTargets, GatewayConfig, LinkOverlay,
-        LinkedExecutableBody, LinkedTypeDescriptor, ParamIr, RuntimeActivation, RuntimeProgram,
-        RuntimeTypeContext, ServiceMeta, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr, UnitAddr,
+        LinkedExecutableBody, LinkedTypeDescriptor, ParamIr, RuntimeProgram, RuntimeTypeContext,
+        ServiceMeta, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr, UnitAddr,
     },
     eval::program_execution::ProgramExecutionInput,
     execution_budget::ExecutionBudget,
@@ -38,6 +38,12 @@ fn receiver_op(root: &str, method: &str) -> skiff_artifact_model::BuiltinReceive
 
 fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capabilities::runtime_factory()
+}
+
+fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
 }
 
 fn receiver_builtin_target(root: &str, method: &str) -> serde_json::Value {
@@ -191,7 +197,6 @@ async fn local_const_receiver_explicit_self_rejects_extra_user_arg_instead_of_dr
             })),
             source_span: None,
         });
-    let activation = Arc::new(runtime_activation_from_program(&program));
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let request = test_request();
     let operation = test_operation();
@@ -209,7 +214,6 @@ async fn local_const_receiver_explicit_self_rejects_extra_user_arg_instead_of_dr
         &interpreter,
         &request,
         &operation,
-        &activation,
         &cancelled,
         &execution_budget,
         &config,
@@ -392,69 +396,18 @@ async fn interface_wrapper_self_equality_fails_closed_in_program() {
 }
 
 #[tokio::test]
-async fn interface_box_remote_source_constructs_remote_carrier_without_payload() {
-    let (value, heap) =
+async fn interface_box_remote_source_fails_closed() {
+    let error =
         call_run_program_with_args_and_heap(vec![remote_source_interface_box_executable()], |_| {
             Vec::new()
         })
         .await
-        .expect("remote interface box source should construct a remote carrier");
-
-    let RuntimeValue::Heap(handle) = value else {
-        panic!("remote interface box should return a heap interface value");
-    };
-    let HeapNode::Interface(interface) = heap.get(handle).expect("interface handle should exist")
-    else {
-        panic!("remote interface box should allocate an interface value");
-    };
-    assert_eq!(interface.interface(), READER_INTERFACE_ABI_ID);
-    let InterfaceCarrier::Remote {
-        dependency_ref,
-        public_instance_key,
-        operations,
-    } = interface.carrier()
-    else {
-        panic!("remote interface box should not allocate a local payload carrier");
-    };
-    assert_eq!(dependency_ref, "dep");
-    assert_eq!(public_instance_key, "reader");
-    assert_eq!(operations.interface_abi_id(), READER_INTERFACE_ABI_ID);
-    assert_eq!(
-        operations.slots()[0].operation_abi_id(),
-        "operation:dep:reader.read"
-    );
-}
-
-#[tokio::test]
-async fn interface_method_remote_carrier_missing_dependency_fails_closed() {
-    let error = call_run_executable_with_args(interface_method_arg_route_executable(), |heap| {
-        let handle = heap
-            .alloc_interface(InterfaceValue::new(
-                "svc.main.Reader".to_string(),
-                InterfaceCarrier::Remote {
-                    dependency_ref: "dep".to_string(),
-                    public_instance_key: "reader".to_string(),
-                    operations: RemoteOperationTable::new(
-                        "remote:reader".to_string(),
-                        "svc.main.Reader".to_string(),
-                        vec![RemoteOperationSlot::new(
-                            0,
-                            READER_READ_METHOD_ABI_ID.to_string(),
-                            "operation:dep:reader.readName".to_string(),
-                        )],
-                    ),
-                },
-            ))
-            .unwrap();
-        vec![RuntimeValue::Heap(handle)]
-    })
-    .await
-    .expect_err("remote carrier dispatch must fail closed without a declared dependency");
+        .expect_err("legacy remote interface box source must fail closed");
 
     assert!(
         error
             .to_string()
-            .contains("service dependency alias dep is not declared"),
+            .contains("legacy remote interface boxing is not executable"),
         "unexpected error: {error}"
     );
 }
@@ -493,7 +446,6 @@ async fn call_run_program_with_args_and_heap(
     build_args: impl FnOnce(&mut RequestHeap) -> Vec<RuntimeValue>,
 ) -> Result<(RuntimeValue, RequestHeap)> {
     let program = program_with_executables(executables);
-    let activation = Arc::new(runtime_activation_from_program(&program));
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let request = test_request();
     let operation = test_operation();
@@ -511,7 +463,6 @@ async fn call_run_program_with_args_and_heap(
         &interpreter,
         &request,
         &operation,
-        &activation,
         &cancelled,
         &execution_budget,
         &config,
@@ -677,6 +628,7 @@ fn interface_method_route_executable() -> LinkedExecutable {
     expressions.push(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": reader_interface_method_target(),
             "args": [
                 { "expression": 2 }
@@ -723,6 +675,7 @@ fn interface_stream_for_in_route_executable() -> LinkedExecutable {
     expressions.push(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": reader_interface_method_target(),
             "args": [
                 { "expression": 2 }
@@ -916,6 +869,7 @@ fn heterogeneous_interface_array_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": reader_interface_method_target(),
                         "args": [
                             { "expression": 9 }
@@ -1095,6 +1049,7 @@ fn interface_method_arg_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": reader_interface_method_target(),
                         "args": [
                             { "expression": 0 }
@@ -1249,6 +1204,7 @@ fn single_binding_map_for_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("Map", "delete"),
                         "args": [
                             { "expression": 4 },
@@ -1369,6 +1325,7 @@ fn entry_binding_map_for_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("Map", "set"),
                         "args": [
                             { "expression": 6 },
@@ -1421,6 +1378,7 @@ fn local_const_receiver_extra_arg_route() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": local_const_receiver_target(1),
                         "args": [
                             { "expression": 0 },
@@ -1527,6 +1485,7 @@ fn self_type_receiver_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -1712,7 +1671,6 @@ fn program_execution_context<'a>(
     interpreter: &Interpreter,
     request: &'a RequestEnvelope,
     operation: &'a RuntimeOperation,
-    activation: &'a Arc<RuntimeActivation>,
     cancelled: &'a Arc<AtomicBool>,
     execution_budget: &'a Arc<ExecutionBudget>,
     config: &'a RuntimeConfigView,
@@ -1767,21 +1725,8 @@ fn program_execution_context<'a>(
             stream_runtime,
             interpreter.test_effect_double_context(),
         ),
-        runtime_activation: activation.clone(),
         actor: actor.clone(),
         spawn: actor,
-        outbound: eval_capabilities::outbound(
-            eval_capabilities::outbound_service_context_from_request(
-                request,
-                execution_budget.clone(),
-                execution.cancel_flag(),
-                RequestHeapLimits::default(),
-                None,
-                outbound_requests.clone(),
-                &activation.service_dependencies,
-                &activation.timeout,
-            ),
-        ),
         request_heap_limits: RequestHeapLimits::default(),
     })
 }
@@ -1811,11 +1756,8 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
             external_refs: Default::default(),
         })],
         packages: Vec::new(),
-        package_files: Vec::new(),
         service_resources: Default::default(),
-        package_resources: Vec::new(),
         package_configs: Vec::new(),
-        service_dependencies: Vec::new(),
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
         routes: Default::default(),
@@ -1827,20 +1769,6 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
         link_overlay: LinkOverlay::default(),
         gateway: GatewayConfig::default(),
         types: RuntimeTypeContext::default(),
-    }
-}
-
-fn runtime_activation_from_program(program: &RuntimeProgram) -> RuntimeActivation {
-    RuntimeActivation {
-        service: program.service.clone(),
-        version: program.version.clone(),
-        package_configs: program.package_configs.clone(),
-        service_dependencies: program.service_dependencies.clone(),
-        timeout: program.timeout.clone(),
-        operation_route_bindings: program.operation_route_bindings.clone(),
-        db: program.db.clone(),
-        actors: program.actors.clone(),
-        gateway: program.gateway.clone(),
     }
 }
 
@@ -1858,7 +1786,6 @@ fn test_request() -> RequestEnvelope {
         activation_identity: None,
         ingress_selector: None,
         http_adapter: None,
-        websocket_adapter: None,
         binary_http: None,
         test_effects_enabled: false,
         test_effect_doubles: Default::default(),

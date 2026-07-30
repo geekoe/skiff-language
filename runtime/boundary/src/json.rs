@@ -435,6 +435,9 @@ fn encode_untyped_wire_json_inner(
                 "{} cannot be encoded as wire value",
                 value.diagnostic_label()
             ))),
+            HeapNode::Exception(_) => Err(RuntimeError::Decode(
+                "request-local exception cannot be encoded as a wire value".to_string(),
+            )),
         },
     }
 }
@@ -486,8 +489,8 @@ mod tests {
     use crate::{
         request_heap::{RequestHeap, RequestHeapLimits},
         runtime_value::{
-            ActorRef, HeapHandle, HeapNode, InterfaceCarrier, InterfaceValue, RemoteOperationTable,
-            RuntimeMap, RuntimeValue, RuntimeValueKey,
+            ActorRef, CallbackCapabilityCarrier, HeapHandle, HeapNode, InterfaceCarrier,
+            InterfaceValue, RuntimeMap, RuntimeValue, RuntimeValueKey,
         },
     };
 
@@ -586,21 +589,19 @@ mod tests {
         let mut heap = RequestHeap::default();
         let interface = InterfaceValue::new(
             "iface".to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "dep".to_string(),
-                public_instance_key: "instance".to_string(),
-                operations: RemoteOperationTable::new(
-                    "ops".to_string(),
-                    "iface".to_string(),
-                    Vec::new(),
-                ),
-            },
+            InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                "runtime-a",
+                "activation-a",
+                1,
+                "iface",
+                "capability-a",
+            )),
         );
         let handle = heap.alloc_interface(interface).expect("interface alloc");
         let error = encode_untyped_wire_json(&RuntimeValue::Heap(handle), &heap)
             .expect_err("interface should reject");
         assert!(error
             .to_string()
-            .contains("any interface iface (remote) cannot be encoded as wire value"));
+            .contains("any interface iface (callback capability) cannot be encoded as wire value"));
     }
 }

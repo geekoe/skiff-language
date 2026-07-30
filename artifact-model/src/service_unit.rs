@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// Legacy module-path facade for runtime/projection consumers. Canonical
-// ownership lives in executable_target; ServiceUnit only consumes the leaves.
+// Runtime/projection consumers still share these canonical executable-target
+// leaves; this module no longer defines a service aggregate.
 pub use crate::executable_target::{
     LocalReceiverExecutableRef, OperationCallableKind, OperationConstReceiverRef,
     OperationTargetRef, PackageDependencyOperationRef, PublicInstanceExport,
@@ -12,96 +12,13 @@ pub use crate::executable_target::{
 };
 
 use crate::{
-    abi_identity::AbiIdentityFacts,
     file_ir::{
         DbIndexFieldIr, DbLeaseIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, DbRetentionIr,
     },
     metadata::MetadataValue,
-    package_unit::{PackageAbiExpectation, PackageDependencyConstraint},
-    publication_abi::{OperationAbiRef, PublicationAbiUnit},
-    recoverable::RecoverableArtifactMetadata,
-    refs::FileIrRef,
-    resources::PublicationResourceRef,
-    schema::SERVICE_UNIT_SCHEMA_VERSION,
+    publication_abi::OperationAbiRef,
     types::TypeRefIr,
 };
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceUnit {
-    pub schema_version: String,
-    pub service: ServiceMeta,
-    pub version: String,
-    pub protocol_identity: String,
-    #[serde(default, skip_serializing_if = "AbiIdentityFacts::is_empty")]
-    pub abi_identity_projection: AbiIdentityFacts,
-    pub publication_abi: PublicationAbiUnit,
-    pub files: Vec<FileIrRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resources: Vec<PublicationResourceRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub package_dependencies: Vec<PackageDependencyConstraint>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub service_dependencies: Vec<ServiceDependencyConstraint>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub package_abi_expectations: Vec<PackageAbiExpectation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operations: Vec<ServiceOperation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operation_route_bindings: Vec<OperationRouteBinding>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub public_instances: Vec<PublicInstanceExport>,
-    #[serde(default, skip_serializing_if = "RecoverableArtifactMetadata::is_empty")]
-    pub recoverable_metadata: RecoverableArtifactMetadata,
-    #[serde(default)]
-    pub db: Vec<DbMetadataIr>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub spawn_targets: Vec<SpawnTargetIr>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actors: Vec<ActorMetadataIr>,
-    pub gateway: GatewayConfig,
-    #[serde(default, skip_serializing_if = "ServiceTimeoutConfig::is_empty")]
-    pub timeout: ServiceTimeoutConfig,
-    pub config: ServiceConfigMetadata,
-}
-
-impl ServiceUnit {
-    pub fn empty(
-        service_id: impl Into<String>,
-        version: impl Into<String>,
-        protocol_identity: impl Into<String>,
-    ) -> Self {
-        let service_id = service_id.into();
-        let version = version.into();
-        Self {
-            schema_version: SERVICE_UNIT_SCHEMA_VERSION.to_string(),
-            service: ServiceMeta {
-                id: service_id.clone(),
-                display_name: None,
-                metadata: BTreeMap::new(),
-            },
-            version: version.clone(),
-            protocol_identity: protocol_identity.into(),
-            abi_identity_projection: AbiIdentityFacts::default(),
-            publication_abi: PublicationAbiUnit::empty(service_id, version, ""),
-            files: Vec::new(),
-            resources: Vec::new(),
-            package_dependencies: Vec::new(),
-            service_dependencies: Vec::new(),
-            package_abi_expectations: Vec::new(),
-            operations: Vec::new(),
-            operation_route_bindings: Vec::new(),
-            public_instances: Vec::new(),
-            recoverable_metadata: RecoverableArtifactMetadata::default(),
-            db: Vec::new(),
-            spawn_targets: Vec::new(),
-            actors: Vec::new(),
-            gateway: GatewayConfig::default(),
-            timeout: ServiceTimeoutConfig::default(),
-            config: ServiceConfigMetadata::default(),
-        }
-    }
-}
 
 /// Service-unit `db` metadata entry produced by the compiler runtime projection.
 ///
@@ -201,17 +118,6 @@ impl ServiceTimeoutConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceDependencyConstraint {
-    pub id: String,
-    pub version: String,
-    pub alias: String,
-    pub build_id: String,
-    pub service_protocol_identity: String,
-    pub publication_abi: PublicationAbiUnit,
-}
-
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceMeta {
@@ -256,14 +162,6 @@ pub struct OperationRouteBinding {
 pub enum OperationIngressKind {
     ServiceCall,
     HttpGateway,
-    WebSocketGateway,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceDependencyOperationRef {
-    pub dependency_ref: String,
-    pub operation: OperationAbiRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,8 +185,6 @@ pub struct GatewayConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub routes: BTreeMap<String, GatewayRoute>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub web_sockets: BTreeMap<String, GatewayWebSocket>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MetadataValue>,
 }
 
@@ -308,29 +204,6 @@ impl GatewayRoute {
     pub fn route_identity(&self) -> String {
         format!("{} {}", self.method.to_ascii_uppercase(), self.path)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatewayWebSocket {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    pub operation: String,
-    pub operation_abi_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_operation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_operation_abi_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub routes: Vec<GatewayWebSocketRoute>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatewayWebSocketRoute {
-    pub path: String,
-    pub operation: String,
-    pub operation_abi_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

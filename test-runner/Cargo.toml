@@ -7,7 +7,6 @@ autotests = false
 
 [features]
 default = []
-runtime-integration-worker = []
 
 [lints.clippy]
 too_many_lines = "warn"
@@ -16,46 +15,35 @@ too_many_lines = "warn"
 name = "skiff-test-runner"
 path = "src/main.rs"
 
-[[test]]
-name = "test_runner_doubles"
-path = "tests/test_runner_doubles.rs"
-required-features = ["runtime-integration-worker"]
+[[bin]]
+name = "skiff-package-service-smoke-fixture"
+path = "src/bin/package_service_smoke_fixture.rs"
 
 [[test]]
-name = "test_runner_live_smoke"
-path = "tests/test_runner_live_smoke.rs"
-required-features = ["runtime-integration-worker"]
+name = "test_service_flow"
+path = "tests/test_service_flow.rs"
 
 [[test]]
-name = "test_runner_package"
-path = "tests/test_runner_package.rs"
-required-features = ["runtime-integration-worker"]
+name = "canonical_std_seed_bootstrap"
+path = "tests/canonical_std_seed_bootstrap.rs"
 
 [[test]]
-name = "test_runner_package_visibility"
-path = "tests/test_runner_package_visibility.rs"
-required-features = ["runtime-integration-worker"]
-
-[[test]]
-name = "test_runner_service"
-path = "tests/test_runner_service.rs"
-required-features = ["runtime-integration-worker"]
-
-[[test]]
-name = "test_runner_runtime_isolation"
-path = "tests/test_runner_runtime_isolation.rs"
-harness = false
+name = "http_entry_test_service"
+path = "tests/http_entry_test_service.rs"
 
 [dependencies]
+anyhow = "1.0"
 base64 = "0.22"
-libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "2.0"
 skiff-compiler = { path = "../compiler" }
+skiff-compiler-core = { path = "../compiler/core" }
+skiff-compiler-input = { path = "../compiler/input" }
+skiff-compiler-source = { path = "../compiler/source" }
+skiff-deployment = { path = "../deployment" }
 skiff-artifact-model = { path = "../artifact-model" }
 skiff-artifact-identity = { path = "../artifact-identity" }
-skiff-compiler-core = { path = "../compiler/core" }
 skiff-syntax = { path = "../syntax" }
+skiff-runtime-model = { path = "../runtime/model" }

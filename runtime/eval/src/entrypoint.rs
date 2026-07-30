@@ -19,7 +19,7 @@ use crate::{
         TestEffectDouble,
     },
     error::Result,
-    invocation::{EvalInvocation, EvalWebSocketAdapterResult},
+    invocation::EvalInvocation,
     program_invocation::ProgramInvocationInput,
     runtime_ops::runtime_from_wire_required_plan,
     stream_callback::{
@@ -203,16 +203,6 @@ impl EvalRequestExecutor {
             .execute_http_raw_adapter_response_stream(input.into(), eval_invocation, on_event)
             .await
     }
-
-    pub async fn execute_websocket_adapter<'a>(
-        &'a self,
-        input: EvalRequestExecutionInput<'a>,
-        eval_invocation: EvalInvocation<'a>,
-    ) -> Result<EvalWebSocketAdapterResult> {
-        self.entrypoint
-            .execute_websocket_adapter(input.into(), eval_invocation)
-            .await
-    }
 }
 
 impl EvalEntrypoint {
@@ -332,17 +322,6 @@ impl EvalEntrypoint {
                 eval_invocation,
                 on_event,
             )
-            .await
-    }
-
-    async fn execute_websocket_adapter<'a>(
-        &'a self,
-        input: EvalProgramInvocationInput<'a>,
-        eval_invocation: EvalInvocation<'a>,
-    ) -> Result<EvalWebSocketAdapterResult> {
-        let invocation_context = self.program_invocation_context(input);
-        self.interpreter
-            .execute_program_websocket_adapter(&invocation_context, eval_invocation)
             .await
     }
 

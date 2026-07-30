@@ -38,6 +38,33 @@ db object User {
 - 默认 collection name 使用 object 名称，显式 `name` 只用于物理存储映射。
 - `db object` 不生成 `Row`、`Document`、`Entity` 等额外源码名字。
 
+### 1.1 Test Dependency DB Targets
+
+`kind: test` service可以通过direct package dependency的`topLevelAlias`使用其文件顶层`db object`。
+DB target沿用测试顶层名字语法：
+
+```skiff
+const session = db require subjectImpl/model.AdminSession(sessionId)
+```
+
+这里的`subjectImpl/model.AdminSession`同时选择provider package中的`model.AdminSession` type及同文件、
+同名的`db object AdminSession` attachment。它不会把该attachment公开到`api.yml`，也不允许普通
+alias、transitive dependency或production service获得内部DB访问。旧`access: topLevel`字段不再合法。
+
+该规则覆盖所有带target的DB语法：key/query read、insert/update/upsert/replace/delete、count/exists、
+`DbQuery`值、lease claim、lease状态读取，以及claim期间自动追加的写入guard。`db transaction`是当前
+service database上的词法执行边界，本身没有target；其中每个DB operation仍独立按上述规则解析。
+
+两个dependency即使声明相同module path与type name也不会混淆：dependency alias选择精确package
+artifact。运行时仍写入当前test service拥有的database namespace；跨package target不是跨service
+database访问。若两个dependency的物理collection投影冲突，仍必须通过现有dependency collection
+mapping消除或在activation时失败。
+
+同一stateful package可因direct与transitive依赖形成菱形。若两条edge解析到同一精确build，且完整
+source→target collection mapping与owner-relevant facts canonical相同，activation将其合并为一个
+metadata owner；同build不同mapping、不同build指向同一physical target、或dependency与root
+collection冲突都必须失败。test state namespace只由`config.skiff-test.yml`中的对应binding提供。
+
 ## 2. Field Paths And Contextual Keywords
 
 DB block 内的 `fields`、`where`、`order`、`limit`、`offset`、`unset`、`add`、`remove` 等只作为上下文关键字。它们不是全局保留字段名。
@@ -239,7 +266,12 @@ const result = db transaction value {
 语义：
 
 - transaction 内 DB 读写在同一原子边界内执行。
-- block 抛错时，未提交的 DB 写入回滚。
+- block抛出普通业务错误或在commit选择前正常失败时，runtime等待abort，未提交的DB写入回滚。
+- deadline、ancestor stop、disconnect或execution future drop属于异常内部停止：runtime尽力abort，
+  但可见request结果不等待abort acknowledgement；driver/session关闭是最终fallback。
+- block正常完成后runtime选择commit。Commit尝试一旦开始，后续内部停止不改选“保证abort”；
+  底层commit可能完成或处于unknown outcome，late result被丢弃。内部停止、断线或timeout都不承诺
+  撤销已经开始的commit。
 - 读取结果仍是 readonly snapshot。
 - 所有持久写入必须显式使用 DB operation。
 - 嵌套 transaction 当前不支持。
@@ -275,7 +307,8 @@ db object Thread {
 
 - `lease <name>` 在 db object 上声明一个具名租约槽；同一 db object 可声明多个互不影响的槽。
 - `ttl` 是毫秒数，必填：持有者停止续租后，租约最迟这么久之后可被抢占。
-- `max` 是毫秒数，可选：单次持有的硬上限。到达后 runtime 停止续租并取消持有者，用于收回卡死的持有者。
+- `max` 是毫秒数，可选：单次持有的硬上限。到达后runtime停止续租并内部停止块体，以
+  lease-lost结束，用于收回卡死的持有者。
 - 槽状态（owner、token、过期时间、request id）由平台管理，不属于 attached type 的 stored fields：不出现在 read snapshot、projection 和 change block 中。
 
 ### 8.2 Claim Block
@@ -292,9 +325,12 @@ const claimed = db claim Thread(threadId).drain as thread {
 
 - `as <binding>` 绑定 claim 成功时读到的对象 full snapshot，可省略。
 - 块体执行期间，runtime 自动续租，间隔小于 `ttl / 2`。
-- 续租失败、槽被抢占或到达 `max` 时，runtime 取消块体执行，claim 以 lease-lost 平台错误结束。
-- claim 成功时把当前 runtime request id 记入槽状态，供控制面诊断与后续的持有者取消能力使用。
-- 块体正常结束或抛出业务错误时原子释放租约；进程级失败（crash、断连）不释放，由 `ttl` 过期回收。
+- 续租失败、槽被抢占或到达`max`时，runtime内部停止块体执行，claim以lease-lost平台错误结束。
+- claim成功时把当前runtime request id记入槽状态，只供诊断和trace关联。
+- 块体正常结束或抛出业务错误时runtime停止续租并等待release；release完成后才结束正常路径。
+- deadline、ancestor stop、disconnect或execution future drop时，runtime先停止续租并尽力release，
+  但不要求可见request结果等待release acknowledgement；未能及时release时由`ttl`过期回收。
+- 进程级失败（crash、断连）同样不承诺主动release，由`ttl`过期回收。
 - 过期租约可被新 claim 直接抢占，不需要专门的回收步骤。
 
 约束：
@@ -319,7 +355,9 @@ const claimed = db claim Thread(threadId).drain as thread {
 const slot = db lease Thread(threadId).drain
 ```
 
-返回 `{ owner: string, expiresAt: number, requestId: string? }?`；`null` 表示无人持有或已过期。用于诊断；平台提供按 request 取消的能力后，控制面用它定位并取消持有者。槽状态没有其它读写入口。
+返回 `{ owner: string, expiresAt: number, requestId: string? }?`；`null` 表示无人持有或已过期。
+这些字段只用于诊断、trace关联和恢复观察，不提供按request取消持有者的控制面能力。槽状态没有其它
+读写入口。
 
 ### 8.5 恢复
 

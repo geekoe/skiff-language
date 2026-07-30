@@ -1,14 +1,18 @@
-use std::{future::Future, pin::Pin, sync::OnceLock};
+use std::{future::Future, pin::Pin};
 
 use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest,
-    FileCapabilityFuture, FileChunkFuture, FileChunkSource, StreamConsumerCleanup,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestTerminal,
+    FileCapabilityFuture, FileChunkFuture, FileChunkSource, OwnedExecutionControl,
+    StreamConsumerCleanup,
 };
-use skiff_runtime_model::addr::ExecutableAddr;
-use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
+use skiff_runtime_model::{
+    addr::{ExecutableAddr, UnitAddr},
+    LoadedPublicationResource, RuntimeProgramResourceLookupError,
+};
 
 use crate::error::Result;
 use crate::runtime_value_facade::{
@@ -31,11 +35,18 @@ pub trait NativeConfigCapability {
 
 pub trait NativeActorCapability {
     fn service_id(&self) -> &str;
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, ActorRef>;
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef>;
 
     fn find_actor<'a>(
@@ -106,6 +117,8 @@ pub trait NativeFileCapabilityBundle {
 }
 
 pub trait NativeTimeCapability {
+    fn execution_control(&self) -> OwnedExecutionControl;
+
     fn poll_execution_budget(&self) -> Result<()>;
 }
 
@@ -145,6 +158,20 @@ pub trait NativeHttpResponseStreamCapability {
 }
 
 pub trait NativeWebsocketCapability {
+    fn request_json_to_connection<'a>(
+        &'a self,
+        connection_id: String,
+        method: String,
+        payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, ConnectionRequestTerminal> {
+        let _ = (connection_id, method, payload);
+        Box::pin(async {
+            Err(crate::error::RuntimeError::Unsupported(
+                "std.websocket.requestJsonToConnection execution is not attached".to_string(),
+            ))
+        })
+    }
+
     fn send_connection_text_to_business_identity(
         &self,
         business_identity: String,
@@ -172,15 +199,28 @@ pub trait NativeTelemetryCapability {
 }
 
 pub trait NativeResourceCapability {
-    fn resources(&self) -> RuntimeProgramResourceView<'_>;
+    fn lookup_resource<'a>(
+        &'a self,
+        owner: &UnitAddr,
+        path: &str,
+    ) -> std::result::Result<Option<&'a LoadedPublicationResource>, RuntimeProgramResourceLookupError>;
 }
 
 impl NativeResourceCapability for () {
-    fn resources(&self) -> RuntimeProgramResourceView<'_> {
-        static EMPTY: OnceLock<(PublicationResourceTable, Vec<PublicationResourceTable>)> =
-            OnceLock::new();
-        let (service_resources, package_resources) =
-            EMPTY.get_or_init(|| (PublicationResourceTable::default(), Vec::new()));
-        RuntimeProgramResourceView::new(service_resources, package_resources)
+    fn lookup_resource<'a>(
+        &'a self,
+        owner: &UnitAddr,
+        _path: &str,
+    ) -> std::result::Result<Option<&'a LoadedPublicationResource>, RuntimeProgramResourceLookupError>
+    {
+        match owner {
+            UnitAddr::Service => Ok(None),
+            UnitAddr::Package(slot) => {
+                Err(RuntimeProgramResourceLookupError::PackageSlotOutOfBounds {
+                    slot: *slot,
+                    package_count: 0,
+                })
+            }
+        }
     }
 }

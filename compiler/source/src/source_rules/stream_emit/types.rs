@@ -61,6 +61,13 @@ pub(super) fn collect_emit_expression_call_violations(
                 }
             }
         }
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            collect_emit_expression_call_violations_in_block(path, &value.body, violations);
+            collect_emit_expression_call_violations(path, &value.tail, violations);
+        }
+        Expr::Timeout { value, .. } => {
+            collect_emit_expression_call_violations(path, value, violations);
+        }
         Expr::Throw { value } => {
             collect_emit_expression_call_violations(path, value, violations);
         }
@@ -108,6 +115,13 @@ fn collect_emit_stmt_violations(
     violations: &mut Vec<String>,
 ) {
     match stmt {
+        crate::shared::ast::Stmt::CompilerTestEffectRegister { .. } => {
+            for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                .expect("matched compiler test effect")
+            {
+                collect_emit_expression_call_violations(path, expression, violations);
+            }
+        }
         crate::shared::ast::Stmt::Let { value, .. }
         | crate::shared::ast::Stmt::Spawn { call: value }
         | crate::shared::ast::Stmt::Expr(value)
@@ -122,6 +136,13 @@ fn collect_emit_stmt_violations(
         crate::shared::ast::Stmt::Assign { target, value } => {
             collect_emit_expression_call_violations(path, target, violations);
             collect_emit_expression_call_violations(path, value, violations);
+        }
+        crate::shared::ast::Stmt::Timeout { body, .. }
+        | crate::shared::ast::Stmt::Concurrent { body }
+        | crate::shared::ast::Stmt::Serial { body } => {
+            for stmt in &body.statements {
+                collect_emit_stmt_violations(path, stmt, violations);
+            }
         }
         crate::shared::ast::Stmt::If {
             condition,
@@ -272,6 +293,11 @@ pub(super) fn infer_expr_type(
             infer_expr_type(value, env, function_return_types)
                 .map(|_| format!("any {}", interface.name))
         }
+        Expr::ValueBlock(value) => infer_value_block_type(value, env, function_return_types),
+        Expr::ConcurrentValue(value) => {
+            infer_concurrent_value_type(value, env, function_return_types)
+        }
+        Expr::Timeout { value, .. } => infer_expr_type(value, env, function_return_types),
         Expr::Binary { .. }
         | Expr::Unary { .. }
         | Expr::Field { .. }
@@ -299,6 +325,51 @@ pub(super) fn infer_expr_type(
             Some("{ expiresAt: string, owner: string, requestId: string }?".to_string())
         }
     }
+}
+
+#[cfg(test)]
+fn infer_value_block_type(
+    value: &crate::shared::ast::ValueBlock,
+    env: &BTreeMap<String, String>,
+    function_return_types: &BTreeMap<String, String>,
+) -> Option<String> {
+    let mut scoped = env.clone();
+    for statement in &value.body.statements {
+        if let crate::shared::ast::Stmt::Let {
+            name,
+            value: initializer,
+            ..
+        } = statement
+        {
+            if let Some(ty) = infer_expr_type(initializer, &scoped, function_return_types) {
+                scoped.insert(name.clone(), ty);
+            }
+        }
+    }
+    infer_expr_type(&value.tail, &scoped, function_return_types)
+}
+
+#[cfg(test)]
+fn infer_concurrent_value_type(
+    value: &crate::shared::ast::ValueBlock,
+    env: &BTreeMap<String, String>,
+    function_return_types: &BTreeMap<String, String>,
+) -> Option<String> {
+    let mut sibling_scope = env.clone();
+    for statement in &value.body.statements {
+        if let crate::shared::ast::Stmt::Let {
+            mutable: false,
+            name,
+            value: initializer,
+            ..
+        } = statement
+        {
+            if let Some(ty) = infer_expr_type(initializer, &sibling_scope, function_return_types) {
+                sibling_scope.insert(name.clone(), ty);
+            }
+        }
+    }
+    infer_expr_type(&value.tail, &sibling_scope, function_return_types)
 }
 
 #[cfg(test)]

@@ -2,20 +2,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities,
-    assign_service_deployment_identity, contract_operation_id, service_deployment_ref,
+    assign_service_deployment_identity, contract_operation_id, package_schema_index_identity,
+    service_deployment_ref,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractRequirement,
-    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentRevision, IngressProtocol, IngressSelector,
-    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractDiagnosticText, ContractRequirement, DeploymentArtifactIdentity,
+    DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
+    DeploymentRevision, GatewayEntryKey, IngressProtocol, IngressSelector, PackageArtifact,
+    PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement,
-    PackageRequirementKey, PackageRuntimeRequirements, ServiceCallRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceCallRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
@@ -41,11 +42,8 @@ pub fn contract_with_stable_key(service_id: &str, stable_key: &str) -> ServiceCo
                     lifetime: BoundaryValueLifetime::Call,
                 },
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,
@@ -62,7 +60,7 @@ pub fn contract_with_stable_key(service_id: &str, stable_key: &str) -> ServiceCo
         contract_version: version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, descriptor)]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),
             operations: BTreeMap::new(),
@@ -97,6 +95,8 @@ pub fn package(
             package_id: dependency.package_id.clone(),
             exact_version: dependency.package_version.clone(),
             expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+            collection_name_mapping: BTreeMap::new(),
+            expected_package_build: None,
         })
         .collect();
     let contract_requirements = service_dependencies
@@ -136,7 +136,17 @@ pub fn package(
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements,
@@ -144,6 +154,7 @@ pub fn package(
         service_requirements,
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
+            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -175,6 +186,7 @@ pub fn package_binding(
             package_requirement_alias: alias.to_string(),
         },
         package: package_ref(provider),
+        collection_name_mapping: BTreeMap::new(),
     }
 }
 
@@ -211,6 +223,7 @@ pub fn deployment(
         }],
         package_bindings,
         service_selectors,
+        gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
@@ -233,18 +246,21 @@ pub fn deployment_ref(deployment: &ServiceDeployment) -> ServiceDeploymentRef {
 
 pub fn add_http_ingress(
     deployment: &mut ServiceDeployment,
-    contract: &ServiceContract,
-    host: &str,
+    _contract: &ServiceContract,
     path: &str,
 ) {
+    let key = GatewayEntryKey::parse("fixture-http").unwrap();
+    deployment.gateway_entries.insert(
+        key.clone(),
+        crate::fixtures::gateway_entry_fixture(PackageCallableId::new("callable.fixture")),
+    );
     deployment.ingress.push(DeploymentIngressBinding {
         selector: IngressSelector {
             protocol: IngressProtocol::Http,
-            host: host.to_string(),
             method: Some("POST".to_string()),
             path: path.to_string(),
         },
-        contract_operation_id: operation(contract),
+        gateway_entry_key: key,
     });
     assign_service_deployment_identity(deployment).unwrap();
 }

@@ -1,14 +1,12 @@
-use skiff_artifact_model::PackageRefIr;
+use skiff_artifact_model::{PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, TypeRefIr};
 use skiff_runtime_linked_program::{
-    ConstAddr, ExecutableAddr, InterfaceDeclIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
+    ConstAddr, ExecutableAddr, FileAddr, InterfaceDeclIr, LinkedInterfaceInstantiationRef,
+    TypeAddr, UnitAddr,
 };
 
 use super::code_linker::AssemblyCodeLinker;
 use crate::{
-    linker::call_semantic_validation::{
-        local_interface_declaration_abi_ids, package_interface_declaration_id,
-        CallSemanticValidationDelegate,
-    },
+    linker::call_semantic_validation::CallSemanticValidationDelegate,
     resolver::{ProgramError, ProgramResult},
 };
 
@@ -64,52 +62,322 @@ impl CallSemanticValidationDelegate for AssemblyCallSemanticDelegate<'_, '_> {
             .map_err(|error| {
                 assembly_semantic_error(context, error, "linked interface method target")
             })?;
-        linked_interface_declaration(self.linker, context, interface)
+        linked_interface_declaration(
+            self.linker,
+            context,
+            self.code_slot,
+            self.file_index,
+            interface,
+        )
     }
 }
 
 fn linked_interface_declaration(
     linker: &AssemblyCodeLinker<'_>,
     context: &str,
+    source_code_slot: usize,
+    source_file_index: usize,
     interface: &LinkedInterfaceInstantiationRef,
 ) -> ProgramResult<InterfaceDeclIr> {
-    let mut matched = None;
-    for code_slot in 0..linker.addresses.shared_image().code_slots().len() {
-        let files = linker
+    let owner = exact_interface_owner(
+        linker,
+        context,
+        source_code_slot,
+        source_file_index,
+        &interface.interface_abi_id,
+    )?;
+    linked_interface_declaration_at(
+        linker,
+        context,
+        owner.code_slot,
+        owner.file_index,
+        owner.type_index,
+        "interface declaration at exact owner coordinate",
+    )
+}
+
+pub(super) struct ExactInterfaceOwner {
+    code_slot: usize,
+    file_index: usize,
+    type_index: usize,
+    canonical_abi_id: Option<String>,
+}
+
+impl ExactInterfaceOwner {
+    pub(super) fn canonical_abi_id(&self) -> Option<&str> {
+        self.canonical_abi_id.as_deref()
+    }
+}
+
+pub(super) fn exact_interface_owner(
+    linker: &AssemblyCodeLinker<'_>,
+    context: &str,
+    source_code_slot: usize,
+    source_file_index: usize,
+    interface_abi_id: &str,
+) -> ProgramResult<ExactInterfaceOwner> {
+    let interface_type = serde_json::from_str::<TypeRefIr>(interface_abi_id).map_err(|error| {
+        assembly_semantic_error(
+            context,
+            anyhow::Error::new(error),
+            "canonical typed interface owner",
+        )
+    })?;
+    let addr = match interface_type {
+        TypeRefIr::LocalType { type_index } => {
+            linker
+                .addresses
+                .type_addr(source_code_slot, source_file_index, type_index as usize)
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => linker.addresses.publication_type_addr(
+            source_code_slot,
+            &module_path,
+            type_index as usize,
+        ),
+        TypeRefIr::ServiceSymbol { symbol } => linker
             .addresses
-            .package_files(code_slot)
-            .map_err(|error| assembly_semantic_error(context, error, "package code files"))?;
-        for (file_index, file) in files.iter().enumerate() {
-            for (name, declaration) in &file.declarations.interfaces {
-                let abi_ids =
-                    interface_declaration_abi_ids(linker, context, code_slot, file, name)?;
-                if !abi_ids
-                    .iter()
-                    .any(|abi_id| abi_id == &interface.interface_abi_id)
-                {
-                    continue;
-                }
-                if matched.is_some() {
-                    return Err(ProgramError::LinkSymbolUnresolved {
-                        context: context.to_string(),
-                        symbol: interface.interface_abi_id.clone(),
-                        expected_kind: "unique interface declaration for any interface dispatch",
-                    });
-                }
-                let mut linked = declaration.clone();
-                link_interface_declaration_types(linker, code_slot, file_index, &mut linked)
-                    .map_err(|error| {
-                        assembly_semantic_error(context, error, "linked interface declaration")
-                    })?;
-                matched = Some(linked);
+            .local_symbol_type_addr(source_code_slot, &symbol),
+        TypeRefIr::PackageSymbol { symbol } => {
+            if symbol.abi_expectation.is_none() {
+                return Err(ProgramError::LinkSymbolUnresolved {
+                    context: context.to_string(),
+                    symbol: interface_abi_id.to_string(),
+                    expected_kind: "package interface declaration with exact local ABI expectation",
+                });
             }
+            linker
+                .addresses
+                .package_symbol_type_addr(source_code_slot, &symbol)
+        }
+        _ => {
+            return Err(ProgramError::LinkSymbolUnresolved {
+                context: context.to_string(),
+                symbol: interface_abi_id.to_string(),
+                expected_kind: "local, publication, service, or exact package interface owner",
+            });
         }
     }
-    matched.ok_or_else(|| ProgramError::LinkSymbolUnresolved {
-        context: context.to_string(),
-        symbol: interface.interface_abi_id.clone(),
-        expected_kind: "interface declaration for any interface dispatch",
+    .map_err(|error| {
+        assembly_semantic_error(context, error, "exact typed interface declaration owner")
+    })?;
+    exact_interface_owner_at(linker, context, interface_abi_id, &addr)
+}
+
+fn exact_interface_owner_at(
+    linker: &AssemblyCodeLinker<'_>,
+    context: &str,
+    interface_abi_id: &str,
+    addr: &TypeAddr,
+) -> ProgramResult<ExactInterfaceOwner> {
+    let UnitAddr::Package(code_slot) = addr.unit else {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: interface_abi_id.to_string(),
+            expected_kind: "package-owned interface declaration",
+        });
+    };
+    let FileAddr::LoadedFileIndex(file_index) = addr.file else {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: interface_abi_id.to_string(),
+            expected_kind: "loaded package interface declaration file",
+        });
+    };
+    interface_declaration_at(
+        linker,
+        context,
+        code_slot,
+        file_index,
+        addr.type_index,
+        "unique interface declaration at exact owner coordinate",
+    )?;
+    let canonical_abi_id = canonical_package_interface_abi_id(
+        linker,
+        context,
+        code_slot,
+        file_index,
+        addr.type_index,
+    )?;
+    Ok(ExactInterfaceOwner {
+        code_slot,
+        file_index,
+        type_index: addr.type_index,
+        canonical_abi_id,
     })
+}
+
+fn linked_interface_declaration_at(
+    linker: &AssemblyCodeLinker<'_>,
+    context: &str,
+    code_slot: usize,
+    file_index: usize,
+    type_index: usize,
+    expected_kind: &'static str,
+) -> ProgramResult<InterfaceDeclIr> {
+    let mut linked = interface_declaration_at(
+        linker,
+        context,
+        code_slot,
+        file_index,
+        type_index,
+        expected_kind,
+    )?
+    .clone();
+    link_interface_declaration_types(linker, code_slot, file_index, &mut linked)
+        .map_err(|error| assembly_semantic_error(context, error, "linked interface declaration"))?;
+    Ok(linked)
+}
+
+fn interface_declaration_at<'a>(
+    linker: &'a AssemblyCodeLinker<'_>,
+    context: &str,
+    code_slot: usize,
+    file_index: usize,
+    type_index: usize,
+    expected_kind: &'static str,
+) -> ProgramResult<&'a InterfaceDeclIr> {
+    let files = linker
+        .addresses
+        .package_files(code_slot)
+        .map_err(|error| assembly_semantic_error(context, error, "package code files"))?;
+    let file = files
+        .get(file_index)
+        .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: file_index.to_string(),
+            expected_kind: "interface declaration source file",
+        })?;
+    let mut matches = file
+        .declarations
+        .types
+        .iter()
+        .filter(|(_, declaration)| declaration.type_index == type_index)
+        .filter_map(|(name, _)| file.declarations.interfaces.get(name));
+    let declaration = matches
+        .next()
+        .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: type_index.to_string(),
+            expected_kind,
+        })?;
+    if matches.next().is_some() {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: type_index.to_string(),
+            expected_kind: "unique interface declaration at exact owner coordinate",
+        });
+    }
+    if !matches!(
+        file.types.get(type_index).map(|ty| &ty.descriptor),
+        Some(skiff_runtime_linked_program::LinkedTypeDescriptor::Interface)
+    ) {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: type_index.to_string(),
+            expected_kind: "interface type descriptor at exact owner coordinate",
+        });
+    }
+    Ok(declaration)
+}
+
+fn canonical_package_interface_abi_id(
+    linker: &AssemblyCodeLinker<'_>,
+    context: &str,
+    code_slot: usize,
+    file_index: usize,
+    type_index: usize,
+) -> ProgramResult<Option<String>> {
+    let code = linker
+        .addresses
+        .shared_image()
+        .code_slots()
+        .get(code_slot)
+        .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: code_slot.to_string(),
+            expected_kind: "package code for exact interface owner",
+        })?;
+    let file = linker
+        .addresses
+        .package_files(code_slot)
+        .map_err(|error| assembly_semantic_error(context, error, "package code files"))?
+        .get(file_index)
+        .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: file_index.to_string(),
+            expected_kind: "loaded package interface declaration file",
+        })?;
+    let mut exports = code
+        .artifact()
+        .package_local_abi
+        .public_symbols
+        .iter()
+        .filter(|(_, symbol)| {
+            matches!(
+                symbol,
+                PackageLocalAbiSymbol::Type {
+                    is_interface: true,
+                    ..
+                }
+            )
+        })
+        .filter_map(|(symbol_path, _)| {
+            code.artifact()
+                .implementation_links
+                .types
+                .get(symbol_path)
+                .map(|export| (symbol_path, export))
+        })
+        .filter(|(_, export)| {
+            export.type_index as usize == type_index
+                && export.file.file_ir_identity == file.file_ir_identity
+                && export.file.module_path == file.module_path
+                && export
+                    .file
+                    .source_ast_hash
+                    .as_deref()
+                    .is_none_or(|hash| hash == file.source_ast_hash)
+        });
+    let Some((symbol_path, export)) = exports.next() else {
+        // Private interfaces have no package export and therefore cannot cross
+        // the package boundary. Their typed local/publication spelling remains
+        // exact within the package instead of inventing a public ABI identity.
+        return Ok(None);
+    };
+    if exports.next().is_some() {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: format!(
+                "{}:{}:{}",
+                code.artifact().package_id,
+                file.file_ir_identity,
+                type_index
+            ),
+            expected_kind: "unique public package interface export at exact owner coordinate",
+        });
+    }
+    if !export.is_interface {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: symbol_path.clone(),
+            expected_kind: "package interface export at exact owner coordinate",
+        });
+    }
+    let canonical_type = TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: code.artifact().package_id.clone(),
+            },
+            symbol_path: symbol_path.clone(),
+            abi_expectation: Some(code.local_abi_identity().as_str().to_string()),
+        },
+    };
+    Ok(Some(skiff_artifact_identity::type_ref_abi_key(
+        &canonical_type,
+    )))
 }
 
 fn link_interface_declaration_types(
@@ -130,79 +398,6 @@ fn link_interface_declaration_types(
     Ok(())
 }
 
-fn interface_declaration_abi_ids(
-    linker: &AssemblyCodeLinker<'_>,
-    context: &str,
-    code_slot: usize,
-    file: &LinkedFileUnit,
-    declaration_name: &str,
-) -> ProgramResult<Vec<String>> {
-    let mut abi_ids = local_interface_declaration_abi_ids(context, file, declaration_name)?;
-    let Some(type_declaration) = file.declarations.types.get(declaration_name) else {
-        return Ok(abi_ids);
-    };
-    let code = linker
-        .addresses
-        .shared_image()
-        .code_slots()
-        .get(code_slot)
-        .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
-            context: context.to_string(),
-            symbol: code_slot.to_string(),
-            expected_kind: "package code slot for interface declaration",
-        })?;
-    for (export_symbol, export) in &code.artifact().implementation_links.types {
-        if export.file.file_ir_identity != file.file_ir_identity
-            || export.type_index as usize != type_declaration.type_index
-        {
-            continue;
-        }
-        push_unique(
-            &mut abi_ids,
-            package_interface_declaration_id(
-                context,
-                PackageRefIr::PackageId {
-                    package_id: code.artifact().package_id.clone(),
-                },
-                export_symbol,
-            )?,
-        );
-        if !export.symbol.is_empty() && export.symbol != *export_symbol {
-            push_unique(
-                &mut abi_ids,
-                package_interface_declaration_id(
-                    context,
-                    PackageRefIr::PackageId {
-                        package_id: code.artifact().package_id.clone(),
-                    },
-                    &export.symbol,
-                )?,
-            );
-        }
-        for binding in &linker
-            .addresses
-            .shared_image()
-            .package_link_plan()
-            .package_links
-        {
-            if binding.package.package_build_id != *code.package_build_id() {
-                continue;
-            }
-            push_unique(
-                &mut abi_ids,
-                package_interface_declaration_id(
-                    context,
-                    PackageRefIr::Dependency {
-                        dependency_ref: binding.key.package_requirement_alias.clone(),
-                    },
-                    export_symbol,
-                )?,
-            );
-        }
-    }
-    Ok(abi_ids)
-}
-
 fn assembly_semantic_error(
     context: &str,
     error: anyhow::Error,
@@ -212,11 +407,5 @@ fn assembly_semantic_error(
         context: context.to_string(),
         symbol: error.to_string(),
         expected_kind,
-    }
-}
-
-fn push_unique(items: &mut Vec<String>, value: String) {
-    if !items.contains(&value) {
-        items.push(value);
     }
 }

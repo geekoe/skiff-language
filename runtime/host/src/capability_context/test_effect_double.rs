@@ -9,21 +9,17 @@ use serde_json::Value;
 use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUse};
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::{HeapNode, RuntimeMap, RuntimeValue},
-    type_plan::RuntimeTypePlan,
+    runtime_value::RuntimeValue,
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
-use super::{StreamRuntime, TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM};
+#[cfg(test)]
+use super::TARGET_STD_HTTP_REQUEST;
+use super::{StreamRuntime, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM};
 use crate::{
     config_view::materialize_internal_json,
     error::{Result, RuntimeError},
 };
-fn runtime_from_wire(value: &Value, heap: &mut RequestHeap) -> Result<RuntimeValue> {
-    Ok(skiff_runtime_boundary::json::decode_untyped_wire_json(
-        value, heap,
-    )?)
-}
-
 fn runtime_from_wire_required_plan(
     value: &Value,
     expected_type: Option<&RuntimeTypePlan>,
@@ -54,6 +50,23 @@ fn runtime_from_wire_internal_handle_required_plan(
     Ok(RuntimeBoundaryContract::default()
         .codec_for_expected(expected_type, BoundaryUse::NativeReturn, boundary)
         .from_wire_json_internal_handle(value, heap)?)
+}
+
+fn runtime_to_wire_required_plan(
+    value: &RuntimeValue,
+    expected_type: Option<&RuntimeTypePlan>,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<Value> {
+    let expected_type = expected_type.ok_or_else(|| {
+        RuntimeError::invalid_artifact(format!(
+            "{boundary} boundary is missing expected type descriptor"
+        ))
+    })?;
+    RuntimeBoundaryContract::default()
+        .codec_for_expected(expected_type, BoundaryUse::NativeArg, boundary)
+        .to_wire_json(value, heap)
+        .map_err(Into::into)
 }
 
 #[derive(Clone, Debug)]
@@ -93,18 +106,47 @@ impl TestEffectDoubleRegistry {
                 test_effect_doubles
                     .into_iter()
                     .map(|(target, doubles)| {
-                        let reusable = doubles.len() == 1;
                         (
                             target,
                             doubles
                                 .into_iter()
-                                .map(|double| RegisteredTestEffectDouble { double, reusable })
+                                .map(|double| RegisteredTestEffectDouble {
+                                    double,
+                                    reusable: false,
+                                })
                                 .collect(),
                         )
                     })
                     .collect(),
             )),
         }
+    }
+
+    pub fn contains(&self, target: &str) -> bool {
+        self.entries
+            .lock()
+            .expect("test effect double registry lock poisoned")
+            .contains_key(target)
+    }
+
+    pub fn remaining(&self) -> Vec<(String, usize)> {
+        let registry = self
+            .entries
+            .lock()
+            .expect("test effect double registry lock poisoned");
+        let mut remaining = registry
+            .iter()
+            .map(|(target, entries)| (target.clone(), entries.len()))
+            .collect::<Vec<_>>();
+        remaining.sort_by(|left, right| left.0.cmp(&right.0));
+        remaining
+    }
+
+    pub fn clear(&self) {
+        self.entries
+            .lock()
+            .expect("test effect double registry lock poisoned")
+            .clear();
     }
 
     pub fn next(&self, target: &str) -> Option<TestEffectDouble> {
@@ -191,12 +233,32 @@ impl TestEffectDoubleContext {
         self.registry.next(target)
     }
 
+    pub fn unused_effects_error(&self) -> Option<RuntimeError> {
+        let remaining = self.registry.remaining();
+        (!remaining.is_empty()).then(|| {
+            RuntimeError::Decode(format!(
+                "unused test effects: {}",
+                remaining
+                    .iter()
+                    .map(|(target, count)| format!("{target} ({count} outcome(s))"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+    }
+
+    pub fn finalize(&self) -> Result<()> {
+        let result = self.unused_effects_error().map_or(Ok(()), Err);
+        self.registry.clear();
+        result
+    }
+
     pub fn dispatch_test_effect_double(
         &self,
         target: &str,
         input: Option<&Value>,
     ) -> Option<Result<Value>> {
-        if !is_test_double_target(target) {
+        if !self.registry.contains(target) {
             return None;
         }
         let double = self.next_test_effect_double(target)?;
@@ -259,31 +321,56 @@ impl TestEffectDoubleContext {
         &self,
         target: &str,
         input: Option<&RuntimeValue>,
-        _arg_plan: Option<&RuntimeTypePlan>,
+        arg_plan: Option<&RuntimeTypePlan>,
         return_plan: Option<&RuntimeTypePlan>,
         heap: &mut RequestHeap,
     ) -> Option<Result<RuntimeValue>> {
-        if !is_test_double_target(target) {
+        if !self.registry.contains(target) {
             return None;
         }
         let Some(double) = self.next_test_effect_double(target) else {
             return self.missing_double_error(target).map(Err);
         };
         if let Some(expected) = &double.expect_request {
+            let Some(arg_plan) = arg_plan else {
+                return Some(Err(RuntimeError::invalid_artifact(format!(
+                    "test double request {target} boundary is missing expected type descriptor"
+                ))));
+            };
             let actual = input.unwrap_or(&RuntimeValue::Null);
-            let mut expected_heap = RequestHeap::default();
-            let expected_runtime = match runtime_from_wire(expected, &mut expected_heap) {
+            let actual = match runtime_to_wire_required_plan(
+                actual,
+                Some(arg_plan),
+                &format!("test double request {target}"),
+                heap,
+            ) {
                 Ok(value) => value,
                 Err(error) => return Some(Err(error)),
             };
-            match runtime_value_contains(actual, heap, &expected_runtime, &expected_heap) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Some(Err(RuntimeError::Decode(format!(
-                        "test double expectation failed for {target}: expected request subset {expected}, got runtime input {actual:?}"
-                    ))));
-                }
+            let expected_plan = fixture_subset_plan(arg_plan, expected);
+            let mut expected_heap = RequestHeap::default();
+            let expected_runtime = match runtime_from_wire_required_plan(
+                expected,
+                Some(&expected_plan),
+                &format!("test double request {target} expectation"),
+                &mut expected_heap,
+            ) {
+                Ok(value) => value,
                 Err(error) => return Some(Err(error)),
+            };
+            let expected = match runtime_to_wire_required_plan(
+                &expected_runtime,
+                Some(&expected_plan),
+                &format!("test double request {target} expectation"),
+                &mut expected_heap,
+            ) {
+                Ok(value) => value,
+                Err(error) => return Some(Err(error)),
+            };
+            if !json_contains(&actual, &expected) {
+                return Some(Err(RuntimeError::Decode(format!(
+                    "test double expectation failed for {target}: expected request subset {expected}, got a nonmatching materialized request"
+                ))));
             }
         }
         let response = if is_stream_source_double_target(target) {
@@ -313,6 +400,54 @@ impl TestEffectDoubleContext {
     }
 }
 
+fn fixture_subset_plan(plan: &RuntimeTypePlan, fixture: &Value) -> RuntimeTypePlan {
+    let mut subset = plan.clone();
+    subset.node = match plan.node() {
+        RuntimeTypeNode::Alias(inner) => {
+            RuntimeTypeNode::Alias(Box::new(fixture_subset_plan(inner, fixture)))
+        }
+        RuntimeTypeNode::Nullable(inner) if !fixture.is_null() => {
+            RuntimeTypeNode::Nullable(Box::new(fixture_subset_plan(inner, fixture)))
+        }
+        RuntimeTypeNode::Representation { type_name, payload } => RuntimeTypeNode::Representation {
+            type_name: type_name.clone(),
+            payload: Box::new(fixture_subset_plan(payload, fixture)),
+        },
+        RuntimeTypeNode::Record {
+            fields,
+            boundary_record_kind,
+        } => {
+            let fixture = fixture.as_object();
+            RuntimeTypeNode::Record {
+                fields: fields
+                    .iter()
+                    .filter_map(|field| {
+                        fixture
+                            .and_then(|object| object.get(&field.name))
+                            .map(|value| {
+                                let mut field = field.clone();
+                                field.ty = fixture_subset_plan(&field.ty, value);
+                                field
+                            })
+                    })
+                    .collect(),
+                boundary_record_kind: boundary_record_kind.clone(),
+            }
+        }
+        RuntimeTypeNode::Array(item) => RuntimeTypeNode::Array(Box::new(
+            fixture
+                .as_array()
+                .and_then(|items| items.first())
+                .map_or_else(
+                    || (**item).clone(),
+                    |value| fixture_subset_plan(item, value),
+                ),
+        )),
+        _ => plan.node().clone(),
+    };
+    subset
+}
+
 fn json_contains(actual: &Value, expected: &Value) -> bool {
     match (actual, expected) {
         (Value::Object(actual), Value::Object(expected)) => expected.iter().all(|(key, value)| {
@@ -337,13 +472,6 @@ fn is_stream_source_double_target(target: &str) -> bool {
     target == TARGET_STD_HTTP_SSE
 }
 
-fn is_test_double_target(target: &str) -> bool {
-    matches!(
-        target,
-        TARGET_STD_HTTP_REQUEST | TARGET_STD_HTTP_STREAM | TARGET_STD_HTTP_SSE
-    ) || is_std_log_stable_target(target)
-}
-
 fn is_std_log_stable_target(target: &str) -> bool {
     matches!(
         target,
@@ -351,86 +479,245 @@ fn is_std_log_stable_target(target: &str) -> bool {
     )
 }
 
-fn runtime_value_contains(
-    actual: &RuntimeValue,
-    actual_heap: &RequestHeap,
-    expected: &RuntimeValue,
-    expected_heap: &RequestHeap,
-) -> Result<bool> {
-    match (actual, expected) {
-        (RuntimeValue::Null, RuntimeValue::Null) => Ok(true),
-        (RuntimeValue::Bool(actual), RuntimeValue::Bool(expected)) => Ok(actual == expected),
-        (RuntimeValue::Number(actual), RuntimeValue::Number(expected)) => Ok(actual == expected),
-        (RuntimeValue::String(actual), RuntimeValue::String(expected)) => Ok(actual == expected),
-        (RuntimeValue::ActorRef(actual), RuntimeValue::ActorRef(expected)) => {
-            Ok(actual == expected)
-        }
-        (RuntimeValue::Heap(actual), RuntimeValue::Heap(expected)) => runtime_heap_node_contains(
-            actual_heap.get(*actual)?,
-            actual_heap,
-            expected_heap.get(*expected)?,
-            expected_heap,
-        ),
-        _ => Ok(false),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use skiff_runtime_model::type_plan::RuntimeRecordFieldPlan;
 
-fn runtime_heap_node_contains(
-    actual: &HeapNode,
-    actual_heap: &RequestHeap,
-    expected: &HeapNode,
-    expected_heap: &RequestHeap,
-) -> Result<bool> {
-    match (actual, expected) {
-        (HeapNode::Bytes(actual), HeapNode::Bytes(expected)) => Ok(actual == expected),
-        (HeapNode::Array(actual), HeapNode::Array(expected)) => {
-            if actual.len() != expected.len() {
-                return Ok(false);
-            }
-            actual
-                .iter()
-                .zip(expected.iter())
-                .try_fold(true, |matches, (actual, expected)| {
-                    if !matches {
-                        return Ok(false);
-                    }
-                    runtime_value_contains(actual, actual_heap, expected, expected_heap)
-                })
-        }
-        (HeapNode::Object(actual), HeapNode::Object(expected)) => expected
-            .fields()
-            .iter()
-            .try_fold(true, |matches, (key, expected_value)| {
-                if !matches {
-                    return Ok(false);
-                }
-                let Some(actual_value) = actual.fields().get(key) else {
-                    return Ok(false);
-                };
-                runtime_value_contains(actual_value, actual_heap, expected_value, expected_heap)
-            }),
-        (HeapNode::Map(actual), HeapNode::Map(expected)) => {
-            runtime_map_contains(actual, actual_heap, expected, expected_heap)
-        }
-        _ => Ok(false),
-    }
-}
+    use super::*;
 
-fn runtime_map_contains(
-    actual: &RuntimeMap,
-    actual_heap: &RequestHeap,
-    expected: &RuntimeMap,
-    expected_heap: &RequestHeap,
-) -> Result<bool> {
-    expected
-        .iter()
-        .try_fold(true, |matches, (key, expected_value)| {
-            if !matches {
-                return Ok(false);
-            }
-            let Some(actual_value) = actual.get(key) else {
-                return Ok(false);
-            };
-            runtime_value_contains(actual_value, actual_heap, expected_value, expected_heap)
+    fn leaf(label: &str, node: RuntimeTypeNode) -> RuntimeTypePlan {
+        RuntimeTypePlan::new(label, None, node)
+    }
+
+    fn http_request_plan() -> RuntimeTypePlan {
+        let header = RuntimeTypePlan::synthetic_request_record(vec![
+            RuntimeRecordFieldPlan::new("name", leaf("String", RuntimeTypeNode::String), true),
+            RuntimeRecordFieldPlan::new("value", leaf("String", RuntimeTypeNode::String), true),
+        ]);
+        RuntimeTypePlan::synthetic_request_record(vec![
+            RuntimeRecordFieldPlan::new("method", leaf("String", RuntimeTypeNode::String), true),
+            RuntimeRecordFieldPlan::new("url", leaf("String", RuntimeTypeNode::String), true),
+            RuntimeRecordFieldPlan::new("headers", RuntimeTypePlan::synthetic_array(header), true),
+            RuntimeRecordFieldPlan::new("body", leaf("Bytes", RuntimeTypeNode::Bytes), true),
+            RuntimeRecordFieldPlan::new(
+                "timeoutMs",
+                RuntimeTypePlan::synthetic_nullable(leaf("Integer", RuntimeTypeNode::Integer)),
+                false,
+            ),
+        ])
+    }
+
+    fn typed_fixture_matches(actual: &Value, fixture: &Value) -> Result<bool> {
+        let plan = http_request_plan();
+        let mut actual_heap = RequestHeap::default();
+        let actual = runtime_from_wire_required_plan(
+            actual,
+            Some(&plan),
+            "actual HTTP request",
+            &mut actual_heap,
+        )?;
+        let actual = runtime_to_wire_required_plan(
+            &actual,
+            Some(&plan),
+            "test double HTTP request",
+            &mut actual_heap,
+        )?;
+        Ok(json_contains(&actual, fixture))
+    }
+
+    fn actual_request() -> Value {
+        json!({
+            "method": "PUT",
+            "url": "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/photos/a.txt",
+            "headers": [
+                { "name": "Content-Type", "value": "text/plain" },
+                { "name": "Authorization", "value": "OSS test-id:signature" }
+            ],
+            "body": { "__skiffBytesBase64": "aGVsbG8=" },
+            "timeoutMs": 5000
         })
+    }
+
+    #[test]
+    fn typed_http_fixture_matches_record_headers_bytes_and_allows_omitted_fields() {
+        let actual = actual_request();
+        let fixture = json!({
+            "method": "PUT",
+            "url": "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/photos/a.txt",
+            "headers": [
+                { "name": "Content-Type", "value": "text/plain" },
+                { "name": "Authorization", "value": "OSS test-id:signature" }
+            ],
+            "body": { "__skiffBytesBase64": "aGVsbG8=" }
+        });
+
+        assert!(typed_fixture_matches(&actual, &fixture).expect("typed fixture should decode"));
+    }
+
+    #[test]
+    fn typed_http_fixture_rejects_method_url_header_body_and_signature_mismatches() {
+        let actual = actual_request();
+        for fixture in [
+            json!({ "method": "POST" }),
+            json!({ "url": "https://example.test/wrong" }),
+            json!({ "headers": [
+                { "name": "Content-Type", "value": "application/json" },
+                { "name": "Authorization", "value": "OSS test-id:signature" }
+            ] }),
+            json!({ "body": { "__skiffBytesBase64": "d3Jvbmc=" } }),
+            json!({ "headers": [
+                { "name": "Content-Type", "value": "text/plain" },
+                { "name": "Authorization", "value": "OSS test-id:wrong" }
+            ] }),
+        ] {
+            assert!(
+                !typed_fixture_matches(&actual, &fixture).expect("typed fixture should decode"),
+                "fixture unexpectedly matched: {fixture}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_materialization_preserves_nested_maps_and_nullable_values() {
+        let metadata = RuntimeTypePlan::synthetic_map(
+            leaf("String", RuntimeTypeNode::String),
+            RuntimeTypePlan::synthetic_nullable(leaf("String", RuntimeTypeNode::String)),
+        );
+        let plan = RuntimeTypePlan::synthetic_request_record(vec![
+            RuntimeRecordFieldPlan::new("metadata", metadata, true),
+            RuntimeRecordFieldPlan::new(
+                "note",
+                RuntimeTypePlan::synthetic_nullable(leaf("String", RuntimeTypeNode::String)),
+                false,
+            ),
+        ]);
+        let wire = json!({
+            "metadata": {
+                "present": "value",
+                "absent": null
+            },
+            "note": null
+        });
+        let mut heap = RequestHeap::default();
+        let runtime =
+            runtime_from_wire_required_plan(&wire, Some(&plan), "nested request", &mut heap)
+                .expect("nested request should decode");
+
+        let materialized =
+            runtime_to_wire_required_plan(&runtime, Some(&plan), "nested request", &mut heap)
+                .expect("nested request should materialize");
+
+        assert_eq!(materialized, wire);
+    }
+
+    #[test]
+    fn request_materialization_rejects_runtime_type_mismatch() {
+        let plan = http_request_plan();
+        let mut heap = RequestHeap::default();
+        let error = runtime_to_wire_required_plan(
+            &RuntimeValue::String("not a request".to_string()),
+            Some(&plan),
+            "test double request",
+            &mut heap,
+        )
+        .expect_err("request type mismatch must fail closed");
+
+        assert!(
+            error.to_string().contains("expected heap object"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn one_shot_response_sequence_order_is_unchanged() {
+        let first = TestEffectDouble {
+            expect_request: None,
+            response: json!({ "status": 200 }),
+        };
+        let second = TestEffectDouble {
+            expect_request: None,
+            response: json!({ "status": 201 }),
+        };
+        let registry = TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+            TARGET_STD_HTTP_REQUEST.to_string(),
+            vec![first.clone(), second.clone()],
+        )]));
+
+        assert_eq!(
+            registry
+                .next(TARGET_STD_HTTP_REQUEST)
+                .expect("first response")
+                .response,
+            first.response
+        );
+        assert_eq!(
+            registry
+                .next(TARGET_STD_HTTP_REQUEST)
+                .expect("second response")
+                .response,
+            second.response
+        );
+        assert!(registry.next(TARGET_STD_HTTP_REQUEST).is_none());
+    }
+
+    #[test]
+    fn single_outcome_is_consumed_and_exhaustion_is_observable() {
+        let registry = TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+            "dependency.call".to_string(),
+            vec![TestEffectDouble {
+                expect_request: None,
+                response: json!("only"),
+            }],
+        )]));
+        assert_eq!(
+            registry.next("dependency.call").unwrap().response,
+            json!("only")
+        );
+        assert!(registry.next("dependency.call").is_none());
+    }
+
+    #[test]
+    fn remaining_reports_unused_outcomes_precisely() {
+        let registry = TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+            "dependency.call".to_string(),
+            vec![
+                TestEffectDouble {
+                    expect_request: None,
+                    response: json!(1),
+                },
+                TestEffectDouble {
+                    expect_request: None,
+                    response: json!(2),
+                },
+            ],
+        )]));
+        let _ = registry.next("dependency.call");
+        assert_eq!(
+            registry.remaining(),
+            vec![("dependency.call".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn registries_are_isolated_between_parallel_cases() {
+        let case = || {
+            TestEffectDoubleRegistry::one_shot_sequences(HashMap::from([(
+                "dependency.call".to_string(),
+                vec![TestEffectDouble {
+                    expect_request: None,
+                    response: json!("case"),
+                }],
+            )]))
+        };
+        let left = case();
+        let right = case();
+        let left_thread = std::thread::spawn(move || left.next("dependency.call"));
+        let right_thread = std::thread::spawn(move || right.next("dependency.call"));
+        assert_eq!(left_thread.join().unwrap().unwrap().response, json!("case"));
+        assert_eq!(
+            right_thread.join().unwrap().unwrap().response,
+            json!("case")
+        );
+    }
 }

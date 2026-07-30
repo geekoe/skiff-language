@@ -2,9 +2,9 @@ use thiserror::Error;
 
 use skiff_artifact_identity::ArtifactIdentityError;
 use skiff_artifact_model::{
-    ContractOperationId, IngressSelector, PackageArtifactRef, PackageBuildId, PackageRequirement,
-    PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirementKey,
+    ContractOperationId, GatewayEntryKey, PackageArtifactRef, PackageBuildId, PackageRequirement,
+    PackageRequirementKey, ServiceContractRef, ServiceDeploymentRef, ServiceIngressKey,
+    ServiceProtocolIdentity, ServiceRequirementKey,
 };
 
 /// A closed-world assembly resolution failure. Resolution never guesses a
@@ -51,6 +51,9 @@ pub enum AssemblyResolutionError {
 
     #[error("package artifact is not present in the candidate set: {0:?}")]
     MissingPackageArtifact(PackageArtifactRef),
+
+    #[error("validated package admissions do not exactly match the assembly candidate packages")]
+    ValidatedPackageAdmissionMismatch,
 
     #[error("package build {expected:?} resolves to candidate {available:?}")]
     PackageReferenceMismatch {
@@ -130,18 +133,15 @@ pub enum AssemblyResolutionError {
         operation: ContractOperationId,
     },
 
-    #[error(
-        "activation {activation:?} ingress uses operation {operation}, which is absent from {contract:?}"
-    )]
-    MissingIngressOperation {
+    #[error("activation {activation:?} references missing gateway entry {gateway_entry_key}")]
+    MissingGatewayEntry {
         activation: ServiceDeploymentRef,
-        contract: ServiceContractRef,
-        operation: ContractOperationId,
+        gateway_entry_key: GatewayEntryKey,
     },
 
-    #[error("global ingress selector {selector:?} is owned by both {first:?} and {second:?}")]
-    IngressCollision {
-        selector: IngressSelector,
+    #[error("gateway ingress key {key:?} is declared by both {first:?} and {second:?}")]
+    GatewayIngressCollision {
+        key: ServiceIngressKey,
         first: ServiceDeploymentRef,
         second: ServiceDeploymentRef,
     },

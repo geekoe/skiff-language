@@ -1,13 +1,16 @@
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap};
 
 use crate::file_ir::{
-    BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr, DbOperationIr,
-    DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
-    FileIrServiceCallValidationError, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
+    AssignTargetIr, BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr,
+    DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
+    FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr, TestEffectOutcomeIr,
     TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
-use skiff_artifact_model::InterfaceInstantiationRef;
+use skiff_artifact_model::{
+    InterfaceInstantiationRef, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageSymbolRef,
+};
+use skiff_compiler_source::TypeResolutionModel;
 
 use super::external_refs::rebuild_external_refs_for_file_ir_unit;
 
@@ -17,23 +20,31 @@ struct PublicationTypeRefLocation {
     type_index: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PublicationExecutableRefLocation {
-    module_path: String,
-    executable_index: u32,
-}
-
 #[derive(Debug, Default)]
-struct PublicationLocalRefIndex {
+struct PublicationLocalRefIndex<'a> {
     current_package_id: Option<String>,
+    package_dependency_abi_expectations: BTreeMap<String, String>,
+    package_dependency_abi_expectations_by_package_id: BTreeMap<String, String>,
     types_by_module_symbol: BTreeMap<(String, String), PublicationTypeRefLocation>,
-    executables_by_module_symbol: BTreeMap<(String, String), PublicationExecutableRefLocation>,
+    type_resolution: Option<&'a TypeResolutionModel>,
+    alias_expansion_error: RefCell<Option<String>>,
 }
 
-impl PublicationLocalRefIndex {
-    fn build(units: &[FileIrUnit], current_package_id: Option<&str>) -> Self {
+impl<'a> PublicationLocalRefIndex<'a> {
+    fn build(
+        units: &[FileIrUnit],
+        current_package_id: Option<&str>,
+        type_resolution: Option<&'a TypeResolutionModel>,
+        package_dependency_abi_expectations: &BTreeMap<String, String>,
+        package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
+    ) -> Self {
         let mut index = Self {
             current_package_id: current_package_id.map(str::to_string),
+            package_dependency_abi_expectations: package_dependency_abi_expectations.clone(),
+            package_dependency_abi_expectations_by_package_id:
+                package_dependency_abi_expectations_by_package_id.clone(),
+            type_resolution,
+            alias_expansion_error: RefCell::new(None),
             ..Self::default()
         };
         for unit in units {
@@ -43,15 +54,6 @@ impl PublicationLocalRefIndex {
                     PublicationTypeRefLocation {
                         module_path: unit.module_path.clone(),
                         type_index: declaration.type_index,
-                    },
-                );
-            }
-            for (symbol, declaration) in &unit.declarations.executables {
-                index.executables_by_module_symbol.insert(
-                    (unit.module_path.clone(), symbol.clone()),
-                    PublicationExecutableRefLocation {
-                        module_path: unit.module_path.clone(),
-                        executable_index: declaration.executable_index,
                     },
                 );
             }
@@ -65,15 +67,6 @@ impl PublicationLocalRefIndex {
         symbol: &str,
     ) -> Option<&PublicationTypeRefLocation> {
         self.types_by_module_symbol
-            .get(&(module_path.to_string(), symbol.to_string()))
-    }
-
-    fn executable_location(
-        &self,
-        module_path: &str,
-        symbol: &str,
-    ) -> Option<&PublicationExecutableRefLocation> {
-        self.executables_by_module_symbol
             .get(&(module_path.to_string(), symbol.to_string()))
     }
 
@@ -97,12 +90,24 @@ impl PublicationLocalRefIndex {
 pub(super) fn rewrite_publication_local_refs(
     units: &mut [FileIrUnit],
     current_package_id: Option<&str>,
-) -> Result<(), FileIrServiceCallValidationError> {
-    let index = PublicationLocalRefIndex::build(units, current_package_id);
+    type_resolution: Option<&TypeResolutionModel>,
+    package_dependency_abi_expectations: &BTreeMap<String, String>,
+    package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let index = PublicationLocalRefIndex::build(
+        units,
+        current_package_id,
+        type_resolution,
+        package_dependency_abi_expectations,
+        package_dependency_abi_expectations_by_package_id,
+    );
     for unit in units {
         let module_path = unit.module_path.clone();
         rewrite_unit(&index, &module_path, unit);
-        rebuild_external_refs_for_file_ir_unit(unit)?;
+        if let Some(error) = index.alias_expansion_error.borrow_mut().take() {
+            return Err(error);
+        }
+        rebuild_external_refs_for_file_ir_unit(unit).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -175,12 +180,23 @@ fn rewrite_type_descriptor(
         TypeDescriptorIr::Alias { target } => {
             rewrite_type_ref(index, module_path, target);
         }
-        TypeDescriptorIr::Union { variants } => {
-            for variant in variants {
-                rewrite_type_ref(index, module_path, variant);
+        TypeDescriptorIr::Representation { representation } => {
+            rewrite_type_ref(index, module_path, representation);
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        rewrite_type_ref(index, module_path, nominal_type);
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        rewrite_type_ref(index, module_path, payload_type);
+                    }
+                    NamedUnionBranchIr::Literal { .. } => {}
+                }
             }
         }
-        TypeDescriptorIr::Native { .. } => {}
+        TypeDescriptorIr::Interface => {}
     }
 }
 
@@ -212,8 +228,40 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         StmtIr::Throw { payload_type, .. } => {
             rewrite_type_ref(index, module_path, payload_type);
         }
+        StmtIr::TestEffectRegister {
+            expect,
+            step_expect,
+            outcome,
+            ..
+        } => {
+            if let Some(expect) = expect {
+                rewrite_type_ref(index, module_path, &mut expect.request_type);
+            }
+            if let Some(step_expect) = step_expect {
+                rewrite_type_ref(index, module_path, &mut step_expect.request_type);
+            }
+            match outcome {
+                TestEffectOutcomeIr::Respond { value_type, .. } => {
+                    rewrite_type_ref(index, module_path, value_type);
+                }
+                TestEffectOutcomeIr::Throw { payload_type, .. } => {
+                    rewrite_type_ref(index, module_path, payload_type);
+                }
+                TestEffectOutcomeIr::Stream { item_type, .. } => {
+                    rewrite_type_ref(index, module_path, item_type);
+                }
+            }
+        }
+        StmtIr::Assign {
+            target: AssignTargetIr::ActorSelfField { field_type, .. },
+            ..
+        } => {
+            rewrite_type_ref(index, module_path, field_type);
+        }
         StmtIr::Let { .. }
         | StmtIr::Assign { .. }
+        | StmtIr::Timeout { .. }
+        | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::Assert { .. }
         | StmtIr::Break
@@ -237,7 +285,7 @@ fn rewrite_pattern(index: &PublicationLocalRefIndex, module_path: &str, pattern:
 
 fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut ExprIr) {
     match expr {
-        ExprIr::Construct { type_ref, .. } => {
+        ExprIr::Construct { type_ref, .. } | ExprIr::RepresentationWrap { type_ref, .. } => {
             rewrite_type_ref(index, module_path, type_ref);
         }
         ExprIr::InterfaceBox {
@@ -256,9 +304,7 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
             rewrite_type_ref(index, module_path, payload_type);
         }
         ExprIr::Catch { catch_type, .. } => {
-            if let Some(catch_type) = catch_type {
-                rewrite_type_ref(index, module_path, catch_type);
-            }
+            rewrite_type_ref(index, module_path, catch_type);
         }
         ExprIr::DbOperation { operation } => {
             rewrite_db_operation(index, module_path, operation);
@@ -275,16 +321,22 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         ExprIr::DbLeaseRead { read } => {
             rewrite_db_lease_read(index, module_path, read);
         }
+        ExprIr::ActorSelfField { field_type, .. } => {
+            rewrite_type_ref(index, module_path, field_type);
+        }
         ExprIr::Literal { .. }
         | ExprIr::LoadSlot { .. }
         | ExprIr::LoadConst { .. }
+        | ExprIr::LoadPackageConst { .. }
         | ExprIr::Field { .. }
         | ExprIr::MapLiteral { .. }
         | ExprIr::ArrayLiteral { .. }
         | ExprIr::Unary { .. }
         | ExprIr::Binary { .. }
         | ExprIr::Rethrow { .. }
-        | ExprIr::ValueBlock { .. } => {}
+        | ExprIr::Timeout { .. }
+        | ExprIr::ValueBlock { .. }
+        | ExprIr::ConcurrentValue { .. } => {}
     }
 }
 
@@ -294,20 +346,6 @@ fn rewrite_call_target(
     target: &mut CallTargetIr,
 ) {
     match target {
-        CallTargetIr::ExternalServiceSymbol { symbol } => {
-            if let Some(location) = index.executable_location(&symbol.module_path, &symbol.symbol) {
-                if location.module_path == module_path {
-                    *target = CallTargetIr::LocalExecutable {
-                        executable_index: location.executable_index,
-                    };
-                } else {
-                    *target = CallTargetIr::PublicationExecutable {
-                        module_path: location.module_path.clone(),
-                        executable_index: location.executable_index,
-                    };
-                }
-            }
-        }
         CallTargetIr::InterfaceMethod {
             interface,
             method_abi_id,
@@ -325,6 +363,7 @@ fn rewrite_call_target(
         | CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::ServiceCall { .. }
         | CallTargetIr::PackageCallable { .. }
+        | CallTargetIr::ActorMethod { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
         | CallTargetIr::ReceiverBuiltin { .. } => {}
@@ -509,7 +548,28 @@ fn rewrite_type_ref(
     module_path: &str,
     ty: &mut TypeRefIr,
 ) -> bool {
-    match ty {
+    let mut changed = false;
+    if let Some(type_resolution) = index.type_resolution {
+        match type_resolution.expand_alias_type_ref_for_module(module_path, ty) {
+            Ok(expanded) => {
+                if expanded != *ty {
+                    *ty = expanded;
+                    changed = true;
+                }
+            }
+            Err(error) => {
+                let mut expansion_error = index.alias_expansion_error.borrow_mut();
+                if expansion_error.is_none() {
+                    *expansion_error = Some(format!(
+                        "alias expansion failed in module {module_path}: {error}"
+                    ));
+                }
+                return false;
+            }
+        }
+    }
+
+    let nested_changed = match ty {
         TypeRefIr::ServiceSymbol { symbol } => {
             if let Some(location) = index.type_location(&symbol.module_path, &symbol.symbol) {
                 rewrite_type_ref_to_publication_location(module_path, ty, location)
@@ -523,13 +583,20 @@ fn rewrite_type_ref(
             {
                 rewrite_type_ref_to_publication_location(module_path, ty, location)
             } else {
-                false
+                rewrite_external_package_symbol(index, symbol)
             }
         }
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             let mut changed = false;
             for arg in args {
                 changed |= rewrite_type_ref(index, module_path, arg);
+            }
+            changed
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let mut changed = rewrite_applied_nominal_base(index, module_path, base);
+            for argument in arguments {
+                changed |= rewrite_type_ref(index, module_path, argument);
             }
             changed
         }
@@ -564,10 +631,108 @@ fn rewrite_type_ref(
         }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
+    };
+    changed || nested_changed
+}
+
+fn rewrite_applied_nominal_base(
+    index: &PublicationLocalRefIndex,
+    module_path: &str,
+    base: &mut NominalTypeRefBaseIr,
+) -> bool {
+    match base {
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            let Some(location) = index.type_location(&symbol.module_path, &symbol.symbol) else {
+                return false;
+            };
+            *base = if location.module_path == module_path {
+                NominalTypeRefBaseIr::LocalType {
+                    type_index: location.type_index,
+                }
+            } else {
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path: location.module_path.clone(),
+                    type_index: location.type_index,
+                }
+            };
+            true
+        }
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+            if let Some(location) =
+                index.current_package_type_location(&symbol.package, &symbol.symbol_path)
+            {
+                *base = if location.module_path == module_path {
+                    NominalTypeRefBaseIr::LocalType {
+                        type_index: location.type_index,
+                    }
+                } else {
+                    NominalTypeRefBaseIr::PublicationType {
+                        module_path: location.module_path.clone(),
+                        type_index: location.type_index,
+                    }
+                };
+                true
+            } else {
+                rewrite_external_package_symbol(index, symbol)
+            }
+        }
+        NominalTypeRefBaseIr::LocalType { .. }
+        | NominalTypeRefBaseIr::PublicationType { .. }
+        | NominalTypeRefBaseIr::PackageSchema { .. } => false,
     }
+}
+
+fn rewrite_external_package_symbol(
+    index: &PublicationLocalRefIndex<'_>,
+    symbol: &mut PackageSymbolRef,
+) -> bool {
+    let mut changed = false;
+    let abi_expectation = match &mut symbol.package {
+        PackageRefIr::Dependency { dependency_ref } => {
+            changed = canonicalize_dependency_ref(index, dependency_ref);
+            let Some(abi_expectation) = index
+                .package_dependency_abi_expectations
+                .get(dependency_ref)
+            else {
+                return changed;
+            };
+            abi_expectation
+        }
+        PackageRefIr::PackageId { package_id } => {
+            let Some(abi_expectation) = index
+                .package_dependency_abi_expectations_by_package_id
+                .get(package_id)
+            else {
+                return false;
+            };
+            abi_expectation
+        }
+    };
+    if symbol.abi_expectation.as_ref() == Some(abi_expectation) {
+        changed
+    } else {
+        symbol.abi_expectation = Some(abi_expectation.clone());
+        true
+    }
+}
+
+fn canonicalize_dependency_ref(
+    index: &PublicationLocalRefIndex<'_>,
+    dependency_ref: &mut String,
+) -> bool {
+    let Some(type_resolution) = index.type_resolution else {
+        return false;
+    };
+    let canonical = type_resolution.canonical_package_dependency_ref(dependency_ref);
+    if canonical == dependency_ref {
+        return false;
+    }
+    *dependency_ref = canonical.to_string();
+    true
 }
 
 fn rewrite_type_ref_to_publication_location(
@@ -591,11 +756,11 @@ fn rewrite_type_ref_to_publication_location(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::PackageSymbolRef;
     use skiff_artifact_model::{
         CallIr, ContractOperationId, ExecutableBody, ServiceCallRef, ServiceCallRefIndex,
         ServiceProtocolIdentity,
     };
+    use skiff_artifact_model::{LiteralIr, TypeDeclIr, TypeDeclarationIr};
 
     fn current_package_duration_ref(package_id: &str) -> TypeRefIr {
         TypeRefIr::PackageSymbol {
@@ -613,6 +778,8 @@ mod tests {
     fn current_package_symbol_type_refs_become_publication_local() {
         let index = PublicationLocalRefIndex {
             current_package_id: Some("skiff.run/std".to_string()),
+            package_dependency_abi_expectations: BTreeMap::new(),
+            package_dependency_abi_expectations_by_package_id: BTreeMap::new(),
             types_by_module_symbol: BTreeMap::from([(
                 ("std.time".to_string(), "Duration".to_string()),
                 PublicationTypeRefLocation {
@@ -620,7 +787,8 @@ mod tests {
                     type_index: 3,
                 },
             )]),
-            executables_by_module_symbol: BTreeMap::new(),
+            type_resolution: None,
+            alias_expansion_error: RefCell::new(None),
         };
 
         let mut local = current_package_duration_ref("skiff.run/std");
@@ -651,6 +819,51 @@ mod tests {
     }
 
     #[test]
+    fn package_id_interface_identity_receives_exact_dependency_abi() {
+        let package_id = "example.com/interfaces";
+        let index = PublicationLocalRefIndex {
+            current_package_id: Some("example.com/consumer".to_string()),
+            package_dependency_abi_expectations: BTreeMap::new(),
+            package_dependency_abi_expectations_by_package_id: BTreeMap::from([(
+                package_id.to_string(),
+                "local-abi:interfaces".to_string(),
+            )]),
+            types_by_module_symbol: BTreeMap::new(),
+            type_resolution: None,
+            alias_expansion_error: RefCell::new(None),
+        };
+        let interface_identity = TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: "tools.ToolProvider".to_string(),
+                abi_expectation: None,
+            },
+        };
+        let mut ty = TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&interface_identity).unwrap(),
+                canonical_type_args: Vec::new(),
+            },
+        };
+
+        assert!(rewrite_type_ref(&index, "consumer.main", &mut ty));
+        let TypeRefIr::AnyInterface { interface } = ty else {
+            panic!("any interface")
+        };
+        let TypeRefIr::PackageSymbol { symbol } =
+            serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).unwrap()
+        else {
+            panic!("package interface identity")
+        };
+        assert_eq!(
+            symbol.abi_expectation.as_deref(),
+            Some("local-abi:interfaces")
+        );
+    }
+
+    #[test]
     fn service_call_target_and_ref_survive_publication_local_rewrite() {
         let call_ref = ServiceCallRef {
             service_requirement_slot: 2,
@@ -661,12 +874,15 @@ mod tests {
         unit.external_refs.service_call_refs = vec![call_ref.clone()];
         unit.constants.push(skiff_artifact_model::ConstIr {
             name: "call".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody {
                 expressions: vec![ExprIr::Call {
                     call: CallIr {
                         target: CallTargetIr::ServiceCall {
                             service_call_ref_index: ServiceCallRefIndex::new(0),
+                        },
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },
                         args: Vec::new(),
                         type_args: BTreeMap::new(),
@@ -678,7 +894,14 @@ mod tests {
             source_span: None,
         });
 
-        rewrite_publication_local_refs(std::slice::from_mut(&mut unit), None).unwrap();
+        rewrite_publication_local_refs(
+            std::slice::from_mut(&mut unit),
+            None,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(unit.external_refs.service_call_refs, vec![call_ref]);
         let ExprIr::Call { call } = &unit.constants[0].body.expressions[0] else {
@@ -690,5 +913,143 @@ mod tests {
                 service_call_ref_index
             } if service_call_ref_index.index() == 0
         ));
+        assert!(matches!(
+            call.site,
+            skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            }
+        ));
+    }
+
+    #[test]
+    fn representation_wrap_targets_and_nested_child_become_publication_local() {
+        let package_id = "example.com/model";
+        let package_symbol = |symbol_path: &str| TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: None,
+            },
+        };
+        let mut model = FileIrUnit::empty("model.types", "source");
+        model.type_table.push(TypeDeclIr {
+            name: "Payload".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        model.declarations.types.insert(
+            "Payload".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "Payload".to_string(),
+                source_span: None,
+            },
+        );
+
+        let mut consumer = FileIrUnit::empty("consumer.main", "source");
+        consumer.type_table = vec![
+            TypeDeclIr {
+                name: "Inner".to_string(),
+                descriptor: TypeDescriptorIr::Representation {
+                    representation: TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                },
+                type_params: vec!["T".to_string()],
+                implements: Vec::new(),
+                source_span: None,
+            },
+            TypeDeclIr {
+                name: "Outer".to_string(),
+                descriptor: TypeDescriptorIr::Representation {
+                    representation: TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                },
+                type_params: vec!["T".to_string()],
+                implements: Vec::new(),
+                source_span: None,
+            },
+        ];
+        consumer.constants.push(skiff_artifact_model::ConstIr {
+            name: "nested".to_string(),
+            ty: TypeRefIr::builtin("void"),
+            body: ExecutableBody {
+                expressions: vec![
+                    ExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "payload".to_string(),
+                        },
+                    },
+                    ExprIr::RepresentationWrap {
+                        value: skiff_artifact_model::ExprRefIr { expression: 0 },
+                        type_ref: TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                            arguments: vec![package_symbol("model.types.Payload")],
+                        },
+                    },
+                    ExprIr::RepresentationWrap {
+                        value: skiff_artifact_model::ExprRefIr { expression: 1 },
+                        type_ref: TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                            arguments: vec![package_symbol("model.types.Payload")],
+                        },
+                    },
+                ],
+                ..ExecutableBody::default()
+            },
+            source_span: None,
+        });
+        let mut units = vec![model, consumer];
+
+        rewrite_publication_local_refs(
+            &mut units,
+            Some(package_id),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let expressions = &units[1].constants[0].body.expressions;
+        assert!(matches!(
+            &expressions[1],
+            ExprIr::RepresentationWrap {
+                value,
+                type_ref:
+                    TypeRefIr::AppliedNominal {
+                        base:
+                            NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments,
+                    },
+            } if value.expression == 0
+                && arguments == &vec![TypeRefIr::PublicationType {
+                    module_path: "model.types".to_string(),
+                    type_index: 0,
+                }]
+        ));
+        assert!(matches!(
+            &expressions[2],
+            ExprIr::RepresentationWrap {
+                value,
+                type_ref:
+                    TypeRefIr::AppliedNominal {
+                        base:
+                            NominalTypeRefBaseIr::LocalType { type_index: 1 },
+                        arguments,
+                    },
+            } if value.expression == 1
+                && arguments == &vec![TypeRefIr::PublicationType {
+                    module_path: "model.types".to_string(),
+                    type_index: 0,
+                }]
+        ));
+        assert!(units[1].external_refs.package_symbols.is_empty());
     }
 }

@@ -1,368 +1,256 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { stableStringify } from '../../src/manifest/identity.js';
-import { serviceIdPathSegments } from '../../src/artifacts/pathProjection.js';
-
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const compilerManifestPath = join(repoRoot, 'compiler/Cargo.toml');
-const websocketFixturePath = join(
+const fixturePath = join(repoRoot, 'compiler/tests/fixtures/router-websocket-fixture');
+const currentScopeFixturePath = join(
   repoRoot,
-  'compiler/tests/fixtures/router-websocket-fixture'
+  'test-runner/fixtures/package-service-current-scope'
 );
+const testRunnerManifestPath = join(repoRoot, 'test-runner/Cargo.toml');
+
+interface ObjectReceipt {
+  recordPath: string;
+  [key: string]: unknown;
+}
 
 export interface CompilerGeneratedArtifactRoot {
   root: string;
-  buildId: string;
-  serviceId: string;
-  serviceVersion: string;
-  serviceAssembly: {
-    assemblyIdentity: string;
-    assemblyPath: string;
+  packageArtifact: ObjectReceipt & {
+    artifact: {
+      packageId: string;
+      packageVersion: string;
+      packageBuildId: string;
+      packageLocalAbiIdentity: string;
+    };
   };
-  serviceUnit: {
-    unitPath: string;
-    schemaVersion: 'skiff-service-unit-v1';
-    unitIdentity: string;
-    unitHash: string;
+  serviceContract: ObjectReceipt & {
+    contract: {
+      serviceId: string;
+      contractVersion: string;
+      serviceProtocolIdentity: string;
+    };
   };
-  packageUnits: Array<{
-    schemaVersion: 'skiff-package-unit-v1';
-    packageId: string;
-    version: string;
-    buildIdentity: string;
-    abiIdentity: string;
-    unitHash: string;
-    unitPath: string;
-  }>;
-  contractIdentity: string;
+  serviceDeployment: ObjectReceipt & {
+    deployment: Record<string, string>;
+  };
+  runtimeAssembly: ObjectReceipt & {
+    environment: string;
+    assembly: { assemblyIdentity: string };
+  };
+  packageValue: Record<string, unknown>;
+  contractValue: Record<string, unknown>;
+  deploymentValue: Record<string, unknown>;
+  assemblyValue: Record<string, unknown>;
 }
 
-export async function writeCompilerGeneratedWebSocketFixtureArtifactRoot(
+export interface CurrentScopeCompilerGeneratedArtifactRoot {
+  root: string;
+  receipt: {
+    schemaVersion: 'skiff-package-service-host-fixture-v1';
+    environment: string;
+    contracts: {
+      payments: Record<string, string>;
+      consumer: Record<string, string>;
+    };
+    packages: {
+      helper: Record<string, string>;
+      provider: Record<string, string>;
+      consumer: Record<string, string>;
+    };
+    deployments: {
+      provider: Record<string, string>;
+      consumer: Record<string, string>;
+    };
+    baseAssembly: { assemblyIdentity: string };
+  };
+}
+
+export async function writeCompilerGeneratedFixtureArtifactRoot(
   root: string
 ): Promise<CompilerGeneratedArtifactRoot> {
+  await mkdir(root, { recursive: true });
+  const packageReceipt = await author('package', 'publish', fixturePath, root);
+  const packageArtifact = objectReceipt(
+    packageReceipt.packageArtifactReceipt,
+    'packageArtifactReceipt'
+  ) as CompilerGeneratedArtifactRoot['packageArtifact'];
+  const serviceContract = objectReceipt(
+    packageReceipt.serviceContractReceipt,
+    'serviceContractReceipt'
+  ) as CompilerGeneratedArtifactRoot['serviceContract'];
+  const serviceDeployment = objectReceipt(
+    packageReceipt.serviceDeploymentReceipt,
+    'serviceDeploymentReceipt'
+  ) as CompilerGeneratedArtifactRoot['serviceDeployment'];
+
+  const assemblyReceipt = await projectRuntimeAssembly(
+    root,
+    'router-fixture',
+    [serviceDeployment.deployment]
+  );
+  const runtimeAssembly = objectReceipt(
+    assemblyReceipt.runtimeAssemblyReceipt,
+    'runtimeAssemblyReceipt'
+  ) as CompilerGeneratedArtifactRoot['runtimeAssembly'];
+
+  return {
+    root,
+    packageArtifact,
+    serviceContract,
+    serviceDeployment,
+    runtimeAssembly,
+    packageValue: await readRecord(root, packageArtifact),
+    contractValue: await readRecord(root, serviceContract),
+    deploymentValue: await readRecord(root, serviceDeployment),
+    assemblyValue: await readRecord(root, runtimeAssembly),
+  };
+}
+
+export async function writeCurrentScopeCompilerGeneratedArtifactRoot(
+  root: string
+): Promise<CurrentScopeCompilerGeneratedArtifactRoot> {
+  await mkdir(root, { recursive: true });
+  const environment = 'current-scope';
+  await runPackageServiceFixture([
+    '--bootstrap-only',
+    '--artifact-root',
+    root,
+    '--environment',
+    environment,
+    '--platform-source-root',
+    repoRoot,
+  ]);
+  const workRoot = join(root, '.authoring', 'current-scope');
+  const receiptPath = join(workRoot, 'receipt.json');
+  await runPackageServiceFixture([
+    '--prepare-host-base',
+    currentScopeFixturePath,
+    '--work-root',
+    workRoot,
+    '--receipt',
+    receiptPath,
+    '--artifact-root',
+    root,
+    '--environment',
+    environment,
+    '--platform-source-root',
+    repoRoot,
+  ]);
+  const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as
+    CurrentScopeCompilerGeneratedArtifactRoot['receipt'];
+  if (
+    receipt.schemaVersion !== 'skiff-package-service-host-fixture-v1' ||
+    receipt.environment !== environment ||
+    typeof receipt.baseAssembly?.assemblyIdentity !== 'string'
+  ) {
+    throw new Error('current-scope compiler fixture returned an invalid receipt');
+  }
+  return { root, receipt };
+}
+
+async function runPackageServiceFixture(args: string[]): Promise<void> {
   await execFileAsync(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--locked',
+      '--manifest-path',
+      testRunnerManifestPath,
+      '--bin',
+      'skiff-package-service-smoke-fixture',
+      '--',
+      ...args,
+    ],
+    { cwd: repoRoot }
+  );
+}
+
+async function author(
+  object: 'package',
+  action: 'build' | 'publish',
+  sourceRoot: string,
+  artifactRoot: string
+): Promise<Record<string, unknown>> {
+  const { stdout } = await execFileAsync(
     'cargo',
     [
       'run',
       '--quiet',
       '--manifest-path',
       compilerManifestPath,
+      '--bin',
+      'skiff-compiler',
       '--',
-      websocketFixturePath,
-      '--out',
-      join(root, 'service-assembly.json'),
+      object,
+      action,
+      sourceRoot,
       '--artifact-root',
-      root
+      artifactRoot,
+      '--environment',
+      'dev',
+      '--platform-source-root',
+      repoRoot,
+      '--json',
     ],
     { cwd: repoRoot }
   );
-
-  const index = await readSingleCompilerArtifactIndex(root);
-  const serviceAssembly = readServiceAssemblyPointer(index);
-  const serviceUnit = readServiceUnitPointer(index);
-  const packageUnits = readPackageUnitPointers(index);
-  const serviceId = readRequiredString(index.serviceId, 'compiler artifact index serviceId');
-  const contractIdentity = readRequiredString(
-    index.contractIdentity,
-    'compiler artifact index contractIdentity'
-  );
-  const serviceUnitValue = JSON.parse(
-    await readFile(join(root, serviceUnit.unitPath), 'utf8')
-  ) as Record<string, unknown>;
-  const serviceVersion = readRequiredString(
-    serviceUnitValue.version,
-    'compiler service unit version'
-  );
-  const buildId = `skiff-service-build-v1:sha256:${identityHash(
-    fixtureIdentity('skiff-service-build-v1', stableStringify(index))
-  )}`;
-
-  await writeVersionPointer(root, { buildId, serviceId, version: serviceVersion });
-  await writeBuildRecord(root, {
-    buildId,
-    serviceId,
-    serviceVersion,
-    contractIdentity,
-    serviceAssembly,
-    serviceUnit,
-    packageUnits,
-  });
-
-  return {
-    root,
-    buildId,
-    serviceId,
-    serviceVersion,
-    serviceAssembly,
-    serviceUnit,
-    packageUnits,
-    contractIdentity
-  };
+  return JSON.parse(stdout) as Record<string, unknown>;
 }
 
-export async function writeCompilerGeneratedWebSocketFixtureDevReloadArtifactRoot(
+async function projectRuntimeAssembly(
+  artifactRoot: string,
+  environment: string,
+  rootDeployments: ReadonlyArray<Record<string, string>>
+): Promise<Record<string, unknown>> {
+  const rootArguments = rootDeployments.flatMap((deployment) => [
+    '--root-deployment',
+    JSON.stringify(deployment),
+  ]);
+  const { stdout } = await execFileAsync(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      compilerManifestPath,
+      '--bin',
+      'skiff-compiler',
+      '--',
+      'assembly',
+      'build',
+      '--artifact-root',
+      artifactRoot,
+      '--environment',
+      environment,
+      ...rootArguments,
+      '--json',
+    ],
+    { cwd: repoRoot }
+  );
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+function objectReceipt(value: unknown, label: string): ObjectReceipt {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`compiler output is missing ${label}`);
+  }
+  const receipt = value as Record<string, unknown>;
+  if (typeof receipt.recordPath !== 'string' || receipt.recordPath.length === 0) {
+    throw new Error(`compiler ${label}.recordPath is missing`);
+  }
+  return receipt as ObjectReceipt;
+}
+
+async function readRecord(
   root: string,
-  profile = 'prod'
-): Promise<CompilerGeneratedArtifactRoot> {
-  const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
-  const buildId = `skiff-service-build-v1:sha256:${identityHash(
-    generated.serviceAssembly.assemblyIdentity
-  )}`;
-  const devPointerPath = serviceIdJsonPath(root, ['dev', 'services'], generated.serviceId);
-  await mkdir(dirname(devPointerPath), { recursive: true });
-  await writeFile(
-    devPointerPath,
-    JSON.stringify(
-      {
-        mode: 'dev',
-        serviceId: generated.serviceId,
-        serviceVersion: generated.serviceVersion,
-        profile,
-        contractHash: identityHash(generated.contractIdentity),
-        protocolIdentity: generated.contractIdentity,
-        buildId,
-        serviceAssembly: generated.serviceAssembly,
-        serviceUnit: generated.serviceUnit,
-        packageUnits: generated.packageUnits,
-      },
-      null,
-      2
-    )
-  );
-
-  return {
-    ...generated,
-    buildId
-  };
-}
-
-async function readSingleCompilerArtifactIndex(root: string): Promise<Record<string, unknown>> {
-  const indexRoot = join(root, 'indexes');
-  const paths = await readJsonFilesRecursive(indexRoot);
-  const indexes: Array<Record<string, unknown>> = [];
-  for (const path of paths) {
-    let candidate: Record<string, unknown>;
-    try {
-      candidate = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (
-      candidate.schemaVersion === 'skiff-artifact-index-v1' &&
-      candidate.serviceAssembly !== undefined
-    ) {
-      indexes.push(candidate);
-    }
-  }
-  if (indexes.length !== 1) {
-    throw new Error(
-      `expected one compiler artifact index in ${indexRoot}, found ${indexes.length}`
-    );
-  }
-  return indexes[0]!;
-}
-
-async function readJsonFilesRecursive(root: string): Promise<string[]> {
-  const entries = await readdir(root, { withFileTypes: true });
-  const paths: string[] = [];
-  for (const entry of entries) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      paths.push(...(await readJsonFilesRecursive(path)));
-    } else if (entry.isFile() && entry.name.endsWith('.json')) {
-      paths.push(path);
-    }
-  }
-  return paths;
-}
-
-function readServiceAssemblyPointer(index: Record<string, unknown>): {
-  assemblyIdentity: string;
-  assemblyPath: string;
-} {
-  const serviceAssembly = index.serviceAssembly;
-  if (!serviceAssembly || typeof serviceAssembly !== 'object') {
-    throw new Error('compiler artifact index serviceAssembly must be an object');
-  }
-  const record = serviceAssembly as Record<string, unknown>;
-  return {
-    assemblyIdentity: readRequiredString(
-      record.assemblyIdentity,
-      'compiler artifact index serviceAssembly.assemblyIdentity'
-    ),
-    assemblyPath: readRequiredString(
-      record.assemblyPath,
-      'compiler artifact index serviceAssembly.assemblyPath'
-    )
-  };
-}
-
-function readServiceUnitPointer(index: Record<string, unknown>): {
-  unitPath: string;
-  schemaVersion: 'skiff-service-unit-v1';
-  unitIdentity: string;
-  unitHash: string;
-} {
-  const serviceUnit = index.serviceUnit;
-  if (!serviceUnit || typeof serviceUnit !== 'object') {
-    throw new Error('compiler artifact index serviceUnit must be an object');
-  }
-  const record = serviceUnit as Record<string, unknown>;
-  return {
-    schemaVersion: readRequiredLiteral(
-      record.schemaVersion,
-      'skiff-service-unit-v1',
-      'compiler artifact index serviceUnit.schemaVersion'
-    ),
-    unitIdentity: readRequiredString(
-      record.unitIdentity,
-      'compiler artifact index serviceUnit.unitIdentity'
-    ),
-    unitHash: readRequiredString(
-      record.unitHash,
-      'compiler artifact index serviceUnit.unitHash'
-    ),
-    unitPath: readRequiredString(
-      record.unitPath,
-      'compiler artifact index serviceUnit.unitPath'
-    ),
-  };
-}
-
-function readPackageUnitPointers(index: Record<string, unknown>): CompilerGeneratedArtifactRoot['packageUnits'] {
-  if (!Array.isArray(index.packageUnits)) {
-    throw new Error('compiler artifact index packageUnits must be an array');
-  }
-  return index.packageUnits.map((value, position) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error(`compiler artifact index packageUnits[${position}] must be an object`);
-    }
-    const record = value as Record<string, unknown>;
-    return {
-      schemaVersion: readRequiredLiteral(
-        record.schemaVersion,
-        'skiff-package-unit-v1',
-        `packageUnits[${position}].schemaVersion`,
-      ),
-      packageId: readRequiredString(record.packageId, `packageUnits[${position}].packageId`),
-      version: readRequiredString(record.version, `packageUnits[${position}].version`),
-      buildIdentity: readRequiredString(record.buildIdentity, `packageUnits[${position}].buildIdentity`),
-      abiIdentity: readRequiredString(record.abiIdentity, `packageUnits[${position}].abiIdentity`),
-      unitHash: readRequiredString(record.unitHash, `packageUnits[${position}].unitHash`),
-      unitPath: readRequiredString(record.unitPath, `packageUnits[${position}].unitPath`),
-    };
-  });
-}
-
-async function writeVersionPointer(
-  root: string,
-  version: { buildId: string; serviceId: string; version: string }
-) {
-  const serviceIdSegments = serviceIdPathSegments(version.serviceId);
-  await mkdir(join(root, 'versions', 'services', ...serviceIdSegments), { recursive: true });
-  await writeFile(
-    join(root, 'versions', 'services', ...serviceIdSegments, `${version.version}.json`),
-    JSON.stringify(
-      {
-        schemaVersion: 'skiff-service-version-pointer-v1',
-        serviceId: version.serviceId,
-        version: version.version,
-        buildId: version.buildId,
-        updatedAt: '2026-05-05T00:00:00.000Z',
-        updatedBy: 'compiler-fixture-test'
-      },
-      null,
-      2
-    )
-  );
-}
-
-async function writeBuildRecord(
-  root: string,
-  input: {
-    buildId: string;
-    serviceId: string;
-    serviceVersion: string;
-    contractIdentity: string;
-    serviceAssembly: {
-      assemblyIdentity: string;
-      assemblyPath: string;
-    };
-    serviceUnit: {
-      unitPath: string;
-      schemaVersion: string;
-      unitIdentity: string;
-      unitHash: string;
-    };
-    packageUnits: CompilerGeneratedArtifactRoot['packageUnits'];
-  }
-) {
-  const serviceIdSegments = serviceIdPathSegments(input.serviceId);
-  await mkdir(join(root, 'builds', 'services', ...serviceIdSegments), { recursive: true });
-  await writeFile(
-    join(root, 'builds', 'services', ...serviceIdSegments, `${identityHash(input.buildId)}.json`),
-    JSON.stringify(
-      {
-        schemaVersion: 'skiff-service-build-v1',
-        serviceId: input.serviceId,
-        serviceVersion: input.serviceVersion,
-        buildId: input.buildId,
-        contractIdentity: input.contractIdentity,
-        serviceAssembly: input.serviceAssembly,
-        serviceUnit: input.serviceUnit,
-        packageUnits: input.packageUnits,
-        fingerprint: input.serviceAssembly.assemblyIdentity,
-        createdAt: '2026-05-05T00:00:00.000Z'
-      },
-      null,
-      2
-    )
-  );
-}
-
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`${label} must be a non-empty string`);
-  }
-  return value;
-}
-
-function readRequiredLiteral<const T extends string>(
-  value: unknown,
-  expected: T,
-  label: string,
-): T {
-  if (value !== expected) {
-    throw new Error(`${label} must be ${expected}`);
-  }
-  return expected;
-}
-
-function readOptionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function fixtureIdentity(prefix: string, seed: string): string {
-  return `${prefix}:sha256:${createHash('sha256').update(seed).digest('hex')}`;
-}
-
-function identityHash(identity: string): string {
-  const marker = ':sha256:';
-  const index = identity.lastIndexOf(marker);
-  return index === -1 ? identity : identity.slice(index + marker.length);
-}
-
-function serviceIdJsonPath(root: string, prefix: string[], serviceId: string): string {
-  const segments = serviceIdPathSegments(serviceId);
-  const lastSegment = segments.at(-1);
-  if (lastSegment === undefined) {
-    throw new Error(`serviceId ${serviceId} must have at least one path segment`);
-  }
-  return join(root, ...prefix, ...segments.slice(0, -1), `${lastSegment}.json`);
+  receipt: ObjectReceipt
+): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(join(root, receipt.recordPath), 'utf8')) as Record<string, unknown>;
 }

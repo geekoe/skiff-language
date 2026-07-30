@@ -86,28 +86,23 @@ string:
 service:
   ProviderUnavailableError: service.ProviderUnavailableError
   ProtocolError: service.ProtocolError
+  InternalError: service.InternalError
 websocket:
-  TextConnectionMessage: websocket.TextConnectionMessage
-  BinaryConnectionMessage: websocket.BinaryConnectionMessage
-  ConnectionMessage: websocket.ConnectionMessage
   WebSocketConnectRequest: websocket.WebSocketConnectRequest
-  WebSocketConnection: websocket.WebSocketConnection
-  WebSocketReceiveEvent: websocket.WebSocketReceiveEvent
-  WebSocketCloseEvent: websocket.WebSocketCloseEvent
   WebSocketConnectionPolicy: websocket.WebSocketConnectionPolicy
   WebSocketConnectResult: websocket.WebSocketConnectResult
+  WebSocketRequestError: websocket.WebSocketRequestError
   sendTextToConnection: websocket.sendTextToConnection
   sendBinaryToConnection: websocket.sendBinaryToConnection
   sendTextToBusinessIdentity: websocket.sendTextToBusinessIdentity
   sendBinaryToBusinessIdentity: websocket.sendBinaryToBusinessIdentity
+  requestJsonToConnection: websocket.requestJsonToConnection
   sendJsonToConnection: websocket.sendJsonToConnection
   sendJsonToBusinessIdentity: websocket.sendJsonToBusinessIdentity
 telemetry:
   emit: telemetry.emit
 actor:
-  Actor: actor.Actor
-  ActorRef: actor.ActorRef
-  put: actor.put
-  get: actor.get
+  getOrCreate: actor.getOrCreate
+  replace: actor.replace
   find: actor.find
   remove: actor.remove

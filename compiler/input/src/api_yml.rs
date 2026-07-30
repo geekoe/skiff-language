@@ -59,7 +59,7 @@ pub fn read_publication_api_yml(root: &Path) -> Result<PublicationApiSpec, Publi
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PublicationApiSpec::empty());
+            return Err(validation_error(&path, "api.yml is required"));
         }
         Err(source) => {
             return Err(PublicationApiYmlError::Read {
@@ -77,7 +77,7 @@ pub fn parse_publication_api_yml(
     path: &Path,
 ) -> Result<PublicationApiSpec, PublicationApiYmlError> {
     if text.trim().is_empty() {
-        return Ok(PublicationApiSpec::empty());
+        return Err(validation_error(path, "api.yml must not be empty"));
     }
     let root: ApiYamlNode =
         serde_yaml::from_str(text).map_err(|source| PublicationApiYmlError::Parse {
@@ -101,6 +101,12 @@ pub fn parse_publication_api_yml(
         &mut public_instances,
         &mut seen,
     )?;
+    if entries.is_empty() && public_instances.is_empty() {
+        return Err(validation_error(
+            path,
+            "api.yml with no public entries must be the top-level mapping {}",
+        ));
+    }
     Ok(PublicationApiSpec::new(entries, public_instances, None))
 }
 
@@ -130,6 +136,24 @@ fn flatten_api_mapping(
                 insert_seen_public_path(path, seen, &public_path)?;
                 public_instances.push(parse_public_instance_leaf(path, prefix.clone(), nested)?);
             }
+            ApiYamlNode::Mapping(nested) if api_legacy_function_leaf(nested) => {
+                return Err(validation_error(
+                    path,
+                    format!(
+                        "api.yml function {} must use a scalar string source selector; source/serviceCall object form is not supported",
+                        public_path_label(prefix)
+                    ),
+                ));
+            }
+            ApiYamlNode::Mapping(nested) if nested.is_empty() => {
+                return Err(validation_error(
+                    path,
+                    format!(
+                        "api.yml public path {} cannot be an empty mapping; use top-level {{}} only when the entire public API is empty",
+                        public_path_label(prefix)
+                    ),
+                ));
+            }
             ApiYamlNode::Mapping(nested) => {
                 flatten_api_mapping(path, nested, prefix, entries, public_instances, seen)?;
             }
@@ -146,7 +170,7 @@ fn flatten_api_mapping(
                 })?;
                 entries.push(PublicationApiEntry::new(prefix.clone(), source_selector));
             }
-            ApiYamlNode::Sequence(_) | ApiYamlNode::Other => {
+            ApiYamlNode::Sequence(_) | ApiYamlNode::Boolean | ApiYamlNode::Other => {
                 return Err(validation_error(
                     path,
                     format!(
@@ -183,6 +207,13 @@ fn api_public_instance_leaf(mapping: &[(YamlValue, ApiYamlNode)]) -> bool {
     keys.contains("const") || keys.contains("interfaces")
 }
 
+fn api_legacy_function_leaf(mapping: &[(YamlValue, ApiYamlNode)]) -> bool {
+    mapping
+        .iter()
+        .filter_map(|(key, _)| key.as_str())
+        .any(|key| matches!(key, "source" | "serviceCall"))
+}
+
 fn parse_public_instance_leaf(
     path: &Path,
     public_path: Vec<String>,
@@ -200,6 +231,12 @@ fn parse_public_instance_leaf(
         };
         match key {
             "const" => {
+                if const_selector.is_some() {
+                    return Err(validation_error(
+                        path,
+                        format!("api.yml public instance {public_path_label} repeats field const"),
+                    ));
+                }
                 let ApiYamlNode::String(selector) = value else {
                     return Err(validation_error(
                         path,
@@ -220,6 +257,14 @@ fn parse_public_instance_leaf(
                 const_selector = Some(selector);
             }
             "interfaces" => {
+                if interface_selectors.is_some() {
+                    return Err(validation_error(
+                        path,
+                        format!(
+                            "api.yml public instance {public_path_label} repeats field interfaces"
+                        ),
+                    ));
+                }
                 let ApiYamlNode::Sequence(items) = value else {
                     return Err(validation_error(
                         path,
@@ -263,7 +308,7 @@ fn parse_public_instance_leaf(
                 return Err(validation_error(
                     path,
                     format!(
-                        "api.yml public instance {public_path_label} has unsupported field {other}; expected const and interfaces"
+                        "api.yml public instance {public_path_label} has unsupported field {other}; expected only const and interfaces"
                     ),
                 ));
             }
@@ -336,6 +381,7 @@ enum ApiYamlNode {
     Mapping(Vec<(YamlValue, ApiYamlNode)>),
     Sequence(Vec<ApiYamlNode>),
     String(String),
+    Boolean,
     Other,
 }
 
@@ -386,7 +432,7 @@ impl<'de> Visitor<'de> for ApiYamlNodeVisitor {
     where
         E: serde::de::Error,
     {
-        Ok(ApiYamlNode::Other)
+        Ok(ApiYamlNode::Boolean)
     }
 
     fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E>
@@ -458,13 +504,22 @@ mod tests {
     }
 
     #[test]
-    fn missing_empty_and_empty_mapping_are_empty_api() {
+    fn missing_and_blank_are_rejected_while_empty_mapping_is_empty_api() {
         let temp = temp_dir("missing");
-        assert!(read_publication_api_yml(&temp).unwrap().is_empty());
+        assert!(read_publication_api_yml(&temp)
+            .unwrap_err()
+            .to_string()
+            .contains("api.yml is required"));
         let _ = std::fs::remove_dir_all(temp);
 
-        assert!(parse("").unwrap().is_empty());
-        assert!(parse("   \n").unwrap().is_empty());
+        assert!(parse("")
+            .unwrap_err()
+            .to_string()
+            .contains("must not be empty"));
+        assert!(parse("   \n")
+            .unwrap_err()
+            .to_string()
+            .contains("must not be empty"));
         assert!(parse("{}\n").unwrap().is_empty());
     }
 
@@ -489,6 +544,15 @@ http:
         assert_eq!(entries[2].public_path_string(), "http.Request");
         assert_eq!(entries[2].source_module_hint(), "http");
         assert_eq!(entries[2].source_symbol(), "HttpRequest");
+    }
+
+    #[test]
+    fn parses_scalar_function_leaf() {
+        let spec = parse("echo: api.echo\n").unwrap();
+        let entries = spec.entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].public_path_string(), "echo");
+        assert_eq!(entries[0].source_selector.as_dotted(), "api.echo");
     }
 
     #[test]
@@ -523,6 +587,16 @@ managedLlm:
     fn rejects_invalid_shapes() {
         for (name, yaml, expected) in [
             ("root-list", "[]", "root must be a mapping"),
+            (
+                "nested-empty",
+                "functions: {}",
+                "cannot be an empty mapping",
+            ),
+            (
+                "mixed-nested-empty",
+                "unused: {}\nrun: api.run\n",
+                "cannot be an empty mapping",
+            ),
             ("numeric-key", "1: types.User", "key under <root>"),
             (
                 "dotted-key",
@@ -532,6 +606,26 @@ managedLlm:
             ("non-string-leaf", "User: 1", "must map to a string"),
             ("short-selector", "User: User", "module.path.Symbol"),
             ("root-selector", "User: root.types.User", "root. prefix"),
+            (
+                "legacy-function-marker-only",
+                "echo:\n  serviceCall: true\n",
+                "must use a scalar string source selector",
+            ),
+            (
+                "legacy-function-source-only",
+                "echo:\n  source: api.echo\n",
+                "must use a scalar string source selector",
+            ),
+            (
+                "legacy-function-source-and-false-marker",
+                "echo:\n  source: api.echo\n  serviceCall: false\n",
+                "must use a scalar string source selector",
+            ),
+            (
+                "legacy-function-source-and-marker",
+                "echo:\n  source: api.echo\n  serviceCall: true\n  route: /echo\n",
+                "must use a scalar string source selector",
+            ),
             (
                 "instance-missing-interface",
                 "managedLlm:\n  const: root.llm.managedLlm\n",
@@ -546,6 +640,16 @@ managedLlm:
                 "instance-extra-field",
                 "managedLlm:\n  const: root.llm.managedLlm\n  interfaces: [root.llm.ManagedLlm]\n  route: /llm\n",
                 "unsupported field route",
+            ),
+            (
+                "instance-false-marker",
+                "managedLlm:\n  const: root.llm.managedLlm\n  interfaces: [root.llm.ManagedLlm]\n  serviceCall: false\n",
+                "unsupported field serviceCall",
+            ),
+            (
+                "instance-duplicate-marker",
+                "managedLlm:\n  const: root.llm.managedLlm\n  interfaces: [root.llm.ManagedLlm]\n  serviceCall: true\n  serviceCall: true\n",
+                "unsupported field serviceCall",
             ),
         ] {
             let error = parse(yaml).unwrap_err().to_string();

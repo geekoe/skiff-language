@@ -1,20 +1,28 @@
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use skiff_artifact_model::{
-    BoundaryOperationDescriptor, ContractOperationId, OperationTargetRef, ServiceContract,
-    ServiceContractRef,
+    BoundaryOperationDescriptor, ContractOperationId, OperationTargetRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, ServiceContract, ServiceContractRef,
 };
 use skiff_runtime_activation::{
     ActivationContext, ActivationContextError, ActivationId, RequestActivationContext,
 };
 use skiff_runtime_linked_program::{
-    ActivationRelativeServiceCall, AssemblyExecutionImage, ExecutableAddr, LinkedPackageDirectCall,
+    ActivationRelativeServiceCall, AssemblyExecutionImage, ConstAddr, ExecutableAddr,
+    LinkedPackageCallableTarget, LinkedPackageDirectCall,
 };
 use skiff_runtime_linked_type_plan::{
     RuntimeAssemblyTypePlanSeamError, RuntimeAssemblyTypePlanTarget,
 };
 
 use crate::assembly_execution::RuntimeAssemblyExecutionProjection;
+
+/// Eval-owned, loader-independent view of one already-admitted contract schema closure.
+///
+/// Both the map and every record payload remain immutable and shared. Execution paths never
+/// receive an artifact resolver or reconstruct admission facts.
+pub type AdmittedPackageSchemaRecords =
+    Arc<BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>>;
 
 /// Host-owned lookup surface needed after an activation-relative service instruction is decoded.
 ///
@@ -28,6 +36,11 @@ pub trait RuntimeAssemblyEvalResolver: Send + Sync {
     fn activation_by_opaque_id(&self, activation_id: &str) -> Option<Arc<ActivationContext>>;
 
     fn contract(&self, contract: &ServiceContractRef) -> Option<Arc<ServiceContract>>;
+
+    fn admitted_schema_records(
+        &self,
+        contract: &ServiceContractRef,
+    ) -> Option<AdmittedPackageSchemaRecords>;
 
     fn operation_target(
         &self,
@@ -218,6 +231,12 @@ impl RuntimeAssemblyEvalTarget {
                 contract: binding.contract().clone(),
             });
         }
+        let schema_records = self
+            .resolver
+            .admitted_schema_records(binding.contract())
+            .ok_or_else(|| RuntimeAssemblyEvalSeamError::MissingAdmittedSchema {
+                contract: binding.contract().clone(),
+            })?;
         let descriptor = contract
             .operations
             .get(instruction.operation_id())
@@ -239,9 +258,9 @@ impl RuntimeAssemblyEvalTarget {
                 activation_id: provider.activation_id().as_str().to_string(),
                 operation: instruction.operation_id().clone(),
             })?;
-        let executable = self
+        let callable_target = self
             .execution_image
-            .entry_executable(
+            .entry_callable_target(
                 provider.implementation_package_build_id(),
                 &operation_target,
             )
@@ -255,8 +274,9 @@ impl RuntimeAssemblyEvalTarget {
         Ok(RuntimeAssemblyServiceCallTarget {
             provider_request,
             contract,
+            schema_records,
             operation: instruction.operation_id().clone(),
-            executable_addr: executable.addr().clone(),
+            callable_target,
         })
     }
 
@@ -294,6 +314,22 @@ impl RuntimeAssemblyEvalTarget {
                 contract: contract_ref.clone(),
             });
         }
+        let admitted_contract = self.resolver.contract(contract_ref).ok_or_else(|| {
+            RuntimeAssemblyEvalSeamError::MissingContract {
+                contract: contract_ref.clone(),
+            }
+        })?;
+        if !Arc::ptr_eq(&contract, &admitted_contract) {
+            return Err(RuntimeAssemblyEvalSeamError::ContractGenerationMismatch {
+                contract: contract_ref.clone(),
+            });
+        }
+        let schema_records = self
+            .resolver
+            .admitted_schema_records(contract_ref)
+            .ok_or_else(|| RuntimeAssemblyEvalSeamError::MissingAdmittedSchema {
+                contract: contract_ref.clone(),
+            })?;
         let descriptor = contract.operations.get(operation).ok_or_else(|| {
             RuntimeAssemblyEvalSeamError::MissingContractOperation {
                 contract: contract_ref.clone(),
@@ -307,9 +343,9 @@ impl RuntimeAssemblyEvalTarget {
                 },
             );
         }
-        let executable = self
+        let callable_target = self
             .execution_image
-            .entry_executable(provider.implementation_package_build_id(), operation_target)
+            .entry_callable_target(provider.implementation_package_build_id(), operation_target)
             .map_err(
                 |error| RuntimeAssemblyEvalSeamError::InvalidProviderTarget {
                     activation_id: provider.activation_id().as_str().to_string(),
@@ -320,8 +356,9 @@ impl RuntimeAssemblyEvalTarget {
         Ok(RuntimeAssemblyServiceCallTarget {
             provider_request: self.request_activation.clone(),
             contract,
+            schema_records,
             operation: operation.clone(),
-            executable_addr: executable.addr().clone(),
+            callable_target,
         })
     }
 }
@@ -330,8 +367,9 @@ impl RuntimeAssemblyEvalTarget {
 pub struct RuntimeAssemblyServiceCallTarget {
     provider_request: RequestActivationContext,
     contract: Arc<ServiceContract>,
+    schema_records: AdmittedPackageSchemaRecords,
     operation: ContractOperationId,
-    executable_addr: ExecutableAddr,
+    callable_target: LinkedPackageCallableTarget,
 }
 
 impl RuntimeAssemblyServiceCallTarget {
@@ -347,6 +385,10 @@ impl RuntimeAssemblyServiceCallTarget {
         &self.contract
     }
 
+    pub fn schema_records(&self) -> &AdmittedPackageSchemaRecords {
+        &self.schema_records
+    }
+
     pub fn descriptor(&self) -> &BoundaryOperationDescriptor {
         self.contract
             .operations
@@ -355,7 +397,11 @@ impl RuntimeAssemblyServiceCallTarget {
     }
 
     pub fn executable_addr(&self) -> &ExecutableAddr {
-        &self.executable_addr
+        self.callable_target.executable_addr()
+    }
+
+    pub fn receiver_const(&self) -> Option<&ConstAddr> {
+        self.callable_target.receiver_const()
     }
 }
 
@@ -388,6 +434,10 @@ pub enum RuntimeAssemblyEvalSeamError {
     MissingContract { contract: ServiceContractRef },
     #[error("runtime assembly resolver returned a mismatched canonical contract {contract:?}")]
     ContractIdentityMismatch { contract: ServiceContractRef },
+    #[error("canonical contract {contract:?} belongs to a different admitted assembly generation")]
+    ContractGenerationMismatch { contract: ServiceContractRef },
+    #[error("runtime assembly resolver has no admitted Package schema for {contract:?}")]
+    MissingAdmittedSchema { contract: ServiceContractRef },
     #[error("canonical contract {contract:?} has no operation {operation}")]
     MissingContractOperation {
         contract: ServiceContractRef,

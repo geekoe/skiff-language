@@ -8,8 +8,9 @@ use super::http_helpers::{
     optional_string_value, sse_headers, NameMatch,
 };
 use super::{
-    ensure_native_capability_context, native_capability_route_mismatch, unsupported_native_target,
-    RuntimeNativeInvocation,
+    ensure_native_capability_context, native_capability_route_mismatch,
+    prepared::run_prepared_native_call, unsupported_native_target, PreparedExternalNativeOperation,
+    PreparedNativeCall, RuntimeNativeInvocation,
 };
 use crate::error::{Result, RuntimeError};
 use crate::{
@@ -36,9 +37,9 @@ const HTTP_RESPONSE_NO_CONTENT_KEY: &str = "std.http.response.noContent";
 const HTTP_RESPONSE_METHOD_NOT_ALLOWED_KEY: &str = "std.http.response.methodNotAllowed";
 const HTTP_HEADERS_FORWARDABLE_KEY: &str = "std.http.headers.forwardable";
 const HTTP_HEADERS_SSE_KEY: &str = "std.http.headers.sse";
-const HTTP_STREAM_START_KEY: &str = "std.http.stream.start";
-const HTTP_STREAM_CHUNK_KEY: &str = "std.http.stream.chunk";
-const HTTP_STREAM_END_KEY: &str = "std.http.stream.end";
+pub(super) const HTTP_STREAM_START_KEY: &str = "std.http.stream.start";
+pub(super) const HTTP_STREAM_CHUNK_KEY: &str = "std.http.stream.chunk";
+pub(super) const HTTP_STREAM_END_KEY: &str = "std.http.stream.end";
 const HTTP_STREAM_EMIT_RESPONSE_KEY: &str = "std.http.stream.emitResponse";
 
 pub(super) struct HttpNativeDispatch;
@@ -74,7 +75,208 @@ impl HttpNativeDispatch {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub(super) fn prepare<
+        'a,
+        ActorContext,
+        FileContext,
+        TimeContext,
+        HttpClientContext,
+        HttpResponseStreamContext,
+        WebsocketContext,
+        TelemetryContext,
+        ResourceContext,
+    >(
+        &self,
+        native_capability_context: NativeCapabilityContexts<
+            ActorContext,
+            FileContext,
+            TimeContext,
+            HttpClientContext,
+            HttpResponseStreamContext,
+            WebsocketContext,
+            TelemetryContext,
+            ResourceContext,
+        >,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<PreparedNativeCall<'a>>
+    where
+        HttpClientContext: NativeHttpClientCapability + Send + 'a,
+        HttpResponseStreamContext: NativeHttpResponseStreamCapability + Send + 'a,
+    {
+        let binding_key = invocation.binding_key().to_string();
+        if matches!(
+            binding_key.as_str(),
+            HTTP_REQUEST_HEADER_KEY
+                | HTTP_REQUEST_HEADERS_KEY
+                | HTTP_REQUEST_QUERY_KEY
+                | HTTP_REQUEST_COOKIE_KEY
+                | HTTP_REQUEST_REQUIRE_METHOD_KEY
+        ) {
+            ensure_http_helper_none_capability_context(&binding_key, &native_capability_context)?;
+            let value = self.dispatch_http_request_helper(
+                &invocation,
+                &binding_key,
+                &diagnostic_target,
+                args,
+                heap,
+            )?;
+            return Ok(PreparedNativeCall::Ready(value));
+        }
+        if matches!(
+            binding_key.as_str(),
+            HTTP_RESPONSE_JSON_KEY
+                | HTTP_RESPONSE_JSON_WITH_HEADERS_KEY
+                | HTTP_RESPONSE_ERROR_KEY
+                | HTTP_RESPONSE_NO_CONTENT_KEY
+                | HTTP_RESPONSE_METHOD_NOT_ALLOWED_KEY
+        ) {
+            ensure_http_helper_none_capability_context(&binding_key, &native_capability_context)?;
+            let value = self.dispatch_http_json_helper(
+                &invocation,
+                &binding_key,
+                &diagnostic_target,
+                args,
+                heap,
+            )?;
+            return Ok(PreparedNativeCall::Ready(value));
+        }
+        if binding_key == HTTP_REQUEST_DECODE_JSON_KEY {
+            ensure_http_helper_none_capability_context(&binding_key, &native_capability_context)?;
+            let value =
+                self.dispatch_http_decode_json_helper(&invocation, &diagnostic_target, args, heap)?;
+            return Ok(PreparedNativeCall::Ready(value));
+        }
+        if matches!(
+            binding_key.as_str(),
+            HTTP_HEADERS_FORWARDABLE_KEY | HTTP_HEADERS_SSE_KEY
+        ) {
+            ensure_http_helper_none_capability_context(&binding_key, &native_capability_context)?;
+            let value = self.dispatch_http_header_list_helper(
+                &invocation,
+                &binding_key,
+                &diagnostic_target,
+                args,
+                heap,
+            )?;
+            return Ok(PreparedNativeCall::Ready(value));
+        }
+        if matches!(
+            binding_key.as_str(),
+            HTTP_STREAM_START_KEY | HTTP_STREAM_CHUNK_KEY | HTTP_STREAM_END_KEY
+        ) {
+            ensure_http_helper_none_capability_context(&binding_key, &native_capability_context)?;
+            let value = self.dispatch_http_stream_event_helper(
+                &invocation,
+                &binding_key,
+                &diagnostic_target,
+                args,
+                heap,
+            )?;
+            return Ok(PreparedNativeCall::Ready(value));
+        }
+        if binding_key == HTTP_STREAM_EMIT_RESPONSE_KEY {
+            let response_stream_context = match native_capability_context {
+                NativeCapabilityContexts::HttpResponseStream(response_stream_context) => {
+                    response_stream_context
+                }
+                other => {
+                    return Err(native_capability_route_mismatch(
+                        &binding_key,
+                        NativeRequiredContext::HttpResponseStream,
+                        other.required_context(),
+                    ));
+                }
+            };
+            let item_type = response_stream_context.response_item_type(&diagnostic_target)?;
+            let event = args.first().ok_or_else(|| {
+                RuntimeError::Decode(format!("{diagnostic_target} requires event"))
+            })?;
+            let event = RuntimeBoundaryContract::default()
+                .codec_for_expected(
+                    &item_type,
+                    BoundaryUse::TypedJson,
+                    format!("{diagnostic_target} event"),
+                )
+                .to_wire_json(event, heap)?;
+            let wait_target = diagnostic_target.clone();
+            return Ok(PreparedNativeCall::ExternalWait(
+                external_http_wire_operation(invocation, diagnostic_target, false, async move {
+                    response_stream_context
+                        .send_response_event(&wait_target, event)
+                        .await?;
+                    Ok(Value::Null)
+                }),
+            ));
+        }
+        let arg_plan = invocation.arg_plans()?.first().cloned();
+        let return_plan = invocation.return_plan()?.clone();
+        let effect_context = match native_capability_context {
+            NativeCapabilityContexts::HttpClient(http_client_context) => http_client_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::HttpClient,
+                    other.required_context(),
+                ));
+            }
+        };
+        if let Some(value) = effect_context.dispatch_test_http_effect_invocation_double(
+            &binding_key,
+            args.first(),
+            arg_plan.as_ref(),
+            Some(&return_plan),
+            heap,
+        ) {
+            return value.map(PreparedNativeCall::Ready);
+        }
+
+        let input = args.first().ok_or_else(|| {
+            RuntimeError::Decode(format!("{diagnostic_target} requires one argument"))
+        })?;
+        let input = invocation.native_boundary()?.to_wire_arg(
+            0,
+            input,
+            &format!("{diagnostic_target} input"),
+            heap,
+        )?;
+        let internal_handle = binding_key == TARGET_STD_HTTP_STREAM;
+        let wait = match binding_key.as_str() {
+            TARGET_STD_HTTP_REQUEST => {
+                Box::pin(async move { effect_context.dispatch_http_request(&input).await })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>,
+                    >
+            }
+            TARGET_STD_HTTP_STREAM => {
+                let item_type =
+                    http_stream_body_item_plan(&diagnostic_target, &return_plan)?.clone();
+                Box::pin(async move {
+                    effect_context
+                        .dispatch_http_stream(&input, Some(&item_type))
+                        .await
+                })
+            }
+            TARGET_STD_HTTP_SSE => {
+                let item_type =
+                    stream_item_plan_from_return_plan(&diagnostic_target, &return_plan)?.clone();
+                Box::pin(async move {
+                    effect_context
+                        .dispatch_http_sse(&input, Some(&item_type))
+                        .await
+                })
+            }
+            _ => return Err(unsupported_native_target(&binding_key)),
+        };
+        Ok(PreparedNativeCall::ExternalWait(
+            external_http_wire_operation(invocation, diagnostic_target, internal_handle, wait),
+        ))
+    }
+
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub(super) async fn dispatch<
         ActorContext,
         FileContext,
@@ -96,198 +298,23 @@ impl HttpNativeDispatch {
             TelemetryContext,
             ResourceContext,
         >,
-        invocation: &RuntimeNativeInvocation,
-        diagnostic_target: &str,
+        invocation: RuntimeNativeInvocation,
+        diagnostic_target: String,
         args: Vec<RuntimeValue>,
         heap: &mut RequestHeap,
     ) -> Result<RuntimeValue>
     where
-        HttpClientContext: NativeHttpClientCapability,
-        HttpResponseStreamContext: NativeHttpResponseStreamCapability,
+        HttpClientContext: NativeHttpClientCapability + Send,
+        HttpResponseStreamContext: NativeHttpResponseStreamCapability + Send,
     {
-        let binding_key = invocation.binding_key();
-        if matches!(
-            binding_key,
-            HTTP_REQUEST_HEADER_KEY
-                | HTTP_REQUEST_HEADERS_KEY
-                | HTTP_REQUEST_QUERY_KEY
-                | HTTP_REQUEST_COOKIE_KEY
-                | HTTP_REQUEST_REQUIRE_METHOD_KEY
-        ) {
-            ensure_http_helper_none_capability_context(binding_key, &native_capability_context)?;
-            return self.dispatch_http_request_helper(
-                invocation,
-                binding_key,
-                diagnostic_target,
-                args,
-                heap,
-            );
-        }
-        if matches!(
-            binding_key,
-            HTTP_RESPONSE_JSON_KEY
-                | HTTP_RESPONSE_JSON_WITH_HEADERS_KEY
-                | HTTP_RESPONSE_ERROR_KEY
-                | HTTP_RESPONSE_NO_CONTENT_KEY
-                | HTTP_RESPONSE_METHOD_NOT_ALLOWED_KEY
-        ) {
-            ensure_http_helper_none_capability_context(binding_key, &native_capability_context)?;
-            return self.dispatch_http_json_helper(
-                invocation,
-                binding_key,
-                diagnostic_target,
-                args,
-                heap,
-            );
-        }
-        if binding_key == HTTP_REQUEST_DECODE_JSON_KEY {
-            ensure_http_helper_none_capability_context(binding_key, &native_capability_context)?;
-            return self.dispatch_http_decode_json_helper(
-                invocation,
-                diagnostic_target,
-                args,
-                heap,
-            );
-        }
-        if matches!(
-            binding_key,
-            HTTP_HEADERS_FORWARDABLE_KEY | HTTP_HEADERS_SSE_KEY
-        ) {
-            ensure_http_helper_none_capability_context(binding_key, &native_capability_context)?;
-            return self.dispatch_http_header_list_helper(
-                invocation,
-                binding_key,
-                diagnostic_target,
-                args,
-                heap,
-            );
-        }
-        if matches!(
-            binding_key,
-            HTTP_STREAM_START_KEY | HTTP_STREAM_CHUNK_KEY | HTTP_STREAM_END_KEY
-        ) {
-            ensure_http_helper_none_capability_context(binding_key, &native_capability_context)?;
-            return self.dispatch_http_stream_event_helper(
-                invocation,
-                binding_key,
-                diagnostic_target,
-                args,
-                heap,
-            );
-        }
-        if binding_key == HTTP_STREAM_EMIT_RESPONSE_KEY {
-            let response_stream_context = match native_capability_context {
-                NativeCapabilityContexts::HttpResponseStream(response_stream_context) => {
-                    response_stream_context
-                }
-                other => {
-                    return Err(native_capability_route_mismatch(
-                        binding_key,
-                        NativeRequiredContext::HttpResponseStream,
-                        other.required_context(),
-                    ));
-                }
-            };
-            return self
-                .dispatch_http_emit_response_stream(
-                    &response_stream_context,
-                    invocation,
-                    diagnostic_target,
-                    args,
-                    heap,
-                )
-                .await;
-        }
-        let native_boundary = invocation.native_boundary()?;
-        let arg_plan = invocation.arg_plans()?.first();
-        let return_plan = Some(invocation.return_plan()?);
-        let effect_context = match native_capability_context {
-            NativeCapabilityContexts::HttpClient(http_client_context) => http_client_context,
-            other => {
-                return Err(native_capability_route_mismatch(
-                    binding_key,
-                    NativeRequiredContext::HttpClient,
-                    other.required_context(),
-                ));
-            }
-        };
-        if let Some(value) = effect_context.dispatch_test_http_effect_invocation_double(
-            binding_key,
-            args.first(),
-            arg_plan,
-            return_plan,
+        let prepared = self.prepare(
+            native_capability_context,
+            invocation,
+            diagnostic_target,
+            args,
             heap,
-        ) {
-            return value;
-        }
-
-        let input = args.first().ok_or_else(|| {
-            RuntimeError::Decode(format!("{diagnostic_target} requires one argument"))
-        })?;
-        let input =
-            native_boundary.to_wire_arg(0, input, &format!("{diagnostic_target} input"), heap)?;
-        let value = match binding_key {
-            TARGET_STD_HTTP_REQUEST => effect_context.dispatch_http_request(&input).await?,
-            TARGET_STD_HTTP_STREAM => {
-                let item_type =
-                    http_stream_body_item_plan(diagnostic_target, invocation.return_plan()?)?;
-                effect_context
-                    .dispatch_http_stream(&input, Some(item_type))
-                    .await?
-            }
-            TARGET_STD_HTTP_SSE => {
-                let item_type = stream_item_plan_from_return_plan(
-                    diagnostic_target,
-                    invocation.return_plan()?,
-                )?;
-                effect_context
-                    .dispatch_http_sse(&input, Some(item_type))
-                    .await?
-            }
-            _ => return Err(unsupported_native_target(binding_key)),
-        };
-        if binding_key == TARGET_STD_HTTP_STREAM {
-            native_boundary.from_wire_internal_handle_return(
-                &value,
-                &format!("{diagnostic_target} response"),
-                heap,
-            )
-        } else {
-            native_boundary.from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_http_emit_response_stream<HttpResponseStreamContext>(
-        &self,
-        response_stream_context: &HttpResponseStreamContext,
-        invocation: &RuntimeNativeInvocation,
-        target: &str,
-        args: Vec<RuntimeValue>,
-        heap: &mut RequestHeap,
-    ) -> Result<RuntimeValue>
-    where
-        HttpResponseStreamContext: NativeHttpResponseStreamCapability,
-    {
-        let item_type = response_stream_context.response_item_type(target)?;
-        let event = args
-            .first()
-            .ok_or_else(|| RuntimeError::Decode(format!("{target} requires event")))?;
-        let event = RuntimeBoundaryContract::default()
-            .codec_for_expected(
-                &item_type,
-                BoundaryUse::TypedJson,
-                format!("{target} event"),
-            )
-            .to_wire_json(event, heap)?;
-        response_stream_context
-            .send_response_event(target, event)
-            .await?;
-        invocation.native_boundary()?.from_wire_return(
-            &serde_json::Value::Null,
-            &format!("{target} response"),
-            heap,
-        )
+        )?;
+        run_prepared_native_call(prepared, heap).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -575,6 +602,31 @@ impl HttpNativeDispatch {
     }
 }
 
+fn external_http_wire_operation<'a>(
+    invocation: RuntimeNativeInvocation,
+    diagnostic_target: String,
+    internal_handle: bool,
+    wait: impl std::future::Future<Output = Result<Value>> + Send + 'a,
+) -> PreparedExternalNativeOperation<'a> {
+    PreparedExternalNativeOperation::new(wait, move |value, heap| {
+        if internal_handle {
+            invocation
+                .native_boundary()?
+                .from_wire_internal_handle_return(
+                    &value,
+                    &format!("{diagnostic_target} response"),
+                    heap,
+                )
+        } else {
+            invocation.native_boundary()?.from_wire_return(
+                &value,
+                &format!("{diagnostic_target} response"),
+                heap,
+            )
+        }
+    })
+}
+
 fn stream_item_plan_from_return_plan<'a>(
     target: &str,
     return_plan: &'a RuntimeTypePlan,
@@ -607,7 +659,7 @@ fn http_stream_body_item_plan<'a>(
     }
 }
 
-fn http_status_arg(value: Option<&RuntimeValue>, target: &str) -> Result<u16> {
+pub(super) fn http_status_arg(value: Option<&RuntimeValue>, target: &str) -> Result<u16> {
     let value = value.ok_or_else(|| RuntimeError::Decode(format!("{target} requires status")))?;
     let RuntimeValue::Number(value) = value else {
         return Err(RuntimeError::Decode(format!(

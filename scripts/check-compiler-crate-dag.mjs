@@ -9,7 +9,9 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultCliPhase = 10;
 const facadePackage = 'skiff-compiler';
 const contractPackage = 'skiff-compiler-contract';
+const deploymentPackage = 'skiff-deployment';
 const terminalProducerPackages = [facadePackage, contractPackage];
+const terminalProducerPackageSet = new Set(terminalProducerPackages);
 const terminalPackageDependencies = [
   contractPackage,
   'skiff-compiler-core',
@@ -27,11 +29,17 @@ const terminalPackageDependencies = [
   'skiff-syntax',
 ];
 
-// The public compiler graph has only two owners: package compilation and code-free contract compilation.
+// Package compilation and code-free contract compilation remain the two terminal compiler owners.
+// The facade alone coordinates Phase 5 authoring through one normal dependency on deployment.
 const finalProductionEdges = new Map([
   [facadePackage, terminalPackageDependencies],
   [contractPackage, ['skiff-artifact-model', 'skiff-artifact-identity']],
 ]);
+const phaseFiveAuthoringCoordinatorEdge = Object.freeze({
+  package: facadePackage,
+  dependency: deploymentPackage,
+  dependency_kind: 'normal',
+});
 
 const cliOptions = parseCliOptions(process.argv.slice(2));
 
@@ -90,63 +98,101 @@ function checkCompilerCrateDag(metadata, options = {}) {
   }
 
   const resolveNodeById = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
+  const workspaceGraph = {
+    workspaceMemberIds,
+    packageById,
+    resolveNodeById,
+  };
 
   for (const packageName of terminalProducerPackages) {
     const sourcePackage = workspacePackagesByName.get(packageName);
     if (sourcePackage === undefined) {
       continue;
     }
-    const node = resolveNodeById.get(sourcePackage.id);
-    if (node === undefined) {
-      result.failures.push(`workspace package ${packageName} is missing from cargo metadata resolve nodes`);
+    for (const edge of resolvedWorkspaceEdges(packageName, sourcePackage, workspaceGraph, result)) {
+      result.checkedEdges.push(edge);
+      checkEdge(edge, phase, result);
+    }
+  }
+
+  for (const [packageName, sourcePackage] of workspacePackagesByName) {
+    if (terminalProducerPackageSet.has(packageName) || !isCompilerStagePackage(packageName)) {
       continue;
     }
-    if (!Array.isArray(node.deps)) {
-      result.failures.push(`workspace package ${packageName} has no resolved dependency kind data`);
-      continue;
-    }
-
-    for (const resolvedDependency of node.deps) {
-      if (!workspaceMemberIds.has(resolvedDependency.pkg)) {
+    for (const edge of resolvedWorkspaceEdges(packageName, sourcePackage, workspaceGraph, result)) {
+      if (edge.dependency !== deploymentPackage) {
         continue;
       }
-      const dependencyPackage = packageById.get(resolvedDependency.pkg);
-      if (dependencyPackage === undefined) {
-        result.failures.push(
-          `resolved dependency ${resolvedDependency.pkg} of ${packageName} is missing from cargo metadata packages`,
-        );
-        continue;
-      }
-
-      for (const dependencyKind of resolvedDependencyKinds(resolvedDependency)) {
-        const edge = {
-          package: packageName,
-          dependency: dependencyPackage.name,
-          dependency_kind: dependencyKind,
-          dependency_key: resolvedDependency.name,
-        };
-        result.checkedEdges.push(edge);
-        checkEdge(edge, phase, result);
-      }
+      result.checkedEdges.push(edge);
+      checkEdge(edge, phase, result);
     }
   }
 
   return result;
 }
 
+function resolvedWorkspaceEdges(packageName, sourcePackage, workspaceGraph, result) {
+  const node = workspaceGraph.resolveNodeById.get(sourcePackage.id);
+  if (node === undefined) {
+    result.failures.push(`workspace package ${packageName} is missing from cargo metadata resolve nodes`);
+    return [];
+  }
+  if (!Array.isArray(node.deps)) {
+    result.failures.push(`workspace package ${packageName} has no resolved dependency kind data`);
+    return [];
+  }
+
+  const edges = [];
+  for (const resolvedDependency of node.deps) {
+    if (!workspaceGraph.workspaceMemberIds.has(resolvedDependency.pkg)) {
+      continue;
+    }
+    const dependencyPackage = workspaceGraph.packageById.get(resolvedDependency.pkg);
+    if (dependencyPackage === undefined) {
+      result.failures.push(
+        `resolved dependency ${resolvedDependency.pkg} of ${packageName} is missing from cargo metadata packages`,
+      );
+      continue;
+    }
+
+    for (const dependencyKind of resolvedDependencyKinds(resolvedDependency)) {
+      edges.push({
+        package: packageName,
+        dependency: dependencyPackage.name,
+        dependency_kind: dependencyKind,
+        dependency_key: resolvedDependency.name,
+      });
+    }
+  }
+  return edges;
+}
+
 function checkEdge(edge, phase, result) {
-  if (isAllowedProductionEdge(edge.package, edge.dependency)) {
+  if (isAllowedProductionEdge(edge)) {
     return;
   }
   result.failures.push(formatDisallowedEdge(edge, phase));
 }
 
-function isAllowedProductionEdge(packageName, dependencyName) {
-  const allowedDependencies = finalProductionEdges.get(packageName);
+function isAllowedProductionEdge(edge) {
+  if (isPhaseFiveAuthoringCoordinatorEdge(edge)) {
+    return true;
+  }
+  const allowedDependencies = finalProductionEdges.get(edge.package);
   if (allowedDependencies === undefined) {
     return false;
   }
-  return allowedDependencies.includes(dependencyName);
+  return allowedDependencies.includes(edge.dependency);
+}
+
+function isPhaseFiveAuthoringCoordinatorEdge(edge) {
+  return edge.package === phaseFiveAuthoringCoordinatorEdge.package
+    && edge.dependency === phaseFiveAuthoringCoordinatorEdge.dependency
+    && edge.dependency_kind === phaseFiveAuthoringCoordinatorEdge.dependency_kind;
+}
+
+function isCompilerStagePackage(packageName) {
+  return packageName.startsWith(`${facadePackage}-`);
 }
 
 function resolvedDependencyKinds(resolvedDependency) {
@@ -266,12 +312,13 @@ function streamDiagnostic(label, value) {
 function runSelfTests() {
   const tests = [
     {
-      name: 'terminal producers accept the final package and contract edges by resolved package name',
+      name: 'terminal producers accept final edges and the facade normal deployment coordinator edge',
       run: () => {
         const metadata = fixtureMetadata({
           packages: [
             facadePackage,
             contractPackage,
+            deploymentPackage,
             'skiff-compiler-core',
             'skiff-compiler-emission',
             'skiff-artifact-model',
@@ -283,6 +330,12 @@ function runSelfTests() {
               package: facadePackage,
               dependency: contractPackage,
               dependency_key: 'contract_renamed',
+              dependency_kind: 'normal',
+            },
+            {
+              package: facadePackage,
+              dependency: deploymentPackage,
+              dependency_key: 'deployment_renamed',
               dependency_kind: 'normal',
             },
             {
@@ -315,7 +368,69 @@ function runSelfTests() {
         });
         const result = checkCompilerCrateDag(metadata);
         assertPass(result, 'terminal dependency graph should pass');
-        assertEqual(result.checkedEdges.length, 6, 'every terminal owner edge should be checked');
+        assertEqual(result.checkedEdges.length, 7, 'every terminal owner edge should be checked');
+      },
+    },
+    {
+      name: 'facade deployment coordinator edge rejects dev and build dependency kinds',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [facadePackage, contractPackage, deploymentPackage],
+          edges: [
+            {
+              package: facadePackage,
+              dependency: deploymentPackage,
+              dependency_kind: 'dev',
+            },
+            {
+              package: facadePackage,
+              dependency: deploymentPackage,
+              dependency_kind: 'build',
+            },
+          ],
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'deployment coordination must be a normal facade dependency');
+        assertEqual(result.failures.length, 2, 'both wrong dependency kinds should fail');
+        assertIncludes(
+          result.failures.join('\n'),
+          `${facadePackage} has disallowed dev dependency on ${deploymentPackage}`,
+        );
+        assertIncludes(
+          result.failures.join('\n'),
+          `${facadePackage} has disallowed build dependency on ${deploymentPackage}`,
+        );
+      },
+    },
+    {
+      name: 'contract and compiler stage owners cannot depend on deployment',
+      run: () => {
+        const wrongOwners = [
+          contractPackage,
+          'skiff-compiler-compiled',
+          'skiff-compiler-source',
+          'skiff-compiler-lowering',
+          'skiff-compiler-input',
+          'skiff-compiler-projection',
+          'skiff-compiler-emission',
+        ];
+        const metadata = fixtureMetadata({
+          packages: [facadePackage, deploymentPackage, ...wrongOwners],
+          edges: wrongOwners.map((packageName) => ({
+            package: packageName,
+            dependency: deploymentPackage,
+            dependency_kind: 'normal',
+          })),
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'deployment coordination cannot move below the facade');
+        assertEqual(result.failures.length, wrongOwners.length, 'every wrong deployment owner edge should fail');
+        for (const packageName of wrongOwners) {
+          assertIncludes(
+            result.failures.join('\n'),
+            `${packageName} has disallowed normal dependency on ${deploymentPackage}`,
+          );
+        }
       },
     },
     {
@@ -334,7 +449,7 @@ function runSelfTests() {
       },
     },
     {
-      name: 'deleted publication ABI edge fails in every phase',
+      name: 'deleted publication ABI normal dev and build edges fail in every phase',
       run: () => {
         const metadata = fixtureMetadata({
           packages: [facadePackage, contractPackage, 'skiff-compiler-publication-abi'],
@@ -344,15 +459,28 @@ function runSelfTests() {
               dependency: 'skiff-compiler-publication-abi',
               dependency_kind: 'normal',
             },
+            {
+              package: facadePackage,
+              dependency: 'skiff-compiler-publication-abi',
+              dependency_kind: 'dev',
+            },
+            {
+              package: facadePackage,
+              dependency: 'skiff-compiler-publication-abi',
+              dependency_kind: 'build',
+            },
           ],
         });
         for (const phase of [0, defaultCliPhase]) {
           const result = checkCompilerCrateDag(metadata, { phase });
           assertFail(result, `publication ABI edge must fail in phase ${phase}`);
-          assertIncludes(
-            result.failures.join('\n'),
-            `${facadePackage} has disallowed normal dependency on skiff-compiler-publication-abi in phase ${phase}`,
-          );
+          assertEqual(result.failures.length, 3, `all publication ABI dependency kinds should fail in phase ${phase}`);
+          for (const dependencyKind of ['normal', 'dev', 'build']) {
+            assertIncludes(
+              result.failures.join('\n'),
+              `${facadePackage} has disallowed ${dependencyKind} dependency on skiff-compiler-publication-abi in phase ${phase}`,
+            );
+          }
         }
       },
     },

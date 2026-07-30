@@ -1,7 +1,4 @@
-use std::{
-    sync::{atomic::Ordering, Arc},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use skiff_runtime_boundary::plan::BoundaryUse;
 use skiff_runtime_capability_context::{DbKey, DbOneSelector};
@@ -12,11 +9,12 @@ use skiff_runtime_model::{
         RuntimeRecoverableTrustBoundary,
     },
     request_heap::RequestHeap,
-    runtime_value::RuntimeValue,
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
     type_plan::RuntimeTypePlan,
 };
 
 use super::{
+    assembly_execution::RuntimeExecutionProjection,
     capabilities::{
         DbCapabilityContext, DbCapabilityStore, DbRecoverableRuntimeContext,
         DbRecoverableRuntimeExpectedPlans,
@@ -24,7 +22,6 @@ use super::{
     db_command::{DbCommand, DbCommandChange, DbCommandValue, DbOneCommandSelector},
     db_eval::DbIrEvaluator,
     env::{Env, Flow},
-    invocation::EvalProgramProjection,
     program_execution::ProgramExecutionContext,
     recoverable_behavior::EvalRecoverableBehaviorHooks,
     runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan_with_use, runtime_to_wire},
@@ -37,6 +34,10 @@ use skiff_runtime_linked_program::{
     LinkedFileUnit,
 };
 use skiff_runtime_native_contract::native_target_name;
+
+mod lease;
+mod transaction;
+mod wait;
 
 const SERVICE_DB_UNCONFIGURED_REASON: &str =
     "serviceDb is not configured for this service activation";
@@ -125,7 +126,7 @@ impl Interpreter {
         };
         execute_db_command(
             &store,
-            self.program_projection()?,
+            RuntimeExecutionProjection::for_context(self, &program_context)?,
             &program_context,
             heap,
             command,
@@ -155,22 +156,30 @@ impl Interpreter {
             ));
         }
 
-        store.begin_transaction().await?;
+        let lifecycle =
+            transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
         let checkpoint = heap.checkpoint();
         let result = self
-            .eval_program_expr_ref(program_context, heap, env, addr, file, executable, body)
+            .eval_program_expr_ref(
+                program_context.clone(),
+                heap,
+                env,
+                addr,
+                file,
+                executable,
+                body,
+            )
             .await;
         match result {
             Ok(value) => {
-                if let Err(error) = store.commit_transaction().await {
-                    store.abort_transaction().await;
+                if let Err(error) = lifecycle.commit(&program_context, heap).await {
                     heap.rollback_to_checkpoint(checkpoint);
-                    return Err(error.into());
+                    return Err(error);
                 }
-                Ok(value)
+                Ok(value.into_value())
             }
             Err(error) => {
-                store.abort_transaction().await;
+                lifecycle.abort(&program_context, heap).await?;
                 heap.rollback_to_checkpoint(checkpoint);
                 Err(error)
             }
@@ -187,7 +196,7 @@ impl Interpreter {
         file: &LinkedFileUnit,
         executable: &LinkedExecutable,
         transaction: &DbTransactionIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let db_context = program_context.db_context();
         self.eval_program_explicit_db_transaction_with_context(
             program_context,
@@ -213,9 +222,10 @@ impl Interpreter {
         file: &LinkedFileUnit,
         executable: &LinkedExecutable,
         transaction: &DbTransactionIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let store = require_db_store(db_context, "db.transaction")?;
-        store.begin_transaction().await?;
+        let lifecycle =
+            transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
         let checkpoint = heap.checkpoint();
         let flow = self
             .exec_program_block(
@@ -231,11 +241,11 @@ impl Interpreter {
         match flow {
             Ok(Flow::Continue) => {
                 let result = match transaction.mode {
-                    DbTransactionModeIr::Effect => Ok(RuntimeValue::Null),
+                    DbTransactionModeIr::Effect => Ok(RuntimeValue::Null.into()),
                     DbTransactionModeIr::Value => match transaction.result {
                         Some(result) => {
                             self.eval_program_expr_ref(
-                                program_context,
+                                program_context.clone(),
                                 heap,
                                 env,
                                 addr,
@@ -253,41 +263,40 @@ impl Interpreter {
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => {
-                        store.abort_transaction().await;
+                        lifecycle.abort(&program_context, heap).await?;
                         heap.rollback_to_checkpoint(checkpoint);
                         return Err(error);
                     }
                 };
-                if let Err(error) = store.commit_transaction().await {
-                    store.abort_transaction().await;
+                if let Err(error) = lifecycle.commit(&program_context, heap).await {
                     heap.rollback_to_checkpoint(checkpoint);
-                    return Err(error.into());
+                    return Err(error);
                 }
                 Ok(result)
             }
             Ok(Flow::Return(_)) => {
-                store.abort_transaction().await;
+                lifecycle.abort(&program_context, heap).await?;
                 heap.rollback_to_checkpoint(checkpoint);
                 Err(RuntimeError::Decode(
                     "return is not allowed inside db transaction blocks".to_string(),
                 ))
             }
             Ok(Flow::Parked | Flow::ContinueConsumer) => {
-                store.abort_transaction().await;
+                lifecycle.abort(&program_context, heap).await?;
                 heap.rollback_to_checkpoint(checkpoint);
                 Err(RuntimeError::Decode(
                     "control flow is not allowed inside db transaction blocks".to_string(),
                 ))
             }
             Ok(Flow::Break | Flow::LoopContinue) => {
-                store.abort_transaction().await;
+                lifecycle.abort(&program_context, heap).await?;
                 heap.rollback_to_checkpoint(checkpoint);
                 Err(RuntimeError::Decode(
                     "db transaction exited with break/continue outside a loop".to_string(),
                 ))
             }
             Err(error) => {
-                store.abort_transaction().await;
+                lifecycle.abort(&program_context, heap).await?;
                 heap.rollback_to_checkpoint(checkpoint);
                 Err(error)
             }
@@ -336,49 +345,61 @@ impl Interpreter {
             )
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap)?);
-        let Some(handle) = store
-            .claim_lease(&claim.target.type_name, key, &claim.slot)
-            .await?
+        let claim_store = store.clone();
+        let type_name = super::db_eval::db_capability_target(&claim.target)
+            .lookup_key()
+            .to_string();
+        let slot = claim.slot.clone();
+        let Some(handle) = wait::await_operation(&program_context, heap, async move {
+            claim_store.claim_lease(&type_name, key, &slot).await
+        })
+        .await??
         else {
             return Ok(RuntimeValue::Bool(false));
         };
-
-        if let Some(binding_slot) = claim.binding_slot {
-            let value = runtime_from_wire(handle.value.as_value(), heap)?;
-            env.declare_binding("db lease binding", Some(binding_slot as usize), value)?;
-        }
 
         let renew_store = store.clone();
         let renew_hold = handle.hold.clone();
         let request_cancelled = program_context.execution().cancel_flag();
         let renew_period = Duration::from_millis((handle.ttl_ms / 3).max(1));
-        let renew_task = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(renew_period);
-            loop {
-                interval.tick().await;
-                if !handle_lease_renew_result(
-                    renew_store.renew_lease(&renew_hold).await,
-                    request_cancelled.as_ref(),
-                ) {
-                    break;
-                }
-            }
-        });
+        let renew_owner =
+            lease::LeaseRenewOwner::start(renew_store, renew_hold, renew_period, request_cancelled);
 
-        let flow = self
-            .exec_program_block(
-                program_context,
-                heap,
-                env,
-                addr,
-                file,
-                executable,
-                &claim.body,
-            )
-            .await;
-        renew_task.abort();
-        let lease_lost = store.lease_lost().await;
-        let release = store.release_lease(&handle.hold).await;
+        let binding = claim.binding_slot.map_or(Ok(()), |binding_slot| {
+            let value = runtime_from_wire(handle.value.as_value(), heap)?;
+            env.declare_binding("db lease binding", Some(binding_slot as usize), value)
+        });
+        let flow = match binding {
+            Ok(()) => {
+                self.exec_program_block(
+                    program_context.clone(),
+                    heap,
+                    env,
+                    addr,
+                    file,
+                    executable,
+                    &claim.body,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        wait::await_operation(&program_context, heap, async move {
+            renew_owner.stop_and_join().await;
+        })
+        .await?;
+
+        let lost_store = store.clone();
+        let lease_lost = wait::await_operation(&program_context, heap, async move {
+            lost_store.lease_lost().await
+        })
+        .await?;
+        let release_store = store.clone();
+        let release_hold = handle.hold.clone();
+        let release = wait::await_operation(&program_context, heap, async move {
+            release_store.release_lease(&release_hold).await
+        })
+        .await?;
         if lease_lost {
             return Err(RuntimeError::LeaseLost(
                 "db lease was lost while executing claim body".to_string(),
@@ -413,12 +434,26 @@ impl Interpreter {
     ) -> Result<RuntimeValue> {
         let store = require_db_store(&program_context.db_context(), "db lease")?;
         let key = self
-            .eval_program_expr_ref(program_context, heap, env, addr, file, executable, read.key)
+            .eval_program_expr_ref(
+                program_context.clone(),
+                heap,
+                env,
+                addr,
+                file,
+                executable,
+                read.key,
+            )
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap)?);
-        match store
-            .read_lease(&read.target.type_name, key, &read.slot)
-            .await?
+        let read_store = store.clone();
+        let type_name = super::db_eval::db_capability_target(&read.target)
+            .lookup_key()
+            .to_string();
+        let slot = read.slot.clone();
+        match wait::await_operation(&program_context, heap, async move {
+            read_store.read_lease(&type_name, key, &slot).await
+        })
+        .await??
         {
             Some(value) => runtime_from_wire(&value, heap),
             None => Ok(RuntimeValue::Null),
@@ -430,64 +465,9 @@ fn require_db_store(db_context: &DbCapabilityContext, target: &str) -> Result<Db
     Ok(db_context.require_store(target, SERVICE_DB_UNCONFIGURED_REASON)?)
 }
 
-fn handle_lease_renew_result<E>(
-    result: std::result::Result<bool, E>,
-    request_cancelled: &std::sync::atomic::AtomicBool,
-) -> bool {
-    match result {
-        Ok(true) => true,
-        Ok(false) | Err(_) => {
-            request_cancelled.store(true, Ordering::SeqCst);
-            false
-        }
-    }
-}
-
-#[cfg(all(test, any()))]
-mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use crate::error::RuntimeError;
-
-    use super::handle_lease_renew_result;
-
-    #[test]
-    fn lease_renew_success_keeps_request_running() {
-        let request_cancelled = AtomicBool::new(false);
-
-        assert!(handle_lease_renew_result(
-            Ok::<bool, RuntimeError>(true),
-            &request_cancelled
-        ));
-        assert!(!request_cancelled.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn lease_renew_rejected_cancels_request() {
-        let request_cancelled = AtomicBool::new(false);
-
-        assert!(!handle_lease_renew_result(
-            Ok::<bool, RuntimeError>(false),
-            &request_cancelled
-        ));
-        assert!(request_cancelled.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn lease_renew_error_cancels_request() {
-        let request_cancelled = AtomicBool::new(false);
-
-        assert!(!handle_lease_renew_result(
-            Err(RuntimeError::Decode("renew failed".to_string())),
-            &request_cancelled,
-        ));
-        assert!(request_cancelled.load(Ordering::SeqCst));
-    }
-}
-
 async fn execute_db_command(
     store: &DbCapabilityStore,
-    program: EvalProgramProjection<'_>,
+    program: RuntimeExecutionProjection<'_>,
     program_context: &ProgramExecutionContext<'_>,
     heap: &mut RequestHeap,
     command: DbCommand,
@@ -496,27 +476,33 @@ async fn execute_db_command(
         DbCommand::FindMany(command) => {
             if let Some(recoverable_runtime) = command.recoverable_runtime {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
-                let values = store
-                    .find_many_page_runtime(
-                        &command.type_name,
-                        command.query,
-                        command.options,
-                        command.projection,
-                        heap,
-                        context,
-                    )
-                    .await?;
-                return Ok(RuntimeValue::Heap(heap.alloc_array(values)?));
-            }
-            let page = store
-                .find_many_page(
-                    &command.type_name,
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
+                let operation = store.prepare_find_many_page_runtime(
+                    command.target.lookup_key(),
                     command.query,
                     command.options,
                     command.projection,
-                )
-                .await?;
+                    heap,
+                    context,
+                )?;
+                let finalizer =
+                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
+                let values = finalizer.finalize(heap)?;
+                return Ok(RuntimeValue::Heap(heap.alloc_array(values)?));
+            }
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            let page = wait::await_operation(program_context, heap, async move {
+                wait_store
+                    .find_many_page(
+                        &type_name,
+                        command.query,
+                        command.options,
+                        command.projection,
+                    )
+                    .await
+            })
+            .await??;
             decode_db_result(
                 &serde_json::Value::Array(
                     page.values
@@ -530,41 +516,52 @@ async fn execute_db_command(
             )
         }
         DbCommand::FindOne(command) => {
-            let type_name = command.type_name;
+            let display_type_name = command.target.type_name.clone();
+            let type_name = command.target.lookup_key().to_string();
             let projection = command.projection;
             if let Some(recoverable_runtime) = command.recoverable_runtime {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
-                let found = match command.selector {
-                    DbOneCommandSelector::Key { key } => {
-                        store
-                            .find_one_by_key_runtime(&type_name, key, projection, heap, context)
-                            .await?
-                    }
-                    DbOneCommandSelector::Query { query, order } => {
-                        store
-                            .find_one_by_query_runtime(
-                                &type_name, query, order, projection, heap, context,
-                            )
-                            .await?
-                    }
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
+                let operation = match command.selector {
+                    DbOneCommandSelector::Key { key } => store.prepare_find_one_by_key_runtime(
+                        &type_name, key, projection, heap, context,
+                    )?,
+                    DbOneCommandSelector::Query { query, order } => store
+                        .prepare_find_one_by_query_runtime(
+                            &type_name, query, order, projection, heap, context,
+                        )?,
                 };
+                let finalizer =
+                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
+                let found = finalizer.finalize(heap)?;
                 return match found {
                     Some(value) => Ok(value),
                     None if command.required => Err(RuntimeError::Decode(format!(
-                        "db require could not find {type_name}"
+                        "db require could not find {display_type_name}"
                     ))),
                     None => Ok(RuntimeValue::Null),
                 };
             }
             let found = match command.selector {
                 DbOneCommandSelector::Key { key } => {
-                    store.find_one_by_key(&type_name, key, projection).await?
+                    let wait_store = store.clone();
+                    let wait_type_name = type_name.clone();
+                    wait::await_operation(program_context, heap, async move {
+                        wait_store
+                            .find_one_by_key(&wait_type_name, key, projection)
+                            .await
+                    })
+                    .await??
                 }
                 DbOneCommandSelector::Query { query, order } => {
-                    store
-                        .find_one_by_query(&type_name, query, order, projection)
-                        .await?
+                    let wait_store = store.clone();
+                    let wait_type_name = type_name.clone();
+                    wait::await_operation(program_context, heap, async move {
+                        wait_store
+                            .find_one_by_query(&wait_type_name, query, order, projection)
+                            .await
+                    })
+                    .await??
                 }
             };
             match found {
@@ -575,14 +572,19 @@ async fn execute_db_command(
                     heap,
                 ),
                 None if command.required => Err(RuntimeError::Decode(format!(
-                    "db require could not find {type_name}"
+                    "db require could not find {display_type_name}"
                 ))),
                 None => Ok(RuntimeValue::Null),
             }
         }
         DbCommand::InsertOne(command) => match command.value {
             DbCommandValue::Wire(value) => {
-                let result = store.create(&command.type_name, value).await?;
+                let wait_store = store.clone();
+                let type_name = command.target.lookup_key().to_string();
+                let result = wait::await_operation(program_context, heap, async move {
+                    wait_store.create(&type_name, value).await
+                })
+                .await??;
                 decode_db_result(
                     result.as_value(),
                     &command.result_plan,
@@ -595,16 +597,27 @@ async fn execute_db_command(
                 recoverable_runtime,
             } => {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
-                Ok(store
-                    .create_runtime(&command.type_name, &value, heap, context)
-                    .await?)
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
+                let operation = store.prepare_create_runtime(
+                    command.target.lookup_key(),
+                    &value,
+                    heap,
+                    context,
+                )?;
+                let finalizer =
+                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
+                Ok(finalizer.finalize(heap)?)
             }
         },
         DbCommand::InsertMany(command) => {
-            let result = store
-                .insert_many_result(&command.type_name, command.values)
-                .await?;
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            let result = wait::await_operation(program_context, heap, async move {
+                wait_store
+                    .insert_many_result(&type_name, command.values)
+                    .await
+            })
+            .await??;
             decode_db_result(
                 result.as_value(),
                 &command.result_plan,
@@ -614,13 +627,13 @@ async fn execute_db_command(
         }
         DbCommand::UpdateOne(command) => match command.change {
             DbCommandChange::Wire(change) => {
-                let result = store
-                    .update_one(
-                        &command.type_name,
-                        service_db_selector(command.selector),
-                        change,
-                    )
-                    .await?;
+                let wait_store = store.clone();
+                let type_name = command.target.lookup_key().to_string();
+                let selector = service_db_selector(command.selector);
+                let result = wait::await_operation(program_context, heap, async move {
+                    wait_store.update_one(&type_name, selector, change).await
+                })
+                .await??;
                 result
                     .map(|value| {
                         decode_db_result(
@@ -638,23 +651,28 @@ async fn execute_db_command(
                 recoverable_runtime,
             } => {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
-                Ok(store
-                    .update_one_runtime(
-                        &command.type_name,
-                        service_db_selector(command.selector),
-                        change,
-                        heap,
-                        context,
-                    )
-                    .await
-                    .map(|value| value.unwrap_or(RuntimeValue::Null))?)
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
+                let operation = store.prepare_update_one_runtime(
+                    command.target.lookup_key(),
+                    service_db_selector(command.selector),
+                    change,
+                    heap,
+                    context,
+                )?;
+                let finalizer =
+                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
+                Ok(finalizer.finalize(heap)?.unwrap_or(RuntimeValue::Null))
             }
         },
         DbCommand::UpdateMany(command) => {
-            let result = store
-                .update_many(&command.type_name, command.query, command.change)
-                .await?;
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            let result = wait::await_operation(program_context, heap, async move {
+                wait_store
+                    .update_many(&type_name, command.query, command.change)
+                    .await
+            })
+            .await??;
             decode_db_result(
                 result.as_value(),
                 &command.result_plan,
@@ -663,14 +681,14 @@ async fn execute_db_command(
             )
         }
         DbCommand::UpsertKey(command) => {
-            let result = store
-                .upsert_by_key(
-                    &command.type_name,
-                    command.key,
-                    command.insert,
-                    command.change,
-                )
-                .await?;
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            let result = wait::await_operation(program_context, heap, async move {
+                wait_store
+                    .upsert_by_key(&type_name, command.key, command.insert, command.change)
+                    .await
+            })
+            .await??;
             decode_db_result(
                 result.as_value(),
                 &command.result_plan,
@@ -680,13 +698,13 @@ async fn execute_db_command(
         }
         DbCommand::ReplaceOne(command) => match command.value {
             DbCommandValue::Wire(value) => {
-                let result = store
-                    .replace_one(
-                        &command.type_name,
-                        service_db_selector(command.selector),
-                        value,
-                    )
-                    .await?;
+                let wait_store = store.clone();
+                let type_name = command.target.lookup_key().to_string();
+                let selector = service_db_selector(command.selector);
+                let result = wait::await_operation(program_context, heap, async move {
+                    wait_store.replace_one(&type_name, selector, value).await
+                })
+                .await??;
                 result
                     .map(|value| {
                         decode_db_result(
@@ -704,39 +722,69 @@ async fn execute_db_command(
                 recoverable_runtime,
             } => {
                 let context =
-                    db_recoverable_runtime_context(program, program_context, recoverable_runtime)?;
-                Ok(store
-                    .replace_one_runtime(
-                        &command.type_name,
-                        service_db_selector(command.selector),
-                        &value,
-                        heap,
-                        context,
-                    )
-                    .await
-                    .map(|value| value.unwrap_or(RuntimeValue::Null))?)
+                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
+                let operation = store.prepare_replace_one_runtime(
+                    command.target.lookup_key(),
+                    service_db_selector(command.selector),
+                    &value,
+                    heap,
+                    context,
+                )?;
+                let finalizer =
+                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
+                Ok(finalizer.finalize(heap)?.unwrap_or(RuntimeValue::Null))
             }
         },
-        DbCommand::DeleteOne(command) => Ok(RuntimeValue::Bool(
-            store
-                .delete_one(&command.type_name, service_db_selector(command.selector))
-                .await?,
-        )),
+        DbCommand::DeleteOne(command) => {
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            let selector = service_db_selector(command.selector);
+            Ok(RuntimeValue::Bool(
+                wait::await_operation(program_context, heap, async move {
+                    wait_store.delete_one(&type_name, selector).await
+                })
+                .await??,
+            ))
+        }
         DbCommand::DeleteMany(command) => {
-            let result = store.delete_many(&command.type_name, command.query).await?;
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            let result = wait::await_operation(program_context, heap, async move {
+                wait_store.delete_many(&type_name, command.query).await
+            })
+            .await??;
             runtime_from_wire(result.as_value(), heap)
         }
-        DbCommand::Count(command) => Ok(RuntimeValue::Number(
-            store.count(&command.type_name, command.query).await? as f64,
-        )),
-        DbCommand::ExistsKey(command) => Ok(RuntimeValue::Bool(
-            store.exists_by_key(&command.type_name, command.key).await?,
-        )),
-        DbCommand::ExistsQuery(command) => Ok(RuntimeValue::Bool(
-            store
-                .exists_by_query(&command.type_name, command.query)
-                .await?,
-        )),
+        DbCommand::Count(command) => {
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            Ok(RuntimeValue::Number(
+                wait::await_operation(program_context, heap, async move {
+                    wait_store.count(&type_name, command.query).await
+                })
+                .await?? as f64,
+            ))
+        }
+        DbCommand::ExistsKey(command) => {
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            Ok(RuntimeValue::Bool(
+                wait::await_operation(program_context, heap, async move {
+                    wait_store.exists_by_key(&type_name, command.key).await
+                })
+                .await??,
+            ))
+        }
+        DbCommand::ExistsQuery(command) => {
+            let wait_store = store.clone();
+            let type_name = command.target.lookup_key().to_string();
+            Ok(RuntimeValue::Bool(
+                wait::await_operation(program_context, heap, async move {
+                    wait_store.exists_by_query(&type_name, command.query).await
+                })
+                .await??,
+            ))
+        }
     }
 }
 
@@ -756,7 +804,7 @@ fn decode_db_result(
 }
 
 fn db_recoverable_runtime_context(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     program_context: &ProgramExecutionContext<'_>,
     expected_plans: DbRecoverableRuntimeExpectedPlans,
 ) -> Result<DbRecoverableRuntimeContext> {
@@ -766,11 +814,7 @@ fn db_recoverable_runtime_context(
         .to_string();
     let build_id = actor_context.request_build_id().to_string();
     Ok(DbRecoverableRuntimeContext {
-        behavior_hooks: Arc::new(EvalRecoverableBehaviorHooks::new(
-            program,
-            &artifact_identity,
-            &build_id,
-        )?),
+        behavior_hooks: Arc::new(EvalRecoverableBehaviorHooks::new_for_execution(program)?),
         expected_plans,
         artifact_identity,
         build_id: build_id.clone(),
@@ -795,3 +839,6 @@ fn service_db_selector(selector: DbOneCommandSelector) -> DbOneSelector {
         DbOneCommandSelector::Query { query, order } => DbOneSelector::Query { query, order },
     }
 }
+
+#[cfg(test)]
+mod tests;

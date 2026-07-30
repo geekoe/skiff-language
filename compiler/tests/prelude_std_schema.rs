@@ -1,6 +1,9 @@
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryUnavailableReason, ContractTypeRef, PackageLocalAbiSymbol,
-    PackageRefIr, TypeDescriptorIr, TypeRefIr,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
+    BoundaryCallbackLifetime, BoundaryStreamContract, BoundaryUnavailableReason,
+    BoundaryValueCarrier, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractTypeRef, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeDescriptorIr,
+    TypeRefIr,
 };
 
 mod common;
@@ -135,6 +138,48 @@ fn builtin_types_reach_the_package_boundary_projection() {
 }
 
 #[test]
+fn imported_http_types_reach_unary_and_stream_boundary_projection() {
+    let temp = TestDir::new("skiff-compiler", "imported-http-boundary-types");
+    temp.write(
+        "package.yml",
+        "id: example.com/http-boundary\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "handle: main.handle\nstream: main.stream\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
+
+function handle(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}
+"#,
+    );
+
+    let project =
+        compile_package_project(temp.path()).expect("imported HTTP boundary source should compile");
+    for public_name in ["handle", "stream"] {
+        let PackageLocalAbiSymbol::Callable { callable_id, .. } =
+            &project.package.artifact.package_local_abi.public_symbols[public_name]
+        else {
+            panic!("{public_name} must be a canonical package callable")
+        };
+        let projection = &project.package.artifact.boundary_projections[callable_id];
+        if let BoundaryCallableProjection::Unavailable { reasons } = projection {
+            assert!(
+                !reasons.contains(&BoundaryUnavailableReason::UnsupportedBoundaryType),
+                "{public_name} must admit its imported HTTP types before independent semantic eligibility closes: {reasons:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn callback_type_is_explicitly_boundary_unavailable() {
     let temp = TestDir::new("skiff-compiler", "callback-boundary-package");
     temp.write("package.yml", "id: example.com/callbacks\nversion: 1.0.0\n");
@@ -163,7 +208,80 @@ fn callback_type_is_explicitly_boundary_unavailable() {
 }
 
 #[test]
-fn stream_type_is_explicitly_boundary_unavailable() {
+fn exact_any_interface_projects_request_scoped_callback_from_real_source() {
+    let temp = TestDir::new("skiff-compiler", "any-interface-callback-boundary-package");
+    temp.write(
+        "package.yml",
+        "id: example.com/any-interface-callbacks\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "Handler: callback.Handler\nrun: callback.run\n");
+    temp.write(
+        "callback.skiff",
+        r#"interface Handler {
+  function handle(self: Self, value: string) -> string
+}
+
+function run(callback: any Handler) -> string {
+  return "accepted"
+}
+"#,
+    );
+
+    let project =
+        compile_package_project(temp.path()).expect("exact any-interface callback should compile");
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &project.package.artifact.package_local_abi.public_symbols["run"]
+    else {
+        panic!("run must remain a public callable")
+    };
+    assert!(
+        matches!(
+            &signature.parameters[0].ty,
+            PackageTypeRef::AnyInterface {
+                interface,
+                arguments,
+            } if arguments.is_empty() && matches!(
+                interface.as_ref(),
+                PackageTypeRef::PackageSchema { package_id, stable_schema_key, .. }
+                    if package_id == "example.com/any-interface-callbacks"
+                        && stable_schema_key == "Handler"
+            )
+        ),
+        "normalized callback signature: {signature:?}; schema={:?}",
+        (
+            &project.package.package_schema_index,
+            &project.package.artifact.package_local_abi.public_symbols["Handler"]
+        )
+    );
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = &project.package.artifact.boundary_projections[callable_id]
+    else {
+        panic!("exact any-interface callback must be boundary available")
+    };
+    assert!(matches!(
+        operation_contract.parameters[0].value_plan,
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Request,
+            ..
+        }
+    ));
+    assert!(matches!(
+        operation_contract.callbacks,
+        BoundaryCallbackContract::RequestScoped {
+            lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn stream_type_projects_an_explicit_server_stream_boundary() {
     let temp = TestDir::new("skiff-compiler", "stream-boundary-package");
     temp.write("package.yml", "id: example.com/stream\nversion: 1.0.0\n");
     temp.write("api.yml", "events: stream.events\n");
@@ -182,8 +300,20 @@ fn stream_type_is_explicitly_boundary_unavailable() {
         .expect("exported stream callable should have a projection");
     assert!(matches!(
         projection,
-        BoundaryCallableProjection::Unavailable { reasons }
-            if reasons.contains(&BoundaryUnavailableReason::UnsupportedStream)
+        BoundaryCallableProjection::Available {
+            operation_contract,
+            ..
+        } if matches!(
+            &operation_contract.stream,
+            BoundaryStreamContract::ServerStream {
+                item_type,
+                item_value_plan: BoundaryValuePlan::Linkable {
+                    owner: BoundaryValueOwner::Provider,
+                    lifetime: BoundaryValueLifetime::Stream,
+                    ..
+                },
+            } if item_type == &ContractTypeRef::builtin("string")
+        )
     ));
 }
 
@@ -263,8 +393,8 @@ fn prelude_builtin_schema_is_typed_in_file_ir() {
     let TypeDescriptorIr::Record { fields } = &builtins.descriptor else {
         panic!("Builtins should remain a record");
     };
-    assert_eq!(fields["flag"], TypeRefIr::native("bool"));
-    assert_eq!(fields["count"], TypeRefIr::native("integer"));
+    assert_eq!(fields["flag"], TypeRefIr::builtin("bool"));
+    assert_eq!(fields["count"], TypeRefIr::builtin("integer"));
 }
 
 #[test]

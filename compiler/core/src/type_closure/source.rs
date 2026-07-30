@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    FileIrUnit, PackageImplementationLinks, PackageRefIr, PackageSymbolRef, TypeDeclIr, TypeRefIr,
+    FileIrUnit, NominalTypeRefBaseIr, PackageImplementationLinks, PackageRefIr, PackageSymbolRef,
+    TypeDeclIr, TypeRefIr,
 };
 
 #[derive(Clone, Debug)]
@@ -184,7 +185,32 @@ impl<'a> ArtifactNominalTypeSource<'a> {
                 self.resolve_symbol_in_module_parts(&symbol.module_path, &symbol.symbol)
             }
             TypeRefIr::PackageSymbol { symbol } => self.resolve_package_symbol_parts(symbol),
-            TypeRefIr::Native { .. }
+            TypeRefIr::AppliedNominal { base, .. } => match base {
+                NominalTypeRefBaseIr::LocalType { type_index } => {
+                    let unit = self.unit_by_module_path(current_module)?;
+                    unit.type_table
+                        .get(*type_index as usize)
+                        .map(|declaration| (unit.module_path.as_str(), declaration))
+                }
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => {
+                    let unit = self.unit_by_module_path(module_path)?;
+                    unit.type_table
+                        .get(*type_index as usize)
+                        .map(|declaration| (unit.module_path.as_str(), declaration))
+                }
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    self.resolve_symbol_in_module_parts(&symbol.module_path, &symbol.symbol)
+                }
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+                    self.resolve_package_symbol_parts(symbol)
+                }
+                NominalTypeRefBaseIr::PackageSchema { .. } => None,
+            },
+            TypeRefIr::Builtin { .. }
+            | TypeRefIr::PackageSchema { .. }
             | TypeRefIr::Record { .. }
             | TypeRefIr::Union { .. }
             | TypeRefIr::Nullable { .. }
@@ -224,6 +250,7 @@ pub fn is_nominal_type_ref(ty: &TypeRefIr) -> bool {
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
+            | TypeRefIr::AppliedNominal { .. }
             | TypeRefIr::DbObjectSymbol { .. }
     )
 }

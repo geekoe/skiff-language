@@ -4,7 +4,11 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallbackOperation, ContractSchemaType, ContractTypeId, ContractTypeRef,
+    BoundaryCallbackOperation, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeRef,
+};
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
+use skiff_runtime_boundary::service_linkable::{
+    ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
 };
 use skiff_runtime_model::{
     callback_projection::{
@@ -18,7 +22,7 @@ use skiff_runtime_model::{
 const EXPLICIT_NATIVE_ADAPTER_PREFIX: &str = "native-callback-adapter:";
 
 static EXPLICIT_NATIVE_ADAPTERS: OnceLock<
-    RwLock<BTreeMap<String, ExplicitNativeCallbackAdapterDescriptor>>,
+    RwLock<BTreeMap<(String, PackageSchemaTypeRef), ExplicitNativeCallbackAdapterDescriptor>>,
 > = OnceLock::new();
 
 pub fn explicit_native_callback_adapter_concrete_type(adapter_identity: &str) -> String {
@@ -29,7 +33,7 @@ pub fn explicit_native_callback_adapter_concrete_type(adapter_identity: &str) ->
 pub struct ExplicitNativeCallbackAdapterDescriptor {
     adapter_identity: String,
     boundary_type: ContractTypeRef,
-    canonical_contract_type_id: ContractTypeId,
+    canonical_package_schema_type: PackageSchemaTypeRef,
     operations: BTreeMap<String, ExplicitNativeCallbackOperation>,
 }
 
@@ -77,19 +81,32 @@ impl ExplicitNativeCallbackAdapterDescriptor {
     pub fn new(
         adapter_identity: impl Into<String>,
         boundary_type: ContractTypeRef,
-        canonical_contract_type_id: ContractTypeId,
+        canonical_package_schema_type: PackageSchemaTypeRef,
         operations: BTreeMap<String, ExplicitNativeCallbackOperation>,
     ) -> Result<Self, CallbackAdapterError> {
         let descriptor = Self {
             adapter_identity: adapter_identity.into(),
             boundary_type,
-            canonical_contract_type_id,
+            canonical_package_schema_type,
             operations,
         };
         if descriptor.adapter_identity.is_empty() {
             return Err(CallbackAdapterError::MissingAdapterIdentity);
         }
-        if descriptor.canonical_contract_type_id.as_str().is_empty() {
+        if descriptor
+            .canonical_package_schema_type
+            .package_id
+            .is_empty()
+            || descriptor
+                .canonical_package_schema_type
+                .stable_schema_key
+                .is_empty()
+            || descriptor
+                .canonical_package_schema_type
+                .package_schema_type_id
+                .as_str()
+                .is_empty()
+        {
             return Err(CallbackAdapterError::MissingContract);
         }
         Ok(descriptor)
@@ -103,8 +120,8 @@ impl ExplicitNativeCallbackAdapterDescriptor {
         &self.boundary_type
     }
 
-    pub fn canonical_contract_type_id(&self) -> &ContractTypeId {
-        &self.canonical_contract_type_id
+    pub fn canonical_package_schema_type(&self) -> &PackageSchemaTypeRef {
+        &self.canonical_package_schema_type
     }
 
     pub fn operations(&self) -> &BTreeMap<String, ExplicitNativeCallbackOperation> {
@@ -119,7 +136,11 @@ pub fn register_explicit_native_callback_adapter(
         .get_or_init(|| RwLock::new(BTreeMap::new()))
         .write()
         .map_err(|_| CallbackAdapterError::AdapterRegistryUnavailable)?;
-    if let Some(existing) = adapters.get(descriptor.adapter_identity()) {
+    let key = (
+        descriptor.adapter_identity().to_string(),
+        descriptor.canonical_package_schema_type().clone(),
+    );
+    if let Some(existing) = adapters.get(&key) {
         return if existing == &descriptor {
             Ok(())
         } else {
@@ -128,7 +149,7 @@ pub fn register_explicit_native_callback_adapter(
             })
         };
     }
-    adapters.insert(descriptor.adapter_identity.clone(), descriptor);
+    adapters.insert(key, descriptor);
     Ok(())
 }
 
@@ -143,24 +164,24 @@ pub struct InProcessCallbackAdapter {
     projection: CallbackContractProjection,
     kind: InProcessCallbackAdapterKind,
     receiver: RuntimeValue,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    package_schema_records: PackageSchemaRecords,
     owner_heap: Arc<tokio::sync::Mutex<RequestHeap>>,
 }
 
 impl InProcessCallbackAdapter {
     pub fn from_local_interface(
-        canonical_contract_type_id: ContractTypeId,
+        canonical_package_schema_type: PackageSchemaTypeRef,
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
-        boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+        package_schema_records: &PackageSchemaRecords,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         Self::from_interface(
-            canonical_contract_type_id,
+            canonical_package_schema_type,
             interface,
             contract_operations,
             None,
-            boundary_schema,
+            package_schema_records,
             source_heap,
             false,
         )
@@ -168,8 +189,10 @@ impl InProcessCallbackAdapter {
 
     pub fn from_registered_explicit_native_interface(
         boundary_type: &ContractTypeRef,
+        canonical_package_schema_type: PackageSchemaTypeRef,
+        contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         interface: &InterfaceValue,
-        boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+        package_schema_records: &PackageSchemaRecords,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         let adapter_identity = explicit_native_adapter_identity(interface)?;
@@ -177,42 +200,58 @@ impl InProcessCallbackAdapter {
             .get_or_init(|| RwLock::new(BTreeMap::new()))
             .read()
             .map_err(|_| CallbackAdapterError::AdapterRegistryUnavailable)?;
-        let descriptor = adapters.get(adapter_identity).ok_or_else(|| {
-            CallbackAdapterError::UnregisteredExplicitNativeAdapter {
+        let descriptor = adapters
+            .get(&(
+                adapter_identity.to_string(),
+                canonical_package_schema_type.clone(),
+            ))
+            .ok_or_else(|| CallbackAdapterError::UnregisteredExplicitNativeAdapter {
                 adapter_identity: adapter_identity.to_string(),
-            }
-        })?;
+            })?;
         if descriptor.boundary_type() != boundary_type {
             return Err(CallbackAdapterError::BoundaryTypeMismatch);
         }
-        let contract_operations = descriptor
-            .operations()
-            .iter()
-            .map(|(name, operation)| (name.clone(), operation.contract().clone()))
-            .collect();
+        if descriptor.operations().len() != contract_operations.len()
+            || descriptor.operations().iter().any(|(name, operation)| {
+                contract_operations.get(name) != Some(operation.contract())
+            })
+        {
+            return Err(CallbackAdapterError::NativeOperationMappingMismatch);
+        }
         Self::from_interface(
-            descriptor.canonical_contract_type_id().clone(),
+            canonical_package_schema_type,
             interface,
-            &contract_operations,
+            contract_operations,
             Some(descriptor.operations()),
-            boundary_schema,
+            package_schema_records,
             source_heap,
             true,
         )
     }
 
     fn from_interface(
-        canonical_contract_type_id: ContractTypeId,
+        canonical_package_schema_type: PackageSchemaTypeRef,
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         native_mappings: Option<&BTreeMap<String, ExplicitNativeCallbackOperation>>,
-        boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+        package_schema_records: &PackageSchemaRecords,
         source_heap: &RequestHeap,
         require_native_adapter: bool,
     ) -> Result<Self, CallbackAdapterError> {
-        if canonical_contract_type_id.as_str().is_empty() {
+        if canonical_package_schema_type.package_id.is_empty()
+            || canonical_package_schema_type.stable_schema_key.is_empty()
+            || canonical_package_schema_type
+                .package_schema_type_id
+                .as_str()
+                .is_empty()
+        {
             return Err(CallbackAdapterError::MissingContract);
         }
+        validate_callback_schema(
+            &canonical_package_schema_type,
+            contract_operations,
+            package_schema_records,
+        )?;
         let InterfaceCarrier::Local {
             concrete_type: _,
             method_table,
@@ -233,7 +272,7 @@ impl InProcessCallbackAdapter {
             InProcessCallbackAdapterKind::LocalInterface
         };
         let projection = CallbackContractProjection::build(
-            canonical_contract_type_id,
+            canonical_package_schema_type,
             contract_operations,
             interface,
         )?;
@@ -262,13 +301,13 @@ impl InProcessCallbackAdapter {
             projection,
             kind,
             receiver,
-            boundary_schema: boundary_schema.clone(),
+            package_schema_records: package_schema_records.clone(),
             owner_heap: Arc::new(tokio::sync::Mutex::new(owner_heap)),
         })
     }
 
-    pub fn canonical_contract_type_id(&self) -> &ContractTypeId {
-        self.projection.canonical_contract_type_id()
+    pub fn canonical_package_schema_type(&self) -> &PackageSchemaTypeRef {
+        self.projection.canonical_package_schema_type()
     }
 
     pub fn source_interface(&self) -> &str {
@@ -283,8 +322,8 @@ impl InProcessCallbackAdapter {
         &self.receiver
     }
 
-    pub fn boundary_schema(&self) -> &BTreeMap<ContractTypeId, ContractSchemaType> {
-        &self.boundary_schema
+    pub fn package_schema_records(&self) -> &PackageSchemaRecords {
+        &self.package_schema_records
     }
 
     pub fn projection(&self) -> &CallbackContractProjection {
@@ -295,8 +334,18 @@ impl InProcessCallbackAdapter {
         self.projection.operations()
     }
 
-    pub fn owner_heap(&self) -> &tokio::sync::Mutex<RequestHeap> {
-        &self.owner_heap
+    /// Acquires the callback owner's heap without borrowing the adapter.
+    ///
+    /// Callback execution uses the owned guard as its one invocation-scoped
+    /// authority. The adapter deliberately exposes no independent heap
+    /// mutation methods, and reentrant invocation fails immediately instead
+    /// of waiting on its own owner lock.
+    pub fn try_lock_owner_heap_owned(
+        &self,
+    ) -> Result<tokio::sync::OwnedMutexGuard<RequestHeap>, CallbackAdapterError> {
+        Arc::clone(&self.owner_heap)
+            .try_lock_owned()
+            .map_err(|_| CallbackAdapterError::OwnerStateUnavailable)
     }
 
     pub fn operation(
@@ -345,10 +394,72 @@ pub enum CallbackAdapterError {
     AdapterRegistryUnavailable,
     #[error("callback adapter owner state cannot be materialized: {message}")]
     OwnerStateMaterialization { message: String },
+    #[error("callback adapter owner state is already executing")]
+    OwnerStateUnavailable,
+    #[error("callback adapter package schema is invalid: {message}")]
+    InvalidPackageSchema { message: String },
     #[error("callback operation {method_abi_id} at slot {slot} is unavailable")]
     OperationUnavailable { slot: u32, method_abi_id: String },
     #[error(transparent)]
     CanonicalProjection(#[from] CallbackContractProjectionError),
+}
+
+fn validate_callback_schema(
+    canonical_type: &PackageSchemaTypeRef,
+    operations: &BTreeMap<String, BoundaryCallbackOperation>,
+    records: &PackageSchemaRecords,
+) -> Result<(), CallbackAdapterError> {
+    let record = records
+        .get(&canonical_type.package_schema_type_id)
+        .ok_or_else(|| CallbackAdapterError::InvalidPackageSchema {
+            message: format!(
+                "missing package schema record {}",
+                canonical_type.package_schema_type_id
+            ),
+        })?;
+    if record.package_id != canonical_type.package_id
+        || record.stable_schema_key != canonical_type.stable_schema_key
+        || record.package_schema_type_id != canonical_type.package_schema_type_id
+    {
+        return Err(CallbackAdapterError::InvalidPackageSchema {
+            message: "callback package owner, stable key, or type identity mismatch".to_string(),
+        });
+    }
+    let ContractTypeDescriptor::CallbackInterface {
+        operations: admitted,
+    } = &record.canonical_descriptor.descriptor
+    else {
+        return Err(CallbackAdapterError::InvalidPackageSchema {
+            message: "package schema type is not a callback interface".to_string(),
+        });
+    };
+    if admitted != operations {
+        return Err(CallbackAdapterError::InvalidPackageSchema {
+            message: "callback operation set does not match admitted package schema".to_string(),
+        });
+    }
+    let detached_plan = skiff_artifact_model::BoundaryValuePlan::Linkable {
+        carrier: skiff_artifact_model::BoundaryValueCarrier::DetachedValueGraph,
+        encoding: skiff_artifact_model::BoundaryValueEncoding::CanonicalValue,
+        owner: skiff_artifact_model::BoundaryValueOwner::Caller,
+        lifetime: skiff_artifact_model::BoundaryValueLifetime::Call,
+    };
+    for operation in operations.values() {
+        for ty in operation
+            .parameters
+            .iter()
+            .chain(std::iter::once(&operation.return_type))
+        {
+            ServiceLinkableContractPlan::new(ty, records, &detached_plan).map_err(
+                |error: ServiceLinkableMaterializationError| {
+                    CallbackAdapterError::InvalidPackageSchema {
+                        message: error.to_string(),
+                    }
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn explicit_native_adapter_identity(
@@ -366,18 +477,62 @@ fn explicit_native_adapter_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_artifact_model::{
+        PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    };
     use skiff_runtime_model::addr::ExecutableAddr;
     use skiff_runtime_model::runtime_value::{
         InterfaceMethodSignature, InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget,
         InterfaceMethodType, InterfaceReceiverCallAbi, InterfaceValue,
     };
 
-    const CONTRACT: &str = "contract:observer";
+    const CONTRACT: &str = "package-schema:observer";
+    const PACKAGE: &str = "example.observer";
+    const STABLE_KEY: &str = "api.Observer";
     const INTERFACE: &str = "interface-abi:observer";
     const METHOD: &str = "method:observer:observe";
 
     fn boundary_type() -> ContractTypeRef {
-        ContractTypeRef::builtin("native-handle")
+        let reference = package_schema_type();
+        ContractTypeRef::package_schema(
+            reference.package_id,
+            reference.stable_schema_key,
+            reference.package_schema_type_id,
+        )
+    }
+
+    fn package_schema_type() -> PackageSchemaTypeRef {
+        package_schema_type_for(PACKAGE, STABLE_KEY, CONTRACT)
+    }
+
+    fn package_schema_type_for(
+        package_id: &str,
+        stable_schema_key: &str,
+        type_id: &str,
+    ) -> PackageSchemaTypeRef {
+        PackageSchemaTypeRef {
+            package_id: package_id.to_string(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new(type_id),
+        }
+    }
+
+    fn schema() -> PackageSchemaRecords {
+        let reference = package_schema_type();
+        BTreeMap::from([(
+            reference.package_schema_type_id.clone(),
+            Arc::new(PackageSchemaTypeRecord {
+                package_id: reference.package_id,
+                stable_schema_key: reference.stable_schema_key,
+                package_schema_type_id: reference.package_schema_type_id,
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::CallbackInterface {
+                        operations: operations(),
+                    },
+                },
+            }),
+        )])
     }
 
     fn operations() -> BTreeMap<String, BoundaryCallbackOperation> {
@@ -386,7 +541,6 @@ mod tests {
             BoundaryCallbackOperation {
                 parameters: vec![ContractTypeRef::builtin("string")],
                 return_type: ContractTypeRef::builtin("bool"),
-                may_suspend: false,
             },
         )])
     }
@@ -439,7 +593,7 @@ mod tests {
             ExplicitNativeCallbackAdapterDescriptor::new(
                 "builtin:test",
                 boundary_type(),
-                ContractTypeId::new(CONTRACT),
+                package_schema_type(),
                 native_operations(),
             )
             .unwrap(),
@@ -447,14 +601,22 @@ mod tests {
         .unwrap();
         let adapter = InProcessCallbackAdapter::from_registered_explicit_native_interface(
             &boundary_type(),
+            package_schema_type(),
+            &operations(),
             &interface(explicit_native_callback_adapter_concrete_type(
                 "builtin:test",
             )),
-            &BTreeMap::new(),
+            &schema(),
             &RequestHeap::default(),
         )
         .expect("explicit native adapter should project");
-        assert_eq!(adapter.canonical_contract_type_id().as_str(), CONTRACT);
+        assert_eq!(
+            adapter
+                .canonical_package_schema_type()
+                .package_schema_type_id
+                .as_str(),
+            CONTRACT
+        );
         assert!(matches!(
             adapter.kind(),
             InProcessCallbackAdapterKind::ExplicitNative { adapter_identity }
@@ -475,10 +637,12 @@ mod tests {
         assert!(matches!(
             InProcessCallbackAdapter::from_registered_explicit_native_interface(
                 &ContractTypeRef::builtin("different-native-handle"),
+                package_schema_type(),
+                &operations(),
                 &interface(explicit_native_callback_adapter_concrete_type(
                     "builtin:test"
                 )),
-                &BTreeMap::new(),
+                &schema(),
                 &RequestHeap::default(),
             ),
             Err(CallbackAdapterError::BoundaryTypeMismatch)
@@ -488,19 +652,88 @@ mod tests {
     #[test]
     fn callback_adapter_projects_distinct_contract_and_interface_identities_by_name() {
         let adapter = InProcessCallbackAdapter::from_local_interface(
-            ContractTypeId::new(CONTRACT),
+            package_schema_type(),
             &interface("local:observer".to_string()),
             &operations(),
-            &BTreeMap::new(),
+            &schema(),
             &RequestHeap::default(),
         )
         .expect("contract identity must not be compared to local interface ABI");
-        assert_eq!(adapter.canonical_contract_type_id().as_str(), CONTRACT);
+        assert_eq!(
+            adapter.canonical_package_schema_type(),
+            &package_schema_type()
+        );
         assert_eq!(adapter.source_interface(), INTERFACE);
         assert_eq!(
             adapter.operation(0, METHOD).unwrap().local_method_name(),
             "observe"
         );
+    }
+
+    #[test]
+    fn callback_adapter_retains_the_admitted_shared_record_without_payload_clone() {
+        let records = schema();
+        let id = package_schema_type().package_schema_type_id;
+        let admitted = Arc::clone(
+            records
+                .get(&id)
+                .expect("callback record should be admitted"),
+        );
+        let owners_before = Arc::strong_count(&admitted);
+
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            package_schema_type(),
+            &interface("local:shared-record".to_string()),
+            &operations(),
+            &records,
+            &RequestHeap::default(),
+        )
+        .expect("adapter should retain shared schema records");
+
+        assert_eq!(Arc::strong_count(&admitted), owners_before + 1);
+        assert!(Arc::ptr_eq(
+            adapter
+                .package_schema_records()
+                .get(&id)
+                .expect("adapter should retain the callback record"),
+            &admitted,
+        ));
+    }
+
+    #[test]
+    fn callback_adapter_owned_owner_heap_guard_is_exclusive_and_released_once() {
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            package_schema_type(),
+            &interface("local:owned-owner-heap".to_string()),
+            &operations(),
+            &schema(),
+            &RequestHeap::default(),
+        )
+        .expect("callback adapter should construct");
+
+        let first = adapter
+            .try_lock_owner_heap_owned()
+            .expect("first owned owner-heap guard should be available");
+        assert!(matches!(
+            adapter.try_lock_owner_heap_owned(),
+            Err(CallbackAdapterError::OwnerStateUnavailable)
+        ));
+        drop(first);
+
+        let mut second = adapter
+            .try_lock_owner_heap_owned()
+            .expect("dropping the first guard should release the owner heap exactly once");
+        second
+            .alloc_array(vec![RuntimeValue::String(
+                "visible-owner-state".to_string(),
+            )])
+            .expect("owner heap should remain usable through the owned guard");
+        drop(second);
+
+        let third = adapter
+            .try_lock_owner_heap_owned()
+            .expect("the owner heap should remain reacquirable");
+        assert_eq!(third.len(), 1);
     }
 
     #[test]
@@ -519,7 +752,7 @@ mod tests {
             ExplicitNativeCallbackAdapterDescriptor::new(
                 identity,
                 boundary_type(),
-                ContractTypeId::new(CONTRACT),
+                package_schema_type(),
                 wrong_mapping,
             )
             .unwrap(),
@@ -529,8 +762,10 @@ mod tests {
         assert!(matches!(
             InProcessCallbackAdapter::from_registered_explicit_native_interface(
                 &boundary_type(),
+                package_schema_type(),
+                &operations(),
                 &interface(explicit_native_callback_adapter_concrete_type(identity)),
-                &BTreeMap::new(),
+                &schema(),
                 &RequestHeap::default(),
             ),
             Err(CallbackAdapterError::NativeOperationMappingMismatch)
@@ -542,8 +777,10 @@ mod tests {
         assert!(matches!(
             InProcessCallbackAdapter::from_registered_explicit_native_interface(
                 &boundary_type(),
+                package_schema_type(),
+                &operations(),
                 &interface("native-handle:secret".to_string()),
-                &BTreeMap::new(),
+                &schema(),
                 &RequestHeap::default(),
             ),
             Err(CallbackAdapterError::MissingExplicitNativeAdapter)
@@ -553,13 +790,173 @@ mod tests {
         assert!(matches!(
             InProcessCallbackAdapter::from_registered_explicit_native_interface(
                 &boundary_type(),
+                package_schema_type(),
+                &operations(),
                 &interface(explicit_native_callback_adapter_concrete_type(identity)),
-                &BTreeMap::new(),
+                &schema(),
                 &RequestHeap::default(),
             ),
             Err(CallbackAdapterError::UnregisteredExplicitNativeAdapter {
                 adapter_identity
             }) if adapter_identity == identity
         ));
+    }
+
+    #[test]
+    fn callback_adapter_rejects_package_identity_descriptor_and_closure_mismatches() {
+        let canonical = package_schema_type();
+        for mutate in [
+            |record: &mut PackageSchemaTypeRecord| record.package_id.push_str(".wrong"),
+            |record: &mut PackageSchemaTypeRecord| record.stable_schema_key.push_str(".wrong"),
+            |record: &mut PackageSchemaTypeRecord| {
+                record.package_schema_type_id = PackageSchemaTypeId::new("wrong")
+            },
+        ] as [fn(&mut PackageSchemaTypeRecord); 3]
+        {
+            let mut invalid = schema();
+            mutate(Arc::make_mut(
+                invalid.get_mut(&canonical.package_schema_type_id).unwrap(),
+            ));
+            assert!(matches!(
+                InProcessCallbackAdapter::from_local_interface(
+                    canonical.clone(),
+                    &interface("local:invalid".to_string()),
+                    &operations(),
+                    &invalid,
+                    &RequestHeap::default(),
+                ),
+                Err(CallbackAdapterError::InvalidPackageSchema { .. })
+            ));
+        }
+
+        let mut non_callback = schema();
+        Arc::make_mut(
+            non_callback
+                .get_mut(&canonical.package_schema_type_id)
+                .unwrap(),
+        )
+        .canonical_descriptor
+        .descriptor = ContractTypeDescriptor::Enumeration {
+            variants: vec!["value".to_string()],
+        };
+        assert!(matches!(
+            InProcessCallbackAdapter::from_local_interface(
+                canonical.clone(),
+                &interface("local:non-callback".to_string()),
+                &operations(),
+                &non_callback,
+                &RequestHeap::default(),
+            ),
+            Err(CallbackAdapterError::InvalidPackageSchema { .. })
+        ));
+
+        let child = package_schema_type_for("example.payload", "api.Payload", "schema:payload");
+        let mut nested_operations = operations();
+        nested_operations.get_mut("observe").unwrap().parameters =
+            vec![ContractTypeRef::package_schema(
+                child.package_id,
+                child.stable_schema_key,
+                child.package_schema_type_id,
+            )];
+        let mut missing_closure = schema();
+        let ContractTypeDescriptor::CallbackInterface {
+            operations: admitted,
+        } = &mut Arc::make_mut(
+            missing_closure
+                .get_mut(&canonical.package_schema_type_id)
+                .unwrap(),
+        )
+        .canonical_descriptor
+        .descriptor
+        else {
+            unreachable!()
+        };
+        *admitted = nested_operations.clone();
+        assert!(matches!(
+            InProcessCallbackAdapter::from_local_interface(
+                canonical,
+                &interface("local:missing-closure".to_string()),
+                &nested_operations,
+                &missing_closure,
+                &RequestHeap::default(),
+            ),
+            Err(CallbackAdapterError::InvalidPackageSchema { .. })
+        ));
+    }
+
+    #[test]
+    fn native_adapter_registry_isolates_same_name_across_packages() {
+        let adapter_identity = "builtin:cross-package";
+        let first =
+            package_schema_type_for("example.first", "api.Observer", "schema:first-observer");
+        let second =
+            package_schema_type_for("example.second", "api.Observer", "schema:second-observer");
+        let first_boundary = ContractTypeRef::package_schema(
+            first.package_id.clone(),
+            first.stable_schema_key.clone(),
+            first.package_schema_type_id.clone(),
+        );
+        let second_boundary = ContractTypeRef::package_schema(
+            second.package_id.clone(),
+            second.stable_schema_key.clone(),
+            second.package_schema_type_id.clone(),
+        );
+        for (boundary, canonical) in [
+            (first_boundary.clone(), first.clone()),
+            (second_boundary.clone(), second.clone()),
+        ] {
+            register_explicit_native_callback_adapter(
+                ExplicitNativeCallbackAdapterDescriptor::new(
+                    adapter_identity,
+                    boundary,
+                    canonical,
+                    native_operations(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let schema_for = |canonical: &PackageSchemaTypeRef| {
+            BTreeMap::from([(
+                canonical.package_schema_type_id.clone(),
+                Arc::new(PackageSchemaTypeRecord {
+                    package_id: canonical.package_id.clone(),
+                    stable_schema_key: canonical.stable_schema_key.clone(),
+                    package_schema_type_id: canonical.package_schema_type_id.clone(),
+                    canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                        type_params: Vec::new(),
+                        descriptor: ContractTypeDescriptor::CallbackInterface {
+                            operations: operations(),
+                        },
+                    },
+                }),
+            )])
+        };
+        let first_adapter = InProcessCallbackAdapter::from_registered_explicit_native_interface(
+            &first_boundary,
+            first.clone(),
+            &operations(),
+            &interface(explicit_native_callback_adapter_concrete_type(
+                adapter_identity,
+            )),
+            &schema_for(&first),
+            &RequestHeap::default(),
+        )
+        .unwrap();
+        let second_adapter = InProcessCallbackAdapter::from_registered_explicit_native_interface(
+            &second_boundary,
+            second.clone(),
+            &operations(),
+            &interface(explicit_native_callback_adapter_concrete_type(
+                adapter_identity,
+            )),
+            &schema_for(&second),
+            &RequestHeap::default(),
+        )
+        .unwrap();
+        assert_ne!(
+            first_adapter.canonical_package_schema_type(),
+            second_adapter.canonical_package_schema_type()
+        );
     }
 }

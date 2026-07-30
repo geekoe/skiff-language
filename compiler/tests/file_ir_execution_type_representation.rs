@@ -3,32 +3,35 @@ mod common;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, ExecutableIr, TypeRefIr,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ExecutableIr, PackageRefIr, PackageSymbolRef, PackageTypeRequirement, TypeRefIr,
 };
-use skiff_compiler::{
-    definition_contract_type_ref, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText,
-};
+use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
 use common::{
     artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
-    package_project::compile_package_project_with_contract_dependencies,
+    package_project::{
+        compile_package_project, compile_package_project_with_contract_dependencies,
+    },
+    package_schemas::public_contract_type,
     TestDir,
 };
 
 const PACKAGE_ID: &str = "example.com/file-ir-execution-types";
+const SCHEMA_PACKAGE_ID: &str = "example.com/file-ir-execution-schema";
+const SCHEMA_ALIAS: &str = "contractSchema";
+const REQUEST_SCHEMA_KEY: &str = "Request";
 const SERVICE_ID: &str = "example.payments";
 const VERSION: &str = "1.0.0";
 
 #[test]
-fn contract_typed_executables_have_one_opaque_execution_representation() {
-    let without_external_symbol = compile_fixture("without-symbol", "");
-    let with_external_symbol = compile_fixture("with-symbol", "type Unrelated { value: string }\n");
+fn contract_typed_executables_preserve_package_nominal_execution_identity() {
+    let without_external_symbol = compile_package_nominal_fixture("without-symbol", "");
+    let with_external_symbol =
+        compile_package_nominal_fixture("with-symbol", "type Unrelated { value: string }\n");
 
     let baseline = module_artifact(&without_external_symbol.package, "main");
     let with_symbol = module_artifact(&with_external_symbol.package, "main");
@@ -39,20 +42,21 @@ fn contract_typed_executables_have_one_opaque_execution_representation() {
         );
     }
 
+    let request_type = package_nominal_request_type();
     let wrapper = executable(&baseline.unit.executables, "wrapper");
     assert_eq!(wrapper.params.len(), 2);
     assert_eq!(wrapper.params[0].name, "label");
-    assert_eq!(wrapper.params[0].ty, TypeRefIr::native("string"));
+    assert_eq!(wrapper.params[0].ty, TypeRefIr::builtin("string"));
     assert_eq!(wrapper.params[1].name, "request");
-    assert_eq!(wrapper.params[1].ty, opaque_unknown());
-    assert_eq!(wrapper.return_type, opaque_unknown());
+    assert_eq!(wrapper.params[1].ty, request_type);
+    assert_eq!(wrapper.return_type, request_type);
     assert!(!wrapper.may_suspend);
 
     let private_helper = executable(&baseline.unit.executables, "private_helper");
-    let nested = TypeRefIr::Native {
+    let nested = TypeRefIr::Builtin {
         name: "Array".to_string(),
         args: vec![TypeRefIr::Nullable {
-            inner: Box::new(opaque_unknown()),
+            inner: Box::new(request_type.clone()),
         }],
     };
     assert_eq!(private_helper.params[0].ty, nested);
@@ -60,28 +64,33 @@ fn contract_typed_executables_have_one_opaque_execution_representation() {
 
     let consume = executable(&baseline.unit.executables, "consume");
     assert!(consume.may_suspend);
-    assert_eq!(consume.params[0].ty, opaque_unknown());
-    assert_eq!(consume.return_type, opaque_unknown());
+    assert_eq!(consume.params[0].ty, request_type);
+    assert_eq!(consume.return_type, request_type);
 
     assert!(baseline.unit.external_refs.service_symbols.is_empty());
-    let ContractTypeRef::Contract { contract_type_id } =
-        definition_contract_type_ref(SERVICE_ID, VERSION, "Request").unwrap()
-    else {
-        panic!("definition contract type helper must return a nominal reference");
-    };
+    assert_schema_dependency_requirement(&without_external_symbol);
+    let schema_dependency = without_external_symbol
+        .dependency(SCHEMA_PACKAGE_ID, VERSION)
+        .expect("canonical schema owner must remain in the dependency closure");
+    let contract_type_id =
+        &schema_dependency.package_schema_index.types[REQUEST_SCHEMA_KEY].package_schema_type_id;
     let executable_wire = serde_json::to_string(&baseline.unit.executables).unwrap();
+    assert!(executable_wire.contains(SCHEMA_PACKAGE_ID));
+    assert!(executable_wire.contains(REQUEST_SCHEMA_KEY));
     assert!(!executable_wire.contains(contract_type_id.as_str()));
+    assert!(!executable_wire.contains("packageSchema"));
     assert!(!executable_wire.contains("serviceSymbol"));
+    assert!(
+        !executable_wire.contains("\"unknown\""),
+        "Package nominal execution identity must not degrade to builtin unknown"
+    );
 }
 
 #[test]
-fn impl_receiver_and_contract_parameter_keep_distinct_execution_roles() {
+fn impl_receiver_stays_local_while_contract_parameter_preserves_package_nominal_identity() {
     let temp = TestDir::new("skiff-compiler", "file-ir-execution-impl-receiver");
-    temp.write(
-        "package.yml",
-        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
-    );
-    temp.write("api.yml", "");
+    write_consumer_manifest(&temp);
+    temp.write("api.yml", "{}\n");
     temp.write(
         "main.skiff",
         r#"
@@ -94,9 +103,10 @@ impl Adapter {
 }
 "#,
     );
-    let dependencies = contract_dependencies();
+    write_schema_package_dependency(&temp);
+    let dependencies = package_nominal_contract_fixture();
     let project = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
-        .expect("impl receiver fixture should compile");
+        .expect("impl receiver and Package nominal contract parameter fixture should compile");
     let main = module_artifact(&project.package, "main");
     let relay = executable(&main.unit.executables, "Adapter.relay");
 
@@ -106,12 +116,13 @@ impl Adapter {
     );
     assert_eq!(relay.params.len(), 1);
     assert_eq!(relay.params[0].name, "request");
-    assert_eq!(relay.params[0].ty, opaque_unknown());
-    assert_eq!(relay.return_type, opaque_unknown());
+    assert_eq!(relay.params[0].ty, package_nominal_request_type());
+    assert_eq!(relay.return_type, package_nominal_request_type());
     assert!(main.unit.external_refs.service_symbols.is_empty());
+    assert_schema_dependency_requirement(&project);
 }
 
-fn compile_fixture(
+fn compile_package_nominal_fixture(
     suffix: &str,
     unrelated_type: &str,
 ) -> common::package_project::PublishedPackageProject {
@@ -119,15 +130,14 @@ fn compile_fixture(
         "skiff-compiler",
         &format!("file-ir-execution-type-{suffix}"),
     );
-    temp.write(
-        "package.yml",
-        format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
-    );
-    temp.write("api.yml", "wrapper: main.wrapper\n");
+    write_consumer_manifest(&temp);
+    temp.write("api.yml", "Request: main.Request\nwrapper: main.wrapper\n");
     temp.write(
         "main.skiff",
         format!(
             r#"{unrelated_type}
+type Request {{ message: string }}
+
 function wrapper(label: string, request: payments.Request) -> payments.Request {{
   return request
 }}
@@ -142,15 +152,26 @@ function consume(request: payments.Request) -> payments.Request {{
 "#
         ),
     );
-    compile_package_project_with_contract_dependencies(temp.path(), &contract_dependencies())
-        .expect("contract execution type fixture should compile")
+    write_schema_package_dependency(&temp);
+    let dependencies = package_nominal_contract_fixture();
+    compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
+        .expect("Package nominal execution identity fixture should compile")
 }
 
-fn contract_dependencies() -> BTreeMap<
+fn package_nominal_contract_fixture() -> BTreeMap<
     skiff_compiler_input::package_config::PackageManifestKey,
     Vec<skiff_compiler::PackageContractCompileDependency>,
 > {
-    let request = definition_contract_type_ref(SERVICE_ID, VERSION, "Request").unwrap();
+    let seed = TestDir::new("skiff-compiler", "file-ir-execution-schema-seed");
+    seed.write(
+        "package.yml",
+        format!("id: {SCHEMA_PACKAGE_ID}\nversion: {VERSION}\n"),
+    );
+    seed.write("api.yml", format!("{REQUEST_SCHEMA_KEY}: main.Request\n"));
+    seed.write("main.skiff", "type Request { message: string }\n");
+    let seed =
+        compile_package_project(seed.path()).expect("independent schema owner seed should compile");
+    let (request, request_id) = public_contract_type(&seed.package, REQUEST_SCHEMA_KEY);
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: VERSION.to_string(),
@@ -166,11 +187,8 @@ fn contract_dependencies() -> BTreeMap<
                     ty: request,
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
-                errors: BoundaryErrorContract::None,
                 stream: BoundaryStreamContract::Unary,
-                cancellation: BoundaryCancellationContract::Cooperative,
                 callbacks: BoundaryCallbackContract::None,
-                may_suspend: true,
                 effect_guarantee: BoundaryEffectGuarantee {
                     detached_parameters: true,
                     detached_return: true,
@@ -181,25 +199,24 @@ fn contract_dependencies() -> BTreeMap<
                 },
             },
         )]),
-        boundary_schema: BTreeMap::from([(
-            "Request".to_string(),
-            ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                descriptor: ContractTypeDescriptor::Record {
-                    fields: BTreeMap::from([(
-                        "message".to_string(),
-                        ContractTypeRef::builtin("string"),
-                    )]),
-                },
-            },
-        )]),
+        package_type_requirements: vec![PackageTypeRequirement {
+            package_id: SCHEMA_PACKAGE_ID.to_string(),
+            required_type_ids: vec![request_id.clone()],
+        }],
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Payments".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "Echo".to_string())]),
-            types: BTreeMap::from([("Request".to_string(), "Request".to_string())]),
+            types: BTreeMap::from([(request_id.clone(), "Request".to_string())]),
         },
     })
     .unwrap();
+    assert_eq!(
+        contract.package_type_requirements,
+        vec![PackageTypeRequirement {
+            package_id: SCHEMA_PACKAGE_ID.to_string(),
+            required_type_ids: vec![request_id],
+        }]
+    );
     BTreeMap::from([(
         (PACKAGE_ID.to_string(), VERSION.to_string()),
         vec![package_contract_dependency("payments", contract)],
@@ -222,8 +239,63 @@ fn assert_execution_signature_eq(left: &ExecutableIr, right: &ExecutableIr) {
     assert_eq!(left.may_suspend, right.may_suspend);
 }
 
-fn opaque_unknown() -> TypeRefIr {
-    TypeRefIr::native("unknown")
+fn package_nominal_request_type() -> TypeRefIr {
+    TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: SCHEMA_PACKAGE_ID.to_string(),
+            },
+            symbol_path: REQUEST_SCHEMA_KEY.to_string(),
+            abi_expectation: None,
+        },
+    }
+}
+
+fn write_consumer_manifest(temp: &TestDir) {
+    temp.write(
+        "package.yml",
+        format!(
+            "id: {PACKAGE_ID}\nversion: {VERSION}\npackages:\n  - id: {SCHEMA_PACKAGE_ID}\n    version: {VERSION}\n    alias: {SCHEMA_ALIAS}\n"
+        ),
+    );
+}
+
+fn write_schema_package_dependency(temp: &TestDir) {
+    let encoded = SCHEMA_PACKAGE_ID.replace('.', "~").replace('/', "~~");
+    let root = format!(".skiff-packages/{encoded}/{VERSION}");
+    temp.write(
+        &format!("{root}/package.yml"),
+        format!("id: {SCHEMA_PACKAGE_ID}\nversion: {VERSION}\n"),
+    );
+    temp.write(
+        &format!("{root}/api.yml"),
+        format!("{REQUEST_SCHEMA_KEY}: main.Request\n"),
+    );
+    temp.write(
+        &format!("{root}/main.skiff"),
+        "type Request { message: string }\n",
+    );
+}
+
+fn assert_schema_dependency_requirement(
+    project: &common::package_project::PublishedPackageProject,
+) {
+    let requirement = project
+        .package
+        .artifact
+        .package_requirements
+        .iter()
+        .find(|requirement| requirement.package_id == SCHEMA_PACKAGE_ID)
+        .expect("consumer manifest must retain the canonical schema owner requirement");
+    assert_eq!(requirement.alias, SCHEMA_ALIAS);
+    assert_eq!(requirement.exact_version, VERSION);
+    let dependency = project
+        .dependency(SCHEMA_PACKAGE_ID, VERSION)
+        .expect("canonical schema owner must remain in the dependency closure");
+    assert_eq!(
+        requirement.expected_local_abi,
+        dependency.artifact.package_local_abi.local_abi_identity
+    );
 }
 
 fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {

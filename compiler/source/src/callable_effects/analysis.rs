@@ -5,9 +5,11 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    parsed_sources::ParsedCompilerSource, semantic::impl_method_declaration_name,
-    shared::type_syntax::generic_type_parameter_names, ExpressionTypeModel,
-    ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceSymbolKey, TypeResolutionModel,
+    parsed_sources::ParsedCompilerSource,
+    semantic::impl_method_declaration_name,
+    shared::{ast::Expr, type_syntax::generic_type_parameter_names},
+    ExpressionTypeModel, ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceSymbolKey,
+    TypeResolutionModel,
 };
 
 use super::{
@@ -24,6 +26,7 @@ pub(crate) fn analyze_source_callables(
     type_resolution: &TypeResolutionModel,
 ) -> SourceCallableAnalysis {
     let definitions = callable_definitions(parsed_sources);
+    let module_constants = module_constant_facts(parsed_sources);
     let graph = LocalCallGraph::build(definitions.keys().cloned(), resolved_call_targets);
     let mut states = BTreeMap::new();
 
@@ -39,6 +42,7 @@ pub(crate) fn analyze_source_callables(
             transfer_callable(
                 definition,
                 &definitions,
+                &module_constants,
                 &BTreeMap::new(),
                 resolved_call_targets,
                 dependency_analysis,
@@ -61,6 +65,7 @@ pub(crate) fn analyze_source_callables(
                 let candidate = transfer_callable(
                     definition,
                     &definitions,
+                    &module_constants,
                     &states,
                     resolved_call_targets,
                     dependency_analysis,
@@ -116,6 +121,62 @@ pub(crate) fn analyze_source_callables(
         effects: SourceCallableEffectFacts::from_operations(effects),
         provenance: SourceCallableProvenanceFacts::from_operations(provenance),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ModuleConstantFact {
+    Exact,
+    Unsupported,
+}
+
+fn module_constant_facts(
+    parsed_sources: &[ParsedCompilerSource],
+) -> BTreeMap<SourceSymbolKey, ModuleConstantFact> {
+    let declarations = parsed_sources
+        .iter()
+        .flat_map(|parsed| {
+            parsed.ast().consts.iter().map(move |constant| {
+                (
+                    SourceSymbolKey::new(parsed.module_path(), &constant.name),
+                    &constant.value,
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut facts = BTreeMap::new();
+    for key in declarations.keys() {
+        resolve_module_constant(key, &declarations, &mut facts, &mut Vec::new());
+    }
+    facts
+}
+
+fn resolve_module_constant(
+    key: &SourceSymbolKey,
+    declarations: &BTreeMap<SourceSymbolKey, &Expr>,
+    facts: &mut BTreeMap<SourceSymbolKey, ModuleConstantFact>,
+    stack: &mut Vec<SourceSymbolKey>,
+) -> ModuleConstantFact {
+    if let Some(fact) = facts.get(key) {
+        return *fact;
+    }
+    if stack.contains(key) {
+        return ModuleConstantFact::Unsupported;
+    }
+    let Some(initializer) = declarations.get(key) else {
+        return ModuleConstantFact::Unsupported;
+    };
+    stack.push(key.clone());
+    let fact = match initializer {
+        Expr::Literal(_) => ModuleConstantFact::Exact,
+        Expr::Identifier(name) => {
+            let dependency = SourceSymbolKey::new(key.module_path(), name);
+            resolve_module_constant(&dependency, declarations, facts, stack)
+        }
+        _ => ModuleConstantFact::Unsupported,
+    };
+    stack.pop();
+    facts.insert(key.clone(), fact);
+    fact
 }
 
 pub(super) fn source_callable_keys(

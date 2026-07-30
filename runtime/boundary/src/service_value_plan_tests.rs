@@ -1,0 +1,1208 @@
+use std::{collections::BTreeMap, sync::Arc};
+
+use serde_json::{json, Value};
+use skiff_artifact_model::{
+    BoundaryCallbackOperation, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+};
+use skiff_runtime_model::service_error::{
+    CatchIdentity, NominalTypeIdentity, PackageSchemaTypeIdentity,
+};
+use skiff_runtime_model::value::{
+    CallbackCapabilityCarrier, HeapNode, InterfaceCarrier, InterfaceValue, RuntimeObject,
+    RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
+};
+
+use crate::{
+    date_value::{MAX_EPOCH_MILLIS, MIN_EPOCH_MILLIS},
+    payload::{PayloadBoundary, PayloadBoundaryKind},
+    request_heap::RequestHeap,
+    service_linkable::{
+        FailClosedServiceLinkableCapabilityHooks, ServiceLinkableContractPlan,
+        ServiceLinkableMaterializationError, ServiceLinkableMaterializationScope,
+    },
+    service_value_plan::{ServiceValuePlan, ServiceValueSelection},
+};
+
+const CONTEXT_ID: &str = "contract-type:Context";
+const USER_ID: &str = "contract-type:UserId";
+const PACKAGE_ID: &str = "test.boundary";
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+fn generic(name: &str, arguments: Vec<ContractTypeRef>) -> ContractTypeRef {
+    ContractTypeRef::Builtin {
+        name: name.to_string(),
+        arguments,
+    }
+}
+
+fn schema_type(
+    id: &str,
+    stable_key: &str,
+    descriptor: ContractTypeDescriptor,
+) -> (PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>) {
+    let id = PackageSchemaTypeId::new(id);
+    (
+        id.clone(),
+        Arc::new(PackageSchemaTypeRecord {
+            package_id: PACKAGE_ID.to_string(),
+            package_schema_type_id: id,
+            stable_schema_key: stable_key.to_string(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor,
+            },
+        }),
+    )
+}
+
+fn single_field_record_schema_type(
+    id: &PackageSchemaTypeId,
+    field_name: &str,
+    field_type: ContractTypeRef,
+) -> (PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>) {
+    let stable_key = id
+        .as_str()
+        .rsplit(':')
+        .next()
+        .expect("test package schema id has a stable-key suffix");
+    schema_type(
+        id.as_str(),
+        stable_key,
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([(field_name.to_string(), field_type)]),
+        },
+    )
+}
+
+fn structural_union_schema_type(
+    id: &PackageSchemaTypeId,
+    variants: Vec<ContractTypeRef>,
+) -> (PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>) {
+    let stable_key = id
+        .as_str()
+        .rsplit(':')
+        .next()
+        .expect("test package schema id has a stable-key suffix");
+    schema_type(
+        id.as_str(),
+        stable_key,
+        ContractTypeDescriptor::StructuralUnion { variants },
+    )
+}
+
+fn rich_context_schema() -> BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
+    let user_id = PackageSchemaTypeId::new(USER_ID);
+    BTreeMap::from([
+        schema_type(
+            USER_ID,
+            "UserId",
+            ContractTypeDescriptor::Representation {
+                target: ContractTypeRef::builtin("string"),
+            },
+        ),
+        schema_type(
+            CONTEXT_ID,
+            "Context",
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([
+                    (
+                        "attributes".to_string(),
+                        ContractTypeRef::builtin("JsonObject"),
+                    ),
+                    ("createdAt".to_string(), ContractTypeRef::builtin("Date")),
+                    ("empty".to_string(), ContractTypeRef::builtin("bytes")),
+                    (
+                        "labels".to_string(),
+                        generic(
+                            "Map",
+                            vec![package_ref(user_id), ContractTypeRef::builtin("string")],
+                        ),
+                    ),
+                    ("ttl".to_string(), ContractTypeRef::builtin("Duration")),
+                ]),
+            },
+        ),
+    ])
+}
+
+#[test]
+fn shared_schema_record_is_reused_by_multiple_contract_plans_without_payload_clones() {
+    let (id, record) = schema_type(
+        CONTEXT_ID,
+        "Context",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("name".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    );
+    let schema = Arc::new(BTreeMap::from([(id.clone(), Arc::clone(&record))]));
+    let first_contract = package_ref(id.clone());
+    let second_contract = package_ref(id);
+    let record_owners_before = Arc::strong_count(&record);
+
+    let first = ServiceValuePlan::compile(&first_contract, schema.as_ref())
+        .expect("first plan should borrow the admitted shared record");
+    let second = ServiceValuePlan::compile(&second_contract, schema.as_ref())
+        .expect("second plan should borrow the same admitted shared record");
+
+    assert_eq!(Arc::strong_count(&record), record_owners_before);
+    let _compiled_plans = (first, second);
+    assert!(Arc::ptr_eq(
+        schema
+            .get(&PackageSchemaTypeId::new(CONTEXT_ID))
+            .expect("shared record should remain admitted"),
+        &record,
+    ));
+}
+
+fn rich_context_ref() -> ContractTypeRef {
+    package_ref(PackageSchemaTypeId::new(CONTEXT_ID))
+}
+
+fn package_ref(id: PackageSchemaTypeId) -> ContractTypeRef {
+    let stable_key = id
+        .as_str()
+        .rsplit(':')
+        .next()
+        .expect("test package schema id has a stable-key suffix");
+    ContractTypeRef::package_schema(PACKAGE_ID, stable_key, id.clone())
+}
+
+fn rich_context_json() -> Value {
+    json!({
+        "attributes": {
+            "nested": [null, true, 3.5, {"message": "ok"}]
+        },
+        "createdAt": "1970-01-01T00:00:00.000Z",
+        "empty": {"__skiffBytesBase64": ""},
+        "labels": {"user-1": "owner"},
+        "ttl": 250
+    })
+}
+
+#[test]
+fn canonical_http_value_plans_preserve_exact_detached_fields() {
+    let schema = BTreeMap::new();
+    let request_type =
+        ContractTypeRef::builtin(skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE);
+    let response_type =
+        ContractTypeRef::builtin(skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE);
+    let stream_type = ContractTypeRef::builtin(
+        skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
+    );
+    let request = ServiceValuePlan::compile(&request_type, &schema).unwrap();
+    let response = ServiceValuePlan::compile(&response_type, &schema).unwrap();
+    let stream = ServiceValuePlan::compile(&stream_type, &schema).unwrap();
+
+    let mut caller_heap = RequestHeap::default();
+    let request_wire = json!({
+        "method": "POST",
+        "url": "https://example.test/items?id=7",
+        "path": "/items",
+        "query": [{"name": "id", "value": "7"}],
+        "headers": [{"name": "content-type", "value": "application/octet-stream"}],
+        "body": {"__skiffBytesBase64": "AQID"}
+    });
+    let request_value = request
+        .decode_json_value(&request_wire, &mut caller_heap)
+        .unwrap();
+    assert_eq!(
+        request
+            .encode_json_value(&request_value, &mut caller_heap)
+            .unwrap(),
+        request_wire
+    );
+    let request_contract = detached_plan(BoundaryValueOwner::Caller);
+    let request_materializer =
+        ServiceLinkableContractPlan::new(&request_type, &schema, &request_contract).unwrap();
+    let mut provider_heap = RequestHeap::default();
+    let provider_request = request_materializer
+        .materialize(
+            &request_value,
+            &caller_heap,
+            &mut provider_heap,
+            detached_scope(BoundaryValueOwner::Caller),
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .unwrap();
+    caller_heap
+        .set_object_field(
+            request_value.as_heap_handle().unwrap(),
+            "method".to_string(),
+            RuntimeValue::String("DELETE".to_string()),
+        )
+        .unwrap();
+    assert_eq!(
+        request
+            .encode_json_value(&provider_request, &mut provider_heap)
+            .unwrap(),
+        request_wire,
+        "provider request must be detached from caller heap mutation"
+    );
+
+    let response_wire = json!({
+        "status": 201,
+        "headers": [{"name": "x-result", "value": "created"}],
+        "body": {"__skiffBytesBase64": "BAUG"}
+    });
+    let response_value = response
+        .decode_json_value(&response_wire, &mut caller_heap)
+        .unwrap();
+    assert_eq!(
+        response
+            .encode_json_value(&response_value, &mut caller_heap)
+            .unwrap(),
+        response_wire
+    );
+
+    for event in [
+        json!({
+            "tag": "start",
+            "status": 200,
+            "headers": [{"name": "content-type", "value": "application/octet-stream"}]
+        }),
+        json!({"tag": "chunk", "value": {"__skiffBytesBase64": "BwgJ"}}),
+        json!({"tag": "end"}),
+    ] {
+        let value = stream.decode_json_value(&event, &mut caller_heap).unwrap();
+        assert_eq!(
+            stream.encode_json_value(&value, &mut caller_heap).unwrap(),
+            event
+        );
+    }
+
+    for malformed in [
+        json!({"method": "GET", "url": "/", "path": "/", "query": [], "headers": []}),
+        json!({"status": 200, "headers": [], "body": {"capability": "socket"}}),
+        json!({"tag": "end", "capability": "file"}),
+    ] {
+        assert!(
+            request
+                .decode_json_value(&malformed, &mut caller_heap)
+                .is_err()
+                && response
+                    .decode_json_value(&malformed, &mut caller_heap)
+                    .is_err()
+                && stream
+                    .decode_json_value(&malformed, &mut caller_heap)
+                    .is_err()
+        );
+    }
+}
+
+fn assert_json_binary_round_trip(
+    plan: &ServiceValuePlan<'_>,
+    expected: &Value,
+) -> (RequestHeap, RuntimeValue) {
+    let mut source = RequestHeap::default();
+    let value = plan
+        .decode_json_value(expected, &mut source)
+        .expect("canonical JSON should decode from the service-value plan");
+    assert_eq!(
+        plan.encode_json_value(&value, &mut source)
+            .expect("canonical JSON should encode from the same plan"),
+        *expected
+    );
+
+    let bytes = plan
+        .encode_binary(&value, &service_response_boundary(), &source)
+        .expect("canonical binary should encode from the same plan");
+    let mut decoded_heap = RequestHeap::default();
+    let decoded = plan
+        .decode_binary(&bytes, &service_response_boundary(), &mut decoded_heap)
+        .expect("canonical binary should decode from the same plan");
+    assert_eq!(
+        plan.encode_json_value(&decoded, &mut decoded_heap)
+            .expect("binary round trip should retain canonical JSON"),
+        *expected
+    );
+    (decoded_heap, decoded)
+}
+
+fn service_response_boundary() -> PayloadBoundary {
+    PayloadBoundary::external_untrusted(PayloadBoundaryKind::ServiceResponse)
+}
+
+fn object_value(
+    heap: &mut RequestHeap,
+    fields: impl IntoIterator<Item = (String, RuntimeValue)>,
+) -> RuntimeValue {
+    RuntimeValue::Heap(
+        heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from_iter(
+            fields,
+        )))
+        .unwrap(),
+    )
+}
+
+fn string_field<'a>(heap: &'a RequestHeap, value: &RuntimeValue, name: &str) -> &'a str {
+    let handle = value
+        .as_heap_handle()
+        .expect("selected record should decode to a heap value");
+    let HeapNode::Object(object) = heap.get(handle).unwrap() else {
+        panic!("selected record should decode to an object");
+    };
+    let Some(RuntimeValue::String(value)) = object.fields().get(name) else {
+        panic!("selected record should retain string field {name}");
+    };
+    value
+}
+
+#[test]
+fn selected_binary_root_round_trips_record_and_representation_without_changing_ordinary_wire() {
+    let record_id = PackageSchemaTypeId::new("contract-type:SelectedRecord");
+    let representation_id = PackageSchemaTypeId::new("contract-type:SelectedRepresentation");
+    let schema = BTreeMap::from([
+        single_field_record_schema_type(&record_id, "message", ContractTypeRef::builtin("string")),
+        schema_type(
+            representation_id.as_str(),
+            "SelectedRepresentation",
+            ContractTypeDescriptor::Representation {
+                target: ContractTypeRef::builtin("string"),
+            },
+        ),
+    ]);
+    let record_type = package_ref(record_id);
+    let representation_type = package_ref(representation_id);
+    let record_plan = ServiceValuePlan::compile(&record_type, &schema).unwrap();
+    let representation_plan = ServiceValuePlan::compile(&representation_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+
+    let mut record_heap = RequestHeap::default();
+    let record = object_value(
+        &mut record_heap,
+        [(
+            "message".to_string(),
+            RuntimeValue::String("record".to_string()),
+        )],
+    );
+    let ordinary_record = record_plan
+        .encode_binary(&record, &boundary, &record_heap)
+        .unwrap();
+    let selected_record = record_plan
+        .encode_binary_selected(
+            &record,
+            ServiceValueSelection::Root,
+            &boundary,
+            &record_heap,
+        )
+        .unwrap();
+    assert_eq!(selected_record, ordinary_record);
+
+    let mut decoded_record_heap = RequestHeap::default();
+    let decoded_record = record_plan
+        .decode_binary_selected(&selected_record, &boundary, &mut decoded_record_heap)
+        .unwrap();
+    assert_eq!(decoded_record.selection, ServiceValueSelection::Root);
+    assert_eq!(
+        string_field(&decoded_record_heap, &decoded_record.value, "message"),
+        "record"
+    );
+
+    let representation = RuntimeValue::String("represented".to_string());
+    let representation_heap = RequestHeap::default();
+    let ordinary_representation = representation_plan
+        .encode_binary(&representation, &boundary, &representation_heap)
+        .unwrap();
+    let selected_representation = representation_plan
+        .encode_binary_selected(
+            &representation,
+            ServiceValueSelection::Root,
+            &boundary,
+            &representation_heap,
+        )
+        .unwrap();
+    assert_eq!(selected_representation, ordinary_representation);
+
+    let mut decoded_representation_heap = RequestHeap::default();
+    let decoded_representation = representation_plan
+        .decode_binary_selected(
+            &selected_representation,
+            &boundary,
+            &mut decoded_representation_heap,
+        )
+        .unwrap();
+    assert_eq!(
+        decoded_representation,
+        crate::DecodedSelectedServiceValue {
+            value: representation,
+            selection: ServiceValueSelection::Root,
+        }
+    );
+}
+
+#[test]
+fn selected_binary_distinguishes_same_shape_named_union_branches_by_wire_ordinal() {
+    let first_id = PackageSchemaTypeId::new("contract-type:SameShapeFirst");
+    let second_id = PackageSchemaTypeId::new("contract-type:SameShapeSecond");
+    let union_id = PackageSchemaTypeId::new("contract-type:SameShapeUnion");
+    let schema = BTreeMap::from([
+        single_field_record_schema_type(&first_id, "message", ContractTypeRef::builtin("string")),
+        single_field_record_schema_type(&second_id, "message", ContractTypeRef::builtin("string")),
+        structural_union_schema_type(
+            &union_id,
+            vec![
+                package_ref(first_id.clone()),
+                package_ref(second_id.clone()),
+            ],
+        ),
+    ]);
+    let union_type = package_ref(union_id);
+    let plan = ServiceValuePlan::compile(&union_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+    let mut source_heap = RequestHeap::default();
+    let value = object_value(
+        &mut source_heap,
+        [(
+            "message".to_string(),
+            RuntimeValue::String("same payload".to_string()),
+        )],
+    );
+
+    assert!(matches!(
+        plan.encode_binary(&value, &boundary, &source_heap),
+        Err(ServiceLinkableMaterializationError::AmbiguousStructuralUnion)
+    ));
+    let first_bytes = plan
+        .encode_binary_selected(
+            &value,
+            ServiceValueSelection::NamedUnionBranch(0),
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    let second_bytes = plan
+        .encode_binary_selected(
+            &value,
+            ServiceValueSelection::NamedUnionBranch(1),
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    assert_eq!(first_bytes[5], 0);
+    assert_eq!(second_bytes[5], 1);
+    let mut normalized_second = second_bytes.clone();
+    normalized_second[5] = 0;
+    assert_eq!(normalized_second, first_bytes);
+
+    for (bytes, expected_index) in [(&first_bytes, 0usize), (&second_bytes, 1usize)] {
+        let mut decoded_heap = RequestHeap::default();
+        let decoded = plan
+            .decode_binary_selected(bytes, &boundary, &mut decoded_heap)
+            .unwrap();
+        assert_eq!(
+            decoded.selection,
+            ServiceValueSelection::NamedUnionBranch(expected_index)
+        );
+        assert_eq!(
+            string_field(&decoded_heap, &decoded.value, "message"),
+            "same payload"
+        );
+        assert_eq!(
+            plan.encode_binary_selected(
+                &decoded.value,
+                decoded.selection,
+                &boundary,
+                &decoded_heap,
+            )
+            .unwrap(),
+            *bytes
+        );
+    }
+}
+
+#[test]
+fn selected_binary_rejects_selection_ordinal_payload_and_trailing_byte_mismatches() {
+    let message_id = PackageSchemaTypeId::new("contract-type:MessageBranch");
+    let code_id = PackageSchemaTypeId::new("contract-type:CodeBranch");
+    let union_id = PackageSchemaTypeId::new("contract-type:DistinctUnion");
+    let schema = BTreeMap::from([
+        single_field_record_schema_type(&message_id, "message", ContractTypeRef::builtin("string")),
+        single_field_record_schema_type(&code_id, "code", ContractTypeRef::builtin("integer")),
+        structural_union_schema_type(
+            &union_id,
+            vec![
+                package_ref(message_id.clone()),
+                package_ref(code_id.clone()),
+            ],
+        ),
+    ]);
+    let union_type = package_ref(union_id);
+    let message_type = package_ref(message_id);
+    let union_plan = ServiceValuePlan::compile(&union_type, &schema).unwrap();
+    let message_plan = ServiceValuePlan::compile(&message_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+    let mut source_heap = RequestHeap::default();
+    let message = object_value(
+        &mut source_heap,
+        [(
+            "message".to_string(),
+            RuntimeValue::String("selected".to_string()),
+        )],
+    );
+
+    assert!(union_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(2),
+            &boundary,
+            &source_heap,
+        )
+        .is_err());
+    assert!(union_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::Root,
+            &boundary,
+            &source_heap,
+        )
+        .is_err());
+    assert!(message_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(0),
+            &boundary,
+            &source_heap,
+        )
+        .is_err());
+    assert!(matches!(
+        union_plan.encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(1),
+            &boundary,
+            &source_heap,
+        ),
+        Err(ServiceLinkableMaterializationError::TypeMismatch)
+    ));
+
+    let valid = union_plan
+        .encode_binary_selected(
+            &message,
+            ServiceValueSelection::NamedUnionBranch(0),
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    let mutations = [
+        {
+            let mut bytes = valid.clone();
+            bytes[5] = 1;
+            bytes
+        },
+        {
+            let mut bytes = valid.clone();
+            bytes[5] = 2;
+            bytes
+        },
+        {
+            let mut bytes = valid;
+            bytes.push(0);
+            bytes
+        },
+    ];
+    for mutation in mutations {
+        let mut heap = RequestHeap::default();
+        let checkpoint_len = heap.len();
+        assert!(union_plan
+            .decode_binary_selected(&mutation, &boundary, &mut heap)
+            .is_err());
+        assert_eq!(heap.len(), checkpoint_len);
+    }
+}
+
+#[test]
+fn selected_binary_returns_only_root_for_nested_union_and_keeps_service_response_restrictions() {
+    let nested_type = ContractTypeRef::Record {
+        fields: BTreeMap::from([(
+            "choice".to_string(),
+            ContractTypeRef::structural_union(vec![
+                ContractTypeRef::builtin("string"),
+                ContractTypeRef::builtin("number"),
+            ]),
+        )]),
+    };
+    let schema = BTreeMap::new();
+    let nested_plan = ServiceValuePlan::compile(&nested_type, &schema).unwrap();
+    let boundary = service_response_boundary();
+    let mut source_heap = RequestHeap::default();
+    let nested = object_value(
+        &mut source_heap,
+        [(
+            "choice".to_string(),
+            RuntimeValue::String("nested".to_string()),
+        )],
+    );
+    let bytes = nested_plan
+        .encode_binary_selected(
+            &nested,
+            ServiceValueSelection::Root,
+            &boundary,
+            &source_heap,
+        )
+        .unwrap();
+    let mut decoded_heap = RequestHeap::default();
+    let decoded = nested_plan
+        .decode_binary_selected(&bytes, &boundary, &mut decoded_heap)
+        .unwrap();
+    assert_eq!(decoded.selection, ServiceValueSelection::Root);
+    let nested_handle = decoded.value.as_heap_handle().unwrap();
+    let HeapNode::Object(nested_object) = decoded_heap.get(nested_handle).unwrap() else {
+        panic!("nested selected root should decode to an object");
+    };
+    assert_eq!(
+        nested_object.fields().get("choice"),
+        Some(&RuntimeValue::String("nested".to_string()))
+    );
+
+    let json_type = ContractTypeRef::builtin("Json");
+    let json_plan = ServiceValuePlan::compile(&json_type, &schema).unwrap();
+    let mut restricted_heap = RequestHeap::default();
+    let interface_error = json_plan
+        .decode_binary_selected(b"SKPV\x02\x09", &boundary, &mut restricted_heap)
+        .expect_err("selected decode must retain the service-response interface restriction");
+    let ServiceLinkableMaterializationError::Codec { message } = interface_error else {
+        panic!("service-response restriction should surface as a codec error");
+    };
+    assert!(
+        message.contains("recoverableUnsupportedDecode"),
+        "{message}"
+    );
+    assert!(message.contains("runtimeBinaryPayload"), "{message}");
+
+    let malformed_error = json_plan
+        .decode_binary_selected(b"SKPV\x02\xff", &boundary, &mut restricted_heap)
+        .expect_err("selected decode must preserve service-response codec context");
+    let ServiceLinkableMaterializationError::Codec { message } = malformed_error else {
+        panic!("service-response codec context should surface as a codec error");
+    };
+    assert!(message.contains("kind=ServiceResponse"), "{message}");
+    assert_eq!(restricted_heap.len(), 0);
+}
+
+fn detached_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+    BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner,
+        lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+fn detached_scope(owner: BoundaryValueOwner) -> ServiceLinkableMaterializationScope {
+    ServiceLinkableMaterializationScope {
+        owner,
+        lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+#[test]
+fn service_value_plan_detaches_nominal_record_both_directions_with_erased_values() {
+    let schema = rich_context_schema();
+    let context_type = rich_context_ref();
+    let value_plan = ServiceValuePlan::compile(&context_type, &schema).unwrap();
+    let mut caller_heap = RequestHeap::default();
+    let caller_value = value_plan
+        .decode_json_value(&rich_context_json(), &mut caller_heap)
+        .unwrap();
+    let caller_root = caller_value.as_heap_handle().unwrap();
+
+    let caller_contract = detached_plan(BoundaryValueOwner::Caller);
+    let caller_to_provider =
+        ServiceLinkableContractPlan::new(&context_type, &schema, &caller_contract).unwrap();
+    let mut provider_heap = RequestHeap::default();
+    let provider_value = caller_to_provider
+        .materialize(
+            &caller_value,
+            &caller_heap,
+            &mut provider_heap,
+            detached_scope(BoundaryValueOwner::Caller),
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .unwrap();
+    let provider_root = provider_value.as_heap_handle().unwrap();
+    provider_heap
+        .set_object_field(
+            provider_root,
+            "ttl".to_string(),
+            RuntimeValue::Number(999.0),
+        )
+        .unwrap();
+    assert_eq!(
+        value_plan
+            .encode_json_value(&caller_value, &mut caller_heap)
+            .unwrap(),
+        rich_context_json(),
+        "provider mutation must not reach the caller heap"
+    );
+    provider_heap
+        .set_object_field(
+            provider_root,
+            "ttl".to_string(),
+            RuntimeValue::Number(250.0),
+        )
+        .unwrap();
+    assert!(matches!(
+        caller_heap.get(caller_root).unwrap(),
+        HeapNode::Object(_)
+    ));
+
+    let provider_contract = detached_plan(BoundaryValueOwner::Provider);
+    let provider_to_caller =
+        ServiceLinkableContractPlan::new(&context_type, &schema, &provider_contract).unwrap();
+    let mut returned_heap = RequestHeap::default();
+    let returned_value = provider_to_caller
+        .materialize(
+            &provider_value,
+            &provider_heap,
+            &mut returned_heap,
+            detached_scope(BoundaryValueOwner::Provider),
+            &FailClosedServiceLinkableCapabilityHooks,
+        )
+        .unwrap();
+    assert_eq!(
+        value_plan
+            .encode_json_value(&returned_value, &mut returned_heap)
+            .unwrap(),
+        rich_context_json()
+    );
+
+    let HeapNode::Object(context) = returned_heap
+        .get(returned_value.as_heap_handle().unwrap())
+        .unwrap()
+    else {
+        panic!("nominal Context must remain a detached record object");
+    };
+    assert_eq!(context.fields()["ttl"], RuntimeValue::Number(250.0));
+    assert_eq!(context.fields()["createdAt"], RuntimeValue::Date(0));
+    let RuntimeValue::Heap(empty) = context.fields()["empty"] else {
+        panic!("zero-byte field must remain present as bytes");
+    };
+    assert!(matches!(
+        returned_heap.get(empty).unwrap(),
+        HeapNode::Bytes(bytes) if bytes.is_empty()
+    ));
+    let RuntimeValue::Heap(attributes) = context.fields()["attributes"] else {
+        panic!("JsonObject must remain present as a map");
+    };
+    assert!(matches!(
+        returned_heap.get(attributes).unwrap(),
+        HeapNode::Map(_)
+    ));
+    let RuntimeValue::Heap(labels) = context.fields()["labels"] else {
+        panic!("representation-keyed Map must remain present");
+    };
+    let HeapNode::Map(labels) = returned_heap.get(labels).unwrap() else {
+        panic!("representation-keyed value must be a runtime map");
+    };
+    assert_eq!(
+        labels.get(&RuntimeValueKey::string("user-1")),
+        Some(&RuntimeValue::String("owner".to_string()))
+    );
+}
+
+#[test]
+fn service_value_plan_rejects_alias_callback_cycle_foreign_and_invalid_map_key() {
+    let alias_id = PackageSchemaTypeId::new("contract-type:Alias");
+    let alias_schema = BTreeMap::from([schema_type(
+        alias_id.as_str(),
+        "Alias",
+        ContractTypeDescriptor::Alias {
+            target: ContractTypeRef::builtin("string"),
+        },
+    )]);
+    assert!(matches!(
+        ServiceValuePlan::compile(&package_ref(alias_id), &alias_schema),
+        Err(ServiceLinkableMaterializationError::AliasSchema { .. })
+    ));
+
+    let callback_id = PackageSchemaTypeId::new("contract-type:Callback");
+    let callback_schema = BTreeMap::from([schema_type(
+        callback_id.as_str(),
+        "Callback",
+        ContractTypeDescriptor::CallbackInterface {
+            operations: BTreeMap::from([(
+                "read".to_string(),
+                BoundaryCallbackOperation {
+                    parameters: Vec::new(),
+                    return_type: ContractTypeRef::builtin("string"),
+                },
+            )]),
+        },
+    )]);
+    assert!(matches!(
+        ServiceValuePlan::compile(&package_ref(callback_id), &callback_schema),
+        Err(ServiceLinkableMaterializationError::CallbackInterfaceSchema { .. })
+    ));
+
+    let cycle_id = PackageSchemaTypeId::new("contract-type:Cycle");
+    let cycle_schema = BTreeMap::from([schema_type(
+        cycle_id.as_str(),
+        "Cycle",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("self".to_string(), package_ref(cycle_id.clone()))]),
+        },
+    )]);
+    assert!(matches!(
+        ServiceValuePlan::compile(&package_ref(cycle_id), &cycle_schema),
+        Err(ServiceLinkableMaterializationError::CyclicSchema { .. })
+    ));
+
+    assert!(matches!(
+        ServiceValuePlan::compile(
+            &package_ref(PackageSchemaTypeId::new("contract-type:Foreign")),
+            &BTreeMap::new()
+        ),
+        Err(ServiceLinkableMaterializationError::MissingSchema { .. })
+    ));
+
+    let requested = PackageSchemaTypeId::new("contract-type:Requested");
+    let identity_mismatch = BTreeMap::from([(
+        requested.clone(),
+        schema_type(
+            "contract-type:Actual",
+            "Actual",
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+        )
+        .1,
+    )]);
+    assert!(matches!(
+        ServiceValuePlan::compile(&package_ref(requested), &identity_mismatch),
+        Err(ServiceLinkableMaterializationError::SchemaIdentityMismatch { .. })
+    ));
+
+    let exact_id = PackageSchemaTypeId::new("contract-type:Exact");
+    let exact_schema = BTreeMap::from([schema_type(
+        exact_id.as_str(),
+        "Exact",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    )]);
+    for mismatched_ref in [
+        ContractTypeRef::package_schema("other.package", "Exact", exact_id.clone()),
+        ContractTypeRef::package_schema(PACKAGE_ID, "Renamed", exact_id.clone()),
+    ] {
+        assert!(matches!(
+            ServiceValuePlan::compile(&mismatched_ref, &exact_schema),
+            Err(ServiceLinkableMaterializationError::SchemaOwnerOrKeyMismatch { .. })
+        ));
+    }
+    let cached_then_mismatched = ContractTypeRef::Record {
+        fields: BTreeMap::from([
+            ("aExact".to_string(), package_ref(exact_id.clone())),
+            (
+                "zWrongOwner".to_string(),
+                ContractTypeRef::package_schema("other.package", "Exact", exact_id.clone()),
+            ),
+        ]),
+    };
+    assert!(matches!(
+        ServiceValuePlan::compile(&cached_then_mismatched, &exact_schema),
+        Err(ServiceLinkableMaterializationError::SchemaOwnerOrKeyMismatch { .. })
+    ));
+    let exact_ref = package_ref(exact_id.clone());
+    let exact_plan = ServiceValuePlan::compile(&exact_ref, &exact_schema).unwrap();
+    assert_eq!(
+        exact_plan.runtime_type_plan().catch_identity(),
+        Some(&CatchIdentity::Nominal(NominalTypeIdentity::PackageSchema(
+            PackageSchemaTypeIdentity::new(PACKAGE_ID, "Exact", exact_id.clone(),)
+                .expect("exact PackageSchema identity"),
+        ),)),
+        "runtime nominal identity must retain Package owner, stable key and type id"
+    );
+
+    let invalid_map = generic(
+        "Map",
+        vec![
+            ContractTypeRef::builtin("number"),
+            ContractTypeRef::builtin("string"),
+        ],
+    );
+    assert!(matches!(
+        ServiceValuePlan::compile(&invalid_map, &BTreeMap::new()),
+        Err(ServiceLinkableMaterializationError::InvalidContractPlan { .. })
+    ));
+
+    let numeric_key_id = PackageSchemaTypeId::new("contract-type:NumericKey");
+    let numeric_key_schema = BTreeMap::from([schema_type(
+        numeric_key_id.as_str(),
+        "NumericKey",
+        ContractTypeDescriptor::Representation {
+            target: ContractTypeRef::builtin("number"),
+        },
+    )]);
+    let invalid_nominal_map = generic(
+        "Map",
+        vec![
+            package_ref(numeric_key_id),
+            ContractTypeRef::builtin("string"),
+        ],
+    );
+    assert!(ServiceValuePlan::compile(&invalid_nominal_map, &numeric_key_schema).is_err());
+
+    assert!(ServiceValuePlan::compile(
+        &ContractTypeRef::builtin("legacy.Unknown"),
+        &BTreeMap::new()
+    )
+    .is_err());
+}
+
+#[test]
+fn service_value_plan_preserves_exact_any_interface_identity_and_fails_wire_closed() {
+    let interface_id = PackageSchemaTypeId::new("contract-type:Reader");
+    let interface_schema = BTreeMap::from([schema_type(
+        interface_id.as_str(),
+        "Reader",
+        ContractTypeDescriptor::CallbackInterface {
+            operations: BTreeMap::from([(
+                "read".to_string(),
+                BoundaryCallbackOperation {
+                    parameters: Vec::new(),
+                    return_type: ContractTypeRef::builtin("string"),
+                },
+            )]),
+        },
+    )]);
+    let existential = ContractTypeRef::AnyInterface {
+        interface: Box::new(package_ref(interface_id)),
+        arguments: Vec::new(),
+    };
+
+    let plan = ServiceValuePlan::compile(&existential, &interface_schema)
+        .expect("exact callback interface existential should compile");
+    assert_eq!(
+        plan.runtime_type_plan().identity.interface.as_deref(),
+        Some("package-schema:test.boundary:Reader:contract-type:Reader")
+    );
+    assert!(matches!(
+        plan.runtime_type_plan().node(),
+        skiff_runtime_model::type_plan::RuntimeTypeNode::Unknown
+    ));
+    assert!(plan
+        .decode_json_value(&json!({}), &mut RequestHeap::default())
+        .is_err());
+
+    let non_interface_id = PackageSchemaTypeId::new("contract-type:NotReader");
+    let non_interface_schema = BTreeMap::from([schema_type(
+        non_interface_id.as_str(),
+        "NotReader",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    )]);
+    let invalid = ContractTypeRef::AnyInterface {
+        interface: Box::new(package_ref(non_interface_id)),
+        arguments: Vec::new(),
+    };
+    assert!(matches!(
+        ServiceValuePlan::compile(&invalid, &non_interface_schema),
+        Err(ServiceLinkableMaterializationError::InvalidContractPlan { .. })
+    ));
+}
+
+#[test]
+fn service_value_plan_uses_expected_type_for_null_nominal_and_zero_byte_values() {
+    let empty_id = PackageSchemaTypeId::new("contract-type:EmptyContext");
+    let empty_schema = BTreeMap::from([schema_type(
+        empty_id.as_str(),
+        "EmptyContext",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    )]);
+    let nominal_type = package_ref(empty_id);
+    let nominal_plan = ServiceValuePlan::compile(&nominal_type, &empty_schema).unwrap();
+    let null_type = ContractTypeRef::builtin("null");
+    let null_plan = ServiceValuePlan::compile(&null_type, &BTreeMap::new()).unwrap();
+
+    assert!(nominal_plan
+        .decode_json_value(&json!({}), &mut RequestHeap::default())
+        .is_ok());
+    assert!(nominal_plan
+        .decode_json_value(&Value::Null, &mut RequestHeap::default())
+        .is_err());
+    assert!(null_plan
+        .decode_json_value(&Value::Null, &mut RequestHeap::default())
+        .is_ok());
+    assert!(null_plan
+        .decode_json_value(&json!({}), &mut RequestHeap::default())
+        .is_err());
+
+    let bytes_type = ContractTypeRef::builtin("bytes");
+    let bytes_plan = ServiceValuePlan::compile(&bytes_type, &BTreeMap::new()).unwrap();
+    let mut bytes_heap = RequestHeap::default();
+    let zero_bytes = bytes_plan
+        .decode_json_value(&json!({"__skiffBytesBase64": ""}), &mut bytes_heap)
+        .unwrap();
+    assert!(bytes_plan.value_matches(&zero_bytes, &bytes_heap).unwrap());
+    assert!(!null_plan.value_matches(&zero_bytes, &bytes_heap).unwrap());
+    let encoded = bytes_plan
+        .encode_binary(&zero_bytes, &service_response_boundary(), &bytes_heap)
+        .unwrap();
+    let decoded = bytes_plan
+        .decode_binary(
+            &encoded,
+            &service_response_boundary(),
+            &mut RequestHeap::default(),
+        )
+        .unwrap();
+    assert!(matches!(decoded, RuntimeValue::Heap(_)));
+}
+
+#[test]
+fn service_value_plan_enforces_safe_integer_duration_date_and_recursive_json() {
+    let empty_schema = BTreeMap::new();
+    let integer_type = ContractTypeRef::builtin("integer");
+    let duration_type = ContractTypeRef::builtin("Duration");
+    let date_type = ContractTypeRef::builtin("Date");
+    let integer = ServiceValuePlan::compile(&integer_type, &empty_schema).unwrap();
+    let duration = ServiceValuePlan::compile(&duration_type, &empty_schema).unwrap();
+    let date = ServiceValuePlan::compile(&date_type, &empty_schema).unwrap();
+    let heap = RequestHeap::default();
+
+    for value in [-MAX_SAFE_INTEGER, 0.0, MAX_SAFE_INTEGER] {
+        assert!(integer
+            .value_matches(&RuntimeValue::Number(value), &heap)
+            .unwrap());
+        assert!(duration
+            .value_matches(&RuntimeValue::Number(value), &heap)
+            .unwrap());
+    }
+    for value in [MAX_SAFE_INTEGER + 1.0, 1.5, f64::INFINITY] {
+        assert!(!integer
+            .value_matches(&RuntimeValue::Number(value), &heap)
+            .unwrap());
+        assert!(!duration
+            .value_matches(&RuntimeValue::Number(value), &heap)
+            .unwrap());
+    }
+    for value in [MIN_EPOCH_MILLIS, 0, MAX_EPOCH_MILLIS] {
+        assert!(date
+            .value_matches(&RuntimeValue::Date(value), &heap)
+            .unwrap());
+    }
+    for value in [MIN_EPOCH_MILLIS - 1, MAX_EPOCH_MILLIS + 1] {
+        assert!(!date
+            .value_matches(&RuntimeValue::Date(value), &heap)
+            .unwrap());
+    }
+
+    let json_type = ContractTypeRef::builtin("Json");
+    let json_plan = ServiceValuePlan::compile(&json_type, &empty_schema).unwrap();
+    let nested = json!([
+        null,
+        {"level1": [{"level2": [1, 2, 3]}, false]},
+        "done"
+    ]);
+    assert_json_binary_round_trip(&json_plan, &nested);
+
+    let mut reserved = nested;
+    reserved[1]["__skiffType"] = json!("legacy.Json");
+    assert!(json_plan
+        .decode_json_value(&reserved, &mut RequestHeap::default())
+        .is_err());
+
+    let ambiguous_type = ContractTypeRef::structural_union(vec![
+        ContractTypeRef::builtin("number"),
+        ContractTypeRef::builtin("integer"),
+    ]);
+    let ambiguous = ServiceValuePlan::compile(&ambiguous_type, &empty_schema).unwrap();
+    assert!(matches!(
+        ambiguous.value_matches(&RuntimeValue::Number(1.0), &heap),
+        Err(ServiceLinkableMaterializationError::AmbiguousStructuralUnion)
+    ));
+}
+
+#[test]
+fn service_value_plan_accepts_acyclic_contract_recursion_and_rejects_runtime_cycles_and_interfaces()
+{
+    let child_id = PackageSchemaTypeId::new("contract-type:Child");
+    let parent_id = PackageSchemaTypeId::new("contract-type:Parent");
+    let schema = BTreeMap::from([
+        schema_type(
+            child_id.as_str(),
+            "Child",
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([("name".to_string(), ContractTypeRef::builtin("string"))]),
+            },
+        ),
+        schema_type(
+            parent_id.as_str(),
+            "Parent",
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([
+                    (
+                        "children".to_string(),
+                        generic(
+                            "Array",
+                            vec![ContractTypeRef::Nullable {
+                                inner: Box::new(package_ref(child_id.clone())),
+                            }],
+                        ),
+                    ),
+                    ("left".to_string(), package_ref(child_id.clone())),
+                    ("right".to_string(), package_ref(child_id)),
+                ]),
+            },
+        ),
+    ]);
+    let parent_type = package_ref(parent_id);
+    let parent_plan = ServiceValuePlan::compile(&parent_type, &schema).unwrap();
+    let mut heap = RequestHeap::default();
+    let shared_child = heap
+        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+            "name".to_string(),
+            RuntimeValue::String("shared".to_string()),
+        )])))
+        .unwrap();
+    let children = heap
+        .alloc_array(vec![RuntimeValue::Heap(shared_child), RuntimeValue::Null])
+        .unwrap();
+    let parent = heap
+        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([
+            ("children".to_string(), RuntimeValue::Heap(children)),
+            ("left".to_string(), RuntimeValue::Heap(shared_child)),
+            ("right".to_string(), RuntimeValue::Heap(shared_child)),
+        ])))
+        .unwrap();
+    assert!(parent_plan
+        .value_matches(&RuntimeValue::Heap(parent), &heap)
+        .unwrap());
+
+    let json_type = ContractTypeRef::builtin("Json");
+    let json_plan = ServiceValuePlan::compile(&json_type, &BTreeMap::new()).unwrap();
+    let mut cyclic_heap = RequestHeap::default();
+    let cycle = cyclic_heap.alloc_array(Vec::new()).unwrap();
+    cyclic_heap
+        .push_array_item_without_cycle_check_for_test(cycle, RuntimeValue::Heap(cycle))
+        .unwrap();
+    assert!(matches!(
+        json_plan.value_matches(&RuntimeValue::Heap(cycle), &cyclic_heap),
+        Err(ServiceLinkableMaterializationError::CyclicValueGraph)
+    ));
+
+    let mut interface_heap = RequestHeap::default();
+    let callback = interface_heap
+        .alloc_interface(InterfaceValue::new(
+            "contract.Callback".to_string(),
+            InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                "runtime-1",
+                "activation-1",
+                1,
+                "contract.Callback",
+                "capability-1",
+            )),
+        ))
+        .unwrap();
+    assert!(matches!(
+        json_plan.value_matches(&RuntimeValue::Heap(callback), &interface_heap),
+        Err(
+            ServiceLinkableMaterializationError::DetachedInterfaceCarrier {
+                carrier: "callback capability"
+            }
+        )
+    ));
+}

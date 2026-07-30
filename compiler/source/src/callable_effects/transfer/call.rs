@@ -1,4 +1,10 @@
-use skiff_artifact_model::CallableProvenanceUnknownReason;
+use std::collections::BTreeSet;
+
+use skiff_artifact_model::{
+    builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
+    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
+    CallableProvenanceUnknownReason, ValueProjectionPath,
+};
 
 use crate::{shared::ast::Expr, ExpressionKey, ResolvedCallTarget};
 
@@ -15,8 +21,20 @@ impl Evaluator<'_, '_> {
         args: &[Expr],
         env: &mut Environment,
     ) -> AbstractValue {
+        let target = self.resolved_call_targets.target(call_key).cloned();
         let callee_start = self.next_index;
-        let callee_value = self.eval_expr(callee, env);
+        let callee_value = if matches!(
+            target,
+            Some(ResolvedCallTarget::LocalFunction { .. })
+                | Some(ResolvedCallTarget::ConfigIntrinsic { .. })
+                | Some(ResolvedCallTarget::NativeFunction { .. })
+                | Some(ResolvedCallTarget::DependencyPackageFunction { .. })
+                | Some(ResolvedCallTarget::ContractOperation { .. })
+        ) {
+            self.eval_exact_non_receiver_callee(callee, env)
+        } else {
+            self.eval_expr(callee, env)
+        };
         let receiver = receiver_object_index(callee_start, callee)
             .and_then(|index| self.value_at(index).cloned());
         let mut actuals = args
@@ -24,11 +42,13 @@ impl Evaluator<'_, '_> {
             .map(|arg| self.eval_expr(arg, env))
             .collect::<Vec<_>>();
         let return_reference = self.expression_may_be_reference(call_key);
-        let target = self.resolved_call_targets.target(call_key).cloned();
-
-        match target {
+        let result = match target {
+            Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => {
+                AbstractValue::fresh(return_reference)
+            }
             Some(ResolvedCallTarget::LocalFunction { .. })
-            | Some(ResolvedCallTarget::LocalImplMethod { .. }) => {
+            | Some(ResolvedCallTarget::LocalImplMethod { .. })
+            | Some(ResolvedCallTarget::ActorMethod { .. }) => {
                 let target = target.expect("matched local target");
                 let Some(callee_key) = target.source_callable_key() else {
                     return self.apply_unknown_call_with_callee(
@@ -53,10 +73,31 @@ impl Evaluator<'_, '_> {
                 });
                 self.apply_callee(&callee, &actuals, return_reference, None)
             }
+            Some(ResolvedCallTarget::NativeFunction { binding_key }) => self
+                .apply_exact_native_call(&binding_key, &callee_value, &actuals, return_reference),
+            Some(ResolvedCallTarget::ReceiverBuiltin { op }) => {
+                let Some(receiver) = receiver else {
+                    return self.apply_unknown_call_with_callee(
+                        &callee_value,
+                        &actuals,
+                        return_reference,
+                        EscapeLane::Native,
+                    );
+                };
+                self.apply_exact_receiver_call(
+                    op,
+                    &callee_value,
+                    receiver,
+                    &actuals,
+                    return_reference,
+                )
+            }
             Some(ResolvedCallTarget::DependencyPackageFunction {
                 package_requirement_alias,
                 package_callable_id,
                 expected_local_abi,
+                exact_signature,
+                ..
             }) => {
                 let Some(callable) = self.dependency_analysis.package_callable(
                     &package_requirement_alias,
@@ -70,10 +111,14 @@ impl Evaluator<'_, '_> {
                         EscapeLane::External,
                     );
                 };
-                let callee = CallableState::from_semantic_facts(
+                let mut callee = CallableState::from_semantic_facts(
                     &callable.semantic_facts().effects,
                     &callable.semantic_facts().provenance,
                 );
+                callee.effects.may_suspend = exact_signature
+                    .as_ref()
+                    .map(|signature| signature.may_suspend)
+                    .unwrap_or(true);
                 self.apply_callee(
                     &callee,
                     &actuals,
@@ -81,16 +126,31 @@ impl Evaluator<'_, '_> {
                     Some(package_callable_id.to_string()),
                 )
             }
-            Some(ResolvedCallTarget::ContractOperation { .. }) => {
-                // Contract target identity is known, but T02 does not own the
-                // operation descriptor/effect guarantee input. Do not infer
-                // safety from identity alone.
-                self.apply_unknown_call_with_callee(
+            Some(ResolvedCallTarget::InterfaceMethod { .. }) => self
+                .apply_unknown_call_with_callee(
                     &callee_value,
                     &actuals,
                     return_reference,
                     EscapeLane::External,
-                )
+                ),
+            Some(ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+                ..
+            }) => {
+                let Some(callee) = self
+                    .dependency_analysis
+                    .exact_contract_operation(&contract_requirement, &contract_operation_id)
+                    .and_then(detached_contract_callee)
+                else {
+                    return self.apply_unknown_call_with_callee(
+                        &callee_value,
+                        &actuals,
+                        return_reference,
+                        EscapeLane::External,
+                    );
+                };
+                self.apply_callee(&callee, &actuals, return_reference, None)
             }
             Some(ResolvedCallTarget::Unknown { .. }) | None => self.apply_unknown_call_with_callee(
                 &callee_value,
@@ -98,7 +158,151 @@ impl Evaluator<'_, '_> {
                 return_reference,
                 EscapeLane::External,
             ),
+        };
+        if return_reference && !result.unknown && result.needs_fresh_root {
+            // A summary says which roots are directly returned and which
+            // origins are merely reachable, but it is intentionally
+            // field-insensitive. Materialize the direct Fresh branch as a new
+            // call-site root and retain all non-root reachability as possible
+            // one-level payload. This lets a later field read recover a caller
+            // alias embedded by the callee without treating that alias as the
+            // wrapper's own identity.
+            let mut payload = result.clone();
+            payload.direct_origins = payload.origins.clone();
+            payload.direct_origins.remove(&Origin::Fresh);
+            payload.direct_caller_references = payload.caller_references.clone();
+            payload.fresh_roots = payload.fresh_references.clone();
+            payload.needs_fresh_root = false;
+            let fresh = self.allocate_fresh_container(call_key.preorder_index(), payload);
+            let mut result = result;
+            result.needs_fresh_root = false;
+            result.join(&fresh);
+            result.needs_fresh_root = false;
+            result
+        } else {
+            result
         }
+    }
+
+    fn eval_exact_non_receiver_callee(
+        &mut self,
+        callee: &Expr,
+        env: &mut Environment,
+    ) -> AbstractValue {
+        // A non-receiver callable address is safe only as the syntactic callee
+        // of the exact target attached to this call key. Every first-class
+        // evaluation path still goes through `eval_expr` and remains
+        // fail-closed.
+        match callee {
+            Expr::Identifier(_) => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let value = AbstractValue::constant(self.expression_may_be_reference(&key));
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
+            Expr::DependencySourceAddress(_) => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let value = AbstractValue::constant(self.expression_may_be_reference(&key));
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
+            Expr::Generic { callee, .. } => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let value = self.eval_exact_non_receiver_callee(callee, env);
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
+            Expr::Field { object, .. } => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let reference = self.expression_may_be_reference(&key);
+                let mut value = self.eval_exact_non_receiver_callee(object, env);
+                value.reference = reference;
+                if !reference {
+                    value.caller_references.clear();
+                    value.direct_caller_references.clear();
+                    value.fresh_roots.clear();
+                    value.fresh_references.clear();
+                    value.needs_fresh_root = false;
+                }
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
+            _ => self.eval_expr(callee, env),
+        }
+    }
+
+    fn apply_exact_native_call(
+        &mut self,
+        binding_key: &str,
+        callee_value: &AbstractValue,
+        actuals: &[AbstractValue],
+        return_reference: bool,
+    ) -> AbstractValue {
+        let Some(callee) = native_callable_callee(binding_key) else {
+            return self.apply_unknown_call_with_callee(
+                callee_value,
+                actuals,
+                return_reference,
+                EscapeLane::Native,
+            );
+        };
+        self.apply_callee(&callee, actuals, return_reference, None)
+    }
+
+    fn apply_exact_receiver_call(
+        &mut self,
+        op: BuiltinReceiverOp,
+        callee_value: &AbstractValue,
+        receiver: AbstractValue,
+        args: &[AbstractValue],
+        return_reference: bool,
+    ) -> AbstractValue {
+        let stored_value = receiver_store_value(op, args);
+        if let Some(value) = stored_value {
+            if receiver.unknown || value.unknown || self.store_would_create_cycle(&receiver, value)
+            {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+                return AbstractValue::unknown(return_reference);
+            }
+        }
+        let mut actuals = Vec::with_capacity(args.len().saturating_add(1));
+        actuals.push(receiver.clone());
+        actuals.extend_from_slice(args);
+        let Some(mut callee) = receiver_callable_callee(op) else {
+            return self.apply_unknown_call_with_callee(
+                callee_value,
+                &actuals,
+                return_reference,
+                EscapeLane::Native,
+            );
+        };
+        // Receiver mutation is contextual to the receiver graph, not to values
+        // merely embedded into that graph. A fresh local JsonObject therefore
+        // discharges the write fact even when the inserted value originated at
+        // the caller boundary.
+        if !actuals[0].contains_direct_caller_reference() && !actuals[0].unknown {
+            callee.effects.writes_caller_reachable = false;
+        }
+        let result = self.apply_callee(&callee, &actuals, return_reference, None);
+        if let Some(value) = stored_value {
+            if !receiver.fresh_roots.is_empty() {
+                self.store_into_fresh_roots(&receiver.fresh_roots, value);
+            }
+            for reference in &receiver.direct_caller_references {
+                self.state
+                    .parameter_stores
+                    .entry(reference.clone())
+                    .and_modify(|stored| stored.join(value))
+                    .or_insert_with(|| value.clone());
+            }
+        }
+        result
     }
 
     fn apply_unknown_call_with_callee(
@@ -136,51 +340,172 @@ impl Evaluator<'_, '_> {
         return_reference: bool,
         dependency_return: Option<String>,
     ) -> AbstractValue {
+        if matches!(
+            callee.unknown,
+            Some(CallableProvenanceUnknownReason::UnsupportedHeapStore)
+        ) {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+        }
         let any_caller_reference = actuals
             .iter()
             .any(|value| value.contains_caller_reference() || value.unknown);
-        let any_caller_value = actuals
-            .iter()
-            .any(|value| value.contains_caller_value() || value.unknown);
-        self.state.effects.writes_caller_reachable |=
-            callee.effects.writes_caller_reachable && any_caller_reference;
-        self.state.effects.requires_same_heap_identity |=
-            callee.effects.requires_same_heap_identity;
+        if callee.write_parameters.is_empty() && callee.parameter_stores.is_empty() {
+            self.state.effects.writes_caller_reachable |=
+                callee.effects.writes_caller_reachable && any_caller_reference;
+        } else if callee.effects.writes_caller_reachable {
+            for actual in indexed_actuals(&callee.write_parameters, actuals) {
+                if actual.contains_direct_caller_reference() || actual.unknown {
+                    self.state.effects.writes_caller_reachable = true;
+                    self.state.write_parameters.extend(
+                        actual
+                            .direct_caller_references
+                            .iter()
+                            .map(|reference| reference.parameter),
+                    );
+                }
+            }
+        }
+        for (formal, stored) in &callee.parameter_stores {
+            let Some(actual) = usize::try_from(formal.parameter)
+                .ok()
+                .and_then(|index| actuals.get(index))
+            else {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+                continue;
+            };
+            let mapped_target = self.project_store_target(actual, formal);
+            let mapped = self.map_value(stored, actuals, true);
+            if mapped_target.unknown
+                || mapped.unknown
+                || self.store_would_create_cycle(&mapped_target, &mapped)
+            {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+            } else {
+                let mut transferred = false;
+                if !mapped_target.fresh_roots.is_empty() {
+                    self.store_into_fresh_roots(&mapped_target.fresh_roots, &mapped);
+                    transferred = true;
+                }
+                if mapped_target.contains_direct_caller_reference() {
+                    self.state.effects.writes_caller_reachable = true;
+                    self.state.write_parameters.extend(
+                        mapped_target
+                            .direct_caller_references
+                            .iter()
+                            .map(|reference| reference.parameter),
+                    );
+                    for reference in &mapped_target.direct_caller_references {
+                        self.state
+                            .parameter_stores
+                            .entry(reference.clone())
+                            .and_modify(|value| value.join(&mapped))
+                            .or_insert_with(|| mapped.clone());
+                    }
+                    transferred = true;
+                }
+                if !transferred
+                    && (!mapped_target.origins.is_empty() || !mapped_target.fresh_roots.is_empty())
+                {
+                    self.state.join(&CallableState::fail_closed(
+                        CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                    ));
+                }
+            }
+        }
+        if callee.effects.requires_same_heap_identity {
+            let identity_actuals = indexed_actuals(&callee.same_heap_identity_parameters, actuals);
+            // Only a mapped caller-owned identity makes the callee's real
+            // observation visible here. An unknown actual remains rejected by
+            // its unknown facts without manufacturing an identity observation.
+            let identity_is_observable = if callee.same_heap_identity_parameters.is_empty() {
+                actuals
+                    .iter()
+                    .any(|actual| actual.contains_direct_caller_reference())
+            } else {
+                identity_actuals
+                    .iter()
+                    .any(|actual| actual.contains_direct_caller_reference())
+            };
+            self.state.effects.requires_same_heap_identity |= identity_is_observable;
+            if identity_is_observable {
+                let relevant_actuals = if callee.same_heap_identity_parameters.is_empty() {
+                    actuals.iter().collect::<Vec<_>>()
+                } else {
+                    identity_actuals
+                };
+                for actual in relevant_actuals {
+                    self.state.same_heap_identity_parameters.extend(
+                        actual
+                            .direct_caller_references
+                            .iter()
+                            .map(|reference| reference.parameter),
+                    );
+                }
+            }
+        }
         self.state.effects.invokes_unknown_target |= callee.effects.invokes_unknown_target;
         self.state.effects.may_suspend |= callee.effects.may_suspend;
 
-        if callee.effects.escapes_caller_value && any_caller_value {
-            self.state.effects.escapes_caller_value = true;
-            if callee.escape_lanes.is_empty() {
-                self.state.escape_lanes.insert(EscapeLane::External);
+        if callee.effects.escapes_caller_value {
+            let lanes = if callee.escape_lanes.is_empty() {
+                BTreeSet::from([EscapeLane::External])
             } else {
-                self.state
-                    .escape_lanes
-                    .extend(callee.escape_lanes.iter().copied());
+                callee.escape_lanes.clone()
+            };
+            for lane in lanes {
+                if let Some(parameters) = callee.escape_parameters.get(&lane) {
+                    for actual in indexed_actuals(parameters, actuals) {
+                        self.state.record_escape(actual, lane);
+                    }
+                } else {
+                    // Public/dependency summaries and unresolved effects have
+                    // no internal selector identity. Preserve their aggregate
+                    // effect by conservatively considering every actual.
+                    for actual in actuals {
+                        self.state.record_escape(actual, lane);
+                    }
+                }
             }
         }
 
-        let mut returned = map_origins(
+        let mut returned = self.map_value_origins(
             &callee.return_origins,
+            &callee.return_direct_origins,
             actuals,
             return_reference,
             callee.effects.returns_caller_alias,
         );
-        if callee.effects.returns_caller_alias && any_caller_reference {
+        let return_formals = caller_parameter_indices(&callee.return_origins);
+        if callee.effects.returns_caller_alias && return_formals.is_empty() && any_caller_reference
+        {
             for actual in actuals {
                 returned
                     .caller_references
-                    .extend(actual.caller_references.iter().copied());
+                    .extend(actual.caller_references.iter().cloned());
+                returned
+                    .direct_caller_references
+                    .extend(actual.direct_caller_references.iter().cloned());
                 returned.unknown |= actual.unknown;
             }
         }
         if let Some(callable_id) = dependency_return {
+            // This is a dependency-trace origin used by package build
+            // identity, not an additional possible heap identity of the
+            // returned value. The dependency's directReturnOrigins already
+            // carry that semantic fact exactly.
             returned
                 .origins
                 .insert(Origin::DependencyReturn(callable_id));
         }
 
-        let mut thrown = map_origins(
+        let mut thrown = self.map_value_origins(
+            &callee.throw_origins,
             &callee.throw_origins,
             actuals,
             true,
@@ -198,57 +523,275 @@ impl Evaluator<'_, '_> {
             || (callee.effects.throws_caller_alias && any_caller_reference)
             || thrown.unknown;
 
-        if returned.unknown || thrown.unknown {
+        if thrown.unknown {
             self.state.join(&CallableState::fail_closed(
                 CallableProvenanceUnknownReason::UnknownCallTarget,
             ));
         }
 
         if let Some(reason) = callee.unknown {
-            self.state.mark_unknown(reason);
-            returned.unknown = true;
+            returned.unknown |= matches!(
+                reason,
+                CallableProvenanceUnknownReason::UnknownCallTarget
+                    | CallableProvenanceUnknownReason::AnalysisPending
+            ) || callee.return_origins.is_empty();
+            // Unknown return provenance is an abstract value, not an
+            // unconditional callable failure. Its consumer (return, throw or
+            // an escape lane) decides whether it becomes caller-visible.
+            // A genuinely unresolved/dynamic call target remains fail-closed
+            // through its explicit invokes_unknown_target effect.
+            if callee.effects.invokes_unknown_target {
+                self.state.mark_unknown(reason);
+            }
         }
         returned.reference = return_reference;
         if !return_reference {
             returned.caller_references.clear();
+            returned.direct_caller_references.clear();
+            returned.fresh_roots.clear();
+            returned.fresh_references.clear();
+            returned.needs_fresh_root = false;
         }
         returned
     }
 }
 
-fn map_origins(
-    origins: &std::collections::BTreeSet<Origin>,
-    actuals: &[AbstractValue],
-    reference: bool,
-    preserve_caller_references: bool,
-) -> AbstractValue {
-    let mut mapped = AbstractValue {
-        reference,
-        ..AbstractValue::default()
-    };
-    for origin in origins {
-        match origin {
-            Origin::CallerParameter(index) => {
-                let Some(actual) = usize::try_from(*index)
-                    .ok()
-                    .and_then(|index| actuals.get(index))
-                else {
-                    mapped.unknown = true;
-                    continue;
-                };
-                let mut actual = actual.clone();
-                if !preserve_caller_references {
-                    actual.caller_references.clear();
+fn receiver_store_value<'a>(
+    op: BuiltinReceiverOp,
+    args: &'a [AbstractValue],
+) -> Option<&'a AbstractValue> {
+    match op.canonical_key {
+        "receiver:Array.push@1" => args.first(),
+        "receiver:Array.set@1" | "receiver:Map.set@1" | "receiver:JsonObject.set@1" => args.get(1),
+        _ => None,
+    }
+}
+
+fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
+    if let Some(semantics) = native_callable_semantics(binding_key) {
+        let mut state = CallableState::bottom();
+        state.effects = semantics.effects;
+        if binding_key == "std.http.stream.emitResponse" && state.effects.escapes_caller_value {
+            state.escape_lanes.insert(EscapeLane::External);
+            state
+                .escape_parameters
+                .insert(EscapeLane::External, BTreeSet::from([0]));
+        }
+        let origin = Origin::from(semantics.return_provenance.clone());
+        state.return_origins.insert(origin.clone());
+        state.return_direct_origins.insert(origin);
+        return Some(state);
+    }
+    match binding_key {
+        // runtime/native dispatch decodes into the current request heap and
+        // either returns that newly materialized value or raises a detached
+        // std.json.DecodeError. It does not retain the input or suspend.
+        "std.json.decode" => {
+            let mut state = CallableState::bottom();
+            state.return_origins.insert(Origin::Fresh);
+            state.return_direct_origins.insert(Origin::Fresh);
+            Some(state)
+        }
+        _ => None,
+    }
+}
+
+fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
+    if let Some(semantics) = builtin_receiver_callable_semantics(op) {
+        let mut state = CallableState::bottom();
+        state.effects = semantics.effects;
+        if state.effects.writes_caller_reachable {
+            state.write_parameters.insert(0);
+        }
+        if state.effects.requires_same_heap_identity {
+            state.same_heap_identity_parameters.insert(0);
+        }
+        let origin = Origin::from(semantics.return_provenance.clone());
+        state.return_origins.insert(origin.clone());
+        state.return_direct_origins.insert(origin);
+        if matches!(
+            op.canonical_key,
+            "receiver:Map.get@1" | "receiver:JsonObject.get@1"
+        ) {
+            state.return_origins.remove(&Origin::CallerParameter(0));
+            state
+                .return_direct_origins
+                .remove(&Origin::CallerParameter(0));
+            let projection = Origin::CallerParameterProjection {
+                index: 0,
+                path: ValueProjectionPath::container_element(),
+            };
+            state.return_origins.insert(projection.clone());
+            state.return_direct_origins.insert(projection);
+        }
+        return Some(state);
+    }
+    let mut state = CallableState::bottom();
+    match op.canonical_key {
+        "receiver:string.length@1" => {
+            state.return_origins.insert(Origin::Constant);
+            state.return_direct_origins.insert(Origin::Constant);
+        }
+        "receiver:bytes.toUtf8String@1" => {
+            state.return_origins.insert(Origin::Fresh);
+            state.return_direct_origins.insert(Origin::Fresh);
+        }
+        _ => return None,
+    }
+    Some(state)
+}
+
+fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<CallableState> {
+    let contract = &operation.contract;
+    let guarantee = contract.effect_guarantee;
+    if !matches!(contract.stream, BoundaryStreamContract::Unary)
+        || !matches!(contract.callbacks, BoundaryCallbackContract::None)
+        || !guarantee.detached_parameters
+        || !guarantee.detached_return
+        || !guarantee.detached_error
+        || !guarantee.no_caller_reachable_mutation
+        || !guarantee.no_caller_value_escape
+        || !guarantee.no_same_heap_identity
+    {
+        return None;
+    }
+    let mut state = CallableState::bottom();
+    state.effects.may_suspend = true;
+    state.return_origins.insert(Origin::Fresh);
+    state.return_direct_origins.insert(Origin::Fresh);
+    state.throw_origins.insert(Origin::Fresh);
+    Some(state)
+}
+
+impl Evaluator<'_, '_> {
+    fn map_origins(
+        &mut self,
+        origins: &std::collections::BTreeSet<Origin>,
+        actuals: &[AbstractValue],
+        reference: bool,
+        preserve_caller_references: bool,
+    ) -> AbstractValue {
+        let mut mapped = AbstractValue {
+            reference,
+            ..AbstractValue::default()
+        };
+        for origin in origins {
+            match origin {
+                Origin::CallerParameter(index) => {
+                    let Some(actual) = usize::try_from(*index)
+                        .ok()
+                        .and_then(|index| actuals.get(index))
+                    else {
+                        mapped.unknown = true;
+                        continue;
+                    };
+                    let mut actual = actual.clone();
+                    if !preserve_caller_references {
+                        actual.caller_references.clear();
+                        actual.direct_caller_references.clear();
+                    }
+                    if !reference {
+                        actual.fresh_roots.clear();
+                        actual.fresh_references.clear();
+                        actual.caller_references.clear();
+                        actual.direct_caller_references.clear();
+                    }
+                    mapped.join(&actual);
                 }
-                mapped.join(&actual);
-            }
-            Origin::Fresh | Origin::Constant | Origin::DependencyReturn(_) => {
-                mapped.origins.insert(origin.clone());
+                Origin::CallerParameterProjection { index, path } => {
+                    let Some(actual) = usize::try_from(*index)
+                        .ok()
+                        .and_then(|index| actuals.get(index))
+                    else {
+                        mapped.unknown = true;
+                        continue;
+                    };
+                    let projection =
+                        self.project_value(actual, path, reference, preserve_caller_references);
+                    mapped.join(&projection);
+                }
+                Origin::Fresh | Origin::Constant | Origin::DependencyReturn(_) => {
+                    mapped.origins.insert(origin.clone());
+                    mapped.direct_origins.insert(origin.clone());
+                    mapped.needs_fresh_root |= reference && matches!(origin, Origin::Fresh);
+                }
             }
         }
+        mapped.reference = reference;
+        if !reference {
+            mapped.fresh_roots.clear();
+            mapped.fresh_references.clear();
+            mapped.caller_references.clear();
+            mapped.direct_caller_references.clear();
+            mapped.needs_fresh_root = false;
+        }
+        mapped
     }
-    mapped.reference = reference;
-    mapped
+
+    fn map_value_origins(
+        &mut self,
+        origins: &std::collections::BTreeSet<Origin>,
+        direct_origins: &std::collections::BTreeSet<Origin>,
+        actuals: &[AbstractValue],
+        reference: bool,
+        preserve_caller_references: bool,
+    ) -> AbstractValue {
+        let mut mapped = self.map_origins(origins, actuals, reference, preserve_caller_references);
+        let direct = self.map_origins(
+            direct_origins,
+            actuals,
+            reference,
+            preserve_caller_references,
+        );
+        mapped.direct_origins = direct.direct_origins;
+        mapped.direct_caller_references = direct.direct_caller_references;
+        mapped.fresh_roots = direct.fresh_roots;
+        mapped.needs_fresh_root = direct.needs_fresh_root;
+        mapped.unknown |= direct.unknown;
+        mapped
+    }
+
+    fn map_value(
+        &mut self,
+        value: &AbstractValue,
+        actuals: &[AbstractValue],
+        preserve_caller_references: bool,
+    ) -> AbstractValue {
+        let mut mapped = self.map_value_origins(
+            &value.origins,
+            &value.direct_origins,
+            actuals,
+            value.reference,
+            preserve_caller_references,
+        );
+        mapped.unknown |= value.unknown;
+        mapped
+    }
+}
+
+fn caller_parameter_indices(
+    origins: &std::collections::BTreeSet<Origin>,
+) -> std::collections::BTreeSet<u32> {
+    origins
+        .iter()
+        .filter_map(|origin| match origin {
+            Origin::CallerParameter(index) | Origin::CallerParameterProjection { index, .. } => {
+                Some(*index)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn indexed_actuals<'a>(
+    indices: &std::collections::BTreeSet<u32>,
+    actuals: &'a [AbstractValue],
+) -> Vec<&'a AbstractValue> {
+    indices
+        .iter()
+        .filter_map(|index| usize::try_from(*index).ok())
+        .filter_map(|index| actuals.get(index))
+        .collect()
 }
 
 fn receiver_object_index(callee_start: u32, mut callee: &Expr) -> Option<u32> {

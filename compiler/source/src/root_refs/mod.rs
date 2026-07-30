@@ -6,11 +6,13 @@ use std::{
 use crate::{
     shared::{
         ast::{
-            AliasDecl, ConstDecl, DbDecl, Expr, FunctionDecl, ImplDecl, InterfaceDecl,
-            InterfaceOperation, Pattern, SourceFile, TypeDecl, TypeRef,
+            AliasDecl, Block, ConstDecl, DbDecl, Expr, ForBinding, FunctionDecl, ImplDecl,
+            InterfaceDecl, InterfaceOperation, MatchArm, Pattern, SourceFile, Stmt, TypeDecl,
+            TypeRef,
         },
         ast_utils::{
-            walk_expr, walk_expr_mut, walk_pattern, walk_pattern_mut, AstVisitor, AstVisitorMut,
+            walk_expr, walk_expr_mut, walk_pattern, walk_pattern_mut, walk_test_effect,
+            walk_test_effect_mut, AstVisitor, AstVisitorMut,
         },
         publication_error::PublicationError,
     },
@@ -330,6 +332,7 @@ pub fn resolve_root_refs_in_ast(ast: &mut SourceFile, index: &RootRefIndex) -> R
     let mut visitor = RootRefResolver {
         index,
         outcome: RootRefResolution::default(),
+        package_binding_depth: module_binds_package(ast),
     };
     visitor.visit_source_file(ast);
     visitor.outcome
@@ -339,6 +342,7 @@ pub fn collect_root_refs_in_ast(ast: &SourceFile, index: &RootRefIndex) -> RootR
     let mut visitor = RootRefCollector {
         index,
         outcome: RootRefResolution::default(),
+        package_binding_depth: module_binds_package(ast),
     };
     visitor.visit_source_file(ast);
     visitor.outcome
@@ -347,6 +351,7 @@ pub fn collect_root_refs_in_ast(ast: &SourceFile, index: &RootRefIndex) -> RootR
 struct RootRefResolver<'a> {
     index: &'a RootRefIndex,
     outcome: RootRefResolution,
+    package_binding_depth: usize,
 }
 
 impl RootRefResolver<'_> {
@@ -376,6 +381,9 @@ impl RootRefResolver<'_> {
             self.visit_interface_operation(signature);
         }
         for test in &mut ast.tests {
+            for effect in &mut test.effects {
+                walk_test_effect_mut(self, effect);
+            }
             self.visit_block(&mut test.body);
         }
     }
@@ -440,7 +448,10 @@ impl RootRefResolver<'_> {
         if let Some(implicit_self) = decl.implicit_self.as_mut() {
             self.visit_type_ref(implicit_self);
         }
-        self.visit_block(&mut decl.body);
+        let binds_package = decl.params.iter().any(|param| param.name == "package");
+        self.with_package_binding(binds_package, |visitor| {
+            visitor.visit_block(&mut decl.body);
+        });
     }
 
     fn visit_interface_operation(&mut self, op: &mut InterfaceOperation) {
@@ -452,9 +463,65 @@ impl RootRefResolver<'_> {
             self.visit_type_ref(implicit_self);
         }
     }
+
+    fn with_package_binding(&mut self, binds_package: bool, visit: impl FnOnce(&mut Self)) {
+        self.package_binding_depth += usize::from(binds_package);
+        visit(self);
+        self.package_binding_depth -= usize::from(binds_package);
+    }
+
+    fn package_is_bound(&self) -> bool {
+        self.package_binding_depth > 0
+    }
 }
 
 impl AstVisitorMut for RootRefResolver<'_> {
+    fn visit_block(&mut self, block: &mut Block) {
+        let entry_depth = self.package_binding_depth;
+        for stmt in &mut block.statements {
+            self.visit_stmt(stmt);
+        }
+        self.package_binding_depth = entry_depth;
+    }
+
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+        match stmt {
+            Stmt::Let {
+                name, ty, value, ..
+            } => {
+                if let Some(ty) = ty {
+                    self.visit_type_ref(ty);
+                }
+                self.visit_expr(value);
+                self.package_binding_depth += usize::from(name == "package");
+            }
+            Stmt::For {
+                binding,
+                iterable,
+                body,
+            } => {
+                self.visit_expr(iterable);
+                self.with_package_binding(for_binding_binds_package(binding), |visitor| {
+                    visitor.visit_block(body);
+                });
+            }
+            Stmt::Match { value, arms } => {
+                self.visit_expr(value);
+                for arm in arms {
+                    self.visit_match_arm(arm);
+                }
+            }
+            _ => crate::shared::ast_utils::walk_stmt_mut(self, stmt),
+        }
+    }
+
+    fn visit_match_arm(&mut self, arm: &mut MatchArm) {
+        self.visit_pattern(&mut arm.pattern);
+        self.with_package_binding(pattern_binds_package(&arm.pattern), |visitor| {
+            visitor.visit_block(&mut arm.body);
+        });
+    }
+
     fn visit_pattern(&mut self, pattern: &mut Pattern) {
         if let Pattern::Nominal { name, .. } = pattern {
             *name = rewrite_type_name(name, self.index, &mut self.outcome);
@@ -463,7 +530,24 @@ impl AstVisitorMut for RootRefResolver<'_> {
     }
 
     fn visit_expr(&mut self, expr: &mut Expr) {
-        if try_resolve_root_expr(expr, self.index, &mut self.outcome) {
+        if try_resolve_root_expr(expr, self.package_is_bound(), self.index, &mut self.outcome) {
+            return;
+        }
+        if let Expr::ValueBlock(value) | Expr::ConcurrentValue(value) = expr {
+            let entry_depth = self.package_binding_depth;
+            for statement in &mut value.body.statements {
+                self.visit_stmt(statement);
+            }
+            self.visit_expr(&mut value.tail);
+            self.package_binding_depth = entry_depth;
+            return;
+        }
+        if let Expr::DbLeaseClaim(claim) = expr {
+            self.visit_type_ref(&mut claim.target);
+            self.visit_expr(&mut claim.key);
+            self.with_package_binding(claim.binding.as_deref() == Some("package"), |visitor| {
+                visitor.visit_block(&mut claim.body);
+            });
             return;
         }
         if let Expr::Record { type_name, .. } = expr {
@@ -480,6 +564,7 @@ impl AstVisitorMut for RootRefResolver<'_> {
 struct RootRefCollector<'a> {
     index: &'a RootRefIndex,
     outcome: RootRefResolution,
+    package_binding_depth: usize,
 }
 
 impl RootRefCollector<'_> {
@@ -509,6 +594,9 @@ impl RootRefCollector<'_> {
             self.visit_interface_operation(signature);
         }
         for test in &ast.tests {
+            for effect in &test.effects {
+                walk_test_effect(self, effect);
+            }
             self.visit_block(&test.body);
         }
     }
@@ -568,7 +656,10 @@ impl RootRefCollector<'_> {
         if let Some(implicit_self) = &decl.implicit_self {
             self.visit_type_ref(implicit_self);
         }
-        self.visit_block(&decl.body);
+        let binds_package = decl.params.iter().any(|param| param.name == "package");
+        self.with_package_binding(binds_package, |visitor| {
+            visitor.visit_block(&decl.body);
+        });
     }
 
     fn visit_interface_operation(&mut self, op: &InterfaceOperation) {
@@ -580,9 +671,65 @@ impl RootRefCollector<'_> {
             self.visit_type_ref(implicit_self);
         }
     }
+
+    fn with_package_binding(&mut self, binds_package: bool, visit: impl FnOnce(&mut Self)) {
+        self.package_binding_depth += usize::from(binds_package);
+        visit(self);
+        self.package_binding_depth -= usize::from(binds_package);
+    }
+
+    fn package_is_bound(&self) -> bool {
+        self.package_binding_depth > 0
+    }
 }
 
 impl AstVisitor for RootRefCollector<'_> {
+    fn visit_block(&mut self, block: &Block) {
+        let entry_depth = self.package_binding_depth;
+        for stmt in &block.statements {
+            self.visit_stmt(stmt);
+        }
+        self.package_binding_depth = entry_depth;
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let {
+                name, ty, value, ..
+            } => {
+                if let Some(ty) = ty {
+                    self.visit_type_ref(ty);
+                }
+                self.visit_expr(value);
+                self.package_binding_depth += usize::from(name == "package");
+            }
+            Stmt::For {
+                binding,
+                iterable,
+                body,
+            } => {
+                self.visit_expr(iterable);
+                self.with_package_binding(for_binding_binds_package(binding), |visitor| {
+                    visitor.visit_block(body);
+                });
+            }
+            Stmt::Match { value, arms } => {
+                self.visit_expr(value);
+                for arm in arms {
+                    self.visit_match_arm(arm);
+                }
+            }
+            _ => crate::shared::ast_utils::walk_stmt(self, stmt),
+        }
+    }
+
+    fn visit_match_arm(&mut self, arm: &MatchArm) {
+        self.visit_pattern(&arm.pattern);
+        self.with_package_binding(pattern_binds_package(&arm.pattern), |visitor| {
+            visitor.visit_block(&arm.body);
+        });
+    }
+
     fn visit_pattern(&mut self, pattern: &Pattern) {
         if let Pattern::Nominal { name, .. } = pattern {
             collect_type_name(name, self.index, &mut self.outcome);
@@ -591,7 +738,24 @@ impl AstVisitor for RootRefCollector<'_> {
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
-        if try_collect_root_expr(expr, self.index, &mut self.outcome) {
+        if try_collect_root_expr(expr, self.package_is_bound(), self.index, &mut self.outcome) {
+            return;
+        }
+        if let Expr::ValueBlock(value) | Expr::ConcurrentValue(value) = expr {
+            let entry_depth = self.package_binding_depth;
+            for statement in &value.body.statements {
+                self.visit_stmt(statement);
+            }
+            self.visit_expr(&value.tail);
+            self.package_binding_depth = entry_depth;
+            return;
+        }
+        if let Expr::DbLeaseClaim(claim) = expr {
+            self.visit_type_ref(&claim.target);
+            self.visit_expr(&claim.key);
+            self.with_package_binding(claim.binding.as_deref() == Some("package"), |visitor| {
+                visitor.visit_block(&claim.body);
+            });
             return;
         }
         if let Expr::Record { type_name, .. } = expr {
@@ -612,12 +776,16 @@ enum AliasOrTypeDecl<'a> {
 
 fn try_resolve_root_expr(
     expr: &mut Expr,
+    package_is_bound: bool,
     index: &RootRefIndex,
     outcome: &mut RootRefResolution,
 ) -> bool {
     let Some(chain) = collect_root_chain(expr) else {
         return false;
     };
+    if chain.head == "package" && package_is_bound {
+        return false;
+    }
     if collect_root_chain_resolution(&chain.head, &chain.segments, index, outcome) {
         *expr = Expr::Identifier(chain.segments.last().cloned().unwrap_or_default());
         return true;
@@ -631,12 +799,16 @@ fn try_resolve_root_expr(
 
 fn try_collect_root_expr(
     expr: &Expr,
+    package_is_bound: bool,
     index: &RootRefIndex,
     outcome: &mut RootRefResolution,
 ) -> bool {
     let Some(chain) = collect_root_chain(expr) else {
         return false;
     };
+    if chain.head == "package" && package_is_bound {
+        return false;
+    }
     collect_root_chain_resolution(&chain.head, &chain.segments, index, outcome);
     true
 }
@@ -700,6 +872,9 @@ fn collect_root_chain(expr: &Expr) -> Option<RootChain> {
             }
             Expr::Identifier(name) if name == "root" || name == "package" => {
                 segments.reverse();
+                if name == "package" && segments.is_empty() {
+                    return None;
+                }
                 return Some(RootChain {
                     head: name.clone(),
                     segments,
@@ -707,6 +882,40 @@ fn collect_root_chain(expr: &Expr) -> Option<RootChain> {
             }
             _ => return None,
         }
+    }
+}
+
+fn module_binds_package(ast: &SourceFile) -> usize {
+    usize::from(
+        ast.consts.iter().any(|decl| decl.name == "package")
+            || ast.functions.iter().any(|decl| decl.name == "package")
+            || ast
+                .function_signatures
+                .iter()
+                .any(|decl| decl.name == "package"),
+    )
+}
+
+fn for_binding_binds_package(binding: &ForBinding) -> bool {
+    match binding {
+        ForBinding::Item { item } => item == "package",
+        ForBinding::Entry { key, value } => key == "package" || value == "package",
+    }
+}
+
+fn pattern_binds_package(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Binding(name) => name == "package",
+        Pattern::Nominal { fields, .. } | Pattern::Record { fields } => {
+            fields.iter().any(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .map_or(field.name == "package", pattern_binds_package)
+            })
+        }
+        Pattern::Or(patterns) => patterns.iter().any(pattern_binds_package),
+        Pattern::Wildcard | Pattern::Literal(_) => false,
     }
 }
 

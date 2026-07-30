@@ -2,14 +2,26 @@ use std::{any::Any, collections::HashMap, error::Error, fmt, future::Future, pin
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use skiff_artifact_model::DbMetadataIr;
+use skiff_artifact_model::{DbMetadataIr, FileIrRef, PackageArtifactRef};
 use skiff_runtime_boundary::recoverable::RecoverableBehaviorHooks;
 use skiff_runtime_model::{
-    error::{RuntimeErrorPayload, TypeIdentity, WirePayload},
+    error::{RuntimeErrorPayload, WirePayload},
     recoverable::{RuntimeRecoverableBoundaryContext, RuntimeRecoverableExpectedTypePlan},
     request_heap::RequestHeap,
     runtime_value::RuntimeValue,
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
+
+mod prepared_runtime;
+
+pub use prepared_runtime::{
+    DbPreparedRuntimeWait, DbRuntimeFinalizer, PreparedDbManyRuntimeOperation,
+    PreparedDbOptionalRuntimeOperation, PreparedDbRuntimeOperation,
+    PreparedDbValueRuntimeOperation,
+};
+
+#[cfg(test)]
+mod prepared_runtime_tests;
 
 macro_rules! db_wire_newtype {
     ($name:ident) => {
@@ -246,9 +258,31 @@ pub struct DbProviderConfig {
     value: Value,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MongoDbProviderConfig {
+    mongo_url: String,
+}
+
 impl DbProviderConfig {
     pub fn opaque(value: Value) -> Self {
         Self { value }
+    }
+
+    /// Builds the provider-owned opaque shape for an already-admitted Mongo URL.
+    pub fn mongo(mongo_url: impl Into<String>) -> DbCapabilityResult<Self> {
+        let mongo_url = mongo_url.into();
+        if mongo_url.trim().is_empty() {
+            return Err(DbCapabilityError::decode(
+                "serviceDb provider config field mongoUrl must be a non-empty string",
+            ));
+        }
+        let value = serde_json::to_value(MongoDbProviderConfig { mongo_url }).map_err(|error| {
+            DbCapabilityError::decode(format!(
+                "failed to encode typed Mongo serviceDb provider config: {error}"
+            ))
+        })?;
+        Ok(Self::opaque(value))
     }
 
     pub fn as_value(&self) -> &Value {
@@ -260,11 +294,95 @@ impl DbProviderConfig {
     }
 }
 
+#[cfg(test)]
+mod db_provider_config_tests {
+    use serde_json::json;
+
+    use super::{DbCapabilityError, DbProviderConfig};
+
+    #[test]
+    fn mongo_provider_config_owns_opaque_shape() {
+        let config = DbProviderConfig::mongo("mongodb://127.0.0.1:27017")
+            .expect("non-empty Mongo URL should produce provider config");
+
+        assert_eq!(
+            config.into_value(),
+            json!({ "mongoUrl": "mongodb://127.0.0.1:27017" })
+        );
+    }
+
+    #[test]
+    fn mongo_provider_config_rejects_empty_url() {
+        let error = DbProviderConfig::mongo(" \n")
+            .expect_err("empty Mongo URL must fail closed at the config owner");
+
+        assert!(matches!(
+            error,
+            DbCapabilityError::Decode(message)
+                if message
+                    == "serviceDb provider config field mongoUrl must be a non-empty string"
+        ));
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DbProviderBuildInput {
     pub service_id: String,
+    pub state_namespace: String,
     pub config: DbProviderConfig,
-    pub runtime_program_db: Vec<DbMetadataIr>,
+    pub runtime_program_db: Vec<DbProviderTargetMetadata>,
+}
+
+/// Runtime-only exact identity for one admitted DB object declaration.
+///
+/// This mirrors the already-linked `DbObjectTargetId` without becoming an artifact DTO or
+/// creating a dependency from capability-context back to linked-program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DbCapabilityTargetId {
+    pub package_artifact_ref: PackageArtifactRef,
+    pub file_ir_ref: FileIrRef,
+    pub type_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DbCapabilityTarget {
+    pub target_id: DbCapabilityTargetId,
+    pub type_name: String,
+    lookup_key: String,
+}
+
+impl DbCapabilityTarget {
+    pub fn new(target_id: DbCapabilityTargetId, type_name: impl Into<String>) -> Self {
+        let type_name = type_name.into();
+        let lookup_key = exact_db_target_lookup_key(&target_id);
+        Self {
+            target_id,
+            type_name,
+            lookup_key,
+        }
+    }
+
+    pub fn lookup_key(&self) -> &str {
+        &self.lookup_key
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbProviderTargetMetadata {
+    pub target: DbCapabilityTarget,
+    pub metadata: DbMetadataIr,
+}
+
+fn exact_db_target_lookup_key(target: &DbCapabilityTargetId) -> String {
+    let package = &target.package_artifact_ref;
+    let file = &target.file_ir_ref;
+    serde_json::to_string(&(
+        "skiff-db-object-target-v1",
+        package,
+        file,
+        target.type_index,
+    ))
+    .expect("exact DB target identity contains only serializable artifact facts")
 }
 
 #[derive(Debug)]
@@ -334,10 +452,10 @@ impl WirePayload for DbCapabilityError {
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 json!({
                     "target": target,
                     "reason": reason,
@@ -415,6 +533,15 @@ pub struct DbCapabilitySource {
     factory: Option<Arc<dyn DbCapabilityFactory>>,
 }
 
+impl fmt::Debug for DbCapabilitySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DbCapabilitySource")
+            .field("configured", &self.factory.is_some())
+            .finish()
+    }
+}
+
 impl DbCapabilitySource {
     pub fn new<T>(factory: Option<T>) -> Self
     where
@@ -468,6 +595,15 @@ pub trait DbProviderFactory: Send + Sync {
 #[derive(Clone)]
 pub struct DbProviderSource {
     factory: Option<Arc<dyn DbProviderFactory>>,
+}
+
+impl fmt::Debug for DbProviderSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DbProviderSource")
+            .field("configured", &self.factory.is_some())
+            .finish()
+    }
 }
 
 impl DbProviderSource {
@@ -598,6 +734,19 @@ pub struct FileCapabilityRecord {
     pub created_at: String,
 }
 
+const PREPARED_DB_RUNTIME_OPERATION_UNAVAILABLE_REASON: &str =
+    "prepared DB runtime operation is unavailable";
+
+fn prepared_runtime_operation_unavailable<T>() -> DbCapabilityResult<PreparedDbRuntimeOperation<T>>
+where
+    T: Send + 'static,
+{
+    Err(DbCapabilityError::provider_unavailable(
+        "serviceDb",
+        PREPARED_DB_RUNTIME_OPERATION_UNAVAILABLE_REASON,
+    ))
+}
+
 pub trait DbCapabilityStoreApi: Send + Sync {
     fn begin_transaction(&self) -> DbCapabilityFuture<'_, ()>;
     fn commit_transaction(&self) -> DbCapabilityFuture<'_, ()>;
@@ -619,6 +768,17 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>>;
 
+    fn prepare_find_one_by_key_runtime(
+        &self,
+        _type_name: &str,
+        _key: DbKey,
+        _projection: Option<Vec<FieldPath>>,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        prepared_runtime_operation_unavailable()
+    }
+
     fn find_one_by_query<'a>(
         &'a self,
         type_name: &'a str,
@@ -636,6 +796,18 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>>;
+
+    fn prepare_find_one_by_query_runtime(
+        &self,
+        _type_name: &str,
+        _query: DbQuery,
+        _order: Vec<DbOrderEntry>,
+        _projection: Option<Vec<FieldPath>>,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        prepared_runtime_operation_unavailable()
+    }
 
     fn find_many_page<'a>(
         &'a self,
@@ -655,6 +827,18 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Vec<RuntimeValue>>;
 
+    fn prepare_find_many_page_runtime(
+        &self,
+        _type_name: &str,
+        _query: DbQuery,
+        _options: ServiceDbFindOptions,
+        _projection: Option<Vec<FieldPath>>,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbManyRuntimeOperation> {
+        prepared_runtime_operation_unavailable()
+    }
+
     fn create<'a>(
         &'a self,
         type_name: &'a str,
@@ -665,9 +849,19 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         &'a self,
         type_name: &'a str,
         value: &'a RuntimeValue,
-        heap: &'a RequestHeap,
+        heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, RuntimeValue>;
+
+    fn prepare_create_runtime(
+        &self,
+        _type_name: &str,
+        _value: &RuntimeValue,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbValueRuntimeOperation> {
+        prepared_runtime_operation_unavailable()
+    }
 
     fn insert_many_result<'a>(
         &'a self,
@@ -690,6 +884,17 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>>;
+
+    fn prepare_update_one_runtime(
+        &self,
+        _type_name: &str,
+        _selector: DbOneSelector,
+        _change: DbRuntimeChange,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        prepared_runtime_operation_unavailable()
+    }
 
     fn update_many<'a>(
         &'a self,
@@ -721,6 +926,17 @@ pub trait DbCapabilityStoreApi: Send + Sync {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>>;
+
+    fn prepare_replace_one_runtime(
+        &self,
+        _type_name: &str,
+        _selector: DbOneSelector,
+        _value: &RuntimeValue,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        prepared_runtime_operation_unavailable()
+    }
 
     fn delete_one<'a>(
         &'a self,
@@ -834,6 +1050,18 @@ impl DbCapabilityStore {
             .await
     }
 
+    pub fn prepare_find_one_by_key_runtime(
+        &self,
+        type_name: &str,
+        key: DbKey,
+        projection: Option<Vec<FieldPath>>,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.inner
+            .prepare_find_one_by_key_runtime(type_name, key, projection, heap, context)
+    }
+
     pub async fn find_one_by_query(
         &self,
         type_name: &str,
@@ -858,6 +1086,19 @@ impl DbCapabilityStore {
         self.inner
             .find_one_by_query_runtime(type_name, query, order, projection, heap, context)
             .await
+    }
+
+    pub fn prepare_find_one_by_query_runtime(
+        &self,
+        type_name: &str,
+        query: DbQuery,
+        order: Vec<DbOrderEntry>,
+        projection: Option<Vec<FieldPath>>,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.inner
+            .prepare_find_one_by_query_runtime(type_name, query, order, projection, heap, context)
     }
 
     pub async fn find_many_page(
@@ -886,6 +1127,19 @@ impl DbCapabilityStore {
             .await
     }
 
+    pub fn prepare_find_many_page_runtime(
+        &self,
+        type_name: &str,
+        query: DbQuery,
+        options: ServiceDbFindOptions,
+        projection: Option<Vec<FieldPath>>,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbManyRuntimeOperation> {
+        self.inner
+            .prepare_find_many_page_runtime(type_name, query, options, projection, heap, context)
+    }
+
     pub async fn create(
         &self,
         type_name: &str,
@@ -898,12 +1152,23 @@ impl DbCapabilityStore {
         &self,
         type_name: &str,
         value: &RuntimeValue,
-        heap: &RequestHeap,
+        heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityResult<RuntimeValue> {
         self.inner
             .create_runtime(type_name, value, heap, context)
             .await
+    }
+
+    pub fn prepare_create_runtime(
+        &self,
+        type_name: &str,
+        value: &RuntimeValue,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbValueRuntimeOperation> {
+        self.inner
+            .prepare_create_runtime(type_name, value, heap, context)
     }
 
     pub async fn insert_many_result(
@@ -934,6 +1199,18 @@ impl DbCapabilityStore {
         self.inner
             .update_one_runtime(type_name, selector, change, heap, context)
             .await
+    }
+
+    pub fn prepare_update_one_runtime(
+        &self,
+        type_name: &str,
+        selector: DbOneSelector,
+        change: DbRuntimeChange,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.inner
+            .prepare_update_one_runtime(type_name, selector, change, heap, context)
     }
 
     pub async fn update_many(
@@ -977,6 +1254,18 @@ impl DbCapabilityStore {
         self.inner
             .replace_one_runtime(type_name, selector, value, heap, context)
             .await
+    }
+
+    pub fn prepare_replace_one_runtime(
+        &self,
+        type_name: &str,
+        selector: DbOneSelector,
+        value: &RuntimeValue,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.inner
+            .prepare_replace_one_runtime(type_name, selector, value, heap, context)
     }
 
     pub async fn delete_one(

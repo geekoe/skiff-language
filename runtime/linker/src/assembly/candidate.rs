@@ -4,9 +4,9 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    ActivationTemplate, BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding,
-    IngressSelector, OperationTargetRef, PackageBuildId, PackageCallableId, RuntimeAssembly,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    ActivationTemplate, BoundaryOperationDescriptor, ContractOperationId, GatewayEntryKey,
+    OperationTargetRef, PackageBuildId, PackageCallableId, RuntimeAssembly, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceIngressKey, ServiceProtocolIdentity,
     ServiceRequirementKey,
 };
 use skiff_runtime_linked_program::{
@@ -14,6 +14,8 @@ use skiff_runtime_linked_program::{
     SharedPackageLinkedImage,
 };
 use skiff_runtime_loader::ServiceContractStore;
+
+use super::LinkedGatewayEntry;
 
 /// An implementation operation linked to immutable package code.
 ///
@@ -147,7 +149,9 @@ pub struct AssemblyLinkedCandidate {
     pub(super) execution_image: Arc<AssemblyExecutionImage>,
     pub(super) contracts: Arc<ServiceContractStore>,
     pub(super) activations: BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
-    pub(super) ingress: BTreeMap<IngressSelector, GlobalIngressBinding>,
+    pub(super) gateway_entries:
+        BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<LinkedGatewayEntry>>,
+    pub(super) ingress: BTreeMap<ServiceIngressKey, Arc<LinkedGatewayEntry>>,
 }
 
 impl AssemblyLinkedCandidate {
@@ -189,19 +193,39 @@ impl AssemblyLinkedCandidate {
         self.activations.get(deployment)
     }
 
+    pub fn gateway_entries(
+        &self,
+    ) -> impl ExactSizeIterator<
+        Item = (
+            &(ServiceDeploymentRef, GatewayEntryKey),
+            &Arc<LinkedGatewayEntry>,
+        ),
+    > {
+        self.gateway_entries.iter()
+    }
+
+    pub fn gateway_entry(
+        &self,
+        owner: &ServiceDeploymentRef,
+        key: &GatewayEntryKey,
+    ) -> Option<&Arc<LinkedGatewayEntry>> {
+        self.gateway_entries.get(&(owner.clone(), key.clone()))
+    }
+
     pub fn ingress_bindings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (&IngressSelector, &GlobalIngressBinding)> {
+    ) -> impl ExactSizeIterator<Item = (&ServiceIngressKey, &Arc<LinkedGatewayEntry>)> {
         self.ingress.iter()
     }
 
-    pub fn ingress(&self, selector: &IngressSelector) -> Option<&GlobalIngressBinding> {
-        self.ingress.get(selector)
+    pub fn ingress(&self, key: &ServiceIngressKey) -> Option<&Arc<LinkedGatewayEntry>> {
+        self.ingress.get(key)
     }
 
     pub fn is_empty(&self) -> bool {
         self.shared_image.is_empty()
             && self.activations.is_empty()
+            && self.gateway_entries.is_empty()
             && self.ingress.is_empty()
             && self.contracts.is_empty()
     }

@@ -1,7 +1,8 @@
-use std::{collections::HashMap, num::NonZeroU32};
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RouterWriterMessage {
@@ -11,8 +12,12 @@ pub enum RouterWriterMessage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutboundControlMessage {
-    ActorPut {
-        request: ActorPutControlRequest,
+    ActorGetOrCreate {
+        request: ActorGetOrCreateControlRequest,
+        payload: Vec<u8>,
+    },
+    ActorReplace {
+        request: ActorReplaceControlRequest,
         payload: Vec<u8>,
     },
     ActorFind {
@@ -25,16 +30,19 @@ pub enum OutboundControlMessage {
         request: SpawnSubmitControlRequest,
         payload: Vec<u8>,
     },
-    RequestStart {
-        request: RequestStartControl,
-        payload: Vec<u8>,
-    },
     RequestCancel {
         request: RequestCancelControl,
     },
     ConnectionSend {
         request: ConnectionSendControl,
         payload: Vec<u8>,
+    },
+    ConnectionRequest {
+        request: ConnectionRequestControl,
+        payload: Vec<u8>,
+    },
+    ConnectionRequestCancel {
+        request: ConnectionRequestCancelControl,
     },
 }
 
@@ -49,18 +57,40 @@ pub struct ActorKeyControlMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorPutControlRequest {
+pub struct ActivationIdentityControl {
+    pub assembly_identity: AssemblyIdentity,
+    pub generation: u64,
+    pub runtime_replica_id: String,
+    pub deployment_revision: DeploymentRevision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorGetOrCreateControlRequest {
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
     pub actor_key: ActorKeyControlMetadata,
-    pub object_schema_identity: String,
-    pub object_encoding_version: String,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorReplaceControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
+    pub actor_key: ActorKeyControlMetadata,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorFindControlRequest {
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
     pub actor_key: ActorKeyControlMetadata,
 }
 
@@ -68,6 +98,7 @@ pub struct ActorFindControlRequest {
 pub struct ActorRemoveControlRequest {
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
     pub actor_key: ActorKeyControlMetadata,
 }
 
@@ -82,7 +113,7 @@ pub struct SpawnSubmitControlRequest {
     pub target: String,
     pub spawn_id: Option<String>,
     pub build_id: Option<String>,
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityControl,
     pub caller_request_id: Option<String>,
     pub trace_id: Option<String>,
     pub caller_target: Option<String>,
@@ -90,26 +121,50 @@ pub struct SpawnSubmitControlRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RequestStartControl {
-    pub request_id: String,
-    pub mode: String,
-    pub caller: RuntimeCallerControl,
-    pub target: String,
-    pub operation_abi_id: Option<String>,
-    pub selector: Option<String>,
-    pub service_id: Option<String>,
-    pub version: Option<String>,
-    pub build_id: String,
+pub struct SpawnClaimControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
+    pub worker_id: String,
+    pub service_id: String,
+    pub service_version: String,
     pub service_protocol_identity: String,
-    pub activation_identity: Option<String>,
-    pub gateway_entry_identity: Option<String>,
-    pub business_identity: Option<String>,
-    pub websocket_entry_id: Option<String>,
-    pub client_session: Option<RuntimeClientSessionControl>,
-    pub deadline: Option<RuntimeDeadlineControl>,
-    pub trace: RuntimeTraceContextControl,
-    pub test_effects_enabled: bool,
-    pub test_effect_doubles: HashMap<String, Vec<RequestEffectDoubleControl>>,
+    pub supported_targets: Vec<String>,
+    pub supported_spawn_compatibility_keys: Vec<String>,
+    pub build_id: Option<String>,
+    pub max_execution_ms: Option<f64>,
+    pub max_concurrency: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnRenewControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
+    pub item_id: String,
+    pub lease_id: String,
+    pub worker_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnCompleteControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
+    pub item_id: String,
+    pub lease_id: String,
+    pub diagnostics: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnFailControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
+    pub item_id: String,
+    pub lease_id: String,
+    pub reason: String,
+    pub diagnostics: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,29 +193,9 @@ pub enum WebSocketConnectionPolicyOverflowControl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeCallerControl {
-    pub kind: String,
-    pub target: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeDeadlineControl {
     pub timeout_ms: u64,
     pub expires_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeTraceContextControl {
-    pub trace_id: String,
-    pub span_id: String,
-    pub parent_span_id: Option<String>,
-    pub sampled: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RequestEffectDoubleControl {
-    pub expect_request: Option<Value>,
-    pub response: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,4 +211,20 @@ pub struct ConnectionSendControl {
     pub business_identity: Option<String>,
     pub connection_id: Option<String>,
     pub payload_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRequestControl {
+    pub request_id: String,
+    pub service_id: String,
+    pub websocket_entry_id: String,
+    pub connection_id: String,
+    pub method: String,
+    pub deadline: Option<RuntimeDeadlineControl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRequestCancelControl {
+    pub request_id: String,
+    pub reason: String,
 }

@@ -3,12 +3,20 @@ use std::collections::BTreeMap;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 pub use skiff_artifact_model::{
-    BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue, NativeTarget, OperationAbiRef,
-    PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
-    SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
+    BuiltinReceiverOp, FileIrRef, InstructionSourceSite, LiteralIr, MetadataValue, NativeTarget,
+    OperationAbiRef, PackageArtifactRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+    RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
-use super::addr::{ConstAddr, ExecutableAddr, ExecutableIndex, TypeAddr, TypeIndex};
+use super::addr::{
+    ConstAddr, ExecutableAddr, ExecutableIndex, FileAddr, TypeAddr, TypeIndex, UnitAddr,
+};
+
+mod concurrent_plan;
+
+pub use concurrent_plan::{LinkedConcurrentLaneIr, LinkedConcurrentPlanIr};
 
 pub type FileIrIdentity = String;
 pub type SourceAstHash = String;
@@ -28,6 +36,8 @@ pub struct LinkedFileUnit {
     pub source_map: SourceMapDto,
     pub declarations: FileDeclarations,
     pub link_targets: FileLinkTargets,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actor_declarations: Vec<LinkedActorDeclaration>,
     #[serde(rename = "typeTable", default)]
     pub types: Vec<TypeDeclIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -35,6 +45,90 @@ pub struct LinkedFileUnit {
     #[serde(default)]
     pub executables: Vec<LinkedExecutable>,
     pub external_refs: ExternalRefTable,
+}
+
+/// Canonical Actor ABI facts owned by this linked file. Actor declarations are
+/// not entries in the ordinary type table: their source-level nominal identity
+/// is the service symbol and their runtime owner is filled by assembly linking.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorDeclaration {
+    pub actor_type: ServiceSymbolRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation_owner: Option<LinkedActorDeclarationOwner>,
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub actor_name: String,
+    pub actor_id_type: LinkedTypeRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<LinkedActorField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_methods: Vec<LinkedActorPublicMethod>,
+    pub actor_runtime_abi_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorDeclarationOwner {
+    pub unit: UnitAddr,
+    pub file: FileAddr,
+    pub actor_symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorField {
+    pub name: String,
+    pub ty: LinkedTypeRef,
+    pub encoding: ActorFieldEncodingIr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorPublicMethod {
+    pub method_identity: ActorMethodIdentity,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<LinkedFunctionTypeParamIr>,
+    pub return_type: LinkedTypeRef,
+    pub may_suspend: bool,
+    pub implementation: LinkedActorMethodImplementation,
+}
+
+/// The private code entry owned by an Actor declaration. This address is
+/// deliberately absent from [`LinkedActorMethodDispatchPlan`]: callers route
+/// by logical Actor identity and the owner runtime performs this final lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum LinkedActorMethodImplementation {
+    LocalExecutable { executable_index: u32 },
+    Executable { addr: ExecutableAddr },
+}
+
+/// A linked Actor call contains only the identities needed for routed dispatch.
+/// It is not an ordinary executable call and cannot bypass Actor ownership,
+/// epoch fencing, or the per-instance executor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorMethodDispatchPlan {
+    pub declaration_owner: LinkedActorDeclarationOwner,
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub method_identity: ActorMethodIdentity,
+}
+
+/// A call-site reference to the single declaration that proved the registry
+/// intrinsic's actor/id/bootstrap type arguments. Field and method tables stay
+/// on `LinkedActorDeclaration`; calls never duplicate them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorNativeMetadata {
+    pub declaration_owner: LinkedActorDeclarationOwner,
+    pub actor_abi_identity: ActorAbiIdentity,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -226,8 +320,6 @@ pub struct TypeDeclIr {
     pub descriptor: LinkedTypeDescriptor,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discriminator: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implements: Vec<LinkedTypeRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,21 +330,43 @@ pub struct TypeDeclIr {
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
-    tag = "kind"
+    tag = "kind",
+    deny_unknown_fields
 )]
 pub enum LinkedTypeDescriptor {
     Record {
         fields: BTreeMap<String, LinkedTypeRef>,
     },
+    Representation {
+        representation: LinkedTypeRef,
+    },
     Alias {
         target: LinkedTypeRef,
     },
     Union {
-        variants: Vec<LinkedTypeRef>,
+        branches: Vec<LinkedNamedUnionBranch>,
     },
-    #[serde(rename = "external")]
-    Native {
-        symbol: String,
+    Interface,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    deny_unknown_fields
+)]
+pub enum LinkedNamedUnionBranch {
+    ConcreteNominal {
+        nominal_type: LinkedTypeRef,
+    },
+    SyntheticDiscriminator {
+        payload_type: LinkedTypeRef,
+        discriminator_field: String,
+        discriminator_value: String,
+    },
+    Literal {
+        value: LiteralIr,
     },
 }
 
@@ -370,6 +484,37 @@ pub struct InterfaceOperationIr {
     pub implicit_self: Option<LinkedTypeRef>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum LinkedNominalTypeRefBase {
+    LocalType {
+        type_index: TypeIndex,
+    },
+    PublicationType {
+        module_path: String,
+        type_index: TypeIndex,
+    },
+    ServiceSymbol {
+        symbol: ServiceSymbolRef,
+    },
+    PackageSymbol {
+        symbol: PackageSymbolRef,
+    },
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+    },
+    Address {
+        addr: TypeAddr,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -404,6 +549,15 @@ pub enum LinkedTypeRef {
     },
     PackageSymbol {
         symbol: PackageSymbolRef,
+    },
+    PackageSchema {
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+    },
+    AppliedNominal {
+        base: LinkedNominalTypeRefBase,
+        arguments: Vec<LinkedTypeRef>,
     },
     Record {
         fields: BTreeMap<String, LinkedTypeRef>,
@@ -590,6 +744,7 @@ pub struct StmtRefIr {
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
+    deny_unknown_fields,
     tag = "kind"
 )]
 pub enum LinkedStmtIr {
@@ -600,6 +755,14 @@ pub enum LinkedStmtIr {
     Assign {
         target: AssignTargetIr,
         value: ExprRefIr,
+    },
+    Timeout {
+        duration_ms: u64,
+        body: String,
+        site: InstructionSourceSite,
+    },
+    Concurrent {
+        plan: LinkedConcurrentPlanIr,
     },
     If {
         condition: ExprRefIr,
@@ -634,6 +797,12 @@ pub enum LinkedStmtIr {
         operation: String,
         value: ExprRefIr,
     },
+    TestEffectRegister {
+        target: LinkedCallTarget,
+        expect: Option<LinkedTestEffectExpectedIr>,
+        step_expect: Option<LinkedTestEffectExpectedIr>,
+        outcome: LinkedTestEffectOutcomeIr,
+    },
     Expr {
         value: ExprRefIr,
     },
@@ -644,9 +813,38 @@ pub enum LinkedStmtIr {
     Throw {
         value: ExprRefIr,
         payload_type: LinkedTypeRef,
+        site: InstructionSourceSite,
     },
     Rethrow {
         exception_slot: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedTestEffectExpectedIr {
+    pub value: ExprRefIr,
+    pub request_type: LinkedTypeRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum LinkedTestEffectOutcomeIr {
+    Respond {
+        value: ExprRefIr,
+        value_type: LinkedTypeRef,
+    },
+    Throw {
+        value: ExprRefIr,
+        payload_type: LinkedTypeRef,
+    },
+    Stream {
+        values: Vec<ExprRefIr>,
+        item_type: LinkedTypeRef,
     },
 }
 
@@ -657,9 +855,21 @@ pub enum LinkedStmtIr {
     tag = "kind"
 )]
 pub enum AssignTargetIr {
-    Slot { slot: u32 },
-    Field { object: ExprRefIr, field: String },
-    Index { object: ExprRefIr, index: ExprRefIr },
+    Slot {
+        slot: u32,
+    },
+    ActorSelfField {
+        field: String,
+        field_type: LinkedTypeRef,
+    },
+    Field {
+        object: ExprRefIr,
+        field: String,
+    },
+    Index {
+        object: ExprRefIr,
+        index: ExprRefIr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -686,6 +896,7 @@ pub enum PatternIr {
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
+    deny_unknown_fields,
     tag = "kind"
 )]
 pub enum LinkedExprIr {
@@ -698,6 +909,16 @@ pub enum LinkedExprIr {
     LoadConst {
         const_index: u32,
     },
+    LoadPackageConst {
+        symbol: PackageSymbolRef,
+    },
+    LoadConstAddress {
+        const_addr: ConstAddr,
+    },
+    ActorSelfField {
+        field: String,
+        field_type: LinkedTypeRef,
+    },
     Field {
         object: ExprRefIr,
         field: String,
@@ -705,6 +926,10 @@ pub enum LinkedExprIr {
     Construct {
         type_ref: LinkedTypeRef,
         fields: BTreeMap<String, ExprRefIr>,
+    },
+    RepresentationWrap {
+        value: ExprRefIr,
+        type_ref: LinkedTypeRef,
     },
     InterfaceBox {
         value: ExprRefIr,
@@ -732,6 +957,7 @@ pub enum LinkedExprIr {
     Throw {
         value: ExprRefIr,
         payload_type: LinkedTypeRef,
+        site: InstructionSourceSite,
     },
     Rethrow {
         exception_slot: u32,
@@ -739,13 +965,20 @@ pub enum LinkedExprIr {
     Catch {
         try_expression: ExprRefIr,
         catch_slot: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catch_type: Option<LinkedTypeRef>,
+        catch_type: LinkedTypeRef,
         body: ExprRefIr,
+    },
+    Timeout {
+        duration_ms: u64,
+        value: ExprRefIr,
+        site: InstructionSourceSite,
     },
     ValueBlock {
         block: String,
         result: ExprRefIr,
+    },
+    ConcurrentValue {
+        plan: LinkedConcurrentPlanIr,
     },
     DbOperation {
         operation: DbOperationIr,
@@ -811,8 +1044,17 @@ pub enum DbOpKindIr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbTargetIr {
+    pub target_id: DbObjectTargetId,
     pub type_ref: LinkedTypeRef,
     pub type_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbObjectTargetId {
+    pub package_artifact_ref: PackageArtifactRef,
+    pub file_ir_ref: FileIrRef,
+    pub type_index: TypeIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -999,12 +1241,15 @@ pub enum BinaryOpIr {
 #[serde(rename_all = "camelCase")]
 pub struct CallIr {
     pub target: LinkedCallTarget,
+    pub site: InstructionSourceSite,
     #[serde(default)]
     pub args: Vec<ExprRefIr>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub type_args: BTreeMap<String, LinkedTypeRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MetadataValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_metadata: Option<LinkedActorNativeMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1024,8 +1269,17 @@ pub enum LinkedCallTarget {
     Executable {
         addr: ExecutableAddr,
     },
-    ExternalServiceSymbol {
-        symbol: ServiceSymbolRef,
+    /// Artifact-level Actor method facts awaiting declaration-owner resolution.
+    ActorMethod {
+        actor: ServiceSymbolRef,
+        actor_abi_identity: ActorAbiIdentity,
+        actor_implementation_identity: ActorImplementationIdentity,
+        method_identity: ActorMethodIdentity,
+    },
+    /// Canonical routed Actor invocation. It never contains an executable
+    /// address; the owner runtime resolves the method in its declaration table.
+    ActorDispatch {
+        plan: LinkedActorMethodDispatchPlan,
     },
     ServiceDependencySymbol {
         symbol: ServiceDependencySymbolRef,
@@ -1147,6 +1401,45 @@ impl<'de> Deserialize<'de> for LinkedTypeRef {
                     .map_err(D::Error::custom)?;
                 Ok(Self::PackageSymbol {
                     symbol: fields.symbol,
+                })
+            }
+            "packageSchema" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct PackageSchemaFields {
+                    package_id: String,
+                    stable_schema_key: String,
+                    package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId,
+                }
+
+                let fields = serde_json::from_value::<PackageSchemaFields>(value)
+                    .map_err(D::Error::custom)?;
+                Ok(Self::PackageSchema {
+                    package_id: fields.package_id,
+                    stable_schema_key: fields.stable_schema_key,
+                    package_schema_type_id: fields.package_schema_type_id,
+                })
+            }
+            "appliedNominal" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct AppliedNominalFields {
+                    kind: String,
+                    base: LinkedNominalTypeRefBase,
+                    arguments: Vec<LinkedTypeRef>,
+                }
+
+                let fields = serde_json::from_value::<AppliedNominalFields>(value)
+                    .map_err(D::Error::custom)?;
+                if fields.arguments.is_empty() {
+                    return Err(D::Error::custom(
+                        "applied nominal type ref arguments must be non-empty",
+                    ));
+                }
+                debug_assert_eq!(fields.kind, "appliedNominal");
+                Ok(Self::AppliedNominal {
+                    base: fields.base,
+                    arguments: fields.arguments,
                 })
             }
             "record" => {
@@ -1327,6 +1620,48 @@ where
 }
 
 #[cfg(test)]
+mod exception_instruction_tests {
+    use super::*;
+
+    fn builtin_json() -> Value {
+        serde_json::json!({
+            "kind": "builtin",
+            "name": "string"
+        })
+    }
+
+    #[test]
+    fn linked_json_rejects_missing_throw_and_call_sites_and_catch_type() {
+        assert!(serde_json::from_value::<LinkedStmtIr>(serde_json::json!({
+            "kind": "throw",
+            "value": { "expression": 0 },
+            "payloadType": builtin_json()
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<LinkedExprIr>(serde_json::json!({
+            "kind": "throw",
+            "value": { "expression": 0 },
+            "payloadType": builtin_json()
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<CallIr>(serde_json::json!({
+            "target": {
+                "kind": "localExecutable",
+                "executableIndex": 0
+            }
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<LinkedExprIr>(serde_json::json!({
+            "kind": "catch",
+            "tryExpression": { "expression": 0 },
+            "catchSlot": 1,
+            "body": { "expression": 2 }
+        }))
+        .is_err());
+    }
+}
+
+#[cfg(test)]
 mod db_storage_tests {
     use super::*;
 
@@ -1346,5 +1681,278 @@ mod db_storage_tests {
             serde_json::from_value::<DbObjectFieldIr>(value).unwrap(),
             field
         );
+    }
+}
+
+#[cfg(test)]
+mod applied_nominal_tests {
+    use super::*;
+
+    fn builtin(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn applied_nominal_round_trips_exact_base_and_ordered_arguments() {
+        let expected = LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: "models".to_string(),
+                    },
+                    symbol_path: "api.Pair".to_string(),
+                    abi_expectation: Some("local-abi:pair".to_string()),
+                },
+            },
+            arguments: vec![
+                builtin("string"),
+                LinkedTypeRef::AppliedNominal {
+                    base: LinkedNominalTypeRefBase::LocalType { type_index: 3 },
+                    arguments: vec![builtin("number")],
+                },
+            ],
+        };
+
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(value["kind"], "appliedNominal");
+        assert_eq!(value["base"]["kind"], "packageSymbol");
+        assert_eq!(value["arguments"][1]["kind"], "appliedNominal");
+        assert_eq!(
+            serde_json::from_value::<LinkedTypeRef>(value).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn applied_nominal_package_owner_and_abi_are_structural_facts() {
+        let applied = |dependency_ref: &str, abi_expectation: &str| LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: dependency_ref.to_string(),
+                    },
+                    symbol_path: "api.Box".to_string(),
+                    abi_expectation: Some(abi_expectation.to_string()),
+                },
+            },
+            arguments: vec![builtin("string")],
+        };
+
+        let first_owner = applied("models-a", "local-abi:a");
+        let second_owner = applied("models-b", "local-abi:b");
+        assert_ne!(first_owner, second_owner);
+        assert_ne!(
+            serde_json::to_value(first_owner).unwrap(),
+            serde_json::to_value(second_owner).unwrap()
+        );
+    }
+
+    #[test]
+    fn applied_nominal_rejects_empty_arguments() {
+        let error = serde_json::from_value::<LinkedTypeRef>(serde_json::json!({
+            "kind": "appliedNominal",
+            "base": {
+                "kind": "localType",
+                "typeIndex": 0
+            },
+            "arguments": []
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("arguments must be non-empty"));
+    }
+
+    #[test]
+    fn applied_nominal_rejects_display_or_shape_side_channels() {
+        for extra in [
+            serde_json::json!({ "display": "Box<string>" }),
+            serde_json::json!({ "shape": { "value": "string" } }),
+        ] {
+            let mut value = serde_json::json!({
+                "kind": "appliedNominal",
+                "base": {
+                    "kind": "localType",
+                    "typeIndex": 0
+                },
+                "arguments": [{
+                    "kind": "builtin",
+                    "name": "string"
+                }]
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<LinkedTypeRef>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn resolved_applied_nominal_keeps_wrapper_and_distinguishes_arguments() {
+        let addr = TypeAddr {
+            unit: UnitAddr::Package(2),
+            file: FileAddr::LoadedFileIndex(4),
+            type_index: 1,
+        };
+        let string_box = LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr: addr.clone() },
+            arguments: vec![builtin("string")],
+        };
+        let number_box = LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr },
+            arguments: vec![builtin("number")],
+        };
+
+        assert_ne!(string_box, number_box);
+        assert!(matches!(
+            string_box,
+            LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::Address { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn linked_descriptors_preserve_all_nominal_kinds_and_union_branch_categories() {
+        let descriptors = [
+            LinkedTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+            LinkedTypeDescriptor::Representation {
+                representation: builtin("string"),
+            },
+            LinkedTypeDescriptor::Union {
+                branches: vec![
+                    LinkedNamedUnionBranch::ConcreteNominal {
+                        nominal_type: LinkedTypeRef::LocalType { type_index: 0 },
+                    },
+                    LinkedNamedUnionBranch::SyntheticDiscriminator {
+                        payload_type: builtin("number"),
+                        discriminator_field: "kind".to_string(),
+                        discriminator_value: "count".to_string(),
+                    },
+                    LinkedNamedUnionBranch::Literal {
+                        value: LiteralIr::String {
+                            value: "none".to_string(),
+                        },
+                    },
+                ],
+            },
+            LinkedTypeDescriptor::Alias {
+                target: builtin("string"),
+            },
+            LinkedTypeDescriptor::Interface,
+        ];
+
+        let kinds = descriptors
+            .iter()
+            .map(|descriptor| serde_json::to_value(descriptor).unwrap()["kind"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["record", "representation", "union", "alias", "interface"]
+        );
+        let union = serde_json::to_value(&descriptors[2]).unwrap();
+        assert_eq!(union["branches"][0]["kind"], "concreteNominal");
+        assert_eq!(union["branches"][1]["kind"], "syntheticDiscriminator");
+        assert_eq!(union["branches"][2]["kind"], "literal");
+
+        let legacy_branch_map = serde_json::json!({
+            "kind": "union",
+            "branches": [{
+                "kind": "concreteNominal",
+                "nominalType": {
+                    "kind": "localType",
+                    "typeIndex": 0
+                },
+                "typeArguments": {
+                    "T": {
+                        "kind": "builtin",
+                        "name": "string"
+                    }
+                }
+            }]
+        });
+        assert!(serde_json::from_value::<LinkedTypeDescriptor>(legacy_branch_map).is_err());
+    }
+}
+
+#[cfg(test)]
+mod representation_wrap_tests {
+    use super::*;
+
+    fn builtin(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn representation_wrap_wire_round_trips_exact_child_and_applied_target() {
+        let expected = LinkedExprIr::RepresentationWrap {
+            value: ExprRefIr { expression: 17 },
+            type_ref: LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::Dependency {
+                            dependency_ref: "models".to_string(),
+                        },
+                        symbol_path: "api.Representation".to_string(),
+                        abi_expectation: Some("local-abi:models".to_string()),
+                    },
+                },
+                arguments: vec![builtin("string")],
+            },
+        };
+
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(value["kind"], "representationWrap");
+        assert_eq!(value["value"]["expression"], 17);
+        assert_eq!(value["typeRef"]["kind"], "appliedNominal");
+        assert_eq!(value["typeRef"]["arguments"][0]["name"], "string");
+        assert_eq!(
+            serde_json::from_value::<LinkedExprIr>(value).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn representation_wrap_wire_requires_only_value_and_type_ref() {
+        let valid = serde_json::json!({
+            "kind": "representationWrap",
+            "value": { "expression": 1 },
+            "typeRef": {
+                "kind": "localType",
+                "typeIndex": 2
+            }
+        });
+        for missing in ["value", "typeRef"] {
+            let mut candidate = valid.clone();
+            candidate.as_object_mut().unwrap().remove(missing);
+            assert!(serde_json::from_value::<LinkedExprIr>(candidate).is_err());
+        }
+        for extra in ["display", "shape", "fields", "site"] {
+            let mut candidate = valid.clone();
+            candidate[extra] = serde_json::json!("forbidden");
+            assert!(serde_json::from_value::<LinkedExprIr>(candidate).is_err());
+        }
+    }
+
+    #[test]
+    fn representation_wrap_applied_arguments_are_structurally_distinct() {
+        let wrap = |argument| LinkedExprIr::RepresentationWrap {
+            value: ExprRefIr { expression: 0 },
+            type_ref: LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::LocalType { type_index: 4 },
+                arguments: vec![argument],
+            },
+        };
+
+        assert_ne!(wrap(builtin("string")), wrap(builtin("number")));
     }
 }

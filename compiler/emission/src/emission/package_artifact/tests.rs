@@ -6,7 +6,8 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     config_shape_from_package_requirements, FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId,
     PackageConfigRequirement, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PublicationResourceRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PublicationResourceRef,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::json_utils::sha256_hex;
 
@@ -167,8 +168,12 @@ fn materializer_rejects_missing_or_unreferenced_assets() {
 #[test]
 fn projected_file_ir_handoff_requires_exact_typed_units() {
     let (artifact, file, _) = fixture();
+    let package_schema_index = empty_schema_index(&artifact.package_id);
     let projected = ProjectedPackageArtifact {
         artifact,
+        package_schema_index,
+        package_schema_type_records: BTreeMap::new(),
+        resolved_package_schema_type_records: BTreeMap::new(),
         file_ir_units: vec![file.unit.clone()],
         resources: Vec::new(),
     };
@@ -234,7 +239,14 @@ fn fixture() -> (
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.com/pkg".to_string(),
+            package_schema_index_identity: empty_schema_index("example.com/pkg")
+                .package_schema_index_identity,
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),
@@ -242,6 +254,7 @@ fn fixture() -> (
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
+            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -251,4 +264,16 @@ fn fixture() -> (
     };
     assign_package_artifact_identities(&mut artifact).unwrap();
     (artifact, published_file, published_resource)
+}
+
+fn empty_schema_index(package_id: &str) -> PackageSchemaIndex {
+    PackageSchemaIndex {
+        package_id: package_id.to_string(),
+        package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+            package_id,
+            &BTreeMap::new(),
+        )
+        .expect("empty Package schema index is canonical"),
+        types: BTreeMap::new(),
+    }
 }

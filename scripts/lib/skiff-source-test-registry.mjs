@@ -3,7 +3,12 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 export const canonicalSkiffSourceTestRegistry = Object.freeze([
   Object.freeze({
     id: 'std',
-    root: 'std',
+    root: 'test-services/std',
+  }),
+  Object.freeze({
+    id: 'alias-return-catch-once',
+    root: 'test-runner/fixtures/alias-return-catch-once-tests',
+    subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
   }),
 ]);
 
@@ -21,6 +26,9 @@ export function createCanonicalSkiffSourceTestPlan({
   return registry.map((entry) => {
     const id = requiredRegistryText(entry?.id, 'id');
     const root = requiredRegistryText(entry?.root, `entry ${id} root`);
+    const subjectRoot = entry?.subjectRoot === undefined
+      ? undefined
+      : requiredRegistryText(entry.subjectRoot, `entry ${id} subjectRoot`);
     if (!/^[a-z][a-z0-9-]*$/.test(id)) {
       throw new Error(`canonical Skiff source test id must be kebab-case, found ${id}`);
     }
@@ -44,12 +52,37 @@ export function createCanonicalSkiffSourceTestPlan({
     }
     ids.add(id);
     roots.add(repositoryRelativeRoot);
+    const subject = subjectRoot === undefined
+      ? undefined
+      : resolveRepositoryPath(resolvedSkiffRoot, subjectRoot, `entry ${id} subjectRoot`);
     return Object.freeze({
       id,
       root: repositoryRelativeRoot,
       absoluteRoot,
+      ...(subject === undefined
+        ? {}
+        : {
+            subjectRoot: subject.relativeRoot,
+            absoluteSubjectRoot: subject.absoluteRoot,
+          }),
     });
   });
+}
+
+function resolveRepositoryPath(skiffRoot, path, label) {
+  if (isAbsolute(path)) {
+    throw new Error(`canonical Skiff source test ${label} must be repository-relative: ${path}`);
+  }
+  const absoluteRoot = resolve(skiffRoot, path);
+  const relativeRoot = relative(skiffRoot, absoluteRoot);
+  if (
+    relativeRoot.length === 0
+    || relativeRoot === '..'
+    || relativeRoot.startsWith(`..${sep}`)
+  ) {
+    throw new Error(`canonical Skiff source test ${label} escapes the repository: ${path}`);
+  }
+  return { absoluteRoot, relativeRoot };
 }
 
 function requiredRegistryText(value, label) {

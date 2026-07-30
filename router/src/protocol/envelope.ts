@@ -1,5 +1,6 @@
 import type { ConfigShape } from '../config/index.js';
 import type { RequestCancelReason } from './cancelReason.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from './runtimeAssemblyRequest.js';
 
 export type { RequestCancelReason } from './cancelReason.js';
 
@@ -26,23 +27,31 @@ export interface TraceContext {
 export const TELEMETRY_PROTOCOL = 'skiff-telemetry-v1' as const;
 
 export const TELEMETRY_TOPICS = ['log', 'trace', 'metric', 'health', 'debug'] as const;
+export const TELEMETRY_VISIBILITIES = ['operational', 'restricted'] as const;
 
 export type TelemetryTopic = (typeof TELEMETRY_TOPICS)[number];
 
 export type TelemetrySource = 'gateway' | 'router' | 'runtime' | 'provider' | 'test';
 
 export type TelemetryLevel = 'debug' | 'info' | 'warn' | 'error';
+export type TelemetryVisibility = (typeof TELEMETRY_VISIBILITIES)[number];
 
 export const SKIFF_BINARY_FRAME_MAGIC = Buffer.from([0x53, 0x4b, 0x42, 0x46]) as Buffer;
 export const SKIFF_BINARY_FRAME_VERSION = 1;
 export const SKIFF_BINARY_FRAME_HEADER_ENCODING_JSON = 1;
-export const RUNTIME_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v1' as const;
+export const RUNTIME_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v2' as const;
+export const RESPONSE_ERROR_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v2' as const;
 
 const BINARY_FRAME_FIXED_HEADER_BYTES = 14;
 const UINT32_MAX = 0xffffffff;
 
 export interface BinaryFrame<THeader extends Record<string, unknown> = Record<string, unknown>> {
   header: THeader;
+  payloadBytes: Uint8Array;
+}
+
+export interface BinaryFrameParts {
+  headerBytes: Uint8Array;
   payloadBytes: Uint8Array;
 }
 
@@ -58,10 +67,14 @@ export type RuntimeFrameHeaderName =
   | 'runtime.capabilities'
   | 'runtime.health'
   | 'runtime.registered'
+  | 'router.bootstrap'
   | 'router.control'
-  | 'actor.put.request'
-  | 'actor.put.response'
-  | 'actor.put.error'
+  | 'actor.getOrCreate.request'
+  | 'actor.getOrCreate.response'
+  | 'actor.getOrCreate.error'
+  | 'actor.replace.request'
+  | 'actor.replace.response'
+  | 'actor.replace.error'
   | 'actor.find.request'
   | 'actor.find.response'
   | 'actor.find.error'
@@ -87,6 +100,9 @@ export type RuntimeFrameHeaderName =
   | 'package-test.start'
   | 'request.cancel'
   | 'connection.send'
+  | 'connection.request'
+  | 'connection.request.cancel'
+  | 'connection.response'
   | 'response.start'
   | 'response.chunk'
   | 'response.end'
@@ -140,6 +156,7 @@ export interface TelemetryEvent {
   topic: TelemetryTopic;
   ts: string;
   source: TelemetrySource;
+  visibility: TelemetryVisibility;
   serviceId?: string;
   revisionId?: string;
   buildId?: string;
@@ -152,6 +169,7 @@ export interface TelemetryEvent {
   requestId?: string;
   clientRequestId?: string;
   traceId?: string;
+  errorId?: string;
   spanId?: string;
   parentSpanId?: string;
   target?: string;
@@ -185,7 +203,6 @@ export interface RuntimeRegisterEnvelope {
   buildId: string;
   serviceProtocolIdentity: string;
   targets: string[];
-  protocolVersion?: string;
   runtimeVersion?: string;
   codeRevisionId?: string;
   artifactIdentity?: string;
@@ -230,6 +247,24 @@ export interface RuntimeRegisteredEnvelope {
 
 export type RuntimeRegisteredFrameHeader = RuntimeFrameHeaderBase<'runtime.registered'> &
   Omit<RuntimeRegisteredEnvelope, 'type'>;
+
+export interface RouterBootstrapServiceDb {
+  mongoUrl: string;
+}
+
+export interface RouterBootstrapHttp {
+  maxResponseBytes: number;
+}
+
+export interface RouterBootstrapEnvelope {
+  type: 'router.bootstrap';
+  artifactsPath: string;
+  serviceDb: RouterBootstrapServiceDb;
+  http: RouterBootstrapHttp;
+}
+
+export type RouterBootstrapFrameHeader = RuntimeFrameHeaderBase<'router.bootstrap'> &
+  Omit<RouterBootstrapEnvelope, 'type'>;
 
 export interface RouterControlEnvelope {
   type: 'router.control';
@@ -348,6 +383,7 @@ export interface WebSocketCookieFrameMetadata {
 }
 
 export type WebSocketAdapterSourceKind =
+  | 'websocket.ingressEvent'
   | 'websocket.connectRequest'
   | 'websocket.receiveEvent'
   | 'websocket.connection'
@@ -430,6 +466,42 @@ export interface WebSocketConnectResponseFrameMetadata {
   reason?: string;
 }
 
+export type RuntimeAssemblyWebSocketConnectResponseFrameMetadata =
+  | {
+      result: 'accept';
+      businessIdentity?: string;
+      connectionPolicy?: WebSocketConnectionPolicyFrameMetadata;
+    }
+  | {
+      result: 'reject';
+      code: number;
+      reason: string;
+    };
+
+export interface RuntimeAssemblyWebSocketConnectResponseEndFrameHeader
+  extends RuntimeFrameHeaderBase<'response.end'> {
+  requestId: string;
+  payloadPresent: false;
+  websocketConnect: RuntimeAssemblyWebSocketConnectResponseFrameMetadata;
+}
+
+export type RuntimeAssemblyWebSocketJsonRpcResponseOutcome =
+  | 'success'
+  | 'invalidParams'
+  | 'internalError'
+  | 'deadlineExceeded';
+
+export interface RuntimeAssemblyWebSocketJsonRpcResponseFrameMetadata {
+  outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome;
+}
+
+export interface RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
+  extends RuntimeFrameHeaderBase<'response.end'> {
+  requestId: string;
+  payloadPresent: boolean;
+  websocketJsonRpc: RuntimeAssemblyWebSocketJsonRpcResponseFrameMetadata;
+}
+
 export interface RequestStartFrameHeader extends RuntimeFrameHeaderBase<'request.start'> {
   requestId: string;
   mode: DispatchMode;
@@ -506,12 +578,27 @@ export interface ResponseEndFrameHeader extends RuntimeFrameHeaderBase<'response
   payloadPresent: boolean;
   httpResponse?: HttpResponseFrameMetadata;
   websocketConnect?: WebSocketConnectResponseFrameMetadata;
+  websocketJsonRpc?: RuntimeAssemblyWebSocketJsonRpcResponseFrameMetadata;
 }
 
-export interface ResponseErrorFrameHeader extends RuntimeFrameHeaderBase<'response.error'> {
+export interface FixedServiceResponseErrorFrameHeader {
+  schemaVersion: typeof RESPONSE_ERROR_FRAME_SCHEMA_VERSION;
+  type: 'response.error';
   requestId: string;
+  errorKind: 'fixedService';
+}
+
+export interface ControlResponseErrorFrameHeader {
+  schemaVersion: typeof RESPONSE_ERROR_FRAME_SCHEMA_VERSION;
+  type: 'response.error';
+  requestId: string;
+  errorKind: 'control';
   error: RuntimeErrorPayload;
 }
+
+export type ResponseErrorFrameHeader =
+  | FixedServiceResponseErrorFrameHeader
+  | ControlResponseErrorFrameHeader;
 
 export interface RequestCancelEnvelope {
   type: 'request.cancel';
@@ -542,6 +629,50 @@ export interface ConnectionSendFrameHeader extends RuntimeFrameHeaderBase<'conne
   payloadKind?: ConnectionSendPayloadKind;
 }
 
+export interface ConnectionRequestDeadlineFrameHeader {
+  timeoutMs: number;
+  expiresAt: string;
+}
+
+export interface ConnectionRequestFrameHeader
+  extends RuntimeFrameHeaderBase<'connection.request'> {
+  requestId: string;
+  serviceId: string;
+  websocketEntryId: string;
+  connectionId: string;
+  profile: 'jsonrpc-2.0-text';
+  method: string;
+  deadline?: ConnectionRequestDeadlineFrameHeader;
+}
+
+export interface ConnectionRequestCancelFrameHeader
+  extends RuntimeFrameHeaderBase<'connection.request.cancel'> {
+  requestId: string;
+  reason: RequestCancelReason;
+}
+
+export type ConnectionResponseOutcome =
+  | 'success'
+  | 'deadlineExceeded'
+  | 'connectionUnavailable'
+  | 'transportUnavailable'
+  | 'protocolError'
+  | 'resourceLimit'
+  | 'remote';
+
+export interface ConnectionRemoteErrorFrameHeader {
+  code: number;
+  message: string;
+  dataPresent: boolean;
+}
+
+export interface ConnectionResponseFrameHeader
+  extends RuntimeFrameHeaderBase<'connection.response'> {
+  requestId: string;
+  outcome: ConnectionResponseOutcome;
+  remote?: ConnectionRemoteErrorFrameHeader;
+}
+
 export interface RuntimeErrorPayload {
   code: string;
   message: string;
@@ -568,20 +699,40 @@ export interface RuntimeRpcFrameHeaderBase<TType extends RuntimeFrameHeaderName>
   rpcId: string;
 }
 
+export interface ActivationIdentityFrameMetadata {
+  assemblyIdentity: string;
+  generation: number;
+  runtimeReplicaId: string;
+  deploymentRevision: string;
+}
+
 export interface RuntimeControlRequestFrameHeaderBase<TType extends RuntimeFrameHeaderName>
   extends RuntimeRpcFrameHeaderBase<TType> {
   runtimeId: string;
+  activationIdentity: ActivationIdentityFrameMetadata;
 }
 
-export interface ActorPutRequestFrameHeader
-  extends RuntimeControlRequestFrameHeaderBase<'actor.put.request'> {
+export interface ActorBootstrapRequestFrameHeader<
+  TType extends 'actor.getOrCreate.request' | 'actor.replace.request'
+> extends RuntimeControlRequestFrameHeaderBase<TType> {
   actorKey: ActorKeyFrameMetadata;
-  objectSchemaIdentity: string;
-  objectEncodingVersion: string;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
 }
 
-export interface ActorPutResponseFrameHeader
-  extends RuntimeRpcFrameHeaderBase<'actor.put.response'> {
+export type ActorGetOrCreateRequestFrameHeader =
+  ActorBootstrapRequestFrameHeader<'actor.getOrCreate.request'>;
+export type ActorReplaceRequestFrameHeader =
+  ActorBootstrapRequestFrameHeader<'actor.replace.request'>;
+
+export interface ActorGetOrCreateResponseFrameHeader
+  extends RuntimeRpcFrameHeaderBase<'actor.getOrCreate.response'> {
+  actorRef: ActorRefFrameMetadata;
+}
+
+export interface ActorReplaceResponseFrameHeader
+  extends RuntimeRpcFrameHeaderBase<'actor.replace.response'> {
   actorRef: ActorRefFrameMetadata;
 }
 
@@ -617,7 +768,6 @@ export interface SpawnSubmitRequestFrameHeader
   target: string;
   spawnId?: string;
   buildId?: string;
-  activationIdentity?: string;
   callerRequestId?: string;
   traceId?: string;
   callerTarget?: string;
@@ -640,7 +790,6 @@ export interface SpawnClaimRequestFrameHeader
   supportedTargets: string[];
   supportedSpawnCompatibilityKeys: string[];
   buildId?: string;
-  activationIdentity?: string;
   maxExecutionMs?: number;
   maxConcurrency?: number;
 }
@@ -657,7 +806,7 @@ export interface SpawnClaimDescriptorFrameMetadata {
   serviceVersion: string;
   serviceProtocolIdentity: string;
   buildId: string;
-  activationIdentity?: string;
+  activationIdentity: ActivationIdentityFrameMetadata;
   payloadSchemaIdentity?: string;
   leaseExpiresAt?: string;
 }
@@ -712,7 +861,8 @@ export interface SpawnFailResponseFrameHeader
 }
 
 export type ActorSpawnRuntimeRequestFrameHeader =
-  | ActorPutRequestFrameHeader
+  | ActorGetOrCreateRequestFrameHeader
+  | ActorReplaceRequestFrameHeader
   | ActorFindRequestFrameHeader
   | ActorRemoveRequestFrameHeader
   | SpawnSubmitRequestFrameHeader
@@ -722,7 +872,8 @@ export type ActorSpawnRuntimeRequestFrameHeader =
   | SpawnFailRequestFrameHeader;
 
 export type ActorSpawnRuntimeResponseFrameHeader =
-  | ActorPutResponseFrameHeader
+  | ActorGetOrCreateResponseFrameHeader
+  | ActorReplaceResponseFrameHeader
   | ActorFindResponseFrameHeader
   | ActorRemoveResponseFrameHeader
   | SpawnSubmitResponseFrameHeader
@@ -732,7 +883,8 @@ export type ActorSpawnRuntimeResponseFrameHeader =
   | SpawnFailResponseFrameHeader;
 
 export type ActorSpawnRuntimeErrorFrameHeaderName =
-  | 'actor.put.error'
+  | 'actor.getOrCreate.error'
+  | 'actor.replace.error'
   | 'actor.find.error'
   | 'actor.remove.error'
   | 'spawn.submit.error'
@@ -748,13 +900,16 @@ export type ActorSpawnRuntimeErrorFrameHeader = {
 }[ActorSpawnRuntimeErrorFrameHeaderName];
 
 export type RouterToRuntimeFrameHeader =
+  | RouterBootstrapFrameHeader
   | RouterControlFrameHeader
   | RuntimeRegisteredFrameHeader
   | ActorSpawnRuntimeResponseFrameHeader
   | ActorSpawnRuntimeErrorFrameHeader
   | RequestStartFrameHeader
+  | RuntimeAssemblyRequestStartFrameHeader
   | PackageTestStartFrameHeader
   | RequestCancelFrameHeader
+  | ConnectionResponseFrameHeader
   | ResponseStartFrameHeader
   | ResponseChunkFrameHeader
   | ResponseEndFrameHeader
@@ -768,6 +923,8 @@ export type RuntimeToRouterFrameHeader =
   | RequestStartFrameHeader
   | RequestCancelFrameHeader
   | ConnectionSendFrameHeader
+  | ConnectionRequestFrameHeader
+  | ConnectionRequestCancelFrameHeader
   | ResponseStartFrameHeader
   | ResponseChunkFrameHeader
   | ResponseEndFrameHeader
@@ -816,6 +973,31 @@ export function encodeBinaryFrame<THeader extends Record<string, unknown>>(
 }
 
 export function decodeBinaryFrame(data: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string): BinaryFrame {
+  const frame = decodeBinaryFrameParts(data);
+  const headerText = Buffer.from(
+    frame.headerBytes.buffer,
+    frame.headerBytes.byteOffset,
+    frame.headerBytes.byteLength
+  ).toString('utf8');
+  let header: unknown;
+  try {
+    header = JSON.parse(headerText);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BinaryFrameDecodeError(`invalid skiff binary frame: header is not valid JSON: ${message}`);
+  }
+  if (!isRecord(header)) {
+    throw new BinaryFrameDecodeError('invalid skiff binary frame: header must be an object');
+  }
+  return {
+    header,
+    payloadBytes: frame.payloadBytes
+  };
+}
+
+export function decodeBinaryFrameParts(
+  data: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string
+): BinaryFrameParts {
   const frame = rawDataToBuffer(data);
   if (frame.byteLength < BINARY_FRAME_FIXED_HEADER_BYTES) {
     throw new BinaryFrameDecodeError('invalid skiff binary frame: frame is too short');
@@ -851,19 +1033,8 @@ export function decodeBinaryFrame(data: Buffer | ArrayBuffer | Buffer[] | Uint8A
 
   const headerStart = BINARY_FRAME_FIXED_HEADER_BYTES;
   const payloadStart = headerStart + headerLength;
-  const headerText = frame.subarray(headerStart, payloadStart).toString('utf8');
-  let header: unknown;
-  try {
-    header = JSON.parse(headerText);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new BinaryFrameDecodeError(`invalid skiff binary frame: header is not valid JSON: ${message}`);
-  }
-  if (!isRecord(header)) {
-    throw new BinaryFrameDecodeError('invalid skiff binary frame: header must be an object');
-  }
   return {
-    header,
+    headerBytes: frame.subarray(headerStart, payloadStart),
     payloadBytes: frame.subarray(payloadStart)
   };
 }
@@ -877,13 +1048,17 @@ export function encodeRuntimeFrame<THeader extends RuntimeFrameHeader>(
 
 export function decodeRuntimeFrame(data: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string): RuntimeBinaryFrame {
   const frame = decodeBinaryFrame(data);
-  if (frame.header.schemaVersion !== RUNTIME_FRAME_SCHEMA_VERSION) {
-    throw new BinaryFrameDecodeError(
-      `invalid skiff runtime frame: schemaVersion must be ${RUNTIME_FRAME_SCHEMA_VERSION}`
-    );
-  }
   if (typeof frame.header.type !== 'string') {
     throw new BinaryFrameDecodeError('invalid skiff runtime frame: type must be a string');
+  }
+  const expectedSchemaVersion =
+    frame.header.type === 'response.error'
+      ? RESPONSE_ERROR_FRAME_SCHEMA_VERSION
+      : RUNTIME_FRAME_SCHEMA_VERSION;
+  if (frame.header.schemaVersion !== expectedSchemaVersion) {
+    throw new BinaryFrameDecodeError(
+      `invalid skiff runtime frame: schemaVersion must be ${expectedSchemaVersion}`
+    );
   }
   return frame as RuntimeBinaryFrame;
 }

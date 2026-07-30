@@ -1,28 +1,9 @@
 import { loadManifest } from '../../src/manifest/loadManifest.js';
 import { publicationStorageSegment } from '../../src/publicationId.js';
 
-import { webSocketManifestValue } from './websocketFixtures.js';
-
 export const SAMPLE_SERVICE_ID = 'skiff.run/sample';
 export const DEFAULT_TEST_BUILD_ID =
   'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333';
-
-export function loadWebSocketManifest() {
-  return withBuildId(loadManifest(webSocketManifestValue()));
-}
-
-export function webSocketRuntimeGatewayEntryIdentities(
-  manifest: ReturnType<typeof loadManifest>
-): string[] {
-  const entry = manifest.websocketEntry;
-  if (!entry) {
-    return [];
-  }
-  return [
-    entry.connect?.gatewayEntryIdentity,
-    entry.receive.gatewayEntryIdentity
-  ].filter((identity): identity is string => identity !== undefined);
-}
 
 export function loadRawHttpManifest(
   input: {
@@ -36,7 +17,7 @@ export function loadRawHttpManifest(
   const serviceTargetComponent = publicationStorageSegment(serviceId);
   const protocolIdentity =
     input.protocolIdentity ??
-    'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555';
+    'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555';
   const stream = input.stream ?? false;
   const handleTarget = `service.${serviceTargetComponent}.SampleHttpApi.handle`;
   return withBuildId(loadManifest({
@@ -95,7 +76,7 @@ export function loadHttpRouteManifest(
   const serviceTargetComponent = publicationStorageSegment(serviceId);
   const protocolIdentity =
     input.protocolIdentity ??
-    'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555';
+    'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555';
   const sessionTarget = `service.${serviceTargetComponent}.SessionApi.handle`;
   const trackTarget = `service.${serviceTargetComponent}.TrackApi.handle`;
   const rawTarget = `service.${serviceTargetComponent}.SampleHttpApi.handle`;
@@ -320,47 +301,6 @@ export function httpResponseStreamEventSchema() {
   };
 }
 
-export function loadWebSocketManifestForService(
-  serviceId: string,
-  protocolIdentity: string
-) {
-  return loadManifest(webSocketManifestValueForService(serviceId, protocolIdentity));
-}
-
-function webSocketManifestValueForService(serviceId: string, protocolIdentity: string) {
-  const value = JSON.parse(JSON.stringify(webSocketManifestValue()));
-  const typeName = serviceTypeName(serviceId);
-  const connectOperation = `${typeName}Connection.connect`;
-  const receiveOperation = `${typeName}Connection.receive`;
-  value.service.id = serviceId;
-  value.service.revisionId = testRevisionId(`${serviceId}:websocket`);
-  value.service.protocolIdentity = protocolIdentity;
-  value.operations[0].operation = connectOperation;
-  value.operations[0].target = `service.${publicationStorageSegment(serviceId)}.${typeName}Connection.connect`;
-  value.operations[0].operationAbiId = testOperationAbiId(value.operations[0].target);
-  value.operations[1].operation = receiveOperation;
-  value.operations[1].target = `service.${publicationStorageSegment(serviceId)}.${typeName}Connection.receive`;
-  value.operations[1].operationAbiId = testOperationAbiId(value.operations[1].target);
-  value.gateway.websocket.connect.operation = connectOperation;
-  value.gateway.websocket.connect.operationAbiId = value.operations[0].operationAbiId;
-  value.gateway.websocket.receive.operation = receiveOperation;
-  value.gateway.websocket.receive.operationAbiId = value.operations[1].operationAbiId;
-  return value;
-}
-
-function serviceTypeName(serviceId: string): string {
-  const localName = serviceLocalName(serviceId);
-  return localName
-    .split(/[_-]/)
-    .filter((part) => part.length > 0)
-    .map((part) => part[0]!.toUpperCase() + part.slice(1))
-    .join('');
-}
-
-function serviceLocalName(serviceId: string): string {
-  return serviceId.split('/').at(-1) ?? serviceId;
-}
-
 function testRevisionId(seed: string): string {
   let hash = 0;
   for (let index = 0; index < seed.length; index += 1) {
@@ -382,12 +322,6 @@ export function withBuildId<TManifest extends ReturnType<typeof loadManifest>>(
   }
   for (const entry of manifest.rawHttpEntries) {
     entry.buildId ??= buildId;
-  }
-  for (const entry of manifest.websocketEntries) {
-    entry.buildId ??= buildId;
-  }
-  if (manifest.websocketEntry) {
-    manifest.websocketEntry.buildId ??= buildId;
   }
   return manifest;
 }

@@ -7,21 +7,17 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RequestCancelFrameHeader,
   type RequestStartFrameHeader,
-  type RuntimeBinaryFrame,
   type RuntimeHealthCounters,
   type RuntimeHealthFrameHeader
 } from '../src/protocol/envelope.js';
 import {
-  loadRawHttpManifest,
-  loadWebSocketManifest,
-  webSocketRuntimeGatewayEntryIdentities
+  loadRawHttpManifest
 } from './helpers/manifests.js';
 import {
   closeTrackedResources,
-  createRequestStart,
-  trackResource
+  createRequestStart
 } from './helpers/runtime.js';
-import { closeSocket, delay, onceWithTimeout } from './helpers/events.js';
+import { delay } from './helpers/events.js';
 import { RouterHarness } from './helpers/routerHarness.js';
 
 afterEach(closeTrackedResources);
@@ -64,11 +60,6 @@ describe('loop-risk health detail', () => {
       httpStream: {
         backpressureWaiters: 0,
         backpressureCancels: 0
-      },
-      websocketReceive: {
-        inFlight: 0,
-        queued: 0,
-        abortOnClose: 0
       }
     });
     expect(health.runtimes).toHaveLength(1);
@@ -303,116 +294,10 @@ describe('loop-risk health detail', () => {
       httpStream: {
         backpressureWaiters: 0,
         backpressureCancels: 0
-      },
-      websocketReceive: {
-        inFlight: 0,
-        queued: 0,
-        abortOnClose: 0
       }
     });
   });
 
-  it('drains a bounded websocket receive send-close storm to zero-window health', async () => {
-    // The stable-instance stress script below covers the 1000-attempt target.
-    // This router test keeps the count bounded while exercising the real
-    // WebSocketGateway client send + close production path.
-    const stormAttempts = 64;
-    const manifest = loadWebSocketManifest();
-    const harness = await RouterHarness.websocket({ manifest });
-    const runtimeId = 'runtime-loop-risk-ws-close-storm';
-    const runtime = await harness.registerRuntime({
-      runtimeId,
-      targets: manifest.operations.map((operation) => operation.target),
-      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
-    });
-    runtime.ws.send(
-      encodeRuntimeFrame(runtimeHealthFrame(runtimeId, {
-        outboundRequestsPending: stormAttempts,
-        outboundStreamLeasesActive: stormAttempts,
-        streamRuntimeStreamsActive: stormAttempts,
-        flagBackedCancelWaitersActive: 0,
-        spawnedTasksActive: stormAttempts
-      }))
-    );
-    await waitForRuntimeCounters(harness, runtimeId, {
-      outboundRequestsPending: stormAttempts,
-      outboundStreamLeasesActive: stormAttempts,
-      streamRuntimeStreamsActive: stormAttempts,
-      flagBackedCancelWaitersActive: 0,
-      spawnedTasksActive: stormAttempts
-    });
-
-    const connectTarget = manifest.websocketEntry!.connect!.operationManifest.target;
-    const receiveTarget = manifest.websocketEntry!.receive.operationManifest.target;
-    runtime.onRequest((request) => {
-      if (request.target !== connectTarget) {
-        return;
-      }
-      runtime.sendResponse(
-        request.requestId,
-        websocketAccept(`loop-risk-ws-user-${request.requestId}`)
-      );
-    });
-
-    const clients = await Promise.all(
-      Array.from({ length: stormAttempts }, async (_, index) => {
-        const client = new WebSocket(
-          harness.webSocketUrl(`?deviceId=loop-risk-ws-${index}&platform=web&clientVersion=1.0.0&language=en`),
-          websocketOptions(`loop-risk-ws-storm-session-${index}`)
-        );
-        trackResource({ close: () => client.close() });
-        await onceWithTimeout(client, 'open', `loop-risk websocket storm open ${index}`, 3000);
-        return client;
-      })
-    );
-
-    const receiveFramesPromise = collectRuntimeRequestFramesByTarget(
-      runtime.ws,
-      stormAttempts,
-      receiveTarget,
-      'loop-risk websocket receive storm requests',
-      5000
-    );
-    const cancelFramesPromise = collectRuntimeCancelFrames(
-      runtime.ws,
-      stormAttempts,
-      'loop-risk websocket receive storm cancels',
-      5000
-    );
-
-    for (const [index, client] of clients.entries()) {
-      client.send(JSON.stringify({ tag: 'loop_risk_ws_close_storm', index }));
-    }
-    const receiveFrames = await receiveFramesPromise;
-    await Promise.all(
-      clients.map((client, index) =>
-        closeSocket(client, `loop-risk websocket storm close ${index}`)
-      )
-    );
-
-    const receiveRequestIds = new Set(
-      receiveFrames.map((frame) => frame.header.requestId)
-    );
-    const cancels = await cancelFramesPromise;
-    expect(cancels).toHaveLength(stormAttempts);
-    expect(cancels.every((cancel) => receiveRequestIds.has(cancel.requestId))).toBe(true);
-    expect(cancels.every((cancel) => cancel.reason === 'client_disconnect')).toBe(true);
-
-    await waitForGatewayReceiveCountersZero(harness, 5000);
-    expect(harness.webSocketGateway?.receiveLifecycleCounters()).toEqual({
-      inFlight: 0,
-      queued: 0,
-      abortOnClose: 0
-    });
-
-    runtime.ws.send(encodeRuntimeFrame(runtimeHealthFrame(runtimeId, zeroRuntimeCounters())));
-    const health = await waitForLoopRiskZeroWindow(harness, runtimeId, 5000);
-    expect(health.router.websocketReceive).toEqual({
-      inFlight: 0,
-      queued: 0,
-      abortOnClose: 0
-    });
-  });
 });
 
 function runtimeHealthFrame(
@@ -438,28 +323,6 @@ function zeroRuntimeCounters(): RuntimeHealthCounters {
   };
 }
 
-function websocketOptions(sessionId: string): { headers: Record<string, string> } {
-  return {
-    headers: {
-      cookie: `sessionId=${sessionId}`
-    }
-  };
-}
-
-function websocketAccept(userId: string) {
-  return {
-    tag: 'accept',
-    context: {
-      userId,
-      deviceId: userId,
-      platform: 'web',
-      clientVersion: '1.0.0',
-      language: 'en'
-    },
-    identity: userId
-  };
-}
-
 interface LoopRiskHealthPayload {
   observedAt: string;
   router: {
@@ -470,11 +333,6 @@ interface LoopRiskHealthPayload {
     httpStream: {
       backpressureWaiters: number;
       backpressureCancels: number;
-    };
-    websocketReceive: {
-      inFlight: number;
-      queued: number;
-      abortOnClose: number;
     };
   };
   runtimes: Array<{
@@ -565,38 +423,12 @@ async function waitForLoopRiskZeroWindow(
   return latest;
 }
 
-async function waitForGatewayReceiveCountersZero(
-  harness: RouterHarness,
-  timeoutMs: number
-): Promise<void> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt <= timeoutMs) {
-    const counters = harness.webSocketGateway?.receiveLifecycleCounters();
-    if (
-      counters?.inFlight === 0 &&
-      counters.queued === 0 &&
-      counters.abortOnClose === 0
-    ) {
-      return;
-    }
-    await delay(25);
-  }
-  expect(harness.webSocketGateway?.receiveLifecycleCounters()).toEqual({
-    inFlight: 0,
-    queued: 0,
-    abortOnClose: 0
-  });
-}
-
 function routerLoopRiskCountersAreZero(health: LoopRiskHealthPayload): boolean {
   return (
     health.router.dispatcher.pendingUnary === 0 &&
     health.router.dispatcher.pendingStream === 0 &&
     health.router.httpStream.backpressureWaiters === 0 &&
-    health.router.httpStream.backpressureCancels === 0 &&
-    health.router.websocketReceive.inFlight === 0 &&
-    health.router.websocketReceive.queued === 0 &&
-    health.router.websocketReceive.abortOnClose === 0
+    health.router.httpStream.backpressureCancels === 0
   );
 }
 
@@ -661,43 +493,6 @@ function collectRuntimeCancelFrames(
       if (cancels.length === count) {
         cleanup();
         resolve(cancels);
-      }
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ws.off('message', onMessage);
-    };
-    ws.on('message', onMessage);
-  });
-}
-
-function collectRuntimeRequestFramesByTarget(
-  ws: WebSocket,
-  count: number,
-  target: string,
-  label: string,
-  timeoutMs = 2000
-): Promise<Array<{ header: RequestStartFrameHeader }>> {
-  return new Promise((resolve, reject) => {
-    const requests: Array<{ header: RequestStartFrameHeader }> = [];
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timed out waiting for ${label}`));
-    }, timeoutMs);
-    const onMessage = (data: WebSocket.RawData) => {
-      let frame: RuntimeBinaryFrame;
-      try {
-        frame = decodeRuntimeFrame(data);
-      } catch {
-        return;
-      }
-      if (frame.header.type !== 'request.start' || frame.header.target !== target) {
-        return;
-      }
-      requests.push({ header: frame.header });
-      if (requests.length === count) {
-        cleanup();
-        resolve(requests);
       }
     };
     const cleanup = () => {

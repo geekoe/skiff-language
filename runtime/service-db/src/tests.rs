@@ -18,22 +18,24 @@ use mongodb::{
     },
 };
 use serde_json::{json, Map, Value};
-use skiff_artifact_model::DbMetadataIr;
+use skiff_artifact_model::{
+    DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+};
 use skiff_runtime_boundary::{
     db as db_boundary,
     recoverable::{
         RecoverableArtifactRetentionRootStore, RecoverableArtifactStore, RecoverableBehaviorHooks,
         RecoverableEncodedLocalInterfaceSelf, RecoverableInterfaceConformanceRequest,
         RecoverableInterfaceMethodTableRequest, RecoverableLocalInterfaceEncodeRequest,
-        RecoverableLocalInterfaceRestoreRequest, RecoverableRemoteInterfaceCarrierRequest,
-        RecoverableRestoredLocalInterfaceSelf,
+        RecoverableLocalInterfaceRestoreRequest, RecoverableRestoredLocalInterfaceSelf,
     },
     Result as BoundaryResult,
 };
 use skiff_runtime_capability_context::{
-    DbCapabilityContext, DbCapabilityError, DbDocument, DbKey, DbOneSelector, DbOrderDirection,
-    DbOrderEntry, DbProviderBuildInput, DbProviderConfig, DbProviderFactory, DbQuery, FieldPath,
-    ServiceDbChange, ServiceDbFindOptions,
+    DbCapabilityContext, DbCapabilityError, DbCapabilityTarget, DbCapabilityTargetId, DbDocument,
+    DbKey, DbOneSelector, DbOrderDirection, DbOrderEntry, DbProviderBuildInput, DbProviderConfig,
+    DbProviderFactory, DbProviderTargetMetadata, DbQuery, FieldPath, ServiceDbChange,
+    ServiceDbFindOptions,
 };
 use skiff_runtime_model::{
     error::WirePayload,
@@ -50,7 +52,7 @@ use skiff_runtime_model::{
     runtime_value::{
         CallbackCapabilityCarrier, HeapNode, InterfaceCarrier, InterfaceMethodSlot,
         InterfaceMethodTable, InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue,
-        RemoteOperationTable, RuntimeObject, RuntimeObjectFields, RuntimeValue,
+        RuntimeObject, RuntimeObjectFields, RuntimeValue,
     },
 };
 use std::{
@@ -59,6 +61,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::Mutex as TokioMutex;
+
+mod prepared_runtime;
 
 fn db_key(value: serde_json::Value) -> DbKey {
     DbKey::new(value)
@@ -116,6 +120,43 @@ fn db_metadata_entry(value: Value) -> DbMetadataIr {
     entries
         .pop()
         .expect("test db metadata should contain one entry")
+}
+
+fn provider_metadata(value: Value) -> Vec<DbProviderTargetMetadata> {
+    provider_metadata_from_ir(db_metadata(value))
+}
+
+fn provider_metadata_from_ir(entries: Vec<DbMetadataIr>) -> Vec<DbProviderTargetMetadata> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, metadata)| {
+            let module_path = metadata.module_path.clone();
+            let type_name = metadata.type_name.clone();
+            DbProviderTargetMetadata {
+                target: test_db_target(index, &module_path, &type_name),
+                metadata,
+            }
+        })
+        .collect()
+}
+
+fn test_db_target(index: usize, module_path: &str, type_name: &str) -> DbCapabilityTarget {
+    DbCapabilityTarget::new(
+        DbCapabilityTargetId {
+            package_artifact_ref: PackageArtifactRef {
+                package_id: format!("test.local/provider-{type_name}-{index}"),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new(format!("test-build-{type_name}-{index}")),
+                package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
+                    "test-abi-{type_name}-{index}"
+                )),
+            },
+            file_ir_ref: FileIrRef::new(format!("test-file-{type_name}-{index}"), module_path),
+            type_index: index,
+        },
+        type_name,
+    )
 }
 
 fn normalize_db_metadata_entry(entry: &mut Value) {
@@ -242,7 +283,8 @@ fn service_db_write_conflict_is_a_sanitized_catchable_db_error() {
     assert_eq!(
         WirePayload::catch_projection(&error),
         Some((
-            skiff_runtime_model::error::TypeIdentity::builtin("std.db.ConflictError"),
+            skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity::DbConflict
+                .catch_identity(),
             json!({
                 "target": "std.db",
                 "message": "database conflict; retry only at an explicit side-effect-safe boundary",
@@ -260,6 +302,14 @@ fn service_db_non_conflict_mongo_error_keeps_platform_error_behavior() {
     assert_eq!(payload.code, "PlatformMongoError");
     assert!(payload.message.contains("Error code 113"));
     assert_eq!(payload.details, None);
+    assert_eq!(WirePayload::catch_projection(&error), None);
+}
+
+#[test]
+fn service_db_db_decode_code_does_not_imply_a_catch_identity() {
+    let error = ServiceDbError::db_decode("std.db", "db value missing key field id");
+
+    assert_eq!(error.payload().code, "std.db.DecodeError");
     assert_eq!(WirePayload::catch_projection(&error), None);
 }
 
@@ -385,6 +435,7 @@ fn mongo_provider_rejects_invalid_opaque_config() {
 fn provider_input(config: Value) -> DbProviderBuildInput {
     DbProviderBuildInput {
         service_id: service_id("provider"),
+        state_namespace: "provider_fixture".to_string(),
         config: DbProviderConfig::opaque(config),
         runtime_program_db: Vec::new(),
     }
@@ -457,7 +508,7 @@ fn object_metadata_accepts_retention_field() {
         ServiceDbRuntime::new(
             "example.com/test".to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
-            &object_metadata_with_retention(retention),
+            &provider_metadata_from_ir(object_metadata_with_retention(retention)),
         )
         .expect("object DB metadata should allow retention");
     }
@@ -480,6 +531,38 @@ fn service_db_runtime_projects_service_id_to_database_name() {
 
         assert_eq!(runtime.database_name, case.runtime_target_component);
     }
+}
+
+#[test]
+fn service_db_runtime_uses_typed_state_namespace_as_database_name() {
+    let config = ServiceDbConfig {
+        mongo_url: inert_mongo_url("state_namespace"),
+        encryption_cipher: None,
+    };
+    let first = ServiceDbRuntime::new_with_config_and_namespace(
+        service_id("stateful"),
+        "skiff_pt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        config.clone(),
+        &[],
+    )
+    .expect("first test-owned state namespace");
+    let second = ServiceDbRuntime::new_with_config_and_namespace(
+        service_id("stateful"),
+        "skiff_pt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        config,
+        &[],
+    )
+    .expect("second test-owned state namespace");
+
+    assert_eq!(
+        first.database_name,
+        "skiff_pt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        second.database_name,
+        "skiff_pt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+    assert_ne!(first.database_name, second.database_name);
 }
 
 #[test]
@@ -604,13 +687,13 @@ fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell
     let account = ServiceDbRuntime::new(
         service_id("account"),
         mongo_url.clone(),
-        &object_metadata_for_type("AccountOnly"),
+        &provider_metadata_from_ir(object_metadata_for_type("AccountOnly")),
     )
     .expect("account service DB runtime should build");
     let registry = ServiceDbRuntime::new(
         service_id("registry"),
         mongo_url,
-        &object_metadata_for_type("RegistryOnly"),
+        &provider_metadata_from_ir(object_metadata_for_type("RegistryOnly")),
     )
     .expect("registry service DB runtime should build");
 
@@ -622,25 +705,27 @@ fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell
         account.database_name, registry.database_name,
         "different service ids must keep separate Mongo database names"
     );
+    let account_target = test_db_target(0, "", "AccountOnly");
+    let registry_target = test_db_target(0, "", "RegistryOnly");
     account
         .metadata
-        .collection_for_type("AccountOnly")
+        .collection_for_target(&account_target)
         .expect("account metadata should remain on account runtime");
     assert!(
         account
             .metadata
-            .collection_for_type("RegistryOnly")
+            .collection_for_target(&registry_target)
             .is_err(),
         "registry metadata must not leak into account runtime"
     );
     registry
         .metadata
-        .collection_for_type("RegistryOnly")
+        .collection_for_target(&registry_target)
         .expect("registry metadata should remain on registry runtime");
     assert!(
         registry
             .metadata
-            .collection_for_type("AccountOnly")
+            .collection_for_target(&account_target)
             .is_err(),
         "account metadata must not leak into registry runtime"
     );
@@ -744,7 +829,7 @@ fn object_metadata_uses_typed_collection_name_from_service_unit_db() {
 
 #[test]
 fn object_metadata_uses_final_collection_name_from_service_unit_db() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "modulePath": "httpSession.db",
             "kind": "object",
@@ -759,15 +844,8 @@ fn object_metadata_uses_final_collection_name_from_service_unit_db() {
 
     assert_eq!(
         metadata
-            .collection_for_type("Session")
-            .expect("Session metadata should resolve")
-            .collection_name,
-        "registry_session"
-    );
-    assert_eq!(
-        metadata
-            .collection_for_type("httpSession.db.Session")
-            .expect("canonical Session metadata should resolve")
+            .collection_for_target(&test_db_target(0, "httpSession.db", "Session"))
+            .expect("exact Session metadata should resolve")
             .collection_name,
         "registry_session"
     );
@@ -778,7 +856,7 @@ fn object_metadata_rejects_reserved_skiff_collection_name() {
     let error = ServiceDbRuntime::new(
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &db_metadata(json!([
+        &provider_metadata(json!([
             {
                 "kind": "object",
                 "typeName": "File",
@@ -850,7 +928,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     let key_error = ServiceDbRuntime::new(
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &db_metadata(json!([
+        &provider_metadata(json!([
             {
                 "kind": "object",
                 "typeName": "Thread",
@@ -870,7 +948,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     let field_error = ServiceDbRuntime::new(
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &db_metadata(json!([
+        &provider_metadata(json!([
             {
                 "kind": "object",
                 "typeName": "Thread",
@@ -890,7 +968,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
 
 #[test]
 fn object_metadata_tracks_direct_and_nullable_immutable_file_fields() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "kind": "object",
             "typeName": "Interaction",
@@ -922,7 +1000,7 @@ fn object_metadata_tracks_direct_and_nullable_immutable_file_fields() {
     .expect("metadata should parse");
 
     let binding = metadata
-        .collection_for_type("Interaction")
+        .collection_for_target(&test_db_target(0, "", "Interaction"))
         .expect("Interaction should resolve");
     assert_eq!(
         binding.immutable_file_paths,
@@ -1006,7 +1084,7 @@ fn object_metadata_builds_db_boundary_plans_for_key_and_fields() {
 
 #[test]
 fn object_metadata_parses_lease_slots() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "kind": "object",
             "typeName": "Thread",
@@ -1023,7 +1101,7 @@ fn object_metadata_parses_lease_slots() {
     .expect("db metadata should parse");
 
     let binding = metadata
-        .collection_for_type("Thread")
+        .collection_for_target(&test_db_target(0, "", "Thread"))
         .expect("Thread metadata should resolve");
     let writer = binding
         .lease("writer")
@@ -1063,8 +1141,8 @@ fn object_metadata_rejects_unsafe_lease_slot_names() {
 }
 
 #[test]
-fn metadata_lookup_supports_canonical_type_without_overwriting_bare_name() {
-    let metadata = ServiceDbMetadata::from_runtime_program_db(&db_metadata(json!([
+fn metadata_lookup_uses_exact_target_identity_instead_of_type_name() {
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "modulePath": "internal.models",
             "kind": "object",
@@ -1088,27 +1166,124 @@ fn metadata_lookup_supports_canonical_type_without_overwriting_bare_name() {
 
     assert_eq!(
         metadata
-            .collection_for_type("internal.models.Thread")
-            .expect("canonical models Thread should resolve")
+            .collection_for_target(&test_db_target(0, "internal.models", "Thread"))
+            .expect("exact models Thread should resolve")
             .collection_name,
         "threads_a"
     );
     assert_eq!(
         metadata
-            .collection_for_type("internal.archive.Thread")
-            .expect("canonical archive Thread should resolve")
+            .collection_for_target(&test_db_target(1, "internal.archive", "Thread"))
+            .expect("exact archive Thread should resolve")
             .collection_name,
         "threads_b"
     );
 
     let error = metadata
-        .collection_for_type("Thread")
-        .expect_err("bare duplicate Thread lookup should be ambiguous");
+        .collection_for_target(&test_db_target(2, "internal.models", "Thread"))
+        .expect_err("substituted exact target must not resolve");
     assert!(
         error
             .to_string()
-            .contains("runtime program db metadata has ambiguous type Thread"),
+            .contains("does not declare the exact DB target"),
         "{error}"
+    );
+}
+
+#[test]
+fn metadata_keeps_identical_type_names_from_distinct_exact_targets_separate() {
+    let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_a",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        },
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_b",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        }
+    ])))
+    .expect("distinct exact DB targets must not collide by display type name");
+
+    assert_eq!(
+        metadata
+            .collection_for_target(&test_db_target(0, "model", "Session"))
+            .expect("first exact Session target")
+            .collection_name,
+        "sessions_a"
+    );
+    assert_eq!(
+        metadata
+            .collection_for_target(&test_db_target(1, "model", "Session"))
+            .expect("second exact Session target")
+            .collection_name,
+        "sessions_b"
+    );
+}
+
+#[test]
+fn lease_guards_do_not_cross_distinct_exact_targets_with_the_same_type_name() {
+    let entries = provider_metadata(json!([
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_a",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        },
+        {
+            "modulePath": "model",
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "sessions_b",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        }
+    ]));
+    let first_target = entries[0].target.clone();
+    let second_target = entries[1].target.clone();
+    let metadata =
+        ServiceDbMetadata::from_runtime_program_db(&entries).expect("DB metadata should parse");
+    let first = metadata
+        .collection_for_target(&first_target)
+        .expect("first exact Session target");
+    let filter = doc! { "status": "open" };
+    let other_target_hold = DbLeaseHold {
+        target_key: second_target.lookup_key().to_string(),
+        type_name: "Session".to_string(),
+        key: db_key(json!("session-1")),
+        slot: "writer".to_string(),
+        token: "token-1".to_string(),
+    };
+    assert_eq!(
+        guarded_filter(first, filter.clone(), &[other_target_hold], 1000)
+            .expect("foreign exact target guard should be ignored"),
+        filter
+    );
+
+    let exact_target_hold = DbLeaseHold {
+        target_key: first_target.lookup_key().to_string(),
+        type_name: "Session".to_string(),
+        key: db_key(json!("session-1")),
+        slot: "writer".to_string(),
+        token: "token-1".to_string(),
+    };
+    assert_ne!(
+        guarded_filter(first, filter.clone(), &[exact_target_hold], 1000)
+            .expect("same exact target guard should fence"),
+        filter
     );
 }
 
@@ -1397,6 +1572,7 @@ fn guarded_filter_fences_held_lease_key() {
     let binding =
         DbCollectionMetadata::from_ir(&metadata[0], 0).expect("object metadata should parse");
     let hold = DbLeaseHold {
+        target_key: "Thread".to_string(),
         type_name: "Thread".to_string(),
         key: db_key(json!("thread-1")),
         slot: "writer".to_string(),
@@ -1470,6 +1646,7 @@ fn guarded_filter_ignores_other_type_leases() {
     let binding =
         DbCollectionMetadata::from_ir(&metadata[0], 0).expect("object metadata should parse");
     let hold = DbLeaseHold {
+        target_key: "Other".to_string(),
         type_name: "Other".to_string(),
         key: db_key(json!("thread-1")),
         slot: "writer".to_string(),
@@ -1944,6 +2121,7 @@ fn recoverable_runtime_context_reexport_preserves_write_contract_fields() {
 }
 
 #[tokio::test]
+#[ignore = "requires a local MongoDB replica set and real network resources"]
 async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface() {
     let service_id = format!(
         "skiff.run/p5dbprodtest-{}-{}",
@@ -1953,7 +2131,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
     let runtime = ServiceDbRuntime::new(
         service_id,
         "mongodb://127.0.0.1:27017/?directConnection=true".to_string(),
-        &recoverable_provider_metadata_value(),
+        &provider_metadata_from_ir(recoverable_provider_metadata_value()),
     )
     .expect("service DB runtime should build");
     let database_name = runtime.database_name_for_test();
@@ -1980,7 +2158,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
     let context = production_runtime_context(hooks.clone());
 
     runtime
-        .create_runtime("ProviderBinding", &value, &heap, context.clone(), None)
+        .create_runtime("ProviderBinding", &value, &mut heap, context.clone(), None)
         .await
         .expect("production service DB runtime create should encode local interface");
 
@@ -2078,67 +2256,6 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
         .drop()
         .await
         .expect("test database should drop after run");
-}
-
-#[test]
-fn recoverable_envelope_runtime_field_roundtrips_remote_carrier_without_local_encode_hook() {
-    let binding = recoverable_provider_metadata();
-    let mut heap = RequestHeap::default();
-    let provider = remote_provider_runtime_value(&mut heap);
-    let value = runtime_object(
-        &mut heap,
-        [
-            ("id", RuntimeValue::String("binding-1".to_string())),
-            ("provider", provider),
-        ],
-    );
-    let hooks = TestDbBehaviorHooks::default();
-    let expected = test_provider_expected_plan();
-    let artifact_store =
-        TestDbArtifactStore::default().with_available(TEST_SERVICE_ARTIFACT, TEST_SERVICE_BUILD);
-    let mut root_store = TestDbRootStore::default();
-    let mut write_context = DbRecoverableRuntimeWriteContext {
-        behavior_hooks: &hooks,
-        boundary_context: None,
-        recoverable_expected_override: Some(&expected),
-        recoverable_expected_overrides: None,
-        artifact_store: Some(&artifact_store),
-        retention_root_store: Some(&mut root_store),
-        retention_expires_at_epoch_millis: None,
-    };
-
-    let document = binding
-        .document_from_runtime_business_value(&value, &heap, Some(&mut write_context))
-        .expect("remote interface carrier should encode as an owner-internal recoverable envelope");
-
-    assert_eq!(hooks.encode_calls.get(), 0);
-    let Some(Bson::Binary(binary)) = document.get("provider") else {
-        panic!("provider should be stored as recoverable-envelope BSON binary");
-    };
-    assert_eq!(binary.subtype, BinarySubtype::Generic);
-    assert!(!binary.bytes.is_empty());
-    assert!(
-        root_store.roots.is_empty(),
-        "remote public-instance carriers do not create artifact retention roots"
-    );
-
-    let mut read_heap = RequestHeap::default();
-    let read_context = DbRecoverableRuntimeReadContext {
-        behavior_hooks: &hooks,
-        boundary_context: None,
-        recoverable_expected_override: Some(&expected),
-        recoverable_expected_overrides: None,
-    };
-    let decoded = binding
-        .runtime_business_value_from_document(document, &mut read_heap, Some(&read_context))
-        .expect("remote interface carrier should decode from DB recoverable envelope");
-
-    assert_eq!(hooks.encode_calls.get(), 0);
-    assert_eq!(hooks.restore_calls.get(), 0);
-    assert_eq!(hooks.conformance_calls.get(), 0);
-    assert_eq!(hooks.table_calls.get(), 0);
-    assert_eq!(hooks.remote_table_calls.get(), 2);
-    assert_decoded_remote_provider_runtime_value(&decoded, &read_heap, "binding-1");
 }
 
 #[test]
@@ -2990,8 +3107,9 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
 
     let error = match MongoServiceDbProviderFactory::default().build(DbProviderBuildInput {
         service_id: "example.com/credential".to_string(),
+        state_namespace: "example~com~~credential".to_string(),
         config: DbProviderConfig::opaque(json!({ "mongoUrl": inert_mongo_url("encrypted") })),
-        runtime_program_db: valid.clone(),
+        runtime_program_db: provider_metadata_from_ir(valid.clone()),
     }) {
         Ok(_) => panic!("encrypted activation without keyring must fail"),
         Err(error) => error,
@@ -3002,10 +3120,11 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
         .build(DbProviderBuildInput {
             service_id: "example.com/credential".to_string(),
+            state_namespace: "example~com~~credential".to_string(),
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("encrypted-ok") }),
             ),
-            runtime_program_db: valid,
+            runtime_program_db: provider_metadata_from_ir(valid),
         })
         .expect("encrypted activation with keyring");
 }
@@ -3059,7 +3178,7 @@ fn forged_encrypted_metadata_rejects_nullable_recoverable_and_immutable_file_lan
 
 #[test]
 fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
-    let forged = db_metadata(json!([{
+    let forged = provider_metadata(json!([{
         "modulePath": "internal.credential",
         "kind": "object",
         "typeName": "Credential",
@@ -3093,6 +3212,7 @@ fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
     let provider_error = match MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
         .build(DbProviderBuildInput {
             service_id: "example.com/credential".to_string(),
+            state_namespace: "example~com~~credential".to_string(),
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("forged-encrypted-key") }),
             ),
@@ -3388,28 +3508,6 @@ fn local_provider_runtime_value(heap: &mut RequestHeap, provider_name: &str) -> 
     )
 }
 
-fn remote_provider_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
-    RuntimeValue::Heap(
-        heap.alloc_interface(InterfaceValue::new(
-            TEST_PROVIDER_INTERFACE.to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "skiff.run/remote-provider".to_string(),
-                public_instance_key: "provider#1".to_string(),
-                operations: test_remote_provider_operation_table(),
-            },
-        ))
-        .expect("remote provider interface should allocate"),
-    )
-}
-
-fn test_remote_provider_operation_table() -> RemoteOperationTable {
-    RemoteOperationTable::new(
-        "remote:provider".to_string(),
-        TEST_PROVIDER_INTERFACE.to_string(),
-        Vec::new(),
-    )
-}
-
 fn test_provider_method_table() -> InterfaceMethodTable {
     InterfaceMethodTable::new(
         TEST_PROVIDER_PROJECTION.to_string(),
@@ -3496,49 +3594,11 @@ fn assert_decoded_provider_runtime_value(
     ));
 }
 
-fn assert_decoded_remote_provider_runtime_value(
-    value: &RuntimeValue,
-    heap: &RequestHeap,
-    expected_id: &str,
-) {
-    let RuntimeValue::Heap(object_handle) = value else {
-        panic!("decoded DB value should be an object");
-    };
-    let HeapNode::Object(object) = heap.get(*object_handle).expect("object handle") else {
-        panic!("decoded DB value should be an object");
-    };
-    assert_eq!(
-        object.fields().get("id"),
-        Some(&RuntimeValue::String(expected_id.to_string()))
-    );
-    let RuntimeValue::Heap(provider_handle) = object.fields().get("provider").unwrap() else {
-        panic!("provider should be an interface heap value");
-    };
-    let HeapNode::Interface(provider) = heap.get(*provider_handle).expect("provider handle") else {
-        panic!("provider should decode as InterfaceValue");
-    };
-    assert_eq!(provider.interface(), TEST_PROVIDER_INTERFACE);
-    let InterfaceCarrier::Remote {
-        dependency_ref,
-        public_instance_key,
-        operations,
-    } = provider.carrier()
-    else {
-        panic!("provider should decode as a remote carrier");
-    };
-    assert_eq!(dependency_ref, "skiff.run/remote-provider");
-    assert_eq!(public_instance_key, "provider#1");
-    assert_eq!(operations.id(), "remote:provider");
-    assert_eq!(operations.interface_abi_id(), TEST_PROVIDER_INTERFACE);
-    assert!(operations.slots().is_empty());
-}
-
 struct TestDbBehaviorHooks {
     encode_calls: Cell<usize>,
     restore_calls: Cell<usize>,
     conformance_calls: Cell<usize>,
     table_calls: Cell<usize>,
-    remote_table_calls: Cell<usize>,
     table_projection_identity: RefCell<String>,
 }
 
@@ -3549,7 +3609,6 @@ impl Default for TestDbBehaviorHooks {
             restore_calls: Cell::new(0),
             conformance_calls: Cell::new(0),
             table_calls: Cell::new(0),
-            remote_table_calls: Cell::new(0),
             table_projection_identity: RefCell::new(TEST_PROVIDER_PROJECTION.to_string()),
         }
     }
@@ -3623,24 +3682,6 @@ impl RecoverableBehaviorHooks for TestDbBehaviorHooks {
         }
         Ok(Some(test_provider_method_table()))
     }
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> BoundaryResult<Option<RemoteOperationTable>> {
-        self.remote_table_calls
-            .set(self.remote_table_calls.get() + 1);
-        if request.interface_identity != TEST_PROVIDER_INTERFACE
-            || request.carrier.dependency_ref != "skiff.run/remote-provider"
-            || request.carrier.public_instance_key != "provider#1"
-            || request.carrier.operations.id != "remote:provider"
-            || request.carrier.operations.interface_abi_id != TEST_PROVIDER_INTERFACE
-            || !request.carrier.operations.slots.is_empty()
-        {
-            return Ok(None);
-        }
-        Ok(Some(test_remote_provider_operation_table()))
-    }
 }
 
 #[derive(Default)]
@@ -3691,14 +3732,6 @@ impl RecoverableBehaviorHooks for ThreadSafeTestDbBehaviorHooks {
     ) -> BoundaryResult<Option<InterfaceMethodTable>> {
         let inner = self.inner.lock().expect("test hook mutex");
         RecoverableBehaviorHooks::rebuild_local_interface_method_table(&*inner, request)
-    }
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> BoundaryResult<Option<RemoteOperationTable>> {
-        let inner = self.inner.lock().expect("test hook mutex");
-        RecoverableBehaviorHooks::rebuild_remote_interface_operation_table(&*inner, request)
     }
 }
 

@@ -1,0 +1,236 @@
+use serde_json::{json, Value};
+
+use super::{
+    response_event_into_frame, runtime_assembly_websocket_jsonrpc_response_into_frame,
+    validate_response_end_frame, OrdinaryResponseEvent, ResponseEndPhase,
+};
+use crate::protocol::{
+    decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
+    ResponseEndFrameHeader, ResponseErrorFrameHeader, ValidatedResponseErrorFrame,
+    RUNTIME_FRAME_SCHEMA_VERSION,
+};
+use crate::runtime_assembly_request::{
+    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
+    RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+};
+use skiff_runtime_model::service_error::OpaqueServiceError;
+use skiff_runtime_request_contract::{
+    FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseEnd,
+    ResponseError, ResponseEvent,
+};
+
+struct TestOrdinaryError(ResponseError);
+
+impl OrdinaryResponseErrorSource for TestOrdinaryError {
+    fn ordinary_response_error(&self) -> Option<ResponseError> {
+        Some(self.0.clone())
+    }
+}
+
+struct TestCancellationTerminal;
+
+impl OrdinaryResponseErrorSource for TestCancellationTerminal {
+    fn ordinary_response_error(&self) -> Option<ResponseError> {
+        None
+    }
+}
+
+fn ordinary_error(error: ResponseError) -> OrdinaryResponseEvent {
+    OrdinaryResponseEvent::try_error(&TestOrdinaryError(error))
+        .expect("test source is an ordinary failure")
+}
+
+#[test]
+fn response_boundary_rejects_http_and_payload_phase_confusion() {
+    let http = response_event_into_frame(
+        "request-http".to_string(),
+        OrdinaryResponseEvent::End(ResponseEnd::Http {
+            payload: Vec::new(),
+            metadata: HttpResponseMetadata::new(204, Vec::new()),
+        }),
+    )
+    .expect("HTTP response must encode");
+    let (header, payload): (ResponseEndFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&http).expect("HTTP response.end must decode");
+    assert!(validate_response_end_frame(&header, &payload, ResponseEndPhase::Http).is_ok());
+    assert!(validate_response_end_frame(&header, &payload, ResponseEndPhase::Payload).is_err());
+}
+
+#[test]
+fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../testdata/service-error-response-v2.json"
+    ))
+    .expect("service error response v2 corpus must decode");
+    for test_case in corpus["validCases"]
+        .as_array()
+        .expect("validCases must be an array")
+        .iter()
+        .take(3)
+    {
+        let payload = test_case["payloadUtf8"]
+            .as_str()
+            .expect("fixture payload")
+            .as_bytes()
+            .to_vec();
+        let error = OpaqueServiceError::decode(payload.clone()).expect("fixture fixed error");
+        let request_id = test_case["header"]["requestId"]
+            .as_str()
+            .expect("fixture request id");
+
+        let encoded = response_event_into_frame(
+            request_id.to_string(),
+            OrdinaryResponseEvent::FixedServiceFailure(FixedServiceResponseFailure::new(error)),
+        )
+        .expect("fixed service response must encode");
+        let (header, decoded_body) =
+            decode_response_error_frame(&encoded).expect("fixed service response must decode");
+        assert!(matches!(
+            decoded_body,
+            ValidatedResponseErrorFrame::FixedService(ref decoded)
+                if decoded.encoded_bytes() == payload
+        ));
+
+        let raw = decode_binary_frame(&encoded).expect("fixed service binary frame");
+        assert_eq!(raw.payload_bytes, payload);
+        assert!(matches!(
+            header,
+            ResponseErrorFrameHeader::FixedService { .. }
+        ));
+    }
+}
+
+#[test]
+fn service_error_response_v2_mapper_keeps_matching_generic_control_untyped() {
+    let encoded = response_event_into_frame(
+        "request-control-1".to_string(),
+        ordinary_error(ResponseError {
+            code: "InternalError".to_string(),
+            message: "The service could not complete the request.".to_string(),
+            status: Some(500),
+            details: Some(json!({ "traceId": "trace-control-only" })),
+        }),
+    )
+    .expect("control response must encode");
+    let (_header, decoded_body) =
+        decode_response_error_frame(&encoded).expect("control response must decode");
+    assert!(matches!(
+        decoded_body,
+        ValidatedResponseErrorFrame::Control(ref error)
+            if error.code == "InternalError"
+    ));
+}
+
+#[test]
+fn cancellation_terminal_cannot_be_encoded_as_response_error_but_ordinary_failures_can() {
+    let cancelled = OrdinaryResponseEvent::try_error(&TestCancellationTerminal);
+    assert!(
+        cancelled.is_none(),
+        "internal cancellation must fail closed before response.error encoding"
+    );
+    let unproven = OrdinaryResponseEvent::try_from_non_error(ResponseEvent::Error(ResponseError {
+        code: "UnprovenError".to_string(),
+        message: "unproven raw error".to_string(),
+        status: None,
+        details: None,
+    }));
+    assert!(
+        unproven.is_err(),
+        "raw response.error must also fail closed"
+    );
+
+    for (request_id, code) in [
+        ("request-timeout", "TimeoutError"),
+        (
+            "request-provider-unavailable",
+            "std.service.ProviderUnavailableError",
+        ),
+    ] {
+        let encoded = response_event_into_frame(
+            request_id.to_string(),
+            ordinary_error(ResponseError {
+                code: code.to_string(),
+                message: format!("{code} message"),
+                status: None,
+                details: None,
+            }),
+        )
+        .expect("ordinary failure must encode");
+        let (header, decoded_body) =
+            decode_response_error_frame(&encoded).expect("ordinary response.error must decode");
+        assert!(matches!(
+            decoded_body,
+            ValidatedResponseErrorFrame::Control(ref error) if error.code == code
+        ));
+        assert_eq!(header.request_id(), request_id);
+    }
+}
+
+#[test]
+fn websocket_response_wire_raw_optional_bag_shapes_are_rejected() {
+    let legacy = json!({
+        "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+        "type": "response.end",
+        "requestId": "legacy-optional-bag",
+        "payloadPresent": false,
+        "websocketConnect": {
+            "result": "accept",
+            "contextPayloadPresent": false,
+            "code": 1008,
+            "reason": "illegal reject fields on accept"
+        }
+    });
+    assert!(serde_json::from_value::<ResponseEndFrameHeader>(legacy).is_err());
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_mapper_round_trips_opaque_success_payload() {
+    let payload = b"null".to_vec();
+    let encoded = runtime_assembly_websocket_jsonrpc_response_into_frame(
+        "request-websocket-jsonrpc-mapper".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+        },
+        payload.clone(),
+    )
+    .expect("success must encode");
+    let (decoded, decoded_payload) =
+        decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&encoded)
+            .expect("mapped response must decode");
+
+    assert_eq!(decoded.request_id, "request-websocket-jsonrpc-mapper");
+    assert_eq!(
+        decoded.websocket_json_rpc.outcome,
+        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+    );
+    assert_eq!(decoded_payload, payload);
+}
+
+#[test]
+fn runtime_assembly_websocket_jsonrpc_mapper_rejects_outcome_payload_mismatch() {
+    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+        "request-success-without-payload".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+        },
+        Vec::new(),
+    )
+    .is_err());
+    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+        "request-error-with-payload".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+        },
+        b"null".to_vec(),
+    )
+    .is_err());
+    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+        " invalid-request-id ".to_string(),
+        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
+            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+        },
+        Vec::new(),
+    )
+    .is_err());
+}

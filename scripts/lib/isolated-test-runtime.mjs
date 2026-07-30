@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawn as spawnAdditionalRuntimeChild } from 'node:child_process';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,10 +8,20 @@ import { cargoTargetDir } from './cargo-target-dir.mjs';
 import {
   isolatedInstanceOperations,
   isolatedTestInstanceConfigText,
-  isolatedTestInstanceConstants,
   isolatedTestRunnerEnvironment,
 } from './isolated-test-runtime-instance.mjs';
 import { assertPortsClosed, leaseConsecutiveLocalPorts } from './local-port-lease.mjs';
+import {
+  captureIsolatedTestConfig,
+  claimIsolatedTestWorkspace,
+  removeOwnedIsolatedTestWorkspace,
+} from './isolated-test-runtime-workspace.mjs';
+import {
+  ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY,
+  retainIsolatedRuntimeLogEvidence,
+} from './isolated-test-runtime-log-evidence.mjs';
+import { runtimeBinaryName } from './dev-runtime-paths.mjs';
+import { renderRuntimeConfig } from './runtime-stack-config.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultSkiffRoot = resolve(scriptDir, '..', '..');
@@ -25,10 +36,23 @@ export async function runInIsolatedTestRuntime({
   runTest,
   skiffRoot = defaultSkiffRoot,
   baseEnv = process.env,
+  environment = 'skiff-test',
   signalTarget = process,
+  validateBootstrapReceipt,
+  runtimeReplicas = 1,
   dependencies = {},
 }) {
-  const ops = isolatedRuntimeOperations(dependencies, skiffRoot, baseEnv);
+  if (!Number.isSafeInteger(runtimeReplicas) || runtimeReplicas < 1 || runtimeReplicas > 2) {
+    throw new Error('isolated test runtimeReplicas must be 1 or 2');
+  }
+  const absoluteSkiffRoot = resolve(skiffRoot);
+  const absoluteCargoTarget = cargoTargetDir(absoluteSkiffRoot, baseEnv);
+  const isolatedBaseEnv = {
+    ...baseEnv,
+    CARGO_TARGET_DIR: absoluteCargoTarget,
+    SKIFF_TEST_PLATFORM_SOURCE_ROOT: absoluteSkiffRoot,
+  };
+  const ops = isolatedRuntimeOperations(dependencies, absoluteSkiffRoot, isolatedBaseEnv);
   const abortController = new AbortController();
   let stack;
   let interruptedBy;
@@ -46,12 +70,16 @@ export async function runInIsolatedTestRuntime({
   let testError;
   try {
     stack = await startIsolatedTestRuntime({
-      skiffRoot,
-      baseEnv,
+      skiffRoot: absoluteSkiffRoot,
+      cargoTarget: absoluteCargoTarget,
+      baseEnv: isolatedBaseEnv,
+      environment,
       ops,
       signal: abortController.signal,
+      validateBootstrapReceipt,
+      runtimeReplicas,
     });
-    value = await runTest(stack.testRunnerEnv, abortController.signal);
+    value = await runTest(stack.testRunnerEnv, abortController.signal, stack);
   } catch (error) {
     testError = error;
   }
@@ -59,7 +87,7 @@ export async function runInIsolatedTestRuntime({
   let cleanupError;
   if (stack !== undefined) {
     try {
-      await cleanupIsolatedTestRuntime(stack, ops);
+      await cleanupIsolatedTestRuntime(stack, ops, testError);
     } catch (error) {
       cleanupError = error;
     }
@@ -71,10 +99,19 @@ export async function runInIsolatedTestRuntime({
     testError = new Error(`skiff test interrupted by ${interruptedBy}`);
   }
   if (testError !== undefined && cleanupError !== undefined) {
-    throw new Error(
+    const combinedError = new Error(
       `${errorMessage(testError)}; isolated runtime cleanup failed: ${errorMessage(cleanupError)}`,
       { cause: new AggregateError([testError, cleanupError]) },
     );
+    if (Object.hasOwn(testError, ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY)) {
+      Object.defineProperty(combinedError, ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY, {
+        value: testError[ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY],
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+    throw combinedError;
   }
   if (testError !== undefined) {
     throw testError;
@@ -85,52 +122,124 @@ export async function runInIsolatedTestRuntime({
   return value;
 }
 
-async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
+async function startIsolatedTestRuntime({
+  skiffRoot,
+  cargoTarget,
+  baseEnv,
+  environment,
+  ops,
+  signal,
+  validateBootstrapReceipt,
+  runtimeReplicas,
+}) {
   const portLease = await ops.leasePorts();
   let tempRoot;
+  let ownershipReceipt;
   let supervisor;
-  let configWritten = false;
+  let additionalRuntimes = [];
+  let configOwnershipRequired = false;
   let supervisorAttempted = false;
   try {
     tempRoot = await ops.makeTempRoot();
+    ownershipReceipt = await ops.claimWorkspace(tempRoot);
+    const sourceArtifactRoot = join(tempRoot, 'source-artifacts');
+    await ops.createSourceArtifactRoot(sourceArtifactRoot);
     const instanceRoot = join(tempRoot, 'instance');
     const configPath = join(instanceRoot, 'config.yml');
     const devHome = join(instanceRoot, 'dev-home');
     const artifactRoot = join(devHome, 'artifacts');
-    const buildRoot = join(devHome, 'build');
+    const startupGate = join(instanceRoot, 'activation-seeded.ready');
+    const startupReady = join(instanceRoot, 'mongo-started.ready');
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
+    const mongoPort = portLease.ports[3];
     const config = isolatedTestInstanceConfigText({
       devHome,
-      cargoTarget: cargoTargetDir(skiffRoot, baseEnv),
+      cargoTarget,
       basePort,
+      mongoPort,
+      environment,
     });
-    await ops.writeConfig(configPath, config);
-    configWritten = true;
-    const isolatedEnv = isolatedTestRunnerEnvironment({ baseEnv, devHome, controlPort });
-    await ops.seedBootstrap({
+    configOwnershipRequired = true;
+    await ops.writeConfig(configPath, config, ownershipReceipt);
+    ownershipReceipt = await ops.captureConfigOwnership(ownershipReceipt, configPath);
+    const isolatedEnv = isolatedTestRunnerEnvironment({
+      baseEnv,
       skiffRoot,
-      artifactRoot,
-      buildRoot,
-      env: isolatedEnv,
-      signal,
+      cargoTarget,
+      devHome,
+      controlPort,
+      routerHttpPort: basePort,
+      environment,
     });
     signal.throwIfAborted();
     supervisorAttempted = true;
-    supervisor = ops.spawnSupervisor({ skiffRoot, configPath, env: isolatedEnv });
+    supervisor = await stageCall('Mongo spawn', () =>
+      ops.spawnSupervisor({
+        skiffRoot,
+        configPath,
+        startupGate,
+        startupReady,
+        env: isolatedEnv,
+      }));
+    await stageCall('Mongo spawn', () =>
+      ops.waitMongoStarted({ startupReady, supervisor, signal }));
+    await stageCall('Mongo primary election', () =>
+      ops.waitMongoPrimary({ mongoPort, supervisor, signal }));
+    const bootstrap = await stageCall('activation seed', async () => {
+      const receipt = await ops.seedBootstrap({
+        skiffRoot,
+        artifactRoot,
+        environment,
+        env: isolatedEnv,
+        signal,
+      });
+      validateBootstrapReceipt?.(receipt);
+      await ops.seedActivationState({ mongoPort, bootstrap: receipt, signal });
+      await ops.releaseStartupGate(startupGate, ownershipReceipt);
+      return receipt;
+    });
     const controlUrl = `http://127.0.0.1:${controlPort}`;
     const routerHttpUrl = `http://127.0.0.1:${basePort}`;
-    await ops.waitReady({
+    await stageCall('Router/Runtime readiness', () => ops.waitReady({
       controlUrl,
       routerHttpUrl,
+      mongoPort,
       artifactRoot,
+      bootstrap,
       supervisor,
       signal,
-    });
+    }));
+    for (let replica = 1; replica < runtimeReplicas; replica += 1) {
+      const runtimeHome = join(tempRoot, `runtime-${replica + 1}-home`);
+      const runtimeConfig = join(tempRoot, `runtime-${replica + 1}.yml`);
+      await mkdir(runtimeHome, { recursive: true });
+      await writeFile(runtimeConfig, renderRuntimeConfig({
+        routerUrl: `ws://127.0.0.1:${controlPort}/runtime`,
+        runtimeHome,
+        environment,
+      }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      // child-process-owner: isolated-additional-runtime
+      const child = spawnAdditionalRuntimeChild(
+        join(devHome, 'bin', runtimeBinaryName()),
+        [runtimeConfig],
+        { cwd: skiffRoot, env: isolatedEnv, stdio: 'inherit' },
+      );
+      additionalRuntimes.push(child);
+    }
+    if (additionalRuntimes.length > 0) {
+      await waitForRuntimeReplicaCount({
+        controlUrl,
+        expected: runtimeReplicas,
+        children: additionalRuntimes,
+        signal,
+      });
+    }
     console.log(`[skiff-test] isolated runtime control: ${controlUrl}`);
     console.log(`[skiff-test] isolated runtime workspace: ${tempRoot}`);
     return {
       artifactRoot,
+      sourceArtifactRoot,
       configPath,
       controlUrl,
       routerHttpUrl,
@@ -138,21 +247,26 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
       portLease,
       ports: portLease.ports,
       supervisor,
+      additionalRuntimes,
       tempRoot,
+      environment,
+      instanceOwnership: ownershipReceipt,
+      ownershipReceipt,
       testRunnerEnv: isolatedEnv,
     };
   } catch (error) {
     const partial = {
-      configPath: configWritten && supervisorAttempted
-        ? join(tempRoot, 'instance', 'config.yml')
-        : undefined,
+      instanceOwnership: supervisorAttempted ? ownershipReceipt : undefined,
+      ownershipReceipt,
+      configOwnershipRequired,
       portLease,
       ports: portLease.ports,
       supervisor,
+      additionalRuntimes,
       tempRoot,
     };
     try {
-      await cleanupIsolatedTestRuntime(partial, ops);
+      await cleanupIsolatedTestRuntime(partial, ops, error);
     } catch (cleanupError) {
       throw new Error(
         `${errorMessage(error)}; isolated runtime startup cleanup failed: ${errorMessage(cleanupError)}`,
@@ -163,45 +277,59 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
   }
 }
 
-async function cleanupIsolatedTestRuntime(stack, ops) {
+async function cleanupIsolatedTestRuntime(stack, ops, testError) {
   const errors = [];
+  for (const child of stack.additionalRuntimes ?? []) {
+    await settleCleanupStep(errors, `stop additional Runtime ${child.pid}`, () =>
+      stopAdditionalRuntime(child));
+  }
   if (stack.supervisor !== undefined) {
-    try {
-      await ops.stopSupervisor(stack.supervisor);
-    } catch (error) {
-      errors.push(cleanupStepError('stop supervisor', error));
-    }
+    await settleCleanupStep(errors, 'stop supervisor', async () => {
+      const stopped = await ops.stopSupervisor(stack.supervisor);
+      if (stopped?.stopped === false) {
+        throw new Error('isolated runtime supervisor reported stopped:false');
+      }
+    });
   }
-  if (stack.configPath !== undefined) {
-    try {
-      await ops.stopOwnedInstance(stack.configPath);
-    } catch (error) {
-      errors.push(cleanupStepError('stop owned instance', error));
-    }
+  if (stack.instanceOwnership !== undefined) {
+    await settleCleanupStep(
+      errors,
+      'stop owned instance',
+      () => ops.stopOwnedInstance(stack.instanceOwnership),
+    );
   }
-  if (stack.configPath !== undefined) {
-    try {
-      await ops.verifyInstanceStopped(stack.configPath);
-    } catch (error) {
-      errors.push(cleanupStepError('verify instance stopped', error));
-    }
+  if (stack.instanceOwnership !== undefined) {
+    await settleCleanupStep(
+      errors,
+      'verify instance stopped',
+      () => ops.verifyInstanceStopped(stack.instanceOwnership),
+    );
   }
-  try {
-    await ops.assertPortsClosed(stack.ports);
-  } catch (error) {
-    errors.push(cleanupStepError('verify ports closed', error));
+  if (testError !== undefined && stack.tempRoot !== undefined) {
+    await retainIsolatedRuntimeLogEvidence(testError, stack.tempRoot, {
+      read: ops.readFailureLog,
+    });
   }
-  try {
-    await stack.portLease.release();
-  } catch (error) {
-    errors.push(cleanupStepError('release port lease', error));
+  await settleCleanupStep(errors, 'verify ports closed', () => ops.assertPortsClosed(stack.ports));
+  await settleCleanupStep(errors, 'release port lease', () => stack.portLease.release());
+  if (stack.tempRoot !== undefined && stack.ownershipReceipt === undefined) {
+    errors.push(cleanupStepError(
+      'preserve unowned temp workspace',
+      new Error(`isolated workspace ownership receipt was not established for ${stack.tempRoot}`),
+    ));
   }
-  if (errors.length === 0 && stack.tempRoot !== undefined) {
-    try {
-      await ops.removeTempRoot(stack.tempRoot);
-    } catch (error) {
-      errors.push(cleanupStepError('remove temp workspace', error));
-    }
+  if (stack.configOwnershipRequired && stack.ownershipReceipt?.config === undefined) {
+    errors.push(cleanupStepError(
+      'preserve workspace with uncaptured config',
+      new Error(`instance config ownership was not captured for ${stack.tempRoot}`),
+    ));
+  }
+  if (errors.length === 0 && stack.ownershipReceipt !== undefined) {
+    await settleCleanupStep(
+      errors,
+      'remove temp workspace',
+      () => ops.removeOwnedWorkspace(stack.ownershipReceipt),
+    );
   }
   if (errors.length > 0) {
     const evidence = stack.tempRoot === undefined
@@ -212,17 +340,81 @@ async function cleanupIsolatedTestRuntime(stack, ops) {
   }
 }
 
+async function waitForRuntimeReplicaCount({
+  controlUrl,
+  expected,
+  children,
+  signal,
+}) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 120_000) {
+    signal.throwIfAborted();
+    const exited = children.find(
+      (child) => child.exitCode !== null || child.signalCode !== null,
+    );
+    if (exited !== undefined) {
+      throw new Error(
+        `additional Runtime ${exited.pid} exited before readiness with ${
+          exited.signalCode ?? exited.exitCode
+        }`,
+      );
+    }
+    try {
+      const response = await fetch(`${controlUrl}/__router/health`, { signal });
+      if (response.ok) {
+        const health = await response.json();
+        const replicas = (health.replicas ?? []).filter(
+          (replica) => replica?.connected === true && replica?.state === 'healthy',
+        );
+        const connections = (health.capabilityConnections ?? []).filter(
+          (connection) => connection?.connected === true,
+        );
+        if (
+          new Set(replicas.map((replica) => replica.replicaId)).size >= expected
+          && new Set(connections.map((connection) => connection.runtimeId)).size >= expected
+        ) {
+          return;
+        }
+      }
+    } catch {
+      // The Router health endpoint may be between assembly transitions.
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`isolated runtime did not reach ${expected} healthy replicas`);
+}
+
+async function stopAdditionalRuntime(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolvePromise, reject) => {
+    child.once('error', reject);
+    child.once('exit', resolvePromise);
+  });
+  child.kill('SIGTERM');
+  const stopped = await Promise.race([
+    exited.then(() => true),
+    new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 20_000)),
+  ]);
+  if (stopped) return;
+  child.kill('SIGKILL');
+  await exited;
+}
+
 function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
   return {
     ...isolatedInstanceOperations({ skiffRoot, baseEnv }),
     leasePorts: () => leaseConsecutiveLocalPorts({
       rangeStart: ISOLATED_PORT_MIN,
       rangeEnd: ISOLATED_PORT_MAX,
-      count: 3,
+      count: 4,
     }),
     makeTempRoot: () => mkdtemp(join(tmpdir(), 'skiff-test-runtime-')),
+    claimWorkspace: claimIsolatedTestWorkspace,
+    createSourceArtifactRoot: (path) => mkdir(path, { recursive: true }),
+    captureConfigOwnership: captureIsolatedTestConfig,
     assertPortsClosed,
-    removeTempRoot: (path) => rm(path, { recursive: true, force: true }),
+    removeOwnedWorkspace: removeOwnedIsolatedTestWorkspace,
+    readFailureLog: undefined,
     ...overrides,
   };
 }
@@ -231,12 +423,27 @@ function errorMessage(error) {
   return error?.message || String(error);
 }
 
+async function stageCall(stage, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new Error(`isolated ${stage} failed: ${errorMessage(error)}`, { cause: error });
+  }
+}
+
 function cleanupStepError(step, error) {
   return new Error(`${step}: ${errorMessage(error)}`, { cause: error });
+}
+
+async function settleCleanupStep(errors, step, operation) {
+  try {
+    await operation();
+  } catch (error) {
+    errors.push(cleanupStepError(step, error));
+  }
 }
 
 export const isolatedTestRuntimeConstants = {
   portMin: ISOLATED_PORT_MIN,
   portMax: ISOLATED_PORT_MAX,
-  mongoPort: isolatedTestInstanceConstants.mongoPort,
 };

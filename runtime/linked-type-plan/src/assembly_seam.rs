@@ -1,14 +1,14 @@
 use skiff_artifact_model::{OperationTargetRef, PackageBuildId};
 use skiff_runtime_linked_program::{
-    AssemblyExecutable, AssemblyExecutionImage, AssemblyPackageExecutionCode, ExecutableAddr,
-    LinkedFileUnit, RuntimeTypeContext, TypeAddr,
+    AssemblyExecutable, AssemblyExecutionImage, ExecutableAddr, LinkedFileUnit,
+    RuntimeExecutionPackage, RuntimeTypeContext, TypeAddr,
 };
 
 /// Read-only executable/type-plan handoff for one package code owner in an assembly image.
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeAssemblyTypePlanTarget<'a> {
     image: &'a AssemblyExecutionImage,
-    code: &'a AssemblyPackageExecutionCode,
+    code: &'a RuntimeExecutionPackage,
 }
 
 impl<'a> RuntimeAssemblyTypePlanTarget<'a> {
@@ -31,7 +31,7 @@ impl<'a> RuntimeAssemblyTypePlanTarget<'a> {
         self.image
     }
 
-    pub fn code(&self) -> &'a AssemblyPackageExecutionCode {
+    pub fn code(&self) -> &'a RuntimeExecutionPackage {
         self.code
     }
 
@@ -110,7 +110,7 @@ mod tests {
         RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
     use skiff_runtime_linked_program::{
-        AssemblyExecutionImage, RuntimeTypeContext, SharedPackageLinkedImage,
+        AssemblyExecutionImage, RuntimeTypeContext, ServiceErrorTypeIndex, SharedPackageLinkedImage,
     };
 
     use super::*;
@@ -130,14 +130,18 @@ mod tests {
             },
             service_binding_templates: Vec::new(),
             activation_templates: Vec::new(),
-            global_ingress: Vec::new(),
+            gateway_ingress: Vec::new(),
         };
         let shared = Arc::new(
             SharedPackageLinkedImage::from_runtime_assembly(&assembly, Vec::new()).unwrap(),
         );
-        let image =
-            AssemblyExecutionImage::try_new(shared, Vec::new(), RuntimeTypeContext::default())
-                .unwrap();
+        let image = AssemblyExecutionImage::try_new(
+            shared,
+            Vec::new(),
+            RuntimeTypeContext::default(),
+            Arc::new(ServiceErrorTypeIndex::default()),
+        )
+        .unwrap();
 
         assert!(matches!(
             RuntimeAssemblyTypePlanTarget::from_execution_image(

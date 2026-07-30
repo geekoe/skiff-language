@@ -1,0 +1,37 @@
+import std
+
+function ingressUrl(path: string) -> string {
+  return config.require<string>("skiff.test.ingressUrl").concat(path)
+}
+
+function request(path: string) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "GET",
+    url: ingressUrl(path),
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: null,
+    timeoutMs: null,
+  }
+}
+
+function slow(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(200, Array.empty<std.http.HttpHeader>()))
+  emit(std.http.streamChunk(bytes.fromUtf8("active")))
+  std.time.sleep(Duration.milliseconds(10000))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function plain(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("should-not-dispatch"),
+  }
+}
+
+test "second active self-ingress is rejected" {
+  const active = std.http.stream(request("/slow"))
+  assert active.status == 200
+  std.http.request(request("/plain"))
+}

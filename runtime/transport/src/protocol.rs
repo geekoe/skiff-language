@@ -3,21 +3,30 @@ use std::{collections::HashMap, path::PathBuf};
 use crate::TransportError;
 use serde::{de, de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use skiff_artifact_model::ConfigShape;
-use skiff_runtime_request_contract::{
-    RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
+use skiff_artifact_model::{
+    validate_activation_generation, validate_activation_token, validate_runtime_assembly_identity,
+    ConfigShape,
 };
+use skiff_runtime_model::service_error::OpaqueServiceError;
+use skiff_runtime_request_contract::RuntimeClientSessionControl;
 
 pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
 pub const BINARY_FRAME_HEADER_ENCODING_JSON: u8 = 1;
-pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v1";
+pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
+pub const RESPONSE_ERROR_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
 
 const BINARY_FRAME_FIXED_HEADER_BYTES: usize = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryFrame {
     pub header: Value,
+    pub payload_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryFrameParts {
+    pub header_bytes: Vec<u8>,
     pub payload_bytes: Vec<u8>,
 }
 
@@ -62,6 +71,27 @@ pub fn encode_binary_frame<THeader: Serialize>(
 }
 
 pub fn decode_binary_frame(frame: &[u8]) -> std::result::Result<BinaryFrame, BinaryFrameError> {
+    let parts = decode_binary_frame_parts(frame)?;
+    let header: Value = serde_json::from_slice(&parts.header_bytes).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid skiff binary frame: header is not valid JSON: {error}"
+        ))
+    })?;
+    if !header.is_object() {
+        return Err(TransportError::decode(
+            "invalid skiff binary frame: header must be an object",
+        ));
+    }
+
+    Ok(BinaryFrame {
+        header,
+        payload_bytes: parts.payload_bytes,
+    })
+}
+
+pub fn decode_binary_frame_parts(
+    frame: &[u8],
+) -> std::result::Result<BinaryFrameParts, BinaryFrameError> {
     if frame.len() < BINARY_FRAME_FIXED_HEADER_BYTES {
         return Err(TransportError::decode(
             "invalid skiff binary frame: frame is too short",
@@ -109,20 +139,8 @@ pub fn decode_binary_frame(frame: &[u8]) -> std::result::Result<BinaryFrame, Bin
 
     let header_start = BINARY_FRAME_FIXED_HEADER_BYTES;
     let payload_start = header_start + header_length;
-    let header: Value =
-        serde_json::from_slice(&frame[header_start..payload_start]).map_err(|error| {
-            TransportError::decode(format!(
-                "invalid skiff binary frame: header is not valid JSON: {error}"
-            ))
-        })?;
-    if !header.is_object() {
-        return Err(TransportError::decode(
-            "invalid skiff binary frame: header must be an object",
-        ));
-    }
-
-    Ok(BinaryFrame {
-        header,
+    Ok(BinaryFrameParts {
+        header_bytes: frame[header_start..payload_start].to_vec(),
         payload_bytes: frame[payload_start..].to_vec(),
     })
 }
@@ -180,8 +198,6 @@ pub struct RuntimeRegisterFrameHeader {
     pub activation_identity: Option<String>,
     pub service_protocol_identity: String,
     pub targets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,6 +269,76 @@ pub struct RuntimeRegisteredFrameHeader {
     #[serde(rename = "type")]
     pub envelope_type: String,
     pub runtime_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapServiceDbFrameHeader {
+    pub mongo_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapHttpFrameHeader {
+    pub max_response_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBootstrapFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub artifacts_path: String,
+    pub service_db: RouterBootstrapServiceDbFrameHeader,
+    pub http: RouterBootstrapHttpFrameHeader,
+}
+
+pub fn decode_router_bootstrap_frame_header(
+    value: Value,
+) -> std::result::Result<RouterBootstrapFrameHeader, BinaryFrameError> {
+    let header: RouterBootstrapFrameHeader = serde_json::from_value(value).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid router.bootstrap frame header: typed decode failed: {error}"
+        ))
+    })?;
+    if header.schema_version != RUNTIME_FRAME_SCHEMA_VERSION {
+        return Err(TransportError::decode(format!(
+            "invalid router.bootstrap frame header: schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
+        )));
+    }
+    if header.envelope_type != "router.bootstrap" {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: type must be router.bootstrap",
+        ));
+    }
+    if !is_normalized_absolute_artifacts_path(&header.artifacts_path) {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: artifactsPath must be an absolute normalized path",
+        ));
+    }
+    if header.service_db.mongo_url.trim().is_empty() {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: serviceDb.mongoUrl must be a non-empty string",
+        ));
+    }
+    if header.http.max_response_bytes == 0 || header.http.max_response_bytes > 9_007_199_254_740_991
+    {
+        return Err(TransportError::decode(
+            "invalid router.bootstrap frame header: http.maxResponseBytes must be a positive safe integer",
+        ));
+    }
+    Ok(header)
+}
+
+fn is_normalized_absolute_artifacts_path(value: &str) -> bool {
+    if !value.starts_with('/') || (value.len() > 1 && value.ends_with('/')) {
+        return false;
+    }
+    value == "/"
+        || value[1..]
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -359,151 +445,6 @@ pub enum RuntimeGatewayAdapterSourceFrameHeader {
     HttpBody,
     #[serde(rename = "http.context")]
     HttpContext,
-    #[serde(rename = "websocket.connectRequest")]
-    WebSocketConnectRequest,
-    #[serde(rename = "websocket.receiveEvent")]
-    WebSocketReceiveEvent,
-    #[serde(rename = "websocket.connection")]
-    WebSocketConnection,
-    #[serde(rename = "websocket.connectionContext")]
-    WebSocketConnectionContext,
-    #[serde(rename = "websocket.message")]
-    WebSocketMessage,
-    #[serde(rename = "websocket.messageBody")]
-    WebSocketMessageBody,
-    #[serde(rename = "websocket.connectionId")]
-    WebSocketConnectionId,
-    #[serde(rename = "websocket.businessIdentity")]
-    WebSocketBusinessIdentity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketAdapterKindFrameHeader {
-    Connect,
-    Receive,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketAdapterFrameHeader {
-    pub kind: RuntimeWebSocketAdapterKindFrameHeader,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub adapter_args: Vec<RuntimeGatewayAdapterArgFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_expectation: Option<RuntimeWebSocketContextExpectationFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_request: Option<RuntimeWebSocketConnectRequestFrameHeader>,
-    #[serde(rename = "receiveEvent")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receive_request: Option<RuntimeWebSocketReceiveRequestFrameHeader>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum RuntimeWebSocketContextExpectationFrameHeader {
-    Null,
-    Typed {
-        connect_operation_abi_id: String,
-        context_type_identity: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketContextCodecFrameHeader {
-    pub operation_abi_id: String,
-    pub context_type_identity: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketConnectRequestFrameHeader {
-    pub connection_id: String,
-    pub url: String,
-    pub query: Vec<RuntimeHttpNameValueFrameHeader>,
-    pub headers: Vec<RuntimeHttpNameValueFrameHeader>,
-    pub cookies: Vec<RuntimeHttpNameValueFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketReceiveRequestFrameHeader {
-    pub connection_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub business_identity: Option<String>,
-    pub message: RuntimeWebSocketMessageFrameHeader,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_codec: Option<RuntimeWebSocketContextCodecFrameHeader>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub payload_segments: Vec<RuntimeWebSocketPayloadSegmentFrameHeader>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketMessageFrameHeader {
-    pub tag: RuntimeWebSocketMessageTagFrameHeader,
-    pub encoding: RuntimeWebSocketMessageEncodingFrameHeader,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketMessageTagFrameHeader {
-    Text,
-    Binary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketMessageEncodingFrameHeader {
-    Utf8,
-    #[serde(rename = "binary")]
-    Raw,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RuntimeWebSocketPayloadSegmentKindFrameHeader {
-    #[serde(rename = "websocket.context")]
-    Context,
-    #[serde(rename = "websocket.message")]
-    Message,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketPayloadSegmentFrameHeader {
-    pub kind: RuntimeWebSocketPayloadSegmentKindFrameHeader,
-    pub offset: usize,
-    pub length: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketResponseFrameHeader {
-    pub result: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub business_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connection_policy: Option<WebSocketConnectionPolicyControl>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_codec: Option<RuntimeWebSocketContextCodecFrameHeader>,
-    // The router envelope schema marks `contextPayloadPresent` as required, so it
-    // must always be serialized (including `false` for the reject path).
-    pub context_payload_present: bool,
-    #[serde(rename = "code")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<u16>,
-    #[serde(rename = "reason")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -542,10 +483,6 @@ pub struct RequestStartFrameHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_entry_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub business_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_entry_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_session: Option<RuntimeClientSessionControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<RuntimeDeadlineFrameHeader>,
@@ -554,8 +491,6 @@ pub struct RequestStartFrameHeader {
     pub http_request: Option<RuntimeHttpRequestFrameHeader>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_adapter: Option<RuntimeHttpAdapterFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_adapter: Option<RuntimeWebSocketAdapterFrameHeader>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub test_effects_enabled: bool,
     #[serde(
@@ -613,18 +548,68 @@ pub struct ResponseStartFrameHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    try_from = "RawResponseEndFrameHeader",
+    into = "RawResponseEndFrameHeader"
+)]
 pub struct ResponseEndFrameHeader {
     pub schema_version: String,
-    #[serde(rename = "type")]
     pub envelope_type: String,
     pub request_id: String,
     pub payload_present: bool,
+    pub metadata: ResponseEndFrameMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseEndFrameMetadata {
+    None,
+    Http(RuntimeHttpResponseFrameHeader),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawResponseEndFrameHeader {
+    schema_version: String,
+    #[serde(rename = "type")]
+    envelope_type: String,
+    request_id: String,
+    payload_present: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_response: Option<RuntimeHttpResponseFrameHeader>,
-    #[serde(rename = "websocketConnect")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_connect: Option<RuntimeWebSocketResponseFrameHeader>,
+    http_response: Option<RuntimeHttpResponseFrameHeader>,
+}
+
+impl TryFrom<RawResponseEndFrameHeader> for ResponseEndFrameHeader {
+    type Error = String;
+
+    fn try_from(raw: RawResponseEndFrameHeader) -> Result<Self, Self::Error> {
+        let metadata = match raw.http_response {
+            None => ResponseEndFrameMetadata::None,
+            Some(http) => ResponseEndFrameMetadata::Http(http),
+        };
+        Ok(Self {
+            schema_version: raw.schema_version,
+            envelope_type: raw.envelope_type,
+            request_id: raw.request_id,
+            payload_present: raw.payload_present,
+            metadata,
+        })
+    }
+}
+
+impl From<ResponseEndFrameHeader> for RawResponseEndFrameHeader {
+    fn from(header: ResponseEndFrameHeader) -> Self {
+        let http_response = match header.metadata {
+            ResponseEndFrameMetadata::None => None,
+            ResponseEndFrameMetadata::Http(http) => Some(http),
+        };
+        Self {
+            schema_version: header.schema_version,
+            envelope_type: header.envelope_type,
+            request_id: header.request_id,
+            payload_present: header.payload_present,
+            http_response,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -639,13 +624,149 @@ pub struct RuntimeErrorFramePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResponseErrorFrameHeader {
-    pub schema_version: String,
-    #[serde(rename = "type")]
-    pub envelope_type: String,
-    pub request_id: String,
-    pub error: RuntimeErrorFramePayload,
+#[serde(
+    tag = "errorKind",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResponseErrorFrameHeader {
+    #[serde(rename = "fixedService")]
+    FixedService {
+        schema_version: String,
+        #[serde(rename = "type")]
+        envelope_type: String,
+        request_id: String,
+    },
+    #[serde(rename = "control")]
+    Control {
+        schema_version: String,
+        #[serde(rename = "type")]
+        envelope_type: String,
+        request_id: String,
+        error: RuntimeErrorFramePayload,
+    },
+}
+
+impl ResponseErrorFrameHeader {
+    pub fn fixed_service(request_id: String) -> Self {
+        Self::FixedService {
+            schema_version: RESPONSE_ERROR_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "response.error".to_string(),
+            request_id,
+        }
+    }
+
+    pub fn control(request_id: String, error: RuntimeErrorFramePayload) -> Self {
+        Self::Control {
+            schema_version: RESPONSE_ERROR_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "response.error".to_string(),
+            request_id,
+            error,
+        }
+    }
+
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::FixedService { request_id, .. } | Self::Control { request_id, .. } => request_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidatedResponseErrorFrame {
+    FixedService(OpaqueServiceError),
+    Control(RuntimeErrorFramePayload),
+}
+
+pub fn validate_response_error_frame(
+    header: &ResponseErrorFrameHeader,
+    payload_bytes: Vec<u8>,
+) -> std::result::Result<ValidatedResponseErrorFrame, BinaryFrameError> {
+    let (schema_version, envelope_type, request_id) = match header {
+        ResponseErrorFrameHeader::FixedService {
+            schema_version,
+            envelope_type,
+            request_id,
+        }
+        | ResponseErrorFrameHeader::Control {
+            schema_version,
+            envelope_type,
+            request_id,
+            ..
+        } => (schema_version, envelope_type, request_id),
+    };
+    if schema_version != RESPONSE_ERROR_FRAME_SCHEMA_VERSION {
+        return Err(TransportError::decode(format!(
+            "invalid response.error frame: schemaVersion must be {RESPONSE_ERROR_FRAME_SCHEMA_VERSION}"
+        )));
+    }
+    if envelope_type != "response.error" {
+        return Err(TransportError::decode(
+            "invalid response.error frame: type must be response.error",
+        ));
+    }
+    if request_id.trim().is_empty() {
+        return Err(TransportError::decode(
+            "invalid response.error frame: requestId must be non-empty",
+        ));
+    }
+
+    match header {
+        ResponseErrorFrameHeader::FixedService { .. } => {
+            if payload_bytes.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error fixedService frame: payload must be non-empty",
+                ));
+            }
+            let error = OpaqueServiceError::decode(payload_bytes).map_err(|error| {
+                TransportError::decode(format!(
+                    "invalid response.error fixedService frame: payload failed strict service error decode: {error}"
+                ))
+            })?;
+            Ok(ValidatedResponseErrorFrame::FixedService(error))
+        }
+        ResponseErrorFrameHeader::Control { error, .. } => {
+            if !payload_bytes.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: payload must be empty",
+                ));
+            }
+            if error.code.trim().is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: error.code must be non-empty",
+                ));
+            }
+            if error.message.trim().is_empty() {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: error.message must be non-empty",
+                ));
+            }
+            if error
+                .status
+                .is_some_and(|status| !(400..=599).contains(&status))
+            {
+                return Err(TransportError::decode(
+                    "invalid response.error control frame: error.status must be between 400 and 599",
+                ));
+            }
+            Ok(ValidatedResponseErrorFrame::Control(error.clone()))
+        }
+    }
+}
+
+pub fn decode_response_error_frame(
+    frame: &[u8],
+) -> std::result::Result<(ResponseErrorFrameHeader, ValidatedResponseErrorFrame), BinaryFrameError>
+{
+    let decoded = decode_binary_frame(frame)?;
+    let header =
+        serde_json::from_value::<ResponseErrorFrameHeader>(decoded.header).map_err(|error| {
+            TransportError::decode(format!(
+                "invalid response.error frame: header failed strict decode: {error}"
+            ))
+        })?;
+    let body = validate_response_error_frame(&header, decoded.payload_bytes)?;
+    Ok((header, body))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -700,22 +821,88 @@ pub struct ActorRefFrameMetadata {
     pub epoch: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivationIdentityFrameMetadata {
+    pub assembly_identity: String,
+    pub generation: u64,
+    pub runtime_replica_id: String,
+    pub deployment_revision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawActivationIdentityFrameMetadata {
+    assembly_identity: String,
+    generation: u64,
+    runtime_replica_id: String,
+    deployment_revision: String,
+}
+
+impl<'de> Deserialize<'de> for ActivationIdentityFrameMetadata {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawActivationIdentityFrameMetadata::deserialize(deserializer)?;
+        validate_runtime_assembly_identity(&raw.assembly_identity).map_err(de::Error::custom)?;
+        validate_activation_generation(raw.generation, "generation").map_err(de::Error::custom)?;
+        validate_activation_token(&raw.runtime_replica_id, "runtimeReplicaId")
+            .map_err(de::Error::custom)?;
+        validate_activation_token(&raw.deployment_revision, "deploymentRevision")
+            .map_err(de::Error::custom)?;
+        Ok(Self {
+            assembly_identity: raw.assembly_identity,
+            generation: raw.generation,
+            runtime_replica_id: raw.runtime_replica_id,
+            deployment_revision: raw.deployment_revision,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActorPutRequestFrameHeader {
+pub struct ActorGetOrCreateRequestFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
-    pub object_schema_identity: String,
-    pub object_encoding_version: String,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActorPutResponseFrameHeader {
+pub struct ActorGetOrCreateResponseFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub rpc_id: String,
+    pub actor_ref: ActorRefFrameMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorReplaceRequestFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
+    pub actor_key: ActorKeyFrameMetadata,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorReplaceResponseFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
     pub envelope_type: String,
@@ -731,6 +918,7 @@ pub struct ActorFindRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
 }
 
@@ -754,6 +942,7 @@ pub struct ActorRemoveRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
 }
 
@@ -784,8 +973,7 @@ pub struct SpawnSubmitRequestFrameHeader {
     pub spawn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -824,8 +1012,7 @@ pub struct SpawnClaimRequestFrameHeader {
     pub supported_spawn_compatibility_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_execution_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -846,8 +1033,7 @@ pub struct SpawnClaimDescriptorFrameMetadata {
     pub service_version: String,
     pub service_protocol_identity: String,
     pub build_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_schema_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -874,6 +1060,7 @@ pub struct SpawnRenewRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub item_id: String,
     pub lease_id: String,
     pub worker_id: String,
@@ -900,6 +1087,7 @@ pub struct SpawnCompleteRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub item_id: String,
     pub lease_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -925,6 +1113,7 @@ pub struct SpawnFailRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub item_id: String,
     pub lease_id: String,
     pub reason: String,
@@ -1036,6 +1225,13 @@ pub enum TelemetryLevel {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TelemetryVisibility {
+    Operational,
+    Restricted,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileBackendControlConfig {
@@ -1081,12 +1277,13 @@ pub struct TelemetryRegisterEnvelope {
     pub topics: Vec<TelemetryTopic>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryEvent {
     pub topic: TelemetryTopic,
     pub ts: String,
     pub source: TelemetrySource,
+    pub visibility: TelemetryVisibility,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1112,6 +1309,8 @@ pub struct TelemetryEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<String>,
@@ -1131,6 +1330,108 @@ pub struct TelemetryEvent {
     pub duration_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dropped: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawTelemetryEvent {
+    topic: TelemetryTopic,
+    ts: String,
+    source: TelemetrySource,
+    visibility: TelemetryVisibility,
+    service_id: Option<String>,
+    revision_id: Option<String>,
+    build_id: Option<String>,
+    activation_identity: Option<String>,
+    runtime_id: Option<String>,
+    provider_id: Option<String>,
+    provider_revision: Option<String>,
+    provider_capability: Option<String>,
+    provider_target: Option<String>,
+    request_id: Option<String>,
+    client_request_id: Option<String>,
+    trace_id: Option<String>,
+    error_id: Option<String>,
+    span_id: Option<String>,
+    parent_span_id: Option<String>,
+    target: Option<String>,
+    level: Option<TelemetryLevel>,
+    name: Option<String>,
+    message: Option<String>,
+    attrs: Option<serde_json::Map<String, Value>>,
+    error: Option<serde_json::Map<String, Value>>,
+    duration_ms: Option<f64>,
+    dropped: Option<serde_json::Map<String, Value>>,
+}
+
+impl TryFrom<RawTelemetryEvent> for TelemetryEvent {
+    type Error = String;
+
+    fn try_from(raw: RawTelemetryEvent) -> Result<Self, Self::Error> {
+        if raw
+            .error_id
+            .as_deref()
+            .is_some_and(|error_id| error_id.trim().is_empty())
+        {
+            return Err("telemetry event errorId must be non-empty when present".to_string());
+        }
+        if raw.visibility == TelemetryVisibility::Restricted {
+            if raw
+                .trace_id
+                .as_deref()
+                .is_none_or(|trace_id| trace_id.trim().is_empty())
+            {
+                return Err("restricted telemetry event requires a non-empty traceId".to_string());
+            }
+            if raw
+                .error_id
+                .as_deref()
+                .is_none_or(|error_id| error_id.trim().is_empty())
+            {
+                return Err("restricted telemetry event requires a non-empty errorId".to_string());
+            }
+        }
+        Ok(Self {
+            topic: raw.topic,
+            ts: raw.ts,
+            source: raw.source,
+            visibility: raw.visibility,
+            service_id: raw.service_id,
+            revision_id: raw.revision_id,
+            build_id: raw.build_id,
+            activation_identity: raw.activation_identity,
+            runtime_id: raw.runtime_id,
+            provider_id: raw.provider_id,
+            provider_revision: raw.provider_revision,
+            provider_capability: raw.provider_capability,
+            provider_target: raw.provider_target,
+            request_id: raw.request_id,
+            client_request_id: raw.client_request_id,
+            trace_id: raw.trace_id,
+            error_id: raw.error_id,
+            span_id: raw.span_id,
+            parent_span_id: raw.parent_span_id,
+            target: raw.target,
+            level: raw.level,
+            name: raw.name,
+            message: raw.message,
+            attrs: raw.attrs,
+            error: raw.error,
+            duration_ms: raw.duration_ms,
+            dropped: raw.dropped,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TelemetryEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        RawTelemetryEvent::deserialize(deserializer)?
+            .try_into()
+            .map_err(de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1163,7 +1464,6 @@ pub struct RuntimeRegisterEnvelope {
     pub service_protocol_identity: String,
     pub contract_identity: String,
     pub targets: Vec<String>,
-    pub protocol_version: String,
     pub runtime_version: String,
     pub code_revision_id: String,
     pub implementation_identity: String,
@@ -1186,7 +1486,6 @@ impl From<RuntimeRegisterEnvelope> for RuntimeRegisterFrameHeader {
             activation_identity: envelope.activation_identity,
             service_protocol_identity: envelope.service_protocol_identity,
             targets: envelope.targets,
-            protocol_version: Some(envelope.protocol_version),
             runtime_version: Some(envelope.runtime_version),
             code_revision_id: Some(envelope.code_revision_id),
             artifact_identity: Some(envelope.artifact_identity),

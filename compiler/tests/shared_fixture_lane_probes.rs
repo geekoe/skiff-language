@@ -3,15 +3,15 @@ mod common;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, ContractTypeRef,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    CallableEffectSummary, ContractTypeRef,
 };
 use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
 use common::{
-    artifacts::{module_artifact, resource_blob},
+    artifacts::module_artifact,
     contracts::{compile_service_contract, package_contract_dependency},
     package_project::{
         compile_package_project, compile_package_project_with_contract_dependencies,
@@ -85,10 +85,14 @@ fn config_db_resource_lane_exposes_package_artifact_projection() {
         .artifact_path
         .as_deref()
         .expect("materialized resource should carry its artifact path");
-    assert_eq!(
-        resource_blob(&project.package, blob_path).bytes,
-        b"probe resource\n"
-    );
+    assert!(blob_path.starts_with("records/package-artifacts/"));
+    let blob = project
+        .package
+        .resource_blobs
+        .iter()
+        .find(|blob| blob.sha256 == resource_ref.sha256 && blob.byte_len == resource_ref.byte_len)
+        .expect("resource blob by canonical content identity");
+    assert_eq!(blob.bytes, b"probe resource\n");
 }
 
 #[test]
@@ -106,11 +110,8 @@ fn explicit_contract_lane_compiles_without_provider_source() {
             ty: ContractTypeRef::builtin("string"),
             value_plan: linkable(BoundaryValueOwner::Provider),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -124,7 +125,7 @@ fn explicit_contract_lane_compiles_without_provider_source() {
         service_id: "example.probe".to_string(),
         contract_version: "1.0.0".to_string(),
         operations: BTreeMap::from([("echo".to_string(), operation)]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Probe".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "Echo".to_string())]),
@@ -166,6 +167,9 @@ fn write_representative_package_project(temp: &TestDir) {
         "package.yml",
         r#"id: example.com/probe-app
 version: 1.0.0
+state:
+  database:
+    kind: database
 packages:
   - id: example.com/probe-dependency
     version: 1.0.0

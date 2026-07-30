@@ -1,96 +1,204 @@
-// Minimal host-side runner for Skiff source tests.
-//
-// Test-only effect doubles live in optional `skiff.test-doubles.json` files under
-// the tested root. The fixture is keyed by `module.path::test name` and stable target id:
-//
-// ```json
-// {
-//   "configs": {
-//     "api.client::uses fake": { "app": { "mode": "test" } }
-//   },
-//   "tests": {
-//     "api.client::uses fake": {
-//       "std.http.client.request": {
-//         "expectRequest": { "url": "https://example.test" },
-//         "response": { "status": 200, "headers": [], "body": { "__skiffBytesBase64": "" } }
-//       }
-//     }
-//   }
-// }
-// ```
-//
-// A double can also use `"sequence": [{ "expectRequest": ..., "response": ... }]`
-// when a single test invokes the same stable target more than once.
-//
-// Runtime package tests support stable target ids such as `std.http.client.request`,
-// `std.http.client.sse`, and `std.http.client.stream`. Doubles are copied into a fresh test
-// interpreter for each test case, so registrations cannot leak between tests.
+//! Canonical package/service test infrastructure.
+//!
+//! A `kind: test` service compiles into an ordinary immutable `PackageArtifact`.
+//! Each selected case receives an isolated ordinary deployment and runtime assembly.
 
-use std::{fs, path::Path};
-
-mod artifacts;
-mod doubles;
-mod package;
-mod root_paths;
-mod runtime_process;
-mod service;
-mod service_publish;
-mod sources;
-mod types;
-mod visibility;
-
-use types::{
-    PackageDependencyArtifacts, PackageTestCase, PackageTestSource, ParsedSource,
-    ProductionModuleSymbols, ProductionSymbol, ProductionSymbolKind, ResolvedPublicationTestInputs,
-    RuntimeTestArtifact, TestCase,
+use std::{
+    fs,
+    path::{Path, PathBuf},
 };
-pub use types::{SkiffTestError, SkiffTestOptions, SkiffTestResult, SkiffTestSummary};
 
-pub fn validate_runtime_reload_url(value: &str) -> Result<(), String> {
-    runtime_process::validate_runtime_reload_url(value)
+use skiff_compiler::CompilerPlatformSources;
+use thiserror::Error;
+
+pub mod canonical_fixture;
+pub mod canonical_package;
+pub mod canonical_std_seed;
+pub mod canonical_store;
+mod canonical_test_gateway;
+mod inline_effects;
+pub mod package_service_host_fixture;
+pub mod runtime_execution;
+pub mod test_discovery;
+pub mod test_service_fixture;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkiffTestSummary {
+    pub passed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub results: Vec<SkiffTestResult>,
 }
 
-pub fn run_skiff_tests(
-    input: &Path,
-    profile: Option<&str>,
-) -> Result<SkiffTestSummary, SkiffTestError> {
-    run_skiff_tests_with_options(input, profile, &SkiffTestOptions::default())
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkiffTestResult {
+    pub module_path: String,
+    pub name: String,
+    pub passed: bool,
+    pub skipped: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkiffTestOptions {
+    pub live: bool,
+    pub artifact_root: Option<PathBuf>,
+    /// The single validated platform trust owner for every compile in this run.
+    pub platform_sources: CompilerPlatformSources,
+    /// Harness-owned writable canonical root. It has no public CLI spelling.
+    pub runtime_artifact_root: Option<PathBuf>,
+    pub base_assembly: Option<String>,
+    pub activation_url: Option<String>,
+    pub ingress_url: Option<String>,
+    /// Router/Runtime activation target; it never selects a test service config profile.
+    pub target_environment: String,
+    pub expected_generation: u64,
+}
+
+#[derive(Debug, Error)]
+pub enum SkiffTestError {
+    #[error("failed to inspect input {path}: {source}")]
+    Metadata {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("canonical package compile failed: {0}")]
+    PackageCompile(#[from] canonical_package::CanonicalPackageProjectError),
+    #[error("canonical test fixture failed: {0}")]
+    Fixture(#[source] Box<canonical_fixture::CanonicalFixtureError>),
+    #[error("input {path} is not inside a package source root")]
+    MissingPackageRoot { path: String },
+    #[error("canonical execution requires --activation-url, --ingress-url and --artifact-root")]
+    MissingCanonicalRuntime,
+    #[error("live tests require an explicit file and the complete canonical runtime target")]
+    InvalidLiveOptions,
+    #[error(
+        "non-live tests require a harness-owned runtime artifact root outside --artifact-root"
+    )]
+    MissingIsolatedRuntimeRoot,
+}
+
+impl From<canonical_fixture::CanonicalFixtureError> for SkiffTestError {
+    fn from(source: canonical_fixture::CanonicalFixtureError) -> Self {
+        Self::Fixture(Box::new(source))
+    }
+}
+
+pub fn validate_activation_url(value: &str) -> Result<(), String> {
+    let Some(rest) = value.strip_prefix("http://") else {
+        return Err("activation URL must use http://".to_string());
+    };
+    let Some((authority, path)) = rest.split_once('/') else {
+        return Err("activation URL must include /__skiff/activate-assembly".to_string());
+    };
+    if !is_canonical_http_authority(authority) || path != "__skiff/activate-assembly" {
+        return Err("activation URL must point exactly to /__skiff/activate-assembly".to_string());
+    }
+    Ok(())
+}
+
+pub fn validate_ingress_url(value: &str) -> Result<(), String> {
+    let authority = value
+        .strip_prefix("http://")
+        .ok_or_else(|| "ingress URL must use http://".to_string())?
+        .strip_suffix('/')
+        .unwrap_or_else(|| value.strip_prefix("http://").expect("prefix was checked"));
+    if !is_canonical_http_authority(authority) {
+        return Err(
+            "ingress URL must be an http:// origin without path, query or fragment".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn is_canonical_http_authority(authority: &str) -> bool {
+    !authority.is_empty()
+        && authority.trim() == authority
+        && !authority
+            .bytes()
+            .any(|byte| matches!(byte, b'/' | b'?' | b'#' | b'@' | b'\\'))
 }
 
 pub fn run_skiff_tests_with_options(
     input: &Path,
-    profile: Option<&str>,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, SkiffTestError> {
     let metadata = fs::metadata(input).map_err(|source| SkiffTestError::Metadata {
         path: input.display().to_string(),
         source,
     })?;
-
-    let input_is_file = metadata.is_file();
-    if options.live {
-        if !input_is_file {
-            return Err(SkiffTestError::RuntimeSetup {
-                message: "--live tests must explicitly specify a test file".to_string(),
-            });
-        }
-        if !options.allow_network {
-            return Err(SkiffTestError::RuntimeSetup {
-                message: "--live tests require --allow-network".to_string(),
-            });
-        }
-        if options.config_path.is_none() {
-            return Err(SkiffTestError::RuntimeSetup {
-                message: "--live tests require --config <path>".to_string(),
-            });
-        }
+    if options.live && !metadata.is_file() {
+        return Err(SkiffTestError::InvalidLiveOptions);
     }
-    if let Some(package_root) = sources::find_package_root(input, input_is_file) {
-        return package::run_package_tests(input, &package_root, input_is_file, options);
+    let package_root =
+        canonical_package::find_package_root(input, metadata.is_file()).ok_or_else(|| {
+            SkiffTestError::MissingPackageRoot {
+                path: input.display().to_string(),
+            }
+        })?;
+    let artifact_root = options
+        .artifact_root
+        .as_deref()
+        .ok_or(SkiffTestError::MissingCanonicalRuntime)?;
+    let project = canonical_package::compile_package_project_for_test(
+        &options.platform_sources,
+        &package_root,
+        artifact_root,
+    )?;
+    let cases =
+        canonical_fixture::discover_test_service_cases(input, &package_root, metadata.is_file())?;
+    if cases.is_empty() {
+        return Ok(SkiffTestSummary {
+            passed: 0,
+            skipped: 0,
+            failed: 0,
+            results: Vec::new(),
+        });
+    }
+    if project.test_service_profile.is_none() {
+        return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(
+            "test execution requires service.yml kind: test and config.skiff-test.yml; package test overlays are unsupported"
+                .to_string(),
+        )
+        .into());
     }
 
-    service::run_service_tests(input, profile, input_is_file, options)
+    // Execution is deliberately all-or-nothing: a source compile is not reported as a passed
+    // runtime test. The isolated runtime owner supplies both inputs after publishing the fixture.
+    let runtime_artifact_root = if options.live {
+        artifact_root
+    } else {
+        let runtime_artifact_root = options
+            .runtime_artifact_root
+            .as_deref()
+            .ok_or(SkiffTestError::MissingIsolatedRuntimeRoot)?;
+        let source_location =
+            fs::canonicalize(artifact_root).unwrap_or_else(|_| artifact_root.to_path_buf());
+        let runtime_location = fs::canonicalize(runtime_artifact_root)
+            .unwrap_or_else(|_| runtime_artifact_root.to_path_buf());
+        if runtime_location == source_location || runtime_location.starts_with(&source_location) {
+            return Err(SkiffTestError::MissingIsolatedRuntimeRoot);
+        }
+        runtime_artifact_root
+    };
+    let (Some(activation_url), Some(ingress_url)) = (
+        options.activation_url.as_deref(),
+        options.ingress_url.as_deref(),
+    ) else {
+        return Err(SkiffTestError::MissingCanonicalRuntime);
+    };
+    validate_activation_url(activation_url)
+        .map_err(canonical_fixture::CanonicalFixtureError::InvalidInput)?;
+    validate_ingress_url(ingress_url)
+        .map_err(canonical_fixture::CanonicalFixtureError::InvalidInput)?;
+    Ok(canonical_fixture::run_package_cases(
+        &package_root,
+        project,
+        cases,
+        artifact_root,
+        runtime_artifact_root,
+        activation_url,
+        options,
+    )?)
 }
-
-#[cfg(test)]
-mod tests;

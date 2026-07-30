@@ -11,8 +11,8 @@ use crate::{
     dependency_config_is_empty as publication_dependency_config_is_empty,
     empty_dependency_config as publication_empty_dependency_config,
     is_complex_package_dependency_id, is_reserved_source_import_alias,
-    is_standard_package_id as publication_is_standard_package_id, PublicationApiSpec,
-    PublicationApiSpecEntry, PublicationManifest, ResolvedPackage,
+    is_standard_package_id as publication_is_standard_package_id, CompilerPlatformSources,
+    PublicationApiSpec, PublicationApiSpecEntry, PublicationManifest, ResolvedPackage,
 };
 
 pub use crate::PackageDependency;
@@ -39,11 +39,15 @@ pub struct PackageResolutionDirs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageManifest {
     pub publication: PublicationManifest,
+    pub services: Vec<PackageDependency>,
 }
 
 impl PackageManifest {
-    pub fn new(publication: PublicationManifest) -> Self {
-        Self { publication }
+    pub fn new(publication: PublicationManifest, services: Vec<PackageDependency>) -> Self {
+        Self {
+            publication,
+            services,
+        }
     }
 
     pub fn into_publication(self) -> PublicationManifest {
@@ -99,36 +103,32 @@ pub enum PackageConfigError {
 }
 
 pub fn discover_package_manifests(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    manifest_discovery::discover_package_manifests(root)
+    manifest_discovery::discover_package_manifests(platform_sources, root)
 }
 
 pub fn discover_package_manifests_with_dirs(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     package_dirs: &PackageResolutionDirs,
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    manifest_discovery::discover_package_manifests_with_dirs(root, package_dirs)
+    manifest_discovery::discover_package_manifests_with_dirs(platform_sources, root, package_dirs)
 }
 
 pub fn discover_package_manifests_with_dependency_dirs(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     package_dirs: &PackageResolutionDirs,
     dependencies: &[PackageDependency],
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
     manifest_discovery::discover_package_manifests_with_dependency_dirs(
+        platform_sources,
         root,
         package_dirs,
         dependencies,
     )
-}
-
-#[cfg(test)]
-fn discover_builtin_std_registry_manifests(
-    std_dir: &Path,
-    registry_path: &Path,
-) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    manifest_discovery::discover_builtin_std_registry_manifests(std_dir, registry_path)
 }
 
 pub fn read_user_package_manifest(path: &Path) -> Result<PackageManifest, PackageConfigError> {

@@ -48,7 +48,7 @@ async fn file_runtime_create_from_chunks_rejects_over_limit_before_persist() {
         })
         .await
         .expect_err("over-limit stream should fail");
-    let payload = error.payload();
+    let payload = error.ordinary_payload().expect("file failure is ordinary");
     assert_eq!(payload.code, "ResourceLimitExceeded");
     assert_eq!(
         payload
@@ -88,6 +88,26 @@ fn cas_blob_key_is_sha256_size_filename() {
         "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824-5"
     );
     assert!(!key.contains('/'), "blob key should not create directories");
+}
+
+#[tokio::test]
+async fn f445h_i6_file_scope_ingest_drop_removes_spilled_temp_path() {
+    let temp = TempDir::new("scope-drop-cleanup");
+    let tmp_root = temp.path.join("tmp");
+    let mut ingest = FileIngest::new(&tmp_root);
+    ingest
+        .push(&vec![7_u8; FILE_MEMORY_FAST_PATH_BYTES + 1])
+        .await
+        .expect("spill file");
+    let tmp_path = ingest.tmp_path.clone().expect("spill path");
+    assert!(tmp_path.exists(), "ingest owns a live spill path");
+
+    drop(ingest);
+
+    assert!(
+        !tmp_path.exists(),
+        "dropping a scope-losing ingest removes its spill path"
+    );
 }
 
 fn unused_store() -> ServiceDbCapabilityStore {

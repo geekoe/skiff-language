@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
+    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, NamedUnionBranchIr,
     PackageImplementationLinks, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeDeclIr,
     TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
 };
@@ -11,6 +11,7 @@ use super::*;
 #[derive(Default)]
 struct RecordingPolicy {
     visits: Vec<TypeClosureTrace>,
+    visited_types: Vec<TypeRefIr>,
     missing: Vec<TypeClosureTrace>,
     cycles: Vec<(NominalTypeKey, bool, TypeClosureTrace)>,
 }
@@ -23,6 +24,7 @@ impl TypeClosurePolicy for RecordingPolicy {
         visit: TypeClosureVisit<'_>,
     ) -> Result<TypeClosureControl, Self::Error> {
         self.visits.push(visit.trace.clone());
+        self.visited_types.push(visit.ty.clone());
         Ok(TypeClosureControl::Continue)
     }
 
@@ -47,7 +49,7 @@ fn walks_complete_structural_path() {
     let resolver = ArtifactNominalTypeSource::new(&[], &[]);
     let guards = NoTypeClosureGuards;
     let walker = TypeClosureWalker::new(&resolver, &guards);
-    let ty = TypeRefIr::Native {
+    let ty = TypeRefIr::Builtin {
         name: "Array".to_string(),
         args: vec![TypeRefIr::Record {
             fields: BTreeMap::from([(
@@ -60,11 +62,11 @@ fn walks_complete_structural_path() {
                                 ty: TypeRefIr::AnyInterface {
                                     interface: InterfaceInstantiationRef {
                                         interface_abi_id: "I".to_string(),
-                                        canonical_type_args: vec![TypeRefIr::native("string")],
+                                        canonical_type_args: vec![TypeRefIr::builtin("string")],
                                     },
                                 },
                             }],
-                            return_type: Box::new(TypeRefIr::native("void")),
+                            return_type: Box::new(TypeRefIr::builtin("void")),
                         }),
                     }],
                 },
@@ -130,7 +132,7 @@ fn resolves_local_publication_service_and_db_nominal_refs() {
     unit.type_table.push(type_decl(
         "Payload",
         TypeDescriptorIr::Alias {
-            target: TypeRefIr::native("string"),
+            target: TypeRefIr::builtin("string"),
         },
     ));
     unit.declarations.types.insert(
@@ -217,7 +219,7 @@ fn resolves_package_dependency_and_records_nominal_trace() {
     package_file.type_table.push(type_decl(
         "Payload",
         TypeDescriptorIr::Alias {
-            target: TypeRefIr::native("string"),
+            target: TypeRefIr::builtin("string"),
         },
     ));
     package_file.declarations.types.insert(
@@ -240,6 +242,7 @@ fn resolves_package_dependency_and_records_nominal_trace() {
                 source_ast_hash: Some(package_file.source_ast_hash.clone()),
             },
             type_index: 0,
+            is_interface: false,
             descriptor: Some(package_file.type_table[0].descriptor.clone()),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
@@ -277,12 +280,182 @@ fn resolves_package_dependency_and_records_nominal_trace() {
     ));
 }
 
+#[test]
+fn walks_representation_and_every_named_union_branch_input() {
+    let mut unit = FileIrUnit::empty("app", "hash");
+    unit.type_table.push(type_decl(
+        "Payload",
+        TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+    ));
+    unit.type_table.push(type_decl(
+        "Code",
+        TypeDescriptorIr::Representation {
+            representation: TypeRefIr::builtin("string"),
+        },
+    ));
+    unit.type_table.push(type_decl(
+        "Failure",
+        TypeDescriptorIr::Union {
+            branches: vec![
+                NamedUnionBranchIr::ConcreteNominal {
+                    nominal_type: TypeRefIr::AppliedNominal {
+                        base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType {
+                            type_index: 0,
+                        },
+                        arguments: vec![TypeRefIr::LocalType { type_index: 1 }],
+                    },
+                },
+                NamedUnionBranchIr::SyntheticDiscriminator {
+                    payload_type: TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            "payload".to_string(),
+                            TypeRefIr::LocalType { type_index: 1 },
+                        )]),
+                    },
+                    discriminator_field: "kind".to_string(),
+                    discriminator_value: "synthetic".to_string(),
+                },
+                NamedUnionBranchIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::String {
+                        value: "literal".to_string(),
+                    },
+                },
+            ],
+        },
+    ));
+    let resolver = ArtifactNominalTypeSource::new(std::slice::from_ref(&unit), &[]);
+    let guards = NoTypeClosureGuards;
+    let walker = TypeClosureWalker::new(&resolver, &guards);
+    let root = resolver
+        .resolve("app", &TypeRefIr::LocalType { type_index: 2 })
+        .unwrap();
+    let mut policy = RecordingPolicy::default();
+
+    walker.walk_declaration(&root, &mut policy).unwrap();
+
+    let union = TypeClosureTrace::empty().child(TypeClosureTraceSegment::Nominal {
+        module_path: "app".to_string(),
+        name: "Failure".to_string(),
+    });
+    assert!(policy.visits.contains(
+        &union
+            .clone()
+            .child(TypeClosureTraceSegment::NamedUnionBranch { index: 0 })
+            .child(TypeClosureTraceSegment::NamedUnionConcreteType)
+    ));
+    assert!(policy.visits.contains(
+        &union
+            .clone()
+            .child(TypeClosureTraceSegment::NamedUnionBranch { index: 0 })
+            .child(TypeClosureTraceSegment::NamedUnionConcreteType)
+            .child(TypeClosureTraceSegment::AppliedNominalArgument { index: 0 })
+    ));
+    assert!(policy.visits.contains(
+        &union
+            .child(TypeClosureTraceSegment::NamedUnionBranch { index: 1 })
+            .child(TypeClosureTraceSegment::NamedUnionSyntheticPayload)
+            .child(TypeClosureTraceSegment::RecordField {
+                name: "payload".to_string(),
+            })
+    ));
+    assert!(policy.visits.iter().any(|trace| {
+        trace
+            .segments()
+            .ends_with(&[TypeClosureTraceSegment::RepresentationTarget])
+    }));
+}
+
+#[test]
+fn applied_nominal_closure_substitutes_ordered_arguments_into_descriptor_children() {
+    let mut unit = FileIrUnit::empty("app", "hash");
+    unit.type_table.push(TypeDeclIr {
+        name: "Box".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::from([(
+                "value".to_string(),
+                TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            )]),
+        },
+        type_params: vec!["T".to_string()],
+        implements: Vec::new(),
+        source_span: None,
+    });
+    unit.type_table.push(TypeDeclIr {
+        name: "Outer".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::from([
+                (
+                    "first".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "A".to_string(),
+                    },
+                ),
+                (
+                    "second".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "B".to_string(),
+                    },
+                ),
+            ]),
+        },
+        type_params: vec!["A".to_string(), "B".to_string()],
+        implements: Vec::new(),
+        source_span: None,
+    });
+    let root = TypeRefIr::AppliedNominal {
+        base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index: 1 },
+        arguments: vec![
+            TypeRefIr::AppliedNominal {
+                base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                arguments: vec![TypeRefIr::builtin("string")],
+            },
+            TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::AppliedNominal {
+                    base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                    arguments: vec![TypeRefIr::builtin("number")],
+                }],
+            },
+        ],
+    };
+    let resolver = ArtifactNominalTypeSource::new(std::slice::from_ref(&unit), &[]);
+    let guards = NoTypeClosureGuards;
+    let walker = TypeClosureWalker::new(&resolver, &guards);
+    let mut policy = RecordingPolicy::default();
+
+    walker.walk("app", &root, &mut policy).unwrap();
+
+    assert!(
+        policy
+            .visited_types
+            .iter()
+            .all(|ty| !matches!(ty, TypeRefIr::TypeParam { .. })),
+        "descriptor placeholders must be substituted before closure traversal"
+    );
+    assert!(policy.visited_types.contains(&TypeRefIr::builtin("string")));
+    assert!(policy.visited_types.contains(&TypeRefIr::builtin("number")));
+    assert!(policy.visits.iter().any(|trace| {
+        trace.segments().ends_with(&[
+            TypeClosureTraceSegment::Nominal {
+                module_path: "app".to_string(),
+                name: "Outer".to_string(),
+            },
+            TypeClosureTraceSegment::DeclarationField {
+                name: "first".to_string(),
+            },
+        ])
+    }));
+}
+
 fn type_decl(name: &str, descriptor: TypeDescriptorIr) -> TypeDeclIr {
     TypeDeclIr {
         name: name.to_string(),
         descriptor,
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     }

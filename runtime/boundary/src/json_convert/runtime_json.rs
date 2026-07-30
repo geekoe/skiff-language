@@ -67,6 +67,9 @@ pub(super) fn validate_json_runtime_value(
                     Ok(())
                 }
                 HeapNode::Interface(value) => Err(interface_json_error(&value)),
+                HeapNode::Exception(_) => Err(RuntimeError::Decode(
+                    "request-local exception is not a JSON value".to_string(),
+                )),
             }
         }),
     }
@@ -103,6 +106,9 @@ pub(super) fn strip_runtime_value_to_json(
                 }
                 HeapNode::Map(map) => strip_runtime_map_to_json(value, &map, heap, context, depth),
                 HeapNode::Interface(value) => Err(interface_json_error(&value)),
+                HeapNode::Exception(_) => Err(RuntimeError::Decode(
+                    "request-local exception is not a JSON value".to_string(),
+                )),
             }
         }),
     }

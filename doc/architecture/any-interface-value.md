@@ -6,12 +6,12 @@ runtime 如何承载该语义，以及它与现有静态 interface / conformance
 
 **本版合并案（2026-06-24）**：`any I` 的载体从"本地 concrete 值"扩展到"本地或远程装箱源"，由此把
 package capability binding 合并进 `any I`——远程能力是一个**可流动的 `any I` 值**，载体是
-`operation_abi_id` 寻址而非进程内指针。本文据此取代两处既有定位：
+service contract operation 寻址而非进程内指针。本文据此取代既有的 package capability binding
+定位：
 
-- `package-capability-bindings.md`：binding 作为"发布期静态、单点绑定（每个 requirement 恰好一个实现、
-  表达不了运行期变长异构集合）、不可流动的受控 root"的定位被合并案取代。binding 解决的问题（package
+- binding 作为"构建期静态、单点绑定（每个 requirement 恰好一个实现、
+  表达不了运行期变长异构集合）、不可流动的受控 root"的定位被合并案取代。它原本解决的问题（package
   抽象依赖能力、由 consumer 决定本地/远端）仍成立，但实现形态从"受控 root"改为"`any I` 参数 + 装箱源"。
-  该文档已加指针指向本文。
 - 本文旧版"`any I` 不跨 service / 不模拟 remote dispatch"的绝对排除被放开为"远程装箱源经显式
   `as I` 进入 `any I`，远程性由 `carrier = Remote` 表达"。
 
@@ -24,7 +24,8 @@ layout。
 
 - `any I` 在 source type facts、File IR、linked runtime plan 和 runtime value 中的归属。
 - `expr as I` 装箱点如何生成显式动态值，含**本地 concrete 值**与**远程 public instance 寻址源**两类装箱源。
-- `any I` method call 如何经 interface method table（本地）或 `operation_abi_id`（远程）分派。
+- `any I` method call如何经interface method table（本地）或`ContractOperationId`（service carrier）
+  分派。
 - 远程装箱的 fail-closed 锚点（装箱点锁定 callee protocol identity）。
 - `any I` 与 ordinary object type erasure、package/public ABI、service boundary、DB 和 JSON 的边界。
 - generic interface instantiation、object-safety、concrete receiver identity 和 method slot identity 的长期约束。
@@ -46,27 +47,27 @@ dependency public instance root 的"受控 root"形态——把它们从"不可�
 现有 interface 用途，合并后收敛为：
 
 - compile-time contract：`type T implements I` 和 conformance checking。
-- ABI metadata：public instance 和 publication metadata（binding requirement 退役，见 §Capability As Parameter）。
+- ABI metadata：public instance 和 Package Local ABI / ServiceContract metadata（binding requirement 退役，见 §Capability As Parameter）。
 - `any I` first-class dynamic value：见下。
 
 `any I` 的核心用途：
 
-- publication-internal dynamic value：值可放入局部变量、普通内部函数参数/返回、不经任何 boundary schema closure
+- linked-program-local dynamic value：值可放入局部变量、普通内部函数参数/返回、不经任何 boundary schema closure
   投影的内部 record 字段（含具名 record 类型）和 collection；调用时按 interface method table（本地）或
-  `operation_abi_id`（远程）分派。
+  `ContractOperationId`（远程）分派。
 - **本地与远程统一**：一个 `any I` 值的装箱源可以是本地 concrete record，也可以是远程 public instance
   寻址 root（如 `remoteLlm/managedLlm`）。两类装箱出的 `any I` 类型上不可区分，可混入同一个
   `Array<any I>`；区别只在值布局 `carrier` 是 `Local` 还是 `Remote` 分支（见 §Runtime Value）。
-- **远程对象也是本地对象**：远程装箱值在持有它的进程里就是一份本地数据（载体是 `operation_abi_id`
+- **远程对象也是本地对象**：远程装箱值在持有它的进程里就是一份本地数据（载体是`ContractOperationId`
   寻址坐标，不是函数指针），可传可存可进容器。"远程"只体现在**调用方法时**走 service dispatch，
   不体现在"值作为数据存在"时。
 
-“publication-internal” 是 ordinary public schema 的硬边界：`any I` **值**不进入 service public API payload、
+“linked-program-local” 是 ordinary public schema 的硬边界：`any I` **值**不进入 service public API payload、
 ordinary JSON materialization、public instance operation signature、config schema 或 test double external fixture schema
 的默认 wire shape。但 DB schema、`spawn`、queue / persistent work item 和 runtime 内部跨 request payload
 已经由 `recoverable-value.md` 重新定义为 owner-internal recoverable boundary：`carrier = Local` 且 self payload 全可恢复时可恢复，
-`carrier = Remote` 仍是 request-scope 正向远程引用、不可持久化。它**可以**作为同进程 package public 入口的参数类型
-（package link 进 consumer 同一 runtime，`any I` 值不跨进程；远程性只在调用时 dispatch）——见 §Boundary Contract 与
+`carrier = Remote` 仍是 request-scope 正向远程引用、不可持久化。它**可以**作为Package public入口的参数类型
+（Package link进consumer同一linked program，`any I`值不跨service boundary；远程性只在调用时dispatch）——见§Boundary Contract与
 §Capability As Parameter。
 
 ## Type Model
@@ -93,6 +94,22 @@ enum TypeRefIr {
 }
 ```
 
+Package callable不能把existential退化成`Local`或display string。Package Local ABI必须保存结构化
+interface target与generic arguments：
+
+```rust
+AnyInterface {
+    interface: Box<PackageTypeRef>,
+    arguments: Vec<PackageTypeRef>,
+}
+```
+
+Package-owned interface target在PackageArtifact中使用精确Package Local ABI nominal identity；
+Package-local target保持local identity。`AnyInterface`不能进入ServiceContract operation signature，
+service-call boundary projection必须返回结构化Unavailable原因，不能把它改写成
+`ContractTypeRef`或PackageSchema。`Nullable`和container继续在existential外层保持结构，generic
+arguments不并入显示名称。
+
 规则：
 
 - `interface` 必须是完整 `InterfaceInstantiationRef`。generic interface 必须带完整 canonical type args。
@@ -102,7 +119,9 @@ enum TypeRefIr {
   `Map` value 和内部 function type 的参数/返回位置（如 `fn(any I) -> void`、`fn() -> any I`）等普通内部 type constructor
   包裹；`Map<any I, V>` 这类 map key 位置不允许。判据是闭包可达性，不是“临时 vs 具名 record”：具名 `type Foo { p: any I }`
   同样允许，只要 `Foo` 不被任何 boundary 的 schema closure 投影出去。function type 同理——含 `any I` 的函数类型当值传递在
-  publication 内部允许，但同样不能进 ABI/DB/JSON，boundary walker 必须走 function type 的参/返闭包。
+  linked program内部允许，也可以进入Package Local ABI；但不能进入PackageSchema、ServiceContract或
+  ordinary JSON。DB等owner-internal recoverable boundary按`recoverable-value.md`判断。所有boundary walker
+  都必须遍历function type的参数与返回闭包。
 - Ordinary public schema projection 必须拒绝任何包含 `AnyInterface` 的 schema closure。Owner-internal
   recoverable boundary 使用 `recoverable-value.md` 的 boundary plan，不把 `AnyInterface` 当作 public schema field 展开。
 - Object-safety 和 boundary-safety 是两层检查：object-safety 决定某个 interface 能否被 `any` 化；
@@ -134,7 +153,7 @@ enum BoxSource {
     Remote {
         dependency_ref: String,               // service dependency alias
         public_instance_key: String,          // callee public API graph 完整 path
-        operations_plan: RemoteOperationPlanRef, // 选定 interface 方法集 → operation_abi_id 子集（plan，对应本地 method_table_plan）
+        operations_plan: RemoteOperationPlanRef, // 选定 interface 方法集 → contract_operation_id 子集（plan，对应本地 method_table_plan）
         callee_protocol_identity: String,     // 装箱点锁进 dependency lock，见 §Remote Fail-Closed
     },
 }
@@ -152,16 +171,18 @@ public API graph 的 `public_instance_key`。`.` 是成员访问符，用它拼�
 （装箱）。这两种**语法**都是 `/` 一同引入的新写法；底层 outbound dispatch **机制**复用现状 service
 dependency 调用路径（语法新、机制旧）。`const x = remoteLlm/managedLlm` 非法（装箱源不是值）。不给它 first-class
 类型，是因为候选只有"裸 interface 名"（当类型违法）或"codegen 的 stub type"（不做 codegen）——寻址
-靠 interface 类型 + `operation_abi_id` 已足够，类型出现在装箱**之后**，是 `any I`。
+靠 interface 类型 + `contract_operation_id` 已足够，类型出现在装箱**之后**，是 `any I`。
 
 编译期要求（两类共通）：
 
 - `I` 解析到 interface instantiation，不能是 concrete type、alias、primitive、anonymous record 或 `any I`。
 - 装箱源必须显式 implements 同一个 interface instantiation；不做 structural matching。
+- conformance只比较interface requirement拥有的调用形状，不比较concrete executable的推断
+  suspension summary；装箱plan也不得把该summary复制成interface fact。
 - 目标 interface 必须 object-safe。
 - marker interface 不允许装箱，因为没有可调用 method table，不能形成有意义的 dynamic dispatch value。
 - **`as I` 不能省略**，即使装箱源只 expose 一个 interface，也即使赋值/参数已有 `any I` 目标类型。理由是
-  **装箱可见性**，不是多 interface 消歧：`as I` 是装箱发生点——类型擦除、`carrier`（含寻址坐标）/`operation_abi_id`
+  **装箱可见性**，不是多 interface 消歧：`as I` 是装箱发生点——类型擦除、`carrier`（含寻址坐标）/`contract_operation_id`
   填入都在此发生；这是有运行时表示成本、单向不可逆、对远程还锁跨 service protocol
   identity 的操作，必须可见。省略即隐式装箱，违反"装箱必须可见"。（与 Go/Java 隐式向上转型不同——skiff
   默认类型擦除，`any I` 是显式特例；多 interface 即使有目标类型也能消歧，所以消歧不是必写的理由。）
@@ -177,18 +198,21 @@ dependency 调用路径（语法新、机制旧）。`const x = remoteLlm/manage
 远程装箱源额外要求：
 
 - `dependency_ref` 必须是已声明的 service dependency alias。
-- callee public instance 必须在其 `PublicationAbiUnit` 中显式 implements `as I` 选定的 interface
-  （`InterfaceInstantiationRef` 一致），并发布选定 interface 方法派生的 `operation_abi_id` 集合。
+- callee public instance必须在`api.yml`中公开、被`service.yml.serviceCalls`选择，并在其
+  `ServiceContract`中显式保留
+  `as I`选定的interface conformance（`InterfaceInstantiationRef`一致）及选定interface methods派生的
+  `ContractOperationId`集合。
 - **选定 interface 的方法签名（参数与返回）不得含 `any I` 或任何 boundary-unsafe 类型**（**第一版约束**，
-  非地基级永久禁令）。远程方法对应 callee 的跨进程 operation，而 `any I` 值不跨进程（§Boundary Contract），
-  故含 `any I` 的方法无法 projection 成 `operation_abi_id`。这是 object-safety / boundary-safety 之外，对
+  非地基级永久禁令）。Service-carrier method对应callee的service-boundary operation，而`any I`值不跨
+  service boundary（§Boundary Contract），
+  故含`any I`的方法无法projection成`ContractOperationId`。这是object-safety/boundary-safety之外，对
   "远程可装箱 interface"的第三个约束；本地装箱无此限制（本地方法可收发 `any J`，全程同进程）。解除该约束
   需要两块本 workstream 范围外的基建，见 §Evolution "远程方法返回 `any I`"。该约束的两道执行点：
-  - **根因点 = callee 发布期**：含 `any I` 方法的 interface 在 callee 侧根本无法发布成 remote operation
-    （没有对应 `operation_abi_id`）。这是约束的真正来源。
-  - **派生点 = consumer 装箱期**：consumer 的 `as I` 因为在 callee 发布的 `operation_abi_id` 集合里找不到
-    该方法对应 operation 而在装箱点（编译期）即拒，不留到 R3 verifier 对账时才炸。consumer 端看到的是
-    "选定 interface 的方法无可绑定 operation"，根因是 callee 没发布它。
+  - **根因点 = callee ServiceContract projection**：含`any I`方法的interface无法生成service operation，
+    因而没有对应`ContractOperationId`。
+  - **派生点 = consumer装箱期**：consumer的`as I`在callee ServiceContract的
+    `ContractOperationId`集合里找不到该方法时立即拒绝，不留到runtime verifier。consumer看到“选定
+    interface的方法无可绑定operation”，根因仍是callee没有将它投影为service operation。
   - 实测佐证：agent 包现状三个 capability interface 的方法签名闭包都不含 `any I`（见 §Capability As
     Parameter 核对表），故第一版这条约束不咬任何主要场景。
 - 装箱点必须把 callee 的 exact protocol identity 锁进 dependency lock，见 §Remote Fail-Closed。
@@ -200,8 +224,8 @@ Typed IR / artifact verifier 必须在 runtime execution 前保证：
   同一个 `(interface instantiation, concrete receiver instantiation)` pair；`method_table_plan` 每个 slot
   target 来自该 pair 的 explicit conformance checker 结果。
 - 远程装箱：`BoxSource::Remote` 的 `(dependency_ref, public_instance_key)` 必须解析到已声明 dependency 的
-  callee public instance metadata；选定 interface 的每个方法都必须在 callee 发布的
-  `operation_abi_id` 集合中有匹配 canonical signature 的 operation；`callee_protocol_identity` 必须等于
+  callee public instance metadata；选定interface的每个方法都必须在callee ServiceContract的
+  `ContractOperationId`集合中有匹配canonical signature的operation；`callee_protocol_identity`必须等于
   dependency lock 中锁定的 callee exact protocol identity。
 
 runtime 不从 erased payload 反推 concrete type；runtime 只信任已经验证并 linked 的 plan。任何 malformed
@@ -250,11 +274,11 @@ operations 却一个是 plan ref、一个是 linked id"的歧义。
   - `Local.concrete_type`：concrete nominal instantiation identity（供 runtime validation 和未来 downcast）。
   - `Local.method_table` / `Local.payload`：linked method table + 具体值本体。
   - `Remote.{dependency_ref, public_instance_key}`：即"是哪个远程实例"。它**不**指向 concrete type——
-    callee 私有 receiver concrete type 不导出（见 `publication.md`），consumer 侧没有该 id 可填。远程
+    callee 私有 receiver concrete type 不导出（见 `../reference/api-yml.md`），consumer 侧没有该 id 可填。远程
     装箱源的真实身份就是它的寻址坐标。这对坐标同时是 operation 寻址依据和 fail-closed 锚点（§Remote
     Fail-Closed）。诊断/工具若要标注"此处发生跨 service 调用"，直接判 `carrier` 是 `Remote` 分支即可，
     不引入独立 effect。
-  - `Remote.operations`：`operation_abi_id` 集合 + service dispatch；远程分支无本地 payload。
+  - `Remote.operations`：`ContractOperationId`集合与service dispatch；远程分支无本地payload。
 - 因为 `carrier` 把 source identity / dispatch / payload 锁成一个 enum 分支，"本地必有 payload、远程必无
   payload"在类型层不可违反——这是把原平铺三字段合并的主要收益。
 
@@ -263,8 +287,9 @@ operations 却一个是 plan ref、一个是 linked id"的歧义。
 - Interface value 是 request-scope dynamic value。**本条的绝对排除已被 `recoverable-value.md` 部分取代**：
   `carrier = Local` 的行为值可经可恢复 codec 进 DB/spawn/persistent（self payload 全可恢复时）；跨 service 把 `any I`
   作 payload 传去对端、对端回拨这一恢复语义第一版 fail-closed（卡 service callback transport）。仍然成立的是：远程
-  装箱的 `operation_abi_id`（正向 `Remote` carrier，consumer 主动调已发布公开实例）是 request-scope 寻址，不持久化
-  重建——它是“指向远程实例的引用”，不是被恢复的值。能否进 DB/spawn 的权威判据见 `recoverable-value.md`。
+  装箱的`ContractOperationId`（正向`Remote` carrier，consumer主动调用service-call public instance）是
+  request-scope寻址，不持久化重建——它是“指向远程实例的引用”，不是被恢复的值。能否进DB/spawn的权威
+  判据见`recoverable-value.md`。
 - `carrier`（method table / operation 寻址）、type descriptor 和 artifact metadata 不计入 ordinary object
   payload，也不写入 DB / JSON。
 - clone/materialize/debug 可以保留 interface wrapper 的运行时可执行性，但不能把它编码成 ordinary JSON。
@@ -298,7 +323,7 @@ struct InterfaceMethodTable {
 struct InterfaceMethodSlot {
     method_abi_id: String,
     source_method_name: String,
-    signature: CanonicalCallableSignature,
+    signature: InterfaceRequirementSignature,
     target: LinkedInterfaceMethodTarget,
     receiver_call_abi: ReceiverCallAbi,
 }
@@ -311,8 +336,11 @@ struct InterfaceMethodSlot {
   （论据不引用已退役的 binding projection——见 §Capability As Parameter；远程 `as I` 复用的是 binding 的 lock
   *数据形态*而非 binding 机制本身。）
   其余字段用结构化 ref，唯独这里是 string，原因即此；它必须包含 generic interface type args。
-- slot signature 是 interface requirement 完成 type substitution 后的 canonical signature。
-- target 是 conformance checker 选出的 concrete receiver method；linker 把 artifact target 解析为 executable address。
+- slot signature 是 interface requirement 完成 type substitution 后的 canonical调用形状，不包含
+  `maySuspend`。
+- target 是 conformance checker 选出的 concrete receiver method；linker 把 artifact target 解析为
+  executable address。concrete target自己的推断summary保留在executable/Package callable metadata，
+  不进入method table的requirement signature。
 - method-level generic requirement 第一版不允许进入 object-safe method table。
 - 同一 concrete type 对同一 interface symbol 第一版最多实现一次；若未来允许多 instantiation conformance，
   method table key 必须扩展为完整 receiver/interface instantiation，不得只按 symbol 名查表。
@@ -323,8 +351,8 @@ Method table 是 linked runtime plan，不是 ordinary artifact DTO 的可变字
 ### Remote Operation Table
 
 远程装箱值（`carrier = InterfaceCarrier::Remote`）不走本地 method table，而走一张 **remote operation
-table**：slot → `operation_abi_id` 的映射。它与本地 method table 分属 `InterfaceCarrier` 的两个分支，
-共享同一套 slot 身份规则，只是最终 target 不同（本地是 executable address，远程是 `operation_abi_id` +
+table**：slot → `ContractOperationId`的映射。它与本地method table分属`InterfaceCarrier`的两个分支，
+共享同一套slot身份规则，只是最终target不同（本地是executable address，远程是`ContractOperationId`+
 outbound dispatch）：
 
 ```rust
@@ -337,8 +365,8 @@ struct RemoteOperationTable {
 
 struct RemoteOperationSlot {
     method_abi_id: String,            // slot 身份，与本地 method table 同源
-    signature: CanonicalCallableSignature, // substituted requirement signature，对账 callee operation
-    operation_abi_id: String,         // 远程寻址：该方法对应 callee 发布的 operation
+    signature: InterfaceRequirementSignature, // substituted requirement调用形状，对账callee operation
+    contract_operation_id: ContractOperationId, // service寻址：callee公开的精确operation
     // 不带 source_method_name：远程 slot 不解析本地 receiver method，无需源方法名（与本地
     // InterfaceMethodSlot 的差异仅此一处，是有意省略而非遗漏）。
 }
@@ -349,9 +377,10 @@ struct RemoteOperationSlot {
 - slot 顺序以 interface declaration method requirement 顺序为**唯一来源**，与本地 method table 完全一致；
   `method_abi_id` 用于校验 slot 身份和 artifact identity，不用于排序。同一个 `(interface, slot)` 在本地表和
   远程表里指向同一个 method requirement。
-- 每个 slot 的 `signature` 是 requirement 完成 substitution 后的 canonical signature；verifier 用它对账
-  callee 发布的 `operation_abi_id` 的 canonical signature（见 §Boxing 远程装箱 verifier 要求）。
-- `operation_abi_id` 取自 callee `PublicationAbiUnit` 中该方法对应的 operation；一个 public instance expose
+- 每个slot的`signature`是requirement完成substitution后的canonical调用形状，不含suspension summary；
+  verifier用它对账callee ServiceContract中`ContractOperationId`对应的canonical调用形状
+  （见§Boxing远程装箱verifier要求）。
+- `contract_operation_id`字段取自callee `ServiceContract`中该方法对应的operation；一个public instance expose
   多 interface 时，只填 `as I` 选定 interface 方法集对应的 operation 子集（见 §Boxing `as I` 顺带选投影）。
 - 远程表同样是 linked runtime plan / overlay（`RemoteOperationTableId`），不写回 ordinary artifact DTO；
   artifact 侧保存的是 `BoxSource::Remote` 的 symbolic 寻址信息（dependency_ref / public_instance_key /
@@ -390,17 +419,21 @@ enum CallTargetIr {
    - `Local`：从 `carrier.method_table.slots[slot]` 取 linked target，以 `carrier.payload` 作为 explicit
      `self`，再追加用户参数，调用 concrete receiver executable（本进程）。本地分支必有 payload，由 enum
      保证。
-   - `Remote`：从 `carrier.operations` 取该 slot 对应的 `operation_abi_id`，按 `carrier.dependency_ref` 走
+   - `Remote`：从`carrier.operations`取该slot对应的`ContractOperationId`，按`carrier.dependency_ref`走
      service dependency dispatch（与 `remoteLlm/managedLlm.method(...)` 直接 operation 调用走同一条 outbound
      dispatch 机制——该机制复用现状 service dependency 调用路径，`/` 写法本身是新增语法）；远程分支结构上
      无本地 payload，self 由远端 instance 承载。
 4. 返回值按 ordinary runtime value 返回；如果返回 `any J`，它必须是被显式装箱过的 interface value。
-   注意：**远程**方法不可能返回 `any J`——远程方法对应 callee 的跨进程 operation，而 `any I` 值不跨进程
-   （§Boundary Contract），故选定 interface 的方法签名含 `any I`（参/返）时该 interface 在 callee 发布期
-   根本无法发布成 remote operation，consumer 装箱点随之因找不到 operation 而拒（§Boxing 远程额外要求的两道
-   执行点）。下面这条只对本地装箱值成立。
+   注意：**远程**方法不可能返回`any J`——远程方法对应callee的service-boundary operation，而`any I`值不
+   跨service boundary
+   （§Boundary Contract），故选定interface的方法签名含`any I`（参/返）时无法进入callee
+   ServiceContract；consumer装箱点随之因找不到operation而拒（§Boxing远程额外要求的两道执行点）。下面
+   这条只对本地装箱值成立。
 
 无论本地远程，调用 lowering 选 slot 的逻辑相同；只有 §3 的最终 target 解析按 `carrier` 分支分流。
+静态suspension分析不能从`any I` requirement取得concrete summary，因此所有`InterfaceMethod`调用都保守为
+`maySuspend=true`。`Remote`分支还因其本身是service call而必然属于caller-side suspension；两种分支都
+不会仅因保守summary在runtime自动插入`yield`。
 
 禁止路径：
 
@@ -419,23 +452,27 @@ enum CallTargetIr {
 1. 确认 `dependency_ref`（如 `remoteLlm`）是已声明的 service dependency。
 2. 校验 callee public instance 显式 implements `as I` 选定的 interface（`InterfaceInstantiationRef`
    一致，遵循 `interface.md §4` 显式 conformance）。
-3. 把 callee 的 exact `serviceProtocolIdentity`、`public_instance_key`、选定 interface 派生的
-   `operation_abi_id` 集合写入 dependency lock。
+3. 把callee的exact `serviceProtocolIdentity`、`public_instance_key`和选定interface派生的
+   `ContractOperationId`集合写入dependency lock。
 
-dependency lock entry 复用现状远端 binding 形态（`package-capability-bindings-implementation.md` Stage 7
-的 `serviceProtocolIdentity` + `operations` + provenance 数组），只是触发点从 service.yml binding
-entry 改为源码里的远程 `as I`。binding 机制退役后，provenance 字段名一并从 `bindingProvenance` 改为
-`remoteBoxProvenance`（不保留死语义字段名；skiff 无兼容包袱，见 implementation R4）。
+dependency lock entry保存`serviceProtocolIdentity`、选定interface methods对应的
+`ContractOperationId`集合与`remoteBoxProvenance`。这些事实由源码里的远程`as I`装箱点产生，不恢复已退役
+的service.yml binding机制，也不保留`bindingProvenance`等旧字段名。
 
 fail-closed 语义：callee 改了选定 interface 方法签名、撤了 conformance、或移除该 public instance，都会
 改变锁进 lock 的 `serviceProtocolIdentity`，consumer **编译失败**，不退化为运行时才炸。校验集中在
 `as I` 这一个可见点；同一个 `any I` 值后续在多处调用不重复锁定。
 
+callee只改变concrete implementation的内部suspension summary时，interface调用形状、conformance与
+ServiceProtocol identity都保持不变，因此不会使remote装箱lock失效。新的provider build/deployment仍由
+implementation identity精确选择。
+
 ## 远程性的可见性（无 effect）
 
-远程性**不**引入独立 effect。`carrier = Remote` 已经在值布局里携带"这是远程装箱值"这一事实，
+远程性**不**引入用户声明的独立 effect。`carrier = Remote` 已经在值布局里携带"这是远程装箱值"这一事实，
 工具/诊断要标注"此处发生跨 service 调用"直接读它即可，不需要在 `static-semantics.md` 的 effect 体系里
-挂一个空壳。
+挂一个空壳。尽管没有声明或protocol位，remote method call仍按service call种类推断为
+`maySuspend=true`；callee内部summary不参与这项判断。
 
 不强制并发上下文：对运行期变长 `any I` 集合的并发 fan-out 依赖 `concurrent`，而当前 `concurrent` 只接
 静态平铺 lane、不接 `for`（见 §Evolution 开放项）。在该缺口解决前，远程调用与现状 service dependency
@@ -483,7 +520,7 @@ ToolExecutor`、`agentLlm: LlmClient`（可能绑远端 remoteLlm）、`agentEve
 `tools`/`events` 传 `localImpl as ...`，三者混在同一组入口参数——本地 + 远程 + 异构全覆盖（三者签名第一版
 均可远程，见下方核对表）。现状之所以是 binding 而非 `any I`，仅因 `any I` 尚未实现；它一旦实现，binding 退役。
 
-`any I` 作为 package public 入口参数不违反 publication-internal 边界：package link 进 consumer 同一
+`any I` 作为 package public 入口参数不违反 linked-program-local 边界：package link 进 consumer 同一
 runtime，`any I` 值从 consumer 流到 package 入口全程同进程，远程性只在调用时 dispatch。见 §Boundary
 Contract。
 
@@ -518,7 +555,7 @@ Contract。
 ## Boundary Contract
 
 `AnyInterface` 是 schema-open runtime type。边界判据是**值进入哪类 boundary policy**，不是"是否离开当前函数"。
-以下位置默认 fail closed（`carrier` 里的 method table / `operation_abi_id` 在对端无意义）：
+以下位置默认 fail closed（`carrier` 里的 method table / `contract_operation_id` 在对端无意义）：
 
 - service operation 参数或返回值。
 - public instance operation signature。
@@ -530,27 +567,27 @@ Contract。
   lane，按 recoverable boundary 处理；若带 cross-service / external trust boundary，第一版行为节点 fail closed。
 - config schema、test double external fixture schema。
 
-以下位置**允许** `any I`（值不跨进程）：
+以下位置**允许**`any I`（值不跨service boundary）：
 
 - 内部 helper function、内部 record、局部变量、transient collection。
-- **package public 入口的参数 / 返回类型**——package link 进 consumer 同一 runtime，`any I` 值在同进程内
-  从 consumer 流到 package，远程性只在调用时 dispatch。这是 binding 退役后 package 抽象依赖能力的承载点
-  （见 §Capability As Parameter）。注意：这是 package（同进程 link 单元）入口，**不是** service operation
-  （跨进程 ABI）；后者仍然 fail closed。
+- **Package public入口的参数/返回类型**——Package link进consumer同一linked program，`any I`值不经过
+  service boundary，远程性只在调用时dispatch。这是binding退役后Package抽象依赖能力的承载点
+  （见§Capability As Parameter）。注意：这是Package local-link入口，**不是**service operation；后者即使
+  物理同进程也经过service boundary，仍然fail closed。
 
 判据收敛为：ordinary public schema 不承载 `any I` 默认 wire shape；owner-internal DB/spawn/queue/persistent/runtime
 lane 按“值必须可恢复”处理；离开 owner service trust domain 的行为值第一版 fail closed。boundary walker 区分
-"package 入口签名"（同进程，允许）、"service operation 签名"（ordinary 跨进程 ABI，拒绝）和
+"Package入口签名"（local link，允许）、"service operation签名"（service boundary，拒绝）和
 "owner-internal recoverable boundary"（按 carrier/self recoverability 判定）。
 
 ## Relationship To Type Erasure
 
-`any I` 不推翻 runtime type erasure。它是主动建模的 dynamic wrapper，与 `ActorRef` 和 exception envelope 同属
+`any I` 不推翻 runtime type erasure。它是主动建模的dynamic wrapper，与actor句柄的Runtime内部表示和exception envelope同属
 白名单机制：
 
 - ordinary record/object 仍然 unshaped，不携带 source nominal type。
 - 装箱源身份（`carrier` 里的本地 concrete type id / 远程 instance 坐标）只保存在 interface wrapper 内，不反写 payload。
-- method dispatch 本地使用 linked method table、远程使用 `operation_abi_id`，都不查 ordinary object shape。
+- method dispatch 本地使用 linked method table、远程使用 `contract_operation_id`，都不查 ordinary object shape。
 - JSON/DB/HTTP boundary 仍然 expected-type driven；`any I` 没有默认 wire shape。
 
 这条规则避免把 `any I` 实现成“所有 object 都附带 vtable”，也避免重新引入已被 runtime value layout 文档禁止的
@@ -568,16 +605,16 @@ per-instance source type metadata。
   （指向已发布远程公开实例的 `any I`，consumer 主动调）的持久化重建——它是 request-scope 引用，本版不允许持久化后
   重建。注意区分：**局部值**（`carrier = Local`）跨 service 的“持有后重建”是 `recoverable-value.md` 的直传模型
   （第一版 fail-closed，卡 callback transport），不属本条；本条说的是“把一个远程引用坐标 durable 化”这件**另一回事**。
-- ~~**运行期实例级跨进程句柄**（为运行期临时实例铸造可寻址坐标 + "句柄→活实例"注册表 + 生命周期/GC）~~
+- ~~**运行期实例级跨service句柄**（为运行期临时实例铸造可寻址坐标+"句柄→活实例"注册表+生命周期/GC）~~
   **（已否定，2026-06-27，据 `recoverable-value.md §Cross-Service Interface Value`）**。这块基建当初的设想是"用
   坐标机制去寻址运行期临时实例"，但**坐标与临时对象机制不匹配**：坐标只能指**有稳定身份的顶层符号**（顶层 const /
   public instance），临时对象没有这种身份，硬要给它坐标就得造注册表把它**伪装**成稳定实例——这是用错机制。正解是
   按对象类别分两条互不替代的机制：
-  - **顶层符号**（单例，不可复制）→ **传坐标**。其中**已发布 public instance** 坐标 `(service, public_instance_key)`
-    复用现状 service dispatch、无需注册表/GC；而**未发布私有顶层 const** 的内部路径坐标需要跨 service 寻址层**新增能力**
-    （非“复用现状”）——第一版**跨 service 寻址单元只有 `api.yml` 显式发布的 public instance**（`publication.md`：跨
-    service 调用按 `operation_abi_id` 寻址，只对已发布 public instance method 存在；未进 public API graph 的 symbol
-    不进 service remote contract），故私有顶层 const 第一版**寻址层不认**，其坐标方案属演进（见
+  - **顶层符号**（单例，不可复制）→ **传坐标**。其中被`service.yml.serviceCalls`选择的public instance坐标
+    `(service, public_instance_key)`复用现状service dispatch、无需注册表/GC；而私有顶层const的内部路径
+    坐标需要跨service寻址层**新增能力**（非“复用现状”）。第一版跨service寻址单元只有`api.yml`公开且被
+    `service.yml.serviceCalls`选择的public instance；调用按`ContractOperationId`寻址，未进入ServiceContract的symbol
+    不在该寻址面中。故私有顶层const第一版**寻址层不认**，其坐标方案属演进（见
     `recoverable-value.md §Cross-Service`）。
   - **运行期临时（局部）对象** → **直传可恢复字节**，对端持有、回拨带回、构造侧按 build id 无状态重建等价副本，
     不铸句柄、不持有活实例、无注册表/GC。

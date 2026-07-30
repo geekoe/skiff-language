@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 
@@ -12,15 +12,21 @@ import {
   shouldUseIsolatedTestRuntime,
 } from '../lib/isolated-test-runtime.mjs';
 import {
-  bootstrapDevSyncArgs,
-  bootstrapProbeRequest,
+  bootstrapCanonicalArgs,
   isolatedInstanceOperations,
   isolatedRuntimeHealthReady,
   isolatedTestInstanceConfigText,
   isolatedTestRunnerEnvironment,
 } from '../lib/isolated-test-runtime-instance.mjs';
+import { readInstanceConfig } from '../lib/local-instance-config.mjs';
 import { leaseConsecutiveLocalPorts } from '../lib/local-port-lease.mjs';
 import { runOwnedCommand } from '../lib/owned-command.mjs';
+import {
+  captureIsolatedTestConfig,
+  claimIsolatedTestWorkspace,
+} from '../lib/isolated-test-runtime-workspace.mjs';
+
+import './isolated-test-runtime-workspace-cases.mjs';
 
 test('isolated instance config and runner env stay inside dynamic temp boundaries', () => {
   const devHome = '/tmp/skiff-test-runtime/instance/dev-home';
@@ -28,46 +34,98 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
     devHome,
     cargoTarget: '/checkout/build/cargo-target',
     basePort: 46042,
+    mongoPort: 46045,
   });
   assert.match(config, /devHome: "\/tmp\/skiff-test-runtime\/instance\/dev-home"/);
   assert.match(config, /cargoTargetDir: "\/checkout\/build\/cargo-target"/);
   assert.match(config, /base: 46042/);
-  assert.match(config, /mongo: 27017/);
+  assert.match(config, /mongo: 46045/);
   assert.match(config, /telemetry: disabled/);
-  assert.match(config, /mongo: disabled/);
+  assert.match(config, /mongo: managed/);
   assert.match(config, /watch: disabled/);
   assert.doesNotMatch(config, /400[0-7]/);
 
   const environment = isolatedTestRunnerEnvironment({
-    baseEnv: { PATH: '/bin', SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/stable' },
+    baseEnv: {
+      PATH: '/bin',
+      CARGO_TARGET_DIR: 'hostile-relative-target',
+      SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/stable',
+      SKIFF_TEST_ARTIFACT_ROOT: '/tmp/retired-artifact-root',
+      SKIFF_TEST_PLATFORM_SOURCE_ROOT: '/tmp/hostile-platform-root',
+    },
+    skiffRoot: '/checkout',
+    cargoTarget: '/checkout/build/cargo-target',
     devHome,
     controlPort: 46043,
+    routerHttpPort: 46042,
   });
   assert.equal(environment.SKIFF_DEV_HOME, devHome);
-  assert.equal(
-    environment.SKIFF_DEV_RELOAD_URL,
-    'http://127.0.0.1:46043/__skiff/reload-artifacts',
-  );
-  assert.equal(environment.SKIFF_TEST_ARTIFACT_ROOT, `${devHome}/artifacts`);
+  assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
+  assert.equal(environment.SKIFF_TEST_ARTIFACT_ROOT, undefined);
+  assert.equal(environment.CARGO_TARGET_DIR, '/checkout/build/cargo-target');
+  assert.equal(environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT, `${devHome}/artifacts`);
+  assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46042');
+  assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout');
 });
 
-test('bootstrap comes from current checkout and uses isolated artifact/build roots without reload', () => {
-  const args = bootstrapDevSyncArgs({
+test('isolated instance derives its ecosystem store CLI inside its owned dev-home', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-isolated-store-cli-'));
+  const configPath = join(root, 'instance', 'config.yml');
+  const devHome = join(root, 'instance', 'dev-home');
+  try {
+    await mkdir(join(root, 'instance'), { recursive: true });
+    await writeFile(configPath, isolatedTestInstanceConfigText({
+      devHome,
+      cargoTarget: join(root, 'checkout', 'build', 'cargo-target'),
+      basePort: 46042,
+      mongoPort: 46045,
+    }));
+    const config = await readInstanceConfig({
+      configPath,
+      repoRoot: join(root, 'checkout'),
+    });
+    assert.equal(config.ports.mongo, 46045);
+    assert.equal(config.components.mongo, 'managed');
+    assert.equal(config.paths.serviceDbPath, join(devHome, 'service-db'));
+    assert.equal(
+      config.paths.ecosystemStoreCli,
+      join(
+        devHome,
+        'bin',
+        process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
+      ),
+    );
+    assert.equal(config.paths.ecosystemStoreCli.startsWith(`${devHome}/`), true);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('bootstrap comes from current checkout and writes only canonical generation zero', () => {
+  const args = bootstrapCanonicalArgs({
     skiffRoot: '/checkout/skiff',
     artifactRoot: '/tmp/isolated/dev-home/artifacts',
-    buildRoot: '/tmp/isolated/dev-home/build',
+    environment: 'isolated-test',
   });
   assert.deepEqual(args, [
-    '/checkout/skiff/scripts/skiff-dev-sync.mjs',
-    '--root',
-    '/checkout/skiff/scripts/fixtures/isolated-test-bootstrap',
+    'run',
+    '--quiet',
+    '--locked',
+    '--manifest-path',
+    '/checkout/skiff/test-runner/Cargo.toml',
+    '--bin',
+    'skiff-package-service-smoke-fixture',
+    '--',
+    '--bootstrap-only',
     '--artifact-root',
     '/tmp/isolated/dev-home/artifacts',
-    '--build-root',
-    '/tmp/isolated/dev-home/build',
-    '--no-reload',
+    '--platform-source-root',
+    '/checkout/skiff',
+    '--environment',
+    'isolated-test',
   ]);
   assert.equal(args.some((value) => value.includes('.skiff-instance')), false);
+  assert.equal(args.some((value) => value.includes('reload')), false);
 });
 
 test('default owner shutdown invokes current checkout instance down command', async () => {
@@ -76,7 +134,11 @@ test('default owner shutdown invokes current checkout instance down command', as
   const capturePath = join(root, 'capture.json');
   const configPath = join(root, 'instance', 'config.yml');
   try {
+    let ownershipReceipt = await claimIsolatedTestWorkspace(root);
     await mkdir(scriptsRoot, { recursive: true });
+    await mkdir(join(root, 'instance'), { recursive: true });
+    await writeFile(configPath, 'environment: "skiff-test"\n');
+    ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
     await writeFile(join(scriptsRoot, 'skiff-instance.mjs'), [
       "import { writeFile } from 'node:fs/promises';",
       "await writeFile(process.env.SKIFF_OWNER_SHUTDOWN_CAPTURE, JSON.stringify(process.argv.slice(2)));",
@@ -89,7 +151,7 @@ test('default owner shutdown invokes current checkout instance down command', as
       },
     });
 
-    await operations.stopOwnedInstance(configPath);
+    await operations.stopOwnedInstance(ownershipReceipt);
 
     assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['down', configPath]);
   } finally {
@@ -97,36 +159,166 @@ test('default owner shutdown invokes current checkout instance down command', as
   }
 });
 
-test('readiness requires bootstrap runtime registration, not only health and roots', () => {
-  const artifactRoot = '/tmp/isolated/dev-home/artifacts';
-  const base = { artifact: { artifactRoots: [artifactRoot] } };
-  assert.equal(isolatedRuntimeHealthReady({ ...base, runtimes: [] }, artifactRoot), false);
-  assert.equal(
-    isolatedRuntimeHealthReady({
-      ...base,
-      runtimes: [{ serviceId: 'example.com/other' }],
-    }, artifactRoot),
-    false,
-  );
-  assert.equal(
-    isolatedRuntimeHealthReady({
-      ...base,
-      runtimes: [{ serviceId: 'example.com/test-runtime-bootstrap' }],
-    }, artifactRoot),
-    true,
-  );
+test('default config creation is exclusive and preserves a foreign destination', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-config-no-clobber-test-'));
+  const configPath = join(root, 'instance', 'config.yml');
+  const foreignConfig = 'foreign: true\n';
+  try {
+    const ownershipReceipt = await claimIsolatedTestWorkspace(root);
+    await mkdir(join(root, 'instance'));
+    await writeFile(configPath, foreignConfig, 'utf8');
+    const operations = isolatedInstanceOperations({ skiffRoot: root, baseEnv: process.env });
+    await assert.rejects(
+      operations.writeConfig(
+        configPath,
+        'environment: "skiff-test"\n',
+        ownershipReceipt,
+      ),
+      { code: 'EEXIST' },
+    );
+    assert.equal(await readFile(configPath, 'utf8'), foreignConfig);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
-test('bootstrap probe targets isolated HTTP route with explicit service selectors', () => {
-  assert.deepEqual(bootstrapProbeRequest('http://127.0.0.1:46000'), {
-    url: 'http://127.0.0.1:46000/__skiff/test-runtime-bootstrap',
-    options: {
-      headers: {
-        'x-skiff-service': 'example.com/test-runtime-bootstrap',
-        'x-skiff-version': '0.1.0',
-      },
+test('readiness requires one exact connected replica and its own capability handshake', () => {
+  const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`;
+  const bootstrap = {
+    environment: 'skiff-test',
+    bootstrap: { generation: 0, assembly: { assemblyIdentity } },
+  };
+  const readyHealth = {
+    activeAssembly: {
+      environment: 'skiff-test',
+      generation: 0,
+      assemblyIdentity,
+    },
+    capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
+    replicas: [{
+      replicaId: 'runtime-1',
+      environment: 'skiff-test',
+      connected: true,
+      state: 'healthy',
+      generation: 0,
+      assemblyIdentity,
+    }],
+  };
+  assert.equal(
+    isolatedRuntimeHealthReady({
+      activeAssembly: readyHealth.activeAssembly,
+      capabilityConnections: [],
+      replicas: [],
+    }, bootstrap),
+    false,
+  );
+  assert.equal(isolatedRuntimeHealthReady(readyHealth, bootstrap), true);
+
+  const healthMutations = [
+    ['active environment differs', (health) => { health.activeAssembly.environment = 'other'; }],
+    ['active environment is missing', (health) => { delete health.activeAssembly.environment; }],
+    ['active generation differs', (health) => { health.activeAssembly.generation = 1; }],
+    ['active generation is missing', (health) => { delete health.activeAssembly.generation; }],
+    ['active assembly differs', (health) => { health.activeAssembly.assemblyIdentity = 'other'; }],
+    ['active assembly is missing', (health) => { delete health.activeAssembly.assemblyIdentity; }],
+    ['replica id differs', (health) => { health.replicas[0].replicaId = 'runtime-2'; }],
+    ['replica id is missing', (health) => { delete health.replicas[0].replicaId; }],
+    ['replica environment differs', (health) => { health.replicas[0].environment = 'other'; }],
+    ['replica environment is missing', (health) => { delete health.replicas[0].environment; }],
+    ['replica connected is false', (health) => { health.replicas[0].connected = false; }],
+    ['replica connected is missing', (health) => { delete health.replicas[0].connected; }],
+    ['replica state is not healthy', (health) => { health.replicas[0].state = 'draining'; }],
+    ['replica state is missing', (health) => { delete health.replicas[0].state; }],
+    ['replica generation differs', (health) => { health.replicas[0].generation = 1; }],
+    ['replica generation is missing', (health) => { delete health.replicas[0].generation; }],
+    ['replica assembly differs', (health) => { health.replicas[0].assemblyIdentity = 'other'; }],
+    ['replica assembly is missing', (health) => { delete health.replicas[0].assemblyIdentity; }],
+    ['capability runtime differs', (health) => { health.capabilityConnections[0].runtimeId = 'runtime-2'; }],
+    ['capability runtime is missing', (health) => { delete health.capabilityConnections[0].runtimeId; }],
+    ['capability connected is false', (health) => { health.capabilityConnections[0].connected = false; }],
+    ['capability connected is missing', (health) => { delete health.capabilityConnections[0].connected; }],
+  ];
+  for (const [scenario, mutate] of healthMutations) {
+    const health = structuredClone(readyHealth);
+    mutate(health);
+    assert.equal(isolatedRuntimeHealthReady(health, bootstrap), false, scenario);
+  }
+
+  const splitRuntimeHealth = structuredClone(readyHealth);
+  splitRuntimeHealth.capabilityConnections[0].runtimeId = 'runtime-2';
+  splitRuntimeHealth.replicas.push({
+    ...structuredClone(readyHealth.replicas[0]),
+    replicaId: 'runtime-2',
+    environment: 'other',
+  });
+  assert.equal(
+    isolatedRuntimeHealthReady(splitRuntimeHealth, bootstrap),
+    false,
+    'exact replica and connected capability belong to different runtimes',
+  );
+
+  const receiptMutations = [
+    ['bootstrap environment is missing', (receipt) => { delete receipt.environment; }],
+    ['bootstrap generation is missing', (receipt) => { delete receipt.bootstrap.generation; }],
+    ['bootstrap assembly is missing', (receipt) => { delete receipt.bootstrap.assembly; }],
+  ];
+  for (const [scenario, mutate] of receiptMutations) {
+    const receipt = structuredClone(bootstrap);
+    mutate(receipt);
+    assert.equal(isolatedRuntimeHealthReady(readyHealth, receipt), false, scenario);
+  }
+});
+
+test('one absolute checkout and Cargo target flow through config, bootstrap, supervisor, and runner', async () => {
+  const observed = {};
+  const relativeSkiffRoot = 'relative-skiff-checkout';
+  const relativeCargoTarget = 'relative-cargo-target';
+  const expectedSkiffRoot = resolve(relativeSkiffRoot);
+  const expectedCargoTarget = resolve(relativeCargoTarget);
+  const { dependencies } = lifecycleDouble({
+    writeConfig: async (_configPath, config) => { observed.config = config; },
+    seedBootstrap: async (input) => {
+      observed.bootstrap = input;
+      observed.bootstrapReceipt = { environment: 'skiff-test', bootstrap: {} };
+      return observed.bootstrapReceipt;
+    },
+    spawnSupervisor: (input) => {
+      observed.supervisor = input;
+      return { pid: 1000 };
     },
   });
+
+  await runInIsolatedTestRuntime({
+    skiffRoot: relativeSkiffRoot,
+    baseEnv: {
+      PATH: '/bin',
+      CARGO_TARGET_DIR: relativeCargoTarget,
+      SKIFF_TEST_PLATFORM_SOURCE_ROOT: '/tmp/hostile-platform-root',
+    },
+    signalTarget: new EventEmitter(),
+    dependencies,
+    validateBootstrapReceipt: (receipt) => {
+      observed.validatedBootstrapReceipt = receipt;
+      assert.match(observed.supervisor.startupGate, /activation-seeded\.ready$/);
+    },
+    runTest: async (environment) => { observed.runnerEnv = environment; },
+  });
+
+  assert.equal(isAbsolute(expectedCargoTarget), true);
+  assert.notEqual(expectedCargoTarget, resolve(expectedSkiffRoot, relativeCargoTarget));
+  assert.equal(
+    observed.config.includes(`cargoTargetDir: ${JSON.stringify(expectedCargoTarget)}`),
+    true,
+  );
+  assert.match(observed.config, /mongo: 46003/);
+  assert.doesNotMatch(observed.config, /27017/);
+  assert.equal(observed.bootstrap.skiffRoot, expectedSkiffRoot);
+  assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
+  assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);
+  assert.strictEqual(observed.validatedBootstrapReceipt, observed.bootstrapReceipt);
+  assert.equal(observed.supervisor.skiffRoot, expectedSkiffRoot);
+  assert.strictEqual(observed.supervisor.env, observed.bootstrap.env);
+  assert.strictEqual(observed.runnerEnv, observed.bootstrap.env);
 });
 
 test('success and test failure both run owner shutdown, status, ports, lease, and temp cleanup', async () => {
@@ -137,9 +329,11 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       baseEnv: { PATH: '/bin' },
       signalTarget: new EventEmitter(),
       dependencies,
-      runTest: async (environment) => {
+      runTest: async (environment, _signal, stack) => {
         actions.push('test');
-        assert.equal(environment.SKIFF_DEV_RELOAD_URL.includes(':46001/'), true);
+        assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
+        assert.equal(environment.SKIFF_TEST_ACTIVATION_URL.includes(':46001/'), true);
+        assert.equal(stack.sourceArtifactRoot, '/tmp/isolated-runtime-double/source-artifacts');
         if (failing) {
           throw new Error('test failed');
         }
@@ -152,7 +346,9 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       assert.equal(await operation, 'passed');
     }
     assert.deepEqual(actions, [
-      'lease', 'temp', 'config', 'bootstrap', 'spawn', 'ready', 'test',
+      'lease', 'temp', 'workspace-claim', 'source-artifacts', 'config', 'config-owner',
+      'spawn', 'mongo-started', 'mongo-primary', 'bootstrap', 'activation-state',
+      'startup-gate', 'ready', 'test',
       'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
       'lease-release', 'temp-remove',
     ]);
@@ -190,7 +386,30 @@ test('test and cleanup errors are both retained and evidence workspace is preser
   assert.equal(actions.includes('temp-remove'), false);
 });
 
-test('write and bootstrap startup failures do not run instance ownership commands', async () => {
+test('false supervisor stop remains a cleanup failure while later owners still settle', async () => {
+  const { actions, dependencies } = lifecycleDouble({
+    stopSupervisor: async () => {
+      actions.push('stop-supervisor');
+      return { stopped: false };
+    },
+  });
+  await assert.rejects(
+    runInIsolatedTestRuntime({
+      skiffRoot: '/checkout/skiff',
+      baseEnv: {},
+      signalTarget: new EventEmitter(),
+      dependencies,
+      runTest: async () => { actions.push('test'); },
+    }),
+    /supervisor reported stopped:false/,
+  );
+  assert.deepEqual(actions.slice(-5), [
+    'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed', 'lease-release',
+  ]);
+  assert.equal(actions.includes('temp-remove'), false);
+});
+
+test('write and bootstrap startup failures preserve dependency order and cleanup ownership', async () => {
   for (const failureAt of ['config', 'bootstrap']) {
     const { actions, dependencies } = lifecycleDouble({
       ...(failureAt === 'config'
@@ -215,13 +434,39 @@ test('write and bootstrap startup failures do not run instance ownership command
         dependencies,
         runTest: async () => assert.fail('test runner must not start'),
       }),
-      new RegExp(`${failureAt} failed`),
+      failureAt === 'config'
+        ? /config failed.*preserve workspace with uncaptured config/s
+        : /bootstrap failed/,
     );
-    assert.equal(actions.includes('instance-down'), false);
-    assert.equal(actions.includes('instance-status'), false);
+    assert.equal(actions.includes('instance-down'), failureAt === 'bootstrap');
+    assert.equal(actions.includes('instance-status'), failureAt === 'bootstrap');
     assert.equal(actions.includes('lease-release'), true);
-    assert.equal(actions.includes('temp-remove'), true);
+    assert.equal(actions.includes('temp-remove'), failureAt === 'bootstrap');
   }
+});
+
+test('config capture failure preserves the workspace and still releases ports and lease', async () => {
+  const { actions, dependencies } = lifecycleDouble({
+    captureConfigOwnership: async () => {
+      actions.push('config-owner');
+      throw new Error('config identity changed before capture');
+    },
+  });
+  await assert.rejects(
+    runInIsolatedTestRuntime({
+      skiffRoot: '/checkout/skiff',
+      baseEnv: {},
+      signalTarget: new EventEmitter(),
+      dependencies,
+      runTest: async () => assert.fail('test runner must not start'),
+    }),
+    /config identity changed before capture.*preserve workspace with uncaptured config/s,
+  );
+  assert.equal(actions.includes('instance-down'), false);
+  assert.equal(actions.includes('instance-status'), false);
+  assert.equal(actions.includes('ports-closed'), true);
+  assert.equal(actions.includes('lease-release'), true);
+  assert.equal(actions.includes('temp-remove'), false);
 });
 
 test('partial supervisor startup failure still runs owner down plus status and port verification', async () => {
@@ -245,6 +490,44 @@ test('partial supervisor startup failure still runs owner down plus status and p
     'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
     'lease-release', 'temp-remove',
   ]);
+});
+
+test('every ordered startup stage fails precisely and completes owned cleanup', async () => {
+  const scenarios = [
+    ['Mongo spawn', 'waitMongoStarted', 'mongo spawn exploded'],
+    ['Mongo primary election', 'waitMongoPrimary', 'primary election exploded'],
+    ['activation seed', 'seedActivationState', 'activation seed exploded'],
+    ['Router/Runtime readiness', 'waitReady', 'isolated Router startup failed'],
+  ];
+  for (const [diagnostic, operation, detail] of scenarios) {
+    const { actions, dependencies } = lifecycleDouble({
+      [operation]: async () => {
+        actions.push(operation === 'spawnSupervisor' ? 'spawn' : {
+          waitMongoStarted: 'mongo-started',
+          waitMongoPrimary: 'mongo-primary',
+          seedActivationState: 'activation-state',
+          waitReady: 'ready',
+        }[operation]);
+        throw new Error(detail);
+      },
+    });
+    await assert.rejects(
+      runInIsolatedTestRuntime({
+        skiffRoot: '/checkout/skiff',
+        baseEnv: {},
+        signalTarget: new EventEmitter(),
+        dependencies,
+        runTest: async () => assert.fail('test runner must not start'),
+      }),
+      new RegExp(`isolated ${diagnostic} failed: ${detail}`),
+    );
+    assert.equal(actions.includes('ports-closed'), true);
+    assert.equal(actions.includes('lease-release'), true);
+    assert.deepEqual(actions.slice(-6), [
+      'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
+      'lease-release', 'temp-remove',
+    ]);
+  }
 });
 
 test('SIGTERM aborts the test and still completes owned cleanup', async () => {
@@ -303,18 +586,21 @@ test('aborted owned command waits for its process group before returning', {
   }
 });
 
-test('live mode bypasses automatic isolated runtime and leases stay in reserved range', async () => {
+test('live bypass and reserved port leases preserve a foreign token replacement', async () => {
   assert.equal(shouldUseIsolatedTestRuntime(true), false);
   assert.equal(shouldUseIsolatedTestRuntime(false), true);
+  const leaseDir = await mkdtemp(join(tmpdir(), 'skiff-port-lease-audit-'));
   const first = await leaseConsecutiveLocalPorts({
     rangeStart: isolatedTestRuntimeConstants.portMin,
     rangeEnd: isolatedTestRuntimeConstants.portMax,
-    count: 3,
+    count: 4,
+    leaseDir,
   });
   const second = await leaseConsecutiveLocalPorts({
     rangeStart: isolatedTestRuntimeConstants.portMin,
     rangeEnd: isolatedTestRuntimeConstants.portMax,
-    count: 3,
+    count: 4,
+    leaseDir,
   });
   try {
     assert.equal(first.ports.every((port) => port >= 46000 && port <= 46999), true);
@@ -323,19 +609,41 @@ test('live mode bypasses automatic isolated runtime and leases stay in reserved 
     const forbidden = [27017, ...range(4000, 4007), ...range(44000, 45999)];
     assert.equal(first.ports.some((port) => forbidden.includes(port)), false);
     assert.equal(second.ports.some((port) => forbidden.includes(port)), false);
+    const replacedLeasePath = join(leaseDir, `${first.ports[0]}.lock`);
+    const foreignLease = `${JSON.stringify({
+      schemaVersion: 'skiff-local-port-lease-v1',
+      pid: process.pid,
+      token: 'foreign-token',
+      ports: [first.ports[0]],
+    })}\n`;
+    await rm(replacedLeasePath);
+    await writeFile(replacedLeasePath, foreignLease, 'utf8');
+    await first.release();
+    assert.equal(await readFile(replacedLeasePath, 'utf8'), foreignLease);
+    await rm(replacedLeasePath);
   } finally {
     await first.release();
     await second.release();
+    await rm(leaseDir, { force: true, recursive: true });
   }
 });
 
 function lifecycleDouble(overrides = {}) {
   const actions = [];
+  const workspaceReceipt = {
+    schemaVersion: 'isolated-runtime-double-v1',
+    nonce: '0'.repeat(32),
+    root: { path: '/tmp/isolated-runtime-double', identity: { dev: '1', ino: '2' } },
+    marker: {
+      path: '/tmp/isolated-runtime-double/.skiff-isolated-workspace-owner.json',
+      identity: { dev: '1', ino: '3' },
+    },
+  };
   const dependencies = {
     leasePorts: async () => {
       actions.push('lease');
       return {
-        ports: [46000, 46001, 46002],
+        ports: [46000, 46001, 46002, 46003],
         release: async () => { actions.push('lease-release'); },
       };
     },
@@ -343,18 +651,34 @@ function lifecycleDouble(overrides = {}) {
       actions.push('temp');
       return '/tmp/isolated-runtime-double';
     },
+    claimWorkspace: async () => {
+      actions.push('workspace-claim');
+      return workspaceReceipt;
+    },
+    createSourceArtifactRoot: async () => { actions.push('source-artifacts'); },
     writeConfig: async () => { actions.push('config'); },
+    captureConfigOwnership: async (receipt, configPath) => {
+      actions.push('config-owner');
+      return {
+        ...receipt,
+        config: { path: configPath, identity: { dev: '1', ino: '4' } },
+      };
+    },
     seedBootstrap: async () => { actions.push('bootstrap'); },
     spawnSupervisor: () => {
       actions.push('spawn');
       return { pid: 1000 };
     },
+    waitMongoStarted: async () => { actions.push('mongo-started'); },
+    waitMongoPrimary: async () => { actions.push('mongo-primary'); },
+    seedActivationState: async () => { actions.push('activation-state'); },
+    releaseStartupGate: async () => { actions.push('startup-gate'); },
     waitReady: async () => { actions.push('ready'); },
     stopSupervisor: async () => { actions.push('stop-supervisor'); },
     stopOwnedInstance: async () => { actions.push('instance-down'); },
     verifyInstanceStopped: async () => { actions.push('instance-status'); },
     assertPortsClosed: async () => { actions.push('ports-closed'); },
-    removeTempRoot: async () => { actions.push('temp-remove'); },
+    removeOwnedWorkspace: async () => { actions.push('temp-remove'); },
     ...overrides,
   };
   return { actions, dependencies };

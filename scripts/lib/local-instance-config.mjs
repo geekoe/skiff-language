@@ -3,7 +3,11 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { identityCliBinaryName, runtimeBinaryName } from './dev-runtime-paths.mjs';
+import {
+  ecosystemStoreCliBinaryName,
+  runtimeBinaryName,
+} from './dev-runtime-paths.mjs';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activation-timeout.mjs';
 import { parseSimpleYamlObject, parseYamlStringScalar, yamlStringScalarHasContent } from './simple-yaml.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -17,6 +21,13 @@ export const defaultInstancePorts = {
   telemetry: defaultInstanceBasePort + 2,
   mongo: 27017,
 };
+export const defaultInstanceHttp = {
+  maxRequestBytes: 64 * 1024 * 1024,
+  maxResponseBytes: 8 * 1024 * 1024,
+};
+export const defaultInstanceActivation = {
+  prepareTimeoutMs: DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS,
+};
 export function defaultInstanceConfigPath(repoRoot = skiffRoot) {
   return join(repoRoot, '.skiff-instance', 'config.yml');
 }
@@ -27,6 +38,7 @@ export function defaultInstanceConfigText() {
     '# Local Skiff instance config.',
     '# Paths are resolved relative to this config file.',
     '# This file is separate from service/package skiff.yml configuration.',
+    'environment: dev',
     'devHome: dev-home',
     'cargoTargetDir: ~/.cache/skiff/cargo-target',
     '',
@@ -41,6 +53,13 @@ export function defaultInstanceConfigText() {
     `  # telemetry: ${derived.telemetry}`,
     '  # MongoDB is shared across local instances and is not derived from base.',
     `  mongo: ${defaultInstancePorts.mongo}`,
+    '',
+    'http:',
+    `  maxRequestBytes: ${defaultInstanceHttp.maxRequestBytes}`,
+    `  maxResponseBytes: ${defaultInstanceHttp.maxResponseBytes}`,
+    '',
+    'activation:',
+    `  prepareTimeoutMs: ${defaultInstanceActivation.prepareTimeoutMs}`,
     '',
     'components:',
     '  telemetry: managed',
@@ -92,6 +111,7 @@ export function instanceBasePaths({ configPath, repoRoot = skiffRoot }) {
 
 export function instanceSummary(config) {
   return {
+    environment: config.environment,
     configPath: config.paths.configPath,
     instanceRoot: config.paths.instanceRoot,
     devHome: config.paths.devHome,
@@ -103,7 +123,7 @@ export function instanceSummary(config) {
     serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
     binDir: config.paths.binDir,
     runtimeBinary: config.paths.runtimeBinary,
-    identityCli: config.paths.identityCli,
+    ecosystemStoreCli: config.paths.ecosystemStoreCli,
     routerConfig: config.paths.routerConfig,
     telemetryConfig: config.paths.telemetryConfig,
     serviceDbPath: config.paths.serviceDbPath,
@@ -117,6 +137,9 @@ export function instanceSummary(config) {
     routerControlPort: config.ports.routerControl,
     telemetryPort: config.ports.telemetry,
     mongoPort: config.ports.mongo,
+    httpMaxRequestBytes: config.http.maxRequestBytes,
+    httpMaxResponseBytes: config.http.maxResponseBytes,
+    activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
     routerHttpUrl: config.urls.routerHttp,
     routerControlUrl: config.urls.routerControl,
     routerRuntimeUrl: config.urls.routerRuntime,
@@ -128,6 +151,7 @@ export function instanceSummary(config) {
 }
 
 function normalizeInstanceConfig(raw, context) {
+  const environment = normalizeEnvironment(raw.environment);
   const devHome = resolveConfigPath(
     context.instanceRoot,
     readString(raw.devHome, 'devHome', 'dev-home'),
@@ -138,6 +162,8 @@ function normalizeInstanceConfig(raw, context) {
     '~/.cache/skiff/cargo-target',
   ));
   const ports = normalizePorts(raw.ports);
+  const http = normalizeHttp(raw.http);
+  const activation = normalizeActivation(raw.activation);
   const components = normalizeComponents(raw.components);
   const telemetry = normalizeTelemetry(raw.telemetry);
   const mongo = normalizeMongo(raw.mongo, devHome);
@@ -149,6 +175,7 @@ function normalizeInstanceConfig(raw, context) {
 
   return {
     schemaVersion: 'skiff-instance-v1',
+    environment,
     paths: {
       repoRoot: resolve(context.repoRoot),
       configPath: context.configPath,
@@ -162,7 +189,7 @@ function normalizeInstanceConfig(raw, context) {
       serviceDbEncryptionKeyringFile: join(secretsDir, 'service-db-keyring.json'),
       binDir,
       runtimeBinary: join(binDir, runtimeBinaryName()),
-      identityCli: join(binDir, identityCliBinaryName()),
+      ecosystemStoreCli: join(binDir, ecosystemStoreCliBinaryName()),
       routerConfig: join(devHome, 'router.yml'),
       telemetryConfig: join(devHome, 'telemetry.yml'),
       serviceDbPath: mongo.dbPath,
@@ -173,6 +200,8 @@ function normalizeInstanceConfig(raw, context) {
       cargoTargetDir,
     },
     ports,
+    http,
+    activation,
     components,
     packageDirs,
     telemetry,
@@ -186,6 +215,51 @@ function normalizeInstanceConfig(raw, context) {
       telemetry: `ws://127.0.0.1:${ports.telemetry}/telemetry`,
     },
   };
+}
+
+function normalizeHttp(value) {
+  if (!isRecord(value)) {
+    throw new Error('http must be a mapping with explicit maxRequestBytes and maxResponseBytes');
+  }
+  return {
+    maxRequestBytes: readPositiveSafeInteger(value.maxRequestBytes, 'http.maxRequestBytes'),
+    maxResponseBytes: readPositiveSafeInteger(value.maxResponseBytes, 'http.maxResponseBytes'),
+  };
+}
+
+function normalizeActivation(value) {
+  if (value === undefined || value === null) {
+    return { ...defaultInstanceActivation };
+  }
+  if (!isRecord(value)) {
+    throw new Error('activation must be a mapping with explicit prepareTimeoutMs');
+  }
+  if (typeof value.prepareTimeoutMs !== 'number') {
+    throw new Error(
+      'activation.prepareTimeoutMs must be a positive safe integer'
+    );
+  }
+  return {
+    prepareTimeoutMs: readPositiveSafeInteger(
+      value.prepareTimeoutMs,
+      'activation.prepareTimeoutMs',
+    ),
+  };
+}
+
+function normalizeEnvironment(value) {
+  if (value === undefined) {
+    return 'dev';
+  }
+  if (
+    typeof value !== 'string'
+    || !/^[A-Za-z0-9._-]{1,200}$/.test(value)
+    || value === '.'
+    || value === '..'
+  ) {
+    throw new Error('environment must be an ASCII token of 1-200 letters, digits, dots, underscores, or hyphens, excluding . and ..');
+  }
+  return value;
 }
 
 function parseInstanceConfigText(source, label) {
@@ -315,6 +389,14 @@ function readPort(value, label, fallback) {
     throw new Error(`${label} must be a TCP port`);
   }
   return port;
+}
+
+function readPositiveSafeInteger(value, label) {
+  const integer = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(integer) || integer <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+  return integer;
 }
 
 function readEnum(value, label, allowed, fallback) {

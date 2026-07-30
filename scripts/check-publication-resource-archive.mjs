@@ -4,11 +4,13 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectPackageSourceArchivePaths } from './lib/package-source-archive.mjs';
+import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'skiff-publication-resource-archive-'));
 
 try {
   await checkPackageSourceArchiveIncludesManifestResources();
+  await checkExternalDocumentsAreNotResourceManifests();
   console.log('Publication resource archive check passed.');
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -60,6 +62,26 @@ async function checkPackageSourceArchiveIncludesManifestResources() {
     'control file',
   );
 
+  for (const externalFile of ['http.yml', 'websocket.yml']) {
+    await writeFile(
+      join(packageRoot, 'package.yml'),
+      [
+        'id: example.com/pkg',
+        'version: 1.0.0',
+        `resources: ["${externalFile}"]`,
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      join(packageRoot, externalFile),
+      externalFile === 'http.yml' ? '{}\n' : 'path: /socket\n',
+    );
+    await expectFailure(
+      collectPackageSourceArchivePaths(packageRoot),
+      'control file',
+    );
+  }
+
   await writeFile(
     join(packageRoot, 'package.yml'),
     [
@@ -86,11 +108,51 @@ async function checkPackageSourceArchiveIncludesManifestResources() {
       '',
     ].join('\n'),
   );
+  await writeFile(join(packageRoot, 'http.yml'), '{}\n');
+  await writeFile(join(packageRoot, 'websocket.yml'), 'path: /socket\n');
 
   const files = await collectPackageSourceArchivePaths(packageRoot);
   const expected = ['package.yml', 'prompts/system.md', 'src/main.skiff'];
   if (JSON.stringify(files) !== JSON.stringify(expected)) {
     throw new Error(`unexpected package source archive files: ${JSON.stringify(files)}`);
+  }
+}
+
+async function checkExternalDocumentsAreNotResourceManifests() {
+  const packageRoot = join(root, 'manifest-discovery');
+  await mkdir(join(packageRoot, 'resources'), { recursive: true });
+  await writeFile(
+    join(packageRoot, 'package.yml'),
+    'id: example.com/discovery\nversion: 1.0.0\nresources: ["resources/package.txt"]\n',
+  );
+  await writeFile(
+    join(packageRoot, 'service.yml'),
+    'id: example.com/discovery\nresources: ["resources/service.txt"]\n',
+  );
+  await writeFile(
+    join(packageRoot, 'http.yml'),
+    'resources: ["resources/http.txt"]\n',
+  );
+  await writeFile(
+    join(packageRoot, 'websocket.yml'),
+    'path: /socket\nresources: ["resources/websocket.txt"]\n',
+  );
+  for (const name of ['package', 'service', 'http', 'websocket']) {
+    await writeFile(join(packageRoot, 'resources', `${name}.txt`), `${name}\n`);
+  }
+
+  const discovered = (await discoverDeclaredResourceFiles(
+    packageRoot,
+    new Set(['package.yml', 'service.yml', 'http.yml', 'websocket.yml']),
+  )).sort((left, right) => left.localeCompare(right));
+  const expected = [
+    join(packageRoot, 'resources', 'package.txt'),
+    join(packageRoot, 'resources', 'service.txt'),
+  ].sort((left, right) => left.localeCompare(right));
+  if (JSON.stringify(discovered) !== JSON.stringify(expected)) {
+    throw new Error(
+      `external documents were treated as resource manifests: ${JSON.stringify(discovered)}`,
+    );
   }
 }
 

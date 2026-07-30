@@ -1,8 +1,8 @@
 use async_recursion::async_recursion;
 use serde_json::{json, Value};
 use skiff_runtime_capability_context::{
-    DbDocument, DbKey, DbOrderDirection, DbOrderEntry, DbQuery, FieldPath, ServiceDbChange,
-    ServiceDbFindOptions,
+    DbCapabilityTarget, DbCapabilityTargetId, DbDocument, DbKey, DbOrderDirection, DbOrderEntry,
+    DbQuery, FieldPath, ServiceDbChange, ServiceDbFindOptions,
 };
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeRecoverableExpectedTypePlanLinkedExt};
 use skiff_runtime_model::{
@@ -25,7 +25,10 @@ use super::{
     runtime_ops::{runtime_from_wire, runtime_numeric, runtime_to_wire, runtime_truthy},
     Interpreter,
 };
-use crate::error::{Result, RuntimeError};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection,
+    error::{Result, RuntimeError},
+};
 use skiff_runtime_linked_program::{
     DbBodyIr, DbChangeIr, DbChangeOpIr, DbIndexDirectionIr, DbOpKindIr, DbOperationIr, DbOrderIr,
     DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr, DbSelectorIr, DbTargetIr,
@@ -64,6 +67,7 @@ impl<'a> DbIrEvaluator<'a> {
     }
 
     pub async fn eval_operation(&mut self, operation: &DbOperationIr) -> Result<DbCommand> {
+        let target = db_capability_target(&operation.target);
         let type_name = operation.target.type_name.clone();
         let result_plan = self.result_plan(&operation.result_type)?;
         let recoverable_plans = self.recoverable_expected_plans(&operation.target)?;
@@ -87,7 +91,7 @@ impl<'a> DbIrEvaluator<'a> {
                         )
                         .await?;
                     return Ok(DbCommand::FindMany(DbFindManyCommand {
-                        type_name,
+                        target: target.clone(),
                         result_plan,
                         query,
                         options,
@@ -123,7 +127,7 @@ impl<'a> DbIrEvaluator<'a> {
                     }
                 };
                 Ok(DbCommand::FindOne(DbFindOneCommand {
-                    type_name,
+                    target: target.clone(),
                     result_plan,
                     selector,
                     projection,
@@ -148,7 +152,7 @@ impl<'a> DbIrEvaluator<'a> {
                         ));
                     }
                     Ok(DbCommand::InsertMany(DbInsertManyCommand {
-                        type_name,
+                        target: target.clone(),
                         result_plan,
                         values: self.eval_body_values(body).await?,
                     }))
@@ -163,7 +167,7 @@ impl<'a> DbIrEvaluator<'a> {
                         DbCommandValue::Wire(self.eval_body_object(body).await?)
                     };
                     Ok(DbCommand::InsertOne(DbInsertOneCommand {
-                        type_name,
+                        target: target.clone(),
                         result_plan,
                         value,
                     }))
@@ -187,7 +191,7 @@ impl<'a> DbIrEvaluator<'a> {
                         unreachable!("runtime update-many rejected above");
                     };
                     Ok(DbCommand::UpdateMany(DbUpdateManyCommand {
-                        type_name,
+                        target: target.clone(),
                         result_plan,
                         query: self.eval_query(operation.query.as_ref()).await?,
                         change,
@@ -201,7 +205,7 @@ impl<'a> DbIrEvaluator<'a> {
                         )
                         .await?;
                     Ok(DbCommand::UpdateOne(DbUpdateOneCommand {
-                        type_name,
+                        target: target.clone(),
                         result_plan,
                         selector: self
                             .eval_selector(operation.selector.as_ref(), operation.query.as_ref())
@@ -235,7 +239,7 @@ impl<'a> DbIrEvaluator<'a> {
                         RuntimeError::Decode("db upsert requires insert body".to_string())
                     })?;
                 Ok(DbCommand::UpsertKey(DbUpsertKeyCommand {
-                    type_name,
+                    target: target.clone(),
                     result_plan,
                     key: DbKey::new(self.eval_expr_wire(*value).await?),
                     insert: self.eval_body_object(insert_body).await?,
@@ -255,7 +259,7 @@ impl<'a> DbIrEvaluator<'a> {
                     DbCommandValue::Wire(self.eval_body_object(body).await?)
                 };
                 Ok(DbCommand::ReplaceOne(DbReplaceOneCommand {
-                    type_name,
+                    target: target.clone(),
                     result_plan,
                     value,
                     selector: self
@@ -266,12 +270,12 @@ impl<'a> DbIrEvaluator<'a> {
             DbOpKindIr::Delete => {
                 if operation.many {
                     Ok(DbCommand::DeleteMany(DbQueryCommand {
-                        type_name,
+                        target: target.clone(),
                         query: self.eval_query(operation.query.as_ref()).await?,
                     }))
                 } else {
                     Ok(DbCommand::DeleteOne(DbDeleteOneCommand {
-                        type_name,
+                        target: target.clone(),
                         selector: self
                             .eval_selector(operation.selector.as_ref(), operation.query.as_ref())
                             .await?,
@@ -279,16 +283,16 @@ impl<'a> DbIrEvaluator<'a> {
                 }
             }
             DbOpKindIr::Count => Ok(DbCommand::Count(DbQueryCommand {
-                type_name,
+                target: target.clone(),
                 query: self.eval_query(operation.query.as_ref()).await?,
             })),
             DbOpKindIr::Exists => match operation.selector.as_ref() {
                 Some(DbSelectorIr::Key { value }) => Ok(DbCommand::ExistsKey(DbExistsKeyCommand {
-                    type_name,
+                    target: target.clone(),
                     key: DbKey::new(self.eval_expr_wire(*value).await?),
                 })),
                 _ => Ok(DbCommand::ExistsQuery(DbQueryCommand {
-                    type_name,
+                    target: target.clone(),
                     query: self
                         .eval_query(
                             operation
@@ -308,7 +312,7 @@ impl<'a> DbIrEvaluator<'a> {
 
     fn result_plan(&self, ty: &LinkedTypeRef) -> Result<RuntimeTypePlan> {
         self.interpreter
-            .type_projection()?
+            .type_projection_for_context(&self.program_context)?
             .plan_from_linked_nested_ref(ty, self.addr)
     }
 
@@ -316,9 +320,16 @@ impl<'a> DbIrEvaluator<'a> {
         &self,
         target: &DbTargetIr,
     ) -> Result<DbRecoverableRuntimeExpectedPlans> {
-        let program = self.interpreter.program_projection()?;
-        let ctx = PlanContext::from_type_view(program.type_view(), self.addr);
-        db_recoverable_expected_plans_from_declaration(self.file, target, &ctx)
+        let program =
+            RuntimeExecutionProjection::for_context(self.interpreter, &self.program_context)?;
+        let resolved = program.resolve_db_target(&target.target_id)?;
+        let owner_addr = ExecutableAddr {
+            unit: resolved.addr.unit.clone(),
+            file: resolved.addr.file.clone(),
+            executable: 0,
+        };
+        let ctx = PlanContext::from_type_view(program.type_view(), &owner_addr);
+        Self::db_declaration_recoverable_expected_plans(resolved.declaration, &ctx)
     }
 
     fn db_field_recoverable_expected_plan(
@@ -752,6 +763,7 @@ impl<'a> DbIrEvaluator<'a> {
                 expr_ref,
             )
             .await
+            .map(skiff_runtime_model::runtime_value::RuntimeValueCarrier::into_value)
     }
 }
 
@@ -802,81 +814,15 @@ fn db_compare_operator(op: DbPredicateCompareOpIr) -> &'static str {
     }
 }
 
-fn db_recoverable_expected_plans_from_declaration(
-    file: &LinkedFileUnit,
-    target: &DbTargetIr,
-    ctx: &PlanContext,
-) -> Result<DbRecoverableRuntimeExpectedPlans> {
-    if let Some(declaration) = file.declarations.db.get(&target.type_name) {
-        return DbIrEvaluator::db_declaration_recoverable_expected_plans(declaration, ctx);
-    }
-    if let LinkedTypeRef::DbObjectSymbol { symbol } = &target.type_ref {
-        if let Some(plans) = db_symbol_recoverable_expected_plans(symbol, ctx)? {
-            return Ok(plans);
-        }
-    }
-    DbIrEvaluator::db_object_recoverable_expected_plans(target, ctx)
-}
-
-fn db_symbol_recoverable_expected_plans(
-    symbol: &skiff_runtime_linked_program::ServiceSymbolRef,
-    ctx: &PlanContext,
-) -> Result<Option<DbRecoverableRuntimeExpectedPlans>> {
-    match &ctx.current_addr.unit {
-        skiff_runtime_linked_program::UnitAddr::Service => {
-            if let Some(plans) = db_symbol_recoverable_expected_plans_in_files(
-                ctx.program.service_files,
-                symbol,
-                ctx,
-            )? {
-                return Ok(Some(plans));
-            }
-        }
-        skiff_runtime_linked_program::UnitAddr::Package(slot) => {
-            if let Some(files) = ctx.program.package_files.get(*slot) {
-                if let Some(plans) =
-                    db_symbol_recoverable_expected_plans_in_files(files, symbol, ctx)?
-                {
-                    return Ok(Some(plans));
-                }
-            }
-        }
-    }
-
-    if let Some(plans) =
-        db_symbol_recoverable_expected_plans_in_files(ctx.program.service_files, symbol, ctx)?
-    {
-        return Ok(Some(plans));
-    }
-    for files in ctx.program.package_files {
-        if let Some(plans) = db_symbol_recoverable_expected_plans_in_files(files, symbol, ctx)? {
-            return Ok(Some(plans));
-        }
-    }
-    Ok(None)
-}
-
-fn db_symbol_recoverable_expected_plans_in_files(
-    files: &[std::sync::Arc<LinkedFileUnit>],
-    symbol: &skiff_runtime_linked_program::ServiceSymbolRef,
-    ctx: &PlanContext,
-) -> Result<Option<DbRecoverableRuntimeExpectedPlans>> {
-    for file in files {
-        if file.module_path != symbol.module_path {
-            continue;
-        }
-        let qualified_symbol = format!("{}.{}", symbol.module_path, symbol.symbol);
-        if let Some(declaration) = file.declarations.db.get(&symbol.symbol).or_else(|| {
-            file.declarations
-                .db
-                .values()
-                .find(|db| db.type_name == symbol.symbol || db.type_name == qualified_symbol)
-        }) {
-            return DbIrEvaluator::db_declaration_recoverable_expected_plans(declaration, ctx)
-                .map(Some);
-        }
-    }
-    Ok(None)
+pub(super) fn db_capability_target(target: &DbTargetIr) -> DbCapabilityTarget {
+    DbCapabilityTarget::new(
+        DbCapabilityTargetId {
+            package_artifact_ref: target.target_id.package_artifact_ref.clone(),
+            file_ir_ref: target.target_id.file_ir_ref.clone(),
+            type_index: target.target_id.type_index,
+        },
+        target.type_name.clone(),
+    )
 }
 
 fn recoverable_expected_plans_from_record_node(
@@ -973,8 +919,9 @@ mod tests {
         linked::{DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr},
         types::anonymous_type_decl,
         ExecutableAddr, FileAddr, FileDeclarations, FileLinkTargets, LinkedFileUnit,
-        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef, PackageUnit,
-        RuntimeTypeContext, ServiceSymbolKey, ServiceSymbolRef, TypeAddr, UnitAddr,
+        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef,
+        RuntimeExecutionPackage, RuntimeTypeContext, ServiceSymbolKey, ServiceSymbolRef, TypeAddr,
+        UnitAddr,
     };
     use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView};
 
@@ -995,32 +942,28 @@ mod tests {
         );
 
         let service_files: Vec<Arc<LinkedFileUnit>> = Vec::new();
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files = vec![vec![
+        let linked_files = vec![
             Arc::new(model_file_with_db_field(
                 "AgentRun",
                 "runtimeBindings",
                 service_symbol_type("tools", "AgentRuntimeBindings"),
             )),
             Arc::new(empty_file("runner")),
-        ]];
+        ];
+        let packages = vec![crate::test_support::runtime_execution_package_fixture(
+            "skiff.test/db-model",
+            0,
+            linked_files.clone(),
+            Default::default(),
+        )];
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::package(0, 1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
-        let target = db_object_target("model", "AgentRun");
-
-        let plans = db_recoverable_expected_plans_from_declaration(
-            package_files[0][1].as_ref(),
-            &target,
+        let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
+            &linked_files[0].declarations.db["AgentRun"],
             &ctx,
         )
         .expect("package DB declaration field plans");
@@ -1055,25 +998,15 @@ mod tests {
             )),
             Arc::new(empty_file("thread")),
         ];
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::service(1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
-        let target = db_object_target("model", "AgentRun");
-
-        let plans = db_recoverable_expected_plans_from_declaration(
-            service_files[1].as_ref(),
-            &target,
+        let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
+            &service_files[0].declarations.db["AgentRun"],
             &ctx,
         )
         .expect("service DB declaration field plans");
@@ -1117,25 +1050,15 @@ mod tests {
             )),
             Arc::new(empty_file("runner")),
         ];
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::service(1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
-        let target = db_object_target("model", "AgentThread");
-
-        let plans = db_recoverable_expected_plans_from_declaration(
-            service_files[1].as_ref(),
-            &target,
+        let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
+            &service_files[0].declarations.db["AgentThread"],
             &ctx,
         )
         .expect("nested recoverable field plans");
@@ -1153,25 +1076,15 @@ mod tests {
             Arc::new(model_file_with_db_field("AgentRun", "title", string_type())),
             Arc::new(empty_file("runner")),
         ];
-        let packages: Vec<Arc<PackageUnit>> = Vec::new();
-        let package_files: Vec<Vec<Arc<LinkedFileUnit>>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
         let link_overlay = Default::default();
         let current_addr = ExecutableAddr::service(1, 0);
         let ctx = PlanContext::from_type_view(
-            ProgramTypeView::new(
-                &service_files,
-                &packages,
-                &package_files,
-                &link_overlay,
-                &types,
-            ),
+            ProgramTypeView::new(&service_files, &packages, &link_overlay, &types),
             &current_addr,
         );
-        let target = db_object_target("model", "AgentRun");
-
-        let plans = db_recoverable_expected_plans_from_declaration(
-            service_files[1].as_ref(),
-            &target,
+        let plans = DbIrEvaluator::db_declaration_recoverable_expected_plans(
+            &service_files[0].declarations.db["AgentRun"],
             &ctx,
         )
         .expect("plain DB declaration field plans");
@@ -1241,17 +1154,11 @@ mod tests {
             source_map: Default::default(),
             declarations: FileDeclarations::default(),
             link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
             executables: Vec::new(),
             external_refs: Default::default(),
-        }
-    }
-
-    fn db_object_target(module_path: &str, symbol: &str) -> DbTargetIr {
-        DbTargetIr {
-            type_ref: db_object_type(module_path, symbol),
-            type_name: format!("{module_path}.{symbol}"),
         }
     }
 

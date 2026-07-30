@@ -1,0 +1,6 @@
+owner: main.owner
+run: main.run
+leftLabel: main.leftLabel
+rightLabel: main.rightLabel
+leftEvents: main.leftEvents
+rightEvents: main.rightEvents

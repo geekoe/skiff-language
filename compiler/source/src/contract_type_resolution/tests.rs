@@ -4,16 +4,20 @@ use compiler_input_model::{
     PackageCompilePolicy, PackageDependency, PublicationApiEntry,
     PublicationApiPublicInstanceEntry, PublicationApiSpec,
 };
-use skiff_artifact_identity::contract_type_id;
+use skiff_artifact_identity::package_schema_type_id;
 use skiff_artifact_model::{
     ContractLiteral, ContractTypeRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
     InterfaceOperationIr, PackageTypeRef, TypeRefIr,
 };
+use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
-    contract_dependency_test_fixture::resolved_contract_fixture,
-    parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
+    contract_dependency_test_fixture::{
+        resolved_contract_fixture, resolved_nullable_field_contract_fixture,
+    },
+    parsed_sources::parse_publication_sources,
+    source_graph::CompilerSourceFile,
     CompileParsedPackageSourcesInput, PackageSourceModel, SourceCompileError,
     SourceCompilePackageFacts,
 };
@@ -23,9 +27,22 @@ use super::*;
 mod executable_signatures;
 mod interface_signatures;
 
+fn fixture_type_id(
+    service_id: &str,
+    stable_key: &str,
+) -> skiff_artifact_model::PackageSchemaTypeId {
+    let descriptor = skiff_artifact_model::PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: skiff_artifact_model::ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("value".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    package_schema_type_id(&format!("{service_id}.package"), stable_key, &descriptor).unwrap()
+}
+
 #[test]
 fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain() {
-    let user_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let user_id = fixture_type_id("example.payments", "User");
     let dependency_analysis = contract_dependencies();
     let model = build_model(
         r#"
@@ -63,11 +80,11 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
     ));
     assert!(matches!(
         &signature.parameters[1].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(matches!(
         &signature.parameters[2].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(matches!(
             &signature.parameters[3].ty,
@@ -75,12 +92,12 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
             if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
                 if name == "Array"
                 && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
-                        if contract_type_id == &user_id)))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { package_schema_type_id, .. }
+                        if package_schema_type_id == &user_id)))
     ));
     assert!(matches!(
         &signature.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(!signature.may_suspend);
 
@@ -95,7 +112,7 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
     ));
     assert!(matches!(
         &private_sink.parameters[0].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     let suspended = executable_signatures
         .signature(&crate::SourceSymbolKey::new("api", "suspendedHelper"))
@@ -104,8 +121,213 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
 }
 
 #[test]
+fn service_api_nominal_record_uses_ordinary_constructor_and_field_paths() {
+    let dependency_analysis = contract_dependencies();
+    let model = build_model(
+        r#"
+            function submit(input: payments.User) -> payments.User {
+                let copied = payments.User { value: input.value }
+                payments/submit(copied)
+                return copied
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect("service API records construct and expose fields through the shared type model");
+
+    let signature = model
+        .callable_signatures()
+        .signature("submit")
+        .expect("public signature");
+    let expected = fixture_type_id("example.payments", "User");
+    assert!(matches!(
+        &signature.return_type,
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &expected
+    ));
+    assert!(matches!(
+        model
+            .resolved_call_targets()
+            .iter()
+            .map(|(_, target)| target)
+            .find(|target| matches!(target, crate::ResolvedCallTarget::ContractOperation { .. })),
+        Some(crate::ResolvedCallTarget::ContractOperation { .. })
+    ));
+}
+
+#[test]
+fn service_api_nominal_record_rejects_unknown_constructor_and_read_fields() {
+    let dependency_analysis = contract_dependencies();
+    for source in [
+        r#"
+            function submit(input: payments.User) -> payments.User {
+                return payments.User { missing: input.value }
+            }
+        "#,
+        r#"
+            function submit(input: payments.User) -> string {
+                return input.missing
+            }
+        "#,
+    ] {
+        let error = build_model(source, &dependency_analysis, &BTreeMap::new())
+            .expect_err("unknown service API fields fail closed")
+            .to_string();
+        assert!(
+            error.contains("missing") || error.contains("field"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn stable_nullable_field_paths_narrow_local_and_imported_nominal_records() {
+    build_model(
+        r#"
+            type ToolError { code: string }
+            type ToolResult { error: ToolError? }
+
+            function consume(error: ToolError) -> string { return error.code }
+
+            function submit(result: ToolResult) -> string {
+                if result.error != null {
+                    return consume(result.error)
+                }
+                return ""
+            }
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+    )
+    .expect("a stable local nominal field must carry its non-null refinement to the read");
+
+    let dependency_analysis = nullable_field_contract_dependencies();
+    build_model(
+        r#"
+            function consume(error: agent.ToolError) -> string { return error.code }
+
+            function submit(result: agent.ToolResult) -> string {
+                if result.error != null {
+                    return consume(result.error)
+                }
+                return ""
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect("an imported PackageSchema field must carry its exact non-null projection to the read");
+}
+
+#[test]
+fn stable_nullable_field_path_narrowing_fails_closed_after_invalidation_or_for_other_paths() {
+    let cases = [
+        (
+            r#"
+                type ToolError { code: string }
+                type ToolResult { error: ToolError? }
+                type State { current: ToolResult }
+
+                function consume(error: ToolError) -> string { return error.code }
+
+                function submit(state: State) -> string {
+                    if state.current.error != null {
+                        state.current = ToolResult { error: null }
+                        return consume(state.current.error)
+                    }
+                    return ""
+                }
+            "#,
+            "a write to the stable path prefix must invalidate its child refinement",
+        ),
+        (
+            r#"
+                type ToolError { code: string }
+                type ToolResult { error: ToolError? }
+
+                function maybe() -> ToolResult {
+                    return ToolResult { error: null }
+                }
+                function consume(error: ToolError) -> string { return error.code }
+
+                function submit() -> string {
+                    if maybe().error != null {
+                        return consume(maybe().error)
+                    }
+                    return ""
+                }
+            "#,
+            "a call result is not a stable path",
+        ),
+        (
+            r#"
+                type ToolError { code: string }
+                type ToolResult { error: ToolError? }
+
+                function consume(error: ToolError) -> string { return error.code }
+
+                function submit(left: ToolResult, right: ToolResult) -> string {
+                    if left.error != null {
+                        return consume(right.error)
+                    }
+                    return ""
+                }
+            "#,
+            "a refinement must not leak to an unrelated path",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let error = build_model(
+            source,
+            &SourceDependencyAnalysisInput::default(),
+            &BTreeMap::new(),
+        )
+        .expect_err(label)
+        .to_string();
+        assert!(
+            error.contains("type mismatch") || error.contains("nullable"),
+            "{label}: unexpected diagnostic:\n{error}"
+        );
+    }
+
+    let dependency_analysis = nullable_field_contract_dependencies();
+    let error = build_model(
+        r#"
+            function consume(error: agent.ToolError) -> string { return error.code }
+
+            function submit(result: agent.ToolResult) -> string {
+                if result.error != null {
+                    result.error = null
+                    return consume(result.error)
+                }
+                return ""
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect_err("a write must invalidate an imported PackageSchema field refinement")
+    .to_string();
+    assert!(
+        error.contains("canonical type identity mismatch"),
+        "unexpected imported invalidation diagnostic:\n{error}"
+    );
+}
+
+#[test]
+fn service_alias_selects_validated_package_schema_record() {
+    let dependencies = contract_dependencies();
+    let record = dependencies
+        .public_package_type_by_stable_key("payments", "User")
+        .unwrap();
+    assert_eq!(record.package_id, "example.payments.package");
+    assert_eq!(record.stable_schema_key, "User");
+}
+
+#[test]
 fn public_instance_operations_receive_exact_source_owned_signatures() {
-    let user_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let user_id = fixture_type_id("example.payments", "User");
     let dependency_analysis = contract_dependencies();
     let publication_api = PublicationApiSpec::from_public_instances(vec![
         PublicationApiPublicInstanceEntry::for_source(
@@ -148,7 +370,7 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
         .expect("derived public instance operation signature");
     assert!(matches!(
         &signature.parameters[0].ty,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
     assert!(matches!(
         &signature.parameters[1].ty,
@@ -156,12 +378,12 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
             if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
                 if name == "Array"
                 && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
-                        if contract_type_id == &user_id)))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { package_schema_type_id, .. }
+                        if package_schema_type_id == &user_id)))
     ));
     assert!(matches!(
         &signature.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &user_id
     ));
 
     let executable = model
@@ -178,21 +400,60 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
 }
 
 #[test]
-fn unknown_and_closure_only_contract_types_fail_closed() {
-    for (source_type, expected) in [
-        ("payments.Missing", "no contract type stable key `Missing`"),
-        ("payments.Secret", "closure-only type"),
-    ] {
-        let dependency_analysis = contract_dependencies();
-        let error = build_model(
-            &format!("function submit(input: {source_type}) -> void {{}}"),
-            &dependency_analysis,
-            &BTreeMap::new(),
+fn public_type_and_public_instance_publish_impl_method_only_through_instance() {
+    let dependency_analysis = contract_dependencies();
+    let publication_api = PublicationApiSpec::new(
+        vec![
+            PublicationApiEntry::for_source("Handler", "api", "Handler"),
+            PublicationApiEntry::for_source("submit", "api", "submit"),
+        ],
+        vec![PublicationApiPublicInstanceEntry::for_source(
+            "handler",
+            "root.api.handler",
+            ["root.api.PublicApi"],
         )
-        .expect_err("invalid contract type must fail source compilation")
-        .to_string();
-        assert!(error.contains(expected), "unexpected error: {error}");
-    }
+        .unwrap()],
+        None,
+    );
+    let model = build_model_with_publication_api(
+        r#"
+            interface PublicApi {
+              function submit(input: string) -> string
+            }
+            type Handler implements PublicApi {}
+            impl Handler {
+              function submit(self: Handler, input: string) -> string {
+                return input
+              }
+            }
+            const handler: Handler = Handler {}
+            function submit(input: string) -> string { return input }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+        &[],
+        &publication_api,
+    )
+    .expect("publication ownership must select exact callable paths");
+
+    let signatures = model.callable_signatures();
+    assert_eq!(signatures.iter().count(), 2);
+    assert!(signatures.signature("handler.submit").is_some());
+    assert!(signatures.signature("submit").is_some());
+    assert!(signatures.signature("Handler.submit").is_none());
+}
+
+#[test]
+fn unknown_service_package_type_fails_closed() {
+    let dependency_analysis = contract_dependencies();
+    let error = build_model(
+        "function submit(input: payments.Missing) -> void {}",
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect_err("unknown public package type must fail source compilation")
+    .to_string();
+    assert!(error.contains("Missing"), "unexpected error: {error}");
 }
 
 #[test]
@@ -334,6 +595,14 @@ fn build_model_with_publication_api_and_package_facts(
     package_facts: Option<&[SourceCompilePackageFacts<'_>]>,
     publication_api: &PublicationApiSpec,
 ) -> Result<PackageSourceModel, SourceCompileError> {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root resolves");
+    crate::prelude_registry::initialize_prelude_registry(
+        &CompilerPlatformSources::new(&platform_root).expect("platform sources load"),
+    )
+    .expect("prelude registry initializes");
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         "api".to_string(),
@@ -358,6 +627,7 @@ fn build_model_with_publication_api_and_package_facts(
             package_aliases,
             package_dependencies,
             package_facts,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/contract-type-resolution"),
         },
         dependency_analysis,
@@ -373,6 +643,21 @@ fn contract_dependencies() -> SourceDependencyAnalysisInput {
             "submit",
             "User",
             "Secret",
+        )],
+    )
+    .unwrap()
+}
+
+fn nullable_field_contract_dependencies() -> SourceDependencyAnalysisInput {
+    SourceDependencyAnalysisInput::new(
+        Vec::new(),
+        [resolved_nullable_field_contract_fixture(
+            "agent",
+            "example.agent",
+            "run",
+            "ToolResult",
+            "error",
+            "ToolError",
         )],
     )
     .unwrap()

@@ -4,10 +4,14 @@ use bytes::Bytes;
 use serde_json::json;
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 use crate::{
-    DbCapabilityContext, ExecutionControl, ExecutionControlError, StreamRuntime, StreamRuntimeError,
+    DbCapabilityContext, ExecutionControl, ExecutionControlError, OwnedExecutionControl,
+    StreamRuntime, StreamRuntimeError,
 };
 
 #[derive(Debug)]
@@ -65,6 +69,87 @@ impl FileCapabilityError {
             requested_delta,
         }
     }
+
+    pub fn is_cancellation_terminal(&self) -> bool {
+        match self {
+            Self::Stream(error) => error.is_cancellation_terminal(),
+            Self::Execution(error) => error.is_cancellation_terminal(),
+            Self::Decode(_)
+            | Self::File(_)
+            | Self::Opaque(_)
+            | Self::ProviderUnavailable { .. }
+            | Self::ResourceLimitExceeded { .. } => false,
+        }
+    }
+
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        match self {
+            Self::Decode(message) => Some(RuntimeErrorPayload {
+                code: "InternalError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: None,
+            }),
+            Self::File(message) => Some(RuntimeErrorPayload {
+                code: "std.file.FileError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: None,
+            }),
+            Self::Opaque(error) => Some(error.payload()),
+            Self::ProviderUnavailable { target, reason } => Some(RuntimeErrorPayload {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: reason.clone(),
+                status: None,
+                details: Some(json!({
+                    "target": target,
+                    "reason": reason,
+                })),
+            }),
+            Self::ResourceLimitExceeded {
+                resource,
+                reason,
+                limit,
+                current,
+                requested_delta,
+            } => Some(RuntimeErrorPayload {
+                code: "ResourceLimitExceeded".to_string(),
+                message: format!("resource limit exceeded for {resource}: {reason}"),
+                status: None,
+                details: Some(json!({
+                    "resource": resource,
+                    "reason": reason,
+                    "limit": limit,
+                    "current": current,
+                    "requestedDelta": requested_delta,
+                })),
+            }),
+            Self::Stream(error) => error.ordinary_payload(),
+            Self::Execution(error) => error.ordinary_payload(),
+        }
+    }
+
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
+        match self {
+            Self::File(message) => Some((
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
+                json!({
+                    "message": message,
+                }),
+            )),
+            Self::Opaque(error) => error.catch_projection(),
+            Self::ProviderUnavailable { target, reason } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                json!({
+                    "target": target,
+                    "reason": reason,
+                }),
+            )),
+            Self::Stream(error) => error.ordinary_catch_projection(),
+            Self::Execution(error) => error.ordinary_catch_projection(),
+            Self::Decode(_) | Self::ResourceLimitExceeded { .. } => None,
+        }
+    }
 }
 
 impl fmt::Display for FileCapabilityError {
@@ -98,81 +183,6 @@ impl Error for FileCapabilityError {
             | Self::ProviderUnavailable { .. }
             | Self::ResourceLimitExceeded { .. } => None,
         }
-    }
-}
-
-impl WirePayload for FileCapabilityError {
-    fn payload(&self) -> RuntimeErrorPayload {
-        match self {
-            Self::Decode(message) => RuntimeErrorPayload {
-                code: "InternalError".to_string(),
-                message: message.clone(),
-                status: None,
-                details: None,
-            },
-            Self::File(message) => RuntimeErrorPayload {
-                code: "std.file.FileError".to_string(),
-                message: message.clone(),
-                status: None,
-                details: None,
-            },
-            Self::Opaque(error) => error.payload(),
-            Self::ProviderUnavailable { target, reason } => RuntimeErrorPayload {
-                code: "std.service.ProviderUnavailableError".to_string(),
-                message: reason.clone(),
-                status: None,
-                details: Some(json!({
-                    "target": target,
-                    "reason": reason,
-                })),
-            },
-            Self::ResourceLimitExceeded {
-                resource,
-                reason,
-                limit,
-                current,
-                requested_delta,
-            } => RuntimeErrorPayload {
-                code: "ResourceLimitExceeded".to_string(),
-                message: format!("resource limit exceeded for {resource}: {reason}"),
-                status: None,
-                details: Some(json!({
-                    "resource": resource,
-                    "reason": reason,
-                    "limit": limit,
-                    "current": current,
-                    "requestedDelta": requested_delta,
-                })),
-            },
-            Self::Stream(error) => error.payload(),
-            Self::Execution(error) => error.payload(),
-        }
-    }
-
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
-        match self {
-            Self::File(message) => Some((
-                TypeIdentity::builtin("std.file.FileError"),
-                json!({
-                    "message": message,
-                }),
-            )),
-            Self::Opaque(error) => error.catch_projection(),
-            Self::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
-                json!({
-                    "target": target,
-                    "reason": reason,
-                }),
-            )),
-            Self::Stream(error) => error.catch_projection(),
-            Self::Execution(error) => error.catch_projection(),
-            Self::Decode(_) | Self::ResourceLimitExceeded { .. } => None,
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -227,30 +237,35 @@ pub trait FileCapabilityApi: Send + Sync {
         target: &'a str,
         input: Bytes,
         options: FileCreateOptions,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn read_file_wire<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn read_text_file<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn file_info<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 
     fn delete_file<'a>(
         &'a self,
         target: &'a str,
         file: &'a ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, ()>;
 
     fn create_file_from_chunks<'a>(
@@ -258,6 +273,7 @@ pub trait FileCapabilityApi: Send + Sync {
         target: &'a str,
         options: FileCreateOptions,
         next_chunk: FileChunkSource<'a>,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Value>;
 }
 
@@ -285,40 +301,53 @@ impl FileCapabilityContext {
         target: &str,
         input: Bytes,
         options: FileCreateOptions,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.create_file(target, input, options).await
+        self.inner
+            .create_file(target, input, options, execution_control)
+            .await
     }
 
     pub async fn read_file_wire(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.read_file_wire(target, file).await
+        self.inner
+            .read_file_wire(target, file, execution_control)
+            .await
     }
 
     pub async fn read_text_file(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.read_text_file(target, file).await
+        self.inner
+            .read_text_file(target, file, execution_control)
+            .await
     }
 
     pub async fn file_info(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
-        self.inner.file_info(target, file).await
+        self.inner.file_info(target, file, execution_control).await
     }
 
     pub async fn delete_file(
         &self,
         target: &str,
         file: &ImmutableFileRef,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<()> {
-        self.inner.delete_file(target, file).await
+        self.inner
+            .delete_file(target, file, execution_control)
+            .await
     }
 
     pub async fn create_file_from_chunks<'a>(
@@ -326,9 +355,10 @@ impl FileCapabilityContext {
         target: &'a str,
         options: FileCreateOptions,
         next_chunk: FileChunkSource<'a>,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityResult<Value> {
         self.inner
-            .create_file_from_chunks(target, options, next_chunk)
+            .create_file_from_chunks(target, options, next_chunk, execution_control)
             .await
     }
 }
@@ -338,6 +368,7 @@ pub trait FileSourceStreamApi: Send + Sync {
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'a, Option<Value>>;
 }
 
@@ -369,7 +400,9 @@ impl<'a> FileSourceStreamContext<'a> {
     pub fn next_file_source_stream_item<'b>(
         &'b self,
         stream: &'b Value,
+        execution_control: OwnedExecutionControl,
     ) -> FileCapabilityFuture<'b, Option<Value>> {
-        self.inner.next_file_source_stream_item(stream)
+        self.inner
+            .next_file_source_stream_item(stream, execution_control)
     }
 }

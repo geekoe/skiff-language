@@ -1,13 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::{
     error::{Result, RuntimeModelError as RuntimeError},
+    service_error::{CatchIdentity, RequestExceptionCause},
     value::{
         ActorRef, HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodTable,
         InterfaceMethodTarget, InterfaceValue, RuntimeBytes, RuntimeMap, RuntimeObject,
-        RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
+        RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier, RuntimeValueKey,
     },
 };
 
@@ -104,6 +105,27 @@ impl RequestHeap {
         self.alloc_node(HeapNode::Array(items))
     }
 
+    pub fn alloc_array_carriers(&mut self, items: Vec<RuntimeValueCarrier>) -> Result<HeapHandle> {
+        let (values, identities) = split_carriers(items);
+        self.alloc_node_with_carriers(
+            HeapNode::Array(values),
+            HeapCarrierLayout::Array(identities),
+        )
+    }
+
+    /// Allocates an internal one-value cell that retains the carrier identity.
+    ///
+    /// The cell is a request-local handoff primitive for owners such as the
+    /// in-process stream runtime. It is not an ordinary language Array and can
+    /// only be projected through [`RequestHeap::local_carrier_cell`].
+    pub fn alloc_local_carrier_cell(&mut self, carrier: RuntimeValueCarrier) -> Result<HeapHandle> {
+        let (value, identity) = carrier.into_parts();
+        self.alloc_node_with_carriers(
+            HeapNode::Array(vec![value]),
+            HeapCarrierLayout::LocalCarrierCell(identity),
+        )
+    }
+
     pub fn alloc_bytes(&mut self, bytes: impl Into<RuntimeBytes>) -> Result<HeapHandle> {
         self.alloc_node(HeapNode::Bytes(bytes.into()))
     }
@@ -112,16 +134,192 @@ impl RequestHeap {
         self.alloc_node(HeapNode::Object(object))
     }
 
+    pub fn alloc_object_carriers(
+        &mut self,
+        fields: BTreeMap<String, RuntimeValueCarrier>,
+    ) -> Result<HeapHandle> {
+        let mut values = RuntimeObjectFields::new();
+        let mut identities = BTreeMap::new();
+        for (field, carrier) in fields {
+            let (value, identity) = carrier.into_parts();
+            values.insert(field.clone(), value);
+            identities.insert(field, identity);
+        }
+        self.alloc_node_with_carriers(
+            HeapNode::Object(RuntimeObject::unshaped(values)),
+            HeapCarrierLayout::Object(identities),
+        )
+    }
+
     pub fn alloc_map(&mut self, map: RuntimeMap) -> Result<HeapHandle> {
         self.alloc_node(HeapNode::Map(map))
+    }
+
+    pub fn alloc_map_carriers(
+        &mut self,
+        entries: BTreeMap<RuntimeValueKey, RuntimeValueCarrier>,
+    ) -> Result<HeapHandle> {
+        let mut values = RuntimeMap::new();
+        let mut identities = BTreeMap::new();
+        for (key, carrier) in entries {
+            let (value, identity) = carrier.into_parts();
+            values.insert(key.clone(), value);
+            identities.insert(key, identity);
+        }
+        self.alloc_node_with_carriers(HeapNode::Map(values), HeapCarrierLayout::Map(identities))
     }
 
     pub fn alloc_interface(&mut self, value: InterfaceValue) -> Result<HeapHandle> {
         self.alloc_node(HeapNode::Interface(value))
     }
 
+    pub fn alloc_interface_with_local_payload_identity(
+        &mut self,
+        value: InterfaceValue,
+        payload_identity: Option<CatchIdentity>,
+    ) -> Result<HeapHandle> {
+        self.alloc_node_with_carriers(
+            HeapNode::Interface(value),
+            HeapCarrierLayout::Interface(payload_identity),
+        )
+    }
+
+    pub fn alloc_exception(
+        &mut self,
+        exception: crate::service_error::RequestException,
+    ) -> Result<HeapHandle> {
+        self.alloc_node(HeapNode::Exception(exception))
+    }
+
     pub fn get(&self, handle: HeapHandle) -> Result<&HeapNode> {
         self.slot(handle).map(|slot| &slot.node)
+    }
+
+    pub fn array_item_carrier(
+        &self,
+        handle: HeapHandle,
+        index: usize,
+    ) -> Result<Option<RuntimeValueCarrier>> {
+        let slot = self.slot(handle)?;
+        let HeapNode::Array(items) = &slot.node else {
+            return Ok(None);
+        };
+        if matches!(&slot.carriers, HeapCarrierLayout::LocalCarrierCell(_)) {
+            return Ok(None);
+        }
+        let Some(value) = items.get(index) else {
+            return Ok(None);
+        };
+        let identity = match &slot.carriers {
+            HeapCarrierLayout::Array(identities) => identities.get(index).cloned().flatten(),
+            _ => None,
+        };
+        Ok(Some(RuntimeValueCarrier::from_parts(
+            value.clone(),
+            identity,
+        )))
+    }
+
+    pub fn local_carrier_cell(&self, handle: HeapHandle) -> Result<Option<RuntimeValueCarrier>> {
+        let slot = self.slot(handle)?;
+        let (HeapNode::Array(items), HeapCarrierLayout::LocalCarrierCell(identity)) =
+            (&slot.node, &slot.carriers)
+        else {
+            return Ok(None);
+        };
+        let Some(value) = items.first() else {
+            return Err(RuntimeError::Decode(
+                "request-local carrier cell is empty".to_string(),
+            ));
+        };
+        Ok(Some(RuntimeValueCarrier::from_parts(
+            value.clone(),
+            identity.clone(),
+        )))
+    }
+
+    pub fn object_field_carrier(
+        &self,
+        handle: HeapHandle,
+        field: &str,
+    ) -> Result<Option<RuntimeValueCarrier>> {
+        let slot = self.slot(handle)?;
+        let (value, identity) = match &slot.node {
+            HeapNode::Object(object) => {
+                let Some(value) = object.fields().get(field) else {
+                    return Ok(None);
+                };
+                let identity = match &slot.carriers {
+                    HeapCarrierLayout::Object(identities) => {
+                        identities.get(field).cloned().flatten()
+                    }
+                    _ => None,
+                };
+                (value, identity)
+            }
+            HeapNode::Map(map) => {
+                let key = RuntimeValueKey::string(field);
+                let Some(value) = map.get(&key) else {
+                    return Ok(None);
+                };
+                let identity = match &slot.carriers {
+                    HeapCarrierLayout::Map(identities) => identities.get(&key).cloned().flatten(),
+                    _ => None,
+                };
+                (value, identity)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(RuntimeValueCarrier::from_parts(
+            value.clone(),
+            identity,
+        )))
+    }
+
+    pub fn map_entry_carrier(
+        &self,
+        handle: HeapHandle,
+        key: &RuntimeValueKey,
+    ) -> Result<Option<RuntimeValueCarrier>> {
+        let slot = self.slot(handle)?;
+        match &slot.node {
+            HeapNode::Map(map) => {
+                let Some(value) = map.get(key) else {
+                    return Ok(None);
+                };
+                let identity = match &slot.carriers {
+                    HeapCarrierLayout::Map(identities) => identities.get(key).cloned().flatten(),
+                    _ => None,
+                };
+                Ok(Some(RuntimeValueCarrier::from_parts(
+                    value.clone(),
+                    identity,
+                )))
+            }
+            HeapNode::Object(_) => self.object_field_carrier(handle, key.string_payload()),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn interface_local_payload_carrier(
+        &self,
+        handle: HeapHandle,
+    ) -> Result<Option<RuntimeValueCarrier>> {
+        let slot = self.slot(handle)?;
+        let HeapNode::Interface(interface) = &slot.node else {
+            return Ok(None);
+        };
+        let InterfaceCarrier::Local { payload, .. } = interface.carrier() else {
+            return Ok(None);
+        };
+        let identity = match &slot.carriers {
+            HeapCarrierLayout::Interface(identity) => identity.clone(),
+            _ => None,
+        };
+        Ok(Some(RuntimeValueCarrier::from_parts(
+            payload.clone(),
+            identity,
+        )))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -134,8 +332,16 @@ impl RequestHeap {
     }
 
     pub fn push_array_item(&mut self, handle: HeapHandle, value: RuntimeValue) -> Result<()> {
-        self.check_insert_without_cycle(handle, &value)?;
-        self.push_array_item_inner(handle, value)
+        self.push_array_item_carrier(handle, value.into())
+    }
+
+    pub fn push_array_item_carrier(
+        &mut self,
+        handle: HeapHandle,
+        value: RuntimeValueCarrier,
+    ) -> Result<()> {
+        self.check_insert_without_cycle(handle, value.value())?;
+        self.push_array_item_carrier_inner(handle, value)
     }
 
     pub fn set_array_item(
@@ -144,7 +350,17 @@ impl RequestHeap {
         index: usize,
         value: RuntimeValue,
     ) -> Result<()> {
-        self.check_insert_without_cycle(handle, &value)?;
+        self.set_array_item_carrier(handle, index, value.into())
+    }
+
+    pub fn set_array_item_carrier(
+        &mut self,
+        handle: HeapHandle,
+        index: usize,
+        value: RuntimeValueCarrier,
+    ) -> Result<()> {
+        self.check_insert_without_cycle(handle, value.value())?;
+        let (value, identity) = value.into_parts();
         let (old_bytes, new_bytes) = {
             let slot = self.slot(handle)?;
             let HeapNode::Array(items) = &slot.node else {
@@ -172,6 +388,18 @@ impl RequestHeap {
                 ));
             };
             items[index] = value;
+            match &mut slot.carriers {
+                HeapCarrierLayout::Array(identities) => {
+                    identities[index] = identity;
+                }
+                carriers => {
+                    *carriers = HeapCarrierLayout::Array(array_identity_slots(items.len()));
+                    let HeapCarrierLayout::Array(identities) = carriers else {
+                        unreachable!("array carrier layout was just initialized");
+                    };
+                    identities[index] = identity;
+                }
+            }
             apply_estimated_bytes_replacement(&mut slot.estimated_bytes, old_bytes, new_bytes);
         }
         self.apply_stats_estimated_bytes_replacement(old_bytes, new_bytes);
@@ -179,6 +407,11 @@ impl RequestHeap {
     }
 
     pub fn pop_array_item(&mut self, handle: HeapHandle) -> Result<RuntimeValue> {
+        self.pop_array_item_carrier(handle)
+            .map(RuntimeValueCarrier::into_value)
+    }
+
+    pub fn pop_array_item_carrier(&mut self, handle: HeapHandle) -> Result<RuntimeValueCarrier> {
         let popped_bytes = {
             let slot = self.slot(handle)?;
             let HeapNode::Array(items) = &slot.node else {
@@ -189,7 +422,7 @@ impl RequestHeap {
             items.last().map(estimate_array_item_bytes).unwrap_or(0)
         };
 
-        let popped = {
+        let (popped, identity) = {
             let slot = self.slot_mut(handle)?;
             let HeapNode::Array(items) = &mut slot.node else {
                 return Err(RuntimeError::Decode(
@@ -197,15 +430,19 @@ impl RequestHeap {
                 ));
             };
             let popped = items.pop().unwrap_or(RuntimeValue::Null);
+            let identity = match &mut slot.carriers {
+                HeapCarrierLayout::Array(identities) => identities.pop().flatten(),
+                _ => None,
+            };
             if popped_bytes > 0 {
                 slot.estimated_bytes = slot.estimated_bytes.saturating_sub(popped_bytes);
             }
-            popped
+            (popped, identity)
         };
         if popped_bytes > 0 {
             self.stats.estimated_bytes = self.stats.estimated_bytes.saturating_sub(popped_bytes);
         }
-        Ok(popped)
+        Ok(RuntimeValueCarrier::from_parts(popped, identity))
     }
 
     pub fn set_map_entry(
@@ -214,7 +451,17 @@ impl RequestHeap {
         key: RuntimeValueKey,
         value: RuntimeValue,
     ) -> Result<bool> {
-        self.check_insert_without_cycle(handle, &value)?;
+        self.set_map_entry_carrier(handle, key, value.into())
+    }
+
+    pub fn set_map_entry_carrier(
+        &mut self,
+        handle: HeapHandle,
+        key: RuntimeValueKey,
+        value: RuntimeValueCarrier,
+    ) -> Result<bool> {
+        self.check_insert_without_cycle(handle, value.value())?;
+        let (value, identity) = value.into_parts();
         let plan = {
             let slot = self.slot(handle)?;
             match &slot.node {
@@ -253,7 +500,13 @@ impl RequestHeap {
                 }
             }
         };
-        match plan {
+        let identity_key = match &plan {
+            MapEntrySetPlan::Map { .. } => CollectionIdentityKey::Map(key.clone()),
+            MapEntrySetPlan::ObjectField { field, .. } => {
+                CollectionIdentityKey::Object(field.clone())
+            }
+        };
+        let existed = match plan {
             MapEntrySetPlan::Map {
                 existed,
                 old_bytes,
@@ -266,7 +519,9 @@ impl RequestHeap {
                 new_bytes,
             } => self
                 .set_object_field_with_bytes(handle, field, value, existed, old_bytes, new_bytes),
-        }
+        }?;
+        self.set_collection_identity(handle, identity_key, identity)?;
+        Ok(existed)
     }
 
     pub fn delete_map_entry(&mut self, handle: HeapHandle, key: &RuntimeValueKey) -> Result<bool> {
@@ -304,6 +559,9 @@ impl RequestHeap {
                 ));
             };
             let existed = map.remove(key).is_some();
+            if let HeapCarrierLayout::Map(identities) = &mut slot.carriers {
+                identities.remove(key);
+            }
             if old_bytes > 0 {
                 slot.estimated_bytes = slot.estimated_bytes.saturating_sub(old_bytes);
             }
@@ -321,7 +579,17 @@ impl RequestHeap {
         field: String,
         value: RuntimeValue,
     ) -> Result<bool> {
-        self.check_insert_without_cycle(handle, &value)?;
+        self.set_object_field_carrier(handle, field, value.into())
+    }
+
+    pub fn set_object_field_carrier(
+        &mut self,
+        handle: HeapHandle,
+        field: String,
+        value: RuntimeValueCarrier,
+    ) -> Result<bool> {
+        self.check_insert_without_cycle(handle, value.value())?;
+        let (value, identity) = value.into_parts();
         let plan = {
             let slot = self.slot(handle)?;
             match &slot.node {
@@ -360,7 +628,11 @@ impl RequestHeap {
                 }
             }
         };
-        match plan {
+        let identity_key = match &plan {
+            ObjectFieldSetPlan::Object { .. } => CollectionIdentityKey::Object(field.clone()),
+            ObjectFieldSetPlan::MapEntry { key, .. } => CollectionIdentityKey::Map(key.clone()),
+        };
+        let existed = match plan {
             ObjectFieldSetPlan::Object {
                 existed,
                 old_bytes,
@@ -373,7 +645,9 @@ impl RequestHeap {
                 old_bytes,
                 new_bytes,
             } => self.set_map_entry_with_bytes(handle, key, value, existed, old_bytes, new_bytes),
-        }
+        }?;
+        self.set_collection_identity(handle, identity_key, identity)?;
+        Ok(existed)
     }
 
     fn set_map_entry_with_bytes(
@@ -478,6 +752,9 @@ impl RequestHeap {
                 ));
             };
             let existed = map.remove(key).is_some();
+            if let HeapCarrierLayout::Map(identities) = &mut slot.carriers {
+                identities.remove(key);
+            }
             if old_bytes > 0 {
                 slot.estimated_bytes = slot.estimated_bytes.saturating_sub(old_bytes);
             }
@@ -503,6 +780,9 @@ impl RequestHeap {
                 ));
             };
             let existed = object.fields_mut().remove(field).is_some();
+            if let HeapCarrierLayout::Object(identities) = &mut slot.carriers {
+                identities.remove(field);
+            }
             if old_bytes > 0 {
                 slot.estimated_bytes = slot.estimated_bytes.saturating_sub(old_bytes);
             }
@@ -599,6 +879,15 @@ impl RequestHeap {
     }
 
     fn alloc_node(&mut self, node: HeapNode) -> Result<HeapHandle> {
+        let carriers = HeapCarrierLayout::for_node(&node);
+        self.alloc_node_with_carriers(node, carriers)
+    }
+
+    fn alloc_node_with_carriers(
+        &mut self,
+        node: HeapNode,
+        carriers: HeapCarrierLayout,
+    ) -> Result<HeapHandle> {
         let estimated_bytes = estimate_heap_node_bytes(&node);
         self.check_node_limit()?;
         self.check_estimated_bytes_limit(estimated_bytes)?;
@@ -616,6 +905,7 @@ impl RequestHeap {
             generation: INITIAL_GENERATION,
             estimated_bytes,
             node,
+            carriers,
         });
         self.stats.node_count += 1;
         self.stats.estimated_bytes = self.stats.estimated_bytes.saturating_add(estimated_bytes);
@@ -681,7 +971,17 @@ impl RequestHeap {
             .saturating_add(new_bytes);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn push_array_item_inner(&mut self, handle: HeapHandle, value: RuntimeValue) -> Result<()> {
+        self.push_array_item_carrier_inner(handle, value.into())
+    }
+
+    fn push_array_item_carrier_inner(
+        &mut self,
+        handle: HeapHandle,
+        value: RuntimeValueCarrier,
+    ) -> Result<()> {
+        let (value, identity) = value.into_parts();
         let item_bytes = {
             let slot = self.slot(handle)?;
             let HeapNode::Array(_) = &slot.node else {
@@ -701,6 +1001,14 @@ impl RequestHeap {
                 ));
             };
             items.push(value);
+            match &mut slot.carriers {
+                HeapCarrierLayout::Array(identities) => identities.push(identity),
+                carriers => {
+                    let mut identities = array_identity_slots(items.len().saturating_sub(1));
+                    identities.push(identity);
+                    *carriers = HeapCarrierLayout::Array(identities);
+                }
+            }
             slot.estimated_bytes = slot.estimated_bytes.saturating_add(item_bytes);
         }
         self.stats.estimated_bytes = self.stats.estimated_bytes.saturating_add(item_bytes);
@@ -732,6 +1040,12 @@ impl RequestHeap {
             HeapNode::Interface(value) => {
                 self.interface_value_contains_reachable(value, target, visiting)?
             }
+            HeapNode::Exception(exception) => match exception.cause() {
+                RequestExceptionCause::Local { value } => {
+                    self.value_contains_reachable(value.value(), target, visiting)?
+                }
+                RequestExceptionCause::OpaqueService { .. } => false,
+            },
         };
         visiting.remove(&start);
         Ok(reachable)
@@ -747,7 +1061,6 @@ impl RequestHeap {
             InterfaceCarrier::Local { payload, .. } => {
                 self.value_contains_reachable(payload, target, visiting)
             }
-            InterfaceCarrier::Remote { .. } => Ok(false),
             InterfaceCarrier::CallbackCapability(_) => Ok(false),
         }
     }
@@ -776,6 +1089,38 @@ impl RequestHeap {
             RuntimeValue::Heap(handle) => self.is_reachable_inner(*handle, target, visiting),
             _ => Ok(false),
         }
+    }
+
+    fn set_collection_identity(
+        &mut self,
+        handle: HeapHandle,
+        key: CollectionIdentityKey,
+        identity: Option<CatchIdentity>,
+    ) -> Result<()> {
+        let slot = self.slot_mut(handle)?;
+        match key {
+            CollectionIdentityKey::Object(field) => match &mut slot.carriers {
+                HeapCarrierLayout::Object(identities) => {
+                    identities.insert(field, identity);
+                }
+                carriers => {
+                    let mut identities = BTreeMap::new();
+                    identities.insert(field, identity);
+                    *carriers = HeapCarrierLayout::Object(identities);
+                }
+            },
+            CollectionIdentityKey::Map(key) => match &mut slot.carriers {
+                HeapCarrierLayout::Map(identities) => {
+                    identities.insert(key, identity);
+                }
+                carriers => {
+                    let mut identities = BTreeMap::new();
+                    identities.insert(key, identity);
+                    *carriers = HeapCarrierLayout::Map(identities);
+                }
+            },
+        }
+        Ok(())
     }
 
     fn slot(&self, handle: HeapHandle) -> Result<&HeapSlot> {
@@ -817,6 +1162,17 @@ pub fn deep_clone_runtime_value(
     Ok(cloned)
 }
 
+pub fn deep_clone_runtime_value_carrier(
+    heap: &mut RequestHeap,
+    carrier: &RuntimeValueCarrier,
+) -> Result<RuntimeValueCarrier> {
+    let value = deep_clone_runtime_value(heap, carrier.value())?;
+    Ok(RuntimeValueCarrier::from_parts(
+        value,
+        carrier.catch_identity().cloned(),
+    ))
+}
+
 pub fn deep_clone_runtime_value_between_heaps(
     source: &RequestHeap,
     dest: &mut RequestHeap,
@@ -826,6 +1182,18 @@ pub fn deep_clone_runtime_value_between_heaps(
     let cloned = context.clone_value(source, dest, value, 0)?;
     dest.record_clone_depth(context.max_depth)?;
     Ok(cloned)
+}
+
+pub fn deep_clone_runtime_value_carrier_between_heaps(
+    source: &RequestHeap,
+    dest: &mut RequestHeap,
+    carrier: &RuntimeValueCarrier,
+) -> Result<RuntimeValueCarrier> {
+    let value = deep_clone_runtime_value_between_heaps(source, dest, carrier.value())?;
+    Ok(RuntimeValueCarrier::from_parts(
+        value,
+        carrier.catch_identity().cloned(),
+    ))
 }
 
 #[derive(Default)]
@@ -873,7 +1241,9 @@ impl CloneContext {
             )));
         }
 
-        let node = heap.get(handle)?.clone();
+        let slot = heap.slot(handle)?.clone();
+        let carriers = slot.carriers;
+        let node = slot.node;
         let cloned_node = match node {
             HeapNode::Bytes(bytes) => HeapNode::Bytes(bytes),
             HeapNode::Array(items) => {
@@ -905,9 +1275,22 @@ impl CloneContext {
             HeapNode::Interface(value) => {
                 HeapNode::Interface(self.clone_interface_value(heap, &value, depth + 1)?)
             }
+            HeapNode::Exception(exception) => {
+                let cloned = match exception.cause() {
+                    RequestExceptionCause::Local { value } => {
+                        let cloned_value = self.clone_value(heap, value.value(), depth + 1)?;
+                        let identity = value.catch_identity().cloned();
+                        exception.map_local_value(|_| {
+                            RuntimeValueCarrier::from_parts(cloned_value, identity)
+                        })
+                    }
+                    RequestExceptionCause::OpaqueService { .. } => exception,
+                };
+                HeapNode::Exception(cloned)
+            }
         };
 
-        let cloned_handle = heap.alloc_node(cloned_node)?;
+        let cloned_handle = heap.alloc_node_with_carriers(cloned_node, carriers)?;
         self.active.remove(&handle);
         self.cloned.insert(handle, cloned_handle);
         Ok(cloned_handle)
@@ -928,15 +1311,6 @@ impl CloneContext {
                 concrete_type: concrete_type.clone(),
                 method_table: method_table.clone(),
                 payload: self.clone_value(heap, payload, depth)?,
-            },
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-            } => InterfaceCarrier::Remote {
-                dependency_ref: dependency_ref.clone(),
-                public_instance_key: public_instance_key.clone(),
-                operations: operations.clone(),
             },
             InterfaceCarrier::CallbackCapability(capability) => {
                 InterfaceCarrier::CallbackCapability(capability.clone())
@@ -993,7 +1367,9 @@ impl CrossHeapCloneContext {
             )));
         }
 
-        let node = source.get(handle)?.clone();
+        let slot = source.slot(handle)?.clone();
+        let carriers = slot.carriers;
+        let node = slot.node;
         let cloned_node = match node {
             HeapNode::Bytes(bytes) => HeapNode::Bytes(bytes),
             HeapNode::Array(items) => {
@@ -1031,9 +1407,23 @@ impl CrossHeapCloneContext {
             HeapNode::Interface(value) => {
                 HeapNode::Interface(self.clone_interface_value(source, dest, &value, depth + 1)?)
             }
+            HeapNode::Exception(exception) => {
+                let cloned = match exception.cause() {
+                    RequestExceptionCause::Local { value } => {
+                        let cloned_value =
+                            self.clone_value(source, dest, value.value(), depth + 1)?;
+                        let identity = value.catch_identity().cloned();
+                        exception.map_local_value(|_| {
+                            RuntimeValueCarrier::from_parts(cloned_value, identity)
+                        })
+                    }
+                    RequestExceptionCause::OpaqueService { .. } => exception,
+                };
+                HeapNode::Exception(cloned)
+            }
         };
 
-        let cloned_handle = dest.alloc_node(cloned_node)?;
+        let cloned_handle = dest.alloc_node_with_carriers(cloned_node, carriers)?;
         self.active.remove(&handle);
         self.cloned.insert(handle, cloned_handle);
         Ok(cloned_handle)
@@ -1056,15 +1446,6 @@ impl CrossHeapCloneContext {
                 method_table: method_table.clone(),
                 payload: self.clone_value(source, dest, payload, depth)?,
             },
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-            } => InterfaceCarrier::Remote {
-                dependency_ref: dependency_ref.clone(),
-                public_instance_key: public_instance_key.clone(),
-                operations: operations.clone(),
-            },
             InterfaceCarrier::CallbackCapability(capability) => {
                 InterfaceCarrier::CallbackCapability(capability.clone())
             }
@@ -1085,6 +1466,41 @@ struct HeapSlot {
     #[allow(dead_code)]
     estimated_bytes: usize,
     node: HeapNode,
+    carriers: HeapCarrierLayout,
+}
+
+#[derive(Clone, Debug)]
+enum HeapCarrierLayout {
+    None,
+    Array(Vec<Option<CatchIdentity>>),
+    Object(BTreeMap<String, Option<CatchIdentity>>),
+    Map(BTreeMap<RuntimeValueKey, Option<CatchIdentity>>),
+    Interface(Option<CatchIdentity>),
+    LocalCarrierCell(Option<CatchIdentity>),
+}
+
+impl HeapCarrierLayout {
+    fn for_node(node: &HeapNode) -> Self {
+        match node {
+            HeapNode::Array(items) => Self::Array(array_identity_slots(items.len())),
+            HeapNode::Object(object) => Self::Object(
+                object
+                    .fields()
+                    .keys()
+                    .cloned()
+                    .map(|field| (field, None))
+                    .collect(),
+            ),
+            HeapNode::Map(map) => Self::Map(map.keys().cloned().map(|key| (key, None)).collect()),
+            HeapNode::Interface(_) => Self::Interface(None),
+            HeapNode::Bytes(_) | HeapNode::Exception(_) => Self::None,
+        }
+    }
+}
+
+enum CollectionIdentityKey {
+    Object(String),
+    Map(RuntimeValueKey),
 }
 
 enum MapEntrySetPlan {
@@ -1171,7 +1587,27 @@ fn estimate_heap_node_bytes(node: &HeapNode) -> usize {
             total.saturating_add(estimate_map_entry_bytes(key, value))
         }),
         HeapNode::Interface(value) => estimate_interface_value_bytes(value),
+        HeapNode::Exception(exception) => {
+            let stack_bytes = exception.stack().len().saturating_mul(NODE_OVERHEAD_BYTES);
+            NODE_OVERHEAD_BYTES
+                .saturating_add(stack_bytes)
+                .saturating_add(exception.correlation().trace_id.len())
+                .saturating_add(exception.correlation().error_id.len())
+        }
     }
+}
+
+fn split_carriers(
+    carriers: Vec<RuntimeValueCarrier>,
+) -> (Vec<RuntimeValue>, Vec<Option<CatchIdentity>>) {
+    carriers
+        .into_iter()
+        .map(RuntimeValueCarrier::into_parts)
+        .unzip()
+}
+
+fn array_identity_slots(len: usize) -> Vec<Option<CatchIdentity>> {
+    vec![None; len]
 }
 
 fn estimate_interface_value_bytes(value: &InterfaceValue) -> usize {
@@ -1187,14 +1623,6 @@ fn estimate_interface_value_bytes(value: &InterfaceValue) -> usize {
             .saturating_add(concrete_type.len())
             .saturating_add(estimate_interface_method_table_bytes(method_table))
             .saturating_add(estimate_value_bytes(payload)),
-        InterfaceCarrier::Remote {
-            dependency_ref,
-            public_instance_key,
-            operations,
-        } => base
-            .saturating_add(dependency_ref.len())
-            .saturating_add(public_instance_key.len())
-            .saturating_add(estimate_remote_operation_table_bytes(operations)),
         InterfaceCarrier::CallbackCapability(capability) => base
             .saturating_add(capability.owner_runtime_replica_id().len())
             .saturating_add(capability.owner_activation_id().len())
@@ -1214,19 +1642,6 @@ fn estimate_interface_method_table_bytes(table: &InterfaceMethodTable) -> usize 
                 .saturating_add(INTERFACE_METHOD_SLOT_OVERHEAD_BYTES)
                 .saturating_add(slot.method_abi_id().len())
                 .saturating_add(estimate_interface_method_target_bytes(slot.target()))
-        }))
-}
-
-fn estimate_remote_operation_table_bytes(table: &crate::value::RemoteOperationTable) -> usize {
-    table
-        .id()
-        .len()
-        .saturating_add(table.interface_abi_id().len())
-        .saturating_add(table.slots().iter().fold(0usize, |total, slot| {
-            total
-                .saturating_add(INTERFACE_METHOD_SLOT_OVERHEAD_BYTES)
-                .saturating_add(slot.method_abi_id().len())
-                .saturating_add(slot.operation_abi_id().len())
         }))
 }
 

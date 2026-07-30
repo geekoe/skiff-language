@@ -180,17 +180,22 @@ release-mode HTTP 调用必须使用 selector headers：
 node scripts/deploy-runtime-stack.mjs \
   --remote <user@host> \
   --only all \
+  --http-max-request-bytes 67108864 \
+  --http-max-response-bytes 8388608 \
   --runtime-binary build/cargo-target/x86_64-unknown-linux-gnu/release/runtime
 ```
 
 示例 router/runtime 配置：
 
 ```yaml
-artifacts:
-  root: /opt/skiff/artifacts
+artifactsPath: /opt/skiff/artifacts
+serviceDb:
+  mongoUrl: mongodb://127.0.0.1:27017/?replicaSet=rs0
 releaseMode: true
 http:
   port: 4000
+  maxRequestBytes: 67108864
+  maxResponseBytes: 8388608
 runtime:
   port: 4001
   path: /runtime

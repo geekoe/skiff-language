@@ -71,13 +71,9 @@ impl<'ctx, 'req> BinaryHttpIngressHandler<'ctx, 'req> {
                 .execute_http_adapter(execution_input, eval_invocation)
                 .await
                 .map(|response| {
-                    BoundaryResponse::end(
+                    BoundaryResponse::http(
                         response.body,
-                        Some(http_response_metadata_from_boundary(
-                            response.status,
-                            response.headers,
-                        )),
-                        None,
+                        http_response_metadata_from_boundary(response.status, response.headers),
                     )
                 })?)
         }
@@ -114,13 +110,9 @@ impl<'ctx, 'req> BinaryHttpIngressHandler<'ctx, 'req> {
             .execute_binary_http(execution_input, eval_invocation)
             .await
             .map(|response| {
-                BoundaryResponse::end(
+                BoundaryResponse::http(
                     response.body,
-                    Some(http_response_metadata_from_boundary(
-                        response.status,
-                        response.headers,
-                    )),
-                    None,
+                    http_response_metadata_from_boundary(response.status, response.headers),
                 )
             })?)
     }

@@ -126,7 +126,7 @@ impl ProjectionPackageCallableSignatureFacts {
 #[cfg(test)]
 mod tests {
     use skiff_artifact_model::{
-        ContractTypeId, PackageCallableParameter, PackageCallableSignature, PackageTypeRef,
+        PackageCallableParameter, PackageCallableSignature, PackageSchemaTypeId, PackageTypeRef,
         TypeRefIr,
     };
 
@@ -152,11 +152,11 @@ mod tests {
     fn duplicate_callable_signature_key_is_rejected() {
         let key = ProjectionPackageCallableKey::new("run", "api", 0);
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: Vec::new(),
             return_type: PackageTypeRef::Local {
-                local_type: TypeRefIr::native("string"),
+                local_type: TypeRefIr::builtin("string"),
             },
-            throw_types: Vec::new(),
             may_suspend: false,
         };
         let error = ProjectionPackageCallableSignatureFacts::try_from_entries([
@@ -168,12 +168,42 @@ mod tests {
     }
 
     #[test]
-    fn projection_input_preserves_exact_nested_contract_signature() {
+    fn callable_signature_wire_contains_only_open_error_surface() {
+        let signature = PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: Vec::new(),
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("void"),
+            },
+            may_suspend: false,
+        };
+        let wire = serde_json::to_value(&signature).unwrap();
+
+        assert_eq!(
+            wire.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["typeParams", "parameters", "returnType", "maySuspend"]
+        );
+        assert!(wire.get("throwTypes").is_none());
+
+        let mut legacy = wire;
+        legacy["throwTypes"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<PackageCallableSignature>(legacy).is_err());
+    }
+
+    #[test]
+    fn projection_input_preserves_exact_nested_package_schema_signature() {
         let key = ProjectionPackageCallableKey::new("submit", "api", 4);
-        let contract = PackageTypeRef::Contract {
-            contract_type_id: ContractTypeId::new("contract-type:payments:User"),
+        let contract = PackageTypeRef::PackageSchema {
+            package_id: "example.com/models".to_string(),
+            stable_schema_key: "api.User".to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new("package-type:models:User"),
         };
         let signature = PackageCallableSignature {
+            type_params: Vec::new(),
             parameters: vec![PackageCallableParameter {
                 name: "users".to_string(),
                 ty: PackageTypeRef::Nullable {
@@ -184,7 +214,6 @@ mod tests {
                 },
             }],
             return_type: contract,
-            throw_types: Vec::new(),
             may_suspend: true,
         };
         let facts = ProjectionPackageCallableSignatureFacts::try_from_entries([(

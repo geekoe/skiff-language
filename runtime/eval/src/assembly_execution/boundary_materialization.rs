@@ -1,8 +1,8 @@
 use skiff_artifact_model::{
-    BoundaryErrorContract, BoundaryOperationDescriptor, BoundaryValueCarrier,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractSchemaType,
-    ContractTypeId, ContractTypeRef, ServiceContract,
+    BoundaryOperationDescriptor, BoundaryValueCarrier, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractTypeRef,
 };
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableCapabilityHooks, ServiceLinkableContractPlan,
     ServiceLinkableMaterializationError, ServiceLinkableMaterializationScope,
@@ -12,11 +12,7 @@ use skiff_runtime_model::{
     runtime_value::RuntimeValue,
 };
 
-use crate::{
-    error::{replace_user_exception_preserving_diagnostics, Result, RuntimeError, UserException},
-    exceptions::user_exception_for_catch,
-    runtime_ops::{runtime_from_wire, runtime_to_wire},
-};
+use crate::error::{Result, RuntimeError};
 
 /// Canonical, lane-neutral materialization plan for one resolved service operation.
 ///
@@ -26,17 +22,15 @@ pub(crate) struct CanonicalServiceBoundaryPlan<'a> {
     operation: &'a BoundaryOperationDescriptor,
     parameter_plans: Vec<DirectionalMaterializationPlan<'a>>,
     return_plan: DirectionalMaterializationPlan<'a>,
-    error_plan: Option<DirectionalMaterializationPlan<'a>>,
 }
 
 impl<'a> CanonicalServiceBoundaryPlan<'a> {
     pub(crate) fn new(
         operation: &'a BoundaryOperationDescriptor,
-        contract: &'a ServiceContract,
+        schema: &'a PackageSchemaRecords,
         arg_count: usize,
     ) -> Result<Self> {
         preflight_boundary_contract(operation, arg_count)?;
-        let schema = &contract.boundary_schema;
         let parameter_plans = operation
             .contract
             .parameters
@@ -60,31 +54,10 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
             operation.operation_id.as_str(),
             "return",
         )?;
-        let error_plan = match &operation.contract.errors {
-            BoundaryErrorContract::None => None,
-            BoundaryErrorContract::Typed {
-                payload_type,
-                value_plan,
-            } => Some(DirectionalMaterializationPlan::new(
-                payload_type,
-                schema,
-                value_plan,
-                BoundaryValueOwner::Provider,
-                operation.operation_id.as_str(),
-                "typed error",
-            )?),
-            BoundaryErrorContract::Unsupported { reason } => {
-                return Err(RuntimeError::Unsupported(format!(
-                    "canonical service operation {} has unsupported error semantics: {reason:?}",
-                    operation.operation_id
-                )));
-            }
-        };
         Ok(Self {
             operation,
             parameter_plans,
             return_plan,
-            error_plan,
         })
     }
 
@@ -106,6 +79,11 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
             .collect()
     }
 
+    /// Detaches a successful result or forwards an already-fixed failure.
+    ///
+    /// A provider lane must export its actual error while the provider heap is
+    /// alive. Reaching this shared boundary with any other error is an
+    /// execution invariant violation, never a legacy error pass-through.
     pub(crate) fn materialize_provider_result(
         &self,
         result: Result<RuntimeValue>,
@@ -117,9 +95,13 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
             Ok(value) => {
                 self.materialize_success(&value, provider_heap, caller_heap, provider_hooks)
             }
-            Err(error) => {
-                self.materialize_provider_error(error, provider_heap, caller_heap, provider_hooks)
+            Err(RuntimeError::FixedServiceFailure(error)) => {
+                Err(RuntimeError::FixedServiceFailure(error))
             }
+            Err(_) => Err(RuntimeError::InvalidArtifact(format!(
+                "canonical service operation {} returned an unfixed provider failure",
+                self.operation.operation_id
+            ))),
         }
     }
 
@@ -134,64 +116,6 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
         self.return_plan
             .materialize(value, provider_heap, caller_heap, provider_hooks)
     }
-
-    /// Classifies a provider failure and detaches only a contract-declared typed payload.
-    ///
-    /// Runtime failures retain their original class, undeclared typed throws become protocol
-    /// failures, and declared payload mismatches are reported by the same directional planner.
-    pub(crate) fn materialize_provider_error(
-        &self,
-        error: RuntimeError,
-        provider_heap: &mut RequestHeap,
-        caller_heap: &mut RequestHeap,
-        provider_hooks: &dyn ServiceLinkableCapabilityHooks,
-    ) -> Result<RuntimeValue> {
-        let Some(exception) = user_exception_for_catch(&error).cloned() else {
-            return Err(error);
-        };
-        let Some(error_plan) = &self.error_plan else {
-            return Err(RuntimeError::Protocol {
-                target: self.operation.operation_id.to_string(),
-                message:
-                    "provider threw a typed business error but the contract declares no typed error"
-                        .to_string(),
-            });
-        };
-        let mut envelope = exception.envelope();
-        let payload = envelope
-            .as_object()
-            .and_then(|object| object.get("error"))
-            .cloned()
-            .ok_or_else(|| RuntimeError::Protocol {
-                target: self.operation.operation_id.to_string(),
-                message: "provider typed error has no payload".to_string(),
-            })?;
-        let provider_value = runtime_from_wire(&payload, provider_heap).map_err(|error| {
-            self.protocol_error(format!("typed error payload decode failed: {error}"))
-        })?;
-        let caller_value =
-            error_plan.materialize(&provider_value, provider_heap, caller_heap, provider_hooks)?;
-        let detached_payload = runtime_to_wire(&caller_value, caller_heap).map_err(|error| {
-            self.protocol_error(format!("typed error payload encode failed: {error}"))
-        })?;
-        envelope
-            .as_object_mut()
-            .expect("validated user exception envelope is an object")
-            .insert("error".to_string(), detached_payload);
-        let detached_exception =
-            UserException::from_runtime_parts(exception.actual_payload_type().clone(), envelope);
-        Err(replace_user_exception_preserving_diagnostics(
-            error,
-            detached_exception,
-        ))
-    }
-
-    fn protocol_error(&self, message: impl Into<String>) -> RuntimeError {
-        RuntimeError::Protocol {
-            target: self.operation.operation_id.to_string(),
-            message: message.into(),
-        }
-    }
 }
 
 struct DirectionalMaterializationPlan<'a> {
@@ -204,7 +128,7 @@ struct DirectionalMaterializationPlan<'a> {
 impl<'a> DirectionalMaterializationPlan<'a> {
     fn new(
         ty: &'a ContractTypeRef,
-        schema: &'a std::collections::BTreeMap<ContractTypeId, ContractSchemaType>,
+        schema: &'a PackageSchemaRecords,
         value_plan: &'a BoundaryValuePlan,
         detached_owner: BoundaryValueOwner,
         operation: &str,

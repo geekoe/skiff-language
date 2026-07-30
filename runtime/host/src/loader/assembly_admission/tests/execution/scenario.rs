@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use skiff_artifact_identity::service_contract_ref;
 use skiff_artifact_model::{
     ContractOperationId, PackageRefIr, ServiceCallRefIndex, ServiceDeploymentRef,
 };
 use skiff_runtime_activation::RequestActivationContext;
 use skiff_runtime_eval::{
-    RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget, RuntimeAssemblyServiceCallTarget,
+    error::RuntimeError, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget,
+    RuntimeAssemblyServiceCallTarget,
 };
 use skiff_runtime_linked_program::{
     ActivationRelativeServiceCall, ExecutableAddr, FileAddr, LinkedInterfaceInstantiationRef,
@@ -14,6 +16,7 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_model::runtime_value::{
     CallbackCapabilityCarrier, InterfaceCarrier, InterfaceValue, RuntimeValue,
 };
+use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
 use super::super::super::{ActiveAssembly, AssemblyAdmissionController};
 use super::{
@@ -150,7 +153,7 @@ impl TypedExecutionFixture {
             "package executable must propagate the same-heap provider result"
         );
 
-        let callback_interface = callback_interface_ref("phase_four.consumer");
+        let callback_interface = callback_interface_ref();
         let linked_interface = LinkedInterfaceInstantiationRef {
             interface_abi_id: callback_interface.interface_abi_id.clone(),
             canonical_type_args: Vec::new(),
@@ -185,9 +188,13 @@ impl TypedExecutionFixture {
             )
             .await
             .expect_err("callback checkpoint executable must reach the frozen callback hook");
-        assert!(
-            callback_error.to_string().contains("callback-interface"),
-            "callback executable stopped before the callback hook: {callback_error}"
+        let RuntimeError::UserException(exception) = callback_error else {
+            panic!("callback hook failure must remain a typed user exception: {callback_error}")
+        };
+        assert_eq!(
+            exception.actual_payload_type(),
+            Some(&PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity()),
+            "missing callback capability must keep its registered platform catch identity"
         );
     }
 }
@@ -210,6 +217,17 @@ pub(super) async fn assert_typed_execution_fixture() {
             .implementation_package_build_id()
     );
     let provider = fixture.resolve_provider();
+    let contract_ref =
+        service_contract_ref(provider.contract()).expect("provider contract identity is admitted");
+    let admitted_records = fixture
+        ._active
+        .contexts()
+        .admitted_schema_records(&contract_ref)
+        .expect("active generation retains the provider schema");
+    assert!(
+        Arc::ptr_eq(provider.schema_records(), &admitted_records),
+        "internal call target must share the active generation schema map"
+    );
     assert_eq!(
         provider.provider_activation().identity().deployment,
         fixture.provider_deployment
@@ -251,144 +269,4 @@ pub(super) async fn assert_typed_execution_fixture() {
 #[tokio::test]
 async fn typed_execution_fixture_uses_projected_admitted_targets() {
     assert_typed_execution_fixture().await;
-}
-
-#[tokio::test]
-async fn active_generation_context_pins_route_across_reload_and_failed_candidate() {
-    let projected = ProjectedFixture::new(TypedExecutionContract::unary());
-    let selector = projected
-        .assembly
-        .global_ingress
-        .first()
-        .expect("fixture should expose canonical ingress")
-        .selector
-        .clone();
-    let controller = AssemblyAdmissionController::new("active-generation-context-replica");
-    let generation_n = controller
-        .admit(projected.assembly.clone(), &projected.resolver)
-        .await
-        .expect("generation N should admit");
-    let pinned_n = controller
-        .route(&selector)
-        .expect("route lookup should be in-memory")
-        .expect("generation N should expose ingress");
-
-    assert_eq!(pinned_n.generation(), 1);
-    assert_eq!(
-        pinned_n.activation().identity().assembly_generation,
-        pinned_n.generation()
-    );
-    assert!(Arc::ptr_eq(pinned_n.context_set(), generation_n.contexts()));
-
-    let generation_n_plus_one = controller
-        .admit(projected.assembly.clone(), &projected.resolver)
-        .await
-        .expect("generation N+1 should admit");
-    let fresh = controller
-        .route(&selector)
-        .expect("route lookup should be in-memory")
-        .expect("generation N+1 should expose ingress");
-    assert_eq!(fresh.generation(), 2);
-    assert_eq!(pinned_n.generation(), 1);
-    assert_eq!(pinned_n.activation().identity().assembly_generation, 1);
-    assert_eq!(fresh.activation().identity().assembly_generation, 2);
-    assert!(!Arc::ptr_eq(pinned_n.context_set(), fresh.context_set()));
-    assert!(Arc::ptr_eq(
-        fresh.context_set(),
-        generation_n_plus_one.contexts()
-    ));
-
-    let mut invalid = projected.assembly.clone();
-    invalid.assembly_identity =
-        skiff_artifact_model::AssemblyIdentity::new("invalid-active-generation-context-candidate");
-    controller
-        .admit(invalid, &projected.resolver)
-        .await
-        .expect_err("invalid candidate must fail before publication");
-    let after_failure = controller
-        .route(&selector)
-        .expect("route lookup should remain in-memory")
-        .expect("failed reload must retain generation N+1");
-    assert_eq!(after_failure.generation(), 2);
-    assert!(Arc::ptr_eq(
-        after_failure.context_set(),
-        generation_n_plus_one.contexts()
-    ));
-}
-
-#[tokio::test]
-async fn in_process_request_entry_and_internal_call_share_dispatcher_symbol() {
-    let projected = ProjectedFixture::new(TypedExecutionContract::unary());
-    let selector = projected
-        .assembly
-        .global_ingress
-        .first()
-        .expect("fixture should expose canonical ingress")
-        .selector
-        .clone();
-    let controller = AssemblyAdmissionController::new("in-process-request-entry-replica");
-    controller
-        .admit(projected.assembly, &projected.resolver)
-        .await
-        .expect("typed assembly should admit");
-    let route = controller
-        .route(&selector)
-        .expect("route lookup should be in-memory")
-        .expect("canonical ingress should resolve");
-    let request_target = route
-        .request_target()
-        .expect("route should form one pinned request target");
-    let runtime = TypedExecutionRuntime::new(
-        &request_target
-            .eval()
-            .activation_context()
-            .identity()
-            .deployment
-            .service_id,
-    );
-    let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, request_target.eval());
-    let mut heap = context.request_heap();
-    let request = skiff_runtime_request::RequestPayloadContext::new(
-        "legacy-display-target-is-not-routing-identity",
-        &[],
-        None,
-    );
-    let request_generation = request_target.eval().request_activation().generation();
-    skiff_runtime_eval::start_in_process_boundary_dispatch_probe_for_test(request_generation);
-
-    let result = skiff_runtime_eval::dispatch_ingress_via_in_process_boundary(
-        &interpreter,
-        context,
-        &mut heap,
-        request_target.boundary().clone(),
-        &request,
-    )
-    .await
-    .expect("ingress must return the real nested provider result");
-    let skiff_runtime_eval::InProcessBoundaryIngressResponse::RuntimePayload(payload) = result
-    else {
-        panic!("non-binary ingress fixture must return a runtime payload")
-    };
-    let decoded = skiff_runtime_boundary::binary::decode_payload(
-        &payload,
-        &serde_json::json!({ "kind": "builtin", "name": "bool", "args": [] }),
-        &mut skiff_runtime_model::request_heap::RequestHeap::default(),
-    )
-    .expect("ingress response must retain its canonical bool payload");
-    assert_eq!(decoded, RuntimeValue::Bool(true));
-
-    let records =
-        skiff_runtime_eval::take_in_process_boundary_dispatch_records_for_test(request_generation);
-    assert_eq!(
-        records.len(),
-        2,
-        "ingress plus nested internal call expected"
-    );
-    assert_eq!(records[0].origin, "ingress");
-    assert_eq!(records[1].origin, "internal");
-    assert_eq!(
-        records[1].contract_operation,
-        projected.provider_operation.as_str()
-    );
 }

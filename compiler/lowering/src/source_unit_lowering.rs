@@ -73,6 +73,11 @@ pub(super) fn source_ast_hash(source: &str) -> Result<String> {
                 })?;
                 push_hash_token(&mut bytes, "number", &number.to_string());
             }
+            TokenKind::Duration(value) => push_hash_token(
+                &mut bytes,
+                "duration",
+                &format!("{}{}", value.digits, value.unit.suffix()),
+            ),
             TokenKind::String(value) => push_hash_token(&mut bytes, "string", &value),
             TokenKind::Symbol(value) => push_hash_token(&mut bytes, "symbol", &value),
             TokenKind::Eof => push_hash_token(&mut bytes, "eof", ""),

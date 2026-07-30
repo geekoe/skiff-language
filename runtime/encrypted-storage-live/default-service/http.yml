@@ -1,0 +1,189 @@
+default.insert:
+  method: POST
+  path: /encrypted-live/default/insert
+  kind: rawHttp
+  handler: internal.live.insertOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.insert-many:
+  method: POST
+  path: /encrypted-live/default/insert-many
+  kind: rawHttp
+  handler: internal.live.insertMany
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.insert-bulk:
+  method: POST
+  path: /encrypted-live/default/insert-bulk
+  kind: rawHttp
+  handler: internal.live.insertBulk
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.read:
+  method: POST
+  path: /encrypted-live/default/read
+  kind: rawHttp
+  handler: internal.live.readOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.project:
+  method: POST
+  path: /encrypted-live/default/project
+  kind: rawHttp
+  handler: internal.live.projectOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.replace-key:
+  method: POST
+  path: /encrypted-live/default/replace-key
+  kind: rawHttp
+  handler: internal.live.replaceByKey
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.replace-query:
+  method: POST
+  path: /encrypted-live/default/replace-query
+  kind: rawHttp
+  handler: internal.live.replaceByQuery
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.upsert:
+  method: POST
+  path: /encrypted-live/default/upsert
+  kind: rawHttp
+  handler: internal.live.upsertOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.update:
+  method: POST
+  path: /encrypted-live/default/update
+  kind: rawHttp
+  handler: internal.live.updateOne
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.scan:
+  method: POST
+  path: /encrypted-live/default/scan
+  kind: rawHttp
+  handler: internal.live.scan
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.rewrite:
+  method: POST
+  path: /encrypted-live/default/rewrite
+  kind: rawHttp
+  handler: internal.live.rewrite
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.rewrite-batch:
+  method: POST
+  path: /encrypted-live/default/rewrite-batch
+  kind: rawHttp
+  handler: internal.live.rewriteBatch
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.identity-date:
+  method: POST
+  path: /encrypted-live/default/identity-date
+  kind: rawHttp
+  handler: internal.live.identityDate
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.archive-insert:
+  method: POST
+  path: /encrypted-live/default/archive-insert
+  kind: rawHttp
+  handler: internal.live.insertArchive
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.archive-read:
+  method: POST
+  path: /encrypted-live/default/archive-read
+  kind: rawHttp
+  handler: internal.live.readArchive
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.archive-scan:
+  method: POST
+  path: /encrypted-live/default/archive-scan
+  kind: rawHttp
+  handler: internal.live.scanArchive
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.archive-rewrite:
+  method: POST
+  path: /encrypted-live/default/archive-rewrite
+  kind: rawHttp
+  handler: internal.live.rewriteArchive
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.archive-rewrite-batch:
+  method: POST
+  path: /encrypted-live/default/archive-rewrite-batch
+  kind: rawHttp
+  handler: internal.live.rewriteArchiveBatch
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.archive-restore:
+  method: POST
+  path: /encrypted-live/default/archive-restore
+  kind: rawHttp
+  handler: internal.live.restoreArchive
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.barrier:
+  method: POST
+  path: /encrypted-live/default/barrier
+  kind: rawHttp
+  handler: internal.live.activateBarrier
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+default.barrier-status:
+  method: POST
+  path: /encrypted-live/default/barrier-status
+  kind: rawHttp
+  handler: internal.live.barrierStatus
+  guard: internal.live.guard
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

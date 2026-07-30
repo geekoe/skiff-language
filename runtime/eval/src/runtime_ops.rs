@@ -8,17 +8,24 @@ use skiff_runtime_boundary::{
     plan::BoundaryUse,
 };
 use skiff_runtime_model::{
-    request_heap::{deep_clone_runtime_value, RequestHeap},
+    request_heap::{
+        deep_clone_runtime_value, deep_clone_runtime_value_carrier,
+        deep_clone_runtime_value_carrier_between_heaps, RequestHeap,
+    },
     runtime_value::{
         runtime_map_has as model_runtime_map_has, runtime_values_equal, HeapNode, RuntimeBytes,
-        RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
+        RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
+        RuntimeValueKey,
     },
-    type_plan::RuntimeTypePlan,
+    service_error::CatchIdentity,
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use crate::error::{Result, RuntimeError};
 
-use super::runtime_value_view::RuntimeValueView;
+use super::{
+    exceptions::exact_target_accepts_catch_identity, runtime_value_view::RuntimeValueView,
+};
 
 pub fn runtime_from_wire(value: &Value, heap: &mut RequestHeap) -> Result<RuntimeValue> {
     Ok(decode_untyped_wire_json(value, heap)?)
@@ -37,6 +44,17 @@ pub fn runtime_from_wire_required_plan(
         BoundaryUse::TypedJson,
         heap,
     )
+}
+
+pub fn runtime_carrier_from_wire_required_plan(
+    value: &Value,
+    expected_type: Option<&RuntimeTypePlan>,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let expected_type = required_type(expected_type, boundary)?;
+    let value = runtime_from_wire_required_plan(value, Some(expected_type), boundary, heap)?;
+    runtime_carrier_for_plan(value, expected_type, boundary, heap)
 }
 
 pub fn runtime_from_wire_required_plan_with_use(
@@ -66,6 +84,270 @@ pub fn runtime_from_wire_internal_handle_required_plan(
 
 pub fn runtime_to_wire(value: &RuntimeValue, heap: &RequestHeap) -> Result<Value> {
     Ok(encode_untyped_wire_json(value, heap)?)
+}
+
+pub fn runtime_carrier_for_plan(
+    value: impl Into<RuntimeValueCarrier>,
+    expected_type: &RuntimeTypePlan,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let value = value.into();
+    if let (Some(actual), Some(expected)) = (value.catch_identity(), expected_type.catch_identity())
+    {
+        if !exact_target_accepts_catch_identity(actual, expected) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{boundary} materialized value carries an exact identity that does not match its linked type plan"
+            )));
+        }
+    }
+    let carrier = match expected_type.node() {
+        RuntimeTypeNode::Alias(inner) | RuntimeTypeNode::Nullable(inner) => {
+            if matches!(value.value(), RuntimeValue::Null) {
+                value
+            } else {
+                runtime_carrier_for_plan(value, inner, boundary, heap)?
+            }
+        }
+        RuntimeTypeNode::Union(branches) => {
+            let matching = if let Some(identity) = value.catch_identity() {
+                branches
+                    .iter()
+                    .filter(|branch| runtime_plan_accepts_identity(branch, identity))
+                    .collect::<Vec<_>>()
+            } else {
+                let mut matching = Vec::new();
+                for branch in branches {
+                    let matches = RuntimeBoundaryContract::default()
+                        .codec_for_expected(branch, BoundaryUse::TypedJson, boundary)
+                        .to_wire_json(value.value(), heap)
+                        .is_ok();
+                    if matches {
+                        matching.push(branch);
+                    }
+                }
+                matching
+            };
+            match matching.as_slice() {
+                [branch] => runtime_carrier_for_plan(value, branch, boundary, heap)?,
+                [] => Err(RuntimeError::InvalidArtifact(format!(
+                    "{boundary} materialized value does not match any exact linked type-plan branch"
+                )))?,
+                _ => Err(RuntimeError::InvalidArtifact(format!(
+                    "{boundary} materialized value ambiguously matches multiple linked type-plan branches"
+                )))?,
+            }
+        }
+        RuntimeTypeNode::Representation { payload, .. } => runtime_carrier_for_plan(
+            RuntimeValueCarrier::unidentified(value.into_value()),
+            payload,
+            boundary,
+            heap,
+        )?,
+        RuntimeTypeNode::Array(item_plan) => {
+            let (value, identity) = value.into_parts();
+            let RuntimeValue::Heap(handle) = value else {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "{boundary} materialized Array is not a heap value"
+                )));
+            };
+            let item_count = match heap.get(handle)? {
+                HeapNode::Array(items) => items.len(),
+                _ => {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "{boundary} materialized Array has a non-array heap node"
+                    )))
+                }
+            };
+            for index in 0..item_count {
+                let item = heap.array_item_carrier(handle, index)?.ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(format!(
+                        "{boundary} materialized Array item {index} is missing"
+                    ))
+                })?;
+                let item = runtime_carrier_for_plan(item, item_plan, boundary, heap)?;
+                heap.set_array_item_carrier(handle, index, item)?;
+            }
+            RuntimeValueCarrier::from_parts(RuntimeValue::Heap(handle), identity)
+        }
+        RuntimeTypeNode::Map {
+            value: value_plan, ..
+        } => {
+            let (value, identity) = value.into_parts();
+            let RuntimeValue::Heap(handle) = value else {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "{boundary} materialized Map is not a heap value"
+                )));
+            };
+            let keys = match heap.get(handle)? {
+                HeapNode::Map(map) => map.keys().cloned().collect::<Vec<_>>(),
+                _ => {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "{boundary} materialized Map has a non-map heap node"
+                    )))
+                }
+            };
+            for key in keys {
+                let item = heap.map_entry_carrier(handle, &key)?.ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(format!(
+                        "{boundary} materialized Map entry is missing"
+                    ))
+                })?;
+                let item = runtime_carrier_for_plan(item, value_plan, boundary, heap)?;
+                heap.set_map_entry_carrier(handle, key, item)?;
+            }
+            RuntimeValueCarrier::from_parts(RuntimeValue::Heap(handle), identity)
+        }
+        RuntimeTypeNode::Record { fields, .. } => {
+            let (value, identity) = value.into_parts();
+            let RuntimeValue::Heap(handle) = value else {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "{boundary} materialized record is not a heap value"
+                )));
+            };
+            if !matches!(heap.get(handle)?, HeapNode::Object(_) | HeapNode::Map(_)) {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "{boundary} materialized record has a non-record heap node"
+                )));
+            }
+            for field in fields {
+                let Some(value) = heap.object_field_carrier(handle, &field.name)? else {
+                    continue;
+                };
+                let value = runtime_carrier_for_plan(value, &field.ty, boundary, heap)?;
+                heap.set_object_field_carrier(handle, field.name.clone(), value)?;
+            }
+            RuntimeValueCarrier::from_parts(RuntimeValue::Heap(handle), identity)
+        }
+        _ => value,
+    };
+    match expected_type.catch_identity() {
+        Some(identity) => Ok(RuntimeValueCarrier::identified(
+            carrier.into_value(),
+            identity.clone(),
+        )),
+        None => Ok(carrier),
+    }
+}
+
+pub fn runtime_representation_wrap_for_plan(
+    value: RuntimeValueCarrier,
+    target: &RuntimeTypePlan,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let RuntimeTypeNode::Representation { payload, .. } = target.node() else {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} target did not resolve to an exact representation plan"
+        )));
+    };
+    let Some(CatchIdentity::Nominal(target_identity)) = target.catch_identity() else {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} target representation is missing its exact nominal identity"
+        )));
+    };
+    if runtime_plan_has_unidentified_representation(payload) {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} target representation payload plan is missing an exact identity"
+        )));
+    }
+
+    if let Some(actual) = value.catch_identity() {
+        if !runtime_plan_accepts_identity(payload, actual) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{boundary} payload carries an exact identity that conflicts with the representation payload plan"
+            )));
+        }
+    }
+    let mut validation_heap = RequestHeap::new(heap.limits().clone());
+    let validation_value =
+        deep_clone_runtime_value_carrier_between_heaps(heap, &mut validation_heap, &value)?;
+    let validated = runtime_carrier_for_plan(
+        validation_value.clone(),
+        payload,
+        boundary,
+        &mut validation_heap,
+    )?;
+    if value.catch_identity().is_none() && validated.catch_identity().is_some() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{boundary} payload is missing the exact identity required by the representation payload plan"
+        )));
+    }
+    let validation_plan = value
+        .catch_identity()
+        .and_then(|identity| runtime_plan_for_identity(payload, identity))
+        .unwrap_or(payload);
+    RuntimeBoundaryContract::default()
+        .codec_for_expected(validation_plan, BoundaryUse::TypedJson, boundary)
+        .to_wire_json(validation_value.value(), &mut validation_heap)?;
+
+    Ok(RuntimeValueCarrier::identified(
+        value.into_value(),
+        CatchIdentity::Nominal(target_identity.clone()),
+    ))
+}
+
+fn runtime_plan_has_unidentified_representation(plan: &RuntimeTypePlan) -> bool {
+    match plan.node() {
+        RuntimeTypeNode::Representation { .. } if plan.catch_identity().is_none() => true,
+        RuntimeTypeNode::Alias(inner)
+        | RuntimeTypeNode::Nullable(inner)
+        | RuntimeTypeNode::Stream(inner)
+        | RuntimeTypeNode::Array(inner)
+        | RuntimeTypeNode::Representation { payload: inner, .. } => {
+            runtime_plan_has_unidentified_representation(inner)
+        }
+        RuntimeTypeNode::Union(branches) => branches
+            .iter()
+            .any(runtime_plan_has_unidentified_representation),
+        RuntimeTypeNode::Map { key, value } => {
+            runtime_plan_has_unidentified_representation(key)
+                || runtime_plan_has_unidentified_representation(value)
+        }
+        RuntimeTypeNode::Record { fields, .. } => fields
+            .iter()
+            .any(|field| runtime_plan_has_unidentified_representation(&field.ty)),
+        _ => false,
+    }
+}
+
+fn runtime_plan_accepts_identity(plan: &RuntimeTypePlan, identity: &CatchIdentity) -> bool {
+    if plan
+        .catch_identity()
+        .is_some_and(|target| exact_target_accepts_catch_identity(identity, target))
+    {
+        return true;
+    }
+    match plan.node() {
+        RuntimeTypeNode::Alias(inner) | RuntimeTypeNode::Nullable(inner) => {
+            runtime_plan_accepts_identity(inner, identity)
+        }
+        RuntimeTypeNode::Union(branches) => branches
+            .iter()
+            .any(|branch| runtime_plan_accepts_identity(branch, identity)),
+        _ => false,
+    }
+}
+
+fn runtime_plan_for_identity<'a>(
+    plan: &'a RuntimeTypePlan,
+    identity: &CatchIdentity,
+) -> Option<&'a RuntimeTypePlan> {
+    if plan
+        .catch_identity()
+        .is_some_and(|target| exact_target_accepts_catch_identity(identity, target))
+    {
+        return Some(plan);
+    }
+    match plan.node() {
+        RuntimeTypeNode::Alias(inner) | RuntimeTypeNode::Nullable(inner) => {
+            runtime_plan_for_identity(inner, identity)
+        }
+        RuntimeTypeNode::Union(branches) => branches
+            .iter()
+            .find_map(|branch| runtime_plan_for_identity(branch, identity)),
+        _ => None,
+    }
 }
 
 pub fn runtime_to_wire_required_plan(
@@ -185,6 +467,11 @@ pub fn runtime_truthy(value: &RuntimeValue, heap: &RequestHeap) -> Result<bool> 
                     value.diagnostic_label()
                 )));
             }
+            HeapNode::Exception(_) => {
+                return Err(RuntimeError::Decode(
+                    "request-local exception cannot be coerced to bool".to_string(),
+                ));
+            }
         },
     })
 }
@@ -223,6 +510,11 @@ pub fn runtime_stringify_key(value: &RuntimeValue, heap: &RequestHeap) -> Result
                     "{} cannot be stringified",
                     value.diagnostic_label()
                 )));
+            }
+            HeapNode::Exception(_) => {
+                return Err(RuntimeError::Decode(
+                    "request-local exception cannot be stringified".to_string(),
+                ));
             }
             _ => serde_json::to_string(&runtime_to_wire(value, heap)?)?,
         },
@@ -302,10 +594,48 @@ pub fn runtime_member_access(
                 "{} does not support ordinary member access",
                 value.diagnostic_label()
             ))),
+            HeapNode::Exception(exception) => match field {
+                "error" => exception
+                    .local_value()
+                    .map(|payload| payload.value().clone())
+                    .ok_or_else(|| {
+                        RuntimeError::Decode(
+                            "request-local Exception.error has no caller-local payload".to_string(),
+                        )
+                    }),
+                _ => Err(RuntimeError::Decode(format!(
+                    "unknown request-local Exception member `{field}`"
+                ))),
+            },
             _ => Ok(RuntimeValue::Null),
         },
         _ => Ok(RuntimeValue::Null),
     }
+}
+
+pub fn runtime_member_access_carrier(
+    value: &RuntimeValueCarrier,
+    field: &str,
+    heap: &RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let RuntimeValue::Heap(handle) = value.value() else {
+        return Ok(RuntimeValue::Null.into());
+    };
+    if let HeapNode::Exception(exception) = heap.get(*handle)? {
+        return match field {
+            "error" => exception.local_value().cloned().ok_or_else(|| {
+                RuntimeError::Decode(
+                    "request-local Exception.error has no caller-local payload".to_string(),
+                )
+            }),
+            _ => Err(RuntimeError::Decode(format!(
+                "unknown request-local Exception member `{field}`"
+            ))),
+        };
+    }
+    Ok(heap
+        .object_field_carrier(*handle, field)?
+        .unwrap_or_else(|| RuntimeValue::Null.into()))
 }
 
 #[allow(dead_code)]
@@ -323,12 +653,43 @@ pub fn runtime_array_items(
     RuntimeValueView::new(value, heap).array_items()
 }
 
+pub fn runtime_array_item_carriers(
+    value: &RuntimeValueCarrier,
+    heap: &RequestHeap,
+) -> Result<Option<Vec<RuntimeValueCarrier>>> {
+    let RuntimeValue::Heap(handle) = value.value() else {
+        return Ok(None);
+    };
+    let HeapNode::Array(items) = heap.get(*handle)? else {
+        return Ok(None);
+    };
+    (0..items.len())
+        .map(|index| heap.array_item_carrier(*handle, index))
+        .collect::<skiff_runtime_model::error::Result<Vec<_>>>()
+        .map(|items| Some(items.into_iter().flatten().collect()))
+        .map_err(RuntimeError::from)
+}
+
 pub fn runtime_map_get(
     receiver: &RuntimeValue,
     key: &RuntimeValue,
     heap: &RequestHeap,
 ) -> Result<RuntimeValue> {
     RuntimeValueView::new(receiver, heap).map_get(key)
+}
+
+pub fn runtime_map_get_carrier(
+    receiver: &RuntimeValueCarrier,
+    key: &RuntimeValueCarrier,
+    heap: &RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    let RuntimeValue::Heap(handle) = receiver.value() else {
+        return Ok(RuntimeValue::Null.into());
+    };
+    let key = RuntimeValueKey::string(runtime_stringify_key(key.value(), heap)?);
+    Ok(heap
+        .map_entry_carrier(*handle, &key)?
+        .unwrap_or_else(|| RuntimeValue::Null.into()))
 }
 
 pub fn runtime_map_has(
@@ -343,12 +704,28 @@ pub fn runtime_deep_clone(value: &RuntimeValue, heap: &mut RequestHeap) -> Resul
     Ok(deep_clone_runtime_value(heap, value)?)
 }
 
+pub fn runtime_deep_clone_carrier(
+    value: &RuntimeValueCarrier,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    Ok(deep_clone_runtime_value_carrier(heap, value)?)
+}
+
 pub fn runtime_object_from_fields(
     fields: BTreeMap<String, RuntimeValue>,
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
     let object = RuntimeObject::unshaped(fields);
     Ok(RuntimeValue::Heap(heap.alloc_object(object)?))
+}
+
+pub fn runtime_object_from_carriers(
+    fields: BTreeMap<String, RuntimeValueCarrier>,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    Ok(RuntimeValueCarrier::unidentified(RuntimeValue::Heap(
+        heap.alloc_object_carriers(fields)?,
+    )))
 }
 
 pub fn runtime_map_from_entries(
@@ -358,6 +735,15 @@ pub fn runtime_map_from_entries(
     Ok(RuntimeValue::Heap(heap.alloc_map(entries)?))
 }
 
+pub fn runtime_map_from_carriers(
+    entries: BTreeMap<RuntimeValueKey, RuntimeValueCarrier>,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    Ok(RuntimeValueCarrier::unidentified(RuntimeValue::Heap(
+        heap.alloc_map_carriers(entries)?,
+    )))
+}
+
 pub fn runtime_array_from_items(
     items: Vec<RuntimeValue>,
     heap: &mut RequestHeap,
@@ -365,10 +751,254 @@ pub fn runtime_array_from_items(
     Ok(RuntimeValue::Heap(heap.alloc_array(items)?))
 }
 
+pub fn runtime_array_from_carriers(
+    items: Vec<RuntimeValueCarrier>,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValueCarrier> {
+    Ok(RuntimeValueCarrier::unidentified(RuntimeValue::Heap(
+        heap.alloc_array_carriers(items)?,
+    )))
+}
+
 fn stringify_number(value: f64) -> String {
     if value.is_finite() && value.fract() == 0.0 {
         format!("{value:.0}")
     } else {
         value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{InstructionSourceSite, SourcePosition, SourceSpanRef};
+    use skiff_runtime_model::{
+        addr::{FileAddr, TypeAddr, UnitAddr},
+        service_error::{
+            CatchIdentity, ErrorCorrelation, ExceptionStackFrame, InternalErrorPayload,
+            LocalExecutionTypeIdentity, NominalTypeIdentity, OpaqueServiceError, RequestException,
+            ServiceErrorEnvelope,
+        },
+        type_plan::{RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan},
+    };
+
+    use super::*;
+
+    fn local_identity(type_index: usize) -> CatchIdentity {
+        CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+            LocalExecutionTypeIdentity {
+                addr: TypeAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::loaded_file(0),
+                    type_index,
+                },
+                type_arguments: Vec::new(),
+            },
+        ))
+    }
+
+    fn identified_string_plan(identity: CatchIdentity) -> RuntimeTypePlan {
+        RuntimeTypePlan {
+            label: "identified string".to_string(),
+            named_type_name: None,
+            identity: RuntimeTypeIdentityPlan {
+                catch_identity: Some(identity),
+                ..RuntimeTypeIdentityPlan::default()
+            },
+            node: RuntimeTypeNode::String,
+        }
+    }
+
+    fn exception_with_payload(payload: RuntimeValueCarrier) -> RequestException {
+        RequestException::local(
+            payload,
+            InstructionSourceSite::Source {
+                span: SourceSpanRef {
+                    source_id: 1,
+                    start: SourcePosition::new(2, 3),
+                    end: SourcePosition::new(2, 8),
+                },
+            },
+            vec![ExceptionStackFrame::Local {
+                site: InstructionSourceSite::Source {
+                    span: SourceSpanRef {
+                        source_id: 1,
+                        start: SourcePosition::new(2, 3),
+                        end: SourcePosition::new(2, 8),
+                    },
+                },
+            }],
+            ErrorCorrelation {
+                trace_id: "trace:exception-member".to_string(),
+                error_id: "error:exception-member".to_string(),
+            },
+        )
+        .expect("request-local exception")
+    }
+
+    fn exception_without_local_payload() -> RequestException {
+        let envelope = ServiceErrorEnvelope::InternalError {
+            payload: InternalErrorPayload {
+                message: "Internal service error".to_string(),
+                trace_id: "trace:opaque-exception-member".to_string(),
+                error_id: "error:opaque-exception-member".to_string(),
+            },
+        };
+        let opaque = OpaqueServiceError::decode(
+            serde_json::to_vec(&envelope).expect("fixed service error bytes"),
+        )
+        .expect("fixed service error");
+        RequestException::imported(
+            opaque,
+            None,
+            InstructionSourceSite::Source {
+                span: SourceSpanRef {
+                    source_id: 2,
+                    start: SourcePosition::new(4, 1),
+                    end: SourcePosition::new(4, 6),
+                },
+            },
+            vec![ExceptionStackFrame::RemoteBoundary {
+                service_id: "example.service".to_string(),
+                operation_id: "operation:call".to_string(),
+                error_id: "error:opaque-exception-member".to_string(),
+            }],
+        )
+        .expect("opaque request-local exception")
+    }
+
+    #[test]
+    fn exception_error_member_returns_the_exact_local_payload_carrier() {
+        let identity = local_identity(7);
+        let mut heap = RequestHeap::default();
+        let payload_handle = heap
+            .alloc_object_carriers(BTreeMap::from([(
+                "reason".to_string(),
+                RuntimeValueCarrier::unidentified(RuntimeValue::from("denied")),
+            )]))
+            .expect("nominal record payload");
+        let payload =
+            RuntimeValueCarrier::identified(RuntimeValue::Heap(payload_handle), identity.clone());
+        let exception = heap
+            .alloc_exception(exception_with_payload(payload.clone()))
+            .expect("exception node");
+
+        let actual = runtime_member_access_carrier(
+            &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+            "error",
+            &heap,
+        )
+        .expect("Exception.error");
+
+        assert_eq!(actual, payload);
+        assert_eq!(actual.catch_identity(), Some(&identity));
+        assert_eq!(
+            runtime_member_access_carrier(&actual, "reason", &heap)
+                .expect("nominal payload field")
+                .value(),
+            &RuntimeValue::from("denied")
+        );
+        assert_eq!(
+            crate::exceptions::request_exception_for_rethrow(
+                &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+                &heap,
+            )
+            .expect("rethrow reads the unchanged exception"),
+            exception_with_payload(payload)
+        );
+    }
+
+    #[test]
+    fn exception_unknown_member_fails_closed() {
+        let payload =
+            RuntimeValueCarrier::identified(RuntimeValue::from("denied"), local_identity(8));
+        let mut heap = RequestHeap::default();
+        let exception = heap
+            .alloc_exception(exception_with_payload(payload))
+            .expect("exception node");
+
+        let error = runtime_member_access_carrier(
+            &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+            "stack",
+            &heap,
+        )
+        .expect_err("unknown Exception member must fail closed");
+
+        assert!(matches!(error, RuntimeError::Decode(message) if
+            message.contains("unknown request-local Exception member")));
+    }
+
+    #[test]
+    fn exception_error_member_without_a_local_payload_fails_closed() {
+        let mut heap = RequestHeap::default();
+        let exception = heap
+            .alloc_exception(exception_without_local_payload())
+            .expect("exception node");
+
+        let error = runtime_member_access_carrier(
+            &RuntimeValueCarrier::unidentified(RuntimeValue::Heap(exception)),
+            "error",
+            &heap,
+        )
+        .expect_err("opaque Exception.error must not expose encoded or redacted payload");
+
+        assert!(matches!(error, RuntimeError::Decode(message) if
+            message.contains("has no caller-local payload")));
+    }
+
+    #[test]
+    fn plan_materialization_uses_existing_nested_identity_before_shape() {
+        let first = local_identity(1);
+        let second = local_identity(2);
+        let union = RuntimeTypePlan::new(
+            "same-shape union",
+            None,
+            RuntimeTypeNode::Union(vec![
+                identified_string_plan(first),
+                identified_string_plan(second.clone()),
+            ]),
+        );
+        let record = RuntimeTypePlan::synthetic_request_record(vec![RuntimeRecordFieldPlan::new(
+            "value", union, true,
+        )]);
+        let mut heap = RequestHeap::default();
+        let handle = heap
+            .alloc_object_carriers(BTreeMap::from([(
+                "value".to_string(),
+                RuntimeValueCarrier::identified(RuntimeValue::from("payload"), second.clone()),
+            )]))
+            .expect("record");
+
+        runtime_carrier_for_plan(
+            RuntimeValue::Heap(handle),
+            &record,
+            "existing carrier",
+            &mut heap,
+        )
+        .expect("existing identity selects the exact branch");
+
+        assert_eq!(
+            heap.object_field_carrier(handle, "value")
+                .expect("record")
+                .expect("field")
+                .catch_identity(),
+            Some(&second)
+        );
+    }
+
+    #[test]
+    fn plan_materialization_rejects_a_conflicting_existing_identity() {
+        let first = local_identity(1);
+        let second = local_identity(2);
+        let plan = identified_string_plan(second);
+
+        let error = runtime_carrier_for_plan(
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), first),
+            &plan,
+            "conflicting carrier",
+            &mut RequestHeap::default(),
+        )
+        .expect_err("identity mismatch must fail closed");
+
+        assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
     }
 }

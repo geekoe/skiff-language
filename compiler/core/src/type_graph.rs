@@ -11,6 +11,7 @@ pub enum TypeGraphNodeKind {
     PublicationType,
     ServiceSymbol,
     PackageSymbol,
+    AppliedNominal,
     DbObjectSymbol,
     Record,
     Union,
@@ -101,11 +102,13 @@ impl TypeGraphAnalyzer {
 
     fn node_kind(&self, ty: &TypeRefIr) -> TypeGraphNodeKind {
         match ty {
-            TypeRefIr::Native { name, .. } => TypeGraphNodeKind::Native { name: name.clone() },
+            TypeRefIr::Builtin { name, .. } => TypeGraphNodeKind::Native { name: name.clone() },
             TypeRefIr::LocalType { .. } => TypeGraphNodeKind::LocalType,
             TypeRefIr::PublicationType { .. } => TypeGraphNodeKind::PublicationType,
             TypeRefIr::ServiceSymbol { .. } => TypeGraphNodeKind::ServiceSymbol,
             TypeRefIr::PackageSymbol { .. } => TypeGraphNodeKind::PackageSymbol,
+            TypeRefIr::PackageSchema { .. } => TypeGraphNodeKind::PackageSymbol,
+            TypeRefIr::AppliedNominal { .. } => TypeGraphNodeKind::AppliedNominal,
             TypeRefIr::DbObjectSymbol { .. } => TypeGraphNodeKind::DbObjectSymbol,
             TypeRefIr::Record { .. } => TypeGraphNodeKind::Record,
             TypeRefIr::Union { .. } => TypeGraphNodeKind::Union,
@@ -119,7 +122,7 @@ impl TypeGraphAnalyzer {
 
     fn apply_facts(&self, facts: &mut TypeGraphFacts, ty: &TypeRefIr) {
         match ty {
-            TypeRefIr::Native { name, .. } => {
+            TypeRefIr::Builtin { name, .. } => {
                 facts.contains_native = true;
                 if !self.schema_projectable_native_names.contains(name) {
                     facts.schema_projectable_plain_data = false;
@@ -137,8 +140,26 @@ impl TypeGraphAnalyzer {
                 facts.contains_service_symbol = true;
                 facts.schema_projectable_plain_data = false;
             }
-            TypeRefIr::PackageSymbol { .. } => {
+            TypeRefIr::PackageSymbol { .. } | TypeRefIr::PackageSchema { .. } => {
                 facts.contains_package_symbol = true;
+                facts.schema_projectable_plain_data = false;
+            }
+            TypeRefIr::AppliedNominal { base, .. } => {
+                use skiff_artifact_model::NominalTypeRefBaseIr;
+
+                match base {
+                    NominalTypeRefBaseIr::LocalType { .. }
+                    | NominalTypeRefBaseIr::PublicationType { .. } => {
+                        facts.contains_local_type = true;
+                    }
+                    NominalTypeRefBaseIr::ServiceSymbol { .. } => {
+                        facts.contains_service_symbol = true;
+                    }
+                    NominalTypeRefBaseIr::PackageSymbol { .. }
+                    | NominalTypeRefBaseIr::PackageSchema { .. } => {
+                        facts.contains_package_symbol = true;
+                    }
+                }
                 facts.schema_projectable_plain_data = false;
             }
             TypeRefIr::DbObjectSymbol { .. } => {
@@ -182,7 +203,7 @@ mod tests {
     }
 
     fn native(name: &str) -> TypeRefIr {
-        TypeRefIr::native(name)
+        TypeRefIr::builtin(name)
     }
 
     #[test]
@@ -290,7 +311,7 @@ mod tests {
         let ty = TypeRefIr::Record {
             fields: BTreeMap::from([(
                 "values".to_string(),
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "Array".to_string(),
                     args: vec![TypeRefIr::Nullable {
                         inner: Box::new(native("string")),

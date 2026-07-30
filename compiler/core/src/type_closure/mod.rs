@@ -1,11 +1,11 @@
 mod path;
 mod source;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{TypeDescriptorIr, TypeRefIr};
+use skiff_artifact_model::{NamedUnionBranchIr, TypeDescriptorIr, TypeRefIr};
 
-use crate::type_ref::type_ref_children;
+use crate::type_ref::{substitute_type_params_in_type_ref_ref, type_ref_children};
 
 pub use path::{
     NoTypeClosureGuards, RepresentationIndirectionGuards, TypeClosureGuardPolicy, TypeClosureTrace,
@@ -26,14 +26,6 @@ pub enum TypeClosureControl {
 pub struct TypeClosureVisit<'a> {
     pub module_path: &'a str,
     pub ty: &'a TypeRefIr,
-    pub trace: &'a TypeClosureTrace,
-    pub guarded: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct NativeDescriptorVisit<'a> {
-    pub nominal: &'a NominalTypeKey,
-    pub symbol: &'a str,
     pub trace: &'a TypeClosureTrace,
     pub guarded: bool,
 }
@@ -65,10 +57,6 @@ pub trait TypeClosurePolicy {
         _visit: TypeClosureVisit<'_>,
         _resolved: &ResolvedNominalType<'_>,
     ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn native_descriptor(&mut self, _visit: NativeDescriptorVisit<'_>) -> Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -131,6 +119,7 @@ where
         self.walk_descriptor(
             &resolved.key,
             &resolved.declaration.descriptor,
+            &BTreeMap::new(),
             &trace,
             false,
             &mut active,
@@ -161,6 +150,20 @@ where
         }
 
         if is_nominal_type_ref(ty) {
+            if let TypeRefIr::AppliedNominal { arguments, .. } = ty {
+                for (index, argument) in arguments.iter().enumerate() {
+                    self.walk_child(
+                        module_path,
+                        ty,
+                        argument,
+                        trace,
+                        TypeClosureTraceSegment::AppliedNominalArgument { index },
+                        guarded,
+                        active,
+                        policy,
+                    )?;
+                }
+            }
             return self.walk_nominal(visit, active, policy);
         }
 
@@ -236,9 +239,20 @@ where
             return Ok(());
         }
         active.insert(resolved.key.clone());
+        let substitutions = match visit.ty {
+            TypeRefIr::AppliedNominal { arguments, .. } => resolved
+                .declaration
+                .type_params
+                .iter()
+                .cloned()
+                .zip(arguments.iter().cloned())
+                .collect(),
+            _ => BTreeMap::new(),
+        };
         let result = self.walk_descriptor(
             &resolved.key,
             &resolved.declaration.descriptor,
+            &substitutions,
             &trace,
             visit.guarded,
             active,
@@ -252,6 +266,7 @@ where
         &self,
         nominal: &NominalTypeKey,
         descriptor: &TypeDescriptorIr,
+        substitutions: &BTreeMap<String, TypeRefIr>,
         trace: &TypeClosureTrace,
         guarded: bool,
         active: &mut BTreeSet<NominalTypeKey>,
@@ -261,19 +276,23 @@ where
         P: TypeClosurePolicy,
     {
         match descriptor {
-            TypeDescriptorIr::Alias { target } => self.walk_type_ref(
-                &nominal.module_path,
-                target,
-                &trace.child(TypeClosureTraceSegment::AliasTarget),
-                guarded,
-                active,
-                policy,
-            ),
+            TypeDescriptorIr::Alias { target } => {
+                let target = substitute_type_params_in_type_ref_ref(target, substitutions);
+                self.walk_type_ref(
+                    &nominal.module_path,
+                    &target,
+                    &trace.child(TypeClosureTraceSegment::AliasTarget),
+                    guarded,
+                    active,
+                    policy,
+                )
+            }
             TypeDescriptorIr::Record { fields } => {
                 for (name, field_ty) in fields {
+                    let field_ty = substitute_type_params_in_type_ref_ref(field_ty, substitutions);
                     self.walk_type_ref(
                         &nominal.module_path,
-                        field_ty,
+                        &field_ty,
                         &trace.child(TypeClosureTraceSegment::DeclarationField {
                             name: name.clone(),
                         }),
@@ -284,28 +303,55 @@ where
                 }
                 Ok(())
             }
-            TypeDescriptorIr::Union { variants } => {
-                for (index, variant) in variants.iter().enumerate() {
-                    self.walk_type_ref(
-                        &nominal.module_path,
-                        variant,
-                        &trace.child(TypeClosureTraceSegment::DeclarationVariant { index }),
-                        guarded,
-                        active,
-                        policy,
-                    )?;
+            TypeDescriptorIr::Representation { representation } => {
+                let representation =
+                    substitute_type_params_in_type_ref_ref(representation, substitutions);
+                self.walk_type_ref(
+                    &nominal.module_path,
+                    &representation,
+                    &trace.child(TypeClosureTraceSegment::RepresentationTarget),
+                    guarded,
+                    active,
+                    policy,
+                )
+            }
+            TypeDescriptorIr::Union { branches } => {
+                for (index, branch) in branches.iter().enumerate() {
+                    let branch_trace =
+                        trace.child(TypeClosureTraceSegment::NamedUnionBranch { index });
+                    match branch {
+                        NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                            let nominal_type =
+                                substitute_type_params_in_type_ref_ref(nominal_type, substitutions);
+                            self.walk_type_ref(
+                                &nominal.module_path,
+                                &nominal_type,
+                                &branch_trace
+                                    .child(TypeClosureTraceSegment::NamedUnionConcreteType),
+                                guarded,
+                                active,
+                                policy,
+                            )?;
+                        }
+                        NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                            let payload_type =
+                                substitute_type_params_in_type_ref_ref(payload_type, substitutions);
+                            self.walk_type_ref(
+                                &nominal.module_path,
+                                &payload_type,
+                                &branch_trace
+                                    .child(TypeClosureTraceSegment::NamedUnionSyntheticPayload),
+                                guarded,
+                                active,
+                                policy,
+                            )?;
+                        }
+                        NamedUnionBranchIr::Literal { .. } => {}
+                    }
                 }
                 Ok(())
             }
-            TypeDescriptorIr::Native { symbol } => self.call(
-                trace,
-                policy.native_descriptor(NativeDescriptorVisit {
-                    nominal,
-                    symbol,
-                    trace,
-                    guarded,
-                }),
-            ),
+            TypeDescriptorIr::Interface => Ok(()),
         }
     }
 

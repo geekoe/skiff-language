@@ -1,18 +1,24 @@
 #![allow(dead_code)]
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skiff_compiler::{
     PackageCompileError, PackageContractCompileDependency, PublishedPackageArtifact,
+    ServiceApiProjection, ServicePackageCompileError,
 };
 use skiff_compiler_input::{
     package_config::{
         discover_package_manifests_with_dependency_dirs, read_user_package_manifest,
         PackageConfigError, PackageManifestKey, PackageResolutionDirs, PACKAGE_CONFIG_FILE,
     },
-    InputAssemblyError,
+    read_service_package_root, CompilerPlatformSources, CompilerPlatformSourcesError,
+    InputAssemblyError, ServiceSourceConfigError,
 };
 use skiff_compiler_source::SourceCompileError;
+use skiff_deployment::storage::CanonicalArtifactStore;
 use thiserror::Error;
 
 use super::package_graph::PackageGraphCompiler;
@@ -58,6 +64,8 @@ impl PublishedPackageProject {
 #[derive(Debug, Error)]
 pub enum PackageProjectCompileError {
     #[error(transparent)]
+    PlatformSources(#[from] CompilerPlatformSourcesError),
+    #[error(transparent)]
     PackageConfig(#[from] PackageConfigError),
     #[error(transparent)]
     Input(#[from] InputAssemblyError),
@@ -65,6 +73,10 @@ pub enum PackageProjectCompileError {
     Source(#[from] SourceCompileError),
     #[error(transparent)]
     Compile(#[from] PackageCompileError),
+    #[error(transparent)]
+    ServiceCompile(#[from] ServicePackageCompileError),
+    #[error(transparent)]
+    ServiceConfig(#[from] ServiceSourceConfigError),
     #[error("package dependency {package_id}@{package_version} has no discovered package.yml")]
     MissingDependencyManifest {
         package_id: String,
@@ -79,8 +91,17 @@ pub enum PackageProjectCompileError {
     },
     #[error("package dependency graph contains a cycle: {coordinates}")]
     DependencyCycle { coordinates: String },
+    #[error(
+        "service root package {package_id}@{package_version} was already compiled as ordinary"
+    )]
+    ServiceRootAlreadyCompiled {
+        package_id: String,
+        package_version: String,
+    },
     #[error("package manifest path {path} has no package root")]
     MissingPackageRoot { path: String },
+    #[error("test canonical artifact store failed: {message}")]
+    CanonicalArtifactStore { message: String },
 }
 
 /// Compiles a package project rooted at `package.yml`, using a local
@@ -89,6 +110,59 @@ pub fn compile_package_project(
     root: &Path,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
     compile_package_project_with_contract_dependencies(root, &BTreeMap::new())
+}
+
+/// Compiles a package graph while authorizing the root as a service package.
+/// Dependency packages still use the ordinary package entrypoint.
+pub fn compile_service_package_project(
+    root: &Path,
+) -> Result<(PublishedPackageProject, ServiceApiProjection), PackageProjectCompileError> {
+    compile_service_package_project_with_contract_dependencies(root, &BTreeMap::new())
+}
+
+pub fn compile_service_package_project_with_contract_dependencies(
+    root: &Path,
+    contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+) -> Result<(PublishedPackageProject, ServiceApiProjection), PackageProjectCompileError> {
+    let store = root.join(LOCAL_PACKAGE_STORE);
+    let package_dirs = PackageResolutionDirs {
+        package_dirs: store.is_dir().then_some(store).into_iter().collect(),
+    };
+    let platform_sources = repository_platform_sources()?;
+    let service_root = read_service_package_root(root)?;
+    let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
+    let root_key = (root_manifest.id.to_string(), root_manifest.version.clone());
+    let manifests = discover_package_manifests_with_dependency_dirs(
+        &platform_sources,
+        root,
+        &package_dirs,
+        &root_manifest.dependencies,
+    )?;
+    let artifact_store = CanonicalArtifactStore::create(
+        root.join(".skiff-compiler-test-artifacts"),
+    )
+    .map_err(|error| PackageProjectCompileError::CanonicalArtifactStore {
+        message: error.to_string(),
+    })?;
+    let mut graph = PackageGraphCompiler::new(
+        &platform_sources,
+        manifests,
+        contract_dependencies,
+        artifact_store,
+    );
+    // The compiler-owned std artifact must be available for exact source type
+    // resolution. It enters the returned dependency closure only when the
+    // compiled service actually records the std requirement.
+    graph.compile_platform_std()?;
+    let compiled = graph.compile_service(&root_key, &service_root)?;
+    let dependency_packages = graph.compiled_dependency_closure(&compiled.package)?;
+    Ok((
+        PublishedPackageProject {
+            package: compiled.package,
+            dependency_packages,
+        },
+        compiled.service_api,
+    ))
 }
 
 /// Compiles a package graph with validated contract dependencies attached to
@@ -101,7 +175,7 @@ pub fn compile_package_project_with_contract_dependencies(
     let package_dirs = PackageResolutionDirs {
         package_dirs: store.is_dir().then_some(store).into_iter().collect(),
     };
-    compile_package_project_with_dirs_and_contract_dependencies(
+    compile_package_project_with_dirs_contract_dependencies(
         root,
         &package_dirs,
         contract_dependencies,
@@ -115,26 +189,33 @@ pub fn compile_package_project_with_dirs(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
-    compile_package_project_with_dirs_and_contract_dependencies(
-        root,
-        package_dirs,
-        &BTreeMap::new(),
-    )
+    compile_package_project_with_dirs_contract_dependencies(root, package_dirs, &BTreeMap::new())
 }
 
-fn compile_package_project_with_dirs_and_contract_dependencies(
+fn compile_package_project_with_dirs_contract_dependencies(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
     contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
+    let platform_sources = repository_platform_sources()?;
     let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
     let root_key = (root_manifest.id.to_string(), root_manifest.version.clone());
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &platform_sources,
         root,
         package_dirs,
         &root_manifest.dependencies,
     )?;
-    let mut graph = PackageGraphCompiler::new(manifests, contract_dependencies);
+    let mut graph = PackageGraphCompiler::new(
+        &platform_sources,
+        manifests,
+        contract_dependencies,
+        CanonicalArtifactStore::create(root.join(".skiff-compiler-test-artifacts")).map_err(
+            |error| PackageProjectCompileError::CanonicalArtifactStore {
+                message: error.to_string(),
+            },
+        )?,
+    );
     graph.compile_platform_std()?;
     let package = graph.compile(&root_key)?;
     let dependency_packages = graph.compiled_dependency_closure(&package)?;
@@ -142,4 +223,12 @@ fn compile_package_project_with_dirs_and_contract_dependencies(
         package,
         dependency_packages,
     })
+}
+
+fn repository_platform_sources() -> Result<CompilerPlatformSources, CompilerPlatformSourcesError> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate manifest directory should have a repository parent")
+        .to_path_buf();
+    CompilerPlatformSources::new(&root)
 }

@@ -5,17 +5,15 @@ use skiff_runtime_model::{
         InterfaceValueState, NativeHandleState, NominalObjectState, RecoverableArtifactRef,
         RecoverableArtifactRetentionRoot, RecoverableCodeIdentity, RecoverableDate,
         RecoverableEnvelope, RecoverableField, RecoverableMapKey, RecoverableNode,
-        RecoverableNumber, RecoverableRemoteInterfaceCarrier, RecoverableRemoteOperationSlot,
-        RecoverableRemoteOperationTable, RecoverableState, RecoverableValidationLimits,
-        RecoverableValueKind, RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
+        RecoverableNumber, RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
+        RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
         RuntimeRecoverableExpectedAnyInterfacePlan, RuntimeRecoverableExpectedTypeNode,
         RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableTrustBoundary,
     },
     request_heap::RequestHeap,
     runtime_value::{
-        HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodTable, InterfaceValue,
-        RemoteOperationSlot, RemoteOperationTable, RuntimeMap, RuntimeObject, RuntimeObjectFields,
-        RuntimeValue, RuntimeValueKey,
+        HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodTable, InterfaceValue, RuntimeMap,
+        RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
     },
 };
 
@@ -83,16 +81,6 @@ pub struct RecoverableInterfaceMethodTableRequest<'a> {
     pub expected: &'a RuntimeRecoverableExpectedTypePlan,
 }
 
-pub struct RecoverableRemoteInterfaceCarrierRequest<'a> {
-    pub interface_identity: &'a str,
-    pub method_projection_identity: &'a str,
-    pub expected_any_interface: &'a RuntimeRecoverableExpectedAnyInterfacePlan,
-    pub carrier: &'a RecoverableRemoteInterfaceCarrier,
-    pub path: &'a str,
-    pub context: &'a RuntimeRecoverableBoundaryContext,
-    pub expected: &'a RuntimeRecoverableExpectedTypePlan,
-}
-
 pub trait RecoverableBehaviorHooks {
     fn encode_local_interface_self(
         &self,
@@ -115,11 +103,6 @@ pub trait RecoverableBehaviorHooks {
         &self,
         request: RecoverableInterfaceMethodTableRequest<'_>,
     ) -> Result<Option<InterfaceMethodTable>>;
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> Result<Option<RemoteOperationTable>>;
 }
 
 pub struct FailClosedRecoverableBehaviorHooks;
@@ -152,13 +135,6 @@ impl RecoverableBehaviorHooks for FailClosedRecoverableBehaviorHooks {
         &self,
         _request: RecoverableInterfaceMethodTableRequest<'_>,
     ) -> Result<Option<InterfaceMethodTable>> {
-        Ok(None)
-    }
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        _request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> Result<Option<RemoteOperationTable>> {
         Ok(None)
     }
 }
@@ -601,6 +577,14 @@ impl RecoverableValueEncoder<'_> {
                     self.expected,
                 )),
             },
+            HeapNode::Exception(_) => Err(RecoverableBoundaryError::new(
+                RecoverableBoundaryErrorCode::StateInvalid,
+                "request-local exception cannot enter a recoverable boundary",
+                self.context,
+                self.expected,
+            )
+            .with_detail(serde_json::json!({ "nodePath": path }))
+            .into()),
         }
     }
 
@@ -627,39 +611,6 @@ impl RecoverableValueEncoder<'_> {
                     self.expected,
                 ),
             ),
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-            } => {
-                let carrier = recoverable_remote_interface_carrier_from_runtime(
-                    dependency_ref,
-                    public_instance_key,
-                    operations,
-                );
-                let node = RecoverableNode {
-                    value_kind: RecoverableValueKind::InterfaceValue,
-                    variant_identity: RecoverableVariantIdentity::None,
-                    code_identity: RecoverableCodeIdentity::None,
-                    state: RecoverableState::InterfaceValue(InterfaceValueState::Remote {
-                        carrier,
-                    }),
-                };
-                let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
-                    &node.state
-                else {
-                    unreachable!("remote InterfaceValue node was constructed above");
-                };
-                validate_remote_interface_carrier_for_encode(
-                    &node,
-                    carrier,
-                    path,
-                    self.context,
-                    self.expected,
-                    behavior_hooks,
-                )?;
-                Ok(node)
-            }
             InterfaceCarrier::Local {
                 concrete_type,
                 method_table,
@@ -1009,15 +960,6 @@ fn decode_interface_node_with_behavior(
             behavior_hooks,
             decode_policy,
         ),
-        InterfaceValueState::Remote { carrier } => decode_remote_interface_node_with_behavior(
-            carrier,
-            expected_any,
-            path,
-            context,
-            root_expected,
-            heap,
-            behavior_hooks,
-        ),
     }
 }
 
@@ -1137,234 +1079,8 @@ fn decode_local_interface_node_with_behavior(
     )?))
 }
 
-fn decode_remote_interface_node_with_behavior(
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
-    path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
-    heap: &mut RequestHeap,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-) -> Result<RuntimeValue> {
-    validate_remote_interface_carrier_matches_expected(
-        carrier,
-        expected_any,
-        path,
-        context,
-        root_expected,
-        "decode",
-    )?;
-    let operations = behavior_hooks
-        .rebuild_remote_interface_operation_table(RecoverableRemoteInterfaceCarrierRequest {
-            interface_identity: &expected_any.interface_identity,
-            method_projection_identity: &expected_any.method_projection_identity,
-            expected_any_interface: expected_any,
-            carrier,
-            path,
-            context,
-            expected: root_expected,
-        })?
-        .ok_or_else(|| {
-            remote_carrier_not_persistable_error(
-                "current linked program does not provide a matching remote InterfaceValue carrier",
-                carrier,
-                path,
-                context,
-                root_expected,
-            )
-        })?;
-    validate_restored_remote_operation_table(
-        carrier,
-        &operations,
-        expected_any,
-        path,
-        context,
-        root_expected,
-    )?;
-    Ok(RuntimeValue::Heap(heap.alloc_interface(
-        InterfaceValue::new(
-            expected_any.interface_identity.clone(),
-            InterfaceCarrier::Remote {
-                dependency_ref: carrier.dependency_ref.clone(),
-                public_instance_key: carrier.public_instance_key.clone(),
-                operations,
-            },
-        ),
-    )?))
-}
-
 fn plain_node(value_kind: RecoverableValueKind, state: RecoverableState) -> RecoverableNode {
     RecoverableNode::plain(value_kind, state)
-}
-
-fn recoverable_remote_interface_carrier_from_runtime(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    operations: &RemoteOperationTable,
-) -> RecoverableRemoteInterfaceCarrier {
-    RecoverableRemoteInterfaceCarrier {
-        dependency_ref: dependency_ref.to_string(),
-        public_instance_key: public_instance_key.to_string(),
-        operations: RecoverableRemoteOperationTable {
-            id: operations.id().to_string(),
-            interface_abi_id: operations.interface_abi_id().to_string(),
-            slots: operations
-                .slots()
-                .iter()
-                .map(|slot| RecoverableRemoteOperationSlot {
-                    slot: slot.slot(),
-                    method_abi_id: slot.method_abi_id().to_string(),
-                    operation_abi_id: slot.operation_abi_id().to_string(),
-                })
-                .collect(),
-        },
-    }
-}
-
-fn remote_operation_table_from_recoverable(
-    carrier: &RecoverableRemoteInterfaceCarrier,
-) -> RemoteOperationTable {
-    RemoteOperationTable::new(
-        carrier.operations.id.clone(),
-        carrier.operations.interface_abi_id.clone(),
-        carrier
-            .operations
-            .slots
-            .iter()
-            .map(|slot| {
-                RemoteOperationSlot::new(
-                    slot.slot,
-                    slot.method_abi_id.clone(),
-                    slot.operation_abi_id.clone(),
-                )
-            })
-            .collect(),
-    )
-}
-
-fn remote_operation_tables_runtime_equivalent(
-    left: &RemoteOperationTable,
-    right: &RemoteOperationTable,
-) -> bool {
-    left.id() == right.id()
-        && left.interface_abi_id() == right.interface_abi_id()
-        && left.slots() == right.slots()
-}
-
-fn validate_remote_interface_carrier_for_encode(
-    node: &RecoverableNode,
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-) -> Result<()> {
-    let selected_expected = select_expected_plan_for_node_with_behavior_policy(
-        node,
-        root_expected,
-        path,
-        context,
-        root_expected,
-        behavior_hooks,
-        RecoverableDecodePolicy::strict(),
-        "encode",
-    )?;
-    let expected_any = expected_any_interface_for_node(selected_expected, path)
-        .map_err(|error| expected_type_mismatch_error(error, "encode", context, root_expected))?;
-    validate_remote_interface_carrier_matches_expected(
-        carrier,
-        expected_any,
-        path,
-        context,
-        root_expected,
-        "encode",
-    )?;
-    let operations = behavior_hooks
-        .rebuild_remote_interface_operation_table(RecoverableRemoteInterfaceCarrierRequest {
-            interface_identity: &expected_any.interface_identity,
-            method_projection_identity: &expected_any.method_projection_identity,
-            expected_any_interface: expected_any,
-            carrier,
-            path,
-            context,
-            expected: root_expected,
-        })?
-        .ok_or_else(|| {
-            remote_carrier_not_persistable_error(
-                "current linked program does not provide a matching remote InterfaceValue carrier",
-                carrier,
-                path,
-                context,
-                root_expected,
-            )
-        })?;
-    validate_restored_remote_operation_table(
-        carrier,
-        &operations,
-        expected_any,
-        path,
-        context,
-        root_expected,
-    )
-}
-
-fn validate_remote_interface_carrier_matches_expected(
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
-    path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    expected: &RuntimeRecoverableExpectedTypePlan,
-    operation: &'static str,
-) -> Result<()> {
-    remote_interface_carrier_precheck(carrier, expected_any, path)
-        .map_err(|error| expected_type_mismatch_error(error, operation, context, expected))
-}
-
-fn remote_interface_carrier_precheck(
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
-    path: &str,
-) -> std::result::Result<(), ExpectedTypePrecheckError> {
-    if carrier.operations.interface_abi_id != expected_any.interface_identity {
-        return Err(ExpectedTypePrecheckError::new(
-            path,
-            format!(
-                "remote InterfaceValue operation table targets interface {}, expected {}",
-                carrier.operations.interface_abi_id, expected_any.interface_identity
-            ),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_restored_remote_operation_table(
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    operations: &RemoteOperationTable,
-    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
-    path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    expected: &RuntimeRecoverableExpectedTypePlan,
-) -> Result<()> {
-    if operations.interface_abi_id() != expected_any.interface_identity {
-        return Err(remote_carrier_not_persistable_error(
-            "rebuilt remote InterfaceValue operation table targets a different interface identity",
-            carrier,
-            path,
-            context,
-            expected,
-        ));
-    }
-    let persisted = remote_operation_table_from_recoverable(carrier);
-    if !remote_operation_tables_runtime_equivalent(&persisted, operations) {
-        return Err(remote_carrier_not_persistable_error(
-            "rebuilt remote InterfaceValue operation table no longer matches persisted carrier state",
-            carrier,
-            path,
-            context,
-            expected,
-        ));
-    }
-    Ok(())
 }
 
 fn recoverable_map_key_from_runtime_key(key: &RuntimeValueKey) -> RecoverableMapKey {
@@ -1513,7 +1229,6 @@ fn scan_untrusted_behavior_node(
                 expected,
             )?;
         }
-        RecoverableState::InterfaceValue(InterfaceValueState::Remote { .. }) => {}
         RecoverableState::Null
         | RecoverableState::Bool(_)
         | RecoverableState::Number(_)
@@ -2044,36 +1759,6 @@ fn behavior_union_branch_matches(
                 )))
             }
         }
-        InterfaceValueState::Remote { carrier } => {
-            if let Err(error) = remote_interface_carrier_precheck(carrier, expected_any, path) {
-                return Ok(Err(error));
-            }
-            let operations = behavior_hooks.rebuild_remote_interface_operation_table(
-                RecoverableRemoteInterfaceCarrierRequest {
-                    interface_identity: &expected_any.interface_identity,
-                    method_projection_identity: &expected_any.method_projection_identity,
-                    expected_any_interface: expected_any,
-                    carrier,
-                    path,
-                    context,
-                    expected: root_expected,
-                },
-            )?;
-            if operations.is_some() {
-                Ok(Ok(()))
-            } else {
-                Ok(Err(ExpectedTypePrecheckError::new(
-                    path,
-                    format!(
-                        "remote carrier {}/{} does not conform to any-interface {} projection {}",
-                        carrier.dependency_ref,
-                        carrier.public_instance_key,
-                        expected_any.interface_identity,
-                        expected_any.method_projection_identity
-                    ),
-                )))
-            }
-        }
     }
 }
 
@@ -2493,30 +2178,6 @@ fn interface_encode_error(
     )
 }
 
-fn remote_carrier_not_persistable_error(
-    reason: &str,
-    carrier: &RecoverableRemoteInterfaceCarrier,
-    path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    expected: &RuntimeRecoverableExpectedTypePlan,
-) -> RuntimeError {
-    RecoverableBoundaryError::new(
-        RecoverableBoundaryErrorCode::RemoteCarrierNotPersistable,
-        "InterfaceCarrier::Remote cannot be recovered from the current owner-internal linked program",
-        context,
-        expected,
-    )
-    .with_detail(serde_json::json!({
-        "nodePath": path,
-        "reason": reason,
-        "carrier": "remote",
-        "dependencyRef": carrier.dependency_ref,
-        "publicInstanceKey": carrier.public_instance_key,
-        "operationTableId": carrier.operations.id,
-    }))
-    .into()
-}
-
 fn code_identity_missing_error(
     reason: impl Into<String>,
     path: &str,
@@ -2725,8 +2386,8 @@ mod tests {
     };
     use skiff_runtime_model::runtime_value::{
         CallbackCapabilityCarrier, InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable,
-        InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RemoteOperationSlot,
-        RemoteOperationTable, RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValueKey,
+        InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RuntimeMap, RuntimeObject,
+        RuntimeObjectFields, RuntimeValueKey,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
@@ -3008,18 +2669,6 @@ mod tests {
         )
     }
 
-    fn test_remote_operation_table() -> RemoteOperationTable {
-        RemoteOperationTable::new(
-            "remote:reader".to_string(),
-            READER_INTERFACE.to_string(),
-            vec![RemoteOperationSlot::new(
-                0,
-                READER_METHOD.to_string(),
-                "operation:reader:read".to_string(),
-            )],
-        )
-    }
-
     fn local_interface_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
         let interface = InterfaceValue::new(
             READER_INTERFACE.to_string(),
@@ -3032,21 +2681,6 @@ mod tests {
         RuntimeValue::Heap(
             heap.alloc_interface(interface)
                 .expect("local interface should allocate"),
-        )
-    }
-
-    fn remote_interface_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
-        let interface = InterfaceValue::new(
-            READER_INTERFACE.to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "svc.reader".to_string(),
-                public_instance_key: "reader#42".to_string(),
-                operations: test_remote_operation_table(),
-            },
-        );
-        RuntimeValue::Heap(
-            heap.alloc_interface(interface)
-                .expect("remote interface should allocate"),
         )
     }
 
@@ -3100,7 +2734,6 @@ mod tests {
         restore_calls: Cell<usize>,
         conformance_calls: Cell<usize>,
         table_calls: Cell<usize>,
-        remote_table_calls: Cell<usize>,
     }
 
     impl Default for TestBehaviorHooks {
@@ -3119,7 +2752,6 @@ mod tests {
                 restore_calls: Cell::new(0),
                 conformance_calls: Cell::new(0),
                 table_calls: Cell::new(0),
-                remote_table_calls: Cell::new(0),
             }
         }
     }
@@ -3261,23 +2893,6 @@ mod tests {
                 &self.table_interface_identity.borrow(),
                 &self.table_projection_identity.borrow(),
             )))
-        }
-
-        fn rebuild_remote_interface_operation_table(
-            &self,
-            request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-        ) -> Result<Option<RemoteOperationTable>> {
-            self.remote_table_calls
-                .set(self.remote_table_calls.get() + 1);
-            if request.carrier.dependency_ref == "svc.reader"
-                && request.carrier.public_instance_key == "reader#42"
-                && request.interface_identity == READER_INTERFACE
-                && request.method_projection_identity == READER_PROJECTION
-            {
-                Ok(Some(test_remote_operation_table()))
-            } else {
-                Ok(None)
-            }
         }
     }
 
@@ -3990,9 +3605,7 @@ mod tests {
         let RecoverableState::InterfaceValue(state) = &envelope.root.state else {
             panic!("expected InterfaceValue root");
         };
-        let InterfaceValueState::Local { self_node } = state else {
-            panic!("encoded local interface should use Local state");
-        };
+        let InterfaceValueState::Local { self_node } = state;
         let RecoverableCodeIdentity::LocalConcrete {
             owner,
             concrete_type_identity,
@@ -4063,156 +3676,6 @@ mod tests {
         assert_eq!(
             *durable_policy_hooks.last_restore_decode_policy.borrow(),
             Some(RecoverableDecodePolicy::durable_db())
-        );
-    }
-
-    #[test]
-    fn behavior_api_roundtrips_owner_internal_remote_interface_value() {
-        let context = recoverable_context();
-        let expected = any_reader_expected();
-        let mut heap = RequestHeap::default();
-        let value = remote_interface_runtime_value(&mut heap);
-        let hooks = TestBehaviorHooks::default();
-
-        let envelope = RecoverableBoundaryCodec::encode_envelope_with_behavior(
-            &value, &expected, &context, &heap, &hooks,
-        )
-        .expect("remote interface should encode through owner-internal behavior API");
-        assert_eq!(hooks.encode_calls.get(), 0);
-        assert!(matches!(
-            envelope.root.code_identity,
-            RecoverableCodeIdentity::None
-        ));
-        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
-            &envelope.root.state
-        else {
-            panic!("encoded remote interface should use Remote state");
-        };
-        assert_eq!(carrier.dependency_ref, "svc.reader");
-        assert_eq!(carrier.public_instance_key, "reader#42");
-        assert_eq!(carrier.operations.id, "remote:reader");
-        assert_eq!(carrier.operations.interface_abi_id, READER_INTERFACE);
-        assert_eq!(carrier.operations.slots[0].slot, 0);
-        assert_eq!(carrier.operations.slots[0].method_abi_id, READER_METHOD);
-        assert_eq!(
-            carrier.operations.slots[0].operation_abi_id,
-            "operation:reader:read"
-        );
-
-        let bytes = RecoverableBoundaryCodec::encode_envelope_canonical(
-            &envelope,
-            &RecoverableValidationLimits::default(),
-            &expected,
-            &context,
-        )
-        .expect("remote behavior envelope should canonical encode");
-        let mut decode_heap = RequestHeap::default();
-        let decoded = RecoverableBoundaryCodec::decode_with_behavior(
-            &bytes,
-            &expected,
-            &context,
-            &mut decode_heap,
-            &hooks,
-        )
-        .expect("remote interface should decode through behavior hook");
-
-        let RuntimeValue::Heap(handle) = decoded else {
-            panic!("decoded interface should be a heap value");
-        };
-        let HeapNode::Interface(interface) = decode_heap.get(handle).expect("interface resolves")
-        else {
-            panic!("expected decoded InterfaceValue");
-        };
-        let InterfaceCarrier::Remote {
-            dependency_ref,
-            public_instance_key,
-            operations,
-        } = interface.carrier()
-        else {
-            panic!("decoded interface should use remote carrier");
-        };
-        assert_eq!(interface.interface(), READER_INTERFACE);
-        assert_eq!(dependency_ref, "svc.reader");
-        assert_eq!(public_instance_key, "reader#42");
-        assert_eq!(operations.id(), "remote:reader");
-        assert_eq!(operations.interface_abi_id(), READER_INTERFACE);
-        assert_eq!(operations.slots()[0].slot(), 0);
-        assert_eq!(operations.slots()[0].method_abi_id(), READER_METHOD);
-        assert_eq!(
-            operations.slots()[0].operation_abi_id(),
-            "operation:reader:read"
-        );
-        assert_eq!(hooks.restore_calls.get(), 0);
-        assert_eq!(hooks.remote_table_calls.get(), 2);
-    }
-
-    #[test]
-    fn behavior_api_remote_encode_rejects_unresolved_expected_before_hook() {
-        let context = recoverable_context();
-        let expected = expected_plan();
-        let mut heap = RequestHeap::default();
-        let value = remote_interface_runtime_value(&mut heap);
-        let hooks = TestBehaviorHooks::default();
-
-        let error = RecoverableBoundaryCodec::encode_with_behavior(
-            &value, &expected, &context, &heap, &hooks,
-        )
-        .expect_err("remote encode must reject unresolved expected type");
-        let RuntimeError::Recoverable(error) = error else {
-            panic!("expected recoverable error");
-        };
-        assert_eq!(
-            error.code(),
-            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
-        );
-        assert!(error.message().contains("recoverable encode"));
-        assert_eq!(hooks.remote_table_calls.get(), 0);
-    }
-
-    #[test]
-    fn behavior_api_remote_encode_selects_unique_union_any_interface() {
-        let context = recoverable_context();
-        let expected = union_expected(vec![any_writer_expected(), any_reader_expected()]);
-        let mut heap = RequestHeap::default();
-        let value = remote_interface_runtime_value(&mut heap);
-        let hooks = TestBehaviorHooks::default();
-
-        let envelope = RecoverableBoundaryCodec::encode_envelope_with_behavior(
-            &value, &expected, &context, &heap, &hooks,
-        )
-        .expect("single matching union any-interface branch should encode");
-
-        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
-            &envelope.root.state
-        else {
-            panic!("encoded remote interface should use Remote state");
-        };
-        assert_eq!(carrier.operations.interface_abi_id, READER_INTERFACE);
-        assert_eq!(hooks.remote_table_calls.get(), 3);
-    }
-
-    #[test]
-    fn behavior_api_remote_encode_requires_rebuild_hook() {
-        let context = recoverable_context();
-        let expected = any_reader_expected();
-        let mut heap = RequestHeap::default();
-        let value = remote_interface_runtime_value(&mut heap);
-        let missing_hook = FailClosedRecoverableBehaviorHooks;
-
-        let error = RecoverableBoundaryCodec::encode_with_behavior(
-            &value,
-            &expected,
-            &context,
-            &heap,
-            &missing_hook,
-        )
-        .expect_err("remote encode must fail when linked program cannot rebuild the carrier");
-        let RuntimeError::Recoverable(error) = error else {
-            panic!("expected recoverable error");
-        };
-        assert_eq!(
-            error.code(),
-            RecoverableBoundaryErrorCode::RemoteCarrierNotPersistable
         );
     }
 
@@ -4536,7 +3999,6 @@ mod tests {
             assert_eq!(hooks.restore_calls.get(), 0);
             assert_eq!(hooks.conformance_calls.get(), 0);
             assert_eq!(hooks.table_calls.get(), 0);
-            assert_eq!(hooks.remote_table_calls.get(), 0);
         }
     }
 

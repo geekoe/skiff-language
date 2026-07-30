@@ -3,48 +3,75 @@ use std::collections::BTreeMap;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use crate::service_unit::{PublicInstanceExport, PublicInstanceOperation};
 use crate::{builtin_receiver_op_by_name, BuiltinReceiverOp};
-use crate::{
-    ActorMetadataIr, ActorMethodMetadataIr, DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr,
-    DbMetadataIndexIr, DbMetadataIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FieldPathIr,
-    SpawnTargetIr, SpawnTargetKindIr,
-};
+use crate::{DbFieldStorageIr, DbObjectFieldIr};
+
 use crate::{
     BlockIr, BoxSourceIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr, ExecutableKind,
     ExecutableLinkTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrRef, FileIrUnit,
-    FunctionTypeParamIr, GatewayConfig, GatewayRoute, InterfaceInstantiationRef,
+    FunctionTypeParamIr, GatewayRoute, InterfaceInstantiationRef, InterfaceMethodSignature,
     InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
-    InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef, OperationAbiRef,
-    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef, PackageCallableId,
-    PackageCallableRef, PackageDependencyConstraint, PackageOperationTarget, PackageRefIr,
-    PackageSymbolRef, PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypointKind,
-    PackageUnit, PublicationAbiUnit, PublicationOperationKind, PublicationResourceRef,
-    ReceiverCallAbi, RecoverableAdapterSchemaCompatibility, RecoverableArtifactMetadata,
-    RecoverableBoundaryContext, RecoverableBoundaryKind, RecoverableBoundaryPlan,
-    RecoverableCapabilityFlag, RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef,
-    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact,
-    RecoverableFieldIdentityRef, RecoverableInterfaceMethodIdentityFact,
-    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityFact,
-    RecoverableInterfaceProjectionIdentityRef, RecoverableNativeAdapterOwner,
-    RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef, RecoverableRestoreCapability,
-    RecoverableStorageLane, RecoverableStorageLanePlan, RecoverableStorageLaneRef,
-    RecoverableTrustBoundary, RecoverableTypeIdentityFact, RecoverableTypeIdentityRef,
-    RecoverableUnionBranchIdentityFact, RecoverableUnionBranchIdentityRef,
-    RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ServiceConfigMetadata,
-    ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta, ServiceOperation,
-    ServiceOperationTarget, ServiceSymbolRef, ServiceUnit, SlotLayout, SourceMapSource,
-    SourceMapSpan, SourcePosition, SourceSpanRef, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr,
-    TypeLinkTargetIr, TypeRefIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
-    FILE_IR_SCHEMA_VERSION,
+    InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef, NamedUnionBranchIr,
+    OperationAbiRef, OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
+    PackageCallableId, PackageCallableRef, PackageOperationTarget, PackageRefIr, PackageSymbolRef,
+    PublicationOperationKind, ReceiverCallAbi, RecoverableAdapterSchemaCompatibility,
+    RecoverableArtifactMetadata, RecoverableCustomRestorePlan, RecoverableExpectedTypePlan,
+    RecoverableExpectedTypeRoot, RecoverableFieldIdentityRef,
+    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityRef,
+    RecoverableNativeAdapterOwner, RecoverableNativeAdapterPlan, RecoverableRestoreCapability,
+    RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityRef, RemoteOperationSlotPlanIr,
+    RemoteOperationTablePlanIr, ServiceDependencySymbolRef, ServiceSymbolRef, SlotLayout,
+    SourceMapSource, SourceMapSpan, SourcePosition, SourceSpanRef, StmtIr, StmtRefIr, TypeDeclIr,
+    TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr, FILE_IR_FORMAT_VERSION,
+    FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,
 };
 
+#[test]
+fn interface_method_signature_excludes_suspend_flag_and_is_strict() {
+    let method = InterfaceMethodSignature {
+        name: "load".to_string(),
+        type_params: vec!["T".to_string()],
+        params: vec![FunctionTypeParamIr {
+            name: "value".to_string(),
+            ty: TypeRefIr::TypeParam {
+                name: "T".to_string(),
+            },
+        }],
+        return_type: TypeRefIr::TypeParam {
+            name: "T".to_string(),
+        },
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+    };
+    let wire = serde_json::to_value(&method).unwrap();
+    assert!(wire.get("maySuspend").is_none());
+    assert_eq!(
+        serde_json::from_value::<InterfaceMethodSignature>(wire.clone()).unwrap(),
+        method
+    );
+
+    let mut legacy = wire.clone();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .insert("maySuspend".to_string(), serde_json::json!(true));
+    assert!(serde_json::from_value::<InterfaceMethodSignature>(legacy).is_err());
+    let mut unknown = wire;
+    unknown
+        .as_object_mut()
+        .unwrap()
+        .insert("suspends".to_string(), serde_json::json!(true));
+    assert!(serde_json::from_value::<InterfaceMethodSignature>(unknown).is_err());
+}
+
 fn string_type() -> TypeRefIr {
-    TypeRefIr::native("string")
+    TypeRefIr::builtin("string")
 }
 
 fn number_type() -> TypeRefIr {
-    TypeRefIr::native("number")
+    TypeRefIr::builtin("number")
 }
 
 fn reader_interface_ref() -> InterfaceInstantiationRef {
@@ -118,19 +145,6 @@ fn local_receiver_executable_ref() -> LocalReceiverExecutableRef {
     }
 }
 
-fn publication_abi_json(
-    publication_id: &str,
-    version: &str,
-    abi_identity: &str,
-) -> serde_json::Value {
-    json!({
-        "schemaVersion": "skiff-publication-abi-unit-v1",
-        "publicationId": publication_id,
-        "version": version,
-        "abiIdentity": abi_identity
-    })
-}
-
 fn recoverable_type_ref_plan(ty: TypeRefIr) -> RecoverableExpectedTypePlan {
     RecoverableExpectedTypePlan {
         root: RecoverableExpectedTypeRoot::TypeRef { ty },
@@ -155,151 +169,9 @@ fn recoverable_identity_plan(ty: TypeRefIr, identity: &str) -> RecoverableExpect
     }
 }
 
-fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
-    let type_ref = RecoverableTypeIdentityRef("type:user".to_owned());
-    let interface_projection_ref =
-        RecoverableInterfaceProjectionIdentityRef("ifaceProjection:user:managed".to_owned());
-    let interface_method_ref =
-        RecoverableInterfaceMethodIdentityRef("ifaceMethod:user:managed.send".to_owned());
-    let field_ref = RecoverableFieldIdentityRef("field:user.name".to_owned());
-    let union_branch_ref = RecoverableUnionBranchIdentityRef("union:userResult.ok".to_owned());
-    let storage_lane_ref = RecoverableStorageLaneRef("lane:user.db".to_owned());
-    let restore_plan_ref = RecoverableCustomRestorePlanRef("restore:user".to_owned());
-    let native_adapter_plan_ref =
-        RecoverableNativeAdapterPlanRef("nativeAdapter:std.date".to_owned());
-
-    let expected = RecoverableExpectedTypePlan {
-        root: RecoverableExpectedTypeRoot::TypeRef {
-            ty: TypeRefIr::native("User"),
-        },
-        root_type_identity_ref: Some(type_ref.clone()),
-        runtime_carrier_check_required: true,
-        interface_projection_refs: vec![interface_projection_ref.clone()],
-        interface_method_refs: vec![interface_method_ref.clone()],
-        field_refs: vec![field_ref.clone()],
-        union_branch_refs: vec![union_branch_ref.clone()],
-    };
-    let identity_expected = RecoverableExpectedTypePlan {
-        root: RecoverableExpectedTypeRoot::TypeIdentityRef {
-            type_identity_ref: type_ref.clone(),
-        },
-        root_type_identity_ref: Some(type_ref.clone()),
-        runtime_carrier_check_required: false,
-        interface_projection_refs: Vec::new(),
-        interface_method_refs: Vec::new(),
-        field_refs: Vec::new(),
-        union_branch_refs: Vec::new(),
-    };
-
-    let mut metadata = RecoverableArtifactMetadata::default();
-    metadata.identity_tables.types.insert(
-        type_ref.0.clone(),
-        RecoverableTypeIdentityFact {
-            ty: TypeRefIr::native("User"),
-            abi_type_id: Some("abiType:user".to_owned()),
-            contract_revision: Some("contract:user:v1".to_owned()),
-        },
-    );
-    metadata.identity_tables.interface_projections.insert(
-        interface_projection_ref.0.clone(),
-        RecoverableInterfaceProjectionIdentityFact {
-            interface_type: TypeRefIr::native("ManagedUser"),
-            implemented_by: Some(TypeRefIr::native("User")),
-            interface_abi_id: Some("abiInterface:managedUser".to_owned()),
-        },
-    );
-    metadata.identity_tables.interface_methods.insert(
-        interface_method_ref.0.clone(),
-        RecoverableInterfaceMethodIdentityFact {
-            interface_projection_ref,
-            method_name: "send".to_owned(),
-            method_abi_id: Some("abiMethod:send".to_owned()),
-            signature: Some(recoverable_type_ref_plan(TypeRefIr::native("SendResult"))),
-        },
-    );
-    metadata.identity_tables.union_branches.insert(
-        union_branch_ref.0.clone(),
-        RecoverableUnionBranchIdentityFact {
-            union_type_ref: type_ref.clone(),
-            branch_index: 0,
-            branch_type: TypeRefIr::native("User"),
-            branch_abi_id: Some("abiBranch:userResult.ok".to_owned()),
-        },
-    );
-    metadata.identity_tables.fields.insert(
-        field_ref.0.clone(),
-        RecoverableFieldIdentityFact {
-            owner_type_ref: type_ref,
-            field_name: "name".to_owned(),
-            field_type: Some(string_type()),
-            field_abi_id: Some("abiField:user.name".to_owned()),
-        },
-    );
-    metadata.storage_lanes.insert(
-        storage_lane_ref.0.clone(),
-        RecoverableStorageLanePlan {
-            lane: RecoverableStorageLane::SchemaProjectable,
-            expected_type: Some(expected.clone()),
-            schema_projection_ref: Some("db:users.User".to_owned()),
-            envelope_slot_ref: None,
-        },
-    );
-    metadata.custom_restore_plans.insert(
-        restore_plan_ref.0.clone(),
-        RecoverableCustomRestorePlan {
-            concrete_type_identity: "type:user".to_owned(),
-            durable_state_type_plan: identity_expected,
-            encode_hook_id: "restore:user.encode".to_owned(),
-            decode_hook_id: "restore:user.decode".to_owned(),
-            restore_capability: RecoverableRestoreCapability::Exact,
-        },
-    );
-    metadata.native_adapter_plans.insert(
-        native_adapter_plan_ref.0.clone(),
-        RecoverableNativeAdapterPlan {
-            adapter_identity: "adapter:std.date".to_owned(),
-            adapter_schema_version: "1".to_owned(),
-            native_type_identity: "native:std.Date".to_owned(),
-            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
-            encode_hook_id: "adapter:std.date.encode".to_owned(),
-            decode_hook_id: "adapter:std.date.decode".to_owned(),
-            owner: RecoverableNativeAdapterOwner {
-                service_identity: "std".to_owned(),
-            },
-            schema_compatibility: RecoverableAdapterSchemaCompatibility::Exact,
-        },
-    );
-    metadata.boundary_plans.insert(
-        "boundary:db:user".to_owned(),
-        RecoverableBoundaryPlan {
-            context: RecoverableBoundaryContext {
-                boundary_kind: RecoverableBoundaryKind::DbPayload,
-                trust_boundary: RecoverableTrustBoundary::OwnerInternal,
-                origin_service: Some("users".to_owned()),
-                target_service: None,
-                explicit_recoverable_slot: false,
-            },
-            expected_type: expected,
-            runtime_carrier_check_required: true,
-            storage_lane_ref: Some(storage_lane_ref),
-            custom_restore_plan_ref: Some(restore_plan_ref),
-            native_adapter_plan_ref: Some(native_adapter_plan_ref),
-        },
-    );
-    metadata.capabilities.flags.insert(
-        "recoverableArtifactMetadataV1".to_owned(),
-        RecoverableCapabilityFlag {
-            enabled: true,
-            revision: Some(1),
-        },
-    );
-
-    metadata
-}
-
 #[test]
 fn recoverable_expected_type_compatibility_matrix_fails_closed() {
-    let base = recoverable_identity_plan(TypeRefIr::native("User"), "type:user");
+    let base = recoverable_identity_plan(TypeRefIr::builtin("User"), "type:user");
     assert!(crate::recoverable_expected_type_plans_compatible(
         &base, &base
     ));
@@ -427,7 +299,7 @@ fn recoverable_expected_type_compatibility_matrix_fails_closed() {
         &method_a, &method_b
     ));
 
-    let other_nominal = recoverable_identity_plan(TypeRefIr::native("User"), "type:account");
+    let other_nominal = recoverable_identity_plan(TypeRefIr::builtin("User"), "type:account");
     assert!(!crate::recoverable_expected_type_plans_compatible(
         &base,
         &other_nominal
@@ -442,8 +314,8 @@ fn recoverable_expected_type_compatibility_matrix_fails_closed() {
     ));
 
     assert!(!crate::recoverable_expected_type_plans_compatible(
-        &recoverable_type_ref_plan(TypeRefIr::native("number")),
-        &recoverable_type_ref_plan(TypeRefIr::native("string"))
+        &recoverable_type_ref_plan(TypeRefIr::builtin("number")),
+        &recoverable_type_ref_plan(TypeRefIr::builtin("string"))
     ));
 }
 
@@ -454,7 +326,7 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
         "restore:user".to_string(),
         RecoverableCustomRestorePlan {
             concrete_type_identity: String::new(),
-            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
+            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
             encode_hook_id: String::new(),
             decode_hook_id: "restore:user.decode".to_string(),
             restore_capability: RecoverableRestoreCapability::Exact,
@@ -466,7 +338,7 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
             adapter_identity: "adapter:date".to_string(),
             adapter_schema_version: String::new(),
             native_type_identity: "native:Date".to_string(),
-            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
+            durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
             encode_hook_id: "adapter:date.encode".to_string(),
             decode_hook_id: String::new(),
             owner: RecoverableNativeAdapterOwner {
@@ -491,7 +363,7 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
 fn recoverable_custom_plan_rejects_missing_required_schema_fields() {
     let value = json!({
         "concreteTypeIdentity": "type:user",
-        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::native("Json")),
+        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
         "encodeHookId": "restore:user.encode",
         "restoreCapability": "exact"
     });
@@ -513,7 +385,7 @@ fn recoverable_native_plan_rejects_missing_required_schema_fields() {
         "adapterIdentity": "adapter:date",
         "adapterSchemaVersion": "1",
         "nativeTypeIdentity": "native:Date",
-        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::native("Json")),
+        "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::builtin("Json")),
         "encodeHookId": "adapter:date.encode",
         "decodeHookId": "adapter:date.decode",
         "schemaCompatibility": "exact"
@@ -547,7 +419,6 @@ fn sample_file_ir_unit() -> FileIrUnit {
             fields: BTreeMap::from([("name".to_owned(), string_type())]),
         },
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     });
@@ -694,9 +565,9 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v5");
-    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v3");
-    assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v1");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v10");
+    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
+    assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
     assert_eq!(unit.ir_format_version, FILE_IR_FORMAT_VERSION);
     assert_eq!(unit.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
@@ -735,7 +606,7 @@ fn for_in_value_slot_round_trips_and_defaults_to_single_binding() {
             assert_eq!(*item_slot, 0);
             assert_eq!(
                 *item_type,
-                Some(TypeRefIr::Native {
+                Some(TypeRefIr::Builtin {
                     name: "string".to_string(),
                     args: Vec::new(),
                 })
@@ -770,15 +641,40 @@ fn for_in_value_slot_round_trips_and_defaults_to_single_binding() {
 }
 
 #[test]
-fn type_decl_ir_round_trips_discriminator_metadata() {
-    let mut unit = sample_file_ir_unit();
-    unit.type_table[0].discriminator = Some("kind".to_string());
+fn type_decl_ir_round_trips_named_union_branch_identity_input() {
+    let declaration = TypeDeclIr {
+        name: "Outcome".to_string(),
+        descriptor: TypeDescriptorIr::Union {
+            branches: vec![NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type: TypeRefIr::Record {
+                    fields: BTreeMap::from([(
+                        "kind".to_string(),
+                        TypeRefIr::Literal {
+                            value: LiteralIr::String {
+                                value: "ok".to_string(),
+                            },
+                        },
+                    )]),
+                },
+                discriminator_field: "kind".to_string(),
+                discriminator_value: "ok".to_string(),
+            }],
+        },
+        type_params: vec!["T".to_string()],
+        implements: Vec::new(),
+        source_span: None,
+    };
 
-    let value = serde_json::to_value(&unit).unwrap();
-    assert_eq!(value["typeTable"][0]["discriminator"], "kind");
-
-    let decoded: FileIrUnit = serde_json::from_value(value).unwrap();
-    assert_eq!(decoded.type_table[0].discriminator.as_deref(), Some("kind"));
+    let value = serde_json::to_value(&declaration).unwrap();
+    assert_eq!(value["descriptor"]["kind"], "union");
+    assert_eq!(
+        value["descriptor"]["branches"][0]["kind"],
+        "syntheticDiscriminator"
+    );
+    assert_eq!(
+        serde_json::from_value::<TypeDeclIr>(value).unwrap(),
+        declaration
+    );
 }
 
 #[test]
@@ -858,6 +754,24 @@ fn call_target_rejects_runtime_only_resolved_executable() {
     assert!(
         err.contains("unknown variant `resolvedExecutable`"),
         "unexpected resolvedExecutable error: {err}"
+    );
+}
+
+#[test]
+fn call_target_rejects_retired_external_service_symbol() {
+    let err = serde_json::from_value::<CallTargetIr>(json!({
+        "kind": "externalServiceSymbol",
+        "symbol": {
+            "modulePath": "internal.worker",
+            "symbol": "drain"
+        }
+    }))
+    .expect_err("artifact CallTargetIr must not accept unresolved source call targets")
+    .to_string();
+
+    assert!(
+        err.contains("unknown variant `externalServiceSymbol`"),
+        "unexpected retired call target error: {err}"
     );
 }
 
@@ -1081,86 +995,6 @@ fn symbol_refs_round_trip_canonical_fields() {
 }
 
 #[test]
-fn package_unit_rejects_unknown_fields_and_keeps_dependency_config_open() {
-    let value = json!({
-        "schemaVersion": "skiff-package-unit-v1",
-        "packageId": "example.com/mongo",
-        "version": "1.0.0",
-        "buildIdentity": "build:1",
-        "abiIdentity": "abi:1",
-        "publicationAbi": publication_abi_json("example.com/mongo", "1.0.0", "abi:1"),
-        "files": [],
-        "dependencies": [
-            {
-                "id": "example.com/core",
-                "version": "1.0.0",
-                "alias": "core",
-                "config": {
-                    "uri": { "env": "MONGO_URL" },
-                    "pool": { "max": 5 }
-                }
-            }
-        ],
-        "configAndEffectMetadata": { "effects": { "operations": {} } },
-        "runtimeOnly": true
-    });
-
-    assert_unknown_field_rejected::<PackageUnit>(value.clone());
-
-    let mut canonical = value;
-    canonical.as_object_mut().unwrap().remove("runtimeOnly");
-    let decoded: PackageUnit = serde_json::from_value(canonical).unwrap();
-    assert_eq!(
-        decoded.dependencies[0].config["uri"],
-        json!({ "env": "MONGO_URL" })
-    );
-}
-
-#[test]
-fn package_unit_empty_uses_canonical_defaults() {
-    let unit = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
-
-    assert_eq!(unit.schema_version, "skiff-package-unit-v1");
-    assert_eq!(unit.package_id, "example.com/mongo");
-    assert!(unit.resources.is_empty());
-    assert_eq!(
-        serde_json::to_value(unit).unwrap(),
-        json!({
-            "schemaVersion": "skiff-package-unit-v1",
-            "packageId": "example.com/mongo",
-            "version": "1.0.0",
-            "buildIdentity": "build:1",
-            "abiIdentity": "abi:1",
-            "publicationAbi": {
-                "schemaVersion": "skiff-publication-abi-unit-v1",
-                "publicationId": "example.com/mongo",
-                "version": "1.0.0",
-                "abiIdentity": "abi:1"
-            },
-            "files": [],
-            "configAndEffectMetadata": { "effects": { "operations": {} } }
-        })
-    );
-}
-
-#[test]
-fn empty_service_and_package_units_skip_recoverable_metadata() {
-    let service = ServiceUnit::empty("remoteLlm", "0.1.0", "protocol:1");
-    let service_value = serde_json::to_value(&service).unwrap();
-    assert!(service.resources.is_empty());
-    assert!(service_value.get("resources").is_none());
-    assert!(service.recoverable_metadata.is_empty());
-    assert!(service_value.get("recoverableMetadata").is_none());
-
-    let package = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
-    let package_value = serde_json::to_value(&package).unwrap();
-    assert!(package.resources.is_empty());
-    assert!(package_value.get("resources").is_none());
-    assert!(package.recoverable_metadata.is_empty());
-    assert!(package_value.get("recoverableMetadata").is_none());
-}
-
-#[test]
 fn gateway_route_identity_is_method_and_path() {
     let route = GatewayRoute {
         operation: "http.route.internal.session.read".to_string(),
@@ -1170,493 +1004,6 @@ fn gateway_route_identity_is_method_and_path() {
     };
 
     assert_eq!(route.route_identity(), "GET /session");
-}
-
-#[test]
-fn old_service_and_package_units_default_recoverable_metadata_to_empty() {
-    let old_service = json!({
-        "schemaVersion": "skiff-service-unit-v1",
-        "service": { "id": "remoteLlm" },
-        "version": "0.1.0",
-        "protocolIdentity": "protocol:1",
-        "publicationAbi": publication_abi_json("remoteLlm", "0.1.0", ""),
-        "files": [],
-        "gateway": {},
-        "config": {}
-    });
-    let service: ServiceUnit = serde_json::from_value(old_service).unwrap();
-    assert!(service.resources.is_empty());
-    assert!(service.recoverable_metadata.is_empty());
-    assert!(serde_json::to_value(&service)
-        .unwrap()
-        .get("recoverableMetadata")
-        .is_none());
-
-    let old_package = json!({
-        "schemaVersion": "skiff-package-unit-v1",
-        "packageId": "example.com/mongo",
-        "version": "1.0.0",
-        "buildIdentity": "build:1",
-        "abiIdentity": "abi:1",
-        "publicationAbi": publication_abi_json("example.com/mongo", "1.0.0", "abi:1"),
-        "files": [],
-        "configAndEffectMetadata": { "effects": { "operations": {} } }
-    });
-    let package: PackageUnit = serde_json::from_value(old_package).unwrap();
-    assert!(package.resources.is_empty());
-    assert!(package.recoverable_metadata.is_empty());
-    assert!(serde_json::to_value(&package)
-        .unwrap()
-        .get("recoverableMetadata")
-        .is_none());
-}
-
-#[test]
-fn publication_resource_refs_round_trip_on_service_and_package_units() {
-    let resource = PublicationResourceRef {
-        path: "prompts/system.md".to_string(),
-        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string(),
-        byte_len: 5,
-        content_type: None,
-        artifact_path: Some(
-            "resources/sha256/2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-                .to_string(),
-        ),
-    };
-
-    let mut service = ServiceUnit::empty("remoteLlm", "0.1.0", "protocol:1");
-    service.resources.push(resource.clone());
-    assert_eq!(
-        serde_json::to_value(&service).unwrap()["resources"],
-        json!([{
-            "path": "prompts/system.md",
-            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-            "byteLen": 5,
-            "artifactPath": "resources/sha256/2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-        }])
-    );
-    let decoded_service: ServiceUnit =
-        serde_json::from_value(serde_json::to_value(&service).unwrap()).unwrap();
-    assert_eq!(decoded_service.resources, vec![resource.clone()]);
-
-    let mut package = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
-    package.resources.push(resource.clone());
-    let decoded_package: PackageUnit =
-        serde_json::from_value(serde_json::to_value(&package).unwrap()).unwrap();
-    assert_eq!(decoded_package.resources, vec![resource]);
-}
-
-#[test]
-fn non_empty_recoverable_metadata_round_trips_on_service_and_package_units() {
-    let metadata = sample_recoverable_metadata();
-    crate::validate_recoverable_artifact_metadata(&metadata).unwrap();
-
-    let mut service = ServiceUnit::empty("remoteLlm", "0.1.0", "protocol:1");
-    service.recoverable_metadata = metadata.clone();
-    let service_value = serde_json::to_value(&service).unwrap();
-    assert_eq!(
-        service_value["recoverableMetadata"]["boundaryPlans"]["boundary:db:user"]["context"]
-            ["boundaryKind"],
-        "dbPayload"
-    );
-    assert_eq!(
-        service_value["recoverableMetadata"]["identityTables"]["fields"]["field:user.name"]
-            ["fieldName"],
-        "name"
-    );
-    assert_eq!(
-        serde_json::from_value::<ServiceUnit>(service_value).unwrap(),
-        service
-    );
-
-    let mut package = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
-    package.recoverable_metadata = metadata;
-    let package_value = serde_json::to_value(&package).unwrap();
-    assert_eq!(
-        package_value["recoverableMetadata"]["storageLanes"]["lane:user.db"]["lane"],
-        "schemaProjectable"
-    );
-    assert_eq!(
-        package_value["recoverableMetadata"]["nativeAdapterPlans"]["nativeAdapter:std.date"]
-            ["adapterIdentity"],
-        "adapter:std.date"
-    );
-    assert_eq!(
-        serde_json::from_value::<PackageUnit>(package_value).unwrap(),
-        package
-    );
-}
-
-#[test]
-fn package_unit_rejects_legacy_top_level_exports() {
-    assert_unknown_field_rejected::<PackageUnit>(json!({
-        "schemaVersion": "skiff-package-unit-v1",
-        "packageId": "example.com/mongo",
-        "version": "1.0.0",
-        "buildIdentity": "build:1",
-        "abiIdentity": "abi:1",
-        "files": [],
-        "exports": {},
-        "configAndEffectMetadata": { "effects": { "operations": {} } }
-    }));
-}
-
-#[test]
-fn package_unit_requires_publication_abi() {
-    let error = serde_json::from_value::<PackageUnit>(json!({
-        "schemaVersion": "skiff-package-unit-v1",
-        "packageId": "example.com/mongo",
-        "version": "1.0.0",
-        "buildIdentity": "build:1",
-        "abiIdentity": "abi:1",
-        "files": [],
-        "configAndEffectMetadata": { "effects": { "operations": {} } }
-    }))
-    .expect_err("PackageUnit without publicationAbi must fail closed")
-    .to_string();
-    assert!(
-        error.contains("publicationAbi"),
-        "unexpected missing publicationAbi error: {error}"
-    );
-}
-
-#[test]
-fn package_test_assembly_round_trips_canonical_shape() {
-    let value = package_test_assembly_json();
-    let decoded: PackageTestAssembly = serde_json::from_value(value.clone()).unwrap();
-
-    assert_eq!(decoded.kind, PackageTestAssemblyKind::PackageTest);
-    assert_eq!(
-        decoded.test_entrypoints[0].kind,
-        PackageTestEntrypointKind::TestOnly
-    );
-    assert_eq!(decoded.test_files[0].file_ir_path, "units/files/test.json");
-    assert_eq!(
-        decoded.production_package_unit.unit_path,
-        "units/packages/example.com/pkg/prod.json"
-    );
-    assert!(decoded.link_policy.current_package_production.allow_private);
-    assert!(!decoded.link_policy.dependency_public_scopes[0].allow_private);
-    assert_eq!(
-        serde_json::to_value(decoded).unwrap(),
-        value,
-        "PackageTestAssembly should serialize using canonical camelCase fields"
-    );
-}
-
-#[test]
-fn package_test_assembly_rejects_unknown_top_level_fields() {
-    let mut value = package_test_assembly_json();
-    value
-        .as_object_mut()
-        .unwrap()
-        .insert("serviceId".to_owned(), json!("legacy-service-field"));
-
-    assert_unknown_field_rejected::<PackageTestAssembly>(value);
-}
-
-#[test]
-fn package_test_assembly_rejects_unknown_entrypoint_fields() {
-    let mut value = package_test_assembly_json();
-    value["testEntrypoints"][0]
-        .as_object_mut()
-        .unwrap()
-        .insert("operationAbiId".to_owned(), json!("operation:legacy"));
-
-    assert_unknown_field_rejected::<PackageTestAssembly>(value);
-}
-
-fn package_test_assembly_json() -> serde_json::Value {
-    let owner_file = json!({
-        "fileIrIdentity": "skiff-file-ir-v4:sha256:testfile",
-        "fileIrPath": "units/files/test.json",
-        "sourcePath": "tests/pkg.test.skiff",
-        "modulePath": "pkg.test"
-    });
-
-    json!({
-        "schemaVersion": "skiff-package-test-assembly-v1",
-        "kind": "packageTest",
-        "packageId": "example.com/pkg",
-        "packageVersion": "1.0.0",
-        "testBuildIdentity": "skiff-package-test-build-v1:sha256:testbuild",
-        "productionPackageUnit": {
-            "packageId": "example.com/pkg",
-            "version": "1.0.0",
-            "buildIdentity": "skiff-package-build-v1:sha256:prod",
-            "unitPath": "units/packages/example.com/pkg/prod.json",
-            "publicAbiIdentity": "skiff-package-abi-v1:sha256:prodabi",
-            "implementationLinksIdentity": "sha256:prodlinks"
-        },
-        "testFiles": [owner_file.clone()],
-        "dependencyPackageUnits": [
-            {
-                "packageId": "example.com/dep",
-                "version": "1.0.0",
-                "buildIdentity": "skiff-package-build-v1:sha256:dep",
-                "unitPath": "units/packages/example.com/dep/dep.json",
-                "publicAbiIdentity": "skiff-package-abi-v1:sha256:depabi",
-                "implementationLinksIdentity": "sha256:deplinks"
-            }
-        ],
-        "testEntrypoints": [
-            {
-                "kind": "testOnly",
-                "entrypointLocalId": "skiff-package-test-entrypoint-local-v1:sha256:local",
-                "entrypointId": "skiff-package-test-entrypoint-v1:sha256:entry",
-                "displayName": "runs internal helper",
-                "sourcePath": "tests/pkg.test.skiff",
-                "modulePath": "pkg.test",
-                "ownerTestFile": owner_file,
-                "executableRef": {
-                    "fileIrIdentity": "skiff-file-ir-v4:sha256:testfile",
-                    "executableIndex": 0,
-                    "executableLocalId": "test-entrypoint-0",
-                    "symbol": "__skiff_package_test_0"
-                },
-                "defaultRun": true,
-                "configAndEffectMetadata": { "effects": { "operations": {} } },
-                "runtimeExpectedError": {
-                    "code": "ProviderUnavailableError",
-                    "messageContains": "offline"
-                }
-            }
-        ],
-        "linkPolicy": {
-            "currentPackageProduction": {
-                "packageId": "example.com/pkg",
-                "version": "1.0.0",
-                "buildIdentity": "skiff-package-build-v1:sha256:prod",
-                "filesDigest": "sha256:prodfiles",
-                "implementationLinksDigest": "sha256:prodlinks",
-                "allowPrivate": true
-            },
-            "testFileScopes": [
-                {
-                    "ownerTestFileIdentity": "skiff-file-ir-v4:sha256:testfile",
-                    "sourcePath": "tests/pkg.test.skiff",
-                    "modulePath": "pkg.test",
-                    "allowedLocalLinkDigest": "sha256:testlinks",
-                    "entrypointLocalIds": [
-                        "skiff-package-test-entrypoint-local-v1:sha256:local"
-                    ]
-                }
-            ],
-            "dependencyPublicScopes": [
-                {
-                    "packageId": "example.com/dep",
-                    "version": "1.0.0",
-                    "buildIdentity": "skiff-package-build-v1:sha256:dep",
-                    "publicAbiIdentity": "skiff-package-abi-v1:sha256:depabi",
-                    "publicExportDigest": "sha256:depexports",
-                    "implementationLinksDigest": "sha256:deplinks",
-                    "allowPrivate": false
-                }
-            ]
-        },
-        "configAndEffectMetadata": { "effects": { "operations": {} } },
-        "sourceMap": {
-            "sources": []
-        }
-    })
-}
-
-#[test]
-fn publication_abi_unit_round_trips_operation_ref() {
-    let unit = PublicationAbiUnit {
-        operation_exports: vec![OperationAbiRef {
-            operation_abi_id: "call:send".to_string(),
-            kind: PublicationOperationKind::PublicInstanceMethod,
-            public_path: "managedLlm.sendChat".to_string(),
-            public_instance_key: Some("managedLlm".to_string()),
-            interface: Some(InterfaceInstantiationRef {
-                interface_abi_id: "iface:managed-llm".to_string(),
-                canonical_type_args: Vec::new(),
-            }),
-            method_abi_id: Some("method:sendChat".to_string()),
-            display_name: "managedLlm.sendChat".to_string(),
-        }],
-        ..PublicationAbiUnit::empty("example.com/llm", "1.0.0", "abi:llm")
-    };
-
-    let value = serde_json::to_value(&unit).unwrap();
-    assert_eq!(value["schemaVersion"], "skiff-publication-abi-unit-v1");
-    assert_eq!(value["publicationId"], "example.com/llm");
-    assert_eq!(value["operationExports"][0]["operationAbiId"], "call:send");
-    assert_eq!(
-        value["operationExports"][0]["interface"]["interfaceAbiId"],
-        "iface:managed-llm"
-    );
-
-    assert_eq!(
-        serde_json::from_value::<PublicationAbiUnit>(value).unwrap(),
-        unit
-    );
-}
-
-#[test]
-fn package_unit_rejects_legacy_binding_requirements_field() {
-    let without_binding_requirements = json!({
-        "schemaVersion": "skiff-package-unit-v1",
-        "packageId": "example.com/agent",
-        "version": "1.0.0",
-        "buildIdentity": "build:1",
-        "abiIdentity": "abi:1",
-        "publicationAbi": publication_abi_json("example.com/agent", "1.0.0", "abi:1"),
-        "files": [],
-        "configAndEffectMetadata": { "effects": { "operations": {} } }
-    });
-    let decoded_without_binding_requirements: PackageUnit =
-        serde_json::from_value(without_binding_requirements).unwrap();
-    let value = serde_json::to_value(&decoded_without_binding_requirements).unwrap();
-    assert!(value.get("bindingRequirements").is_none());
-
-    let mut legacy = value;
-    legacy.as_object_mut().unwrap().insert(
-        "bindingRequirements".to_string(),
-        json!([{ "alias": "managedLlm" }]),
-    );
-    assert_unknown_field_rejected::<PackageUnit>(legacy);
-}
-
-#[test]
-fn service_unit_round_trips_canonical_operation_shape() {
-    let operation = ServiceOperation::LocalExecutable(ServiceOperationTarget {
-        operation: operation_ref(
-            "operation:users:dev:createUser",
-            PublicationOperationKind::PublicFunction,
-            "createUser",
-        ),
-        executable: operation_target_ref(
-            "callable:create-user",
-            OperationCallableKind::PublicFunction,
-        ),
-    });
-    let unit = ServiceUnit {
-        schema_version: "skiff-service-unit-v1".to_owned(),
-        service: ServiceMeta {
-            id: "users".to_owned(),
-            display_name: Some("Users".to_owned()),
-            metadata: BTreeMap::new(),
-        },
-        version: "dev".to_owned(),
-        protocol_identity: "protocol:1".to_owned(),
-        abi_identity_projection: Default::default(),
-        publication_abi: PublicationAbiUnit::empty("users", "dev", ""),
-        files: vec![FileIrRef::new("file:users", "svc.users")],
-        resources: Vec::new(),
-        package_dependencies: vec![PackageDependencyConstraint {
-            id: "example.com/mongo".to_owned(),
-            version: "1.0.0".to_owned(),
-            alias: "mongo".to_owned(),
-            config: json!({ "uri": { "env": "MONGO_URL" } }),
-        }],
-        service_dependencies: Vec::new(),
-        package_abi_expectations: Vec::new(),
-        operations: vec![operation],
-        operation_route_bindings: Vec::new(),
-        public_instances: Vec::new(),
-        recoverable_metadata: RecoverableArtifactMetadata::default(),
-        db: vec![DbMetadataIr {
-            module_path: "svc.users".to_owned(),
-            source_role: "contract".to_owned(),
-            package_id: None,
-            package_version: None,
-            file_ir_identity: None,
-            kind: DbObjectKindIr::Object,
-            ty: TypeRefIr::native("User"),
-            type_name: "User".to_owned(),
-            collection_name: "user".to_owned(),
-            key: Some(DbObjectKeyIr {
-                name: "id".to_owned(),
-                ty: string_type(),
-            }),
-            fields: vec![DbObjectFieldIr {
-                name: "name".to_owned(),
-                ty: string_type(),
-                storage: DbFieldStorageIr::Encrypted,
-            }],
-            retention: None,
-            leases: Vec::new(),
-            indexes: vec![DbMetadataIndexIr {
-                name: "byName".to_owned(),
-                unique: true,
-                fields: vec![DbIndexFieldIr {
-                    field: FieldPathIr {
-                        text: "name".to_owned(),
-                        segments: vec!["name".to_owned()],
-                    },
-                    direction: DbIndexDirectionIr::Asc,
-                }],
-                where_expr: None,
-            }],
-        }],
-        spawn_targets: vec![SpawnTargetIr {
-            target_identity: "function:Session.activate".to_owned(),
-            kind: SpawnTargetKindIr::Function,
-            executable_target: operation_target_ref(
-                "callable:activate-session",
-                OperationCallableKind::InternalFunction,
-            ),
-            param_types: vec![string_type(), number_type()],
-            return_type: Some(number_type()),
-            service_protocol_identity: "protocol:1".to_owned(),
-        }],
-        actors: vec![ActorMetadataIr {
-            actor_type_identity: TypeRefIr::ServiceSymbol {
-                symbol: crate::ServiceSymbolRef {
-                    module_path: "svc.users".to_owned(),
-                    symbol: "SessionActor".to_owned(),
-                },
-            },
-            actor_id_type_identity: string_type(),
-            methods: vec![ActorMethodMetadataIr {
-                method_identity: "svc.users.SessionActor.activate".to_owned(),
-                executable_target: operation_target_ref(
-                    "callable:session-actor-activate",
-                    OperationCallableKind::ImplMethod,
-                ),
-                param_types: vec![string_type()],
-                return_type: Some(number_type()),
-            }],
-        }],
-        gateway: GatewayConfig::default(),
-        timeout: Default::default(),
-        config: ServiceConfigMetadata::default(),
-    };
-
-    let value = serde_json::to_value(&unit).unwrap();
-    assert_eq!(value["operations"][0]["kind"], "localExecutable");
-    assert_eq!(
-        value["operations"][0]["executable"]["fileRef"]["modulePath"],
-        "svc.users"
-    );
-    assert_eq!(
-        value["operations"][0]["executable"]["callableAbiId"],
-        "callable:create-user"
-    );
-    assert_eq!(value["config"]["packageConfigs"], serde_json::Value::Null);
-    // Byte-shape parity with runtime artifact shapes:
-    // nested `type` key, always-present nullable `key`/`retention`, and `where` emitted as null.
-    assert_eq!(value["db"][0]["type"]["name"], "User");
-    assert_eq!(value["db"][0]["fields"][0]["storage"], "encrypted");
-    assert_eq!(value["db"][0]["retention"], serde_json::Value::Null);
-    assert_eq!(
-        value["db"][0]["indexes"][0]["where"],
-        serde_json::Value::Null
-    );
-    assert_eq!(value["spawnTargets"][0]["kind"], "function");
-    assert_eq!(
-        value["spawnTargets"][0]["executableTarget"]["callableKind"],
-        "internalFunction"
-    );
-    assert_eq!(
-        value["actors"][0]["methods"][0]["methodIdentity"],
-        "svc.users.SessionActor.activate"
-    );
-
-    let decoded: ServiceUnit = serde_json::from_value(value).unwrap();
-    assert_eq!(decoded, unit);
 }
 
 #[test]
@@ -1683,122 +1030,6 @@ fn db_field_storage_uses_compact_identity_and_explicit_encrypted_json() {
         serde_json::from_value::<DbObjectFieldIr>(encrypted_json).unwrap(),
         encrypted
     );
-}
-
-#[test]
-fn service_unit_requires_publication_abi() {
-    let error = serde_json::from_value::<ServiceUnit>(json!({
-        "schemaVersion": "skiff-service-unit-v1",
-        "service": { "id": "remoteLlm" },
-        "version": "0.1.0",
-        "protocolIdentity": "protocol:1",
-        "files": [],
-        "gateway": {},
-        "config": {}
-    }))
-    .expect_err("ServiceUnit without publicationAbi must fail closed")
-    .to_string();
-    assert!(
-        error.contains("publicationAbi"),
-        "unexpected missing publicationAbi error: {error}"
-    );
-}
-
-#[test]
-fn service_dependency_requires_publication_abi() {
-    let error = serde_json::from_value::<ServiceDependencyConstraint>(json!({
-        "id": "example.com/upstream",
-        "version": "1.0.0",
-        "alias": "upstream",
-        "buildId": "build:upstream",
-        "serviceProtocolIdentity": "protocol:upstream"
-    }))
-    .expect_err("ServiceDependencyConstraint without publicationAbi must fail closed")
-    .to_string();
-    assert!(
-        error.contains("publicationAbi"),
-        "unexpected missing publicationAbi error: {error}"
-    );
-}
-
-#[test]
-fn service_unit_public_instances_round_trip_and_default_to_empty() {
-    let instance = PublicInstanceExport {
-        name: "managedLlmService".to_owned(),
-        module_path: "api.llm".to_owned(),
-        declared_receiver_type: TypeRefIr::ServiceSymbol {
-            symbol: ServiceSymbolRef {
-                module_path: "api.llm".to_owned(),
-                symbol: "ManagedLlm".to_owned(),
-            },
-        },
-        implemented_interfaces: vec![TypeRefIr::ServiceSymbol {
-            symbol: ServiceSymbolRef {
-                module_path: String::new(),
-                symbol: "llm.ManagedLlmService".to_owned(),
-            },
-        }],
-        operations: vec![PublicInstanceOperation {
-            operation: instance_method_operation_ref(),
-            receiver_executable: local_receiver_executable_ref(),
-        }],
-    };
-    let mut unit = ServiceUnit::empty("remoteLlm", "0.1.0", "protocol:1");
-    unit.public_instances = vec![instance.clone()];
-
-    let value = serde_json::to_value(&unit).unwrap();
-    assert_eq!(value["publicInstances"][0]["name"], "managedLlmService");
-    assert_eq!(
-        value["publicInstances"][0]["declaredReceiverType"],
-        json!({
-            "kind": "serviceSymbol",
-            "symbol": {
-                "modulePath": "api.llm",
-                "symbol": "ManagedLlm"
-            }
-        })
-    );
-    assert_eq!(
-        value["publicInstances"][0]["operations"][0]["operation"]["operationAbiId"],
-        "operation:remoteLlm:0.1.0:managedLlmService.sendChat"
-    );
-    assert_eq!(
-        value["publicInstances"][0]["operations"][0]["receiverExecutable"]["receiverCallAbi"],
-        "explicitSelfFirst"
-    );
-    let decoded: ServiceUnit = serde_json::from_value(value).unwrap();
-    assert_eq!(decoded.public_instances, vec![instance]);
-
-    let without_public_instances = json!({
-        "schemaVersion": "skiff-service-unit-v1",
-        "service": { "id": "remoteLlm" },
-        "version": "0.1.0",
-        "protocolIdentity": "protocol:1",
-        "publicationAbi": publication_abi_json("remoteLlm", "0.1.0", ""),
-        "files": [],
-        "gateway": {},
-        "config": {}
-    });
-    let decoded_without_public_instances: ServiceUnit =
-        serde_json::from_value(without_public_instances).unwrap();
-    assert!(decoded_without_public_instances.public_instances.is_empty());
-}
-
-#[test]
-fn service_unit_rejects_runtime_linked_operation_fields() {
-    assert_unknown_field_rejected::<ServiceOperation>(json!({
-        "kind": "localExecutable",
-        "operation": operation_ref(
-            "operation:users:dev:createUser",
-            PublicationOperationKind::PublicFunction,
-            "createUser",
-        ),
-        "executable": operation_target_ref(
-            "callable:create-user",
-            OperationCallableKind::PublicFunction,
-        ),
-        "file": { "kind": "loadedFileIndex", "value": 0 }
-    }));
 }
 
 #[test]
@@ -1946,17 +1177,6 @@ fn package_operation_targets_use_structured_operation_targets() {
 }
 
 #[test]
-fn service_unit_rejects_legacy_binding_resolutions_field() {
-    let unit = ServiceUnit::empty("users", "dev", "protocol:1");
-    let mut value = serde_json::to_value(unit).unwrap();
-    value
-        .as_object_mut()
-        .unwrap()
-        .insert("bindingResolutions".to_string(), json!([]));
-    assert_unknown_field_rejected::<ServiceUnit>(value);
-}
-
-#[test]
 fn service_dependency_symbol_ref_uses_structured_operation_ref() {
     let symbol = ServiceDependencySymbolRef {
         dependency_ref: "remoteLlm".to_owned(),
@@ -2004,6 +1224,18 @@ fn type_refs_and_descriptors_reject_unknown_fields() {
         "target": { "kind": "builtin", "name": "string" },
         "legacyTarget": "String"
     }));
+
+    serde_json::from_value::<TypeRefIr>(json!({
+        "kind": "native",
+        "name": "string"
+    }))
+    .expect_err("legacy native type-ref wire must fail closed");
+
+    serde_json::from_value::<TypeDescriptorIr>(json!({
+        "kind": "external",
+        "symbol": "opaque.Handle"
+    }))
+    .expect_err("removed native type descriptor wire must fail closed");
 }
 
 #[test]
@@ -2028,7 +1260,16 @@ fn type_ref_union_serializes_items() {
 #[test]
 fn type_descriptor_union_serializes_variants() {
     let value = serde_json::to_value(TypeDescriptorIr::Union {
-        variants: vec![string_type(), number_type()],
+        branches: vec![
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: TypeRefIr::LocalType { type_index: 1 },
+            },
+            NamedUnionBranchIr::Literal {
+                value: LiteralIr::String {
+                    value: "other".to_string(),
+                },
+            },
+        ],
     })
     .unwrap();
 
@@ -2036,9 +1277,15 @@ fn type_descriptor_union_serializes_variants() {
         value,
         json!({
             "kind": "union",
-            "variants": [
-                { "kind": "builtin", "name": "string" },
-                { "kind": "builtin", "name": "number" }
+            "branches": [
+                {
+                    "kind": "concreteNominal",
+                    "nominalType": { "kind": "localType", "typeIndex": 1 }
+                },
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "other" }
+                }
             ]
         })
     );
@@ -2223,9 +1470,9 @@ fn legacy_union_shapes_fail_closed_when_canonical_field_is_missing() {
         "kind": "union",
         "items": [{ "kind": "builtin", "name": "string" }]
     }))
-    .expect_err("descriptor union must use variants, not items");
+    .expect_err("descriptor union must use branches, not items");
     assert!(
-        descriptor_error.to_string().contains("variants"),
+        descriptor_error.to_string().contains("branches"),
         "unexpected descriptor error: {descriptor_error}"
     );
 

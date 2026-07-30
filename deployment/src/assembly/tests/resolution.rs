@@ -1,8 +1,12 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_deployment_identity,
     validate_runtime_assembly_identity,
 };
-use skiff_artifact_model::{ConfigLiteralBinding, MetadataValue, PackageConfigRequirement};
+use skiff_artifact_model::{
+    ConfigLiteralBinding, DeploymentIngressBinding, MetadataValue, PackageConfigRequirement,
+};
 
 use super::fixtures::*;
 use crate::assembly::resolve_runtime_assembly;
@@ -107,6 +111,48 @@ fn package_diamond_links_each_build_once_and_is_input_order_independent() {
 }
 
 #[test]
+fn collection_mapping_is_preserved_from_requirement_through_assembly_link() {
+    let root_contract = contract("service.collection-mapping");
+    let dependency = package("package.collection-store", &[], &[]);
+    let mut root = package("package.collection-service", &[("store", &dependency)], &[]);
+    let mapping = BTreeMap::from([
+        (
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        ),
+        (
+            "package_audit".to_string(),
+            "mapped_package_audit".to_string(),
+        ),
+    ]);
+    root.package_requirements[0].collection_name_mapping = mapping.clone();
+    assign_package_artifact_identities(&mut root).unwrap();
+    let mut binding = package_binding(&root, "store", &dependency);
+    binding.collection_name_mapping = mapping.clone();
+    let deployment = deployment(
+        &root_contract,
+        &root,
+        "revision-mapped",
+        vec![binding],
+        Vec::new(),
+    );
+
+    let assembly = resolve_runtime_assembly(
+        &[deployment_ref(&deployment)],
+        std::slice::from_ref(&deployment),
+        std::slice::from_ref(&root_contract),
+        &[root, dependency],
+    )
+    .unwrap();
+
+    assert_eq!(
+        assembly.package_link_plan.package_links[0].collection_name_mapping,
+        mapping
+    );
+    validate_runtime_assembly_identity(&assembly).unwrap();
+}
+
+#[test]
 fn two_activations_share_one_code_slot_but_keep_distinct_templates() {
     let contract_a = contract("service.shared-a");
     let contract_b = contract("service.shared-b");
@@ -136,6 +182,83 @@ fn two_activations_share_one_code_slot_but_keep_distinct_templates() {
     assert_ne!(
         assembly.activation_templates[0].deployment,
         assembly.activation_templates[1].deployment
+    );
+}
+
+#[test]
+fn gateway_ingress_projects_exact_entries_and_is_canonical_across_deployments() {
+    let contract_a = contract("service.gateway-a");
+    let contract_b = contract("service.gateway-b");
+    let package_a = package("package.gateway-a", &[], &[]);
+    let package_b = package("package.gateway-b", &[], &[]);
+    let mut deployment_a = deployment(
+        &contract_a,
+        &package_a,
+        "revision-a",
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut deployment_b = deployment(
+        &contract_b,
+        &package_b,
+        "revision-b",
+        Vec::new(),
+        Vec::new(),
+    );
+    add_http_ingress(&mut deployment_a, &contract_a, "/primary");
+    let alias = DeploymentIngressBinding {
+        selector: skiff_artifact_model::IngressSelector {
+            protocol: skiff_artifact_model::IngressProtocol::Http,
+            method: Some("POST".to_string()),
+            path: "/alias".to_string(),
+        },
+        gateway_entry_key: deployment_a.ingress[0].gateway_entry_key.clone(),
+    };
+    deployment_a.ingress.push(alias);
+    assign_service_deployment_identity(&mut deployment_a).unwrap();
+    add_http_ingress(&mut deployment_b, &contract_b, "/call");
+
+    let assembly = resolve_runtime_assembly(
+        &[deployment_ref(&deployment_b), deployment_ref(&deployment_a)],
+        &[deployment_b.clone(), deployment_a.clone()],
+        &[contract_b, contract_a],
+        &[package_b, package_a],
+    )
+    .unwrap();
+    let reordered = resolve_runtime_assembly(
+        &[deployment_ref(&deployment_a), deployment_ref(&deployment_b)],
+        &[deployment_a.clone(), deployment_b],
+        &[contract("service.gateway-a"), contract("service.gateway-b")],
+        &[
+            package("package.gateway-a", &[], &[]),
+            package("package.gateway-b", &[], &[]),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(assembly, reordered);
+    assert_eq!(assembly.gateway_ingress.len(), 3);
+    let a_bindings = assembly
+        .gateway_ingress
+        .iter()
+        .filter(|binding| binding.deployment == deployment_ref(&deployment_a))
+        .collect::<Vec<_>>();
+    assert_eq!(a_bindings.len(), 2);
+    assert_eq!(
+        a_bindings[0].gateway_entry_key,
+        a_bindings[1].gateway_entry_key
+    );
+    assert_eq!(
+        a_bindings[0].gateway_entry_identity,
+        a_bindings[1].gateway_entry_identity
+    );
+    let entry = deployment_a
+        .gateway_entries
+        .get(&a_bindings[0].gateway_entry_key)
+        .unwrap();
+    assert_eq!(
+        a_bindings[0].gateway_entry_identity,
+        entry.gateway_entry_identity
     );
 }
 

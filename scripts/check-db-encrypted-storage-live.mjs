@@ -12,12 +12,15 @@ import {
   SimulatedCheckpointCrash,
 } from './lib/encrypted-storage-rotation-cohort.mjs';
 import {
+  encryptedStorageIngressRequest,
   EncryptedStorageLiveHarness,
   keyringFingerprint,
   makeKeyring,
   randomRootKey,
 } from './lib/encrypted-storage-live-harness.mjs';
 
+const usage =
+  'usage: node scripts/check-db-encrypted-storage-live.mjs [--help]';
 const DEFAULT_SERVICE = 'example.com/encrypted-live-default';
 const MAPPED_SERVICE = 'example.com/encrypted-live-mapped';
 const DEFAULT_DATABASE = storageDatabaseName(DEFAULT_SERVICE);
@@ -47,7 +50,14 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-async function run() {
+async function run(rawArgs) {
+  if (rawArgs.length === 1 && ['-h', '--help'].includes(rawArgs[0])) {
+    console.log(usage);
+    return;
+  }
+  if (rawArgs.length > 0) {
+    throw new Error(`unknown option ${rawArgs[0]}\n${usage}`);
+  }
   liveHarness = await EncryptedStorageLiveHarness.create();
   const roots = {
     old: randomRootKey(),
@@ -262,17 +272,14 @@ async function run() {
 }
 
 async function runOuterRuntimeLiveTest(keyring) {
-  const plaintextSentinel = 'sk-live-test-runner-secret';
+  const plaintextSentinel = 'encrypted-live-test-runner-secret';
   const testFile = join(
     liveHarness.paths.fixtureRoot,
     'default-service',
     'internal',
     'encrypted.live.test.skiff',
   );
-  const storage = await liveHarness.runLiveTestRunner(testFile, {
-    encryptedLive: { testRunnerSecret: plaintextSentinel },
-    serviceDb: { mongoUrl: liveHarness.mongoUrl },
-  });
+  const storage = await liveHarness.runLiveTestRunner(testFile);
   assert(storage.fields.includes('secret'), 'test-runner encrypted field was not dynamically discovered');
   assert(
     storage.keyIds.length === 1 && storage.keyIds[0] === keyring.activeKeyId,
@@ -598,18 +605,12 @@ async function assertDirectFetchWriterBarrier(state) {
     },
   ];
   for (const probe of cases) {
-    const url = new URL(probe.path, liveHarness.routerHttpUrl);
-    url.searchParams.set('service', probe.service);
-    url.searchParams.set('version', '0.1.0');
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-skiff-service': probe.service,
-        'x-skiff-version': '0.1.0',
-      },
-      body: JSON.stringify(probe.body),
+    const request = encryptedStorageIngressRequest({
+      ingressUrl: liveHarness.routerHttpUrl,
+      path: probe.path,
+      body: probe.body,
     });
+    const response = await fetch(request.url, request.options);
     assert(response.status === 423, `direct writer bypass was not blocked for ${probe.service}`);
   }
 }
@@ -680,7 +681,7 @@ function assert(condition, message) {
 }
 
 try {
-  await run();
+  await run(process.argv.slice(2));
 } catch (error) {
   console.error(`db encrypted storage live test failed: ${error?.stack || error}`);
   process.exitCode = 1;

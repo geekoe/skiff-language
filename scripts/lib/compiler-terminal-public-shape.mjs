@@ -66,7 +66,6 @@ export const terminalPublicShapeRegistry = [
         'ExportPublicInstanceProjection',
         'ExportSchemaProjection',
         'ExportSymbolProjection',
-        'PackageAbiType',
         'PackageEntrypointFunctionProjection',
         'PackageEntrypointProjectionFacts',
         'ProjectionAbiDeclarationIds',
@@ -95,16 +94,17 @@ export const terminalPublicShapeRegistry = [
         'PublicTypeProjection',
         'PublicationApiProjectionSeed',
         'PublicationResourceProjectionInput',
+        'ResolvedPackageSchema',
       ],
       enum: [
         'ConfigRequirementAccessProjection',
         'ConfigRequirementScopeProjection',
-        'PackageAbiTypeDescriptor',
         'ProjectionSourceDeclarationKind',
         'ProjectionSyntheticEntrypointExecutableKind',
         'PublicCallableKindProjection',
         'PublicSymbolKindProjection',
         'PublicTypeKindProjection',
+        'ResolvedPackageSchemaError',
       ],
       const: [],
       fn: ['canonical_package_public_path'],
@@ -130,6 +130,7 @@ export const terminalPublicShapeRegistry = [
         'resources',
         'source',
         'source_metadata',
+        'state_requirements',
       ],
     },
     handoffs: [],
@@ -367,8 +368,8 @@ export async function runTerminalPublicShapeSelfTest(tools) {
     'projection input gains an unregistered field',
     terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
       text.replace(
-        '    source_metadata: (),\n}',
-        '    source_metadata: (),\n    deployment_hint: (),\n}',
+        '    state_requirements: (),\n}',
+        '    state_requirements: (),\n    deployment_hint: (),\n}',
       ),
     ),
     /frozen ProjectionInput fields/,
@@ -403,8 +404,53 @@ export async function runTerminalPublicShapeSelfTest(tools) {
     },
     tools,
   );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'resolved package schema declaration is removed',
+    terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
+      text.replace('pub struct ResolvedPackageSchema;\n', ''),
+    ),
+    /missing canonical public struct ResolvedPackageSchema/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'resolved package schema error declaration is removed',
+    terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
+      text.replace('pub enum ResolvedPackageSchemaError { Fixture }\n', ''),
+    ),
+    /missing canonical public enum ResolvedPackageSchemaError/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'projection input loses state requirements',
+    terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
+      text.replace('    state_requirements: (),\n', ''),
+    ),
+    /frozen ProjectionInput fields/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'migrated ABI DTOs return to projection-input',
+    [
+      ...canonicalFiles,
+      terminalFixtureFile(
+        projectionInputRoot,
+        'stale_abi_dtos.rs',
+        `pub struct PackageAbiType;
+pub enum PackageAbiTypeDescriptor { Fixture }
+`,
+      ),
+    ],
+    {
+      count: 2,
+      patterns: [
+        /undeclared public struct/,
+        /undeclared public enum/,
+      ],
+    },
+    tools,
+  );
 
-  console.log('Compiler boundary terminal public-shape self-test passed (11 cases).');
+  console.log('Compiler boundary terminal public-shape self-test passed (15 cases).');
 }
 
 function assertTerminalPublicShapeRegistry() {

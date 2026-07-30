@@ -12,7 +12,6 @@ pub mod types {
 }
 
 pub use crate::test_support::RuntimeProgram;
-pub use skiff_runtime_activation::RuntimeActivation;
 pub use skiff_runtime_linked_program::LinkedProgramImage as EvalProgramImage;
 pub use skiff_runtime_linked_program::{
     anonymous_type_decl, type_descriptor_to_value, type_ref_to_value, AssignTargetIr, BinaryOpIr,
@@ -25,8 +24,7 @@ pub use skiff_runtime_linked_program::{
     LinkedFileUnit, LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
     LinkedInterfaceMethodTablePlanIr, LinkedRemoteOperationSlotPlanIr,
     LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-    MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PackageUnit, ParamIr, PatternIr,
-    ReceiverCallAbi, ResolvedSymbol, RuntimeTypeContext, ServiceDependencyConstraint,
-    ServiceDependencySymbolRef, ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr,
-    TypeAddr, TypeDeclIr, UnaryOpIr, UnitAddr,
+    MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, ParamIr, PatternIr,
+    ReceiverCallAbi, ResolvedSymbol, RuntimeTypeContext, ServiceDependencySymbolRef, ServiceMeta,
+    ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr, TypeAddr, TypeDeclIr, UnaryOpIr, UnitAddr,
 };

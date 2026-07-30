@@ -62,16 +62,15 @@ mod tests {
         unit.type_table.push(TypeDeclIr {
             name: "Payload".to_string(),
             descriptor: TypeDescriptorIr::Alias {
-                target: TypeRefIr::native("string"),
+                target: TypeRefIr::builtin("string"),
             },
             type_params: Vec::new(),
-            discriminator: None,
             implements: Vec::new(),
             source_span: None,
         });
         unit.constants.push(ConstIr {
             name: "greeting".to_string(),
-            ty: TypeRefIr::native("string"),
+            ty: TypeRefIr::builtin("string"),
             body: ExecutableBody::default(),
             source_span: None,
         });
@@ -83,7 +82,7 @@ mod tests {
         assert_eq!(adapter_identity, canonical_identity);
         assert_eq!(
             adapter_identity,
-            "skiff-file-ir-v5:sha256:edbd0eaf1a026d0171b01fbb847fa74655fe4588a38007c8050eff8cd8ea6edb"
+            "skiff-file-ir-v10:sha256:ccbe4344dd1073944a61fd9c4877c2a4417d652442458ab0f2e1448402ca5bff"
         );
     }
 }

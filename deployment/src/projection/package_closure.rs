@@ -1,11 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use super::{ProjectionError, ProjectionResult};
 use skiff_artifact_model::{
     PackageArtifact, PackageArtifactRef, PackageBuildId, PackageRequirementKey,
     ServiceDeploymentInput,
 };
-
-use super::{ProjectionError, ProjectionResult};
 
 pub(super) struct PackageClosure<'a> {
     by_build: BTreeMap<PackageBuildId, &'a PackageArtifact>,
@@ -33,7 +32,38 @@ impl<'a> PackageClosure<'a> {
                 });
             }
         }
+        Self::finish_resolve(input, by_build)
+    }
 
+    pub(super) fn resolve_after_validation(
+        input: &ServiceDeploymentInput,
+        artifacts: &'a [PackageArtifact],
+    ) -> ProjectionResult<Self> {
+        Self::resolve_inner(input, artifacts)
+    }
+
+    fn resolve_inner(
+        input: &ServiceDeploymentInput,
+        artifacts: &'a [PackageArtifact],
+    ) -> ProjectionResult<Self> {
+        let mut by_build = BTreeMap::new();
+        for artifact in artifacts {
+            if by_build
+                .insert(artifact.package_build_id.clone(), artifact)
+                .is_some()
+            {
+                return Err(ProjectionError::DuplicatePackageBuild {
+                    build_id: artifact.package_build_id.clone(),
+                });
+            }
+        }
+        Self::finish_resolve(input, by_build)
+    }
+
+    fn finish_resolve(
+        input: &ServiceDeploymentInput,
+        by_build: BTreeMap<PackageBuildId, &'a PackageArtifact>,
+    ) -> ProjectionResult<Self> {
         let implementation = by_build
             .get(&input.implementation.package_build_id)
             .copied()
@@ -90,7 +120,7 @@ impl<'a> PackageClosure<'a> {
                         key: binding.package.package_build_id.to_string(),
                     })?;
                 validate_package_ref(&binding.package, target)?;
-                validate_requirement_target(requirement, &binding.package, &key)?;
+                validate_requirement_target(requirement, binding, &key)?;
                 pending.push_back(target.package_build_id.clone());
             }
 
@@ -168,9 +198,10 @@ fn validate_package_ref(
 
 fn validate_requirement_target(
     requirement: &skiff_artifact_model::PackageRequirement,
-    target: &PackageArtifactRef,
+    binding: &skiff_artifact_model::PackageBinding,
     key: &PackageRequirementKey,
 ) -> ProjectionResult<()> {
+    let target = &binding.package;
     let mismatch = if target.package_id != requirement.package_id {
         Some(format!(
             "packageId must be {}, got {}",
@@ -185,6 +216,24 @@ fn validate_requirement_target(
         Some(format!(
             "packageLocalAbiIdentity must be {}, got {}",
             requirement.expected_local_abi, target.package_local_abi_identity
+        ))
+    } else if binding.collection_name_mapping != requirement.collection_name_mapping {
+        Some(format!(
+            "collectionNameMapping must be {:?}, got {:?}",
+            requirement.collection_name_mapping, binding.collection_name_mapping
+        ))
+    } else if requirement
+        .expected_package_build
+        .as_ref()
+        .is_some_and(|expected| expected != &target.package_build_id)
+    {
+        Some(format!(
+            "packageBuildId must be {}, got {}",
+            requirement
+                .expected_package_build
+                .as_ref()
+                .expect("checked above"),
+            target.package_build_id
         ))
     } else {
         None

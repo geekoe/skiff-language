@@ -5,6 +5,7 @@ import {
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   isRecord,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RequestStartFrameHeader,
   type ResponseEndFrameHeader,
@@ -321,9 +322,10 @@ export class MockRuntime {
   ): void {
     this.ws.send(
       encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
         type: 'response.error',
         requestId,
+        errorKind: 'control',
         error
       })
     );

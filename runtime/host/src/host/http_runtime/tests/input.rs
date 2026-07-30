@@ -8,7 +8,9 @@ use crate::host::http_runtime::input::{
 use super::helpers::{bytes_body, empty_body};
 
 fn assert_http_error_contains(error: RuntimeError, expected: &str) {
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("HTTP input failure is ordinary");
     assert_eq!(payload.code, "std.http.HttpError");
     assert!(
         payload.message.contains(expected),

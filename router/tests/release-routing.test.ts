@@ -58,6 +58,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -95,6 +96,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -141,7 +143,7 @@ describe('router version routing', () => {
         id: 'skiff.run/sample',
         revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
         protocolIdentity:
-          'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+          'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555'
       },
       operations: [
         {
@@ -178,6 +180,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -226,6 +229,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);

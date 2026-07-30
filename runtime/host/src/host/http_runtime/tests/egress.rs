@@ -4,10 +4,8 @@ use serde_json::{json, Value};
 use tokio::{net::TcpListener, sync::mpsc};
 
 use crate::{
-    capability_context::HttpRuntimeOptions,
-    config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-    error::RuntimeError,
-    host::http_runtime::request::request_inner,
+    capability_context::HttpRuntimeOptions, config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+    error::RuntimeError, host::http_runtime::request::request_inner,
 };
 
 use super::helpers::{
@@ -17,7 +15,9 @@ use super::helpers::{
 };
 
 fn assert_http_error_contains(error: RuntimeError, expected: &str) {
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("HTTP egress failure is ordinary");
     assert_eq!(payload.code, "std.http.HttpError");
     assert!(
         payload.message.contains(expected),

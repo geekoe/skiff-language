@@ -1,6 +1,6 @@
 # Package、Service Contract 与 Deployment 总体实现计划
 
-状态：active；Phase 01–04 已完成，下一实现阶段为 Phase 05
+状态：active；Phase 01–04 已完成，Phase 05 实现中
 
 唯一权威架构输入是 `doc/architecture/package-service-contract-deployment.md`。本文不定义新语义，只把
 该设计转化为可逐阶段验收、尽量缩短关键路径的实现路线。每阶段只向 `main` 合并一次；上一阶段验收后

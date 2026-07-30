@@ -3,6 +3,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
     dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse, Interpreter,
+    TestEffectDouble,
 };
 
 use crate::{
@@ -45,7 +46,29 @@ pub async fn execute_runtime_assembly_request(
         .ensure_execution_ready()
         .map_err(|error| RequestError::Decode(error.to_string()))?;
     let adapter = &handles.eval_adapter;
-    let interpreter = Interpreter::for_runtime_assembly(adapter.runtime_factory());
+    let interpreter = if request.test_effects_enabled || !request.test_effect_doubles.is_empty() {
+        Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
+            request
+                .test_effect_doubles
+                .iter()
+                .map(|(target, sequence)| {
+                    (
+                        target.clone(),
+                        sequence
+                            .iter()
+                            .map(|double| TestEffectDouble {
+                                expect_request: double.expect_request.clone(),
+                                response: double.response.clone(),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+            adapter.runtime_factory(),
+        )
+    } else {
+        Interpreter::for_runtime_assembly(adapter.runtime_factory())
+    };
     let operation = canonical_runtime_operation(target, &request);
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
@@ -65,21 +88,22 @@ pub async fn execute_runtime_assembly_request(
         target,
     );
     let mut heap = context.request_heap();
-    let result = dispatch_ingress_via_in_process_boundary(
+    let body_result = dispatch_ingress_via_in_process_boundary(
         &interpreter,
         context,
         &mut heap,
         target.boundary().clone(),
         &request_context,
     )
-    .await;
-    match result.map_err(RequestError::from)? {
+    .await
+    .map_err(RequestError::from)
+    .map(|result| match result {
         InProcessBoundaryIngressResponse::RuntimePayload(payload) => {
-            Ok(BoundaryResponse::end(payload, None, None))
+            BoundaryResponse::payload(payload)
         }
-        InProcessBoundaryIngressResponse::BinaryHttp(response) => Ok(BoundaryResponse::end(
+        InProcessBoundaryIngressResponse::BinaryHttp(response) => BoundaryResponse::http(
             response.body,
-            Some(HttpResponseMetadata::new(
+            HttpResponseMetadata::new(
                 response.status,
                 response
                     .headers
@@ -89,9 +113,14 @@ pub async fn execute_runtime_assembly_request(
                         value: header.value,
                     })
                     .collect(),
-            )),
-            None,
-        )),
+            ),
+        ),
+    });
+    let finalization_result = interpreter.finalize_test_case().map_err(RequestError::from);
+    match (body_result, finalization_result) {
+        (Err(body_error), _) => Err(body_error),
+        (Ok(_), Err(finalization_error)) => Err(finalization_error),
+        (Ok(response), Ok(())) => Ok(response),
     }
 }
 
@@ -137,6 +166,24 @@ fn validate_assembly_ingress_request(request: &RequestEnvelope) -> RequestResult
             "legacy HTTP callable adapter metadata is not accepted by canonical assembly ingress"
                 .to_string(),
         ));
+    }
+    let selector = request
+        .ingress_selector
+        .as_ref()
+        .expect("canonical selector checked above");
+    match selector.protocol {
+        skiff_artifact_model::IngressProtocol::Http => {
+            if request.extra.contains_key("websocketEntryId") {
+                return Err(RequestError::Unsupported(
+                    "canonical HTTP ingress does not accept websocketEntryId".to_string(),
+                ));
+            }
+        }
+        skiff_artifact_model::IngressProtocol::WebSocket => {
+            return Err(RequestError::Unsupported(
+                "webSocket connect uses the dedicated runtimeAssembly request path".to_string(),
+            ))
+        }
     }
     Ok(())
 }
@@ -209,13 +256,11 @@ mod tests {
             activation_identity: None,
             ingress_selector: Some(IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: "/entry".to_string(),
             }),
             binary_http: None,
             http_adapter: None,
-            websocket_adapter: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),

@@ -41,6 +41,7 @@
           "topic": "log",
           "ts": "2026-05-06T12:00:00.000Z",
           "source": "runtime",
+          "visibility": "operational",
           "serviceId": "hello",
           "revisionId": "revision-fixture-1",
           "buildId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -60,6 +61,7 @@
           "topic": "trace",
           "ts": "2026-05-06T12:00:00.125Z",
           "source": "runtime",
+          "visibility": "operational",
           "serviceId": "hello",
           "runtimeId": "runtime-fixture-1",
           "traceId": "trace-fixture-1",
@@ -73,6 +75,7 @@
           "topic": "health",
           "ts": "2026-05-06T12:00:01.000Z",
           "source": "runtime",
+          "visibility": "operational",
           "runtimeId": "runtime-fixture-1",
           "name": "telemetry.queue",
           "dropped": {
@@ -81,6 +84,27 @@
             "trace": 0,
             "metric": 0,
             "health": 0
+          }
+        },
+        {
+          "topic": "trace",
+          "ts": "2026-05-06T12:00:01.125Z",
+          "source": "runtime",
+          "visibility": "restricted",
+          "serviceId": "hello",
+          "runtimeId": "runtime-fixture-1",
+          "requestId": "request-fixture-1",
+          "traceId": "trace-fixture-1",
+          "errorId": "error-fixture-1",
+          "name": "service.error.restricted",
+          "error": {
+            "causeKind": "internalError",
+            "stack": [
+              {
+                "kind": "local",
+                "sourceId": 7
+              }
+            ]
           }
         }
       ]
@@ -131,6 +155,7 @@
             "topic": "log",
             "ts": "2026-05-06T12:00:02.000Z",
             "source": "runtime",
+            "visibility": "operational",
             "message": "missing level"
           }
         ]
@@ -147,9 +172,118 @@
             "topic": "log",
             "ts": "2026-05-06T12:00:03.000Z",
             "source": "runtime",
+            "visibility": "operational",
             "level": "info",
             "message": "attrs must be object",
             "attrs": ["not", "object"]
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-missing-visibility",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 4,
+        "events": [
+          {
+            "topic": "log",
+            "ts": "2026-05-06T12:00:04.000Z",
+            "source": "runtime",
+            "level": "error",
+            "message": "visibility required"
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-unknown-visibility",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 5,
+        "events": [
+          {
+            "topic": "log",
+            "ts": "2026-05-06T12:00:05.000Z",
+            "source": "runtime",
+            "visibility": "private",
+            "level": "error",
+            "message": "unknown visibility"
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-restricted-missing-trace-id",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 6,
+        "events": [
+          {
+            "topic": "trace",
+            "ts": "2026-05-06T12:00:06.000Z",
+            "source": "runtime",
+            "visibility": "restricted",
+            "errorId": "error-fixture-6",
+            "name": "service.error.restricted"
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-restricted-missing-error-id",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 7,
+        "events": [
+          {
+            "topic": "trace",
+            "ts": "2026-05-06T12:00:07.000Z",
+            "source": "runtime",
+            "visibility": "restricted",
+            "traceId": "trace-fixture-7",
+            "name": "service.error.restricted"
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-event-unknown-field",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 8,
+        "events": [
+          {
+            "topic": "health",
+            "ts": "2026-05-06T12:00:08.000Z",
+            "source": "runtime",
+            "visibility": "operational",
+            "name": "telemetry.queue",
+            "private": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-empty-operational-error-id",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 9,
+        "events": [
+          {
+            "topic": "trace",
+            "ts": "2026-05-06T12:00:09.000Z",
+            "source": "runtime",
+            "visibility": "operational",
+            "traceId": "trace-fixture-9",
+            "errorId": "",
+            "name": "request.error"
           }
         ]
       }

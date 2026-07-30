@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
     BoundaryUnavailableReason, ContractOperationId, PackageBuildId, PackageCallableId,
+    PackageSchemaTypeId,
 };
 use thiserror::Error;
 
@@ -10,6 +11,12 @@ pub enum ProjectionError {
         artifact: &'static str,
         identity_error: skiff_artifact_identity::ArtifactIdentityError,
     },
+    #[error("package build {build_id} has invalid boundary projections: {source}")]
+    InvalidPackageBoundaryProjections {
+        build_id: PackageBuildId,
+        #[source]
+        source: skiff_artifact_model::BoundaryProjectionValidationError,
+    },
     #[error("deployment contract reference {field} mismatch: expected {expected}, got {actual}")]
     ContractReferenceMismatch {
         field: &'static str,
@@ -18,6 +25,8 @@ pub enum ProjectionError {
     },
     #[error("package closure repeats build {build_id}")]
     DuplicatePackageBuild { build_id: PackageBuildId },
+    #[error("validated package admissions do not exactly match the supplied package closure")]
+    ValidatedPackageAdmissionMismatch,
     #[error("implementation package build {build_id} is absent from the artifact closure")]
     MissingImplementation { build_id: PackageBuildId },
     #[error(
@@ -37,10 +46,15 @@ pub enum ProjectionError {
     MissingOperationBinding { operation_id: ContractOperationId },
     #[error("deployment maps unknown contract operation {operation_id}")]
     UnknownOperationBinding { operation_id: ContractOperationId },
-    #[error("package public path {public_path} does not exist")]
-    UnknownPublicPath { public_path: String },
-    #[error("package public path {public_path} is not a callable")]
-    PublicPathNotCallable { public_path: String },
+    #[error("package callable {callable_id} does not exist")]
+    UnknownPackageCallable { callable_id: PackageCallableId },
+    #[error("package callable {callable_id} is not a public function or public-instance method")]
+    NonPublicPackageCallable { callable_id: PackageCallableId },
+    #[error("package callable {callable_id} has an inconsistent callable link: {message}")]
+    CallableLinkMismatch {
+        callable_id: PackageCallableId,
+        message: String,
+    },
     #[error(
         "callable {callable_id} selected for operation {operation_id} is boundary unavailable: {reasons:?}"
     )]
@@ -49,17 +63,23 @@ pub enum ProjectionError {
         callable_id: PackageCallableId,
         reasons: Vec<BoundaryUnavailableReason>,
     },
+    #[error("package schema record closure mismatch: missing {missing:?}, extra {extra:?}")]
+    PackageSchemaClosureMismatch {
+        missing: Vec<PackageSchemaTypeId>,
+        extra: Vec<PackageSchemaTypeId>,
+    },
+    #[error("package schema type {type_id} owner mismatch: expected {expected}, got {actual}")]
+    PackageSchemaOwnerMismatch {
+        type_id: PackageSchemaTypeId,
+        expected: String,
+        actual: String,
+    },
     #[error(
         "callable {callable_id} boundary contract does not match operation {operation_id} descriptor"
     )]
     OperationContractMismatch {
         operation_id: ContractOperationId,
         callable_id: PackageCallableId,
-    },
-    #[error("callable {callable_id} fails independent boundary eligibility: {reasons:?}")]
-    BoundaryEligibilityViolation {
-        callable_id: PackageCallableId,
-        reasons: Vec<BoundaryUnavailableReason>,
     },
     #[error(
         "callable {callable_id} semantic facts conflict with its boundary projection: {message}"

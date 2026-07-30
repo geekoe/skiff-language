@@ -1,8 +1,9 @@
 use super::{
     actor::ActorNativeDispatch, bytes::BytesNativeDispatch, external::ExternalNativeDispatch,
     file::FileNativeDispatch, http::HttpNativeDispatch, invocation::RuntimeNativeInvocation,
-    json::JsonNativeDispatch, resource::ResourceNativeDispatch, telemetry::TelemetryNativeDispatch,
-    time::TimeNativeDispatch, websocket::WebsocketNativeDispatch,
+    json::JsonNativeDispatch, prepared::run_prepared_native_call, resource::ResourceNativeDispatch,
+    telemetry::TelemetryNativeDispatch, time::TimeNativeDispatch,
+    websocket::WebsocketNativeDispatch, PreparedNativeCall,
 };
 use crate::error::{Result, RuntimeError};
 use crate::{
@@ -15,7 +16,7 @@ use crate::{
     runtime_value_facade::{RequestHeap, RuntimeValue},
 };
 use skiff_runtime_capability_context::NativeCapabilityContexts;
-use skiff_runtime_native_contract::{NativeRequiredContext, NativeSignatureRegistry};
+use skiff_runtime_native_contract::NativeRequiredContext;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeNativeRoute {
@@ -33,6 +34,13 @@ pub enum RuntimeNativeRoute {
 }
 
 pub fn runtime_shared_native_route(target: &str) -> Option<RuntimeNativeRoute> {
+    runtime_shared_native_route_for_validation(target, NativeRegistry.is_registered(target))
+}
+
+pub(crate) fn runtime_shared_native_route_for_validation(
+    target: &str,
+    native_registry_registered: bool,
+) -> Option<RuntimeNativeRoute> {
     if ActorNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Actor);
     }
@@ -60,30 +68,10 @@ pub fn runtime_shared_native_route(target: &str) -> Option<RuntimeNativeRoute> {
     if ResourceNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Resource);
     }
-    if is_runtime_receiver_native_binding_key(target) {
+    if skiff_artifact_model::is_runtime_receiver_native_binding_key(target) {
         return Some(RuntimeNativeRoute::ReceiverMethod);
     }
-    NativeRegistry
-        .is_registered(target)
-        .then_some(RuntimeNativeRoute::NativeRegistry)
-}
-
-fn is_runtime_receiver_native_binding_key(binding_key: &str) -> bool {
-    NativeSignatureRegistry::builtins()
-        .signature(binding_key)
-        .is_some_and(|signature| {
-            matches!(
-                signature.target,
-                "Date.toEpochMilliseconds"
-                    | "Date.toISOString"
-                    | "Date.addMilliseconds"
-                    | "Date.diffMilliseconds"
-                    | "Date.compare"
-                    | "Date.isBefore"
-                    | "Date.isAfter"
-                    | "Duration.toMilliseconds"
-            )
-        })
+    native_registry_registered.then_some(RuntimeNativeRoute::NativeRegistry)
 }
 
 pub(super) fn native_capability_route_mismatch(
@@ -117,6 +105,201 @@ pub(super) fn unsupported_native_target(target_or_callee: &str) -> RuntimeError 
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_resolved_native_call<
+    'a,
+    ActorContext,
+    FileContext,
+    TimeContext,
+    HttpClientContext,
+    HttpResponseStreamContext,
+    WebsocketContext,
+    TelemetryContext,
+    ResourceContext,
+>(
+    native_capability_context: NativeCapabilityContexts<
+        ActorContext,
+        FileContext,
+        TimeContext,
+        HttpClientContext,
+        HttpResponseStreamContext,
+        WebsocketContext,
+        TelemetryContext,
+        ResourceContext,
+    >,
+    invocation: RuntimeNativeInvocation,
+    args: Vec<RuntimeValue>,
+    heap: &mut RequestHeap,
+) -> Result<PreparedNativeCall<'a>>
+where
+    ActorContext: NativeActorCapability + Send + 'a,
+    FileContext: NativeFileCapabilityBundle,
+    <FileContext as NativeFileCapabilityBundle>::File: 'a,
+    <FileContext as NativeFileCapabilityBundle>::FileSourceStream: 'a,
+    TimeContext: NativeTimeCapability + Send + 'a,
+    HttpClientContext: NativeHttpClientCapability + Send + 'a,
+    HttpResponseStreamContext: NativeHttpResponseStreamCapability + Send + 'a,
+    WebsocketContext: NativeWebsocketCapability + Send + 'a,
+    TelemetryContext: NativeTelemetryCapability,
+    ResourceContext: NativeResourceCapability,
+{
+    let binding_key = invocation.binding_key().to_string();
+    let diagnostic_target = invocation.target_name().to_string();
+    if BytesNativeDispatch::matches(&binding_key) {
+        ensure_native_capability_context(
+            &binding_key,
+            NativeRequiredContext::None,
+            native_capability_context.required_context(),
+        )?;
+        let value =
+            BytesNativeDispatch::dispatch_native_call(&invocation, &diagnostic_target, args, heap)?;
+        return Ok(PreparedNativeCall::Ready(value));
+    }
+    if JsonNativeDispatch::matches(&binding_key) {
+        ensure_native_capability_context(
+            &binding_key,
+            NativeRequiredContext::None,
+            native_capability_context.required_context(),
+        )?;
+        let value = JsonNativeDispatch::dispatch(&invocation, &diagnostic_target, args, heap)?;
+        return Ok(PreparedNativeCall::Ready(value));
+    }
+    if TimeNativeDispatch::matches(&binding_key) {
+        let time_context = match native_capability_context {
+            NativeCapabilityContexts::Time(time_context) => time_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Time,
+                    other.required_context(),
+                ));
+            }
+        };
+        return TimeNativeDispatch::prepare(
+            time_context,
+            invocation,
+            diagnostic_target,
+            args,
+            heap,
+        );
+    }
+    if FileNativeDispatch::matches(&binding_key) {
+        let (file_context, file_source_stream_context, request_heap_limits) =
+            match native_capability_context {
+                NativeCapabilityContexts::File(file_context) => {
+                    file_context.into_native_file_parts()
+                }
+                other => {
+                    return Err(native_capability_route_mismatch(
+                        &binding_key,
+                        NativeRequiredContext::File,
+                        other.required_context(),
+                    ));
+                }
+            };
+        return FileNativeDispatch::prepare(
+            file_context,
+            file_source_stream_context,
+            request_heap_limits,
+            invocation,
+            diagnostic_target,
+            args,
+            heap,
+        );
+    }
+    if HttpNativeDispatch::matches(&binding_key) {
+        return HttpNativeDispatch::new().prepare(
+            native_capability_context,
+            invocation,
+            diagnostic_target,
+            args,
+            heap,
+        );
+    }
+    if WebsocketNativeDispatch::matches(&binding_key) {
+        let websocket_context = match native_capability_context {
+            NativeCapabilityContexts::Websocket(websocket_context) => websocket_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Websocket,
+                    other.required_context(),
+                ));
+            }
+        };
+        return WebsocketNativeDispatch::prepare(
+            websocket_context,
+            invocation,
+            diagnostic_target,
+            args,
+            heap,
+        );
+    }
+    if TelemetryNativeDispatch::matches(&binding_key) {
+        let telemetry_context = match native_capability_context {
+            NativeCapabilityContexts::Telemetry(telemetry_context) => telemetry_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Telemetry,
+                    other.required_context(),
+                ));
+            }
+        };
+        let value = TelemetryNativeDispatch::dispatch(
+            &telemetry_context,
+            &invocation,
+            &diagnostic_target,
+            args,
+            heap,
+        )?;
+        return Ok(PreparedNativeCall::Ready(value));
+    }
+    if ResourceNativeDispatch::matches(&binding_key) {
+        let resource_context = match native_capability_context {
+            NativeCapabilityContexts::Resource(resource_context) => resource_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Resource,
+                    other.required_context(),
+                ));
+            }
+        };
+        let value = ResourceNativeDispatch::dispatch(
+            &resource_context,
+            &invocation,
+            &diagnostic_target,
+            args,
+            heap,
+        )?;
+        return Ok(PreparedNativeCall::Ready(value));
+    }
+    if ActorNativeDispatch::matches(&binding_key) {
+        let actor_context = match native_capability_context {
+            NativeCapabilityContexts::Actor(actor_context) => actor_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Actor,
+                    other.required_context(),
+                ));
+            }
+        };
+        return ActorNativeDispatch::prepare(
+            actor_context,
+            invocation,
+            diagnostic_target,
+            args,
+            heap,
+        );
+    }
+
+    let value =
+        ExternalNativeDispatch::dispatch_native_call(&invocation, &diagnostic_target, args, heap)?;
+    Ok(PreparedNativeCall::Ready(value))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn dispatch_resolved_native_call<
     ActorContext,
     FileContext,
@@ -142,171 +325,15 @@ pub(super) async fn dispatch_resolved_native_call<
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue>
 where
-    ActorContext: NativeActorCapability,
+    ActorContext: NativeActorCapability + Send,
     FileContext: NativeFileCapabilityBundle,
-    TimeContext: NativeTimeCapability,
-    HttpClientContext: NativeHttpClientCapability,
-    HttpResponseStreamContext: NativeHttpResponseStreamCapability,
-    WebsocketContext: NativeWebsocketCapability,
+    TimeContext: NativeTimeCapability + Send,
+    HttpClientContext: NativeHttpClientCapability + Send,
+    HttpResponseStreamContext: NativeHttpResponseStreamCapability + Send,
+    WebsocketContext: NativeWebsocketCapability + Send,
     TelemetryContext: NativeTelemetryCapability,
     ResourceContext: NativeResourceCapability,
 {
-    let binding_key = invocation.binding_key();
-    let diagnostic_target = invocation.target_name();
-    if BytesNativeDispatch::matches(binding_key) {
-        ensure_native_capability_context(
-            binding_key,
-            NativeRequiredContext::None,
-            native_capability_context.required_context(),
-        )?;
-        return BytesNativeDispatch::dispatch_native_call(
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        );
-    }
-    if JsonNativeDispatch::matches(binding_key) {
-        ensure_native_capability_context(
-            binding_key,
-            NativeRequiredContext::None,
-            native_capability_context.required_context(),
-        )?;
-        return JsonNativeDispatch::dispatch(&invocation, diagnostic_target, args, heap);
-    }
-    if TimeNativeDispatch::matches(binding_key) {
-        let time_context = match native_capability_context {
-            NativeCapabilityContexts::Time(time_context) => time_context,
-            other => {
-                return Err(native_capability_route_mismatch(
-                    binding_key,
-                    NativeRequiredContext::Time,
-                    other.required_context(),
-                ));
-            }
-        };
-        return TimeNativeDispatch::dispatch(
-            &time_context,
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        )
-        .await;
-    }
-    if FileNativeDispatch::matches(binding_key) {
-        let (file_context, file_source_stream_context, request_heap_limits) =
-            match native_capability_context {
-                NativeCapabilityContexts::File(file_context) => {
-                    file_context.into_native_file_parts()
-                }
-                other => {
-                    return Err(native_capability_route_mismatch(
-                        binding_key,
-                        NativeRequiredContext::File,
-                        other.required_context(),
-                    ));
-                }
-            };
-        return FileNativeDispatch::dispatch(
-            &file_context,
-            &file_source_stream_context,
-            request_heap_limits,
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        )
-        .await;
-    }
-    if HttpNativeDispatch::matches(binding_key) {
-        return HttpNativeDispatch::new()
-            .dispatch(
-                native_capability_context,
-                &invocation,
-                diagnostic_target,
-                args,
-                heap,
-            )
-            .await;
-    }
-    if WebsocketNativeDispatch::matches(binding_key) {
-        let websocket_context = match native_capability_context {
-            NativeCapabilityContexts::Websocket(websocket_context) => websocket_context,
-            other => {
-                return Err(native_capability_route_mismatch(
-                    binding_key,
-                    NativeRequiredContext::Websocket,
-                    other.required_context(),
-                ));
-            }
-        };
-        return WebsocketNativeDispatch::dispatch(
-            &websocket_context,
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        );
-    }
-    if TelemetryNativeDispatch::matches(binding_key) {
-        let telemetry_context = match native_capability_context {
-            NativeCapabilityContexts::Telemetry(telemetry_context) => telemetry_context,
-            other => {
-                return Err(native_capability_route_mismatch(
-                    binding_key,
-                    NativeRequiredContext::Telemetry,
-                    other.required_context(),
-                ));
-            }
-        };
-        return TelemetryNativeDispatch::dispatch(
-            &telemetry_context,
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        );
-    }
-    if ResourceNativeDispatch::matches(binding_key) {
-        let resource_context = match native_capability_context {
-            NativeCapabilityContexts::Resource(resource_context) => resource_context,
-            other => {
-                return Err(native_capability_route_mismatch(
-                    binding_key,
-                    NativeRequiredContext::Resource,
-                    other.required_context(),
-                ));
-            }
-        };
-        return ResourceNativeDispatch::dispatch(
-            &resource_context,
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        );
-    }
-    if ActorNativeDispatch::matches(binding_key) {
-        let actor_context = match native_capability_context {
-            NativeCapabilityContexts::Actor(actor_context) => actor_context,
-            other => {
-                return Err(native_capability_route_mismatch(
-                    binding_key,
-                    NativeRequiredContext::Actor,
-                    other.required_context(),
-                ));
-            }
-        };
-        return ActorNativeDispatch::dispatch(
-            &actor_context,
-            &invocation,
-            diagnostic_target,
-            args,
-            heap,
-        )
-        .await;
-    }
-
-    ExternalNativeDispatch::dispatch_native_call(&invocation, diagnostic_target, args, heap)
+    let prepared = prepare_resolved_native_call(native_capability_context, invocation, args, heap)?;
+    run_prepared_native_call(prepared, heap).await
 }

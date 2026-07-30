@@ -1,44 +1,53 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Number;
-use skiff_artifact_model::{builtin_receiver_op_by_name, BuiltinReceiverOp, ReceiverCallAbi};
+use skiff_artifact_model::{
+    builtin_receiver_op_by_name, validate_supported_receiver_builtin_op, BoundaryStreamContract,
+    ReceiverCallAbi,
+};
 use skiff_compiler_source::{
+    package_type_ref_from_contract_type,
     prelude_registry::{prelude_registry, shared_native_alias_target},
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
     LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
     PublicationTypeSymbolIndex, ResolvedCallTarget, ResolvedCallTargetFacts, ResolvedTypeRef,
-    SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
+    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{
         BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
-        PatchOperation, Stmt, TypeRef, UnaryOp,
+        PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
     },
-    ast_utils::{dependency_source_address_parts, expr_path},
+    ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
     type_syntax::generic_parts,
 };
 
 use crate::file_ir::{
     AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr, ExecutableBody, ExprIr,
-    ExprRefIr, FunctionTypeParamIr, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
-    InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue,
-    NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, ServiceSymbolRef, SlotIr, SlotKind,
-    StmtIr, StmtRefIr, TypeRefIr, UnaryOpIr,
+    ExprRefIr, FunctionTypeParamIr, InstructionSourceSite, InterfaceMethodSlotPlanIr,
+    InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
+    LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr,
+    ServiceSymbolRef, SlotIr, SlotKind, StmtIr, StmtRefIr, TestEffectExpectedIr,
+    TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
 
 use super::{
     callable_return_types::CallableReturnType,
     db_lowering::{is_db_readonly_result_operation, DbMetadataIr, LoweredPackageDbMetadataIndex},
+    executable_type_projection::execution_type_ref,
     service_call_lowering::LoweredServiceCalls,
+    source_unit_lowering::source_span_ref,
     type_lowering::{
-        is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
-        lower_named_type, lower_type_ref, lower_type_text, package_scoped_root_path,
-        prelude_field_type_text, runtime_receiver_root_from_type_ref, service_symbol_ref,
+        is_official_std_package_ref, is_unknown_type_ref, lower_named_type, lower_type_ref,
+        lower_type_text, prelude_field_type_text, runtime_receiver_root_from_type_ref,
         type_ref_ir_type_text, union_type_ir, TypeLoweringContext,
     },
 };
+
+mod execution;
+mod object_literal;
 
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SPAWN_FUNCTION_TARGET_PREFIX: &str = "function:";
@@ -98,8 +107,11 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) interface_semantics: &'a InterfaceSemantics,
     pub(super) type_resolution: &'a TypeResolutionModel,
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
+    pub(super) execution_semantics: Option<&'a SourceExecutionSemantics>,
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
+    pub(super) actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
+    pub(super) expected_return_type: Option<TypeRefIr>,
     executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &'a LoweredServiceCalls,
     pub(super) next_expression_index: u32,
@@ -110,12 +122,15 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) body: ExecutableBody,
     pub(super) next_block_id: u32,
     pub(super) db_transaction_depth: u32,
+    pub(super) timeout_plan_cursor: usize,
+    pub(super) concurrent_plan_cursor: usize,
 }
 
 pub(super) type LocalTypeFieldIndex = BTreeMap<u32, BTreeMap<String, TypeRefIr>>;
 
 #[derive(Clone, Debug)]
 pub(super) struct LoweredExecutableSignature {
+    pub(super) type_params: Vec<String>,
     pub(super) params: Vec<FunctionTypeParamIr>,
     pub(super) return_type: TypeRefIr,
     pub(super) self_type: Option<TypeRefIr>,
@@ -142,8 +157,10 @@ impl<'a> FunctionLowerer<'a> {
         interface_semantics: &'a InterfaceSemantics,
         type_resolution: &'a TypeResolutionModel,
         expression_types: Option<&'a ExpressionTypeModel>,
+        execution_semantics: Option<&'a SourceExecutionSemantics>,
         callable_return_types: &'a BTreeMap<String, CallableReturnType>,
         local_type_fields: &'a LocalTypeFieldIndex,
+        actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
         executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
         service_calls: &'a LoweredServiceCalls,
     ) -> Self {
@@ -166,8 +183,11 @@ impl<'a> FunctionLowerer<'a> {
             interface_semantics,
             type_resolution,
             expression_types,
+            execution_semantics,
             callable_return_types,
             local_type_fields,
+            actor_self_fields,
+            expected_return_type: None,
             executable_signatures,
             service_calls,
             next_expression_index: 0,
@@ -178,6 +198,8 @@ impl<'a> FunctionLowerer<'a> {
             body: ExecutableBody::default(),
             next_block_id: 0,
             db_transaction_depth: 0,
+            timeout_plan_cursor: 0,
+            concurrent_plan_cursor: 0,
         }
     }
 
@@ -290,6 +312,198 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<StmtRefIr> {
         let lowered = match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target,
+                target_probe,
+                expect,
+                step_expect,
+                outcome,
+                ..
+            } => {
+                let target_key = self.next_expression_key().ok_or_else(|| {
+                    CompileError::Semantic(
+                        "compiler test setup has no expression owner".to_string(),
+                    )
+                })?;
+                let resolved = self
+                    .resolved_call_targets
+                    .target(&target_key)
+                    .ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "test effect `{target}` has no resolved package target"
+                        ))
+                    })?;
+                let Expr::Call { callee, .. } = target_probe else {
+                    return Err(CompileError::Semantic(
+                        "compiler test effect target probe is not a call".to_string(),
+                    ));
+                };
+                self.consume_static_callee_expression_keys(callee)?;
+                let (register_target, parameters, return_type, stream_item) = match resolved {
+                    ResolvedCallTarget::DependencyPackageFunction {
+                        package_requirement_alias,
+                        package_callable_id,
+                        exact_signature,
+                        ..
+                    } => {
+                        let signature = exact_signature.clone().ok_or_else(|| {
+                            CompileError::Semantic(format!(
+                                "test effect `{target}` has no exact package signature"
+                            ))
+                        })?;
+                        let stream_item = match &signature.return_type {
+                            skiff_artifact_model::PackageTypeRef::Container { name, arguments }
+                                if name == "Stream" && arguments.len() == 1 =>
+                            {
+                                Some(execution_type_ref(&arguments[0]))
+                            }
+                            _ => None,
+                        };
+                        (
+                            TestEffectRegisterTargetIr::PackageCallable {
+                                package_ref: PackageRefIr::Dependency {
+                                    dependency_ref: package_requirement_alias.clone(),
+                                },
+                                callable_id: package_callable_id.clone(),
+                            },
+                            signature
+                                .parameters
+                                .iter()
+                                .map(|parameter| execution_type_ref(&parameter.ty))
+                                .collect::<Vec<_>>(),
+                            execution_type_ref(&signature.return_type),
+                            stream_item,
+                        )
+                    }
+                    ResolvedCallTarget::ContractOperation { .. } => {
+                        let operation = self
+                                .resolved_call_targets
+                                .contract_operation(&target_key)
+                                .ok_or_else(|| {
+                                    CompileError::Semantic(format!(
+                                        "test effect `{target}` has no exact contract operation descriptor"
+                                    ))
+                                })?;
+                        let service_call_ref_index = self
+                            .service_calls
+                            .service_call_ref_index(&target_key)
+                            .ok_or_else(|| {
+                                CompileError::Semantic(format!(
+                                    "test effect `{target}` has no canonical service call ref"
+                                ))
+                            })?;
+                        let contract = &operation.contract;
+                        let stream_item = match &contract.stream {
+                            BoundaryStreamContract::ServerStream { item_type, .. } => Some(
+                                execution_type_ref(&package_type_ref_from_contract_type(item_type)),
+                            ),
+                            BoundaryStreamContract::Unary => None,
+                            BoundaryStreamContract::Unsupported { .. } => {
+                                return Err(CompileError::Semantic(format!(
+                                    "test effect `{target}` has an unsupported stream contract"
+                                )));
+                            }
+                        };
+                        (
+                            TestEffectRegisterTargetIr::ContractOperation {
+                                service_call_ref_index,
+                            },
+                            contract
+                                .parameters
+                                .iter()
+                                .map(|parameter| {
+                                    execution_type_ref(&package_type_ref_from_contract_type(
+                                        &parameter.ty,
+                                    ))
+                                })
+                                .collect(),
+                            execution_type_ref(&package_type_ref_from_contract_type(
+                                &contract.return_value.ty,
+                            )),
+                            stream_item,
+                        )
+                    }
+                    _ => {
+                        return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` must resolve to an exact package or contract operation"
+                            )));
+                    }
+                };
+                let expected = expect
+                    .as_ref()
+                    .map(|value| {
+                        let [parameter] = parameters.as_slice() else {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` expect requires one parameter"
+                            )));
+                        };
+                        Ok(TestEffectExpectedIr {
+                            value: self.lower_expr_with_expected(value, None)?,
+                            request_type: parameter.clone(),
+                        })
+                    })
+                    .transpose()?;
+                let step_expected = step_expect
+                    .as_ref()
+                    .map(|value| {
+                        let [parameter] = parameters.as_slice() else {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` sequence step expect requires one parameter"
+                            )));
+                        };
+                        Ok(TestEffectExpectedIr {
+                            value: self.lower_expr_with_expected(value, None)?,
+                            request_type: parameter.clone(),
+                        })
+                    })
+                    .transpose()?;
+                let outcome = match outcome {
+                    TestEffectStepOutcome::Respond { value } => TestEffectOutcomeIr::Respond {
+                        value: self.lower_expr_with_expected(value, Some(&return_type))?,
+                        value_type: return_type.clone(),
+                    },
+                    TestEffectStepOutcome::Throw { value } => {
+                        let key = self.peek_expression_key().ok_or_else(|| {
+                            CompileError::Semantic(
+                                "compiler test setup has no expression owner".to_string(),
+                            )
+                        })?;
+                        let payload_type = self
+                            .expression_types
+                            .and_then(|types| types.fact(&key))
+                            .and_then(|fact| fact.test_effect_throw_payload_type.clone())
+                            .ok_or_else(|| {
+                                CompileError::Semantic(format!(
+                                    "test effect `{target}` throw has no validated nominal payload type fact"
+                                ))
+                            })?;
+                        TestEffectOutcomeIr::Throw {
+                            value: self.lower_expr_with_expected(value, Some(&payload_type))?,
+                            payload_type,
+                        }
+                    }
+                    TestEffectStepOutcome::Stream { events } => {
+                        let Some(item_type) = stream_item.clone() else {
+                            return Err(CompileError::Semantic(format!(
+                                "test effect `{target}` stream target is not Stream<T>"
+                            )));
+                        };
+                        TestEffectOutcomeIr::Stream {
+                            values: events
+                                .iter()
+                                .map(|value| self.lower_expr_with_expected(value, Some(&item_type)))
+                                .collect::<Result<Vec<_>>>()?,
+                            item_type,
+                        }
+                    }
+                };
+                StmtIr::TestEffectRegister {
+                    target: register_target,
+                    expect: expected,
+                    step_expect: step_expected,
+                    outcome,
+                }
+            }
             Stmt::Let {
                 mutable,
                 name,
@@ -317,12 +531,24 @@ impl<'a> FunctionLowerer<'a> {
                 let value = self.lower_expr(value)?;
                 StmtIr::Assign { target, value }
             }
-            Stmt::Return(value) => StmtIr::Return {
-                value: value
-                    .as_ref()
-                    .map(|value| self.lower_expr(value))
-                    .transpose()?,
-            },
+            Stmt::Timeout { body, .. } => self.lower_timeout_statement(body)?,
+            Stmt::Concurrent { body } => self.lower_concurrent_statement(body)?,
+            Stmt::Serial { .. } => {
+                return Err(CompileError::Semantic(
+                    "serial lowering requires a compiler-checked concurrent lane plan".to_string(),
+                ));
+            }
+            Stmt::Return(value) => {
+                let expected_return_type = self.expected_return_type.clone();
+                StmtIr::Return {
+                    value: value
+                        .as_ref()
+                        .map(|value| {
+                            self.lower_expr_with_expected(value, expected_return_type.as_ref())
+                        })
+                        .transpose()?,
+                }
+            }
             Stmt::Expr(value) => StmtIr::Expr {
                 value: self.lower_expr(value)?,
             },
@@ -431,22 +657,32 @@ impl<'a> FunctionLowerer<'a> {
                 value: self.lower_expr(value)?,
             },
             Stmt::Throw { value } => {
+                let site = self.source_instruction_site(
+                    self.peek_expression_key().as_ref(),
+                    "statement throw",
+                )?;
                 let payload_type = self.throw_payload_type(value, 0)?;
                 StmtIr::Throw {
                     value: self.lower_expr(value)?,
                     payload_type,
+                    site,
                 }
             }
-            Stmt::Rethrow { exception } => StmtIr::Rethrow {
-                exception_slot: self.exception_slot(exception)?,
-            },
+            Stmt::Rethrow { exception } => {
+                let exception_slot = self.exception_slot(exception)?;
+                // A statement-form rethrow reads an identifier directly from its
+                // slot instead of emitting an ExprIr node. It still occupies one
+                // canonical source ExpressionKey, so consume that key before
+                // lowering any following expression.
+                self.consume_expression_key();
+                StmtIr::Rethrow { exception_slot }
+            }
             Stmt::Spawn { call } => self.lower_spawn_stmt(call)?,
         };
         Ok(self.push_stmt(lowered))
     }
 
     fn lower_spawn_stmt(&mut self, call: &Expr) -> Result<StmtIr> {
-        self.reject_spawn_actor_method_target(call)?;
         let call_ref = self.lower_expr(call)?;
         let metadata = self.spawn_function_target_metadata(call_ref)?;
         let Some(ExprIr::Call { call }) =
@@ -459,28 +695,6 @@ impl<'a> FunctionLowerer<'a> {
         call.metadata
             .insert(SPAWN_SUBMIT_METADATA_KEY.to_string(), metadata);
         Ok(StmtIr::Spawn { call: call_ref })
-    }
-
-    fn reject_spawn_actor_method_target(&self, call: &Expr) -> Result<()> {
-        let Expr::Call { callee, .. } = call else {
-            return Ok(());
-        };
-        let callee = match callee.as_ref() {
-            Expr::Generic { callee, .. } => callee.as_ref(),
-            callee => callee,
-        };
-        let Expr::Field { object, .. } = callee else {
-            return Ok(());
-        };
-        if self
-            .infer_receiver_expr_type(object)?
-            .is_some_and(|(_, ty)| Self::is_actor_ref_receiver_type(&ty))
-        {
-            return Err(CompileError::Semantic(
-                "spawn actor method calls are no longer supported".to_string(),
-            ));
-        }
-        Ok(())
     }
 
     fn spawn_function_target_metadata(&self, call_ref: ExprRefIr) -> Result<MetadataValue> {
@@ -518,10 +732,49 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 )
             }
-            CallTargetIr::ExternalServiceSymbol { symbol } => (
-                "function",
-                format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", symbol.symbol_path()),
-            ),
+            CallTargetIr::PublicationExecutable {
+                module_path,
+                executable_index,
+            } => {
+                let symbol = self
+                    .resolved_call_targets
+                    .iter()
+                    .filter_map(|(_, target)| match target {
+                        ResolvedCallTarget::LocalFunction {
+                            source_callable,
+                            executable_index: exact_index,
+                        } if source_callable.module_path() == module_path
+                            && exact_index == executable_index =>
+                        {
+                            Some(source_callable)
+                        }
+                        _ => None,
+                    })
+                    .try_fold(None, |existing: Option<&SourceSymbolKey>, candidate| {
+                        if existing.is_some_and(|existing| existing != candidate) {
+                            Err(CompileError::Semantic(format!(
+                                "spawn target {module_path} executable index {executable_index} maps to more than one typed source callable"
+                            )))
+                        } else {
+                            Ok(Some(candidate))
+                        }
+                    })?
+                    .ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "spawn target {module_path} executable index {executable_index} has no exact typed function source callable"
+                        ))
+                    })?;
+                if symbol.symbol().contains('.') {
+                    return Err(CompileError::Semantic(
+                        "spawn supports function calls; ordinary impl method calls cannot be spawned"
+                            .to_string(),
+                    ));
+                }
+                (
+                    "function",
+                    format!("{SPAWN_FUNCTION_TARGET_PREFIX}{symbol}"),
+                )
+            }
             CallTargetIr::PackageCallable {
                 package_ref,
                 package_callable_id,
@@ -657,6 +910,16 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::Field { object, field } => {
                 self.next_expression_key();
+                if matches!(object.as_ref(), Expr::Identifier(name) if name == "self") {
+                    if let Some(field_type) =
+                        self.actor_self_fields.and_then(|fields| fields.get(field))
+                    {
+                        return Ok(AssignTargetIr::ActorSelfField {
+                            field: field.clone(),
+                            field_type: field_type.clone(),
+                        });
+                    }
+                }
                 Ok(AssignTargetIr::Field {
                     object: {
                         if let Some(name) = self.readonly_assignment_base_identifier(object) {
@@ -739,6 +1002,29 @@ impl<'a> FunctionLowerer<'a> {
             ))
         })?;
         Ok((ty.source_text.clone(), ty.ir.clone()))
+    }
+
+    fn source_instruction_site(
+        &self,
+        key: Option<&ExpressionKey>,
+        purpose: &str,
+    ) -> Result<InstructionSourceSite> {
+        let key = key.ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "{purpose} lowering requires a source expression identity"
+            ))
+        })?;
+        let fact = self
+            .expression_types
+            .and_then(|types| types.fact(key))
+            .ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "{purpose} lowering requires a source span fact for ExpressionKey {key:?}"
+                ))
+            })?;
+        Ok(InstructionSourceSite::Source {
+            span: source_span_ref(fact.span),
+        })
     }
 
     fn lower_record_construct(
@@ -904,7 +1190,9 @@ impl<'a> FunctionLowerer<'a> {
         }
         let expected = ResolvedTypeRef {
             source_text: selector.source_text.clone(),
-            ir: selector.identity.clone(),
+            ir: TypeRefIr::AnyInterface {
+                interface: selector.instantiation_ref.clone(),
+            },
         };
         let conformance = self
             .type_resolution
@@ -1007,7 +1295,22 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<ExprRefIr> {
+        self.lower_expr_with_expected(expr, None)
+    }
+
+    pub(super) fn lower_expr_with_expected(
+        &mut self,
+        expr: &Expr,
+        expected_target: Option<&TypeRefIr>,
+    ) -> Result<ExprRefIr> {
         let expression_key = self.next_expression_key();
+        if let Some(symbol) = expr_path(expr)
+            .and_then(|path| self.type_resolution.resolve_package_constant(&path))
+            .map(|constant| constant.symbol.clone())
+        {
+            self.consume_static_package_value_descendants(expr)?;
+            return Ok(self.push_expr(ExprIr::LoadPackageConst { symbol }));
+        }
         let lowered = match expr {
             Expr::Literal(literal) => ExprIr::Literal {
                 value: lower_literal(literal)?,
@@ -1035,18 +1338,11 @@ impl<'a> FunctionLowerer<'a> {
                 right: self.lower_expr(right)?,
             },
             Expr::ObjectLiteral { entries } => {
-                let mut lowered = BTreeMap::new();
-                for entry in entries {
-                    let key = self.lower_object_literal_key(&entry.key)?;
-                    if lowered.contains_key(&key) {
-                        return Err(CompileError::Semantic(format!(
-                            "duplicate object literal key `{key}` in File IR unit expression"
-                        )));
-                    }
-                    let value = self.lower_expr(&entry.value)?;
-                    lowered.insert(key, value);
-                }
-                ExprIr::MapLiteral { entries: lowered }
+                self.lower_target_typed_object_literal(
+                    expression_key.as_ref(),
+                    entries,
+                    expected_target,
+                )?
             }
             Expr::Patch { target, operations } => self.lower_patch_expr(target, operations)?,
             Expr::Record {
@@ -1054,10 +1350,29 @@ impl<'a> FunctionLowerer<'a> {
                 type_args,
                 fields,
             } => self.lower_record_construct(expression_key.as_ref(), type_name, type_args, fields)?,
-            Expr::Field { object, field } => ExprIr::Field {
-                object: self.lower_expr(object)?,
-                field: field.clone(),
-            },
+            Expr::Field { object, field } => {
+                if matches!(object.as_ref(), Expr::Identifier(name) if name == "self") {
+                    if let Some(field_type) = self
+                        .actor_self_fields
+                        .and_then(|fields| fields.get(field))
+                    {
+                        ExprIr::ActorSelfField {
+                            field: field.clone(),
+                            field_type: field_type.clone(),
+                        }
+                    } else {
+                        ExprIr::Field {
+                            object: self.lower_expr(object)?,
+                            field: field.clone(),
+                        }
+                    }
+                } else {
+                    ExprIr::Field {
+                        object: self.lower_expr(object)?,
+                        field: field.clone(),
+                    }
+                }
+            }
             Expr::Call { callee, args } => {
                 if let Some(payload) =
                     self.lower_representation_constructor_call(expression_key.as_ref(), callee, args)?
@@ -1081,10 +1396,13 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
             Expr::Throw { value } => {
+                let site =
+                    self.source_instruction_site(expression_key.as_ref(), "expression throw")?;
                 let payload_type = self.throw_payload_type(value, 1)?;
                 ExprIr::Throw {
                     value: self.lower_expr(value)?,
                     payload_type,
+                    site,
                 }
             }
             Expr::Rethrow { exception } => ExprIr::Rethrow {
@@ -1099,7 +1417,7 @@ impl<'a> FunctionLowerer<'a> {
                 ExprIr::Catch {
                     try_expression: self.lower_expr(try_expr)?,
                     catch_slot,
-                    catch_type: Some(lower_type_ref(
+                    catch_type: lower_type_ref(
                         catch_type,
                         self.type_indices,
                         self.local_db_objects,
@@ -1108,10 +1426,15 @@ impl<'a> FunctionLowerer<'a> {
                         self.external_type_symbols,
                         self.source_alias_targets,
                         self.value_type_context(),
-                    )?),
+                    )?,
                     body: self.push_expr(ExprIr::LoadSlot { slot: catch_slot }),
                 }
             }
+            Expr::ValueBlock(value) => self.lower_user_value_block(value, expected_target)?,
+            Expr::ConcurrentValue(value) => {
+                self.lower_concurrent_value(value, expected_target)?
+            }
+            Expr::Timeout { value, .. } => self.lower_timeout_value(value, expected_target)?,
             Expr::DbOperation(operation) => self.lower_db_operation(operation)?,
             Expr::DbQuery(query) => self.lower_db_query_value(query)?,
             Expr::DbTransaction(transaction) => self.lower_db_transaction_expr(transaction)?,
@@ -1119,6 +1442,17 @@ impl<'a> FunctionLowerer<'a> {
             Expr::DbLeaseRead(read) => self.lower_db_lease_read(read)?,
         };
         Ok(self.push_expr(lowered))
+    }
+
+    fn consume_static_package_value_descendants(&mut self, expr: &Expr) -> Result<()> {
+        match expr {
+            Expr::Field { object, .. } => self.consume_static_callee_expression_keys(object),
+            Expr::Generic { callee, .. } => self.consume_static_callee_expression_keys(callee),
+            Expr::Identifier(_) | Expr::DependencySourceAddress(_) => Ok(()),
+            _ => Err(CompileError::Semantic(
+                "package constant does not have a static dependency source path".to_string(),
+            )),
+        }
     }
 
     fn lower_patch_expr(
@@ -1181,6 +1515,7 @@ impl<'a> FunctionLowerer<'a> {
             _ => (callee, &[][..]),
         };
         let mut lowered_args = Vec::new();
+        let mut receiver_type_arguments = Vec::new();
         let target = if let Some(target) = self.package_call_target(expression_key, callee)? {
             self.consume_static_callee_expression_keys(callee)?;
             target
@@ -1192,38 +1527,60 @@ impl<'a> FunctionLowerer<'a> {
                 service_call_ref_index,
             }
         } else if let Expr::Field { object, field } = callee {
-            if let Some(target) = self.lower_receiver_call_target(object, field)? {
+            if let Some((target, type_arguments)) =
+                self.resolved_package_receiver_call_target(expression_key, object, field)?
+            {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                receiver_type_arguments = type_arguments;
+                target
+            } else if let Some((target, type_arguments)) =
+                self.resolved_local_impl_receiver_call_target(expression_key, object, field)?
+            {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                receiver_type_arguments = type_arguments;
+                target
+            } else if let Some(target) = self.actor_method_call_target(expression_key)? {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                target
+            } else if let Some(target) =
+                self.resolved_receiver_builtin_call_target(expression_key, object, field)?
+            {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                target
+            } else if let Some(target) = self.lower_receiver_call_target(object, field)? {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
                 target
             } else {
                 self.consume_static_callee_expression_keys(callee)?;
-                self.lower_static_call_target(callee)?
+                self.lower_static_call_target(expression_key, callee)?
             }
         } else {
             self.consume_static_callee_expression_keys(callee)?;
-            self.lower_static_call_target(callee)?
+            self.lower_static_call_target(expression_key, callee)?
         };
-        let mut type_args = type_arg_refs
-            .iter()
-            .enumerate()
-            .map(|(index, ty)| {
-                Ok((
-                    format!("T{index}"),
-                    lower_type_ref(
-                        ty,
-                        self.type_indices,
-                        self.local_db_objects,
-                        self.publication_db_metadata,
-                        self.package_aliases,
-                        self.external_type_symbols,
-                        self.source_alias_targets,
-                        self.value_type_context(),
-                    )?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        self.infer_native_call_type_args(&target, &mut type_args, args);
+        let lowered_type_arguments = receiver_type_arguments
+            .into_iter()
+            .map(Ok)
+            .chain(type_arg_refs.iter().map(|ty| {
+                lower_type_ref(
+                    ty,
+                    self.type_indices,
+                    self.local_db_objects,
+                    self.publication_db_metadata,
+                    self.package_aliases,
+                    self.external_type_symbols,
+                    self.source_alias_targets,
+                    self.value_type_context(),
+                )
+            }))
+            .collect::<Result<Vec<_>>>()?;
+        let mut type_args = positional_type_arguments(lowered_type_arguments);
+        self.infer_native_call_type_args(&target, &mut type_args, args)?;
         let metadata = match &target {
             CallTargetIr::Builtin { op } if is_db_builtin_op(op) => self.lower_db_call_metadata(
                 op,
@@ -1239,6 +1596,7 @@ impl<'a> FunctionLowerer<'a> {
         Ok(ExprIr::Call {
             call: CallIr {
                 target,
+                site: self.source_instruction_site(expression_key, "call")?,
                 args: lowered_args,
                 type_args,
                 metadata,
@@ -1256,10 +1614,15 @@ impl<'a> FunctionLowerer<'a> {
 
         if let Some(ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias,
+            compiler_owned,
             package_callable_id,
             expected_local_abi: _,
+            ..
         }) = target
         {
+            if matches!(callee, Expr::Field { object, .. } if self.is_receiver_call(object)) {
+                return Ok(None);
+            }
             let path = path.as_deref().ok_or_else(|| {
                 package_call_resolution_error(
                     expression_key,
@@ -1279,7 +1642,7 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 ));
             }
-            if !self.package_aliases.contains_key(package_requirement_alias) {
+            if !compiler_owned && !self.package_aliases.contains_key(package_requirement_alias) {
                 return Err(package_call_resolution_error(
                     expression_key,
                     path,
@@ -1288,7 +1651,9 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 ));
             }
-            if root != package_requirement_alias {
+            if self.type_resolution.canonical_package_dependency_ref(root)
+                != package_requirement_alias
+            {
                 return Err(package_call_resolution_error(
                     expression_key,
                     path,
@@ -1303,6 +1668,9 @@ impl<'a> FunctionLowerer<'a> {
                 },
                 package_callable_id: package_callable_id.clone(),
             }));
+        }
+        if matches!(target, Some(ResolvedCallTarget::NativeFunction { .. })) {
+            return Ok(None);
         }
 
         let Some(path) = path.as_deref() else {
@@ -1328,25 +1696,339 @@ impl<'a> FunctionLowerer<'a> {
         Err(package_call_resolution_error(expression_key, path, detail))
     }
 
+    fn resolved_package_receiver_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        object: &Expr,
+        method_name: &str,
+    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+        let Some((_, receiver_ty)) = self.receiver_type_for_call_object(object)? else {
+            return Ok(None);
+        };
+        let Some(receiver) = self
+            .type_resolution
+            .package_receiver_method_resolution(&receiver_ty, method_name)
+        else {
+            return Ok(None);
+        };
+        let Some(ResolvedCallTarget::DependencyPackageFunction {
+            package_requirement_alias,
+            compiler_owned,
+            package_callable_id,
+            expected_local_abi,
+            exact_signature,
+        }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Err(unsupported(format!(
+                "package receiver method `{}/{}` has no exact callable implementation member",
+                receiver.dependency_ref, receiver.source_method_path
+            )));
+        };
+        if *compiler_owned {
+            return Err(unsupported(
+                "compiler-owned package call cannot use a top-level receiver",
+            ));
+        }
+        if receiver.canonical_dependency_ref != *package_requirement_alias
+            || receiver.expected_local_abi != *expected_local_abi
+            || !self.package_aliases.contains_key(package_requirement_alias)
+        {
+            return Err(unsupported(format!(
+                "typed package receiver target `{package_callable_id}` does not match its exact dependency identity"
+            )));
+        }
+        let signature = exact_signature.as_ref().ok_or_else(|| {
+            unsupported(format!(
+                "typed package receiver target `{package_callable_id}` has no exact signature"
+            ))
+        })?;
+        if signature
+            .parameters
+            .first()
+            .map(|parameter| parameter.name.as_str())
+            != Some("self")
+            || signature.type_params.len() < receiver.receiver_type_arguments.len()
+        {
+            return Err(unsupported(format!(
+                "typed package receiver target `{package_callable_id}` has an invalid receiver signature"
+            )));
+        }
+        Ok(Some((
+            CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency {
+                    dependency_ref: package_requirement_alias.clone(),
+                },
+                package_callable_id: package_callable_id.clone(),
+            },
+            receiver.receiver_type_arguments,
+        )))
+    }
+
+    fn resolved_local_impl_receiver_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        object: &Expr,
+        method_name: &str,
+    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+        let Some((_, receiver_ty)) = self.receiver_type_for_call_object(object)? else {
+            return Ok(None);
+        };
+        let receiver_context = TypeResolutionContext::with_type_params(
+            self.module_path,
+            self.type_param_scope.clone(),
+        );
+        let (expected_source_callable, expected_receiver_type_arguments) = if let Some(receiver) =
+            self.type_resolution.local_receiver_method_resolution(
+                &receiver_ty,
+                method_name,
+                &receiver_context,
+            ) {
+            (receiver.source_callable, receiver.receiver_type_arguments)
+        } else if let Some(receiver) =
+            self.exact_impl_self_edge_receiver(object, method_name, &receiver_ty)
+        {
+            receiver
+        } else {
+            return Ok(None);
+        };
+        let Some(ResolvedCallTarget::LocalImplMethod {
+            source_callable,
+            executable_index,
+            receiver_type_arguments,
+        }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Err(unsupported(format!(
+                "local receiver method `{expected_source_callable}` has no exact typed source target"
+            )));
+        };
+        if source_callable != &expected_source_callable
+            || receiver_type_arguments != &expected_receiver_type_arguments
+        {
+            return Err(unsupported(format!(
+                "typed local receiver target `{source_callable}` does not match exact receiver method `{expected_source_callable}`",
+            )));
+        }
+        let target = self.current_package_executable_target(
+            source_callable,
+            *executable_index,
+            "local receiver",
+        )?;
+        Ok(Some((target, receiver_type_arguments.clone())))
+    }
+
+    fn exact_impl_self_edge_receiver(
+        &self,
+        object: &Expr,
+        called_method: &str,
+        receiver_type: &TypeRefIr,
+    ) -> Option<(SourceSymbolKey, Vec<TypeRefIr>)> {
+        if !matches!(object, Expr::Identifier(name) if name == "self") {
+            return None;
+        }
+        let Some(ExpressionOwnerKey::ImplMethod { type_name, method }) =
+            self.expression_owner.as_ref()
+        else {
+            return None;
+        };
+        if called_method != method {
+            return None;
+        }
+        let source_callable = SourceSymbolKey::new(
+            self.module_path,
+            impl_method_declaration_name(type_name, method),
+        );
+        let receiver_type_arguments = match receiver_type {
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments.clone(),
+            _ => Vec::new(),
+        };
+        Some((source_callable, receiver_type_arguments))
+    }
+
+    fn resolved_static_current_package_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(target) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        let (source_callable, executable_index) = match target {
+            ResolvedCallTarget::LocalFunction {
+                source_callable,
+                executable_index,
+            }
+            | ResolvedCallTarget::LocalImplMethod {
+                source_callable,
+                executable_index,
+                ..
+            } => (source_callable, *executable_index),
+            _ => return Ok(None),
+        };
+        self.current_package_executable_target(
+            source_callable,
+            executable_index,
+            "static current-package",
+        )
+        .map(Some)
+    }
+
+    fn current_package_executable_target(
+        &self,
+        source_callable: &SourceSymbolKey,
+        executable_index: u32,
+        context: &str,
+    ) -> Result<CallTargetIr> {
+        if source_callable.module_path() == self.module_path {
+            let exact_index = self
+                .executable_indices
+                .get(source_callable.symbol())
+                .copied()
+                .ok_or_else(|| {
+                    unsupported(format!(
+                        "typed {context} target `{source_callable}` has no exact local executable"
+                    ))
+                })?;
+            if exact_index != executable_index {
+                return Err(unsupported(format!(
+                    "typed {context} target `{source_callable}` declares executable index {executable_index}, but the canonical local index is {exact_index}"
+                )));
+            }
+            Ok(CallTargetIr::LocalExecutable { executable_index })
+        } else {
+            Ok(CallTargetIr::PublicationExecutable {
+                module_path: source_callable.module_path().to_string(),
+                executable_index,
+            })
+        }
+    }
+
+    fn resolved_receiver_builtin_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        object: &Expr,
+        method_name: &str,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(target) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        let ResolvedCallTarget::ReceiverBuiltin { op } = target else {
+            return Ok(None);
+        };
+        validate_supported_receiver_builtin_op(op).map_err(|error| {
+            unsupported(format!(
+                "typed receiver target `{}` is not canonical at ExpressionKey {expression_key:?}: {error}",
+                op.canonical_key
+            ))
+        })?;
+        if op.method.as_str() != method_name {
+            return Err(unsupported(format!(
+                "typed receiver target `{}` does not match callee method `{method_name}` at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            )));
+        }
+        let (_, receiver_ty) = self.receiver_type_for_call_object(object)?.ok_or_else(|| {
+            unsupported(format!(
+                "typed receiver target `{}` has no statically known receiver type at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            ))
+        })?;
+        let receiver_root = runtime_receiver_root_from_type_ref(&receiver_ty).ok_or_else(|| {
+            unsupported(format!(
+                "typed receiver target `{}` cannot validate receiver type {receiver_ty:?} at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            ))
+        })?;
+        if receiver_root != op.receiver.as_str() {
+            return Err(unsupported(format!(
+                "typed receiver target `{}` does not match receiver root `{receiver_root}` at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            )));
+        }
+        Ok(Some(CallTargetIr::ReceiverBuiltin { op: *op }))
+    }
+
     fn infer_native_call_type_args(
         &self,
         target: &CallTargetIr,
         type_args: &mut BTreeMap<String, TypeRefIr>,
         args: &[Expr],
-    ) {
-        if type_args.contains_key("T0") {
-            return;
-        }
+    ) -> Result<()> {
         let CallTargetIr::Native { target } = target else {
-            return;
+            return Ok(());
         };
+        if is_std_actor_registry_native_target(target) {
+            return self.complete_actor_registry_type_args(target, type_args);
+        }
+        if type_args.contains_key("T0") {
+            return Ok(());
+        }
         if !is_std_http_json_native_target(target) {
-            return;
+            return Ok(());
         }
         let Some(payload_type) = self.native_http_json_payload_type(args) else {
-            return;
+            return Ok(());
         };
         type_args.insert("T0".to_string(), payload_type);
+        Ok(())
+    }
+
+    fn complete_actor_registry_type_args(
+        &self,
+        target: &NativeTarget,
+        type_args: &mut BTreeMap<String, TypeRefIr>,
+    ) -> Result<()> {
+        let actor_ty = type_args.get("T0").cloned().ok_or_else(|| {
+            unsupported(format!(
+                "actor registry intrinsic `{}` requires exact actor type argument T0",
+                target
+                    .binding_key
+                    .as_deref()
+                    .unwrap_or(target.symbol.as_str())
+            ))
+        })?;
+        let resolved_actor_ty = ResolvedTypeRef {
+            source_text: type_ref_ir_type_text(&actor_ty),
+            ir: actor_ty,
+        };
+        let actor = self
+            .type_resolution
+            .actor_type_resolution(&resolved_actor_ty, &self.type_resolution_context())
+            .ok_or_else(|| {
+                unsupported(format!(
+                    "actor registry intrinsic `{}` T0 is not an actor declaration",
+                    target
+                        .binding_key
+                        .as_deref()
+                        .unwrap_or(target.symbol.as_str())
+                ))
+            })?;
+        insert_exact_native_type_arg(type_args, "T1", actor.id_type.ir)?;
+        if matches!(
+            target.binding_key.as_deref(),
+            Some("std.actor.getOrCreate" | "std.actor.replace")
+        ) {
+            insert_exact_native_type_arg(
+                type_args,
+                "T2",
+                TypeRefIr::Record {
+                    fields: actor
+                        .fields
+                        .into_iter()
+                        .map(|(name, ty)| (name, ty.ir))
+                        .collect(),
+                },
+            )?;
+        } else if type_args.contains_key("T2") {
+            return Err(unsupported(format!(
+                "actor registry intrinsic `{}` must not carry bootstrap type argument T2",
+                target
+                    .binding_key
+                    .as_deref()
+                    .unwrap_or(target.symbol.as_str())
+            )));
+        }
+        Ok(())
     }
 
     fn native_http_json_payload_type(&self, args: &[Expr]) -> Option<TypeRefIr> {
@@ -1376,7 +2058,7 @@ impl<'a> FunctionLowerer<'a> {
             .cloned();
         if let Some(validation) = representation_validation {
             let payload_expression = validation.payload;
-            let _erased_wrapper_type = validation.target;
+            let wrapper_type = validation.target.ir;
             let callee = match callee {
                 Expr::Generic { callee, .. } => {
                     self.next_expression_key();
@@ -1403,7 +2085,10 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
             let payload = self.lower_expr(payload)?;
-            return Ok(Some(payload));
+            return Ok(Some(self.push_expr(ExprIr::RepresentationWrap {
+                value: payload,
+                type_ref: wrapper_type,
+            })));
         }
         Ok(None)
     }
@@ -1429,14 +2114,11 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(Some(target));
         }
 
-        if let Some(op) = Self::builtin_receiver_op_for_type(&receiver_ty, method_name) {
-            return Ok(Some(CallTargetIr::ReceiverBuiltin { op }));
-        }
-
-        if Self::is_actor_ref_receiver_type(&receiver_ty) {
-            return Err(CompileError::Semantic(format!(
-                "ActorRef receiver method calls are no longer supported: `{method_name}`; spawn a function instead"
-            )));
+        if let Some(target) = runtime_receiver_root_from_type_ref(&receiver_ty)
+            .and_then(|root| builtin_receiver_op_by_name(&root, method_name))
+            .map(|op| CallTargetIr::ReceiverBuiltin { op })
+        {
+            return Ok(Some(target));
         }
 
         if self.is_interface_receiver_method(&receiver_ty, method_name) {
@@ -1463,14 +2145,37 @@ impl<'a> FunctionLowerer<'a> {
             )));
         }
 
-        if let Some(target) = self.lower_static_impl_receiver_call_target(&receiver_ty, method_name)
-        {
-            return Ok(Some(target));
-        }
-
         Err(CompileError::Semantic(format!(
-            "receiver method `{method_name}` on `{receiver_text}` must resolve to a local/package executable, receiver builtin op, interface receiver root, or ActorRef"
+            "receiver method `{method_name}` on `{receiver_text}` must resolve to a local/package executable, receiver builtin op, or interface receiver root"
         )))
+    }
+
+    fn actor_method_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(ResolvedCallTarget::ActorMethod {
+            actor,
+            method_identity,
+            ..
+        }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        Ok(Some(CallTargetIr::ActorMethod {
+            actor: ServiceSymbolRef {
+                module_path: actor.module_path().to_string(),
+                symbol: actor.symbol().to_string(),
+            },
+            // These two identities require the full cross-file execution graph.
+            // LoweredPackage::lower replaces both transient values before an
+            // artifact can leave the compiler.
+            actor_abi_identity: skiff_artifact_model::ActorAbiIdentity::new("pending-actor-abi"),
+            actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity::new(
+                "pending-actor-implementation",
+            ),
+            method_identity: method_identity.clone(),
+        }))
     }
 
     fn lower_any_interface_receiver_call_target(
@@ -1490,29 +2195,11 @@ impl<'a> FunctionLowerer<'a> {
 
     fn receiver_type_for_call_object(&self, object: &Expr) -> Result<Option<(String, TypeRefIr)>> {
         if let Some((source_text, ty)) = self.expression_type_at_offset(1) {
-            let ty = match ty {
-                TypeRefIr::AnyInterface { .. } => ty,
-                _ => self.lower_receiver_type_text(&source_text).unwrap_or(ty),
-            };
             if !is_unknown_type_ref(&ty) {
                 return Ok(Some((source_text, ty)));
             }
         }
         self.infer_receiver_expr_type(object)
-    }
-
-    fn lower_receiver_type_text(&self, source_text: &str) -> Option<TypeRefIr> {
-        lower_type_text(
-            source_text,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.value_type_context(),
-        )
-        .ok()
     }
 
     fn infer_receiver_expr_type(&self, expr: &Expr) -> Result<Option<(String, TypeRefIr)>> {
@@ -1537,7 +2224,7 @@ impl<'a> FunctionLowerer<'a> {
         field: &str,
     ) -> Option<TypeRefIr> {
         let direct = match ty {
-            TypeRefIr::Native { name, args } => self.builtin_field_type(name, args, field),
+            TypeRefIr::Builtin { name, args } => self.builtin_field_type(name, args, field),
             TypeRefIr::LocalType { type_index } => self
                 .local_type_fields
                 .get(type_index)
@@ -1593,7 +2280,7 @@ impl<'a> FunctionLowerer<'a> {
     fn builtin_field_type(&self, name: &str, args: &[TypeRefIr], field: &str) -> Option<TypeRefIr> {
         if name == "DbUpsertResult" {
             return match field {
-                "inserted" => Some(TypeRefIr::native("bool")),
+                "inserted" => Some(TypeRefIr::builtin("bool")),
                 "value" => args.first().cloned(),
                 _ => None,
             };
@@ -1666,29 +2353,6 @@ impl<'a> FunctionLowerer<'a> {
         .ok()
     }
 
-    fn lower_static_impl_receiver_call_target(
-        &self,
-        receiver_ty: &TypeRefIr,
-        method_name: &str,
-    ) -> Option<CallTargetIr> {
-        match receiver_ty {
-            TypeRefIr::LocalType { .. } => {
-                let type_name = self.local_type_name_for_receiver_type(receiver_ty)?;
-                let executable_index =
-                    self.local_impl_method_executable_index(type_name, method_name)?;
-                Some(CallTargetIr::LocalExecutable { executable_index })
-            }
-            TypeRefIr::ServiceSymbol { symbol } => Some(CallTargetIr::ExternalServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: symbol.module_path.clone(),
-                    symbol: impl_method_declaration_name(&symbol.symbol, method_name),
-                },
-            }),
-            TypeRefIr::PackageSymbol { .. } => None,
-            _ => None,
-        }
-    }
-
     fn is_interface_receiver_method(&self, receiver_ty: &TypeRefIr, method_name: &str) -> bool {
         let Some(symbol) = self.interface_receiver_symbol(receiver_ty) else {
             return false;
@@ -1753,22 +2417,16 @@ impl<'a> FunctionLowerer<'a> {
             .find_map(|(name, index)| (*index == *type_index).then_some(name.as_str()))
     }
 
-    fn lower_static_call_target(&self, callee: &Expr) -> Result<CallTargetIr> {
+    fn lower_static_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        callee: &Expr,
+    ) -> Result<CallTargetIr> {
+        if let Some(target) = self.resolved_static_current_package_call_target(expression_key)? {
+            return Ok(target);
+        }
         let path = expr_path(callee).ok_or_else(|| unsupported_call(callee))?;
         let root = path.split('.').next().unwrap_or(path.as_str());
-        if let Some(service_path) = path.strip_prefix("root.") {
-            if is_official_std_module_path(self.module_path) {
-                return Ok(CallTargetIr::ExternalServiceSymbol {
-                    symbol: service_symbol_ref(
-                        self.module_path,
-                        &package_scoped_root_path(self.module_path, service_path),
-                    ),
-                });
-            }
-            return Ok(CallTargetIr::ExternalServiceSymbol {
-                symbol: service_symbol_ref(self.module_path, service_path),
-            });
-        }
         if let Some(target) = shared_native_alias_target(&path) {
             return Ok(CallTargetIr::Native {
                 target: native_target_from_symbol(target),
@@ -1787,51 +2445,16 @@ impl<'a> FunctionLowerer<'a> {
                 target: native_target_from_symbol(&path),
             });
         }
-        if let Some(executable_index) = self.executable_indices.get(&path) {
-            return Ok(CallTargetIr::LocalExecutable {
-                executable_index: *executable_index,
-            });
-        }
-        if let Some(local_symbol) = path.strip_prefix(&format!("{}.", self.module_path)) {
-            if let Some(executable_index) = self.executable_indices.get(local_symbol) {
-                return Ok(CallTargetIr::LocalExecutable {
-                    executable_index: *executable_index,
-                });
-            }
-        }
         if !path.contains('.') {
             return Err(unsupported_file_ir_callee(&path));
         }
-        Ok(CallTargetIr::ExternalServiceSymbol {
-            symbol: service_symbol_ref(self.module_path, &path),
-        })
+        Err(unsupported(format!(
+            "static call target `{path}` has no exact current-package, package dependency, service call, native, or builtin resolution"
+        )))
     }
 
     fn is_receiver_call(&self, object: &Expr) -> bool {
-        match object {
-            Expr::Identifier(name) => self.bindings.contains_key(name),
-            Expr::Field { .. } => expr_path(object)
-                .and_then(|path| path.split('.').next().map(str::to_string))
-                .is_some_and(|root| self.bindings.contains_key(&root)),
-            Expr::Call { .. } => expr_path(object).is_none(),
-            _ => true,
-        }
-    }
-
-    fn builtin_receiver_op_for_type(
-        ty: &TypeRefIr,
-        method_name: &str,
-    ) -> Option<BuiltinReceiverOp> {
-        let root = runtime_receiver_root_from_type_ref(ty)?;
-        builtin_receiver_op_by_name(&root, method_name)
-    }
-
-    fn is_actor_ref_receiver_type(ty: &TypeRefIr) -> bool {
-        match ty {
-            TypeRefIr::Native { name, .. } if name == "ActorRef" => true,
-            TypeRefIr::PackageSymbol { symbol } if is_actor_ref_package_symbol(symbol) => true,
-            _ => false,
-        }
+        is_receiver_call_object(object, &|name| self.bindings.contains_key(name))
     }
 
     fn lower_object_literal_key(&mut self, key: &ObjectLiteralKey) -> Result<String> {
@@ -1871,10 +2494,34 @@ impl<'a> FunctionLowerer<'a> {
             skiff_syntax::ast::Pattern::Binding(name) => PatternIr::Binding {
                 slot: self.declare_slot(name, SlotKind::Pattern, false)?,
             },
-            skiff_syntax::ast::Pattern::Nominal { name, .. } => {
-                return Err(CompileError::Semantic(format!(
-                    "nominal pattern `{name}` cannot match an erased runtime value; use a record, literal, binding, or wildcard pattern"
-                )));
+            skiff_syntax::ast::Pattern::Nominal {
+                name,
+                type_args,
+                fields,
+            } => {
+                let resolved = self
+                    .type_resolution
+                    .resolve_named_type_ref(name, type_args, &self.type_resolution_context())
+                    .map_err(|error| {
+                        CompileError::Semantic(format!(
+                            "nominal pattern `{name}` has invalid type: {error}"
+                        ))
+                    })?;
+                if !matches!(
+                    resolved.ir,
+                    TypeRefIr::LocalType { .. }
+                        | TypeRefIr::PublicationType { .. }
+                        | TypeRefIr::ServiceSymbol { .. }
+                        | TypeRefIr::PackageSymbol { .. }
+                        | TypeRefIr::PackageSchema { .. }
+                        | TypeRefIr::AppliedNominal { .. }
+                ) {
+                    return Err(CompileError::Semantic(format!(
+                        "nominal pattern `{name}` does not resolve to an exact nominal type"
+                    )));
+                }
+                self.declare_pattern_fields(fields)?;
+                PatternIr::Type { ty: resolved.ir }
             }
             skiff_syntax::ast::Pattern::Record { fields } => {
                 self.declare_pattern_fields(fields)?;
@@ -1995,8 +2642,13 @@ fn package_call_resolution_error(
 fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
     match target {
         ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
+        ResolvedCallTarget::ConfigIntrinsic { .. } => "ConfigIntrinsic",
         ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
+        ResolvedCallTarget::ActorMethod { .. } => "ActorMethod",
+        ResolvedCallTarget::NativeFunction { .. } => "NativeFunction",
+        ResolvedCallTarget::ReceiverBuiltin { .. } => "ReceiverBuiltin",
         ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
+        ResolvedCallTarget::InterfaceMethod { .. } => "InterfaceMethod",
         ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
         ResolvedCallTarget::Unknown { .. } => "Unknown",
     }
@@ -2028,7 +2680,31 @@ fn is_std_http_json_native_target(target: &NativeTarget) -> bool {
         && matches!(target.symbol.as_str(), "json" | "jsonWithHeaders"))
 }
 
-fn expr_preorder_node_count(expr: &Expr) -> u32 {
+fn is_std_actor_registry_native_target(target: &NativeTarget) -> bool {
+    matches!(
+        target.binding_key.as_deref(),
+        Some("std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove")
+    )
+}
+
+fn insert_exact_native_type_arg(
+    type_args: &mut BTreeMap<String, TypeRefIr>,
+    key: &str,
+    expected: TypeRefIr,
+) -> Result<()> {
+    if let Some(actual) = type_args.get(key) {
+        if actual != &expected {
+            return Err(unsupported(format!(
+                "native type argument {key} does not match its canonical declaration type"
+            )));
+        }
+        return Ok(());
+    }
+    type_args.insert(key.to_string(), expected);
+    Ok(())
+}
+
+pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
     match expr {
         Expr::Literal(_)
         | Expr::Identifier(_)
@@ -2076,6 +2752,10 @@ fn expr_preorder_node_count(expr: &Expr) -> u32 {
             1 + expr_preorder_node_count(&claim.key) + block_preorder_node_count(&claim.body)
         }
         Expr::DbLeaseRead(read) => 1 + expr_preorder_node_count(&read.key),
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            1 + block_preorder_node_count(&value.body) + expr_preorder_node_count(&value.tail)
+        }
+        Expr::Timeout { value, .. } => 1 + expr_preorder_node_count(value),
     }
 }
 
@@ -2089,6 +2769,14 @@ fn block_preorder_node_count(block: &skiff_syntax::ast::Block) -> u32 {
 
 fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
     match stmt {
+        Stmt::CompilerTestEffectRegister { target_probe, .. } => {
+            expr_preorder_node_count(target_probe)
+                + compiler_test_effect_expressions(stmt)
+                    .expect("matched compiler test effect")
+                    .into_iter()
+                    .map(expr_preorder_node_count)
+                    .sum::<u32>()
+        }
         Stmt::Assert { condition, .. } => expr_preorder_node_count(condition),
         Stmt::Let { value, .. } => expr_preorder_node_count(value),
         Stmt::Assign { target, value } => {
@@ -2117,6 +2805,9 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
                     .sum::<u32>()
         }
         Stmt::DbTransaction { body } => block_preorder_node_count(body),
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            block_preorder_node_count(body)
+        }
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
         | Stmt::Emit(value)
@@ -2128,16 +2819,6 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
             .unwrap_or_default(),
         Stmt::Break | Stmt::Continue => 0,
     }
-}
-
-fn is_actor_ref_package_symbol(symbol: &PackageSymbolRef) -> bool {
-    if !matches!(
-        symbol.symbol_path.as_str(),
-        "actor.ActorRef" | "std.actor.ActorRef"
-    ) {
-        return false;
-    }
-    is_official_std_package_ref(&symbol.package)
 }
 
 pub(super) fn is_builtin_call_root(root: &str) -> bool {
@@ -2192,9 +2873,14 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
             block_contains_return_stmt(then_block)
                 || else_block.as_ref().is_some_and(block_contains_return_stmt)
         }
-        Stmt::For { body, .. } | Stmt::DbTransaction { body } => block_contains_return_stmt(body),
+        Stmt::For { body, .. }
+        | Stmt::DbTransaction { body }
+        | Stmt::Timeout { body, .. }
+        | Stmt::Concurrent { body }
+        | Stmt::Serial { body } => block_contains_return_stmt(body),
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_return_stmt(&arm.body)),
         Stmt::Assert { .. }
+        | Stmt::CompilerTestEffectRegister { .. }
         | Stmt::Let { .. }
         | Stmt::Assign { .. }
         | Stmt::Throw { .. }
@@ -2267,5 +2953,54 @@ fn lower_binary_op(op: BinaryOp) -> BinaryOpIr {
         BinaryOp::Ge => BinaryOpIr::GreaterThanOrEqual,
         BinaryOp::And => BinaryOpIr::And,
         BinaryOp::Or => BinaryOpIr::Or,
+    }
+}
+
+fn positional_type_arguments(
+    arguments: impl IntoIterator<Item = TypeRefIr>,
+) -> BTreeMap<String, TypeRefIr> {
+    arguments
+        .into_iter()
+        .enumerate()
+        .map(|(index, ty)| (format!("T{index}"), ty))
+        .collect()
+}
+
+fn is_receiver_call_object(object: &Expr, is_local_binding: &impl Fn(&str) -> bool) -> bool {
+    match object {
+        Expr::Identifier(name) => is_local_binding(name),
+        Expr::DependencySourceAddress(_) => false,
+        Expr::Field { .. } => expr_path(object)
+            .and_then(|path| path.split('.').next().map(str::to_string))
+            .is_some_and(|root| is_local_binding(&root)),
+        Expr::Call { .. } => expr_path(object).is_none(),
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_receiver_type_arguments_precede_explicit_method_arguments() {
+        let arguments =
+            positional_type_arguments([TypeRefIr::builtin("string"), TypeRefIr::builtin("number")]);
+        assert_eq!(arguments["T0"], TypeRefIr::builtin("string"));
+        assert_eq!(arguments["T1"], TypeRefIr::builtin("number"));
+    }
+
+    #[test]
+    fn package_receiver_classification_keeps_static_dependency_addresses_out() {
+        let static_dependency =
+            Expr::DependencySourceAddress(skiff_syntax::ast::DependencySourceAddress {
+                dependency_ref: "subjectImpl".to_string(),
+                public_path: "internal.makeBox".to_string(),
+            });
+        assert!(!is_receiver_call_object(&static_dependency, &|_| false));
+
+        let local = Expr::Identifier("box".to_string());
+        assert!(is_receiver_call_object(&local, &|name| name == "box"));
+        assert!(!is_receiver_call_object(&local, &|_| false));
     }
 }

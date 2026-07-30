@@ -5,9 +5,9 @@ use std::{
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    ActivationTemplate, ContractOperationId, GlobalIngressBinding, IngressSelector, PackageBuildId,
-    PackageRequirementKey, RuntimeAssembly, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceRequirementKey,
+    ActivationTemplate, ContractOperationId, PackageBuildId, PackageRequirementKey,
+    RuntimeAssembly, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceRequirementKey,
 };
 use skiff_runtime_linked_program::{
     HydratedPackageCode, LoadedPublicationResource, PublicationResourceTable,
@@ -16,11 +16,14 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_loader::{HydratedRuntimeAssembly, ServiceContractStore};
 
 mod candidate;
+mod gateway;
 
 pub use candidate::{
     AssemblyLinkedCandidate, AssemblyServiceCallError, LinkedActivationTemplate,
     LinkedContractOperation, LinkedServiceBindingTemplate,
 };
+use gateway::link_gateway_ingress;
+pub use gateway::{LinkedGatewayCallable, LinkedGatewayEntry};
 
 /// Links the exact canonical package plan once and retains only typed immutable assembly facts.
 ///
@@ -50,7 +53,7 @@ pub fn link_runtime_assembly(
 
     validate_contract_store(&assembly, &contracts)?;
     let activations = link_activation_templates(&hydrated, &shared_image, &contracts)?;
-    let ingress = link_ingress(&hydrated, &activations, &contracts)?;
+    let (gateway_entries, ingress) = link_gateway_ingress(&hydrated, &activations, &shared_image)?;
 
     Ok(AssemblyLinkedCandidate {
         assembly,
@@ -58,6 +61,7 @@ pub fn link_runtime_assembly(
         execution_image,
         contracts,
         activations,
+        gateway_entries,
         ingress,
     })
 }
@@ -89,7 +93,9 @@ fn hydrated_package_code(
         Arc::clone(slot.artifact()),
         slot.files().to_vec(),
         resources,
-    ))
+    )
+    .with_schema_index(Arc::clone(slot.schema_index()))
+    .with_schema_records(slot.schema_records().clone()))
 }
 
 fn validate_contract_store(
@@ -345,10 +351,7 @@ fn activation_package_closure(
 ) -> anyhow::Result<BTreeSet<PackageBuildId>> {
     let mut bindings = BTreeMap::new();
     for binding in &deployment.package_bindings {
-        if bindings
-            .insert(binding.key.clone(), &binding.package)
-            .is_some()
-        {
+        if bindings.insert(binding.key.clone(), binding).is_some() {
             anyhow::bail!("deployment repeats package binding {:?}", binding.key);
         }
     }
@@ -356,7 +359,7 @@ fn activation_package_closure(
         .package_link_plan()
         .package_links
         .iter()
-        .map(|binding| (binding.key.clone(), &binding.package))
+        .map(|binding| (binding.key.clone(), binding))
         .collect::<BTreeMap<_, _>>();
     let mut used = BTreeSet::new();
     let mut closure = BTreeSet::new();
@@ -377,22 +380,27 @@ fn activation_package_closure(
                 anyhow::anyhow!("activation package requirement {key:?} has no binding")
             })?;
             if global_links.get(&key) != Some(provider)
-                || provider.package_id != requirement.package_id
-                || provider.package_version != requirement.exact_version
-                || provider.package_local_abi_identity != requirement.expected_local_abi
+                || provider.package.package_id != requirement.package_id
+                || provider.package.package_version != requirement.exact_version
+                || provider.package.package_local_abi_identity != requirement.expected_local_abi
+                || provider.collection_name_mapping != requirement.collection_name_mapping
+                || requirement
+                    .expected_package_build
+                    .as_ref()
+                    .is_some_and(|expected| expected != &provider.package.package_build_id)
             {
                 anyhow::bail!(
                     "activation package requirement {key:?} does not match the canonical exact link"
                 );
             }
             let provider_code = image
-                .code_by_build(&provider.package_build_id)
+                .code_by_build(&provider.package.package_build_id)
                 .ok_or_else(|| anyhow::anyhow!("package binding {key:?} provider is not linked"))?;
-            if provider_code.artifact_ref() != *provider {
+            if provider_code.artifact_ref() != &provider.package {
                 anyhow::bail!("package binding {key:?} provider ref is not exact");
             }
             used.insert(key);
-            pending.push(provider.package_build_id.clone());
+            pending.push(provider.package.package_build_id.clone());
         }
     }
     if used != bindings.keys().cloned().collect::<BTreeSet<_>>() {
@@ -493,64 +501,6 @@ fn link_service_bindings(
         anyhow::bail!("activation is missing service binding {key:?}");
     }
     Ok(linked)
-}
-
-fn link_ingress(
-    hydrated: &HydratedRuntimeAssembly,
-    activations: &BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
-    contracts: &ServiceContractStore,
-) -> anyhow::Result<BTreeMap<IngressSelector, GlobalIngressBinding>> {
-    let mut expected = BTreeSet::new();
-    for (deployment_ref, deployment) in hydrated.deployments() {
-        for binding in &deployment.ingress {
-            expected.insert((
-                binding.selector.clone(),
-                deployment_ref.clone(),
-                deployment.contract.clone(),
-                binding.contract_operation_id.clone(),
-            ));
-        }
-    }
-
-    let mut ingress = BTreeMap::new();
-    let mut actual = BTreeSet::new();
-    for binding in &hydrated.assembly().global_ingress {
-        let activation = activations.get(&binding.deployment).ok_or_else(|| {
-            anyhow::anyhow!(
-                "ingress {:?} targets a missing activation",
-                binding.selector
-            )
-        })?;
-        if activation.contract() != &binding.contract
-            || activation
-                .operation(&binding.contract_operation_id)
-                .is_none()
-            || contracts
-                .operation_descriptor(&binding.contract, &binding.contract_operation_id)
-                .is_none()
-        {
-            anyhow::bail!(
-                "ingress {:?} targets a dangling contract operation",
-                binding.selector
-            );
-        }
-        actual.insert((
-            binding.selector.clone(),
-            binding.deployment.clone(),
-            binding.contract.clone(),
-            binding.contract_operation_id.clone(),
-        ));
-        if ingress
-            .insert(binding.selector.clone(), binding.clone())
-            .is_some()
-        {
-            anyhow::bail!("global ingress collision for {:?}", binding.selector);
-        }
-    }
-    if actual != expected {
-        anyhow::bail!("global ingress does not exactly match deployment ingress");
-    }
-    Ok(ingress)
 }
 
 #[cfg(test)]

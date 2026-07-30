@@ -3,62 +3,52 @@ use std::collections::HashSet;
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
+use skiff_runtime_capability_context::{
+    ActorInvocationCancellation, ActorInvocationError, ActorInvocationOutcome,
+    ConnectionRequestSession, ConnectionRequestTerminal,
+};
 use skiff_runtime_request::{OutboundResponse, ResponseError};
+#[cfg(test)]
+use skiff_runtime_transport::protocol::RouterControlEnvelope;
 use skiff_runtime_transport::{
+    actor_method::{decode_actor_method_frame, ActorMethodErrorFramePayload, ActorMethodFrame},
+    actor_owner::{
+        decode_actor_owner_control_frame, decode_actor_owner_failure_frame,
+        decode_actor_owner_invoke_frame, encode_actor_owner_control_ack_frame,
+        ActorOwnerControlAckFrameHeader, ActorOwnerControlOperation,
+        ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE, ACTOR_OWNER_CONTROL_FRAME_TYPE,
+        ACTOR_OWNER_FAILURE_FRAME_TYPE, ACTOR_OWNER_INVOKE_FRAME_TYPE,
+    },
+    assembly_activation::{
+        decode_assembly_activation_frame, AssemblyActivationFrameDirection,
+        ASSEMBLY_ACTIVATION_FRAME_TYPE,
+    },
+    connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
-        decode_typed_binary_frame, ActorFindResponseFrameHeader, ActorPutResponseFrameHeader,
-        ActorRemoveResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-        PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
-        ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
-        ResponseStartFrameHeader, RouterControlEnvelope, RouterControlFrameHeader,
-        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        decode_router_bootstrap_frame_header, decode_typed_binary_frame,
+        ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
+        ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
+        ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
+        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
         SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
         SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
         SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
-    request_mapper::{request_cancel_from_frame_header, request_envelope_from_start_frame},
-    response_mapper::{
-        response_chunk_to_outbound, response_end_to_outbound, response_error_to_outbound,
-        response_start_to_outbound,
-    },
+    request_mapper::request_cancel_from_frame_header,
+    runtime_assembly_request::decode_runtime_assembly_request_start_frame,
+    websocket_generation_lifecycle::WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     sync::mpsc,
-    time::{sleep, Duration, MissedTickBehavior},
+    time::{Duration, MissedTickBehavior},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, info, warn};
+use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
+use tracing::{info, warn};
 
-use crate::{
-    error::{Result, RuntimeError},
-    loader::artifact_roots_control_fingerprint,
-};
-
-pub(super) async fn run_reconnect_loop(host: super::RuntimeHost) -> Result<()> {
-    let mut backoff = Duration::from_millis(250);
-    loop {
-        match run_once(host.clone()).await {
-            Ok(()) => {
-                backoff = Duration::from_millis(250);
-                warn!(
-                    event = "runtime.router_disconnected",
-                    reconnect_in_ms = backoff.as_millis() as u64
-                );
-            }
-            Err(error) => {
-                warn!(
-                    event = "runtime.router_connection_error",
-                    error = %error,
-                    reconnect_in_ms = backoff.as_millis() as u64
-                );
-            }
-        }
-        sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(5));
-    }
-}
+use crate::error::{Result, RuntimeError};
 
 pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (ws, _) = connect_async(&host.router_url)
@@ -68,20 +58,27 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
         event = "runtime.router_connected",
         router = %host.router_url
     );
-    let (writer, mut reader) = ws.split();
+    let router_session_id = format!("skiff-router-session-v1:opaque:{}", uuid::Uuid::new_v4());
+    run_connected_session(host, ws, router_session_id).await
+}
+
+async fn run_connected_session<S>(
+    host: super::RuntimeHost,
+    ws: WebSocketStream<S>,
+    router_session_id: String,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let mut ws = ws;
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
+    let mut receiver = receiver;
 
-    host.queue_registers(sender.clone())?;
-    let spawn_registration = super::spawn_worker::start_spawn_workers(host.clone(), sender.clone());
-
-    let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
+    host.websocket_generations.connect(&router_session_id)?;
 
     let session_result = async {
-        let mut control: Option<RouterControlEnvelope> = None;
-        let mut artifact_fingerprint: Option<String> = None;
         let mut health_reporter = RuntimeHealthReporter::default();
-        let mut reload_interval = tokio::time::interval(Duration::from_secs(1));
-        reload_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut bootstrap = None;
         let mut health_interval = tokio::time::interval(Duration::from_secs(1));
         health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut health_zero_transition_interval = tokio::time::interval(Duration::from_millis(50));
@@ -89,7 +86,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 
         loop {
             tokio::select! {
-                message = reader.next() => {
+                message = ws.next() => {
                     let Some(message) = message else {
                         break;
                     };
@@ -102,22 +99,38 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                         Message::Binary(bytes) => {
                             dispatch_router_binary_frame_with_health(
                                 &host,
+                                &router_session_id,
                                 &bytes,
                                 &sender,
-                                &spawn_registration,
-                                &mut control,
-                                &mut artifact_fingerprint,
                                 &mut health_reporter,
+                                &mut bootstrap,
                             )
                             .await?;
                         }
-                        _ => {}
+                        Message::Ping(_) => {
+                            ws.flush()
+                                .await
+                                .map_err(|error| RuntimeError::Decode(format!(
+                                    "failed to flush Router ping reply: {error}"
+                                )))?;
+                        }
+                        Message::Pong(_) => {}
+                        Message::Close(_) => {
+                            ws.flush()
+                                .await
+                                .map_err(|error| RuntimeError::Decode(format!(
+                                    "failed to flush Router close reply: {error}"
+                                )))?;
+                            return Ok(());
+                        }
+                        Message::Frame(_) => {}
                     }
                 }
-                _ = reload_interval.tick(), if control.as_ref().is_some_and(|control| control.dev_reload.unwrap_or(false)) => {
-                    let control_ref = control.as_ref().expect("control should be present");
-                    maybe_reload_dev_artifacts(&host, &sender, control_ref, &mut artifact_fingerprint)
-                        .await;
+                message = receiver.recv() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    send_writer_message(&mut ws, message).await?;
                 }
                 _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
                     health_reporter.send_periodic(&host, &sender).await?;
@@ -128,16 +141,67 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
             }
         }
 
-        health_reporter.send_final(&host, &sender).await
+        Ok(())
     }
     .await;
 
-    host.spawn_workers
-        .stop_registration(&spawn_registration)
-        .await;
+    if let Ok(session) = ConnectionRequestSession::new(router_session_id.clone()) {
+        host.connection_requests.disconnect_session(&session);
+    }
+    host.outbound_requests.fail_all(ResponseError {
+        code: "ConnectionClosed".to_string(),
+        message: "router connection closed".to_string(),
+        status: None,
+        details: None,
+    });
+    host.actor_method_outbound.fail_all(
+        crate::capability_context::actor_method_outbound::ActorInvocationTransportError {
+            code: "ConnectionClosed".to_string(),
+            message: "router connection closed".to_string(),
+        },
+    );
+    host.actor_owner_invocations.cancel_session();
+    host.discard_actor_instances_for_session(&router_session_id);
+    let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
     drop(sender);
-    let _ = writer_task.await;
-    session_result
+    session_result.and(disconnect_result)
+}
+
+struct ConnectionBootstrap {
+    resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
+    service_db: skiff_artifact_model::AssemblyActivationServiceDb,
+    max_response_bytes: usize,
+}
+
+fn decode_connection_bootstrap(
+    typed: TypedEnvelope,
+    payload: &[u8],
+) -> Result<ConnectionBootstrap> {
+    if !payload.is_empty() {
+        return Err(RuntimeError::Decode(
+            "router.bootstrap binary frame payload must be empty".to_string(),
+        ));
+    }
+    let mut value = typed.rest;
+    value.insert("type".to_string(), Value::String(typed.envelope_type));
+    let header = decode_router_bootstrap_frame_header(Value::Object(value))
+        .map_err(super::transport_error_into_runtime_error)?;
+    let resolver = skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+        &header.artifacts_path,
+    )
+    .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let service_db = skiff_artifact_model::AssemblyActivationServiceDb {
+        mongo_url: header.service_db.mongo_url.clone(),
+    };
+    Ok(ConnectionBootstrap {
+        resolver,
+        service_db,
+        max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
+            RuntimeError::Decode(
+                "router.bootstrap http.maxResponseBytes exceeds Runtime address space".to_string(),
+            )
+        })?,
+    })
 }
 
 #[derive(Default)]
@@ -203,6 +267,7 @@ impl RuntimeHealthReporter {
         Ok(true)
     }
 
+    #[cfg(test)]
     async fn send_final(
         &mut self,
         host: &super::RuntimeHost,
@@ -254,52 +319,137 @@ async fn dispatch_router_binary_frame(
     control: &mut Option<RouterControlEnvelope>,
     artifact_fingerprint: &mut Option<String>,
 ) -> Result<()> {
+    let _ = (control, artifact_fingerprint);
+    let artifact_path = std::env::temp_dir().join("skiff-runtime-test-artifacts");
+    std::fs::create_dir_all(&artifact_path)
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let mut bootstrap = Some(ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
+        )
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
+        },
+        max_response_bytes: 67_108_864,
+    });
     dispatch_router_binary_frame_inner(
         host,
+        "skiff-router-session-v1:opaque:test-session",
         bytes,
         sender,
         None,
-        control,
-        artifact_fingerprint,
+        &mut bootstrap,
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn dispatch_router_binary_frame_with_http_response_max(
+    host: &super::RuntimeHost,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    max_response_bytes: usize,
+) -> Result<()> {
+    let artifact_path = std::env::temp_dir().join("skiff-runtime-test-artifacts");
+    std::fs::create_dir_all(&artifact_path)
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let mut bootstrap = Some(ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
+        )
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
+        },
+        max_response_bytes,
+    });
+    dispatch_router_binary_frame_inner(
+        host,
+        "skiff-router-session-v1:opaque:test-session",
+        bytes,
+        sender,
         None,
+        &mut bootstrap,
     )
     .await
 }
 
 async fn dispatch_router_binary_frame_with_health(
     host: &super::RuntimeHost,
+    router_session_id: &str,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    spawn_registration: &super::spawn_worker::SpawnWorkerRegistration,
-    control: &mut Option<RouterControlEnvelope>,
-    artifact_fingerprint: &mut Option<String>,
     health_reporter: &mut RuntimeHealthReporter,
+    bootstrap: &mut Option<ConnectionBootstrap>,
 ) -> Result<()> {
     dispatch_router_binary_frame_inner(
         host,
+        router_session_id,
         bytes,
         sender,
-        Some(spawn_registration),
-        control,
-        artifact_fingerprint,
         Some(health_reporter),
+        bootstrap,
     )
     .await
 }
 
 async fn dispatch_router_binary_frame_inner(
     host: &super::RuntimeHost,
+    router_session_id: &str,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    spawn_registration: Option<&super::spawn_worker::SpawnWorkerRegistration>,
-    control: &mut Option<RouterControlEnvelope>,
-    artifact_fingerprint: &mut Option<String>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
+    bootstrap: &mut Option<ConnectionBootstrap>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
     match typed.envelope_type.as_str() {
+        "router.bootstrap" => {
+            if bootstrap.is_some() {
+                return Err(RuntimeError::Decode(
+                    "router.bootstrap must appear exactly once per connection".to_string(),
+                ));
+            }
+            let installed = decode_connection_bootstrap(typed, &payload)?;
+            host.recover_durable_committed(&installed.resolver, &installed.service_db)
+                .await?;
+            host.queue_connection_registration(sender.clone())?;
+            *bootstrap = Some(installed);
+        }
+        ASSEMBLY_ACTIVATION_FRAME_TYPE => {
+            let bootstrap = bootstrap.as_ref().ok_or_else(|| {
+                RuntimeError::Decode(
+                    "assembly activation requires router.bootstrap first".to_string(),
+                )
+            })?;
+            let control = decode_assembly_activation_frame(
+                AssemblyActivationFrameDirection::RouterToRuntime,
+                bytes,
+            )
+            .map_err(super::transport_error_into_runtime_error)?;
+            if let Some(reply) = host
+                .apply_bootstrapped_assembly_activation_control(
+                    control,
+                    &bootstrap.resolver,
+                    Some(&bootstrap.service_db),
+                )
+                .await
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?
+            {
+                super::RuntimeHost::queue_assembly_activation(sender.clone(), &reply)?;
+            }
+        }
+        WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE => {
+            host.websocket_generations
+                .dispatch_router_control(router_session_id, bytes, sender)?;
+        }
         "runtime.registered" => {
+            if bootstrap.is_none() {
+                return Err(RuntimeError::Decode(
+                    "runtime.registered requires router.bootstrap first".to_string(),
+                ));
+            }
             let (header, payload) =
                 decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
@@ -323,47 +473,28 @@ async fn dispatch_router_binary_frame_inner(
             }
         }
         "router.control" => {
-            let (header, payload) = decode_typed_binary_frame::<RouterControlFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if !payload.is_empty() {
-                return Err(RuntimeError::Decode(
-                    "router.control binary frame payload must be empty".to_string(),
-                ));
-            }
-            handle_router_control(
-                host,
-                router_control_typed_envelope_from_frame_header(header),
-                sender,
-                control,
-                artifact_fingerprint,
-            )
-            .await?;
+            return Err(RuntimeError::Decode(
+                "router.control artifactRoots/serviceConfig reload is not supported; use exact assembly activation control"
+                    .to_string(),
+            ));
         }
         "request.start" => {
-            let (header, payload) = decode_typed_binary_frame::<RequestStartFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            let request =
-                request_envelope_from_start_frame(header, payload).map_err(RuntimeError::Decode)?;
-            if let Some(registration) = spawn_registration {
-                host.spawn_session_request(request, sender.clone(), registration)
-                    .await;
-            } else {
-                host.spawn_request(request, sender.clone()).await;
+            if bootstrap.is_none() {
+                return Err(RuntimeError::Decode(
+                    "request.start requires router.bootstrap first".to_string(),
+                ));
             }
-        }
-        "package-test.start" => {
-            let (header, payload) = decode_typed_binary_frame::<PackageTestStartFrameHeader>(bytes)
+            let (header, payload) = decode_runtime_assembly_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(registration) = spawn_registration {
-                host.submit_session_package_test_start(
-                    header,
-                    payload,
-                    sender.clone(),
-                    registration.clone(),
-                );
-            } else {
-                host.submit_package_test_start(header, payload, sender.clone());
-            }
+            let bootstrap = bootstrap.as_ref().expect("bootstrap checked above");
+            host.spawn_runtime_assembly_request(
+                router_session_id,
+                header,
+                payload,
+                bootstrap.max_response_bytes,
+                sender.clone(),
+            )
+            .await;
         }
         "request.cancel" => {
             let (header, payload) = decode_typed_binary_frame::<RequestCancelFrameHeader>(bytes)
@@ -376,74 +507,117 @@ async fn dispatch_router_binary_frame_inner(
             host.cancel_request(request_cancel_from_frame_header(header))
                 .await;
         }
-        "response.end" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseEndFrameHeader>(bytes)
+        "connection.response" => {
+            let (header, payload) = decode_connection_response_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_end_to_outbound(&header, payload));
-            } else {
+            let request_id = header.request_id.clone();
+            let session = ConnectionRequestSession::new(router_session_id.to_string())
+                .map_err(RuntimeError::Decode)?;
+            let terminal = match header.outcome {
+                ConnectionResponseOutcome::Success => ConnectionRequestTerminal::Success(payload),
+                ConnectionResponseOutcome::DeadlineExceeded => {
+                    ConnectionRequestTerminal::DeadlineExceeded
+                }
+                ConnectionResponseOutcome::ConnectionUnavailable => {
+                    ConnectionRequestTerminal::ConnectionUnavailable
+                }
+                ConnectionResponseOutcome::TransportUnavailable => {
+                    ConnectionRequestTerminal::TransportUnavailable
+                }
+                ConnectionResponseOutcome::ProtocolError => {
+                    ConnectionRequestTerminal::ProtocolError
+                }
+                ConnectionResponseOutcome::ResourceLimit => {
+                    ConnectionRequestTerminal::ResourceLimit
+                }
+                ConnectionResponseOutcome::Remote => {
+                    let remote = header
+                        .remote
+                        .expect("strict connection response decoder requires remote metadata");
+                    ConnectionRequestTerminal::Remote {
+                        code: remote.code,
+                        message: remote.message,
+                        data: remote.data_present.then_some(payload),
+                    }
+                }
+            };
+            if !host
+                .connection_requests
+                .complete(&session, &request_id, terminal)
+            {
                 warn!(
-                    event = "runtime.unmatched_outbound_response_end",
-                    request_id = %header.request_id
+                    event = "runtime.unmatched_connection_response",
+                    request_id = %request_id,
+                    router_session_id
                 );
             }
         }
-        "response.start" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseStartFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if !payload.is_empty() {
+        ACTOR_OWNER_INVOKE_FRAME_TYPE => {
+            if bootstrap.is_none() {
                 return Err(RuntimeError::Decode(
-                    "response.start binary frame payload must be empty".to_string(),
+                    "actor.owner.invoke requires router.bootstrap first".to_string(),
                 ));
             }
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_start_to_outbound(&header));
-            } else {
-                warn!(
-                    event = "runtime.unmatched_outbound_response_start",
-                    request_id = %header.request_id
-                );
-            }
-        }
-        "response.chunk" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseChunkFrameHeader>(bytes)
+            let (header, arguments_payload) = decode_actor_owner_invoke_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_chunk_to_outbound(&header, payload));
-            } else {
-                warn!(
-                    event = "runtime.unmatched_outbound_response_chunk",
-                    request_id = %header.request_id,
-                    payload_bytes = payload.len()
-                );
-            }
-        }
-        "response.error" => {
-            let (header, payload) = decode_typed_binary_frame::<ResponseErrorFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if !payload.is_empty() {
+            if header.target_runtime_id != host.base_runtime_id {
                 return Err(RuntimeError::Decode(
-                    "response.error binary frame payload must be empty".to_string(),
+                    "actor.owner.invoke targets a different Runtime".to_string(),
                 ));
             }
-            if let Some(sender) = host.outbound_requests.sender(&header.request_id) {
-                let _ = sender.send(response_error_to_outbound(&header));
-            } else {
+            host.spawn_actor_owner_invoke(
+                router_session_id.to_string(),
+                header,
+                arguments_payload,
+                sender.clone(),
+            );
+        }
+        ACTOR_OWNER_CONTROL_FRAME_TYPE => {
+            dispatch_actor_owner_control(host, router_session_id, bytes, sender)?;
+        }
+        ACTOR_OWNER_FAILURE_FRAME_TYPE => {
+            let failure = decode_actor_owner_failure_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?;
+            if !host.actor_method_outbound.complete_failure(
+                &failure.invocation_id,
+                failure.epoch,
+                &failure.actor_implementation_identity,
+                crate::capability_context::actor_method_outbound::ActorInvocationTransportError {
+                    code: failure.reason.code,
+                    message: failure.reason.message,
+                },
+            ) {
                 warn!(
-                    event = "runtime.unmatched_outbound_response_error",
-                    request_id = %header.request_id
+                    event = "runtime.unmatched_actor_owner_failure",
+                    invocation_id = %failure.invocation_id
                 );
             }
         }
-        "actor.put.response" => {
-            let (header, payload) = decode_typed_binary_frame::<ActorPutResponseFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
+        "actor.method.return" | "actor.method.error" | "actor.method.cancel" => {
+            dispatch_actor_method_terminal(host, bytes)?;
+        }
+        "actor.getOrCreate.response" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorGetOrCreateResponseFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_response(
                 host,
                 &header.rpc_id,
                 &header,
                 payload,
-                "actor.put.response",
+                "actor.getOrCreate.response",
+            )?;
+        }
+        "actor.replace.response" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorReplaceResponseFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_response(
+                host,
+                &header.rpc_id,
+                &header,
+                payload,
+                "actor.replace.response",
             )?;
         }
         "actor.find.response" => {
@@ -525,7 +699,7 @@ async fn dispatch_router_binary_frame_inner(
                 "spawn.fail.response",
             )?;
         }
-        "actor.put.error" => {
+        "actor.getOrCreate.error" => {
             let (header, payload) =
                 decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
@@ -534,7 +708,19 @@ async fn dispatch_router_binary_frame_inner(
                 &header.rpc_id,
                 payload,
                 header.error,
-                "actor.put.error",
+                "actor.getOrCreate.error",
+            )?;
+        }
+        "actor.replace.error" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_error(
+                host,
+                &header.rpc_id,
+                payload,
+                header.error,
+                "actor.replace.error",
             )?;
         }
         "actor.find.error" => {
@@ -632,6 +818,137 @@ async fn dispatch_router_binary_frame_inner(
     Ok(())
 }
 
+fn dispatch_actor_method_terminal(host: &super::RuntimeHost, bytes: &[u8]) -> Result<()> {
+    let (invocation_id, outcome) = match decode_actor_method_frame(bytes)
+        .map_err(super::transport_error_into_runtime_error)?
+    {
+        ActorMethodFrame::Return(header, payload) => (
+            header.invocation_id,
+            ActorInvocationOutcome::Returned(payload),
+        ),
+        ActorMethodFrame::Error(header) => {
+            let outcome = match header.error {
+                ActorMethodErrorFramePayload::ActorUpgradingError { retry_after_ms, .. } => {
+                    ActorInvocationOutcome::ActorError(ActorInvocationError::ActorUpgrading {
+                        retry_after_ms,
+                    })
+                }
+                ActorMethodErrorFramePayload::ActorVersionRejectedError {
+                    requested_implementation_identity,
+                    accepted_implementation_identity,
+                    ..
+                } => {
+                    ActorInvocationOutcome::ActorError(ActorInvocationError::ActorVersionRejected {
+                        requested: requested_implementation_identity,
+                        accepted: accepted_implementation_identity,
+                    })
+                }
+                ActorMethodErrorFramePayload::ActorIncarnationReplacedError {
+                    actor_ref,
+                    current_epoch,
+                } => ActorInvocationOutcome::ActorError(
+                    ActorInvocationError::ActorIncarnationReplaced {
+                        requested_epoch: actor_ref.epoch,
+                        current_epoch,
+                    },
+                ),
+            };
+            (header.invocation_id, outcome)
+        }
+        ActorMethodFrame::Cancel(header) => {
+            let expected = host
+                .actor_method_outbound
+                .cancellation_correlation(&header.invocation_id);
+            if expected.is_none() {
+                host.actor_owner_invocations.cancel(
+                    &header.invocation_id,
+                    &header.cancellation_correlation,
+                    header.reason.into(),
+                );
+                return Ok(());
+            }
+            if expected.as_deref() != Some(header.cancellation_correlation.as_str()) {
+                return Ok(());
+            }
+            let reason = match header.reason {
+                skiff_runtime_transport::actor_method::ActorMethodCancelReason::Cancelled => {
+                    ActorInvocationCancellation::Cancelled
+                }
+                skiff_runtime_transport::actor_method::ActorMethodCancelReason::DeadlineExceeded => {
+                    ActorInvocationCancellation::DeadlineExceeded
+                }
+            };
+            (
+                header.invocation_id,
+                ActorInvocationOutcome::Cancelled(reason),
+            )
+        }
+        ActorMethodFrame::Invoke(_, _) => {
+            return Err(RuntimeError::Decode(
+                "public actor.method.invoke is not a terminal frame".to_string(),
+            ))
+        }
+    };
+    if !host.actor_method_outbound.complete(&invocation_id, outcome) {
+        warn!(
+            event = "runtime.unmatched_actor_method_terminal",
+            invocation_id = %invocation_id
+        );
+    }
+    Ok(())
+}
+
+fn dispatch_actor_owner_control(
+    host: &super::RuntimeHost,
+    router_session_id: &str,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+) -> Result<()> {
+    let control = decode_actor_owner_control_frame(bytes)
+        .map_err(super::transport_error_into_runtime_error)?;
+    if control.target_runtime_id != host.base_runtime_id {
+        return Err(RuntimeError::Decode(
+            "actor.owner.control targets a different Runtime".to_string(),
+        ));
+    }
+    let host = host.clone();
+    let router_session_id = router_session_id.to_string();
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let accepted = match control.operation {
+            ActorOwnerControlOperation::MarkUpgrading => {
+                super::actor_owner_execution::control_instance_fence(&control)
+                    .is_ok_and(|fence| host.begin_actor_upgrade_exact(&router_session_id, &fence))
+            }
+            ActorOwnerControlOperation::Discard => {
+                super::actor_owner_execution::control_instance_fence(&control).is_ok_and(|fence| {
+                    host.discard_upgrading_actor_exact(&router_session_id, &fence)
+                })
+            }
+            ActorOwnerControlOperation::IdleEvict => {
+                super::actor_owner_execution::control_instance_fence(&control)
+                    .is_ok_and(|fence| host.discard_actor_exact(&router_session_id, &fence))
+            }
+            ActorOwnerControlOperation::Activate => {
+                host.activate_actor_owner_control(&router_session_id, &control, &sender)
+                    .await
+            }
+        };
+        let ack = ActorOwnerControlAckFrameHeader {
+            schema_version: skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION.into(),
+            envelope_type: ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE.into(),
+            runtime_id: host.base_runtime_id.clone(),
+            request_id: control.request_id,
+            operation: control.operation,
+            accepted,
+        };
+        if let Ok(frame) = encode_actor_owner_control_ack_frame(&ack) {
+            let _ = sender.send(super::RouterWriterMessage::Binary(frame));
+        }
+    });
+    Ok(())
+}
+
 fn dispatch_spawn_claim_response(
     host: &super::RuntimeHost,
     rpc_id: &str,
@@ -640,7 +957,7 @@ fn dispatch_spawn_claim_response(
 ) -> Result<()> {
     let payload = spawn_claim_response_control_payload(header, &payload)
         .map_err(super::transport_error_into_runtime_error)?;
-    if let Some(sender) = host.outbound_requests.sender(rpc_id) {
+    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
         let _ = sender.send(OutboundResponse::End { payload });
     } else {
         warn!(
@@ -665,7 +982,7 @@ fn dispatch_control_response<THeader: Serialize>(
         )));
     }
     let response = serde_json::to_vec(header).map_err(RuntimeError::from)?;
-    if let Some(sender) = host.outbound_requests.sender(rpc_id) {
+    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
         let _ = sender.send(OutboundResponse::End { payload: response });
     } else {
         warn!(
@@ -689,7 +1006,7 @@ fn dispatch_control_error(
             "{envelope_type} binary frame payload must be empty"
         )));
     }
-    if let Some(sender) = host.outbound_requests.sender(rpc_id) {
+    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
         let _ = sender.send(OutboundResponse::Error(response_error_from_frame(error)));
     } else {
         warn!(
@@ -710,77 +1027,6 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
     }
 }
 
-fn router_control_typed_envelope_from_frame_header(
-    header: RouterControlFrameHeader,
-) -> TypedEnvelope {
-    let mut rest = serde_json::Map::new();
-    rest.insert(
-        "artifactRoots".to_string(),
-        Value::Array(
-            header
-                .artifact_roots
-                .into_iter()
-                .map(|root| Value::String(root.to_string_lossy().into_owned()))
-                .collect(),
-        ),
-    );
-    if let Some(dev_reload) = header.dev_reload {
-        rest.insert("devReload".to_string(), Value::Bool(dev_reload));
-    }
-    if let Some(mode) = header.mode {
-        rest.insert("mode".to_string(), Value::String(mode));
-    }
-    if let Some(generation) = header.generation {
-        rest.insert("generation".to_string(), Value::String(generation));
-    }
-    if let Some(fingerprint) = header.fingerprint {
-        rest.insert("fingerprint".to_string(), Value::String(fingerprint));
-    }
-    if !header.service_config.is_empty() {
-        rest.insert(
-            "serviceConfig".to_string(),
-            serde_json::to_value(header.service_config).unwrap_or(Value::Null),
-        );
-    }
-    if let Some(telemetry) = header.telemetry {
-        rest.insert(
-            "telemetry".to_string(),
-            serde_json::to_value(telemetry).unwrap_or(Value::Null),
-        );
-    }
-    if let Some(file_backend) = header.file_backend {
-        rest.insert(
-            "fileBackend".to_string(),
-            serde_json::to_value(file_backend).unwrap_or(Value::Null),
-        );
-    }
-    TypedEnvelope {
-        envelope_type: "router.control".to_string(),
-        rest,
-    }
-}
-
-async fn run_writer_loop<S>(
-    mut writer: S,
-    mut receiver: mpsc::UnboundedReceiver<super::RouterWriterMessage>,
-) where
-    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
-{
-    while let Some(message) = receiver.recv().await {
-        let message = match encode_writer_message(message) {
-            Ok(message) => message,
-            Err(error) => {
-                error!(event = "runtime.encode_writer_message_error", error = %error);
-                break;
-            }
-        };
-        if let Err(error) = writer.send(message).await {
-            error!(event = "runtime.write_error", error = %error);
-            break;
-        }
-    }
-}
-
 fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message> {
     match message {
         super::RouterWriterMessage::Binary(bytes) => Ok(Message::Binary(bytes.into())),
@@ -790,69 +1036,22 @@ fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message>
     }
 }
 
+async fn send_writer_message<S>(writer: &mut S, message: super::RouterWriterMessage) -> Result<()>
+where
+    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let message = encode_writer_message(message)?;
+    writer
+        .send(message)
+        .await
+        .map_err(|error| RuntimeError::Decode(format!("router write failed: {error}")))
+}
+
 fn reject_router_text_message(_text: &str) -> Result<()> {
     Err(RuntimeError::Decode(
         "text protocol messages are not supported on runtime WebSocket; use binary runtime frames"
             .to_string(),
     ))
-}
-
-async fn handle_router_control(
-    host: &super::RuntimeHost,
-    typed: TypedEnvelope,
-    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    control: &mut Option<RouterControlEnvelope>,
-    artifact_fingerprint: &mut Option<String>,
-) -> Result<()> {
-    let next_control: RouterControlEnvelope = serde_json::from_value(Value::Object(typed.rest))?;
-    match host
-        .reload_from_control(&next_control, sender.clone())
-        .await
-    {
-        Ok(fingerprint) => {
-            *artifact_fingerprint = Some(fingerprint);
-            *control = Some(next_control);
-        }
-        Err(error) => {
-            warn!(event = "runtime.router_control_load_failed", error = %error);
-        }
-    }
-    Ok(())
-}
-
-async fn maybe_reload_dev_artifacts(
-    host: &super::RuntimeHost,
-    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    control: &RouterControlEnvelope,
-    artifact_fingerprint: &mut Option<String>,
-) {
-    let artifact_roots = match control.ordered_artifact_roots() {
-        Ok(artifact_roots) => artifact_roots,
-        Err(error) => {
-            warn!(
-                event = "runtime.artifact_reload_fingerprint_error",
-                error = %error
-            );
-            return;
-        }
-    };
-    match artifact_roots_control_fingerprint(&artifact_roots, control.dev_reload) {
-        Ok(fingerprint) if artifact_fingerprint.as_deref() == Some(fingerprint.as_str()) => {}
-        Ok(_) => match host.reload_from_control(control, sender.clone()).await {
-            Ok(next_fingerprint) => {
-                *artifact_fingerprint = Some(next_fingerprint);
-            }
-            Err(error) => {
-                warn!(event = "runtime.artifact_reload_failed", error = %error);
-            }
-        },
-        Err(error) => {
-            warn!(
-                event = "runtime.artifact_reload_fingerprint_error",
-                error = %error
-            );
-        }
-    }
 }
 
 #[cfg(test)]

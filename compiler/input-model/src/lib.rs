@@ -1,3 +1,4 @@
+pub mod actors;
 pub mod compile_input;
 pub mod compile_policy;
 pub mod dependencies;
@@ -5,6 +6,7 @@ pub mod manifest;
 pub mod raw_source;
 pub mod resources;
 
+pub use actors::{actor_declaration_inputs, ActorDeclarationInput, ActorFieldInput};
 pub use compile_input::{
     PackageCompileInput, PackageCompileInputMetadata, PackageContractCompileDependency,
 };

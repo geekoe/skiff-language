@@ -1,18 +1,42 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile as writeFileRaw } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { TELEMETRY_PROTOCOL, TELEMETRY_TOPICS } from '../src/protocol/envelope.js';
-import { loadRouterConfig } from '../src/router/config.js';
+import {
+  loadRouterConfig,
+  runtimeBootstrapForRouterConfig
+} from '../src/router/config.js';
 
 const tempDirs: string[] = [];
-const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
 const originalDevHomeEnv = process.env.SKIFF_DEV_HOME;
 
+async function writeRouterConfigFixture(path: string, contents: string): Promise<void> {
+  const withHttpCeilings = /^http:/m.test(contents)
+    ? contents.replace(
+        /^http:\s*$/m,
+        [
+          'http:',
+          /^\s+maxRequestBytes:/m.test(contents) ? '' : '  maxRequestBytes: 67108864',
+          /^\s+maxResponseBytes:/m.test(contents) ? '' : '  maxResponseBytes: 67108864'
+        ].filter(Boolean).join('\n')
+      )
+    : `${contents}\nhttp:\n  maxRequestBytes: 67108864\n  maxResponseBytes: 67108864`;
+  const required = [
+    withHttpCeilings,
+    /^artifactsPath:/m.test(contents) ? '' : 'artifactsPath: ./artifacts',
+    /^serviceDb:/m.test(contents)
+      ? ''
+      : 'serviceDb:\n  mongoUrl: mongodb://127.0.0.1:27017/skiff',
+    ''
+  ].filter((line) => line.length > 0).join('\n');
+  await writeFileRaw(path, required);
+}
+
 beforeEach(() => {
-  delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
   delete process.env.SKIFF_DEV_HOME;
 });
 
@@ -23,28 +47,36 @@ afterEach(async () => {
       await rm(dir, { recursive: true, force: true });
     }
   }
-  restoreEnv('SKIFF_ARTIFACT_IDENTITY_CLI', originalIdentityCliEnv);
   restoreEnv('SKIFF_DEV_HOME', originalDevHomeEnv);
 });
 
 describe('router config', () => {
+  it('keeps the checked-in example explicit about the shared artifact path', async () => {
+    const examplePath = fileURLToPath(new URL('../router.example.yml', import.meta.url));
+    await expect(loadRouterConfig(examplePath)).resolves.toMatchObject({
+      artifactsPath: resolve(fileURLToPath(new URL('..', import.meta.url)), '../var/skiff-artifacts')
+    });
+  });
+
   it('loads router.yml values and resolves manifest relative to the config file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
         'host: 0.0.0.0',
-        'artifactRoots:',
-        '  - ../var/skiff-artifacts',
+        'artifactsPath: ../var/skiff-artifacts',
         'releaseMode: true',
         'manifest: manifests/router-manifest.json',
         'requestTimeoutMs: 7000',
+        'activation:',
+        '  prepareTimeoutMs: 120000',
         'http:',
         '  port: 5010',
-        '  bodyLimitBytes: 16777216',
+        '  maxRequestBytes: 16777216',
+        '  maxResponseBytes: 8388608',
         'runtime:',
         '  port: 5011',
         '  path: /runtime-dev',
@@ -71,14 +103,19 @@ describe('router config', () => {
     );
 
     await expect(loadRouterConfig(configPath)).resolves.toEqual({
-      artifactRoots: [join(dir, '..', 'var/skiff-artifacts')],
+      artifactsPath: join(dir, '..', 'var/skiff-artifacts'),
+      serviceDb: {
+        mongoUrl: 'mongodb://127.0.0.1:27017/skiff',
+      },
       host: '0.0.0.0',
-      httpBodyLimitBytes: 16777216,
+      httpMaxRequestBytes: 16777216,
+      httpMaxResponseBytes: 8388608,
       httpPort: 5010,
       manifests: [join(dir, 'manifests/router-manifest.json')],
       profile: 'dev',
       releaseMode: true,
       requestTimeoutMs: 7000,
+      activationPrepareTimeoutMs: 120000,
       fileBackend: {
         local: {
           root: join(dir, '..', 'var/skiff-file-blobs'),
@@ -109,20 +146,45 @@ describe('router config', () => {
     });
   });
 
+  it('projects only the configured response ceiling onto Runtime bootstrap', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'http:',
+        '  maxRequestBytes: 111',
+        '  maxResponseBytes: 222',
+        ''
+      ].join('\n')
+    );
+
+    const config = await loadRouterConfig(configPath);
+    expect(runtimeBootstrapForRouterConfig(config)).toEqual({
+      artifactsPath: join(dir, 'artifacts'),
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff' },
+      http: { maxResponseBytes: 222 }
+    });
+  });
+
   it('allows command line overrides on top of router.yml', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, ['profile: base', 'manifest: base.json', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['profile: base', 'manifest: base.json', ''].join('\n'));
 
     await expect(
       loadRouterConfig(configPath, {
         host: '127.0.0.2',
-        artifactRoots: ['artifact-override'],
-        httpBodyLimitBytes: '33554432',
+        artifactsPath: 'artifact-override',
+        httpMaxRequestBytes: '33554432',
+        httpMaxResponseBytes: '16777216',
         httpPort: '6010',
         manifest: 'override.json',
         requestTimeoutMs: '9000',
+        activationPrepareTimeoutMs: '150000',
         runtimePath: '/override-runtime',
         runtimePort: '6011',
         websocketPath: '/override-ws',
@@ -130,25 +192,69 @@ describe('router config', () => {
         releaseMode: true,
       })
     ).resolves.toMatchObject({
-      artifactRoots: [join(dir, 'artifact-override')],
+      artifactsPath: join(dir, 'artifact-override'),
       host: '127.0.0.2',
-      httpBodyLimitBytes: 33554432,
+      httpMaxRequestBytes: 33554432,
+      httpMaxResponseBytes: 16777216,
       httpPort: 6010,
       manifests: [join(dir, 'override.json')],
       profile: 'prod',
       releaseMode: true,
       requestTimeoutMs: 9000,
+      activationPrepareTimeoutMs: 150000,
       runtimePath: '/override-runtime',
       runtimePort: 6011,
       websocketPath: '/override-ws',
     });
   });
 
+  it('defaults activation prepare independently from the business request timeout', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      ['profile: dev', 'requestTimeoutMs: 7000', ''].join('\n')
+    );
+
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      requestTimeoutMs: 7000,
+      activationPrepareTimeoutMs: 120000,
+    });
+  });
+
+  it('fails closed on invalid activation prepare timeout values', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    for (const [index, value] of [
+      '0',
+      '-1',
+      '1.5',
+      '"120000"',
+      '{}',
+      '9007199254740992',
+    ].entries()) {
+      const configPath = join(dir, `router-${index}.yml`);
+      await writeRouterConfigFixture(
+        configPath,
+        [
+          'profile: dev',
+          'activation:',
+          `  prepareTimeoutMs: ${value}`,
+          '',
+        ].join('\n')
+      );
+      await expect(loadRouterConfig(configPath)).rejects.toThrow(
+        /activation\.prepareTimeoutMs must be a positive integer/
+      );
+    }
+  });
+
   it('loads router profile from top-level profile and allows overrides', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'profile: staging\n');
+    await writeRouterConfigFixture(configPath, 'profile: staging\n');
 
     await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
       profile: 'staging',
@@ -167,7 +273,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: dev', 'devReload: true', ''].join('\n')
     );
@@ -185,63 +291,11 @@ describe('router config', () => {
     });
   });
 
-  it('resolves identity CLI path from config, override, env, and dev fallback', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    await writeFile(
-      configPath,
-      ['profile: dev', 'identityCliPath: bin/skiff-artifact-identity', ''].join('\n')
-    );
-
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: join(dir, 'bin/skiff-artifact-identity'),
-    });
-
-    await expect(
-      loadRouterConfig(configPath, {
-        identityCliPath: 'override/skiff-artifact-identity',
-      })
-    ).resolves.toMatchObject({
-      identityCliPath: resolve('override/skiff-artifact-identity'),
-    });
-
-    await writeFile(configPath, ['profile: dev', ''].join('\n'));
-    process.env.SKIFF_ARTIFACT_IDENTITY_CLI = 'env/skiff-artifact-identity';
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: resolve('env/skiff-artifact-identity'),
-    });
-
-    delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
-    const devHome = join(dir, 'dev-home');
-    process.env.SKIFF_DEV_HOME = devHome;
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: join(devHome, 'bin/skiff-artifact-identity'),
-    });
-
-    delete process.env.SKIFF_DEV_HOME;
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      identityCliPath: join(resolve('.skiff-instance', 'dev-home'), 'bin/skiff-artifact-identity'),
-    });
-  });
-
-  it('does not use local dev identity CLI fallback in release mode', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    await writeFile(
-      configPath,
-      ['profile: prod', 'releaseMode: true', ''].join('\n')
-    );
-
-    await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty('identityCliPath');
-  });
-
   it('loads telemetry config with router-owned defaults', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -269,7 +323,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -290,7 +344,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const envConfig = join(dir, 'file-env.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       envConfig,
       [
         'profile: dev',
@@ -315,7 +369,7 @@ describe('router config', () => {
     });
 
     const directConfig = join(dir, 'file-direct.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       directConfig,
       [
         'profile: dev',
@@ -342,13 +396,13 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const emptyConfig = join(dir, 'file-empty.yml');
-    await writeFile(emptyConfig, ['profile: dev', 'fileBackend: {}', ''].join('\n'));
+    await writeRouterConfigFixture(emptyConfig, ['profile: dev', 'fileBackend: {}', ''].join('\n'));
     await expect(loadRouterConfig(emptyConfig)).rejects.toThrow(
       /router config fileBackend must configure local or oss/
     );
 
     const missingCredential = join(dir, 'file-missing-credential.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       missingCredential,
       [
         'profile: dev',
@@ -369,7 +423,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -390,7 +444,7 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const missingService = join(dir, 'missing-service.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       missingService,
       [
         'profile: dev',
@@ -404,7 +458,7 @@ describe('router config', () => {
     );
 
     const invalidPath = join(dir, 'invalid-path.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidPath,
       [
         'profile: dev',
@@ -420,7 +474,7 @@ describe('router config', () => {
     );
 
     const invalidService = join(dir, 'invalid-service.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidService,
       [
         'profile: dev',
@@ -435,7 +489,7 @@ describe('router config', () => {
     );
 
     const invalidVersion = join(dir, 'invalid-version.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidVersion,
       [
         'profile: dev',
@@ -451,7 +505,7 @@ describe('router config', () => {
     );
 
     const unknownField = join(dir, 'unknown-field.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       unknownField,
       [
         'profile: dev',
@@ -468,7 +522,7 @@ describe('router config', () => {
     );
 
     const duplicate = join(dir, 'duplicate.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       duplicate,
       [
         'profile: dev',
@@ -491,7 +545,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const disabledConfig = join(dir, 'disabled.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       disabledConfig,
       [
         'profile: dev',
@@ -504,7 +558,7 @@ describe('router config', () => {
     await expect(loadRouterConfig(disabledConfig)).resolves.not.toHaveProperty('telemetry');
 
     const noEndpointConfig = join(dir, 'no-endpoint.yml');
-    await writeFile(noEndpointConfig, ['profile: dev', 'telemetry:', '  enabled: true', ''].join('\n'));
+    await writeRouterConfigFixture(noEndpointConfig, ['profile: dev', 'telemetry:', '  enabled: true', ''].join('\n'));
     await expect(loadRouterConfig(noEndpointConfig)).resolves.not.toHaveProperty('telemetry');
   });
 
@@ -513,7 +567,7 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const invalidProtocol = join(dir, 'invalid-protocol.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidProtocol,
       [
         'profile: dev',
@@ -528,7 +582,7 @@ describe('router config', () => {
     );
 
     const duplicateTopic = join(dir, 'duplicate-topic.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       duplicateTopic,
       [
         'profile: dev',
@@ -543,7 +597,7 @@ describe('router config', () => {
     );
 
     const emptyTopics = join(dir, 'empty-topics.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       emptyTopics,
       [
         'profile: dev',
@@ -558,7 +612,7 @@ describe('router config', () => {
     );
 
     const invalidTopic = join(dir, 'invalid-topic.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidTopic,
       [
         'profile: dev',
@@ -573,7 +627,7 @@ describe('router config', () => {
     );
 
     const invalidNumber = join(dir, 'invalid-number.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidNumber,
       [
         'profile: dev',
@@ -593,32 +647,88 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const badConfig = join(dir, 'bad-dev-reload.yml');
-    await writeFile(badConfig, ['profile: dev', 'devReload: latest', ''].join('\n'));
+    await writeRouterConfigFixture(badConfig, ['profile: dev', 'devReload: latest', ''].join('\n'));
     await expect(loadRouterConfig(badConfig)).rejects.toThrow(
       /router config devReload must be a boolean/
     );
   });
 
-  it('rejects invalid http body limit values', async () => {
+  it.each(['maxRequestBytes', 'maxResponseBytes'])(
+    'rejects invalid and missing http.%s values',
+    async (field) => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
+    const otherField =
+      field === 'maxRequestBytes' ? 'maxResponseBytes' : 'maxRequestBytes';
 
-    const zeroConfig = join(dir, 'zero-body-limit.yml');
-    await writeFile(
+    const zeroConfig = join(dir, `zero-${field}.yml`);
+    await writeRouterConfigFixture(
       zeroConfig,
-      ['profile: dev', 'http:', '  bodyLimitBytes: 0', ''].join('\n')
+      ['profile: dev', 'http:', `  ${field}: 0`, `  ${otherField}: 16`, ''].join('\n')
     );
     await expect(loadRouterConfig(zeroConfig)).rejects.toThrow(
-      /router config http\.bodyLimitBytes must be a positive integer/
+      new RegExp(`router config http\\.${field} must be a positive integer`)
     );
 
-    const fractionalConfig = join(dir, 'fractional-body-limit.yml');
-    await writeFile(
+    const fractionalConfig = join(dir, `fractional-${field}.yml`);
+    await writeRouterConfigFixture(
       fractionalConfig,
-      ['profile: dev', 'http:', '  bodyLimitBytes: 1.5', ''].join('\n')
+      ['profile: dev', 'http:', `  ${field}: 1.5`, `  ${otherField}: 16`, ''].join('\n')
     );
     await expect(loadRouterConfig(fractionalConfig)).rejects.toThrow(
-      /router config http\.bodyLimitBytes must be a positive integer/
+      new RegExp(`router config http\\.${field} must be a positive integer`)
+    );
+
+    const overflowConfig = join(dir, `overflow-${field}.yml`);
+    await writeRouterConfigFixture(
+      overflowConfig,
+      [
+        'profile: dev',
+        'http:',
+        `  ${field}: 9007199254740992`,
+        `  ${otherField}: 16`,
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(overflowConfig)).rejects.toThrow(
+      new RegExp(`router config http\\.${field} must be a positive integer`)
+    );
+
+    const missingConfig = join(dir, `missing-${field}.yml`);
+    await writeFileRaw(
+      missingConfig,
+      [
+        'profile: dev',
+        'artifactsPath: ./artifacts',
+        'serviceDb:',
+        '  mongoUrl: mongodb://127.0.0.1:27017/skiff',
+        'http:',
+        `  ${otherField}: 16`,
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(missingConfig)).rejects.toThrow(
+      new RegExp(`router config http\\.${field} must be a positive integer`)
+    );
+  });
+
+  it('rejects the removed http.bodyLimitBytes alias', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'removed-body-limit.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'http:',
+        '  bodyLimitBytes: 16',
+        '  maxRequestBytes: 16',
+        '  maxResponseBytes: 16',
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /http\.bodyLimitBytes is no longer supported/
     );
   });
 
@@ -626,7 +736,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'manifest: base.json\n');
+    await writeRouterConfigFixture(configPath, 'manifest: base.json\n');
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /router config profile is required/
@@ -637,7 +747,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, ['values:', '  profile: prod', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['values:', '  profile: prod', ''].join('\n'));
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /router config values\.profile is no longer supported/
@@ -648,7 +758,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'profile: prod-us\n');
+    await writeRouterConfigFixture(configPath, 'profile: prod-us\n');
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /router config profile must match \[A-Za-z_\]\[A-Za-z0-9_\]\*/
@@ -659,7 +769,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -683,18 +793,18 @@ describe('router config', () => {
     tempDirs.push(dir);
     await mkdir(join(dir, 'artifacts'));
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, ['profile: dev', 'artifacts: artifacts', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['profile: dev', 'artifacts: artifacts', ''].join('\n'));
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
-      /router config artifacts is no longer supported; use artifactRoots/
+      /router config artifacts is no longer supported; use artifactsPath/
     );
   });
 
-  it('loads ordered artifact roots from top-level config', async () => {
+  it('rejects plural artifact roots', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -705,16 +815,16 @@ describe('router config', () => {
       ].join('\n')
     );
 
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      artifactRoots: [join(dir, 'artifacts/base'), join(dir, 'artifacts/test')],
-    });
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /router config artifactRoots is no longer supported; use artifactsPath/
+    );
   });
 
   it('rejects old host-to-service mappings', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: dev', 'hosts:', '  localhost:3011: sample', ''].join('\n')
     );

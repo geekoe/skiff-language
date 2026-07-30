@@ -1,0 +1,21 @@
+type Box { value: string }
+
+type EffectRequest {
+  method: string,
+  url: string,
+  detail: string,
+}
+
+type EffectResponse { value: string }
+
+function mutate(input: Box) -> void {
+  input.value = "helper-mutated"
+}
+
+function lookup(input: EffectRequest) -> EffectResponse {
+  return EffectResponse { value: input.url.concat(":real") }
+}
+
+function events(input: EffectRequest) -> Stream<EffectResponse> {
+  emit(EffectResponse { value: input.url.concat(":real") })
+}

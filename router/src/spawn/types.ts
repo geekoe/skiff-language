@@ -1,9 +1,11 @@
 import type { QueueItem, QueueItemStatus, QueuePolicy } from '../queue/types.js';
+import type { ActivationIdentityFrameMetadata } from '../protocol/envelope.js';
 export const SPAWN_QUEUE_NAME = '__skiff.spawn' as const;
 export const PACKAGE_TEST_BUILD_ID_PREFIX = 'skiff-package-test-build-v1:sha256:' as const;
 export const PACKAGE_TEST_ACTIVATION_ID_PREFIX = 'skiff-package-test-run-v1:' as const;
 
 export type SpawnTargetKind = 'function';
+export type SpawnActivationIdentity = ActivationIdentityFrameMetadata | string;
 export type SpawnTerminalStatus = Extract<
   QueueItemStatus,
   'completed' | 'failed' | 'cancelled' | 'timed_out'
@@ -28,7 +30,7 @@ export interface SpawnQueuePayload {
   serviceVersion: string;
   serviceProtocolIdentity: string;
   buildId?: string | undefined;
-  activationIdentity?: string | undefined;
+  activationIdentity?: SpawnActivationIdentity | undefined;
   runtimeTarget: string;
   callerTarget?: string | undefined;
   createdAt: string;
@@ -77,7 +79,7 @@ export interface EnqueueSpawnInput {
   spawnCompatibilityKey: string;
   payload: SpawnQueuePayload;
   buildId?: string | undefined;
-  activationIdentity?: string | undefined;
+  activationIdentity?: SpawnActivationIdentity | undefined;
   callerRequestId?: string | undefined;
   traceId?: string | undefined;
   visibleAt?: Date | undefined;
@@ -92,7 +94,7 @@ export interface SpawnClaimRequest {
   serviceVersion: string;
   serviceProtocolIdentity: string;
   buildId?: string | undefined;
-  activationIdentity?: string | undefined;
+  activationIdentity?: SpawnActivationIdentity | undefined;
   supportedTargets: readonly string[];
   supportedSpawnCompatibilityKeys: readonly string[];
   now?: Date | undefined;
@@ -169,21 +171,44 @@ export function isPackageTestBuildId(buildId: string | undefined): boolean {
 }
 
 export function isPackageTestActivationIdentity(
-  activationIdentity: string | undefined
+  activationIdentity: SpawnActivationIdentity | undefined
 ): activationIdentity is string {
-  return activationIdentity?.startsWith(PACKAGE_TEST_ACTIVATION_ID_PREFIX) === true;
+  return (
+    typeof activationIdentity === 'string' &&
+    activationIdentity.startsWith(PACKAGE_TEST_ACTIVATION_ID_PREFIX)
+  );
 }
 
 export function spawnActivationIdentityMatchesClaim(input: {
   buildId: string | undefined;
-  queuedActivationIdentity: string | undefined;
-  claimantActivationIdentity: string | undefined;
+  queuedActivationIdentity: SpawnActivationIdentity | undefined;
+  claimantActivationIdentity: SpawnActivationIdentity | undefined;
 }): boolean {
-  if (!isPackageTestBuildId(input.buildId)) {
-    return true;
+  if (isPackageTestBuildId(input.buildId)) {
+    return (
+      isPackageTestActivationIdentity(input.queuedActivationIdentity) &&
+      input.queuedActivationIdentity === input.claimantActivationIdentity
+    );
+  }
+  return activationIdentityEquals(
+    input.queuedActivationIdentity,
+    input.claimantActivationIdentity
+  );
+}
+
+function activationIdentityEquals(
+  left: SpawnActivationIdentity | undefined,
+  right: SpawnActivationIdentity | undefined
+): boolean {
+  if (typeof left === 'string' || typeof right === 'string') {
+    return typeof left === 'string' && typeof right === 'string';
   }
   return (
-    isPackageTestActivationIdentity(input.queuedActivationIdentity) &&
-    input.queuedActivationIdentity === input.claimantActivationIdentity
+    left !== undefined &&
+    right !== undefined &&
+    left.assemblyIdentity === right.assemblyIdentity &&
+    left.generation === right.generation &&
+    left.runtimeReplicaId === right.runtimeReplicaId &&
+    left.deploymentRevision === right.deploymentRevision
   );
 }

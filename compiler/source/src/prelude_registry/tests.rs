@@ -1,17 +1,27 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
 
 use skiff_artifact_model::STD_NATIVE_SIGNATURES;
+use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::shared::type_syntax::generic_parts;
 
+use super::identity::legacy_prelude_identity;
 use super::{
-    default_prelude_dir, default_std_dir, native_type_expr_def_normalized_name, prelude_registry,
-    prelude_schema_identity, shared_native_alias_target, NativeBindingShape, PreludeRegistry,
+    default_prelude_dir, initialize_prelude_registry, native_type_expr_def_normalized_name,
+    prelude_identity, prelude_schema_identity, shared_native_alias_target, NativeBindingShape,
+    PreludeRegistry,
 };
+
+#[cfg(unix)]
+mod p5_f18a;
 
 #[test]
 fn compiler_owned_schema_stable_types_have_canonical_symbols() {
-    let registry = PreludeRegistry::empty();
+    let registry = prelude_registry();
 
     for name in [
         "Array",
@@ -20,15 +30,25 @@ fn compiler_owned_schema_stable_types_have_canonical_symbols() {
         "bytes",
         "Json",
         "JsonObject",
+        "WebSocketConnectRequest",
+        "WebSocketConnectionPolicy",
         "WebSocketConnectResult",
-        "ConnectionMessage",
-        "TextConnectionMessage",
-        "BinaryConnectionMessage",
     ] {
         assert_ne!(registry.type_symbol(name), "std.unknown");
     }
 
-    let registry = prelude_registry();
+    for removed in [
+        "std.websocket.TextConnectionMessage",
+        "std.websocket.BinaryConnectionMessage",
+        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnection",
+        "std.websocket.WebSocketReceiveEvent",
+        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketCloseEvent",
+    ] {
+        assert!(registry.type_decl(removed).is_none(), "{removed}");
+    }
+
     for name in [
         "LlmRole",
         "LlmMessage",
@@ -60,21 +80,6 @@ fn builtin_type_helper_includes_prelude_date_and_language_aliases() {
 }
 
 #[test]
-fn std_exported_interfaces_have_known_symbols_without_schema_stability() {
-    let registry = prelude_registry();
-
-    assert_eq!(
-        registry.known_type_symbol("std.actor.Actor").as_deref(),
-        Some("std.actor.Actor")
-    );
-    assert_eq!(
-        registry.known_type_symbol("Actor").as_deref(),
-        Some("std.actor.Actor")
-    );
-    assert!(!registry.is_schema_stable_type("Actor"));
-}
-
-#[test]
 fn duplicate_std_type_names_are_resolved_by_qualified_symbol() {
     let registry = prelude_registry();
 
@@ -98,15 +103,46 @@ fn duplicate_std_type_names_are_resolved_by_qualified_symbol() {
 }
 
 #[test]
-fn split_registry_identities_match_builtin_registry_accessors() {
-    let registry =
-        PreludeRegistry::try_from_split_dirs(&default_prelude_dir(), &default_std_dir()).unwrap();
-
-    assert_eq!(registry.schema_identity(), prelude_schema_identity());
+fn platform_source_context_pins_current_prelude_identity() {
+    let registry = prelude_registry();
+    assert_eq!(
+        registry.schema_identity(),
+        // The schema identity includes the ordinary public
+        // std.service.InternalError record.
+        "skiff-prelude-schema-v1:sha256:9fdff61def1678189b88cf3a983ab8b83d9d12d7bbaf8e2d90e3fd802873b40e"
+    );
     assert_eq!(
         registry.native_identity(),
-        prelude_registry().native_identity()
+        // Native identity also commits to the validated marker-free source and
+        // manifest fingerprints.
+        "skiff-prelude-native-v1:sha256:e4c62eb7addae8d4c7af090e7af353e699139366414ed6bb1e0a356898193cd4"
     );
+    assert_eq!(registry.schema_identity(), prelude_schema_identity());
+    assert_eq!(
+        prelude_identity(),
+        legacy_prelude_identity(&default_prelude_dir(), registry)
+    );
+    assert_eq!(
+        prelude_identity(),
+        // The full identity includes the marker-free std/prelude sources and
+        // ordinary std.service.InternalError public surface.
+        "skiff-prelude-v1:sha256:8ec6c2b3f4411b159d8b1b8dd2d55d036713a2533dd3aba043eb3d7fb020c76e"
+    );
+}
+
+#[test]
+fn prelude_registry_same_root_is_idempotent_and_different_root_is_typed_failure() {
+    let context = test_platform_sources();
+    let first = initialize_prelude_registry(&context).unwrap();
+    let second = initialize_prelude_registry(&context).unwrap();
+    assert!(std::ptr::eq(first, second));
+
+    let other = MinimalPlatformFixture::new("different-root");
+    let error = initialize_prelude_registry(&other.context()).unwrap_err();
+    assert!(matches!(
+        error,
+        super::PreludeRegistryInitializationError::DifferentPlatformRoot { .. }
+    ));
 }
 
 #[test]
@@ -211,6 +247,55 @@ fn compiler_std_native_declarations_match_shared_signatures() {
         compiler_only.is_empty(),
         "compiler std/prelude native declarations should be either shared native signatures or explicit runtime builtin-only exclusions; missing shared entries for {compiler_only:?}"
     );
+}
+
+#[test]
+fn native_signature_type_domains_are_validated_independently() {
+    use skiff_artifact_model::NativeSignatureTypeExpr;
+
+    let registry = prelude_registry();
+    registry
+        .validate_native_signature_type_expr(
+            "test.valid",
+            &NativeSignatureTypeExpr::Package {
+                package_id: "skiff.run/std",
+                public_path: "std.file.CreateOptions",
+            },
+        )
+        .unwrap();
+
+    for (expr, expected) in [
+        (
+            NativeSignatureTypeExpr::Builtin("std.file.CreateOptions"),
+            "unknown compiler builtin type",
+        ),
+        (
+            NativeSignatureTypeExpr::Package {
+                package_id: "example.other",
+                public_path: "std.file.CreateOptions",
+            },
+            "unknown public type",
+        ),
+        (
+            NativeSignatureTypeExpr::Package {
+                package_id: "skiff.run/std",
+                public_path: "std.file.create",
+            },
+            "is not a type",
+        ),
+        (
+            NativeSignatureTypeExpr::Package {
+                package_id: "skiff.run/std",
+                public_path: "std.file.Missing",
+            },
+            "unknown public type",
+        ),
+    ] {
+        let error = registry
+            .validate_native_signature_type_expr("test.invalid", &expr)
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]
@@ -404,4 +489,54 @@ fn normalize_compiler_native_type_name(
         return format!("{root}<{args}>");
     }
     name.to_string()
+}
+
+fn prelude_registry() -> &'static PreludeRegistry {
+    initialize_prelude_registry(&test_platform_sources()).unwrap()
+}
+
+fn test_platform_sources() -> CompilerPlatformSources {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    CompilerPlatformSources::new(&root).unwrap()
+}
+
+struct MinimalPlatformFixture {
+    root: PathBuf,
+}
+
+impl MinimalPlatformFixture {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "skiff-prelude-registry-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("std")).unwrap();
+        fs::create_dir_all(root.join("prelude")).unwrap();
+        fs::write(
+            root.join("std/registry.yml"),
+            "schemaVersion: skiff-std-registry-v1\npackages:\n  - id: skiff.run/std\n    path: .\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("std/package.yml"),
+            "id: skiff.run/std\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(root.join("prelude/error.skiff"), "").unwrap();
+        Self { root }
+    }
+
+    fn context(&self) -> CompilerPlatformSources {
+        CompilerPlatformSources::new(&self.root).unwrap()
+    }
+}
+
+impl Drop for MinimalPlatformFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }

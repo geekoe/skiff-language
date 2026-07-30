@@ -2,9 +2,234 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const PRELUDE_REGISTRY_ID: &str = "skiff.prelude";
 pub const RESERVED_ROOT_NAMES: &[&str] = &["service", "std", "connect", "config", "root"];
-pub const LANGUAGE_PRIMITIVES: &[&str] = &[
-    "string", "number", "integer", "bool", "boolean", "null", "unknown", "void", "never",
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanguagePrimitiveType {
+    pub source_spelling: &'static str,
+    pub canonical_name: &'static str,
+}
+
+pub const LANGUAGE_PRIMITIVE_TYPES: &[LanguagePrimitiveType] = &[
+    LanguagePrimitiveType {
+        source_spelling: "string",
+        canonical_name: "string",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "number",
+        canonical_name: "number",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "integer",
+        canonical_name: "integer",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "bool",
+        canonical_name: "bool",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "boolean",
+        canonical_name: "bool",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "null",
+        canonical_name: "null",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "unknown",
+        canonical_name: "unknown",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "void",
+        canonical_name: "void",
+    },
+    LanguagePrimitiveType {
+        source_spelling: "never",
+        canonical_name: "never",
+    },
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerBuiltinTypeKind {
+    Value,
+    Container,
+    OpaqueHandle,
+    Capability,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompilerBuiltinType {
+    pub name: &'static str,
+    pub symbol: &'static str,
+    pub arity: usize,
+    pub kind: CompilerBuiltinTypeKind,
+}
+
+pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
+    CompilerBuiltinType {
+        name: "Actor",
+        symbol: "std.actor.Actor",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
+    },
+    CompilerBuiltinType {
+        name: "bytes",
+        symbol: "std.bytes.bytes",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "Array",
+        symbol: "std.collection.Array",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::Container,
+    },
+    CompilerBuiltinType {
+        name: "Map",
+        symbol: "std.collection.Map",
+        arity: 2,
+        kind: CompilerBuiltinTypeKind::Container,
+    },
+    CompilerBuiltinType {
+        name: "Config",
+        symbol: "config.Config",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Capability,
+    },
+    CompilerBuiltinType {
+        name: "Date",
+        symbol: "Date",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "Json",
+        symbol: "Json",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "JsonObject",
+        symbol: "JsonObject",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "Stream",
+        symbol: "std.stream.Stream",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
+    },
+    CompilerBuiltinType {
+        name: "Exception",
+        symbol: "std.error.Exception",
+        arity: 1,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "CatchResult",
+        symbol: "std.error.CatchResult",
+        arity: 2,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "SourceLocation",
+        symbol: "std.error.SourceLocation",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "StackTrace",
+        symbol: "std.error.StackTrace",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "StackFrame",
+        symbol: "std.error.StackFrame",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "TimeoutError",
+        symbol: "std.error.TimeoutError",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Error,
+    },
+    CompilerBuiltinType {
+        name: "ClientSessionRef",
+        symbol: "std.session.ClientSessionRef",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
+    },
+    CompilerBuiltinType {
+        name: "ClientCapability",
+        symbol: "std.session.ClientCapability",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Capability,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileIrBuiltinTypeKind {
+    LanguagePrimitive,
+    Compiler(CompilerBuiltinTypeKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIrBuiltinSourceSpelling {
+    pub source_spelling: &'static str,
+    pub canonical_name: &'static str,
+    pub arity: usize,
+    pub kind: FileIrBuiltinTypeKind,
+}
+
+pub fn file_ir_builtin_source_spellings(
+) -> impl Iterator<Item = FileIrBuiltinSourceSpelling> + Clone {
+    let primitives = LANGUAGE_PRIMITIVE_TYPES
+        .iter()
+        .map(|primitive| FileIrBuiltinSourceSpelling {
+            source_spelling: primitive.source_spelling,
+            canonical_name: primitive.canonical_name,
+            arity: 0,
+            kind: FileIrBuiltinTypeKind::LanguagePrimitive,
+        });
+    let compiler_builtins = COMPILER_BUILTIN_TYPES.iter().flat_map(|builtin| {
+        [
+            Some(FileIrBuiltinSourceSpelling {
+                source_spelling: builtin.name,
+                canonical_name: builtin.name,
+                arity: builtin.arity,
+                kind: FileIrBuiltinTypeKind::Compiler(builtin.kind),
+            }),
+            (builtin.symbol != builtin.name).then_some(FileIrBuiltinSourceSpelling {
+                source_spelling: builtin.symbol,
+                canonical_name: builtin.name,
+                arity: builtin.arity,
+                kind: FileIrBuiltinTypeKind::Compiler(builtin.kind),
+            }),
+        ]
+        .into_iter()
+        .flatten()
+    });
+    primitives.chain(compiler_builtins)
+}
+
+pub fn canonical_file_ir_builtin(source_spelling: &str) -> Option<FileIrBuiltinSourceSpelling> {
+    let source_spelling = source_spelling.trim();
+    file_ir_builtin_source_spellings().find(|builtin| builtin.source_spelling == source_spelling)
+}
+
+pub fn canonical_file_ir_builtin_name(source_spelling: &str) -> Option<&'static str> {
+    canonical_file_ir_builtin(source_spelling).map(|builtin| builtin.canonical_name)
+}
+
+pub fn compiler_builtin_type(name: &str) -> Option<&'static CompilerBuiltinType> {
+    let name = name.trim();
+    COMPILER_BUILTIN_TYPES
+        .iter()
+        .find(|builtin| builtin.name == name || builtin.symbol == name)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBindingShape {
@@ -45,19 +270,21 @@ pub fn is_prelude_canonical_type(name: &str) -> bool {
 }
 
 pub fn primitive_type_symbols() -> BTreeMap<String, String> {
-    LANGUAGE_PRIMITIVES
+    LANGUAGE_PRIMITIVE_TYPES
         .iter()
-        .map(|name| {
-            let symbol = if *name == "boolean" { "bool" } else { name };
-            ((*name).to_string(), symbol.to_string())
+        .map(|primitive| {
+            (
+                primitive.source_spelling.to_string(),
+                primitive.canonical_name.to_string(),
+            )
         })
         .collect()
 }
 
 pub fn is_language_builtin_type_name(name: &str) -> bool {
-    LANGUAGE_PRIMITIVES
+    LANGUAGE_PRIMITIVE_TYPES
         .iter()
-        .any(|primitive| primitive == &name)
+        .any(|primitive| primitive.source_spelling == name)
 }
 
 pub fn qualified_prelude_type(name: &str) -> Option<(&str, &str)> {
@@ -98,21 +325,7 @@ pub fn module_symbol_root(package_id: &str, module_path: &str) -> String {
 }
 
 pub fn compiler_owned_type_symbol(name: &str) -> Option<&'static str> {
-    match name {
-        "Array" => Some("std.collection.Array"),
-        "Date" => Some("Date"),
-        "Map" => Some("std.collection.Map"),
-        "Stream" => Some("std.stream.Stream"),
-        "bytes" => Some("std.bytes.bytes"),
-        "Json" => Some("Json"),
-        "JsonObject" => Some("JsonObject"),
-        "WebSocketConnectResult" => Some("std.websocket.WebSocketConnectResult"),
-        "ConnectionMessage" => Some("std.websocket.ConnectionMessage"),
-        "TextConnectionMessage" => Some("std.websocket.TextConnectionMessage"),
-        "BinaryConnectionMessage" => Some("std.websocket.BinaryConnectionMessage"),
-        "ActorRef" => Some("ActorRef"),
-        _ => None,
-    }
+    compiler_builtin_type(name).map(|builtin| builtin.symbol)
 }
 
 pub fn schema_primitive_type(name: &str) -> bool {
@@ -152,12 +365,14 @@ pub fn validate_package_api_public_path(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        compiler_owned_type_symbol, config_prelude_type, module_symbol_root,
+        canonical_file_ir_builtin, compiler_builtin_type, compiler_owned_type_symbol,
+        config_prelude_type, file_ir_builtin_source_spellings, module_symbol_root,
         qualified_prelude_type, validate_package_api_public_path,
-        validate_root_projection_metadata, PRELUDE_REGISTRY_ID,
+        validate_root_projection_metadata, CompilerBuiltinTypeKind, FileIrBuiltinTypeKind,
+        COMPILER_BUILTIN_TYPES, LANGUAGE_PRIMITIVE_TYPES, PRELUDE_REGISTRY_ID,
     };
 
     #[test]
@@ -226,6 +441,72 @@ mod tests {
         );
         assert_eq!(config_prelude_type("config.deep.Type"), None);
         assert_eq!(compiler_owned_type_symbol("JsonObject"), Some("JsonObject"));
+    }
+
+    #[test]
+    fn compiler_builtin_registry_owns_identity_kind_and_arity() {
+        let array = compiler_builtin_type("Array").unwrap();
+        assert_eq!(array.symbol, "std.collection.Array");
+        assert_eq!(array.arity, 1);
+        assert_eq!(array.kind, CompilerBuiltinTypeKind::Container);
+        assert_eq!(compiler_builtin_type(array.symbol), Some(array));
+
+        let session = compiler_builtin_type("ClientSessionRef").unwrap();
+        assert_eq!(session.symbol, "std.session.ClientSessionRef");
+        assert_eq!(session.arity, 0);
+        assert_eq!(session.kind, CompilerBuiltinTypeKind::OpaqueHandle);
+        assert!(compiler_builtin_type("ActorRef").is_none());
+        assert!(compiler_builtin_type("NotABuiltin").is_none());
+    }
+
+    #[test]
+    fn canonical_file_ir_builtin_spelling_registry_is_complete_and_collision_free() {
+        let spellings = file_ir_builtin_source_spellings().collect::<Vec<_>>();
+        let mut source_spellings = BTreeMap::new();
+        for spelling in &spellings {
+            assert!(
+                source_spellings
+                    .insert(spelling.source_spelling, spelling.canonical_name)
+                    .is_none(),
+                "source builtin spelling {} must have exactly one canonical owner",
+                spelling.source_spelling
+            );
+        }
+
+        let mut canonical_compiler_names = BTreeSet::new();
+        for builtin in COMPILER_BUILTIN_TYPES {
+            assert!(
+                canonical_compiler_names.insert(builtin.name),
+                "compiler builtin canonical name {} must be unique",
+                builtin.name
+            );
+            for source_spelling in [builtin.name, builtin.symbol] {
+                let resolved = canonical_file_ir_builtin(source_spelling)
+                    .unwrap_or_else(|| panic!("{source_spelling} must resolve"));
+                assert_eq!(resolved.canonical_name, builtin.name);
+                assert_eq!(resolved.arity, builtin.arity);
+                assert_eq!(resolved.kind, FileIrBuiltinTypeKind::Compiler(builtin.kind));
+            }
+        }
+
+        for primitive in LANGUAGE_PRIMITIVE_TYPES {
+            let resolved = canonical_file_ir_builtin(primitive.source_spelling)
+                .unwrap_or_else(|| panic!("{} must resolve", primitive.source_spelling));
+            assert_eq!(resolved.canonical_name, primitive.canonical_name);
+            assert_eq!(resolved.arity, 0);
+            assert_eq!(resolved.kind, FileIrBuiltinTypeKind::LanguagePrimitive);
+        }
+        assert_eq!(
+            canonical_file_ir_builtin("boolean").map(|builtin| builtin.canonical_name),
+            Some("bool")
+        );
+        assert_eq!(
+            canonical_file_ir_builtin("bool").map(|builtin| builtin.canonical_name),
+            Some("bool")
+        );
+        for unknown in ["String", "Bytes", "std.date.Date", "NotABuiltin"] {
+            assert_eq!(canonical_file_ir_builtin(unknown), None);
+        }
     }
 
     #[test]

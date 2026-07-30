@@ -1,6 +1,7 @@
 # Skiff `any I` —— First-Class Interface Value（动态分派）
 
-本文负责：稳定描述 `any I`（first-class interface value / 动态分派）的目标态用户语义——`any I` 类型、`as I` 装箱、裸 interface 名的使用规则、值布局、与单态化泛型的边界、以及 publication 内部适用范围。
+本文负责：稳定描述 `any I`（first-class interface value / 动态分派）的目标态用户语义——`any I` 类型、
+`as I` 装箱、裸 interface 名的使用规则、值布局、与单态化泛型的边界，以及 Package/request 内部适用范围。
 
 本文不负责：parser/lowering/runtime vtable 的实现细节、artifact 字段表。这是 `interface.md §7` 末尾点名的“另立设计”——它在 §7 已声明“如果未来需要 first-class interface value，必须另立设计，显式定义 value layout”。本文即该设计。
 
@@ -32,7 +33,7 @@ function f(p: any ToolProvider)        // ✅ 存在类型：动态分派，可�
 
 ### 2.2 `any I` 作类型
 
-`any I` 是一个类型，表示“某个实现了 `I` 的值，其具体类型已擦除”。它只可用于 publication 内部普通值位置：
+`any I` 是一个类型，表示“某个实现了 `I` 的值，其具体类型已擦除”。它只可用于 Package/request 内部普通值位置：
 内部函数参数、内部返回值、不经任何 boundary schema closure 投影的内部 record 字段（含具名 record 类型）、
 collection element、map value，以及内部 function type 的参数/返回位置（如 `fn(any I) -> void`）。
 
@@ -63,7 +64,8 @@ const llm: any LlmClient = remoteLlm/managedLlm as LlmClient           // 远程
 ```
 
 - 本地装箱源：`expr` 的静态类型必须是 concrete nominal record instantiation，且 `implements I`（显式
-  conformance，遵循 `interface.md §4`）。
+  conformance，遵循 `interface.md §4`）。conformance只检查interface requirement的调用形状，不比较
+  concrete executable的推断suspension summary。
 - 远程装箱源：见 §2.5。
 - **`as I` 不能省略**，即使装箱源只 expose 一个 interface，也即使赋值/参数已有 `any I` 目标类型。理由是
   **装箱可见性**，不是消歧：`as I` 是类型擦除发生点（产生 fat 值 / 对远程还含寻址填入与 protocol identity
@@ -94,6 +96,11 @@ const out = p.execute(ctx, call)
 ```
 
 只能调用 `I` 声明的 method requirement；`any I` 不暴露具体类型的其它成员。
+
+`any I` method call无法从interface requirement确定唯一concrete summary，因此静态suspension分析必须
+保守视为可能挂起；它不能把某个当前装箱值的实现summary复制成interface承诺。remote carrier调用同时是
+service call，因service call本身而是潜在挂起点，不读取callee内部summary。保守`maySuspend`不会在调用
+入口插入`yield`；runtime仍只在执行遇到真实且尚未完成的等待时释放actor执行权。
 
 ### 2.5 远程装箱源（`/` 寻址）
 
@@ -184,14 +191,19 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 - **吸收 binding**：原 binding alias / dependency public instance 受控 root 被 `any I` 合并取代——package
   能力依赖改为入口吃 `any I` 参数，consumer 在调用点用 `as I`（本地或远程）装箱传入（见 §8）。`any I`
   是显式的、可流动的 first-class 形态。
-- **Boundary**：`any I` 是 publication 内部普通值，但进入边界时按边界 policy 判定。
-  service public API payload、public instance operation signature、ordinary JSON materialization、config schema 或 test
-  double external fixture schema 的默认 wire shape 不承载 interface value，也不会隐式生成 recoverable envelope。
-  DB schema、
+- **Boundary**：`any I` 是 Package/request 内部普通值，但进入边界时按boundary policy判定。
+  service operation的顶层、非泛型`any I`参数或返回位置可以投影成request-scope callback capability，前提是
+  `I`的全部method都可形成service boundary contract。对端只拿到opaque capability，并按`I`声明的operation
+  回调创建该值的一侧；普通JSON materialization、config schema或test double external fixture schema仍没有
+  `any I`默认wire shape，也不会隐式生成recoverable envelope。第一版不接受`Array<any I>`、nullable/record
+  内嵌`any I`或泛型`any I<T>`作为service position；直接出现的普通Package schema也不会因为其descriptor是
+  interface而自动变成callback。DB schema、
   `spawn` 参数、queue / persistent work item payload 和 runtime 内部跨 request payload 是 owner-internal
   recoverable boundary：`carrier = Local` 且 self payload 全可恢复时可恢复；`carrier = Remote` 是 request-scope
-  正向远程引用，不可持久化。跨 service 行为值第一版 fail closed，目标态依赖 sealed opaque payload 与 callback
-  transport。权威规则见 [`recoverable-value.md`](../architecture/recoverable-value.md) 和
+  正向远程引用，不可持久化。service callback capability同样不能进入这些recoverable lane；其生命周期到顶层
+  request结束，server stream存在时延长到stream关闭。失效稳定返回`CapabilityExpired`或
+  `CapabilityUnavailable`，不会重建或fallback。权威规则见
+  [`recoverable-value.md`](../architecture/recoverable-value.md) 和
   [`any-interface-value.md`](any-interface-value.md)。
   `any I` **可以**作为同进程 **package public 入口参数**（package link 进 consumer 同一 runtime，值不
   跨进程；远程性只在调用时 dispatch）。这是 binding 退役后 package 抽象依赖能力的承载点（见 §8）。
@@ -202,10 +214,12 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 - **不支持 downcast**：`any I` 是单向擦除，不能取回具体类型（本地装箱保留 concrete type identity 供未来；
   远程装箱保留的是 `(dependency, public instance)` 坐标，本就不可能 downcast 回本地 concrete type）。本版
   不暴露 narrowing/downcast。
-- **跨 service 行为值第一版 fail closed**：owner-internal DB/spawn/queue/persistent payload 按可恢复值规则处理，
-  不再由 `any I` 绝对排除；但跨 service 把行为值交给对端后回拨构造侧的形态第一版仍 fail closed，直到 sealed
-  opaque payload 与 callback transport 落地。远程**装箱**（远程能力作为 request-scope `any I` 值，§2.5）是支持的；
-  不支持的是把这个 `carrier = Remote` 值序列化进跨 request / 持久 payload，或 durable 化为远程能力句柄。
+- **不支持嵌套或泛型service callback position**：第一版只投影operation顶层、非泛型`any I`。`Array<any I>`、
+  record/nullable内嵌`any I`、泛型interface instantiation和raw function值在service boundary继续fail closed。
+  native value只有显式callback adapter时才可用，不能从native类型或Package schema descriptor猜测adapter。
+- **callback capability不可持久化**：owner-internal DB/spawn/queue/persistent payload仍按可恢复值规则处理；
+  service callback capability和`carrier = Remote`都不能被序列化进跨request/持久payload，也不能durable化为
+  远程能力句柄。
 - **不改默认**：默认仍静态分派；`any I` 必须显式。
 - **不支持隐式装箱**：必须 `as I`。
 - **不支持 marker interface 的 `any` 化**。
@@ -232,8 +246,9 @@ agent/run(input, localLlm as LlmClient)           // 本地实现
   在调用点选 `remoteLlm/...`（远程装箱）还是 `local...`（本地装箱）决定。
 - `any I` 参数可以传任意多个、混入 `Array<any I>`——不像 binding 那样每个 requirement 只能绑一个实现、
   装不下运行期变长的异构集合。
-- 远程能力一旦改了签名 / 撤了 conformance，consumer 的装箱点编译失败（fail-closed 锁在产生远程引用的
-  装箱点，package 不碰）。
+- 远程能力一旦改了interface调用形状 / 撤了 conformance，consumer 的装箱点编译失败（fail-closed锁在
+  产生远程引用的装箱点，package不碰）。只改变callee implementation的内部suspension summary不改变
+  interface conformance或ServiceProtocol identity，因此不使该装箱点失效。
 
 `requires.bindings` manifest 机制本版退役，不再支持旧的 binding 写法。（是否在后续版本以更轻的"能力
 requirement"声明形态回归——让 consumer 用 `as I` 满足——是一个开放设计项，见
@@ -246,8 +261,11 @@ requirement"声明形态回归——让 consumer 用 `as I` 满足——是一�
 远程寻址值）、在 `any I` 方法调用处 emit 间接调用（本地 method table / 远程 operation dispatch）；
 runtime 执行间接调用。**本地** `any I` 不影响 ABI/identity；**远程**装箱在装箱点把 callee protocol
 identity 锁进 dependency lock（fail-closed）。远程性由值布局 `carrier` 是 `Remote` 分支表达，不引入
-独立 effect。DB/spawn/queue/persistent 等跨 request 边界是否接受该值由 recoverable boundary plan 与 runtime
-carrier check 决定，本文不展开。
+用户声明的独立 effect；但remote method call仍因其调用种类是service call而被推断为
+`maySuspend=true`。service operation顶层、非泛型`any I`由compiler投影为opaque callback capability；
+compiler和artifact admission从同一个canonical position规则重建并校验carrier、owner、lifetime及callback
+interface清单。DB/spawn/queue/persistent等跨request边界是否接受普通local `any I`由recoverable boundary
+plan与runtime carrier check决定，本文不展开。
 
 内部架构契约见 `../architecture/any-interface-value.md`；可恢复边界契约见
 `../architecture/recoverable-value.md`；落地阶段计划见

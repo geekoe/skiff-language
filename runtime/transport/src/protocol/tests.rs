@@ -1,33 +1,108 @@
 use std::collections::HashMap;
 
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 
+use crate::protocol::decode_router_bootstrap_frame_header;
 use crate::protocol::{
-    decode_binary_frame, decode_typed_binary_frame, encode_binary_frame, ConnectionSendEnvelope,
-    ConnectionSendFrameHeader, PackageTestStartFrameHeader, RequestCancelFrameHeader,
-    RequestStartFrameHeader, RequestTestEffectDouble, ResponseEndFrameHeader,
-    ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
-    RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader,
-    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDeadlineFrameHeader,
-    RuntimeDispatchModeCapability, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
-    RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
+    decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
+    encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+    ActorGetOrCreateRequestFrameHeader, ActorRemoveRequestFrameHeader,
+    ActorReplaceRequestFrameHeader, ConnectionSendEnvelope, ConnectionSendFrameHeader,
+    PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
+    RequestTestEffectDouble, ResponseEndFrameHeader, ResponseErrorFrameHeader,
+    ResponseStartFrameHeader, RouterControlEnvelope, RuntimeCallerFrameHeader,
+    RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
+    RuntimeDeadlineFrameHeader, RuntimeDispatchModeCapability, RuntimeErrorFramePayload,
+    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
     RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope,
     RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnClaimDescriptorFrameMetadata,
-    SpawnClaimRequestFrameHeader, SpawnClaimResponseFrameHeader, TelemetryProtocol, TelemetryTopic,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+    SpawnClaimRequestFrameHeader, SpawnClaimResponseFrameHeader, SpawnCompleteRequestFrameHeader,
+    SpawnFailRequestFrameHeader, SpawnRenewRequestFrameHeader, SpawnSubmitRequestFrameHeader,
+    TelemetryBatchEnvelope, TelemetryProtocol, TelemetryTopic, TelemetryVisibility,
+    ValidatedResponseErrorFrame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
+use skiff_runtime_model::service_error::ServiceErrorEnvelope;
 
 const SERVICE_PROTOCOL_A: &str =
-    "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SERVICE_REVISION: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RouterBootstrapCorpus {
+    schema_version: u32,
+    cases: Vec<RouterBootstrapCorpusCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RouterBootstrapCorpusCase {
+    name: String,
+    outcome: String,
+    header: Value,
+}
+
 #[test]
-fn spawn_claim_package_test_activation_round_trips() {
+fn router_bootstrap_shared_corpus_has_strict_parity() {
+    let corpus: RouterBootstrapCorpus = serde_json::from_str(include_str!(
+        "../../../../cross-system-fixtures/package-service-ecosystem/runtime-bootstrap-wire.json"
+    ))
+    .expect("router bootstrap corpus must decode");
+    assert_eq!(corpus.schema_version, 1);
+    assert_eq!(
+        corpus
+            .cases
+            .iter()
+            .filter(|test_case| test_case.outcome == "accept")
+            .count(),
+        1
+    );
+
+    for test_case in corpus.cases {
+        let encoded = encode_binary_frame(&test_case.header, &[])
+            .unwrap_or_else(|error| panic!("{} must encode: {error}", test_case.name));
+        let decoded = decode_binary_frame(&encoded).unwrap_or_else(|error| {
+            panic!("{} must decode binary framing: {error}", test_case.name)
+        });
+        assert!(decoded.payload_bytes.is_empty());
+        let result = decode_router_bootstrap_frame_header(decoded.header);
+        match test_case.outcome.as_str() {
+            "accept" => {
+                let header = result
+                    .unwrap_or_else(|error| panic!("{} must accept: {error}", test_case.name));
+                assert_eq!(header.envelope_type, "router.bootstrap");
+                assert_eq!(header.artifacts_path, "/opt/skiff/artifacts");
+                assert!(!header.service_db.mongo_url.is_empty());
+                assert_eq!(header.http.max_response_bytes, 67_108_864);
+            }
+            "reject" => assert!(
+                result.is_err(),
+                "{} must reject but decoded successfully",
+                test_case.name
+            ),
+            outcome => panic!("{} has unsupported outcome {outcome}", test_case.name),
+        }
+    }
+}
+
+fn activation_identity() -> ActivationIdentityFrameMetadata {
+    ActivationIdentityFrameMetadata {
+        assembly_identity:
+            "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+        generation: 7,
+        runtime_replica_id: "runtime-replica-7".to_string(),
+        deployment_revision: "deployment-revision-7".to_string(),
+    }
+}
+
+#[test]
+fn spawn_claim_structured_activation_identity_round_trips() {
     let build_id =
         "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let activation_identity = "skiff-package-test-run-v1:example.com~hello:test-a:run:1";
     let request = SpawnClaimRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "spawn.claim.request".to_string(),
@@ -40,7 +115,7 @@ fn spawn_claim_package_test_activation_round_trips() {
         supported_targets: vec!["function:package.test".to_string()],
         supported_spawn_compatibility_keys: vec!["compatibility-key".to_string()],
         build_id: Some(build_id.to_string()),
-        activation_identity: Some(activation_identity.to_string()),
+        activation_identity: activation_identity(),
         max_execution_ms: Some(5_000.0),
         max_concurrency: Some(1.0),
     };
@@ -67,7 +142,7 @@ fn spawn_claim_package_test_activation_round_trips() {
             service_version: "0.1.0".to_string(),
             service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
             build_id: build_id.to_string(),
-            activation_identity: Some(activation_identity.to_string()),
+            activation_identity: activation_identity(),
             payload_schema_identity: None,
             lease_expires_at: None,
         }),
@@ -77,6 +152,202 @@ fn spawn_claim_package_test_activation_round_trips() {
         decode_typed_binary_frame(&response_frame).expect("spawn claim response decodes");
     assert_eq!(decoded_response, response);
     assert!(payload.is_empty());
+}
+
+#[test]
+fn actor_spawn_requests_share_strict_activation_identity_corpus() {
+    let corpus: Value = serde_json::from_str(include_str!(
+        "../../testdata/actor-control-activation-identity.json"
+    ))
+    .expect("activation identity corpus must be valid JSON");
+    let valid_identity = corpus["valid"].clone();
+    let actor_key = json!({
+        "serviceId": "example.com/actor",
+        "actorTypeIdentity": "actor.example.Thread",
+        "actorIdTypeIdentity": "type.example.ThreadId",
+        "actorIdEncodingVersion": "json-v1",
+        "canonicalActorIdKeyBytesBase64": "InRocmVhZC0xIg=="
+    });
+    let base = json!({
+        "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+        "rpcId": "rpc-activation-corpus",
+        "runtimeId": "runtime-replica-7",
+        "activationIdentity": valid_identity
+    });
+    let frames = vec![
+        merge_json(
+            &base,
+            json!({
+                "type": "actor.getOrCreate.request",
+                "actorKey": actor_key,
+                "actorAbiIdentity": "actor-abi:thread",
+                "actorImplementationIdentity": "build:thread:v1",
+                "bootstrapEncodingVersion": "canonical-value-v1"
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "actor.replace.request",
+                "actorKey": actor_key,
+                "actorAbiIdentity": "actor-abi:thread",
+                "actorImplementationIdentity": "build:thread:v2",
+                "bootstrapEncodingVersion": "canonical-value-v1"
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "actor.find.request",
+                "actorKey": actor_key
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "actor.remove.request",
+                "actorKey": actor_key
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "spawn.submit.request",
+                "targetKind": "function",
+                "serviceId": "example.com/worker",
+                "serviceVersion": "1.0.0",
+                "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
+                "target": "Worker.run"
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "spawn.claim.request",
+                "workerId": "worker-7",
+                "serviceId": "example.com/worker",
+                "serviceVersion": "1.0.0",
+                "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
+                "supportedTargets": ["Worker.run"],
+                "supportedSpawnCompatibilityKeys": ["worker-v1"]
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "spawn.renew.request",
+                "itemId": "item-7",
+                "leaseId": "lease-7",
+                "workerId": "worker-7"
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "spawn.complete.request",
+                "itemId": "item-7",
+                "leaseId": "lease-7"
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "spawn.fail.request",
+                "itemId": "item-7",
+                "leaseId": "lease-7",
+                "reason": "failed"
+            }),
+        ),
+    ];
+
+    for frame in &frames {
+        decode_actor_spawn_request(frame.clone()).unwrap_or_else(|error| {
+            panic!("valid {} failed: {error}", frame["type"]);
+        });
+
+        let mut missing = frame.clone();
+        missing
+            .as_object_mut()
+            .expect("frame must be an object")
+            .remove("activationIdentity");
+        assert!(
+            decode_actor_spawn_request(missing).is_err(),
+            "{} accepted missing activationIdentity",
+            frame["type"]
+        );
+
+        let mut unknown = frame.clone();
+        unknown
+            .as_object_mut()
+            .expect("frame must be an object")
+            .insert("serviceDisplayName".to_string(), json!("legacy"));
+        assert!(
+            decode_actor_spawn_request(unknown).is_err(),
+            "{} accepted an unknown top-level field",
+            frame["type"]
+        );
+
+        for invalid in corpus["invalid"]
+            .as_array()
+            .expect("invalid corpus must be an array")
+        {
+            let mut mutated = frame.clone();
+            mutated["activationIdentity"] = invalid["value"].clone();
+            assert!(
+                decode_actor_spawn_request(mutated).is_err(),
+                "{} accepted invalid activation identity case {}",
+                frame["type"],
+                invalid["label"]
+            );
+        }
+    }
+}
+
+fn merge_json(base: &Value, overlay: Value) -> Value {
+    let mut merged = base.clone();
+    merged
+        .as_object_mut()
+        .expect("base must be an object")
+        .extend(
+            overlay
+                .as_object()
+                .expect("overlay must be an object")
+                .clone(),
+        );
+    merged
+}
+
+fn decode_actor_spawn_request(value: Value) -> Result<(), serde_json::Error> {
+    match value.get("type").and_then(Value::as_str) {
+        Some("actor.getOrCreate.request") => {
+            serde_json::from_value::<ActorGetOrCreateRequestFrameHeader>(value).map(drop)
+        }
+        Some("actor.replace.request") => {
+            serde_json::from_value::<ActorReplaceRequestFrameHeader>(value).map(drop)
+        }
+        Some("actor.find.request") => {
+            serde_json::from_value::<ActorFindRequestFrameHeader>(value).map(drop)
+        }
+        Some("actor.remove.request") => {
+            serde_json::from_value::<ActorRemoveRequestFrameHeader>(value).map(drop)
+        }
+        Some("spawn.submit.request") => {
+            serde_json::from_value::<SpawnSubmitRequestFrameHeader>(value).map(drop)
+        }
+        Some("spawn.claim.request") => {
+            serde_json::from_value::<SpawnClaimRequestFrameHeader>(value).map(drop)
+        }
+        Some("spawn.renew.request") => {
+            serde_json::from_value::<SpawnRenewRequestFrameHeader>(value).map(drop)
+        }
+        Some("spawn.complete.request") => {
+            serde_json::from_value::<SpawnCompleteRequestFrameHeader>(value).map(drop)
+        }
+        Some("spawn.fail.request") => {
+            serde_json::from_value::<SpawnFailRequestFrameHeader>(value).map(drop)
+        }
+        _ => unreachable!("test only supplies actor/spawn request frames"),
+    }
 }
 
 #[test]
@@ -97,7 +368,6 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
             "service.test.Api.alpha".to_string(),
             "service.test.Api.beta".to_string(),
         ],
-        protocol_version: "skiff-protocol-v1".to_string(),
         runtime_version: env!("CARGO_PKG_VERSION").to_string(),
         code_revision_id: SERVICE_REVISION.to_string(),
         implementation_identity:
@@ -138,6 +408,8 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
         Some("skiff-runtime-activation-v1:opaque:activation-fixture")
     );
     assert_eq!(decoded.service_protocol_identity, SERVICE_PROTOCOL_A);
+    let encoded = serde_json::to_value(&decoded).expect("register header should serialize");
+    assert!(encoded.get("protocolVersion").is_none());
     assert_eq!(
         decoded.artifact_identity.as_deref(),
         Some(
@@ -166,6 +438,30 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
             "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .to_string()
         ]
+    );
+}
+
+#[test]
+fn runtime_register_frame_header_rejects_legacy_protocol_version() {
+    let error = serde_json::from_value::<RuntimeRegisterFrameHeader>(json!({
+        "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+        "type": "runtime.register",
+        "runtimeId": "runtime-1",
+        "serviceId": "example.com/service-a",
+        "version": "v1",
+        "buildId": "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "revisionId": SERVICE_REVISION,
+        "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
+        "targets": ["service.test.Api.alpha"],
+        "protocolVersion": "skiff-protocol-v1"
+    }))
+    .expect_err("legacy protocolVersion must be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `protocolVersion`"),
+        "unexpected error: {error}"
     );
 }
 
@@ -643,6 +939,51 @@ fn router_control_envelope_deserializes_telemetry_fixture() {
 }
 
 #[test]
+fn telemetry_shared_fixture_requires_visibility_and_restricted_correlation() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../doc/architecture/fixtures/observability-minimal.json"
+    ))
+    .expect("observability fixture should parse");
+    let batch: TelemetryBatchEnvelope = serde_json::from_value(fixture["valid"]["batch"].clone())
+        .expect("shared telemetry batch must decode");
+    assert_eq!(batch.events.len(), 4);
+    assert!(batch.events[..3]
+        .iter()
+        .all(|event| event.visibility == TelemetryVisibility::Operational));
+    let restricted = &batch.events[3];
+    assert_eq!(restricted.visibility, TelemetryVisibility::Restricted);
+    assert_eq!(restricted.trace_id.as_deref(), Some("trace-fixture-1"));
+    assert_eq!(restricted.error_id.as_deref(), Some("error-fixture-1"));
+
+    let invalid_cases = fixture["invalidCases"]
+        .as_array()
+        .expect("invalidCases must be an array")
+        .iter()
+        .filter(|test_case| {
+            matches!(
+                test_case["name"].as_str(),
+                Some(
+                    "telemetry-batch-missing-visibility"
+                        | "telemetry-batch-unknown-visibility"
+                        | "telemetry-batch-restricted-missing-trace-id"
+                        | "telemetry-batch-restricted-missing-error-id"
+                        | "telemetry-batch-event-unknown-field"
+                        | "telemetry-batch-empty-operational-error-id"
+                )
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(invalid_cases.len(), 6);
+    for test_case in invalid_cases {
+        assert!(
+            serde_json::from_value::<TelemetryBatchEnvelope>(test_case["payload"].clone()).is_err(),
+            "{} must fail closed",
+            test_case["name"]
+        );
+    }
+}
+
+#[test]
 fn router_control_envelope_deserializes_file_backend() {
     let value: RouterControlEnvelope = serde_json::from_value(json!({
         "artifactRoots": ["/tmp/skiff-artifacts"],
@@ -721,12 +1062,10 @@ fn runtime_binary_frame_round_trips_typed_header_and_payload_bytes() {
             "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 .to_string(),
         service_protocol_identity:
-            "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
-        business_identity: None,
-        websocket_entry_id: None,
         client_session: None,
         deadline: Some(RuntimeDeadlineFrameHeader {
             timeout_ms: 2_000,
@@ -739,7 +1078,6 @@ fn runtime_binary_frame_round_trips_typed_header_and_payload_bytes() {
             sampled: Some(true),
         },
         http_adapter: None,
-        websocket_adapter: None,
         http_request: None,
         test_effects_enabled: false,
         test_effect_doubles: HashMap::new(),
@@ -792,8 +1130,6 @@ fn runtime_binary_request_start_decodes_test_effect_fields() {
         service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
-        business_identity: None,
-        websocket_entry_id: None,
         client_session: None,
         deadline: None,
         trace: RuntimeTraceContextFrameHeader {
@@ -803,7 +1139,6 @@ fn runtime_binary_request_start_decodes_test_effect_fields() {
             sampled: Some(true),
         },
         http_adapter: None,
-        websocket_adapter: None,
         http_request: None,
         test_effects_enabled: true,
         test_effect_doubles: test_effect_doubles.clone(),
@@ -854,17 +1189,15 @@ fn runtime_binary_frame_allows_header_only_control_and_error_frames() {
     assert_eq!(typed_header, start_header);
     assert!(payload.is_empty());
 
-    let error_header = ResponseErrorFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "response.error".to_string(),
-        request_id: "request-1".to_string(),
-        error: RuntimeErrorFramePayload {
+    let error_header = ResponseErrorFrameHeader::control(
+        "request-1".to_string(),
+        RuntimeErrorFramePayload {
             code: "FixtureError".to_string(),
             message: "fixture runtime error".to_string(),
             status: None,
             details: None,
         },
-    };
+    );
 
     let frame = encode_binary_frame(&error_header, &[]).expect("error frame should encode");
     let (typed_header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
@@ -872,6 +1205,161 @@ fn runtime_binary_frame_allows_header_only_control_and_error_frames() {
 
     assert_eq!(typed_header, error_header);
     assert!(payload.is_empty());
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceErrorResponseV2Corpus {
+    schema_version: u32,
+    valid_cases: Vec<ServiceErrorResponseV2Case>,
+    invalid_cases: Vec<ServiceErrorResponseV2InvalidCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceErrorResponseV2Case {
+    name: String,
+    header: Value,
+    payload_utf8: String,
+    expected: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceErrorResponseV2InvalidCase {
+    name: String,
+    header: Value,
+    payload_utf8: String,
+}
+
+#[test]
+fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
+    let corpus: ServiceErrorResponseV2Corpus = serde_json::from_str(include_str!(
+        "../../testdata/service-error-response-v2.json"
+    ))
+    .expect("service error response v2 corpus must decode");
+    assert_eq!(corpus.schema_version, 1);
+    assert_eq!(corpus.valid_cases.len(), 4);
+    assert!(corpus.invalid_cases.len() >= 20);
+
+    for test_case in &corpus.valid_cases {
+        let payload = test_case.payload_utf8.as_bytes().to_vec();
+        let frame = encode_binary_frame(&test_case.header, &payload)
+            .unwrap_or_else(|error| panic!("{} must encode: {error}", test_case.name));
+        let (header, body) = decode_response_error_frame(&frame)
+            .unwrap_or_else(|error| panic!("{} must decode: {error}", test_case.name));
+        assert_eq!(
+            header.request_id(),
+            test_case.header["requestId"].as_str().unwrap(),
+            "{} request id",
+            test_case.name
+        );
+        match body {
+            ValidatedResponseErrorFrame::FixedService(error) => {
+                assert_eq!(
+                    error.encoded_bytes(),
+                    payload,
+                    "{} must retain exact payload bytes",
+                    test_case.name
+                );
+                assert_eq!(
+                    error.envelope().trace_id(),
+                    test_case.expected["traceId"].as_str().unwrap(),
+                    "{} trace id",
+                    test_case.name
+                );
+                assert_eq!(
+                    error.envelope().error_id(),
+                    test_case.expected["errorId"].as_str().unwrap(),
+                    "{} error id",
+                    test_case.name
+                );
+                match (
+                    test_case.expected["kind"].as_str().unwrap(),
+                    error.envelope(),
+                ) {
+                    (
+                        "publicTypedError",
+                        ServiceErrorEnvelope::PublicTypedError {
+                            package_id,
+                            stable_schema_key,
+                            package_schema_type_id,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(
+                            package_id,
+                            test_case.expected["packageId"].as_str().unwrap()
+                        );
+                        assert_eq!(
+                            stable_schema_key,
+                            test_case.expected["stableSchemaKey"].as_str().unwrap()
+                        );
+                        assert_eq!(
+                            package_schema_type_id.as_str(),
+                            test_case.expected["packageSchemaTypeId"].as_str().unwrap()
+                        );
+                    }
+                    ("internalError", ServiceErrorEnvelope::InternalError { .. }) => {}
+                    (
+                        "platformError",
+                        ServiceErrorEnvelope::PlatformError {
+                            builtin_error_identity,
+                            ..
+                        },
+                    ) => assert_eq!(
+                        builtin_error_identity.symbol(),
+                        test_case.expected["builtinErrorIdentity"].as_str().unwrap()
+                    ),
+                    (expected, actual) => {
+                        panic!("{} expected {expected}, got {actual:?}", test_case.name)
+                    }
+                }
+            }
+            ValidatedResponseErrorFrame::Control(error) => {
+                assert_eq!(test_case.expected["kind"], "control");
+                assert_eq!(
+                    error.code,
+                    test_case.expected["code"].as_str().unwrap(),
+                    "{} control code",
+                    test_case.name
+                );
+                assert!(payload.is_empty(), "{} control payload", test_case.name);
+            }
+        }
+    }
+
+    for test_case in &corpus.invalid_cases {
+        let frame = encode_binary_frame(&test_case.header, test_case.payload_utf8.as_bytes())
+            .unwrap_or_else(|error| panic!("{} binary frame must encode: {error}", test_case.name));
+        assert!(
+            decode_response_error_frame(&frame).is_err(),
+            "{} must fail closed",
+            test_case.name
+        );
+    }
+
+    assert_eq!(
+        RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        "skiff-runtime-frame-v2"
+    );
+    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v2");
+}
+
+#[test]
+fn router_bootstrap_rejects_previous_runtime_frame_generation() {
+    let stale = json!({
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "router.bootstrap",
+        "artifactsPath": "/tmp/skiff-artifacts",
+        "serviceDb": {
+            "mongoUrl": "mongodb://127.0.0.1:27017/?replicaSet=rs0"
+        },
+        "http": {
+            "maxResponseBytes": 1024
+        }
+    });
+    assert!(decode_router_bootstrap_frame_header(stale).is_err());
 }
 
 #[test]
@@ -1015,8 +1503,6 @@ fn runtime_http_binary_frame_headers_round_trip_metadata_without_body_base64() {
         service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
-        business_identity: None,
-        websocket_entry_id: None,
         client_session: None,
         deadline: None,
         trace: RuntimeTraceContextFrameHeader {
@@ -1026,7 +1512,6 @@ fn runtime_http_binary_frame_headers_round_trip_metadata_without_body_base64() {
             sampled: None,
         },
         http_adapter: None,
-        websocket_adapter: None,
         http_request: Some(crate::protocol::RuntimeHttpRequestFrameHeader {
             method: "POST".to_string(),
             url: "https://example.test/items?x=1".to_string(),

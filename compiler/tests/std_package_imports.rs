@@ -6,8 +6,9 @@ use common::{
     TestDir,
 };
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, CallableEffectSummary, ExprIr, PackageCallableId, PackageLocalAbiSymbol,
-    PackageRefIr, TypeDescriptorIr, TypeRefIr,
+    BoundaryCallableProjection, CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableTargetFact, ExprIr, PackageCallableId,
+    PackageLocalAbiSymbol, PackageRefIr, TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_emission::PublishedFileIrArtifact;
@@ -20,23 +21,181 @@ fn user_packages_reject_native_declarations() {
             "native function hostOnly() -> string\n",
             "cannot declare native function hostOnly",
         ),
-        (
-            "native-type",
-            "native type HostOnly\n",
-            "cannot declare native type HostOnly",
-        ),
+        ("native-type", "native type HostOnly\n", "expected function"),
     ] {
         let temp = TestDir::new("skiff-compiler", name);
         temp.write(
             "package.yml",
             format!("id: example.com/{name}\nversion: 1.0.0\n"),
         );
+        temp.write("api.yml", "{}\n");
         temp.write("main.skiff", declaration);
 
         let error = compile_package_project(temp.path())
             .expect_err("user package native declarations must fail closed")
             .to_string();
         assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
+
+#[test]
+fn truncate_utf8_bytes_projects_available() {
+    let temp = TestDir::new("skiff-compiler", "truncate-utf8-bytes-projection");
+    temp.write(
+        "package.yml",
+        "id: example.com/truncate-projection\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "truncate: main.truncate\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
+
+function truncate(value: string, maxBytes: number) -> string {
+  return std.string.truncateUtf8Bytes(value, maxBytes)
+}
+"#,
+    );
+
+    let project = compile_package_project(temp.path()).expect("truncate wrapper should compile");
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the canonical dependency closure");
+    let truncate_callable_id = public_callable_id(std, "std.string.truncateUtf8Bytes");
+    let callable_id = public_callable_id(&project.package, "truncate");
+    let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
+    assert_eq!(
+        facts.effects,
+        CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            },
+        }
+    );
+    assert_eq!(
+        facts.provenance,
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![
+                ValueProvenance::Fresh,
+                ValueProvenance::DependencyReturn {
+                    callable_id: truncate_callable_id.as_str().to_string(),
+                },
+            ],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        }
+    );
+    assert_eq!(facts.resolved_call_targets.len(), 1);
+    assert!(facts.resolved_call_targets.values().any(|target| {
+        matches!(
+            target,
+            CallableTargetFact::PackageDirect {
+                package_callable_id,
+            } if package_callable_id == truncate_callable_id.as_str()
+        )
+    }));
+    assert!(matches!(
+        project.package.artifact.boundary_projections[&callable_id],
+        BoundaryCallableProjection::Available { .. }
+    ));
+
+    let main = module_artifact(&project.package, "main");
+    assert!(file_contains_call(main, &|target| {
+        matches!(
+            target,
+            CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency { dependency_ref },
+                package_callable_id,
+            } if dependency_ref == "std" && package_callable_id == &truncate_callable_id
+        )
+    }));
+}
+
+#[test]
+fn http_request_native_helpers_project_available_from_imported_source() {
+    let temp = TestDir::new("skiff-compiler", "http-request-native-projection");
+    temp.write(
+        "package.yml",
+        "id: example.com/http-request-native-projection\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "handler: main.handler\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
+
+function cookieValue(request: std.http.HttpRequest) -> string? {
+  return std.http.cookie(request, "session")
+}
+
+function headerValues(request: std.http.HttpRequest) -> Array<string> {
+  return std.http.headers(request, "x-trace")
+}
+
+function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const values = headerValues(request)
+  const session = cookieValue(request)
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("ok"),
+  }
+}
+"#,
+    );
+
+    let project =
+        compile_package_project(temp.path()).expect("HTTP request native handler should compile");
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the canonical dependency closure");
+    let callable_id = public_callable_id(&project.package, "handler");
+    let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
+    assert_eq!(
+        facts.effects,
+        CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            },
+        }
+    );
+    assert_eq!(
+        facts.provenance,
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::Fresh, ValueProvenance::Constant],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        }
+    );
+    assert!(matches!(
+        project.package.artifact.boundary_projections[&callable_id],
+        BoundaryCallableProjection::Available { .. }
+    ));
+
+    let main = module_artifact(&project.package, "main");
+    for public_path in ["std.http.headers", "std.http.cookie"] {
+        let package_callable_id = public_callable_id(std, public_path);
+        assert!(file_contains_call(main, &|target| {
+            matches!(
+                target,
+                CallTargetIr::PackageCallable {
+                    package_ref: PackageRefIr::Dependency { dependency_ref },
+                    package_callable_id: actual_callable_id,
+                } if dependency_ref == "std" && actual_callable_id == &package_callable_id
+            )
+        }));
     }
 }
 
@@ -80,14 +239,22 @@ type Marker { request: std.http.HttpRequest }
     assert!(main
         .unit
         .external_refs
-        .service_symbols
+        .package_callables
         .iter()
-        .any(|symbol| { symbol.module_path == "std.log" && symbol.symbol == "info" }));
+        .any(|reference| {
+            reference.package_ref
+                == (PackageRefIr::Dependency {
+                    dependency_ref: "std".to_string(),
+                })
+                && reference.package_callable_id == log_callable_id
+        }));
     assert!(file_contains_call(main, &|target| {
         matches!(
             target,
-            CallTargetIr::ExternalServiceSymbol { symbol }
-                if symbol.module_path == "std.log" && symbol.symbol == "info"
+            CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency { dependency_ref },
+                package_callable_id,
+            } if dependency_ref == "std" && package_callable_id == &log_callable_id
         )
     }));
 
@@ -98,9 +265,8 @@ type Marker { request: std.http.HttpRequest }
         CallableEffectSummary::Analyzed { .. }
     ));
 
-    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 98);
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 93);
     for public_path in [
-        "std.actor.Actor",
         "std.bytes.DecodeError",
         "std.crypto.sha256",
         "std.db.ConflictError",
@@ -113,7 +279,9 @@ type Marker { request: std.http.HttpRequest }
         "std.service.ProtocolError",
         "std.telemetry.emit",
         "std.time.sleep",
-        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnectRequest",
+        "std.websocket.WebSocketConnectionPolicy",
+        "std.websocket.WebSocketConnectResult",
     ] {
         assert!(
             std.artifact
@@ -123,18 +291,31 @@ type Marker { request: std.http.HttpRequest }
             "std local ABI should contain {public_path}"
         );
     }
+    for removed in [
+        "std.websocket.TextConnectionMessage",
+        "std.websocket.BinaryConnectionMessage",
+        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnection",
+        "std.websocket.WebSocketReceiveEvent",
+        "std.websocket.WebSocketIngressEvent",
+        "std.websocket.WebSocketCloseEvent",
+    ] {
+        assert!(
+            !std.artifact
+                .package_local_abi
+                .public_symbols
+                .contains_key(removed),
+            "std local ABI must not contain removed {removed}"
+        );
+    }
     assert!(std.artifact.callable_links.contains_key(&log_callable_id));
 
     let log = source_artifact(std, "log.skiff");
     let telemetry = source_artifact(std, "telemetry.skiff");
-    let emit_index = telemetry.unit.declarations.executables["emit"].executable_index;
     assert!(file_contains_call(log, &|target| {
         matches!(
             target,
-            CallTargetIr::PublicationExecutable {
-                module_path,
-                executable_index,
-            } if module_path == "std.telemetry" && *executable_index == emit_index
+            CallTargetIr::Builtin { op } if op == "root.telemetry.emit"
         )
     }));
 
@@ -165,15 +346,23 @@ fn standard_error_catch_types_are_public_package_symbols() {
 function check() -> bool {
   const jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
   const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
+  const exactNumber = std.number.assertSafeInteger(1)
   const timeResult = catch<std.time.DecodeError>(null)
   const dbResult = catch<std.db.ConflictError>(null)
-  return true
+  return exactNumber == 1
 }
 "#,
     );
 
     let project = compile_package_project(temp.path()).expect("std catch types should compile");
     let main = module_artifact(&project.package, "main");
+    assert!(file_contains_call(main, &|target| {
+        matches!(
+            target,
+            CallTargetIr::Native { target }
+                if target.binding_key.as_deref() == Some("core.number.assertSafeInteger")
+        )
+    }));
     for symbol_path in [
         "std.json.DecodeError",
         "std.number.DecodeError",
@@ -197,8 +386,9 @@ type Envelope {
   request: std.http.HttpRequest,
   event: std.http.HttpResponseStreamEvent,
   file: std.file.ImmutableFile,
-  gateway: std.websocket.WebSocketConnectResult<string>,
-  connect: std.websocket.ConnectionMessage,
+  gateway: std.websocket.WebSocketConnectResult,
+  connect: std.websocket.WebSocketConnectRequest,
+  policy: std.websocket.WebSocketConnectionPolicy,
   raw: Json,
   bytesValue: bytes,
 }
@@ -211,17 +401,12 @@ type Envelope {
         "std.http.HttpRequest",
         "std.http.HttpResponseStreamEvent",
         "std.file.ImmutableFile",
-        "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketConnectResult",
+        "std.websocket.WebSocketConnectRequest",
+        "std.websocket.WebSocketConnectionPolicy",
     ] {
         assert!(file_contains_std_package_type(consumer, symbol_path));
     }
-    assert!(file_contains_type_ref(consumer, &|ty| {
-        matches!(
-            ty,
-            TypeRefIr::Native { name, .. }
-                if name == "std.websocket.WebSocketConnectResult"
-        )
-    }));
 
     let std = project
         .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
@@ -280,7 +465,7 @@ fn implicit_std_types_close_requirements_while_prelude_json_object_stays_local()
     assert!(project.dependency_packages.is_empty());
     assert!(file_contains_type_ref(
         module_artifact(&project.package, "types"),
-        &|ty| matches!(ty, TypeRefIr::Native { name, args } if name == "JsonObject" && args.is_empty())
+        &|ty| matches!(ty, TypeRefIr::Builtin { name, args } if name == "JsonObject" && args.is_empty())
     ));
 }
 
@@ -430,10 +615,7 @@ fn expression_contains_type_ref(
 ) -> bool {
     match expression {
         ExprIr::Construct { type_ref, .. } => type_ref_contains(type_ref, predicate),
-        ExprIr::Catch {
-            catch_type: Some(catch_type),
-            ..
-        } => type_ref_contains(catch_type, predicate),
+        ExprIr::Catch { catch_type, .. } => type_ref_contains(catch_type, predicate),
         ExprIr::Throw { payload_type, .. } => type_ref_contains(payload_type, predicate),
         ExprIr::DbOperation { operation } => type_ref_contains(&operation.result_type, predicate),
         ExprIr::DbQuery { query } => type_ref_contains(&query.result_type, predicate),
@@ -455,10 +637,20 @@ fn descriptor_contains_type_ref(
             .values()
             .any(|field| type_ref_contains(field, predicate)),
         TypeDescriptorIr::Alias { target } => type_ref_contains(target, predicate),
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .any(|variant| type_ref_contains(variant, predicate)),
-        TypeDescriptorIr::Native { .. } => false,
+        TypeDescriptorIr::Representation { representation } => {
+            type_ref_contains(representation, predicate)
+        }
+        TypeDescriptorIr::Union { branches } => branches.iter().any(|branch| match branch {
+            skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                type_ref_contains(nominal_type, predicate)
+            }
+            skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                payload_type,
+                ..
+            } => type_ref_contains(payload_type, predicate),
+            skiff_artifact_model::NamedUnionBranchIr::Literal { .. } => false,
+        }),
+        TypeDescriptorIr::Interface => false,
     }
 }
 
@@ -467,12 +659,15 @@ fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) ->
         return true;
     }
     match ty {
-        TypeRefIr::Native { args, .. } => args.iter().any(|arg| type_ref_contains(arg, predicate)),
+        TypeRefIr::Builtin { args, .. } => args.iter().any(|arg| type_ref_contains(arg, predicate)),
         TypeRefIr::Record { fields } => fields
             .values()
             .any(|field| type_ref_contains(field, predicate)),
         TypeRefIr::Union { items } => items.iter().any(|item| type_ref_contains(item, predicate)),
         TypeRefIr::Nullable { inner } => type_ref_contains(inner, predicate),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments
+            .iter()
+            .any(|argument| type_ref_contains(argument, predicate)),
         TypeRefIr::AnyInterface { interface } => interface
             .canonical_type_args
             .iter()
@@ -486,7 +681,8 @@ fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) ->
                 .any(|param| type_ref_contains(&param.ty, predicate))
                 || type_ref_contains(return_type, predicate)
         }
-        TypeRefIr::PackageSymbol { .. }
+        TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }

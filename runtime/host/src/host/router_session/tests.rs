@@ -1,36 +1,76 @@
-use std::{
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
 use serde_json::json;
-use skiff_artifact_identity::{
-    derive_package_test_entrypoint_id, file_ir_identity, package_build_identity,
-    package_implementation_links_identity, package_local_abi_identity, package_test_build_identity,
-    package_test_entrypoint_local_id, publication_abi_identity,
-};
-use skiff_artifact_model::{
-    ConfigAndEffectMetadata, FileIrUnit, MetadataValue, PackageProductionLinkScope,
-    PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
-    PackageTestExecutableRef, PackageTestFileIrRef, PackageTestFileLinkScope,
-    PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageUnit, FILE_IR_FORMAT_VERSION,
-    FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION, PACKAGE_TEST_ASSEMBLY_SCHEMA_VERSION,
-};
 
 use super::*;
-use crate::artifact_cache::PackageTestRuntimeTemplateCache;
-use crate::loader::{value_sha256, write_package_unit_value_ref};
-use skiff_runtime_package_test::PackageTestDispatchSelection;
-use skiff_runtime_transport::protocol::{
-    encode_binary_frame, PackageTestStartFrameHeader, RequestCancelFrameHeader,
-    ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
-    ResponseStartFrameHeader, RouterControlFrameHeader, RuntimeCallerFrameHeader,
-    RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
-    RuntimeHttpResponseFrameHeader, RuntimeRegisteredFrameHeader, RuntimeTraceContextFrameHeader,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+use skiff_runtime_transport::{
+    assembly_activation::{
+        decode_assembly_activation_frame, encode_assembly_activation_frame,
+        AssemblyActivationFrameDirection,
+    },
+    connection_protocol::{
+        encode_connection_response_frame, ConnectionResponseFrameHeader, ConnectionResponseOutcome,
+    },
+    protocol::{
+        encode_binary_frame, RequestCancelFrameHeader, RouterControlFrameHeader,
+        RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeRegisteredFrameHeader,
+        RUNTIME_FRAME_SCHEMA_VERSION,
+    },
 };
+
+#[tokio::test]
+async fn connection_request_response_demux_uses_exact_router_session() {
+    let host = test_host();
+    let session = skiff_runtime_capability_context::ConnectionRequestSession::new(
+        "skiff-router-session-v1:opaque:test-session",
+    )
+    .expect("test session");
+    let cancellation = skiff_runtime_capability_context::CancellationSource::new();
+    let scope =
+        skiff_runtime_capability_context::ExecutionScope::request(cancellation.token(), None);
+    let mut pending = host
+        .connection_requests
+        .install(session, scope, std::sync::Arc::new(|_, _| Ok(())))
+        .expect("pending request");
+    let request_id = pending.request_id().to_string();
+    let frame = encode_connection_response_frame(
+        &ConnectionResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "connection.response".to_string(),
+            request_id,
+            outcome: ConnectionResponseOutcome::Success,
+            remote: None,
+        },
+        b"null",
+    )
+    .expect("strict response frame");
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let mut control = None;
+    let mut artifact_fingerprint = None;
+
+    dispatch_router_binary_frame(
+        &host,
+        &frame,
+        &sender,
+        &mut control,
+        &mut artifact_fingerprint,
+    )
+    .await
+    .expect("response should dispatch");
+
+    assert_eq!(
+        pending.wait().await,
+        skiff_runtime_capability_context::ConnectionRequestTerminal::Success(b"null".to_vec())
+    );
+    assert_eq!(host.connection_requests.pending_count(), 0);
+    assert_eq!(host.connection_requests.active_lease_count(), 0);
+    assert_eq!(host.connection_requests.active_timer_count(), 0);
+}
+
+mod connection_lifecycle;
+mod control_response_lifecycle;
+mod foreign_db_exact_identity;
+mod runtime_assembly_request;
+mod websocket_generation_lifecycle;
+mod websocket_jsonrpc_dispatch;
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;
@@ -66,83 +106,16 @@ fn test_db_provider() -> skiff_runtime_capability_context::DbProviderSource {
 }
 
 fn test_host() -> super::super::RuntimeHost {
-    test_host_with_artifact_roots(Vec::new())
-}
-
-fn test_host_with_artifact_roots(artifact_roots: Vec<PathBuf>) -> super::super::RuntimeHost {
     super::super::RuntimeHost::new(super::super::RuntimeConfig {
         db_provider: test_db_provider(),
-        services: Vec::new(),
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: "runtime-base".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
-        artifact_roots,
+        environment: "test".to_string(),
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })
     .expect("runtime host should build")
-}
-
-const PACKAGE_TEST_PHASE_05_MIGRATION_ERROR: &str =
-    "package-test legacy service-program materialization is unavailable until its Phase 05 consumer migration";
-
-fn assert_package_test_phase_05_migration_error(error: impl std::fmt::Display) {
-    let error = error.to_string();
-    assert!(
-        error.contains(PACKAGE_TEST_PHASE_05_MIGRATION_ERROR),
-        "unexpected package-test terminal-seam error: {error}"
-    );
-}
-
-fn assert_package_test_phase_05_error_frame(
-    message: super::super::RouterWriterMessage,
-    request_id: &str,
-) {
-    let super::super::RouterWriterMessage::Binary(frame) = message else {
-        panic!("expected binary response.error frame");
-    };
-    let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
-        decode_typed_binary_frame(&frame).expect("response.error should decode");
-    assert_eq!(header.request_id, request_id);
-    assert!(payload.is_empty());
-    assert_eq!(header.error.code, "InvalidArtifact");
-    assert_package_test_phase_05_migration_error(header.error.message);
-}
-
-async fn apply_router_control_artifact_roots(
-    host: &super::super::RuntimeHost,
-    artifact_roots: Vec<PathBuf>,
-    generation: &str,
-) {
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let frame = encode_binary_frame(
-        &RouterControlFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "router.control".to_string(),
-            artifact_roots,
-            dev_reload: None,
-            mode: None,
-            generation: Some(generation.to_string()),
-            fingerprint: Some(format!("fingerprint:{generation}")),
-            service_config: Vec::new(),
-            telemetry: None,
-            file_backend: None,
-        },
-        &[],
-    )
-    .expect("router.control frame should encode");
-
-    dispatch_router_binary_frame(
-        host,
-        &frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("router.control should apply artifact roots");
 }
 
 #[tokio::test]
@@ -183,6 +156,124 @@ fn writer_encodes_outbound_control_command_as_binary_frame() {
     assert_eq!(header.request_id, "request-cancel-from-control");
     assert_eq!(header.reason, "caller_cancel");
     assert!(payload.is_empty());
+}
+
+#[tokio::test]
+async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
+    use std::{
+        pin::Pin,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll},
+    };
+
+    struct CountingSocket(Arc<AtomicUsize>);
+
+    impl futures_util::Sink<tokio_tungstenite::tungstenite::Message> for CountingSocket {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(
+            self: Pin<&mut Self>,
+            _message: tokio_tungstenite::tungstenite::Message,
+        ) -> std::result::Result<(), Self::Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let encoded_frames = Arc::new(AtomicUsize::new(0));
+    let message = super::super::RouterWriterMessage::Control(
+        skiff_runtime_request::OutboundControlMessage::SpawnSubmit {
+            request: skiff_runtime_request::SpawnSubmitControlRequest {
+                rpc_id: "rpc-spawn".to_string(),
+                runtime_id: "runtime-1".to_string(),
+                target_kind: "operation".to_string(),
+                service_id: "test.skiff/agine.ai/api-tests/case-23".to_string(),
+                service_version: "1.0.0".to_string(),
+                service_protocol_identity: "service-protocol-1".to_string(),
+                target: "Worker.run".to_string(),
+                spawn_id: Some("spawn-1".to_string()),
+                build_id: Some("build-1".to_string()),
+                activation_identity: skiff_runtime_request::ActivationIdentityControl {
+                    assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
+                        "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ),
+                    generation: 7,
+                    runtime_replica_id: "runtime-replica-7".to_string(),
+                    deployment_revision: skiff_artifact_model::DeploymentRevision::new(
+                        "deployment-revision-7",
+                    ),
+                },
+                caller_request_id: Some("request-1".to_string()),
+                trace_id: Some("trace-1".to_string()),
+                caller_target: Some("Caller.start".to_string()),
+                max_queue_wait_ms: Some(250.0),
+            },
+            payload: b"opaque spawn args".to_vec(),
+        },
+    );
+    send_writer_message(&mut CountingSocket(Arc::clone(&encoded_frames)), message)
+        .await
+        .expect_err("invalid service ID must fail before writing a frame");
+
+    assert_eq!(encoded_frames.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
+    let artifact_path = std::env::temp_dir().join(format!(
+        "skiff-runtime-bootstrap-positive-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let typed = TypedEnvelope {
+        envelope_type: "router.bootstrap".to_string(),
+        rest: serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "artifactsPath": artifact_path,
+            "serviceDb": { "mongoUrl": "mongodb://router-owned" },
+            "http": { "maxResponseBytes": 67108864 }
+        }))
+        .expect("bootstrap fields should decode"),
+    };
+
+    let bootstrap =
+        super::decode_connection_bootstrap(typed, &[]).expect("bootstrap should install");
+
+    assert_eq!(
+        bootstrap.resolver.store().root(),
+        artifact_path
+            .canonicalize()
+            .expect("test artifact root should canonicalize")
+    );
+    assert_eq!(
+        bootstrap.service_db.mongo_url,
+        "mongodb://router-owned".to_string()
+    );
+    assert_eq!(bootstrap.max_response_bytes, 67_108_864);
 }
 
 #[tokio::test]
@@ -383,7 +474,7 @@ async fn binary_runtime_registered_rejects_non_empty_payload() {
 }
 
 #[tokio::test]
-async fn binary_router_control_rejects_non_empty_payload() {
+async fn binary_router_control_is_rejected_before_legacy_payload_decode() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
     let mut control = None;
@@ -413,12 +504,12 @@ async fn binary_router_control_rejects_non_empty_payload() {
         &mut artifact_fingerprint,
     )
     .await
-    .expect_err("non-empty router.control payload should fail");
+    .expect_err("legacy router.control should fail");
 
     assert!(matches!(error, RuntimeError::Decode(_)));
     assert!(error
         .to_string()
-        .contains("router.control binary frame payload must be empty"));
+        .contains("router.control artifactRoots/serviceConfig reload is not supported"));
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
@@ -455,42 +546,17 @@ async fn binary_router_control_decode_error_propagates() {
 }
 
 #[tokio::test]
-async fn binary_package_test_start_fails_closed_without_artifact_roots() {
+async fn binary_assembly_activation_command_uses_router_to_runtime_codec() {
     let host = test_host();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let mut control = None;
     let mut artifact_fingerprint = None;
-    let frame = encode_binary_frame(
-        &PackageTestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "package-test.start".to_string(),
-            request_id: "package-test-no-root".to_string(),
-            caller: RuntimeCallerFrameHeader {
-                kind: "gateway".to_string(),
-                target: "__skiff.test-dispatch".to_string(),
-            },
-            package_id: "example.com/pkg".to_string(),
-            package_version: "1.0.0".to_string(),
-            test_build_identity:
-                "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string(),
-            entrypoint_id:
-                "skiff-package-test-entrypoint-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
-            activation_id: "skiff-package-test-run-v1:example~com~~pkg:run:1".to_string(),
-            deadline: None,
-            trace: RuntimeTraceContextFrameHeader {
-                trace_id: "trace-package-test-no-root".to_string(),
-                span_id: "span-package-test-no-root".to_string(),
-                parent_span_id: None,
-                sampled: Some(true),
-            },
-            test_effects_enabled: false,
-            test_effect_doubles: Default::default(),
-        },
-        b"payload",
+    let activation = assembly_activation_control("prepare");
+    let frame = encode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &activation,
     )
-    .expect("package-test.start frame should encode");
+    .expect("router activation command should encode");
 
     dispatch_router_binary_frame(
         &host,
@@ -500,689 +566,175 @@ async fn binary_package_test_start_fails_closed_without_artifact_roots() {
         &mut artifact_fingerprint,
     )
     .await
-    .expect("package-test.start validation error should be returned as response.error");
+    .expect("missing exact assembly record should produce a typed rejection");
 
-    let error = match receiver
-        .recv()
-        .await
-        .expect("response.error should be sent")
-    {
-        super::super::RouterWriterMessage::Binary(frame) => {
-            let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&frame).expect("response.error should decode");
-            assert!(payload.is_empty());
-            header.error
-        }
-        other => panic!("expected binary response.error frame, got {other:?}"),
+    let super::super::RouterWriterMessage::Binary(reply) =
+        receiver.try_recv().expect("rejection should be queued")
+    else {
+        panic!("expected binary rejection");
     };
-    assert_eq!(error.code, "InvalidArtifact");
-    assert_package_test_phase_05_migration_error(error.message);
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
+    assert!(matches!(
+        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &reply)
+            .expect("rejection should decode"),
+        skiff_artifact_model::AssemblyActivationControl::Reject { .. }
+    ));
 }
 
 #[tokio::test]
-async fn binary_package_test_start_reports_phase_05_materialization_boundary() {
-    let fixture = write_package_test_runtime_fixture();
-    let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let frame = encode_binary_frame(&fixture.start_header("package-test-executes"), &[])
-        .expect("package-test.start frame should encode");
-
-    dispatch_router_binary_frame(
-        &host,
-        &frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("package-test.start should spawn runtime execution");
-
-    let message = tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
-        .await
-        .expect("package-test runtime response should not block")
-        .expect("package-test runtime response should be sent");
-    assert_package_test_phase_05_error_frame(message, "package-test-executes");
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
-}
-
-#[tokio::test]
-async fn binary_package_test_start_returns_before_template_preprocessing_completes() {
-    let fixture = write_package_test_runtime_fixture();
-    let artifact_roots = vec![fixture.artifact_root_path()];
-    let host = test_host_with_artifact_roots(artifact_roots.clone());
-    let header = fixture.start_header("package-test-start-nonblocking");
-    let cache_key = package_test_template_cache_key(&artifact_roots, &header);
-    let template_build_guard = host
-        .acquire_package_test_template_build_lock_for_test(cache_key)
-        .await;
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let frame = encode_binary_frame(&header, &[]).expect("package-test.start frame should encode");
-
-    tokio::time::timeout(
-        tokio::time::Duration::from_millis(100),
-        dispatch_router_binary_frame(
-            &host,
-            &frame,
-            &sender,
-            &mut control,
-            &mut artifact_fingerprint,
-        ),
-    )
-    .await
-    .expect("package-test.start dispatch should not wait for template preprocessing")
-    .expect("package-test.start should submit to executor");
-    assert!(
-        receiver.try_recv().is_err(),
-        "template preprocessing is still blocked, so no response should be available"
-    );
-
-    drop(template_build_guard);
-    let message = tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
-        .await
-        .expect("package-test runtime response should arrive after unblocking preprocessing")
-        .expect("package-test runtime response should be sent");
-    assert_package_test_phase_05_error_frame(message, "package-test-start-nonblocking");
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
-}
-
-#[tokio::test]
-async fn binary_package_test_start_queues_when_execution_slots_are_full() {
-    let fixture = write_package_test_runtime_fixture();
-    let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
-    let held_start_permits = host.acquire_all_package_test_start_execution_permits_for_test();
-    let header = fixture.start_header("package-test-start-queued");
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let frame = encode_binary_frame(&header, &[]).expect("package-test.start frame should encode");
-
-    tokio::time::timeout(
-        tokio::time::Duration::from_millis(100),
-        dispatch_router_binary_frame(
-            &host,
-            &frame,
-            &sender,
-            &mut control,
-            &mut artifact_fingerprint,
-        ),
-    )
-    .await
-    .expect("package-test.start dispatch should enqueue without waiting for an execution slot")
-    .expect("package-test.start should submit to executor");
-    assert!(
-        receiver.try_recv().is_err(),
-        "queued package-test start should not fail while execution slots are full"
-    );
-
-    drop(held_start_permits);
-    let message = tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
-        .await
-        .expect(
-            "queued package-test runtime response should arrive after releasing execution slots",
-        )
-        .expect("queued package-test runtime response should be sent");
-    assert_package_test_phase_05_error_frame(message, "package-test-start-queued");
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
-}
-
-#[tokio::test]
-async fn binary_package_test_start_cancelled_while_queued_returns_cancel_error() {
-    let fixture = write_package_test_runtime_fixture();
-    let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
-    let held_start_permits = host.acquire_all_package_test_start_execution_permits_for_test();
-    let header = fixture.start_header("package-test-start-queued-cancel");
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let start_frame =
-        encode_binary_frame(&header, &[]).expect("package-test.start frame should encode");
-
-    dispatch_router_binary_frame(
-        &host,
-        &start_frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("package-test.start should submit to executor");
-    assert!(
-        receiver.try_recv().is_err(),
-        "queued package-test start should not respond before cancellation can be observed"
-    );
-
-    let cancel_frame = encode_binary_frame(
-        &RequestCancelFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "request.cancel".to_string(),
-            request_id: "package-test-start-queued-cancel".to_string(),
-            reason: "test_cancel_before_start_execution".to_string(),
-        },
-        &[],
-    )
-    .expect("request.cancel frame should encode");
-    dispatch_router_binary_frame(
-        &host,
-        &cancel_frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("queued package-test cancel should be accepted");
-    assert!(
-        receiver.try_recv().is_err(),
-        "queued cancellation is emitted when the start job reaches execution"
-    );
-
-    drop(held_start_permits);
-    let error = match tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
-        .await
-        .expect("queued package-test cancellation response should arrive")
-        .expect("queued package-test cancellation response should be sent")
-    {
-        super::super::RouterWriterMessage::Binary(frame) => {
-            let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&frame).expect("response.error should decode");
-            assert_eq!(header.request_id, "package-test-start-queued-cancel");
-            assert!(payload.is_empty());
-            header.error
-        }
-        other => panic!("expected binary response.error frame, got {other:?}"),
-    };
-
-    assert_eq!(error.code, "CancelError");
-    assert_eq!(error.message, "request was cancelled");
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
-}
-
-#[tokio::test]
-async fn binary_package_test_start_saturation_returns_request_error_without_ws_failure() {
+async fn assembly_activation_fails_closed_before_connection_bootstrap() {
     let host = test_host();
-    let _held_permits = host.acquire_all_package_test_start_admission_permits_for_test();
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let frame = encode_binary_frame(
-        &PackageTestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "package-test.start".to_string(),
-            request_id: "package-test-start-saturated".to_string(),
-            caller: RuntimeCallerFrameHeader {
-                kind: "gateway".to_string(),
-                target: "__skiff.test-dispatch".to_string(),
-            },
-            package_id: "example.com/pkg".to_string(),
-            package_version: "1.0.0".to_string(),
-            test_build_identity:
-                "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string(),
-            entrypoint_id:
-                "skiff-package-test-entrypoint-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
-            activation_id: "skiff-package-test-run-v1:example~com~~pkg:run:saturated".to_string(),
-            deadline: None,
-            trace: RuntimeTraceContextFrameHeader {
-                trace_id: "trace-package-test-saturated".to_string(),
-                span_id: "span-package-test-saturated".to_string(),
-                parent_span_id: None,
-                sampled: Some(true),
-            },
-            test_effects_enabled: false,
-            test_effect_doubles: Default::default(),
-        },
-        b"payload",
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let frame = encode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &assembly_activation_control("prepare"),
     )
-    .expect("package-test.start frame should encode");
+    .expect("router activation command should encode");
+    let mut bootstrap = None;
 
-    dispatch_router_binary_frame(
+    let error = super::dispatch_router_binary_frame_inner(
         &host,
+        "skiff-router-session-v1:opaque:test-session",
         &frame,
         &sender,
-        &mut control,
-        &mut artifact_fingerprint,
+        None,
+        &mut bootstrap,
     )
     .await
-    .expect("saturation should be returned as request-level response.error");
+    .expect_err("activation before bootstrap must fail");
 
-    let error = match receiver
-        .recv()
-        .await
-        .expect("saturation response.error should be sent")
-    {
-        super::super::RouterWriterMessage::Binary(frame) => {
-            let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&frame).expect("response.error should decode");
-            assert_eq!(header.request_id, "package-test-start-saturated");
-            assert!(payload.is_empty());
-            header.error
-        }
-        other => panic!("expected binary response.error frame, got {other:?}"),
-    };
-    assert_eq!(error.code, "ResourceLimitExceeded");
     assert!(error
-        .message
-        .contains("package-test start executor admission saturated"));
-    assert_eq!(
-        error
-            .details
-            .as_ref()
-            .and_then(|details| details.get("resource"))
-            .and_then(serde_json::Value::as_str),
-        Some("packageTestStartExecutor")
-    );
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
+        .to_string()
+        .contains("assembly activation requires router.bootstrap first"));
 }
 
 #[tokio::test]
-async fn package_test_runtime_template_waiters_fail_closed_at_phase_05_boundary() {
-    let fixture = write_package_test_runtime_fixture();
-    let artifact_roots = vec![fixture.artifact_root_path()];
-    let host = test_host_with_artifact_roots(artifact_roots.clone());
-    let first_header = fixture.start_header_for(
-        "package-test-singleflight-first",
-        0,
-        "skiff-package-test-run-v1:example~com~~pkg:run:1",
-    );
-    let second_header = fixture.start_header_for(
-        "package-test-singleflight-second",
-        1,
-        "skiff-package-test-run-v1:example~com~~pkg:run:2",
-    );
-    let cache_key = package_test_template_cache_key(&artifact_roots, &first_header);
-    let template_build_guard = host
-        .acquire_package_test_template_build_lock_for_test(cache_key)
-        .await;
-
-    let first_host = host.clone();
-    let first = tokio::spawn(async move {
-        first_host
-            .load_package_test_runtime_program(&first_header)
-            .await
-    });
-    let second_host = host.clone();
-    let second = tokio::spawn(async move {
-        second_host
-            .load_package_test_runtime_program(&second_header)
-            .await
-    });
-    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-    assert_eq!(
-        host.package_test_template_build_count_for_test(),
-        0,
-        "held singleflight guard should block actual template builds"
-    );
-    assert!(!first.is_finished());
-    assert!(!second.is_finished());
-
-    drop(template_build_guard);
-    let first_error = first
-        .await
-        .expect("first package-test load task should join")
-        .expect_err("first package-test load must fail at the Phase 05 boundary");
-    let second_error = second
-        .await
-        .expect("second package-test load task should join")
-        .expect_err("second package-test load must fail at the Phase 05 boundary");
-
-    assert_package_test_phase_05_migration_error(first_error);
-    assert_package_test_phase_05_migration_error(second_error);
-    assert_eq!(host.package_test_template_build_count_for_test(), 2);
-    assert!(host.artifact_caches.package_test_templates.is_empty());
-}
-
-#[tokio::test]
-async fn package_test_runtime_load_fails_before_legacy_service_context() {
-    let fixture = write_package_test_runtime_fixture();
-    let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
-    let header = fixture.start_header("package-test-local-config");
-
-    let error = host
-        .load_package_test_runtime_program(&header)
-        .await
-        .expect_err("legacy package-test service context must remain unreachable");
-
-    assert_package_test_phase_05_migration_error(error);
-    assert!(host.artifact_caches.package_test_templates.is_empty());
-}
-
-#[tokio::test]
-async fn package_test_runtime_cache_stays_empty_across_phase_05_failures() {
-    let fixture = write_package_test_runtime_fixture();
-    let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
-    let first_header = fixture.start_header_for(
-        "package-test-cache-first",
-        0,
-        "skiff-package-test-run-v1:example~com~~pkg:run:1",
-    );
-    let second_header = fixture.start_header_for(
-        "package-test-cache-second",
-        1,
-        "skiff-package-test-run-v1:example~com~~pkg:run:2",
-    );
-
-    let first_error = host
-        .load_package_test_runtime_program(&first_header)
-        .await
-        .expect_err("first entrypoint must fail at the Phase 05 boundary");
-    let second_error = host
-        .load_package_test_runtime_program(&second_header)
-        .await
-        .expect_err("second entrypoint must fail at the Phase 05 boundary");
-
-    assert_package_test_phase_05_migration_error(first_error);
-    assert_package_test_phase_05_migration_error(second_error);
-    assert!(host.artifact_caches.package_test_templates.is_empty());
-}
-
-#[tokio::test]
-async fn package_test_runtime_cache_remains_empty_across_root_change() {
-    let first_fixture = write_package_test_runtime_fixture();
-    let second_fixture = write_package_test_runtime_fixture();
-    let host = test_host();
-
-    apply_router_control_artifact_roots(
-        &host,
-        vec![first_fixture.artifact_root_path()],
-        "package-test-cache-root-1",
-    )
-    .await;
-    let first_error = host
-        .load_package_test_runtime_program(&first_fixture.start_header("package-test-root-1"))
-        .await
-        .expect_err("first root must fail at the Phase 05 boundary");
-    assert_package_test_phase_05_migration_error(first_error);
-    assert!(host.artifact_caches.package_test_templates.is_empty());
-
-    apply_router_control_artifact_roots(
-        &host,
-        vec![second_fixture.artifact_root_path()],
-        "package-test-cache-root-2",
-    )
-    .await;
-    assert!(
-        host.artifact_caches.package_test_templates.is_empty(),
-        "root reload must not create a legacy package-test template"
-    );
-
-    let second_error = host
-        .load_package_test_runtime_program(&second_fixture.start_header("package-test-root-2"))
-        .await
-        .expect_err("second root must fail at the Phase 05 boundary");
-    assert_package_test_phase_05_migration_error(second_error);
-    assert!(host.artifact_caches.package_test_templates.is_empty());
-}
-
-#[tokio::test]
-async fn package_test_runtime_cache_does_not_store_phase_05_failures() {
-    let fixture = write_package_test_runtime_fixture();
-    let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
-    let mut bad_header = fixture.start_header("package-test-cache-bad-entrypoint");
-    bad_header.entrypoint_id =
-        "skiff-package-test-entrypoint-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-            .to_string();
-
-    let error = host
-        .load_package_test_runtime_program(&bad_header)
-        .await
-        .expect_err("invalid entrypoint should not load");
-    assert_package_test_phase_05_migration_error(error);
-    assert!(
-        host.artifact_caches.package_test_templates.is_empty(),
-        "failed entrypoint dispatch must not populate the package-test template cache"
-    );
-
-    let error = host
-        .load_package_test_runtime_program(&fixture.start_header("package-test-cache-valid"))
-        .await
-        .expect_err("valid entrypoint must also stop at the Phase 05 boundary");
-    assert_package_test_phase_05_migration_error(error);
-    assert!(host.artifact_caches.package_test_templates.is_empty());
-}
-
-#[tokio::test]
-async fn package_test_template_stats_stay_empty_at_phase_05_boundary() {
-    let fixture = write_package_test_runtime_fixture();
-    let artifact_roots = vec![fixture.artifact_root_path()];
-    let host = test_host_with_artifact_roots(artifact_roots.clone());
-    let header = fixture.start_header("package-test-cache-stats");
-
-    let error = host
-        .load_package_test_runtime_program(&header)
-        .await
-        .expect_err("package-test runtime must stop at the Phase 05 boundary");
-    assert_package_test_phase_05_migration_error(error);
-    let stats = host.artifact_caches.stats();
-
-    assert_eq!(stats.package_test_templates.entries, 0);
-    assert_eq!(stats.package_test_templates.estimated_size_bytes, 0);
-}
-
-#[tokio::test]
-async fn binary_response_end_completes_pending_outbound_request() {
+async fn duplicate_connection_bootstrap_fails_closed() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let lease = host
-        .outbound_requests
-        .insert_with_lease(
-            "request-outbound-1".to_string(),
-            response_sender,
-            None,
-            "caller_cancel",
+    let artifact_path = std::env::temp_dir().join("skiff-runtime-bootstrap-duplicate");
+    std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let mut bootstrap = Some(super::ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
         )
-        .expect("pending outbound response should register");
-    let frame = encode_binary_frame(
-        &ResponseEndFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.end".to_string(),
-            request_id: "request-outbound-1".to_string(),
-            payload_present: true,
-            http_response: None,
-            websocket_connect: None,
+        .expect("test resolver should open"),
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
-        b"encoded-result",
-    )
-    .expect("response.end frame should encode");
-
-    dispatch_router_binary_frame(
-        &host,
-        &frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("response.end should route to pending outbound request");
-
-    let response = response_receiver
-        .recv()
-        .await
-        .expect("pending outbound receiver should complete");
-    assert!(matches!(
-        response,
-        skiff_runtime_request::OutboundResponse::End { payload }
-            if payload == b"encoded-result"
-    ));
-    assert!(host.outbound_requests.contains("request-outbound-1"));
-    lease.complete();
-    assert!(!host.outbound_requests.contains("request-outbound-1"));
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
-}
-
-#[tokio::test]
-async fn binary_response_error_completes_pending_outbound_request() {
-    let host = test_host();
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let lease = host
-        .outbound_requests
-        .insert_with_lease(
-            "request-outbound-error".to_string(),
-            response_sender,
-            None,
-            "caller_cancel",
-        )
-        .expect("pending outbound response should register");
+        max_response_bytes: 67_108_864,
+    });
     let frame = encode_binary_frame(
-        &ResponseErrorFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.error".to_string(),
-            request_id: "request-outbound-error".to_string(),
-            error: RuntimeErrorFramePayload {
-                code: "RemoteError".to_string(),
-                message: "callee failed".to_string(),
-                status: Some(503),
-                details: None,
-            },
-        },
+        &json!({
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "router.bootstrap",
+            "artifactsPath": artifact_path,
+            "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:27017" },
+            "http": { "maxResponseBytes": 67108864 }
+        }),
         &[],
     )
-    .expect("response.error frame should encode");
+    .expect("bootstrap frame should encode");
 
-    dispatch_router_binary_frame(
+    let error = super::dispatch_router_binary_frame_inner(
         &host,
+        "skiff-router-session-v1:opaque:test-session",
         &frame,
         &sender,
-        &mut control,
-        &mut artifact_fingerprint,
+        None,
+        &mut bootstrap,
     )
     .await
-    .expect("response.error should route to pending outbound request");
+    .expect_err("duplicate bootstrap must fail");
 
-    let response = response_receiver
-        .recv()
-        .await
-        .expect("pending outbound receiver should complete");
-    assert!(matches!(
-        response,
-        skiff_runtime_request::OutboundResponse::Error(error)
-            if error.message == "callee failed" && error.status == Some(503)
-    ));
-    assert!(host.outbound_requests.contains("request-outbound-error"));
-    lease.complete();
-    assert!(!host.outbound_requests.contains("request-outbound-error"));
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
+    assert!(error
+        .to_string()
+        .contains("router.bootstrap must appear exactly once per connection"));
 }
 
 #[tokio::test]
-async fn binary_response_start_for_pending_outbound_sends_stream_event_without_completing() {
+async fn activation_rejects_superseded_transient_service_db_wire() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let _lease = host
-        .outbound_requests
-        .insert_with_lease(
-            "request-outbound-stream".to_string(),
-            response_sender,
-            None,
-            "caller_cancel",
+    let artifact_path = std::env::temp_dir().join("skiff-runtime-bootstrap-service-db");
+    std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let mut bootstrap = Some(super::ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
         )
-        .expect("pending outbound response should register");
-    let frame = encode_binary_frame(
-        &ResponseStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.start".to_string(),
-            request_id: "request-outbound-stream".to_string(),
-            http_response: RuntimeHttpResponseFrameHeader {
-                status: 200,
-                headers: Vec::new(),
-            },
+        .expect("test resolver should open"),
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://bootstrap-owner".to_string(),
         },
-        &[],
+        max_response_bytes: 67_108_864,
+    });
+    let mut activation = serde_json::to_value(assembly_activation_control("prepare"))
+        .expect("activation should encode as JSON");
+    activation
+        .as_object_mut()
+        .expect("activation should be an object")
+        .insert(
+            "serviceDb".to_string(),
+            json!({ "mongoUrl": "mongodb://transient-owner" }),
+        );
+    let activation: skiff_artifact_model::AssemblyActivationControl =
+        serde_json::from_value(activation).expect("legacy activation wire should decode");
+    let frame = encode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &activation,
     )
-    .expect("response.start frame should encode");
+    .expect("activation frame should encode");
 
-    dispatch_router_binary_frame(
+    let error = super::dispatch_router_binary_frame_inner(
         &host,
+        "skiff-router-session-v1:opaque:test-session",
         &frame,
         &sender,
-        &mut control,
-        &mut artifact_fingerprint,
+        None,
+        &mut bootstrap,
     )
     .await
-    .expect("response.start should route to pending outbound request");
+    .expect_err("transient serviceDb must fail");
 
-    assert!(host.outbound_requests.contains("request-outbound-stream"));
-    let response = response_receiver
-        .try_recv()
-        .expect("response.start event should be available");
-    assert!(matches!(
-        response,
-        skiff_runtime_request::OutboundResponse::Start { http_response }
-            if http_response.status == 200
-    ));
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
+    assert!(error
+        .to_string()
+        .contains("assembly activation serviceDb is not supported"));
 }
 
-#[tokio::test]
-async fn binary_response_chunk_for_pending_outbound_sends_stream_event_without_completing() {
-    let host = test_host();
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
-    let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let _lease = host
-        .outbound_requests
-        .insert_with_lease(
-            "request-outbound-stream".to_string(),
-            response_sender,
-            None,
-            "caller_cancel",
-        )
-        .expect("pending outbound response should register");
-    let frame = encode_binary_frame(
-        &ResponseChunkFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.chunk".to_string(),
-            request_id: "request-outbound-stream".to_string(),
-            seq: 0,
-        },
-        b"chunk",
-    )
-    .expect("response.chunk frame should encode");
+#[test]
+fn assembly_activation_reply_uses_runtime_to_router_codec() {
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let activation = assembly_activation_control("prepared");
 
-    dispatch_router_binary_frame(
-        &host,
-        &frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("response.chunk should route to pending outbound request");
-
-    assert!(host.outbound_requests.contains("request-outbound-stream"));
-    let response = response_receiver
+    super::super::RuntimeHost::queue_assembly_activation(sender, &activation)
+        .expect("runtime activation reply should queue");
+    let super::super::RouterWriterMessage::Binary(frame) = receiver
         .try_recv()
-        .expect("response.chunk event should be available");
-    assert!(matches!(
-        response,
-        skiff_runtime_request::OutboundResponse::Chunk { seq: 0, payload }
-            if payload == b"chunk".to_vec()
-    ));
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
+        .expect("runtime activation reply should be present")
+    else {
+        panic!("expected binary assembly activation reply");
+    };
+    let decoded =
+        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &frame)
+            .expect("runtime activation reply should decode in runtime-to-router direction");
+
+    assert_eq!(decoded, activation);
+}
+
+fn assembly_activation_control(
+    control_type: &str,
+) -> skiff_artifact_model::AssemblyActivationControl {
+    serde_json::from_value(json!({
+        "type": control_type,
+        "environment": "test",
+        "activationId": "activation-42",
+        "expectedGeneration": 41,
+        "candidateGeneration": 42,
+        "assembly": {
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "replicaId": "runtime-base"
+    }))
+    .expect("assembly activation control fixture should decode")
 }
 
 #[tokio::test]
@@ -1211,510 +763,4 @@ async fn text_json_request_start_is_rejected_on_runtime_websocket() {
     assert!(error
         .to_string()
         .contains("text protocol messages are not supported on runtime WebSocket"));
-}
-
-fn package_test_template_cache_key(
-    artifact_roots: &[PathBuf],
-    header: &PackageTestStartFrameHeader,
-) -> String {
-    let selection = PackageTestDispatchSelection {
-        package_id: header.package_id.clone(),
-        package_version: header.package_version.clone(),
-        test_build_identity: header.test_build_identity.clone(),
-        entrypoint_id: header.entrypoint_id.clone(),
-        activation_id: header.activation_id.clone(),
-    };
-    PackageTestRuntimeTemplateCache::cache_key(artifact_roots, &selection.build_selection())
-}
-
-struct PackageTestRuntimeFixture {
-    artifact_root: TempArtifactRoot,
-    package_id: String,
-    package_version: String,
-    test_build_identity: String,
-    entrypoint_ids: Vec<String>,
-}
-
-impl PackageTestRuntimeFixture {
-    fn artifact_root_path(&self) -> PathBuf {
-        self.artifact_root.path().to_path_buf()
-    }
-
-    fn start_header(&self, request_id: &str) -> PackageTestStartFrameHeader {
-        self.start_header_for(
-            request_id,
-            0,
-            "skiff-package-test-run-v1:example~com~~pkg:run:1",
-        )
-    }
-
-    fn start_header_for(
-        &self,
-        request_id: &str,
-        entrypoint_index: usize,
-        activation_id: &str,
-    ) -> PackageTestStartFrameHeader {
-        PackageTestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "package-test.start".to_string(),
-            request_id: request_id.to_string(),
-            caller: RuntimeCallerFrameHeader {
-                kind: "gateway".to_string(),
-                target: "__skiff.test-dispatch".to_string(),
-            },
-            package_id: self.package_id.clone(),
-            package_version: self.package_version.clone(),
-            test_build_identity: self.test_build_identity.clone(),
-            entrypoint_id: self.entrypoint_ids[entrypoint_index].clone(),
-            activation_id: activation_id.to_string(),
-            deadline: None,
-            trace: RuntimeTraceContextFrameHeader {
-                trace_id: format!("trace-{request_id}"),
-                span_id: format!("span-{request_id}"),
-                parent_span_id: None,
-                sampled: Some(true),
-            },
-            test_effects_enabled: false,
-            test_effect_doubles: Default::default(),
-        }
-    }
-}
-
-fn write_package_test_runtime_fixture() -> PackageTestRuntimeFixture {
-    let artifact_root = unique_temp_dir();
-    let package_id = "example.com/pkg".to_string();
-    let package_version = "1.0.0".to_string();
-    let package_storage = "example~com~~pkg";
-
-    let mut production_package = PackageUnit::empty(&package_id, &package_version, "", "");
-    production_package.publication_abi.abi_identity =
-        publication_abi_identity(&production_package.publication_abi)
-            .expect("publication ABI identity");
-    production_package.abi_identity =
-        package_local_abi_identity(&production_package).expect("package local ABI identity");
-    production_package.build_identity =
-        package_build_identity(&production_package).expect("package build identity");
-    let production_package_ref = write_package_unit_value_ref(
-        artifact_root.path(),
-        serde_json::to_value(&production_package).expect("production package should serialize"),
-    )
-    .expect("production package ref should be canonical");
-    let package_unit_path = PathBuf::from(&production_package_ref.unit_path);
-
-    let mut test_file = package_test_file_ir_fixture();
-    test_file.file_ir_identity = file_ir_identity(&test_file).expect("test file identity");
-    let test_file_hash = identity_hash(&test_file.file_ir_identity);
-    let test_file_path = PathBuf::from("units")
-        .join("files")
-        .join(format!("{test_file_hash}.json"));
-    write_json_artifact(artifact_root.path(), &test_file_path, &test_file);
-
-    let owner_test_file = PackageTestFileIrRef {
-        file_ir_identity: test_file.file_ir_identity.clone(),
-        file_ir_path: relative_path_string(&test_file_path),
-        source_path: "pkg.test.skiff".to_string(),
-        module_path: test_file.module_path.clone(),
-    };
-    let first_entrypoint_local_id = package_test_entrypoint_local_id(
-        &package_id,
-        &package_version,
-        &owner_test_file.source_path,
-        0,
-        "returns package test ok",
-    )
-    .expect("first package test entrypoint local id");
-    let second_entrypoint_local_id = package_test_entrypoint_local_id(
-        &package_id,
-        &package_version,
-        &owner_test_file.source_path,
-        1,
-        "returns second package test ok",
-    )
-    .expect("second package test entrypoint local id");
-    let entrypoint_local_ids = vec![
-        first_entrypoint_local_id.clone(),
-        second_entrypoint_local_id.clone(),
-    ];
-    let mut config_and_effect_metadata = ConfigAndEffectMetadata::default();
-    config_and_effect_metadata.config.insert(
-        "shape".to_string(),
-        MetadataValue::from_json(json!({
-            "schemaVersion": "skiff-config-shape-v1",
-            "entries": [
-                { "path": "app.secret", "type": "string", "required": true },
-                { "path": "serviceDb.mongoUrl", "type": "string", "required": false }
-            ]
-        })),
-    );
-    let mut assembly = PackageTestAssembly {
-        schema_version: PACKAGE_TEST_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        kind: PackageTestAssemblyKind::PackageTest,
-        package_id: package_id.clone(),
-        package_version: package_version.clone(),
-        test_build_identity:
-            "skiff-package-test-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                .to_string(),
-        production_package_unit: PackageTestPackageUnitRef {
-            package_id: package_id.clone(),
-            version: package_version.clone(),
-            build_identity: production_package.build_identity.clone(),
-            unit_path: relative_path_string(&package_unit_path),
-            public_abi_identity: production_package.abi_identity.clone(),
-            implementation_links_identity: package_implementation_links_identity(
-                &production_package.implementation_links,
-            )
-            .expect("production implementation links identity"),
-        },
-        test_files: vec![owner_test_file.clone()],
-        dependency_package_units: Vec::new(),
-        test_entrypoints: vec![
-            PackageTestEntrypoint {
-                kind: PackageTestEntrypointKind::TestOnly,
-                entrypoint_local_id: first_entrypoint_local_id.clone(),
-                entrypoint_id:
-                    "skiff-package-test-entrypoint-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                        .to_string(),
-                display_name: "returns package test ok".to_string(),
-                source_path: owner_test_file.source_path.clone(),
-                module_path: owner_test_file.module_path.clone(),
-                owner_test_file: owner_test_file.clone(),
-                executable_ref: PackageTestExecutableRef {
-                    file_ir_identity: owner_test_file.file_ir_identity.clone(),
-                    executable_index: 0,
-                    executable_local_id: "entrypoint-0".to_string(),
-                    symbol: Some("__skiff_package_test_0".to_string()),
-                },
-                default_run: true,
-                config_and_effect_metadata: config_and_effect_metadata.clone(),
-                runtime_expected_error: None,
-            },
-            PackageTestEntrypoint {
-                kind: PackageTestEntrypointKind::TestOnly,
-                entrypoint_local_id: second_entrypoint_local_id.clone(),
-                entrypoint_id:
-                    "skiff-package-test-entrypoint-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                        .to_string(),
-                display_name: "returns second package test ok".to_string(),
-                source_path: owner_test_file.source_path.clone(),
-                module_path: owner_test_file.module_path.clone(),
-                owner_test_file: owner_test_file.clone(),
-                executable_ref: PackageTestExecutableRef {
-                    file_ir_identity: owner_test_file.file_ir_identity.clone(),
-                    executable_index: 1,
-                    executable_local_id: "entrypoint-1".to_string(),
-                    symbol: Some("__skiff_package_test_1".to_string()),
-                },
-                default_run: false,
-                config_and_effect_metadata: config_and_effect_metadata.clone(),
-                runtime_expected_error: None,
-            },
-        ],
-        link_policy: PackageTestLinkPolicy {
-            current_package_production: PackageProductionLinkScope {
-                package_id: package_id.clone(),
-                version: package_version.clone(),
-                build_identity: production_package.build_identity.clone(),
-                files_digest: canonical_digest(&production_package.files),
-                implementation_links_digest: canonical_digest(
-                    &production_package.implementation_links,
-                ),
-                allow_private: true,
-            },
-            test_file_scopes: vec![PackageTestFileLinkScope {
-                owner_test_file_identity: owner_test_file.file_ir_identity.clone(),
-                source_path: owner_test_file.source_path.clone(),
-                module_path: owner_test_file.module_path.clone(),
-                allowed_local_link_digest: package_test_allowed_local_link_digest(
-                    &owner_test_file,
-                    &test_file,
-                    &entrypoint_local_ids,
-                ),
-                entrypoint_local_ids,
-            }],
-            dependency_public_scopes: Vec::new(),
-        },
-        config_and_effect_metadata,
-        source_map: json!({}),
-    };
-    assembly.test_build_identity =
-        package_test_build_identity(&assembly).expect("package test build identity");
-    let entrypoint_ids = vec![
-        derive_package_test_entrypoint_id(
-            &assembly.test_build_identity,
-            &first_entrypoint_local_id,
-        )
-        .expect("first package test entrypoint identity"),
-        derive_package_test_entrypoint_id(
-            &assembly.test_build_identity,
-            &second_entrypoint_local_id,
-        )
-        .expect("second package test entrypoint identity"),
-    ];
-    for (entrypoint, entrypoint_id) in assembly.test_entrypoints.iter_mut().zip(&entrypoint_ids) {
-        entrypoint.entrypoint_id = entrypoint_id.clone();
-    }
-
-    let test_build_hash = identity_hash(&assembly.test_build_identity);
-    let assembly_path = PathBuf::from("assemblies")
-        .join("package-tests")
-        .join(package_storage)
-        .join(format!("{test_build_hash}.json"));
-    let pointer_path = PathBuf::from("dev")
-        .join("package-tests")
-        .join(package_storage)
-        .join(format!("{test_build_hash}.json"));
-    write_json_artifact(artifact_root.path(), &assembly_path, &assembly);
-    write_json_artifact(
-        artifact_root.path(),
-        &pointer_path,
-        &json!({
-            "schemaVersion": "skiff-package-test-dev-pointer-v1",
-            "packageId": package_id,
-            "packageVersion": package_version,
-            "testBuildIdentity": assembly.test_build_identity,
-            "packageTestAssembly": {
-                "assemblyPath": relative_path_string(&assembly_path),
-                "assemblyIdentity": assembly.test_build_identity
-            }
-        }),
-    );
-    write_yaml_artifact(
-        artifact_root.path(),
-        &PathBuf::from("configs")
-            .join("package-tests")
-            .join("skiff-package-test-run-v1:example~com~~pkg:run:1")
-            .join("config.yml"),
-        &json!({
-            "serviceDb": {
-                "mongoUrl": "mongodb://127.0.0.1:27017/router-session-package-test"
-            },
-            "service": {
-                "app": {
-                    "secret": "router-secret"
-                },
-                "serviceDb": {
-                    "mongoUrl": "business-config"
-                }
-            }
-        }),
-    );
-    write_yaml_artifact(
-        artifact_root.path(),
-        &PathBuf::from("configs")
-            .join("package-tests")
-            .join("skiff-package-test-run-v1:example~com~~pkg:run:2")
-            .join("config.yml"),
-        &json!({
-            "serviceDb": {
-                "mongoUrl": "mongodb://127.0.0.1:27017/router-session-package-test-2"
-            },
-            "service": {
-                "app": {
-                    "secret": "router-secret-2"
-                },
-                "serviceDb": {
-                    "mongoUrl": "business-config-2"
-                }
-            }
-        }),
-    );
-
-    PackageTestRuntimeFixture {
-        artifact_root,
-        package_id: "example.com/pkg".to_string(),
-        package_version: "1.0.0".to_string(),
-        test_build_identity: assembly.test_build_identity,
-        entrypoint_ids,
-    }
-}
-
-fn package_test_file_ir_fixture() -> FileIrUnit {
-    serde_json::from_value(json!({
-        "schemaVersion": FILE_IR_SCHEMA_VERSION,
-        "fileIrIdentity": "",
-        "sourceAstHash": "source:package-test",
-        "modulePath": "pkg.test",
-        "irFormatVersion": FILE_IR_FORMAT_VERSION,
-        "opcodeTableVersion": FILE_IR_OPCODE_TABLE_VERSION,
-        "sourceMap": {
-            "format": "skiff-file-ir-source-map-v1",
-            "sources": [],
-            "spans": []
-        },
-        "declarations": {
-            "interfaces": {},
-            "executables": {
-                "__skiff_package_test_0": {
-                    "executableIndex": 0,
-                    "symbol": "__skiff_package_test_0"
-                },
-                "__skiff_package_test_1": {
-                    "executableIndex": 1,
-                    "symbol": "__skiff_package_test_1"
-                }
-            }
-        },
-        "linkTargets": {},
-        "typeTable": [],
-        "constants": [],
-        "executables": [
-            {
-                "kind": "function",
-                "symbol": "__skiff_package_test_0",
-                "typeParams": [],
-                "params": [],
-                "returnType": { "kind": "builtin", "name": "string", "args": [] },
-                "slots": { "slots": [], "frameSize": 0 },
-                "maySuspend": false,
-                "body": {
-                    "blocks": [
-                        {
-                            "label": "entry",
-                            "statements": [{ "statement": 0 }]
-                        }
-                    ],
-                    "statements": [
-                        {
-                            "kind": "return",
-                            "value": { "expression": 0 }
-                        }
-                    ],
-                    "expressions": [
-                        {
-                            "kind": "literal",
-                            "value": { "kind": "string", "value": "package-test-ok" }
-                        }
-                    ]
-                }
-            },
-            {
-                "kind": "function",
-                "symbol": "__skiff_package_test_1",
-                "typeParams": [],
-                "params": [],
-                "returnType": { "kind": "builtin", "name": "string", "args": [] },
-                "slots": { "slots": [], "frameSize": 0 },
-                "maySuspend": false,
-                "body": {
-                    "blocks": [
-                        {
-                            "label": "entry",
-                            "statements": [{ "statement": 0 }]
-                        }
-                    ],
-                    "statements": [
-                        {
-                            "kind": "return",
-                            "value": { "expression": 0 }
-                        }
-                    ],
-                    "expressions": [
-                        {
-                            "kind": "literal",
-                            "value": { "kind": "string", "value": "package-test-ok-2" }
-                        }
-                    ]
-                }
-            }
-        ],
-        "externalRefs": { "serviceCallRefs": [] }
-    }))
-    .expect("package-test File IR fixture should deserialize")
-}
-
-fn write_json_artifact<T: serde::Serialize>(root: &Path, relative_path: &Path, value: &T) {
-    let path = root.join(relative_path);
-    fs::create_dir_all(path.parent().expect("artifact path should have parent"))
-        .expect("artifact parent should be created");
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(value).expect("artifact should serialize"),
-    )
-    .expect("artifact should be written");
-}
-
-fn write_yaml_artifact<T: serde::Serialize>(root: &Path, relative_path: &Path, value: &T) {
-    let path = root.join(relative_path);
-    fs::create_dir_all(path.parent().expect("artifact path should have parent"))
-        .expect("artifact parent should be created");
-    fs::write(
-        &path,
-        serde_yaml::to_string(value).expect("artifact YAML should serialize"),
-    )
-    .expect("artifact should be written");
-}
-
-fn relative_path_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn package_test_allowed_local_link_digest(
-    reference: &PackageTestFileIrRef,
-    file: &FileIrUnit,
-    entrypoint_local_ids: &[String],
-) -> String {
-    let mut entrypoint_local_ids = entrypoint_local_ids.to_vec();
-    entrypoint_local_ids.sort();
-    entrypoint_local_ids.dedup();
-    value_sha256(&json!({
-        "fileIrIdentity": reference.file_ir_identity,
-        "sourcePath": reference.source_path,
-        "modulePath": reference.module_path,
-        "entrypointLocalIds": entrypoint_local_ids,
-        "localTargets": {
-            "declarations": &file.declarations,
-            "linkTargets": &file.link_targets,
-            "typeCount": file.type_table.len(),
-            "constCount": file.constants.len(),
-            "executableCount": file.executables.len(),
-        },
-    }))
-    .expect("test file link scope digest")
-}
-
-fn canonical_digest<T: serde::Serialize>(value: &T) -> String {
-    let value = serde_json::to_value(value).expect("artifact projection should serialize");
-    value_sha256(&value).expect("artifact projection should hash")
-}
-
-fn identity_hash(identity: &str) -> &str {
-    identity
-        .rsplit_once(':')
-        .map(|(_, hash)| hash)
-        .expect("identity should contain hash suffix")
-}
-
-struct TempArtifactRoot {
-    path: PathBuf,
-}
-
-impl TempArtifactRoot {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempArtifactRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn unique_temp_dir() -> TempArtifactRoot {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time should be monotonic enough")
-        .as_nanos();
-    for attempt in 0..1000 {
-        let path = std::env::temp_dir().join(format!(
-            "skiff-runtime-router-package-test-{}-{nanos}-{attempt}",
-            std::process::id()
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => return TempArtifactRoot { path },
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => panic!("temp dir should be created: {error}"),
-        }
-    }
-    panic!("failed to allocate unique package-test temp dir after 1000 attempts");
 }

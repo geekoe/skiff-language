@@ -1,5 +1,3 @@
-import type { Server as HttpServer } from 'node:http';
-
 import type { LoadedManifest } from '../../src/manifest/types.js';
 import type {
   RuntimeCapabilitiesMetadata,
@@ -22,18 +20,12 @@ import type {
 import {
   RuntimeRegistry
 } from '../../src/router/runtimeRegistry.js';
-import {
-  WebSocketGateway,
-  type WebSocketGatewayListenResult,
-  type WebSocketGatewayOptions
-} from '../../src/gateway/webSocketGateway.js';
 import { buildActivationLookup } from '../../src/artifacts/activationLookup.js';
-import type { ActivationLookup } from '../../src/artifacts/loadArtifactRoot.js';
+import type { ActivationLookup } from '../../src/artifacts/activationLookup.js';
 
 import {
   DEFAULT_TEST_BUILD_ID,
   loadRawHttpManifest,
-  loadWebSocketManifest,
   withBuildId
 } from './manifests.js';
 import { requestHttp } from './request.js';
@@ -51,8 +43,6 @@ export class RouterHarness {
   registryListen: RuntimeEndpointListenResult | undefined;
   httpGateway: HttpGateway | undefined;
   httpListen: HttpGatewayListenResult | undefined;
-  webSocketGateway: WebSocketGateway | undefined;
-  webSocketListen: WebSocketGatewayListenResult | undefined;
 
   private constructor(
     readonly manifest: LoadedManifest,
@@ -101,32 +91,6 @@ export class RouterHarness {
     return harness;
   }
 
-  static async websocket(input: {
-    manifest?: LoadedManifest;
-    activationByServiceOperation?: ActivationLookup;
-  } = {}): Promise<RouterHarness> {
-    const harness = await RouterHarness.create({
-      manifest: input.manifest ?? loadWebSocketManifest()
-    });
-    await harness.listenWebSocket(
-      input.activationByServiceOperation
-        ? { activationByServiceOperation: input.activationByServiceOperation }
-        : {}
-    );
-    return harness;
-  }
-
-  static async combinedHttpWebSocket(input: {
-    manifest?: LoadedManifest;
-  } = {}): Promise<RouterHarness> {
-    const harness = await RouterHarness.create({
-      manifest: input.manifest ?? loadWebSocketManifest()
-    });
-    const httpListen = await harness.listenHttp();
-    await harness.listenWebSocket({ server: httpListen.server });
-    return harness;
-  }
-
   async listenRegistry(input: {
     control?: RuntimeEndpointListenOptions['control'];
     controlPlane?: RuntimeEndpointListenOptions['controlPlane'];
@@ -161,6 +125,7 @@ export class RouterHarness {
       manifest: this.manifest,
       dispatcher: this.dispatcher,
       port: 0,
+      maxRequestBytes: 64 * 1024 * 1024,
       requestTimeoutMs: 2000
     };
     if (input.activationByServiceOperation) {
@@ -183,49 +148,6 @@ export class RouterHarness {
     return this.httpListen;
   }
 
-  async listenWebSocket(input: {
-    activationByServiceOperation?: ActivationLookup;
-    path?: string;
-    rewrite?: WebSocketGatewayOptions['rewrite'];
-    server?: HttpServer;
-    snapshotStore?: RouterActiveSnapshotStore;
-    verifiedReceiveInFlightLimit?: WebSocketGatewayOptions['verifiedReceiveInFlightLimit'];
-    verifiedReceiveQueueLimit?: WebSocketGatewayOptions['verifiedReceiveQueueLimit'];
-  } = {}): Promise<WebSocketGatewayListenResult> {
-    const options: WebSocketGatewayOptions = {
-      manifest: this.manifest,
-      dispatcher: this.dispatcher,
-      runtimeConnectionSend: this.endpoint,
-      requestTimeoutMs: 2000
-    };
-    if (input.activationByServiceOperation) {
-      options.activationByServiceOperation = input.activationByServiceOperation;
-    }
-    if (input.path) {
-      options.path = input.path;
-    }
-    if (input.verifiedReceiveInFlightLimit) {
-      options.verifiedReceiveInFlightLimit = input.verifiedReceiveInFlightLimit;
-    }
-    if (input.verifiedReceiveQueueLimit) {
-      options.verifiedReceiveQueueLimit = input.verifiedReceiveQueueLimit;
-    }
-    if (input.rewrite) {
-      options.rewrite = input.rewrite;
-    }
-    if (input.snapshotStore) {
-      options.snapshotStore = input.snapshotStore;
-    }
-    if (input.server) {
-      options.server = input.server;
-    } else {
-      options.port = 0;
-    }
-    this.webSocketGateway = trackResource(new WebSocketGateway(options));
-    this.webSocketListen = await this.webSocketGateway.listen();
-    return this.webSocketListen;
-  }
-
   async registerRuntime(input: {
     runtimeId: string;
     serviceId?: string;
@@ -236,7 +158,6 @@ export class RouterHarness {
     activationIdentity?: string;
     targets?: string[];
     gatewayEntryIdentities?: string[];
-    protocolVersion?: string;
     runtimeVersion?: string;
     codeRevisionId?: string;
     artifactIdentity?: string;
@@ -264,9 +185,6 @@ export class RouterHarness {
     if (input.gatewayEntryIdentities) {
       register.gatewayEntryIdentities = input.gatewayEntryIdentities;
     }
-    if (input.protocolVersion) {
-      register.protocolVersion = input.protocolVersion;
-    }
     if (input.runtimeVersion) {
       register.runtimeVersion = input.runtimeVersion;
     }
@@ -287,13 +205,6 @@ export class RouterHarness {
       throw new Error('HTTP gateway is not listening');
     }
     return `${this.httpListen.url}${path}`;
-  }
-
-  webSocketUrl(query = ''): string {
-    if (!this.webSocketListen) {
-      throw new Error('websocket gateway is not listening');
-    }
-    return `${this.webSocketListen.url}${query}`;
   }
 
   async requestHttp(input: {

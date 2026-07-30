@@ -2,12 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    ConstExport, ContractOperationId, ContractRequirement, ContractTypeId, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, PackageCallableParameter, PackageCallableSignature,
-    PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement,
+    ConstDeclarationIr, ConstExport, ConstIr, ContractOperationId, ContractRequirement,
+    ExecutableBody, ExecutableDeclarationIr, ExecutableExport, ExecutableIr, ExecutableKind,
+    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
+    PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
     PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
-    PackageTypeRef, ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr,
-    ValueProvenance,
+    PackageSymbolRef, PackageTypeRef, ParamIr, ServiceCallRef, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceSymbolRef, SlotLayout, TypeDeclIr, TypeDeclarationIr,
+    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -47,6 +50,29 @@ pub(super) fn project_fixture_with_runtime_requirements(
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
     let file_ref = file_ref();
     let export_index = PackageExportIndex {
+        types: BTreeMap::from([(
+            "Worker".to_string(),
+            TypeExport {
+                file: file_ref.clone(),
+                type_index: 0,
+                symbol: "Worker".to_string(),
+                is_interface: false,
+                descriptor: Some(TypeDescriptorIr::Record {
+                    fields: BTreeMap::new(),
+                }),
+                type_params: Vec::new(),
+                interface_methods: Vec::new(),
+            },
+        )]),
+        constants: BTreeMap::from([(
+            "VERSION".to_string(),
+            ConstExport {
+                file: file_ref.clone(),
+                const_index: 1,
+                symbol: "VERSION".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+        )]),
         functions: BTreeMap::from([
             (
                 "mutate".to_string(),
@@ -60,6 +86,20 @@ pub(super) fn project_fixture_with_runtime_requirements(
     let api_exports = PackageExports {
         entries: Vec::new(),
         symbols: BTreeMap::from([
+            (
+                "Worker".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "Worker".to_string(),
+                },
+            ),
+            (
+                "VERSION".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "VERSION".to_string(),
+                },
+            ),
             (
                 "mutate".to_string(),
                 PackageExportSymbol {
@@ -87,15 +127,15 @@ pub(super) fn project_fixture_with_runtime_requirements(
     let mut signature_entries = vec![
         (
             callable_key("run", 0),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         ),
         (
             callable_key("mutate", 1),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         ),
         (
             callable_key("worker.handle", 2),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         ),
     ];
     match signature_set {
@@ -106,7 +146,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
         }
         SignatureSet::Extra => signature_entries.push((
             callable_key("internal", 9),
-            signature(TypeRefIr::native("string")),
+            signature(TypeRefIr::builtin("string")),
         )),
         SignatureSet::TargetMismatch => {
             signature_entries[0].0 = callable_key("run", 9);
@@ -128,6 +168,110 @@ pub(super) fn project_fixture_with_runtime_requirements(
     ]);
     let mut file = skiff_artifact_model::FileIrUnit::empty("api", "source-hash");
     file.file_ir_identity = file_ref.file_ir_identity.clone();
+    file.type_table.extend([
+        TypeDeclIr {
+            name: "Worker".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+        TypeDeclIr {
+            name: "WorkerInterface".to_string(),
+            descriptor: TypeDescriptorIr::Interface,
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        },
+    ]);
+    file.declarations.types.extend([
+        (
+            "Worker".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "api.Worker".to_string(),
+                source_span: None,
+            },
+        ),
+        (
+            "WorkerInterface".to_string(),
+            TypeDeclarationIr {
+                type_index: 1,
+                symbol: "api.WorkerInterface".to_string(),
+                source_span: None,
+            },
+        ),
+    ]);
+    file.declarations.interfaces.insert(
+        "WorkerInterface".to_string(),
+        InterfaceDeclIr {
+            name: "WorkerInterface".to_string(),
+            type_params: Vec::new(),
+            operations: vec![InterfaceOperationIr {
+                name: "handle".to_string(),
+                type_params: Vec::new(),
+                params: vec![FunctionTypeParamIr {
+                    name: "value".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                }],
+                return_type: TypeRefIr::builtin("string"),
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: Some(TypeRefIr::builtin("Self")),
+            }],
+            source_span: None,
+        },
+    );
+    file.executables.extend([
+        fixture_executable(ExecutableKind::Function, "api.run", None),
+        fixture_executable(ExecutableKind::Function, "api.mutate", None),
+        fixture_executable(
+            ExecutableKind::ImplMethod,
+            "api.Worker.handle",
+            Some(TypeRefIr::LocalType { type_index: 0 }),
+        ),
+    ]);
+    file.declarations.executables.insert(
+        "Worker.handle".to_string(),
+        ExecutableDeclarationIr {
+            executable_index: 2,
+            symbol: "api.Worker.handle".to_string(),
+            source_span: None,
+        },
+    );
+    file.constants.push(ConstIr {
+        name: "worker".to_string(),
+        ty: TypeRefIr::LocalType { type_index: 0 },
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+    file.declarations.constants.insert(
+        "worker".to_string(),
+        ConstDeclarationIr {
+            const_index: 0,
+            symbol: "api.worker".to_string(),
+            ty: TypeRefIr::LocalType { type_index: 0 },
+            source_span: None,
+        },
+    );
+    file.constants.push(ConstIr {
+        name: "VERSION".to_string(),
+        ty: TypeRefIr::builtin("string"),
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+    file.declarations.constants.insert(
+        "VERSION".to_string(),
+        ConstDeclarationIr {
+            const_index: 1,
+            symbol: "api.VERSION".to_string(),
+            ty: TypeRefIr::builtin("string"),
+            source_span: None,
+        },
+    );
     let protocol_identity = ServiceProtocolIdentity::new("protocol:greeter:v1");
     let operation_id = ContractOperationId::new("operation:greet");
     let contract_requirement = ContractRequirement {
@@ -136,6 +280,16 @@ pub(super) fn project_fixture_with_runtime_requirements(
         contract_version: "1.0.0".to_string(),
         expected_protocol_identity: protocol_identity.clone(),
     };
+    let schema_types = BTreeMap::new();
+    let schema_index = skiff_artifact_model::PackageSchemaIndex {
+        package_id: "example.pkg".to_string(),
+        package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+            "example.pkg",
+            &schema_types,
+        )
+        .unwrap(),
+        types: schema_types,
+    };
     Ok(project_package_artifact_facts(ProjectedPackageFacts {
         package_id: "example.pkg",
         package_version: "1.0.0",
@@ -143,6 +297,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
         export_links: ProjectedPackageExportLinks {
             exports: export_index,
             public_instances: vec![public_instance(&file_ref)],
+            alias_types: BTreeSet::new(),
         },
         file_ir_units: vec![file],
         resources: Vec::new(),
@@ -151,6 +306,8 @@ pub(super) fn project_fixture_with_runtime_requirements(
             package_id: "example.dependency".to_string(),
             exact_version: "2.0.0".to_string(),
             expected_local_abi: PackageLocalAbiIdentity::new("local-abi:dependency:v2"),
+            collection_name_mapping: BTreeMap::new(),
+            expected_package_build: None,
         }],
         contract_requirements: vec![contract_requirement.clone()],
         service_requirements: vec![ServiceRequirement {
@@ -161,6 +318,11 @@ pub(super) fn project_fixture_with_runtime_requirements(
         runtime_requirements,
         callable_semantic_facts: semantic_facts,
         callable_signatures: signatures,
+        package_schema_index: schema_index,
+        package_schema_type_records: BTreeMap::new(),
+        resolved_package_schema_type_records: BTreeMap::new(),
+        package_schema_refs_by_source: BTreeMap::new(),
+        resolved_package_schemas: &[],
         service_call_refs: vec![ServiceCallRef {
             service_requirement_slot: 3,
             contract_operation_id: operation_id,
@@ -171,16 +333,30 @@ pub(super) fn project_fixture_with_runtime_requirements(
 }
 
 fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
-    let interface_type = TypeRefIr::native("WorkerInterface");
+    let receiver_type = TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "api".to_string(),
+            symbol: "Worker".to_string(),
+        },
+    };
+    let interface_type = TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: "example.pkg".to_string(),
+            },
+            symbol_path: "api.WorkerInterface".to_string(),
+            abi_expectation: None,
+        },
+    };
     PackagePublicInstanceExecutionLink {
         public_path: "worker".to_string(),
-        declared_receiver_type: TypeRefIr::native("Worker"),
+        declared_receiver_type: receiver_type.clone(),
         interfaces: vec![interface_type],
         receiver: ConstExport {
             file: file.clone(),
             const_index: 0,
             symbol: "worker".to_string(),
-            ty: TypeRefIr::native("Worker"),
+            ty: receiver_type,
         },
         methods: vec![PackagePublicInstanceMethodExecutionLink {
             name: "handle".to_string(),
@@ -191,25 +367,23 @@ fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
 }
 
 fn receiver_export(file: &FileIrRef) -> ExecutableExport {
-    let self_ty = TypeRefIr::native("Worker");
+    let self_ty = TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "api".to_string(),
+            symbol: "Worker".to_string(),
+        },
+    };
     ExecutableExport {
         file: file.clone(),
         executable_index: 2,
         symbol: "Worker.handle".to_string(),
         signature: ExecutableSignatureIr {
-            params: vec![
-                skiff_artifact_model::ParamIr {
-                    name: "self".to_string(),
-                    slot: 0,
-                    ty: self_ty.clone(),
-                },
-                skiff_artifact_model::ParamIr {
-                    name: "value".to_string(),
-                    slot: 1,
-                    ty: TypeRefIr::native("string"),
-                },
-            ],
-            return_type: TypeRefIr::native("string"),
+            params: vec![skiff_artifact_model::ParamIr {
+                name: "value".to_string(),
+                slot: 1,
+                ty: TypeRefIr::builtin("string"),
+            }],
+            return_type: TypeRefIr::builtin("string"),
             self_type: Some(self_ty),
             may_suspend: false,
         },
@@ -225,34 +399,60 @@ fn executable_export(file: &FileIrRef, index: u32, symbol: &str) -> ExecutableEx
             params: vec![skiff_artifact_model::ParamIr {
                 name: "value".to_string(),
                 slot: 0,
-                ty: TypeRefIr::native("string"),
+                ty: TypeRefIr::builtin("string"),
             }],
-            return_type: TypeRefIr::native("string"),
+            return_type: TypeRefIr::builtin("string"),
             self_type: None,
             may_suspend: false,
         },
     }
 }
 
+fn fixture_executable(
+    kind: ExecutableKind,
+    symbol: &str,
+    self_type: Option<TypeRefIr>,
+) -> ExecutableIr {
+    ExecutableIr {
+        kind,
+        symbol: symbol.to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "value".to_string(),
+            slot: u32::from(self_type.is_some()),
+            ty: TypeRefIr::builtin("string"),
+        }],
+        return_type: TypeRefIr::builtin("string"),
+        self_type,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
+    }
+}
+
 pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
     PackageCallableSignature {
+        type_params: Vec::new(),
         parameters: vec![PackageCallableParameter {
             name: "value".to_string(),
             ty: PackageTypeRef::Local { local_type: ty },
         }],
         return_type: PackageTypeRef::Local {
-            local_type: TypeRefIr::native("string"),
+            local_type: TypeRefIr::builtin("string"),
         },
-        throw_types: Vec::new(),
         may_suspend: false,
     }
 }
 
 pub(super) fn exact_typed_signature() -> PackageCallableSignature {
-    let contract = PackageTypeRef::Contract {
-        contract_type_id: ContractTypeId::new("contract-type:example.payments:User"),
+    let contract = PackageTypeRef::PackageSchema {
+        package_id: "example.dependency".to_string(),
+        stable_schema_key: "User".to_string(),
+        package_schema_type_id: "package-type:user".into(),
     };
     PackageCallableSignature {
+        type_params: Vec::new(),
         parameters: vec![PackageCallableParameter {
             name: "value".to_string(),
             ty: PackageTypeRef::Nullable {
@@ -265,7 +465,6 @@ pub(super) fn exact_typed_signature() -> PackageCallableSignature {
             },
         }],
         return_type: contract,
-        throw_types: Vec::new(),
         may_suspend: true,
     }
 }
@@ -277,6 +476,7 @@ pub(super) fn safe_facts() -> CallableSemanticFacts {
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],
+            direct_return_origins: vec![ValueProvenance::Fresh],
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         },
@@ -303,6 +503,7 @@ pub(super) fn runtime_requirements(capability: &str) -> PackageRuntimeRequiremen
             value_type: "string".to_string(),
             required: true,
         }],
+        state: Vec::new(),
         resources: vec![PackageResourceRequirement {
             key: "database".to_string(),
             capability: "mongodb".to_string(),

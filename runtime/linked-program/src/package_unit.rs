@@ -9,7 +9,6 @@ use super::{
     LinkedTypeRef,
 };
 
-pub type PackageUnit = skiff_artifact_model::PackageUnit;
 pub type PackageBuildIdentity = String;
 pub type PackageAbiIdentity = String;
 pub type PackageExportIndex = skiff_artifact_model::PackageExportIndex;
@@ -19,10 +18,6 @@ pub type ExecutableExport = skiff_artifact_model::ExecutableExport;
 pub type ConstExport = skiff_artifact_model::ConstExport;
 pub type PackageDependencyConstraint = skiff_artifact_model::PackageDependencyConstraint;
 pub type ConfigAndEffectMetadata = skiff_artifact_model::ConfigAndEffectMetadata;
-
-pub fn package_config_shape(package: &PackageUnit) -> anyhow::Result<ConfigShape> {
-    config_and_effect_metadata_shape(&package.config_and_effect_metadata)
-}
 
 pub fn config_and_effect_metadata_shape(
     metadata: &ConfigAndEffectMetadata,

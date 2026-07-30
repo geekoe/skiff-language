@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::file_ir::{LiteralIr, TypeRefIr};
-use skiff_artifact_model::InterfaceInstantiationRef;
+use skiff_artifact_model::{InterfaceInstantiationRef, NominalTypeRefBaseIr};
 
 #[derive(Debug, Clone)]
 pub struct EntryFunctionSignature {
@@ -24,26 +24,16 @@ pub struct EntryTypeSpec {
     pub local_type_names: BTreeMap<u32, String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PackageAbiType {
-    pub name: String,
-    pub descriptor: PackageAbiTypeDescriptor,
-    pub discriminator: Option<String>,
-    pub local_type_names: BTreeMap<u32, String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum PackageAbiTypeDescriptor {
-    Alias { target: TypeRefIr },
-    Union { variants: Vec<TypeRefIr> },
-    Record { fields: BTreeMap<String, TypeRefIr> },
-    External,
-}
+/// Package/public declaration handoff uses the canonical File IR declaration
+/// model directly. Keeping aliases here avoids a second descriptor DTO while
+/// callers migrate to the canonical owner.
+pub type PackageAbiType = crate::file_ir::TypeDeclIr;
+pub type PackageAbiTypeDescriptor = crate::file_ir::TypeDescriptorIr;
 
 impl EntryTypeSpec {
     pub fn response_type_ir(&self) -> TypeRefIr {
         match &self.ir {
-            TypeRefIr::Native { name, args } if name == "Stream" && args.len() == 1 => {
+            TypeRefIr::Builtin { name, args } if name == "Stream" && args.len() == 1 => {
                 args[0].clone()
             }
             _ => self.ir.clone(),
@@ -80,8 +70,8 @@ fn type_ref_ir_source_text_with_named_types(
     named_type: &impl Fn(&str) -> String,
 ) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => named_type(name),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => named_type(name),
+        TypeRefIr::Builtin { name, args } => format!(
             "{}<{}>",
             named_type(name),
             args.iter()
@@ -89,6 +79,19 @@ fn type_ref_ir_source_text_with_named_types(
                     arg,
                     local_type_name,
                     named_type
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_source_text(base, local_type_name, named_type),
+            arguments
+                .iter()
+                .map(|argument| type_ref_ir_source_text_with_named_types(
+                    argument,
+                    local_type_name,
+                    named_type,
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -111,6 +114,11 @@ fn type_ref_ir_source_text_with_named_types(
             named_type(&name)
         }
         TypeRefIr::PackageSymbol { symbol } => named_type(&symbol.symbol_path),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => named_type(&format!("{package_id}::{stable_schema_key}")),
         TypeRefIr::Record { fields } => format!(
             "{{ {} }}",
             fields
@@ -163,6 +171,38 @@ fn type_ref_ir_source_text_with_named_types(
                 .join(", "),
             type_ref_ir_source_text_with_named_types(return_type, local_type_name, named_type)
         ),
+    }
+}
+
+fn nominal_base_source_text(
+    base: &NominalTypeRefBaseIr,
+    local_type_name: &impl Fn(u32) -> Option<String>,
+    named_type: &impl Fn(&str) -> String,
+) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => named_type(
+            &local_type_name(*type_index)
+                .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
+        ),
+        NominalTypeRefBaseIr::PublicationType { module_path, .. } => {
+            named_type(&format!("root.{module_path}"))
+        }
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            let name = if symbol.module_path.is_empty() {
+                symbol.symbol.clone()
+            } else if symbol.module_path.starts_with("std.") {
+                symbol.symbol_path()
+            } else {
+                format!("root.{}", symbol.symbol_path())
+            };
+            named_type(&name)
+        }
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => named_type(&symbol.symbol_path),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => named_type(&format!("{package_id}::{stable_schema_key}")),
     }
 }
 
@@ -229,7 +269,7 @@ mod tests {
                         symbol: "Provider".to_string(),
                     },
                 },
-                vec![TypeRefIr::native("string")],
+                vec![TypeRefIr::builtin("string")],
             ),
         };
 

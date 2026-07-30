@@ -68,7 +68,7 @@ json:
 }
 
 #[test]
-fn package_export_mappings_missing_api_yml_is_empty() {
+fn package_export_mappings_reject_missing_api_yml() {
     let package_dir = temp_test_dir("missing-api-yml");
     fs::write(
         package_dir.join("package.yml"),
@@ -78,16 +78,14 @@ id: skiff.run/std
     )
     .expect("package manifest should be written");
 
-    let mappings = package_export_mappings("skiff.run/std", &package_dir)
-        .expect("missing api.yml should be allowed");
-
-    assert!(mappings.is_empty());
+    let error = package_export_mappings("skiff.run/std", &package_dir).unwrap_err();
+    assert!(error.contains("api.yml is required"), "{error}");
 
     fs::remove_dir_all(&package_dir).expect("temporary package dir should be removed");
 }
 
 #[test]
-fn package_export_mappings_empty_api_yml_is_empty() {
+fn package_export_mappings_reject_blank_api_yml() {
     let package_dir = temp_test_dir("empty-api-yml");
     fs::write(
         package_dir.join("package.yml"),
@@ -98,10 +96,8 @@ id: skiff.run/std
     .expect("package manifest should be written");
     fs::write(package_dir.join("api.yml"), "\n").expect("api.yml should be written");
 
-    let mappings = package_export_mappings("skiff.run/std", &package_dir)
-        .expect("empty api.yml should be allowed");
-
-    assert!(mappings.is_empty());
+    let error = package_export_mappings("skiff.run/std", &package_dir).unwrap_err();
+    assert!(error.contains("api.yml must not be empty"), "{error}");
 
     fs::remove_dir_all(&package_dir).expect("temporary package dir should be removed");
 }
@@ -119,6 +115,7 @@ api:
 "#,
     )
     .expect("package manifest should be written");
+    fs::write(package_dir.join("api.yml"), "{}\n").expect("api.yml should be written");
 
     let error = package_export_mappings("skiff.run/std", &package_dir).unwrap_err();
 
@@ -158,6 +155,20 @@ impl Date {
         .expect("instance native method should be registered")
         .shape;
     assert_eq!(instance_shape.params, vec!["Date", "integer"]);
+}
+
+#[test]
+fn platform_source_cannot_spoof_compiler_builtin_type() {
+    let mut registry = PreludeRegistry::empty();
+    registry.install_compiler_builtin_types();
+    let error = registry
+        .add_source("fake", "type Array<T> { value: T }")
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "standard_library source must not declare compiler builtin type Array"
+    );
+    assert!(registry.type_decl("Array").is_none());
 }
 
 fn temp_test_dir(label: &str) -> PathBuf {

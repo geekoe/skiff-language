@@ -1,63 +1,61 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex, RwLock},
+    sync::{Arc, Mutex as StdMutex},
 };
 
-use skiff_runtime_activation::RuntimeActivation;
-use skiff_runtime_capability_context::{DbProviderConfig, DbProviderSource, HttpRuntimeOptions};
-use skiff_runtime_linked_program::{LinkedProgramImage, RuntimeProgramIdentity};
+use skiff_runtime_capability_context::{
+    ConnectionRequestRegistry, DbProviderSource, HttpRuntimeOptions,
+};
+use skiff_runtime_eval::actor_instance::{
+    ActorInstanceFence, ActorInstanceHandle, ActorInstanceSessionTrackError,
+    ActorInstanceSessionTracker, ActorInstanceStore,
+};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
 use crate::{
-    artifact_cache::RuntimeArtifactCaches,
-    config::skiff_file_tmp_dir,
-    config_view::RuntimeConfigView,
-    error::Result,
-    loader::{assembly_admission::AssemblyAdmissionController, ArtifactLoadOptions},
+    config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
+    loader::assembly_admission::AssemblyAdmissionController,
 };
 
 use super::{
+    actor_owner_invocations::ActorOwnerInvocationRegistry,
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
-    route_registry,
-    service_context::ServiceRuntimeContext,
     spawn_worker,
-    state::ArtifactLoadState,
     telemetry::{TelemetryConfig, TelemetryExporterHandle, TelemetryProducer},
-    LoadedBuildRegistry, OutboundRequestRegistry, ServiceRouteState,
+    websocket_generation::WebSocketGenerationRegistry,
+    OutboundRequestRegistry,
 };
+use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
+use crate::capability_context::TestHttpEntryRegistry;
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub db_provider: DbProviderSource,
-    pub services: Vec<RuntimeServiceConfig>,
     pub router_url: String,
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
-    pub artifact_roots: Vec<PathBuf>,
+    pub environment: String,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
 
+/// Production startup input for the canonical committed-assembly lifecycle.
+///
+/// Unlike the focused host-test configuration, this surface cannot carry legacy service
+/// definitions. Router bootstrap supplies the connection-scoped artifact path and DB transport.
 #[derive(Clone)]
-pub struct RuntimeServiceConfig {
-    pub runtime_program_identity: RuntimeProgramIdentity,
-    pub linked_image: Arc<LinkedProgramImage>,
-    pub runtime_activation: Arc<RuntimeActivation>,
+#[cfg(not(test))]
+pub struct RuntimeProductionConfig {
+    pub db_provider: DbProviderSource,
+    pub router_url: String,
+    pub base_runtime_id: String,
+    pub runtime_home: PathBuf,
+    pub environment: String,
     pub http_response_max_bytes: usize,
-    pub use_runtime_default_http_response_max_bytes: bool,
-    pub runtime_id: String,
-    pub revision_id: String,
-    pub contract_identity: String,
-    pub implementation_identity: String,
-    pub artifact_identity: String,
-    pub activation_identity: Option<String>,
-    pub resolved_config_identity: Option<String>,
-    pub config: RuntimeConfigView,
-    pub package_configs: Vec<RuntimeConfigView>,
-    pub service_db: Option<DbProviderConfig>,
+    pub http_egress_proxy: Option<String>,
 }
 
 #[derive(Clone)]
@@ -65,40 +63,44 @@ pub struct RuntimeHost {
     pub(super) router_url: String,
     pub(super) base_runtime_id: String,
     pub(super) runtime_home: PathBuf,
+    pub(super) environment: String,
     pub(super) default_http_response_max_bytes: usize,
     pub(super) http_runtime_options: HttpRuntimeOptions,
-    pub(super) db_provider: DbProviderSource,
-    pub(super) configured_artifact_roots: Arc<Vec<PathBuf>>,
-    pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
-    pub(super) artifact_caches: Arc<RuntimeArtifactCaches>,
+    pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
-    pub(super) package_test_start_executor:
-        Arc<super::package_test_entry::PackageTestStartExecutor>,
-    pub(super) package_test_template_builds:
-        Arc<super::package_test_entry::PackageTestTemplateBuildLocks>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
-    pub(crate) state: Arc<RwLock<ServiceRouteState>>,
-    pub(super) loaded_builds: Arc<LoadedBuildRegistry>,
     pub(super) spawn_workers: Arc<spawn_worker::SpawnWorkerRegistry>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
+    pub(super) websocket_generations: Arc<WebSocketGenerationRegistry>,
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
+    pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
+    pub(crate) actor_owner_invocations: Arc<ActorOwnerInvocationRegistry>,
+    pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
+    pub(crate) test_http_entries: TestHttpEntryRegistry,
 }
 
 impl RuntimeHost {
+    #[cfg(not(test))]
+    pub fn new_production(config: RuntimeProductionConfig) -> anyhow::Result<Self> {
+        Self::new(RuntimeConfig {
+            db_provider: config.db_provider,
+            router_url: config.router_url,
+            base_runtime_id: config.base_runtime_id,
+            runtime_home: config.runtime_home,
+            environment: config.environment,
+            http_response_max_bytes: config.http_response_max_bytes,
+            http_egress_proxy: config.http_egress_proxy,
+        })
+    }
+
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
         let db_provider = config.db_provider.clone();
         let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
-        let services = route_registry::apply_default_http_response_limits(
-            config.services,
-            config.http_response_max_bytes,
-        );
-        let state = route_registry::build_service_route_state(
-            services,
-            config.http_response_max_bytes,
-            &db_provider,
-        )?;
+        skiff_artifact_model::validate_activation_environment(&config.environment)
+            .map_err(|error| anyhow::anyhow!("runtime environment is invalid: {error}"))?;
         let producer_id = format!(
             "{}:proc:{}",
             config.base_runtime_id,
@@ -113,40 +115,74 @@ impl RuntimeHost {
             producer_id,
             config.base_runtime_id.clone(),
         ));
-        let loaded_builds = Arc::new(LoadedBuildRegistry::from_build_ids(state.build_ids()));
+        let actor_instance_store = Arc::new(ActorInstanceStore::new());
         Ok(Self {
             router_url: config.router_url,
             base_runtime_id: config.base_runtime_id.clone(),
             runtime_home: config.runtime_home,
+            environment: config.environment,
             default_http_response_max_bytes: config.http_response_max_bytes,
             http_runtime_options,
-            db_provider,
-            configured_artifact_roots: Arc::new(config.artifact_roots.clone()),
-            artifact_load_state: Arc::new(Mutex::new(ArtifactLoadState {
-                artifact_roots: config.artifact_roots,
-                load_options: ArtifactLoadOptions::release(),
-                service_config: Vec::new(),
-                epoch: 0,
-            })),
-            artifact_caches: Arc::new(RuntimeArtifactCaches::new()),
+            memory_budgets: RuntimeMemoryBudgets::default(),
             assembly_admission: Arc::new(AssemblyAdmissionController::new(
                 config.base_runtime_id.clone(),
+                db_provider,
             )),
-            package_test_start_executor: Arc::new(
-                super::package_test_entry::PackageTestStartExecutor::default(),
-            ),
-            package_test_template_builds: Arc::new(
-                super::package_test_entry::PackageTestTemplateBuildLocks::default(),
-            ),
             blob_store: Arc::new(StdMutex::new(None)),
-            state: Arc::new(RwLock::new(state)),
-            loaded_builds,
             spawn_workers: Arc::new(spawn_worker::SpawnWorkerRegistry::default()),
             request_supervisor: Arc::new(RequestSupervisor::new()),
+            websocket_generations: Arc::new(WebSocketGenerationRegistry::default()),
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
+            connection_requests: Arc::new(ConnectionRequestRegistry::new(1024)),
+            actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
+            actor_owner_invocations: Arc::new(ActorOwnerInvocationRegistry::default()),
+            actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),
+            test_http_entries: TestHttpEntryRegistry::default(),
         })
+    }
+
+    pub(crate) fn track_actor_instance(
+        &self,
+        router_session_id: &str,
+        handle: ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceSessionTrackError> {
+        self.actor_instances.track(router_session_id, handle)
+    }
+
+    pub(crate) fn discard_actor_instances_for_session(&self, router_session_id: &str) -> usize {
+        self.actor_instances.discard_session(router_session_id)
+    }
+
+    pub(crate) fn begin_actor_upgrade_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        self.actor_instances
+            .begin_upgrade_exact(router_session_id, fence)
+    }
+
+    pub(crate) fn discard_upgrading_actor_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        self.actor_instances
+            .discard_upgrading_exact(router_session_id, fence)
+    }
+
+    pub(crate) fn discard_actor_exact(
+        &self,
+        router_session_id: &str,
+        fence: &ActorInstanceFence,
+    ) -> bool {
+        self.actor_instances.discard_exact(router_session_id, fence)
+    }
+
+    pub fn shutdown_actor_instances(&self) -> usize {
+        self.actor_instances.discard_all()
     }
 
     pub async fn shutdown_telemetry(&self) {
@@ -167,24 +203,10 @@ impl RuntimeHost {
         ))
     }
 
-    pub(crate) fn begin_build_execution(
-        &self,
-        build_id: &str,
-    ) -> Result<super::BuildExecutionGuard> {
-        self.loaded_builds.begin_execution(build_id)
-    }
-
     pub(crate) fn request_heap_limits(&self) -> RequestHeapLimits {
         let mut limits = RequestHeapLimits::default();
-        limits.max_estimated_bytes = self.artifact_caches.memory_budgets().request_heap_bytes;
+        limits.max_estimated_bytes = self.memory_budgets.request_heap_bytes;
         limits
-    }
-
-    pub(crate) fn service_snapshot(&self) -> Vec<Arc<ServiceRuntimeContext>> {
-        self.state
-            .read()
-            .map(|state| state.services.iter().cloned().collect())
-            .unwrap_or_default()
     }
 }
 

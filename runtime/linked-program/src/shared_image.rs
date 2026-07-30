@@ -13,12 +13,18 @@ use std::{
 use skiff_artifact_model::{
     file_ir_package_call_sites, validate_file_ir_package_calls, validate_file_ir_service_calls,
     AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId, FileIrRef, FileIrUnit,
-    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr, PackageRequirementKey, RuntimeAssembly,
-    ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
+    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageLocalAbi, PackageLocalAbiIdentity, PackageRefIr,
+    PackageRequirementKey, PackageSchemaIndex, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSymbolRef, RuntimeAssembly, ServiceCallRef, ServiceCallRefIndex,
+    ServiceProtocolIdentity, ServiceSymbolRef, TypeRefIr,
 };
 
-use crate::{ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr};
+use crate::{
+    ConstAddr, DbObjectTargetId, ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr,
+};
+
+mod callable_targets;
 
 /// Loader-owned immutable inputs for one canonical package code slot.
 #[derive(Debug)]
@@ -26,6 +32,8 @@ pub struct HydratedPackageCode {
     artifact: Arc<PackageArtifact>,
     files: Vec<Arc<FileIrUnit>>,
     static_resources: PublicationResourceTable,
+    schema_index: Option<Arc<PackageSchemaIndex>>,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 }
 
 impl HydratedPackageCode {
@@ -38,7 +46,22 @@ impl HydratedPackageCode {
             artifact,
             files,
             static_resources,
+            schema_index: None,
+            schema_records: BTreeMap::new(),
         }
+    }
+
+    pub fn with_schema_index(mut self, schema_index: Arc<PackageSchemaIndex>) -> Self {
+        self.schema_index = Some(schema_index);
+        self
+    }
+
+    pub fn with_schema_records(
+        mut self,
+        schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    ) -> Self {
+        self.schema_records = schema_records;
+        self
     }
 
     pub fn artifact(&self) -> &Arc<PackageArtifact> {
@@ -69,6 +92,9 @@ pub struct SharedPackageCode {
     files: Vec<Arc<FileIrUnit>>,
     files_by_identity: BTreeMap<String, usize>,
     static_resources: PublicationResourceTable,
+    schema_index: Arc<PackageSchemaIndex>,
+    schema_records: BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
+    callable_targets: BTreeMap<PackageCallableId, LinkedPackageCallableTarget>,
 }
 
 impl SharedPackageCode {
@@ -96,6 +122,10 @@ impl SharedPackageCode {
         self.artifact.as_ref()
     }
 
+    pub fn artifact_arc(&self) -> Arc<PackageArtifact> {
+        Arc::clone(&self.artifact)
+    }
+
     pub fn files(&self) -> &[Arc<FileIrUnit>] {
         &self.files
     }
@@ -110,11 +140,46 @@ impl SharedPackageCode {
         &self.static_resources
     }
 
+    pub fn schema_records(&self) -> &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>> {
+        &self.schema_records
+    }
+
+    pub fn schema_index(&self) -> &Arc<PackageSchemaIndex> {
+        &self.schema_index
+    }
+
     pub fn callable_target(&self, callable_id: &PackageCallableId) -> Option<&OperationTargetRef> {
         self.artifact
             .callable_links
             .get(callable_id)
             .map(|fact| &fact.target)
+    }
+
+    pub fn linked_callable_target(
+        &self,
+        callable_id: &PackageCallableId,
+    ) -> Option<&LinkedPackageCallableTarget> {
+        self.callable_targets.get(callable_id)
+    }
+}
+
+/// Runtime-only target for one exact package callable.
+///
+/// The receiver is derived from canonical package facts while hydrating the
+/// linked image. It is never serialized back into the artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedPackageCallableTarget {
+    executable_addr: ExecutableAddr,
+    receiver_const: Option<ConstAddr>,
+}
+
+impl LinkedPackageCallableTarget {
+    pub fn executable_addr(&self) -> &ExecutableAddr {
+        &self.executable_addr
+    }
+
+    pub fn receiver_const(&self) -> Option<&ConstAddr> {
+        self.receiver_const.as_ref()
     }
 }
 
@@ -127,7 +192,7 @@ pub struct LinkedPackageDirectCall {
     dependency_package_build_id: PackageBuildId,
     package_callable_id: PackageCallableId,
     target: OperationTargetRef,
-    executable_addr: ExecutableAddr,
+    linked_target: LinkedPackageCallableTarget,
 }
 
 impl LinkedPackageDirectCall {
@@ -152,7 +217,11 @@ impl LinkedPackageDirectCall {
     }
 
     pub fn executable_addr(&self) -> &ExecutableAddr {
-        &self.executable_addr
+        self.linked_target.executable_addr()
+    }
+
+    pub fn receiver_const(&self) -> Option<&ConstAddr> {
+        self.linked_target.receiver_const()
     }
 }
 
@@ -196,7 +265,7 @@ pub struct SharedPackageLinkedImage {
     package_link_plan: CanonicalPackageLinkPlan,
     code_slots: Vec<Arc<SharedPackageCode>>,
     code_slot_by_build: BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
-    package_links: BTreeMap<PackageRequirementKey, PackageArtifactRef>,
+    package_links: BTreeMap<PackageRequirementKey, PackageBinding>,
 }
 
 impl SharedPackageLinkedImage {
@@ -248,7 +317,7 @@ impl SharedPackageLinkedImage {
         let mut package_links = BTreeMap::new();
         for binding in &assembly.package_link_plan.package_links {
             if package_links
-                .insert(binding.key.clone(), binding.package.clone())
+                .insert(binding.key.clone(), binding.clone())
                 .is_some()
             {
                 return Err(SharedPackageImageError::DuplicatePackageLink {
@@ -332,11 +401,12 @@ impl SharedPackageLinkedImage {
             caller_package_build_id: caller_package_build_id.clone(),
             package_requirement_alias: requirement_alias.to_string(),
         };
-        let dependency_ref = self
+        let binding = self
             .package_links
             .get(&key)
             .ok_or_else(|| SharedPackageImageError::MissingPackageLink { key: key.clone() })?;
-        validate_requirement_binding(caller, requirement, dependency_ref)?;
+        validate_requirement_binding(caller, requirement, binding)?;
+        let dependency_ref = &binding.package;
 
         let dependency = self.required_code_by_build(&dependency_ref.package_build_id)?;
         if dependency.artifact_ref() != dependency_ref {
@@ -362,7 +432,15 @@ impl SharedPackageLinkedImage {
             });
         }
         dependency.validate_callable_target(package_callable_id, &fact.target)?;
-        let executable_addr = dependency.executable_addr(&fact.target)?;
+        let linked_target = dependency
+            .linked_callable_target(package_callable_id)
+            .ok_or_else(
+                || SharedPackageImageError::MissingLinkedPackageCallableTarget {
+                    dependency_package_build_id: dependency.package_build_id().clone(),
+                    package_callable_id: package_callable_id.clone(),
+                },
+            )?
+            .clone();
 
         Ok(LinkedPackageDirectCall {
             caller_package_build_id: caller_package_build_id.clone(),
@@ -370,7 +448,188 @@ impl SharedPackageLinkedImage {
             dependency_package_build_id: dependency.package_build_id().clone(),
             package_callable_id: package_callable_id.clone(),
             target: fact.target.clone(),
-            executable_addr,
+            linked_target,
+        })
+    }
+
+    /// Resolves a foreign DB object through the caller's exact package edge.
+    pub fn resolve_package_db_object_target(
+        &self,
+        caller_package_build_id: &PackageBuildId,
+        symbol: &PackageSymbolRef,
+    ) -> SharedPackageImageResult<DbObjectTargetId> {
+        let PackageRefIr::Dependency { dependency_ref } = &symbol.package else {
+            return Err(SharedPackageImageError::DbTargetRequiresDependencyAlias {
+                caller_package_build_id: caller_package_build_id.clone(),
+                symbol_path: symbol.symbol_path.clone(),
+            });
+        };
+        let caller = self.required_code_by_build(caller_package_build_id)?;
+        let requirement = unique_package_requirement(caller, dependency_ref)?;
+        if requirement.expected_package_build.is_none() {
+            return Err(SharedPackageImageError::MissingDbTargetBuildExpectation {
+                caller_package_build_id: caller_package_build_id.clone(),
+                alias: dependency_ref.clone(),
+            });
+        }
+        let key = PackageRequirementKey {
+            caller_package_build_id: caller_package_build_id.clone(),
+            package_requirement_alias: dependency_ref.clone(),
+        };
+        let binding = self
+            .package_links
+            .get(&key)
+            .ok_or_else(|| SharedPackageImageError::MissingPackageLink { key: key.clone() })?;
+        validate_requirement_binding(caller, requirement, binding)?;
+        let dependency = self.required_code_by_build(&binding.package.package_build_id)?;
+        if dependency.artifact_ref() != &binding.package {
+            return Err(SharedPackageImageError::PackageLinkTargetRefMismatch {
+                key,
+                linked: binding.package.clone(),
+                loaded: dependency.artifact_ref().clone(),
+            });
+        }
+        if symbol
+            .abi_expectation
+            .as_deref()
+            .is_some_and(|expected| expected != dependency.local_abi_identity().as_str())
+        {
+            return Err(SharedPackageImageError::DbTargetAbiExpectationMismatch {
+                caller_package_build_id: caller_package_build_id.clone(),
+                symbol_path: symbol.symbol_path.clone(),
+                expected: symbol.abi_expectation.clone().unwrap(),
+                actual: dependency.local_abi_identity().to_string(),
+            });
+        }
+        let export = dependency
+            .artifact()
+            .implementation_links
+            .types
+            .get(&symbol.symbol_path)
+            .ok_or_else(|| SharedPackageImageError::MissingDbTargetTypeExport {
+                dependency_package_build_id: dependency.package_build_id().clone(),
+                symbol_path: symbol.symbol_path.clone(),
+            })?;
+        let file_ref = unique_semantic_artifact_file_ref(dependency, &export.file)?;
+        let file = dependency.file(&file_ref.file_ir_identity).ok_or_else(|| {
+            SharedPackageImageError::DbTargetFileNotLoaded {
+                dependency_package_build_id: dependency.package_build_id().clone(),
+                file_ir_identity: file_ref.file_ir_identity.clone(),
+            }
+        })?;
+        validate_db_attachment(
+            dependency.package_build_id(),
+            file,
+            export.type_index as usize,
+            Some(symbol.symbol_path.as_str()),
+            Some(export.symbol.as_str()),
+        )?;
+        Ok(DbObjectTargetId {
+            package_artifact_ref: dependency.artifact_ref().clone(),
+            file_ir_ref: file_ref.clone(),
+            type_index: export.type_index as usize,
+        })
+    }
+
+    pub fn resolve_db_object_target(
+        &self,
+        caller_package_build_id: &PackageBuildId,
+        target_type: &TypeRefIr,
+    ) -> SharedPackageImageResult<DbObjectTargetId> {
+        match target_type {
+            TypeRefIr::PackageSymbol { symbol } => {
+                self.resolve_package_db_object_target(caller_package_build_id, symbol)
+            }
+            TypeRefIr::DbObjectSymbol { symbol } => {
+                self.resolve_local_db_object_target(caller_package_build_id, symbol)
+            }
+            _ => Err(SharedPackageImageError::UnsupportedDbTargetType {
+                caller_package_build_id: caller_package_build_id.clone(),
+            }),
+        }
+    }
+
+    pub fn validate_db_object_target_id(
+        &self,
+        target: &DbObjectTargetId,
+    ) -> SharedPackageImageResult<()> {
+        let dependency =
+            self.required_code_by_build(&target.package_artifact_ref.package_build_id)?;
+        if dependency.artifact_ref() != &target.package_artifact_ref {
+            return Err(SharedPackageImageError::DbTargetPackageRefMismatch {
+                expected: target.package_artifact_ref.clone(),
+                loaded: dependency.artifact_ref().clone(),
+            });
+        }
+        let file_ref = unique_semantic_artifact_file_ref(dependency, &target.file_ir_ref)?;
+        if file_ref != &target.file_ir_ref {
+            return Err(SharedPackageImageError::DbTargetFileRefMismatch {
+                dependency_package_build_id: dependency.package_build_id().clone(),
+                expected: file_ref.clone(),
+                actual: target.file_ir_ref.clone(),
+            });
+        }
+        let file = dependency.file(&file_ref.file_ir_identity).ok_or_else(|| {
+            SharedPackageImageError::DbTargetFileNotLoaded {
+                dependency_package_build_id: dependency.package_build_id().clone(),
+                file_ir_identity: file_ref.file_ir_identity.clone(),
+            }
+        })?;
+        validate_db_attachment(
+            dependency.package_build_id(),
+            file,
+            target.type_index,
+            None,
+            None,
+        )
+    }
+
+    fn resolve_local_db_object_target(
+        &self,
+        caller_package_build_id: &PackageBuildId,
+        symbol: &ServiceSymbolRef,
+    ) -> SharedPackageImageResult<DbObjectTargetId> {
+        let caller = self.required_code_by_build(caller_package_build_id)?;
+        let mut matches = caller
+            .artifact()
+            .files
+            .iter()
+            .filter(|file_ref| file_ref.module_path == symbol.module_path)
+            .filter_map(|file_ref| {
+                caller.file(&file_ref.file_ir_identity).and_then(|file| {
+                    file.declarations
+                        .types
+                        .get(&symbol.symbol)
+                        .map(|declaration| (file_ref, file, declaration))
+                })
+            });
+        let (file_ref, file, declaration) =
+            matches
+                .next()
+                .ok_or_else(|| SharedPackageImageError::MissingLocalDbTarget {
+                    caller_package_build_id: caller_package_build_id.clone(),
+                    module_path: symbol.module_path.clone(),
+                    symbol: symbol.symbol.clone(),
+                })?;
+        if matches.next().is_some() {
+            return Err(SharedPackageImageError::AmbiguousLocalDbTarget {
+                caller_package_build_id: caller_package_build_id.clone(),
+                module_path: symbol.module_path.clone(),
+                symbol: symbol.symbol.clone(),
+            });
+        }
+        let symbol_path = symbol.symbol_path();
+        validate_db_attachment(
+            caller.package_build_id(),
+            file,
+            declaration.type_index as usize,
+            Some(symbol_path.as_str()),
+            None,
+        )?;
+        Ok(DbObjectTargetId {
+            package_artifact_ref: caller.artifact_ref().clone(),
+            file_ir_ref: file_ref.clone(),
+            type_index: declaration.type_index as usize,
         })
     }
 
@@ -418,15 +677,15 @@ impl SharedPackageLinkedImage {
     }
 
     fn validate_package_edges(&self) -> SharedPackageImageResult<()> {
-        for (key, package_ref) in &self.package_links {
+        for (key, binding) in &self.package_links {
             let caller = self.required_code_by_build(&key.caller_package_build_id)?;
             let requirement = unique_package_requirement(caller, &key.package_requirement_alias)?;
-            validate_requirement_binding(caller, requirement, package_ref)?;
-            let dependency = self.required_code_by_build(&package_ref.package_build_id)?;
-            if dependency.artifact_ref() != package_ref {
+            validate_requirement_binding(caller, requirement, binding)?;
+            let dependency = self.required_code_by_build(&binding.package.package_build_id)?;
+            if dependency.artifact_ref() != &binding.package {
                 return Err(SharedPackageImageError::PackageLinkTargetRefMismatch {
                     key: key.clone(),
-                    linked: package_ref.clone(),
+                    linked: binding.package.clone(),
                     loaded: dependency.artifact_ref().clone(),
                 });
             }
@@ -518,17 +777,17 @@ impl SharedPackageCode {
             .files
             .get(file_index)
             .expect("hydrated files preserve artifact file order");
-        if expected_file_ref != &target.file_ref {
+        let file = self
+            .files
+            .get(file_index)
+            .expect("hydrated files preserve artifact file order");
+        if !semantic_file_ref_matches_loaded(&target.file_ref, file) {
             return Err(SharedPackageImageError::ExecutableTargetFileRefMismatch {
                 package_build_id: self.package_build_id().clone(),
                 expected: expected_file_ref.clone(),
                 actual: target.file_ref.clone(),
             });
         }
-        let file = self
-            .files
-            .get(file_index)
-            .expect("hydrated files preserve artifact file order");
         let executable = target.executable_index as usize;
         if executable >= file.executables.len() {
             return Err(SharedPackageImageError::ExecutableTargetOutOfBounds {
@@ -591,6 +850,22 @@ impl SharedPackageCode {
         }
 
         validate_static_resources(expected_ref, &hydrated.artifact, &hydrated.static_resources)?;
+        let schema_index = hydrated.schema_index.ok_or_else(|| {
+            SharedPackageImageError::MissingHydratedSchemaIndex {
+                package_build_id: expected_ref.package_build_id.clone(),
+            }
+        })?;
+        if schema_index.package_id != hydrated.artifact.package_schema_index.package_id
+            || schema_index.package_schema_index_identity
+                != hydrated
+                    .artifact
+                    .package_schema_index
+                    .package_schema_index_identity
+        {
+            return Err(SharedPackageImageError::HydratedSchemaIndexMismatch {
+                package_build_id: expected_ref.package_build_id.clone(),
+            });
+        }
 
         let code = Self {
             code_slot,
@@ -599,6 +874,9 @@ impl SharedPackageCode {
             files,
             files_by_identity,
             static_resources: hydrated.static_resources,
+            schema_index,
+            schema_records: hydrated.schema_records,
+            callable_targets: BTreeMap::new(),
         };
         for (callable_id, fact) in &code.artifact.callable_links {
             if *callable_id != fact.callable_id {
@@ -610,6 +888,11 @@ impl SharedPackageCode {
             }
             code.validate_callable_target(callable_id, &fact.target)?;
         }
+        let callable_targets = callable_targets::link_callable_targets(&code)?;
+        let code = Self {
+            callable_targets,
+            ..code
+        };
         validate_package_service_call_aggregate(&code)?;
         Ok(code)
     }
@@ -639,7 +922,7 @@ impl SharedPackageCode {
             .iter()
             .find(|candidate| candidate.file_ir_identity == target.file_ref.file_ir_identity)
             .expect("loaded file identities were validated from artifact refs");
-        if expected_file_ref != &target.file_ref {
+        if !semantic_file_ref_matches_loaded(&target.file_ref, file) {
             return Err(SharedPackageImageError::CallableTargetFileRefMismatch {
                 package_build_id: self.package_build_id().clone(),
                 package_callable_id: callable_id.clone(),
@@ -681,17 +964,124 @@ fn validate_artifact_ref(
     Ok(())
 }
 
+fn unique_semantic_artifact_file_ref<'a>(
+    dependency: &'a SharedPackageCode,
+    candidate: &FileIrRef,
+) -> SharedPackageImageResult<&'a FileIrRef> {
+    let mut matches = dependency.artifact().files.iter().filter(|expected| {
+        expected.file_ir_identity == candidate.file_ir_identity
+            && expected.module_path == candidate.module_path
+            && expected.source_ast_hash == candidate.source_ast_hash
+    });
+    let file_ref =
+        matches
+            .next()
+            .ok_or_else(|| SharedPackageImageError::DbTargetFileRefOutsideArtifact {
+                dependency_package_build_id: dependency.package_build_id().clone(),
+                actual: candidate.clone(),
+            })?;
+    if matches.next().is_some() {
+        return Err(SharedPackageImageError::DbTargetFileRefAmbiguous {
+            dependency_package_build_id: dependency.package_build_id().clone(),
+            actual: candidate.clone(),
+        });
+    }
+    Ok(file_ref)
+}
+
+fn validate_db_attachment(
+    package_build_id: &PackageBuildId,
+    file: &FileIrUnit,
+    type_index: usize,
+    expected_symbol_path: Option<&str>,
+    implementation_link_symbol: Option<&str>,
+) -> SharedPackageImageResult<()> {
+    if type_index >= file.type_table.len() {
+        return Err(SharedPackageImageError::DbTargetTypeOutOfBounds {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+            type_count: file.type_table.len(),
+        });
+    }
+    let mut declarations = file
+        .declarations
+        .types
+        .iter()
+        .filter(|(_, declaration)| declaration.type_index as usize == type_index);
+    let (symbol, declaration) = declarations.next().ok_or_else(|| {
+        SharedPackageImageError::MissingDbTargetTypeDeclaration {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+        }
+    })?;
+    if declarations.next().is_some() {
+        return Err(SharedPackageImageError::AmbiguousDbTargetTypeDeclaration {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+        });
+    }
+    let canonical_symbol_path = if file.module_path.is_empty() {
+        symbol.clone()
+    } else {
+        format!("{}.{}", file.module_path, symbol)
+    };
+    let declaration_symbol_is_canonical =
+        declaration.symbol == *symbol || declaration.symbol == canonical_symbol_path;
+    let target_symbol_is_canonical =
+        expected_symbol_path.is_none_or(|expected| expected == canonical_symbol_path);
+    let link_symbol_is_canonical = implementation_link_symbol
+        .is_none_or(|linked| linked == symbol || linked == canonical_symbol_path);
+    if !declaration_symbol_is_canonical || !target_symbol_is_canonical || !link_symbol_is_canonical
+    {
+        let actual = format!(
+            "mapKey={symbol}, declaration={}, target={}, implementationLink={}",
+            declaration.symbol,
+            expected_symbol_path.unwrap_or("<none>"),
+            implementation_link_symbol.unwrap_or("<none>")
+        );
+        return Err(SharedPackageImageError::DbTargetCanonicalSymbolMismatch {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+            expected: canonical_symbol_path,
+            actual,
+        });
+    }
+    let db = file.declarations.db.get(symbol).ok_or_else(|| {
+        SharedPackageImageError::MissingDbTargetAttachment {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+        }
+    })?;
+    let attachment_matches = match &db.type_ref {
+        skiff_artifact_model::TypeRefIr::LocalType {
+            type_index: attached,
+        } => *attached as usize == type_index,
+        skiff_artifact_model::TypeRefIr::DbObjectSymbol { symbol: attached } => {
+            attached.module_path == file.module_path && attached.symbol == *symbol
+        }
+        _ => false,
+    };
+    if !attachment_matches {
+        return Err(SharedPackageImageError::DbTargetAttachmentTypeMismatch {
+            dependency_package_build_id: package_build_id.clone(),
+            file_ir_identity: file.file_ir_identity.clone(),
+            type_index,
+        });
+    }
+    Ok(())
+}
+
 fn validate_file_ref(
     package: &PackageArtifactRef,
     expected: &FileIrRef,
     file: &FileIrUnit,
 ) -> SharedPackageImageResult<()> {
-    if expected.module_path != file.module_path
-        || expected
-            .source_ast_hash
-            .as_deref()
-            .is_some_and(|hash| hash != file.source_ast_hash)
-    {
+    if !semantic_file_ref_matches_loaded(expected, file) {
         return Err(SharedPackageImageError::HydratedFileRefMismatch {
             package_build_id: package.package_build_id.clone(),
             expected: expected.clone(),
@@ -700,6 +1090,16 @@ fn validate_file_ref(
         });
     }
     Ok(())
+}
+
+/// Matches semantic File IR facts; `artifact_path` remains a loader-owned record locator.
+fn semantic_file_ref_matches_loaded(reference: &FileIrRef, file: &FileIrUnit) -> bool {
+    reference.file_ir_identity == file.file_ir_identity
+        && reference.module_path == file.module_path
+        && reference
+            .source_ast_hash
+            .as_deref()
+            .is_none_or(|hash| hash == file.source_ast_hash)
 }
 
 fn validate_static_resources(
@@ -805,12 +1205,22 @@ fn unique_package_requirement<'a>(
 fn validate_requirement_binding(
     caller: &SharedPackageCode,
     requirement: &skiff_artifact_model::PackageRequirement,
-    dependency: &PackageArtifactRef,
+    binding: &PackageBinding,
 ) -> SharedPackageImageResult<()> {
     let key = PackageRequirementKey {
         caller_package_build_id: caller.package_build_id().clone(),
         package_requirement_alias: requirement.alias.clone(),
     };
+    if requirement.collection_name_mapping != binding.collection_name_mapping {
+        return Err(
+            SharedPackageImageError::PackageRequirementCollectionMappingMismatch {
+                key,
+                expected: requirement.collection_name_mapping.clone(),
+                actual: binding.collection_name_mapping.clone(),
+            },
+        );
+    }
+    let dependency = &binding.package;
     if requirement.package_id != dependency.package_id
         || requirement.exact_version != dependency.package_version
     {
@@ -831,6 +1241,15 @@ fn validate_requirement_binding(
                 actual: dependency.package_local_abi_identity.clone(),
             },
         );
+    }
+    if let Some(expected) = &requirement.expected_package_build {
+        if expected != &dependency.package_build_id {
+            return Err(SharedPackageImageError::PackageRequirementBuildMismatch {
+                key,
+                expected: expected.clone(),
+                actual: dependency.package_build_id.clone(),
+            });
+        }
     }
     Ok(())
 }
@@ -946,6 +1365,12 @@ pub enum SharedPackageImageError {
         package_build_id: PackageBuildId,
         path: String,
     },
+    MissingHydratedSchemaIndex {
+        package_build_id: PackageBuildId,
+    },
+    HydratedSchemaIndexMismatch {
+        package_build_id: PackageBuildId,
+    },
     DuplicatePackageLink {
         key: PackageRequirementKey,
     },
@@ -974,6 +1399,16 @@ pub enum SharedPackageImageError {
         expected: PackageLocalAbiIdentity,
         actual: PackageLocalAbiIdentity,
     },
+    PackageRequirementBuildMismatch {
+        key: PackageRequirementKey,
+        expected: PackageBuildId,
+        actual: PackageBuildId,
+    },
+    PackageRequirementCollectionMappingMismatch {
+        key: PackageRequirementKey,
+        expected: BTreeMap<String, String>,
+        actual: BTreeMap<String, String>,
+    },
     PackageLinkTargetRefMismatch {
         key: PackageRequirementKey,
         linked: PackageArtifactRef,
@@ -982,9 +1417,142 @@ pub enum SharedPackageImageError {
     PackageDirectCallRequiresDependencyAlias {
         caller_package_build_id: PackageBuildId,
     },
+    DbTargetRequiresDependencyAlias {
+        caller_package_build_id: PackageBuildId,
+        symbol_path: String,
+    },
+    MissingDbTargetBuildExpectation {
+        caller_package_build_id: PackageBuildId,
+        alias: String,
+    },
+    UnsupportedDbTargetType {
+        caller_package_build_id: PackageBuildId,
+    },
+    MissingLocalDbTarget {
+        caller_package_build_id: PackageBuildId,
+        module_path: String,
+        symbol: String,
+    },
+    AmbiguousLocalDbTarget {
+        caller_package_build_id: PackageBuildId,
+        module_path: String,
+        symbol: String,
+    },
+    DbTargetAbiExpectationMismatch {
+        caller_package_build_id: PackageBuildId,
+        symbol_path: String,
+        expected: String,
+        actual: String,
+    },
+    MissingDbTargetTypeExport {
+        dependency_package_build_id: PackageBuildId,
+        symbol_path: String,
+    },
+    DbTargetPackageRefMismatch {
+        expected: PackageArtifactRef,
+        loaded: PackageArtifactRef,
+    },
+    DbTargetFileRefOutsideArtifact {
+        dependency_package_build_id: PackageBuildId,
+        actual: FileIrRef,
+    },
+    DbTargetFileRefAmbiguous {
+        dependency_package_build_id: PackageBuildId,
+        actual: FileIrRef,
+    },
+    DbTargetFileRefMismatch {
+        dependency_package_build_id: PackageBuildId,
+        expected: FileIrRef,
+        actual: FileIrRef,
+    },
+    DbTargetFileNotLoaded {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+    },
+    DbTargetTypeOutOfBounds {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+        type_count: usize,
+    },
+    MissingDbTargetTypeDeclaration {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+    },
+    AmbiguousDbTargetTypeDeclaration {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+    },
+    DbTargetCanonicalSymbolMismatch {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+        expected: String,
+        actual: String,
+    },
+    MissingDbTargetAttachment {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+    },
+    DbTargetAttachmentTypeMismatch {
+        dependency_package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        type_index: usize,
+    },
     MissingPackageCallable {
         dependency_package_build_id: PackageBuildId,
         package_callable_id: PackageCallableId,
+    },
+    MissingLinkedPackageCallableTarget {
+        dependency_package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+    },
+    MissingPublicInstanceReceiverLink {
+        package_build_id: PackageBuildId,
+        public_path: String,
+    },
+    MissingPublicInstanceCallableLink {
+        package_build_id: PackageBuildId,
+        public_path: String,
+        package_callable_id: PackageCallableId,
+    },
+    PublicInstanceCallableKindMismatch {
+        package_build_id: PackageBuildId,
+        public_path: String,
+        package_callable_id: PackageCallableId,
+        actual: skiff_artifact_model::OperationCallableKind,
+    },
+    DuplicatePublicInstanceCallableReceiver {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+        first_public_path: String,
+        duplicate_public_path: String,
+    },
+    ConflictingPublicInstanceCallableReceiver {
+        package_build_id: PackageBuildId,
+        package_callable_id: PackageCallableId,
+        first_public_path: String,
+        first_receiver: ConstAddr,
+        conflicting_public_path: String,
+        conflicting_receiver: ConstAddr,
+    },
+    PublicInstanceReceiverFileNotLoaded {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+    },
+    PublicInstanceReceiverFileRefMismatch {
+        package_build_id: PackageBuildId,
+        expected: FileIrRef,
+        actual: FileIrRef,
+    },
+    PublicInstanceReceiverConstOutOfBounds {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+        const_index: u32,
+        const_count: usize,
     },
     CallableLinkKeyMismatch {
         package_build_id: PackageBuildId,

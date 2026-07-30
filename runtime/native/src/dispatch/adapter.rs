@@ -1,6 +1,6 @@
 use super::{
     builtin::BuiltinDispatch, bytes::BytesNativeDispatch, config::ConfigNativeDispatch, core,
-    external::ExternalNativeDispatch, invocation::RuntimeNativeInvocation,
+    external::ExternalNativeDispatch, invocation::RuntimeNativeInvocation, PreparedNativeCall,
 };
 use crate::error::{Result, RuntimeError};
 use crate::{
@@ -60,6 +60,48 @@ impl NativeDispatch {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn prepare_resolved_native_call<
+        'a,
+        ActorContext,
+        FileContext,
+        TimeContext,
+        HttpClientContext,
+        HttpResponseStreamContext,
+        WebsocketContext,
+        TelemetryContext,
+        ResourceContext,
+    >(
+        &self,
+        native_capability_context: NativeCapabilityContexts<
+            ActorContext,
+            FileContext,
+            TimeContext,
+            HttpClientContext,
+            HttpResponseStreamContext,
+            WebsocketContext,
+            TelemetryContext,
+            ResourceContext,
+        >,
+        invocation: RuntimeNativeInvocation,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<PreparedNativeCall<'a>>
+    where
+        ActorContext: NativeActorCapability + Send + 'a,
+        FileContext: NativeFileCapabilityBundle,
+        <FileContext as NativeFileCapabilityBundle>::File: 'a,
+        <FileContext as NativeFileCapabilityBundle>::FileSourceStream: 'a,
+        TimeContext: NativeTimeCapability + Send + 'a,
+        HttpClientContext: NativeHttpClientCapability + Send + 'a,
+        HttpResponseStreamContext: NativeHttpResponseStreamCapability + Send + 'a,
+        WebsocketContext: NativeWebsocketCapability + Send + 'a,
+        TelemetryContext: NativeTelemetryCapability,
+        ResourceContext: NativeResourceCapability,
+    {
+        core::prepare_resolved_native_call(native_capability_context, invocation, args, heap)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn dispatch_resolved_native_call<
         ActorContext,
         FileContext,
@@ -86,12 +128,12 @@ impl NativeDispatch {
         heap: &mut RequestHeap,
     ) -> Result<RuntimeValue>
     where
-        ActorContext: NativeActorCapability,
+        ActorContext: NativeActorCapability + Send,
         FileContext: NativeFileCapabilityBundle,
-        TimeContext: NativeTimeCapability,
-        HttpClientContext: NativeHttpClientCapability,
-        HttpResponseStreamContext: NativeHttpResponseStreamCapability,
-        WebsocketContext: NativeWebsocketCapability,
+        TimeContext: NativeTimeCapability + Send,
+        HttpClientContext: NativeHttpClientCapability + Send,
+        HttpResponseStreamContext: NativeHttpResponseStreamCapability + Send,
+        WebsocketContext: NativeWebsocketCapability + Send,
         TelemetryContext: NativeTelemetryCapability,
         ResourceContext: NativeResourceCapability,
     {

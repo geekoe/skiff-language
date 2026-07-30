@@ -4,10 +4,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  collectDevSyncArtifactPathFailures,
-} from './lib/artifact-identity-dev-sync-check.mjs';
-import { devSyncArtifactPathSelfTestFailures } from './lib/artifact-identity-dev-sync-check-self-test.mjs';
-import {
   collectDeprecatedPackageAbiRustSymbolFailures,
   deprecatedPackageAbiRustSymbolSelfTestFailures,
 } from './lib/artifact-identity-deprecated-package-abi.mjs';
@@ -21,6 +17,23 @@ const skippedRustScanDirectories = new Set([
   'target',
 ]);
 const artifactIdentityFacadePath = 'artifact-identity/src/lib.rs';
+const terminalLegacyArtifactSymbolNames = Object.freeze([
+  'PackageUnit',
+  'ServiceUnit',
+  'PublicationAbiUnit',
+  'PackageTestAssembly',
+  'ServiceDependencyConstraint',
+  'ServiceDependencyOperationRef',
+  'PublicationApiBinding',
+  'PublicationApiSymbolKind',
+  'PublicationConformanceFact',
+  'PublicationOperationAbi',
+  'PublicationPublicInstanceExport',
+  'PublicationSchemaType',
+  'PublicationSchemaTypeNameability',
+  'SourceCallMethodIndexEntry',
+  'SourceCallOperationIndexEntry',
+]);
 const canonicalFileIrCallValidatorRegistry = Object.freeze([
   Object.freeze({
     name: 'service-call',
@@ -137,51 +150,6 @@ const ownerRequirements = [
   },
   ...canonicalFileIrCallValidatorRegistry.map(({ owner }) => owner),
   {
-    name: 'ServiceUnitStorageIdentityPayload',
-    relPath: 'artifact-identity/src/legacy_service.rs',
-    regexp: /\bstruct\s+ServiceUnitStorageIdentityPayload\b/,
-  },
-  {
-    name: 'service_unit_identity',
-    relPath: 'artifact-identity/src/legacy_service.rs',
-    regexp: /\bpub\s+fn\s+service_unit_identity\s*\(/,
-  },
-  {
-    name: 'service_unit_identity_bytes',
-    relPath: 'artifact-identity/src/legacy_service.rs',
-    regexp: /\bpub\s+fn\s+service_unit_identity_bytes\s*\(/,
-  },
-  {
-    name: 'PackageLocalAbiIdentityProjection',
-    relPath: 'artifact-identity/src/package/projection.rs',
-    regexp: /\bpub\s+struct\s+PackageLocalAbiIdentityProjection\b/,
-  },
-  {
-    name: 'PackageBuildIdentityProjection',
-    relPath: 'artifact-identity/src/package/projection.rs',
-    regexp: /\bpub\s+struct\s+PackageBuildIdentityProjection\b/,
-  },
-  {
-    name: 'package_build_identity',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_build_identity\s*\(/,
-  },
-  {
-    name: 'package_local_abi_identity',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_local_abi_identity\s*\(/,
-  },
-  {
-    name: 'package_implementation_links_identity',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_implementation_links_identity\s*\(/,
-  },
-  {
-    name: 'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
-    relPath: 'artifact-identity/src/constants.rs',
-    regexp: /\bpub\s+const\s+PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX\b/,
-  },
-  {
     name: 'ServiceProtocolIdentityProjection',
     relPath: 'artifact-identity/src/contract.rs',
     regexp: /\bpub\s+struct\s+ServiceProtocolIdentityProjection\b/,
@@ -234,12 +202,17 @@ const ownerRequirements = [
   {
     name: 'ASSEMBLY_IDENTITY_PREFIX',
     relPath: 'artifact-identity/src/constants.rs',
-    regexp: /\bpub\s+const\s+ASSEMBLY_IDENTITY_PREFIX\b/,
+    regexp: /\bpub\s+use\s+skiff_artifact_model::RUNTIME_ASSEMBLY_IDENTITY_PREFIX\s+as\s+ASSEMBLY_IDENTITY_PREFIX\s*;/,
   },
   {
-    name: 'contract_type_id',
+    name: 'package_schema_type_id',
     relPath: 'artifact-identity/src/contract.rs',
-    regexp: /\bpub\s+fn\s+contract_type_id\s*\(/,
+    regexp: /\bpub\s+fn\s+package_schema_type_id\s*\(/,
+  },
+  {
+    name: 'package_schema_index_identity',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+package_schema_index_identity\s*\(/,
   },
   {
     name: 'contract_operation_id',
@@ -297,49 +270,49 @@ const ownerRequirements = [
     regexp: /\bpub\s+const\s+SERVICE_PROTOCOL_IDENTITY_PREFIX\b/,
   },
   {
+    name: 'SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER\b/,
+  },
+  {
     name: 'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
     relPath: 'artifact-identity/src/constants.rs',
     regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX\b/,
   },
   {
-    name: 'PublicationAbiIdentityProjection',
-    relPath: 'artifact-identity/src/publication.rs',
-    regexp: /\bstruct\s+PublicationAbiIdentityProjection\b/,
+    name: 'PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
-    name: 'publication_abi_identity',
-    relPath: 'artifact-identity/src/publication.rs',
-    regexp: /\bpub\s+fn\s+publication_abi_identity\s*\(/,
+    name: 'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX\b/,
   },
   {
-    name: 'publication_abi_identity_bytes',
-    relPath: 'artifact-identity/src/publication.rs',
-    regexp: /\bpub\s+fn\s+publication_abi_identity_bytes\s*\(/,
+    name: 'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
-    name: 'OperationAbiIdentityInput',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+struct\s+OperationAbiIdentityInput\b/,
+    name: 'PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX\b/,
   },
   {
-    name: 'operation_abi_hash',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+operation_abi_hash\s*\(/,
+    name: 'PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
-    name: 'operation_abi_identity',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+operation_abi_identity\s*\(/,
+    name: 'PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX\b/,
   },
   {
-    name: 'public_function_operation_abi_id',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+public_function_operation_abi_id\s*\(/,
-  },
-  {
-    name: 'public_instance_method_operation_abi_id',
-    relPath: 'artifact-identity/src/operation.rs',
-    regexp: /\bpub\s+fn\s+public_instance_method_operation_abi_id\s*\(/,
+    name: 'PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
     name: 'abi_type_id_from_source_anchor',
@@ -402,74 +375,9 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+canonical_interface_instantiation_key\s*\(/,
   },
   {
-    name: 'validate_publication_abi_surface',
-    relPath: 'artifact-identity/src/publication_validation.rs',
-    regexp: /\bpub\s+fn\s+validate_publication_abi_surface\s*\(/,
-  },
-  {
-    name: 'validate_publication_abi_identity',
-    relPath: 'artifact-identity/src/publication_validation.rs',
-    regexp: /\bpub\s+fn\s+validate_publication_abi_identity\s*\(/,
-  },
-  {
-    name: 'PackageTestBuildIdentityPayload',
-    relPath: 'artifact-identity/src/package_test.rs',
-    regexp: /\bstruct\s+PackageTestBuildIdentityPayload\b/,
-  },
-  {
-    name: 'RuntimeProgramServiceUnitIdentityPayload',
-    relPath: 'artifact-identity/src/runtime_program.rs',
-    regexp: /\bstruct\s+RuntimeProgramServiceUnitIdentityPayload\b/,
-  },
-  {
     name: 'ArtifactRelativePath',
     relPath: 'artifact-identity/src/artifact_path.rs',
     regexp: /\bpub\s+struct\s+ArtifactRelativePath\b/,
-  },
-  {
-    name: 'ServiceAssemblyArtifactRef',
-    relPath: 'artifact-identity/src/artifact_reference.rs',
-    regexp: /\bpub\s+struct\s+ServiceAssemblyArtifactRef\b/,
-  },
-  {
-    name: 'ServiceUnitArtifactRef',
-    relPath: 'artifact-identity/src/artifact_reference.rs',
-    regexp: /\bpub\s+struct\s+ServiceUnitArtifactRef\b/,
-  },
-  {
-    name: 'PackageUnitArtifactRef',
-    relPath: 'artifact-identity/src/artifact_reference.rs',
-    regexp: /\bpub\s+struct\s+PackageUnitArtifactRef\b/,
-  },
-  {
-    name: 'service_assembly_identity_projection',
-    relPath: 'artifact-identity/src/service_assembly_identity.rs',
-    regexp: /\bpub\s+fn\s+service_assembly_identity_projection\s*\(/,
-  },
-  {
-    name: 'service_assembly_hash',
-    relPath: 'artifact-identity/src/service_assembly_identity.rs',
-    regexp: /\bpub\s+fn\s+service_assembly_hash\s*\(/,
-  },
-  {
-    name: 'service_assembly_identity',
-    relPath: 'artifact-identity/src/service_assembly_identity.rs',
-    regexp: /\bpub\s+fn\s+service_assembly_identity\s*\(/,
-  },
-  {
-    name: 'package_unit_content_hash',
-    relPath: 'artifact-identity/src/artifact_coordinates.rs',
-    regexp: /\bpub\s+fn\s+package_unit_content_hash\s*\(/,
-  },
-  {
-    name: 'validate_package_unit_artifact_path',
-    relPath: 'artifact-identity/src/artifact_coordinates.rs',
-    regexp: /\bpub\s+fn\s+validate_package_unit_artifact_path\s*\(/,
-  },
-  {
-    name: 'validate_service_artifact_closure',
-    relPath: 'artifact-identity/src/service_artifact_closure.rs',
-    regexp: /\bpub\s+fn\s+validate_service_artifact_closure\s*\(/,
   },
   {
     name: 'canonical_json_value',
@@ -493,12 +401,6 @@ const exclusiveDefinitionNames = new Set([
   'FileIrIdentityPayload',
   'ServiceCallRefIndex',
   ...canonicalFileIrCallValidatorRegistry.map(({ owner }) => owner.name),
-  'ServiceUnitStorageIdentityPayload',
-  'PackageLocalAbiIdentityProjection',
-  'PackageBuildIdentityProjection',
-  'package_local_abi_identity',
-  'package_implementation_links_identity',
-  'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
   'ServiceProtocolIdentityProjection',
   'DeploymentArtifactIdentityProjection',
   'service_deployment_identity',
@@ -507,12 +409,10 @@ const exclusiveDefinitionNames = new Set([
   'AssemblyIdentityProjection',
   'runtime_assembly_identity',
   'assign_runtime_assembly_identity',
-  'validate_runtime_assembly_identity',
   'DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX',
   'ASSEMBLY_IDENTITY_PREFIX',
-  'contract_type_id',
+  'package_schema_index_identity',
   'contract_operation_id',
-  'service_protocol_identity',
   'BoundaryOperationContract',
   'BoundaryOperationDescriptor',
   'PackageArtifactLocalAbiIdentityProjection',
@@ -522,25 +422,17 @@ const exclusiveDefinitionNames = new Set([
   'assign_package_artifact_identities',
   'validate_package_artifact_identities',
   'SERVICE_PROTOCOL_IDENTITY_PREFIX',
+  'SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER',
   'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
-  'PublicationAbiIdentityProjection',
-  'OperationAbiIdentityInput',
-  'PackageTestBuildIdentityPayload',
-  'RuntimeProgramServiceUnitIdentityPayload',
+  'PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER',
+  'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX',
+  'PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER',
+  'PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX',
+  'PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER',
+  'PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX',
+  'PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER',
   'ArtifactRelativePath',
-  'ServiceAssemblyArtifactRef',
-  'ServiceUnitArtifactRef',
-  'PackageUnitArtifactRef',
-  'service_assembly_identity_projection',
-  'service_assembly_hash',
-  'service_assembly_identity',
-  'package_unit_content_hash',
-  'validate_package_unit_artifact_path',
-  'validate_service_artifact_closure',
   'canonical_file_ir_identity_bytes',
-  'service_unit_identity_bytes',
-  'publication_abi_identity_bytes',
-  'operation_abi_identity',
   'abi_type_id_from_source_anchor',
   'abi_alias_id_from_source_anchor',
   'abi_interface_id_from_source_anchor',
@@ -553,8 +445,6 @@ const exclusiveDefinitionNames = new Set([
   'canonical_interface_method_abi_id',
   'canonical_interface_method_abi_id_from_parts',
   'canonical_interface_instantiation_key',
-  'validate_publication_abi_surface',
-  'validate_publication_abi_identity',
   'canonical_json_value',
   'canonical_json_number',
   'canonical_json_bytes',
@@ -572,25 +462,15 @@ const ownedDefinitionRegexp = new RegExp(
 const facadeModules = [
   'artifact_coordinates',
   'artifact_path',
-  'artifact_reference',
   'constants',
   'contract',
   'deployment',
   'error',
   'file_ir',
   'framing',
-  'legacy_service',
-  'operation',
-  'package',
   'package_artifact',
-  'package_test',
-  'publication',
-  'publication_validation',
-  'runtime_program',
   'runtime_assembly',
   'semantic',
-  'service_artifact_closure',
-  'service_assembly_identity',
 ];
 
 const canonicalDelegationRequirements = [
@@ -604,11 +484,6 @@ const canonicalDelegationRequirements = [
     relPath: 'compiler/core/src/json_utils.rs',
     helper: 'compiler canonical JSON API',
     regexp: /\bpub\s+use\s+skiff_canonical_json\s*::/,
-  },
-  {
-    relPath: 'runtime/linker/src/json_utils.rs',
-    helper: 'runtime linker canonical JSON API',
-    regexp: /\buse\s+skiff_canonical_json::canonical_json_value\b/,
   },
   {
     relPath: 'runtime/linked-type-plan/src/type_plan.rs',
@@ -636,17 +511,15 @@ const adapterRequirements = [
   {
     relPath: 'compiler/driver/source_compile/canonical_dependencies.rs',
     helper: 'canonical package dependency identity validation',
-    regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
+    rustUse: Object.freeze({
+      modulePath: 'skiff_artifact_identity',
+      symbol: 'validate_package_artifact_identities',
+    }),
   },
   {
     relPath: 'compiler/driver/pipeline/mod.rs',
     helper: 'compiler-owned std PackageArtifact identity validation',
     regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
-  },
-  {
-    relPath: 'runtime/package-test/src/lib.rs',
-    helper: 'package implementation links identity',
-    regexp: /\bskiff_artifact_identity::\{[^}]*package_implementation_links_identity|\buse\s+skiff_artifact_identity::package_implementation_links_identity\b/,
   },
 ];
 const canonicalCompileModelPaths = Object.freeze([
@@ -702,7 +575,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'PackageBinding',
-    requiredFields: Object.freeze(['key', 'package']),
+    requiredFields: Object.freeze(['key', 'package', 'collection_name_mapping']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -712,7 +585,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'ServiceDeploymentOperationInput',
-    requiredFields: Object.freeze(['contract_operation_id', 'package_public_path']),
+    requiredFields: Object.freeze(['contract_operation_id', 'package_callable_id']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -722,12 +595,12 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'IngressSelector',
-    requiredFields: Object.freeze(['protocol', 'host', 'method', 'path']),
+    requiredFields: Object.freeze(['protocol', 'method', 'path']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'DeploymentIngressBinding',
-    requiredFields: Object.freeze(['selector', 'contract_operation_id']),
+    requiredFields: Object.freeze(['selector', 'gateway_entry_key']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -785,6 +658,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'operation_bindings',
       'package_bindings',
       'service_selectors',
+      'gateway_entries',
       'ingress',
       'config_literals',
       'secret_refs',
@@ -807,6 +681,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'operation_bindings',
       'package_bindings',
       'service_selectors',
+      'gateway_entries',
       'ingress',
       'config_literals',
       'secret_refs',
@@ -852,12 +727,12 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   }),
   Object.freeze({
     relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'GlobalIngressBinding',
+    typeName: 'GatewayIngressBinding',
     requiredFields: Object.freeze([
       'selector',
       'deployment',
-      'contract',
-      'contract_operation_id',
+      'gateway_entry_key',
+      'gateway_entry_identity',
     ]),
   }),
   Object.freeze({
@@ -873,7 +748,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'package_link_plan',
       'service_binding_templates',
       'activation_templates',
-      'global_ingress',
+      'gateway_ingress',
     ]),
   }),
 ]);
@@ -912,7 +787,6 @@ if (options.help) {
 async function runCheck() {
   const failures = [];
   const files = await collectCandidateRustFiles(root);
-  const scriptFiles = await collectIdentityScriptFiles();
   const rustTextByPath = new Map(files.map(({ relPath, text }) => [relPath, text]));
   failures.push(...collectOwnerRequirementFailures(ownerRequirements, rustTextByPath));
 
@@ -946,24 +820,11 @@ async function runCheck() {
     );
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
+  failures.push(...collectTerminalLegacyArtifactSymbolFailures(files));
   failures.push(...collectCanonicalCompileModelFailures(files));
   failures.push(...collectCanonicalDeploymentAssemblyModelFailures(files));
   failures.push(...collectCanonicalBoundaryContractFailures(files));
   failures.push(...collectCanonicalFileIrCallValidatorFailures(files));
-  for (const violation of collectPackageImplementationLinksIdentityViolations([
-    ...files,
-    ...scriptFiles,
-  ])) {
-    failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
-  }
-  for (const violation of collectServiceAssemblyIdentityViolations([...files, ...scriptFiles])) {
-    failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
-  }
-  failures.push(...collectDevSyncArtifactPathFailures(
-    await readFile(join(root, 'scripts/skiff-dev-sync.mjs'), 'utf8'),
-    await readFile(join(root, 'scripts/lib/artifact-identity-dev-sync-paths.mjs'), 'utf8'),
-    scriptFiles,
-  ));
 
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -1015,13 +876,72 @@ function collectAdapterRequirementFailures(requirements, textByPath) {
       continue;
     }
     const productionText = stripInlineTestModules(text);
-    if (!requirement.regexp.test(productionText)) {
+    const delegates = requirement.rustUse === undefined
+      ? requirement.regexp.test(productionText)
+      : rustUseImportsSymbol(
+        productionText,
+        requirement.rustUse.modulePath,
+        requirement.rustUse.symbol,
+      );
+    if (!delegates) {
       failures.push(
         `${requirement.relPath} must delegate ${requirement.helper} to skiff_artifact_identity`,
       );
     }
   }
   return failures;
+}
+
+function rustUseImportsSymbol(text, modulePath, symbol) {
+  const canonicalModulePath = modulePath.replace(/\s/g, '');
+  const canonicalSymbol = symbol.replace(/\s/g, '');
+  const source = stripRustComments(text);
+  for (const match of source.matchAll(/\buse\s+([^;]+);/gs)) {
+    const useTree = match[1].replace(/\s/g, '');
+    const direct = new RegExp(
+      `^${escapeRegExp(canonicalModulePath)}::${escapeRegExp(canonicalSymbol)}(?:as\\w+)?$`,
+    );
+    if (direct.test(useTree)) {
+      return true;
+    }
+    const groupedPrefix = `${canonicalModulePath}::{`;
+    if (!useTree.startsWith(groupedPrefix) || !useTree.endsWith('}')) {
+      continue;
+    }
+    const members = splitTopLevelUseTreeMembers(
+      useTree.slice(groupedPrefix.length, -1),
+    );
+    if (
+      members.some((member) => new RegExp(
+        `^${escapeRegExp(canonicalSymbol)}(?:as\\w+)?$`,
+      ).test(member))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function splitTopLevelUseTreeMembers(text) {
+  const members = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '{') {
+      depth += 1;
+    } else if (text[index] === '}') {
+      depth -= 1;
+    } else if (text[index] === ',' && depth === 0) {
+      members.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  members.push(text.slice(start));
+  return members.filter((member) => member.length > 0);
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function collectOwnedDefinitionViolations(files) {
@@ -1048,6 +968,23 @@ function collectOwnedDefinitionViolations(files) {
   }
 
   return violations;
+}
+
+function collectTerminalLegacyArtifactSymbolFailures(files) {
+  const failures = [];
+  const legacyTypeRegexp = new RegExp(
+    `\\b(${terminalLegacyArtifactSymbolNames.join('|')})\\b`,
+    'g',
+  );
+  for (const file of files) {
+    const identifierView = rustIdentifierView(file.text);
+    for (const match of identifierView.matchAll(legacyTypeRegexp)) {
+      failures.push(
+        `${file.relPath}:${lineNumberAt(identifierView, match.index ?? 0)} contains terminal legacy artifact symbol ${match[1]}`,
+      );
+    }
+  }
+  return failures;
 }
 
 function collectCanonicalCompileModelFailures(files) {
@@ -1287,134 +1224,6 @@ function collectCanonicalFileIrCallValidatorFailures(
   return failures;
 }
 
-function collectPackageImplementationLinksIdentityViolations(files) {
-  const restrictions = [
-    {
-      regexp: /skiff-package-implementation-links-v1:sha256/g,
-      message: 'package implementation links identity prefix is owned by artifact-identity',
-    },
-    {
-      regexp: /\b(?:fn|function)\s+(?:(?:package_)?implementation_links_identity|packageImplementationLinksIdentity)\s*\(/g,
-      message: 'package implementation links identity helper is owned by artifact-identity',
-    },
-  ];
-  const violations = [];
-  for (const file of files) {
-    if (
-      file.relPath === 'artifact-identity/src/package.rs'
-      || file.relPath === 'artifact-identity/src/constants.rs'
-      || file.relPath === 'scripts/check-artifact-identity-single-source.mjs'
-      || !isProductionIdentitySource(file.relPath)
-    ) {
-      continue;
-    }
-    const text = file.relPath.endsWith('.rs')
-      ? stripInlineTestModules(file.text)
-      : file.text;
-    for (const restriction of restrictions) {
-      restriction.regexp.lastIndex = 0;
-      for (const match of text.matchAll(restriction.regexp)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, match.index ?? 0),
-          message: restriction.message,
-        });
-      }
-    }
-  }
-  return violations;
-}
-
-function collectServiceAssemblyIdentityViolations(files) {
-  const definitionPatterns = [
-    /\b(?:fn|function)\s+service_assembly_identity_projection\s*\(/g,
-    /\b(?:fn|function)\s+service_assembly_hash\s*\(/g,
-    /\b(?:fn|function)\s+service_assembly_identity\s*\(/g,
-    /\bfunction\s+serviceAssemblyHashInput\s*\(/g,
-    /\bfunction\s+serviceAssemblyIdentityProjection\s*\(/g,
-    /\bfunction\s+serviceAssemblyHash\s*\(/g,
-    /\bfunction\s+serviceAssemblyIdentity\s*\(/g,
-  ];
-  const violations = [];
-  for (const file of files) {
-    if (
-      file.relPath === 'artifact-identity/src/service_assembly_identity.rs'
-      || file.relPath === 'scripts/check-artifact-identity-single-source.mjs'
-      || (file.relPath.endsWith('.rs') && !isProductionRustFile(file.relPath))
-    ) {
-      continue;
-    }
-    const text = file.relPath.endsWith('.rs')
-      ? stripInlineTestModules(file.text)
-      : file.text;
-    for (const regexp of definitionPatterns) {
-      regexp.lastIndex = 0;
-      for (const match of text.matchAll(regexp)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, match.index ?? 0),
-          message: 'service assembly identity projection/hash is owned by artifact-identity',
-        });
-      }
-    }
-    for (const prefixMatch of text.matchAll(/skiff-service-assembly-v1/g)) {
-      const index = prefixMatch.index ?? 0;
-      const nearbyImplementation = text.slice(
-        Math.max(0, index - 400),
-        Math.min(text.length, index + prefixMatch[0].length + 400),
-      );
-      if (/\b(?:createHash|Sha256|value_sha256|stableStringify|canonical_json_(?:value|bytes))\b/.test(nearbyImplementation)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, index),
-          message: 'service assembly identity prefix and hashing must not be combined outside artifact-identity',
-        });
-      }
-    }
-  }
-  return violations;
-}
-
-async function collectIdentityScriptFiles() {
-  const files = [];
-  await collectIdentitySourceFiles(join(root, 'router', 'src'), files);
-  await collectIdentitySourceFiles(join(root, 'scripts'), files);
-  return files;
-}
-
-async function collectIdentitySourceFiles(directory, files) {
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return;
-    }
-    throw error;
-  }
-  for (const entry of entries) {
-    const absPath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === 'tests') {
-        continue;
-      }
-      await collectIdentitySourceFiles(absPath, files);
-      continue;
-    }
-    if (
-      !entry.isFile()
-      || (!entry.name.endsWith('.ts') && !entry.name.endsWith('.mjs'))
-      || entry.name.includes('.test.')
-    ) {
-      continue;
-    }
-    files.push({
-      absPath,
-      relPath: normalizePath(relative(root, absPath)),
-      text: await readFile(absPath, 'utf8'),
-    });
-  }
-}
 
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
@@ -1464,18 +1273,6 @@ function isProductionRustFile(relPath) {
   return relPath.endsWith('.rs');
 }
 
-function isProductionIdentitySource(relPath) {
-  if (relPath.endsWith('.rs')) {
-    return isProductionRustFile(relPath);
-  }
-  return (
-    (relPath.startsWith('router/src/') || relPath.startsWith('scripts/'))
-    && (relPath.endsWith('.ts') || relPath.endsWith('.mjs'))
-    && !relPath.includes('.test.')
-    && !relPath.split('/').includes('tests')
-  );
-}
-
 function canonicalFileIrCallValidatorFixture(entry) {
   const textByPath = new Map();
   for (const requirement of [entry.owner, ...entry.shapeRequirements, ...entry.consumers]) {
@@ -1503,6 +1300,61 @@ function collectFileIrCallValidatorGraphDiagnostics(entry, files) {
 }
 
 function runSelfTest() {
+  const terminalLegacyCases = [
+    {
+      name: 'accepts current artifact types',
+      files: [{
+        relPath: 'artifact-model/src/current.rs',
+        text: 'pub struct PackageArtifact;\n',
+      }],
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects every terminal legacy artifact symbol in production code',
+      files: [{
+        relPath: 'runtime/model/src/legacy.rs',
+        text: [
+          'pub struct PublicationApiBinding;',
+          'pub enum PublicationApiSymbolKind {}',
+          'pub struct PublicationConformanceFact;',
+          'pub struct PublicationOperationAbi;',
+          'pub struct PublicationPublicInstanceExport;',
+          'pub struct PublicationSchemaType;',
+          'pub enum PublicationSchemaTypeNameability {}',
+          'pub struct SourceCallMethodIndexEntry;',
+          'pub struct SourceCallOperationIndexEntry;',
+          '',
+        ].join('\n'),
+      }],
+      expectedFailures: 9,
+    },
+    {
+      name: 'rejects terminal legacy type in test code',
+      files: [{
+        relPath: 'artifact-model/src/tests.rs',
+        text: '#[test]\nfn legacy() { let _: Option<ServiceDependencyConstraint> = None; }\n',
+      }],
+      expectedFailures: 1,
+    },
+    {
+      name: 'ignores terminal legacy names in comments and strings',
+      files: [{
+        relPath: 'artifact-model/src/current.rs',
+        text: '// PackageUnit\nconst NOTE: &str = "ServiceUnit";\nconst RAW: &str = r#"PublicationAbiUnit"#;\nconst BYTES: &[u8] = b"PackageTestAssembly";\n',
+      }],
+      expectedFailures: 0,
+    },
+  ];
+  const failures = [];
+  for (const testCase of terminalLegacyCases) {
+    const legacyFailures = collectTerminalLegacyArtifactSymbolFailures(testCase.files);
+    if (legacyFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} terminal legacy failure(s), got ${legacyFailures.length}`,
+      );
+    }
+  }
+
   const cases = [
     {
       name: 'allows definitions in their declared owner modules',
@@ -1512,25 +1364,11 @@ function runSelfTest() {
           text: 'pub fn framed_identity() {}\n',
         },
         {
-          relPath: 'artifact-identity/src/operation.rs',
-          text: 'pub struct OperationAbiIdentityInput;\npub fn operation_abi_identity() {}\n',
-        },
-        {
           relPath: 'canonical-json/src/lib.rs',
           text: 'pub fn canonical_json_value() {}\n',
         },
       ],
       expectedViolations: 0,
-    },
-    {
-      name: 'rejects compiler operation identity duplicate struct',
-      files: [
-        {
-          relPath: 'compiler/driver/shared/operation_abi_identity.rs',
-          text: 'struct OperationAbiIdentityInput;\n',
-        },
-      ],
-      expectedViolations: 1,
     },
     {
       name: 'rejects lowering File IR payload duplicate',
@@ -1548,16 +1386,6 @@ function runSelfTest() {
         {
           relPath: 'compiler/lowering/src/service_call_validation.rs',
           text: 'fn validate_file_ir_service_calls() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-    },
-    {
-      name: 'rejects package build identity duplicate in terminal projection',
-      files: [
-        {
-          relPath: 'compiler/projection/src/package_artifact/projection.rs',
-          text: 'struct PackageBuildIdentityProjection;\n',
         },
       ],
       expectedViolations: 1,
@@ -1593,26 +1421,6 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects publication ABI byte projection duplicate',
-      files: [
-        {
-          relPath: 'compiler/publication-abi/src/identity.rs',
-          text: 'fn publication_abi_identity_bytes() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-    },
-    {
-      name: 'rejects an identity definition in the wrong artifact-identity module',
-      files: [
-        {
-          relPath: 'artifact-identity/src/other.rs',
-          text: 'fn operation_abi_identity() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-    },
-    {
       name: 'rejects framed_identity implementation in terminal package emission',
       files: [
         {
@@ -1632,90 +1440,13 @@ function runSelfTest() {
       ],
       expectedViolations: 1,
     },
-    {
-      name: 'ignores compiler test files',
-      files: [
-        {
-          relPath: 'compiler/tests/operation_identity.rs',
-          text: 'struct OperationAbiIdentityInput;\nfn operation_abi_identity() {}\n',
-        },
-      ],
-      expectedViolations: 0,
-    },
-    {
-      name: 'ignores cfg test modules',
-      files: [
-        {
-          relPath: 'compiler/driver/shared/operation_abi_identity.rs',
-          text: '#[cfg(test)]\nmod tests { struct OperationAbiIdentityInput; }\n',
-        },
-      ],
-      expectedViolations: 0,
-    },
-    {
-      name: 'rejects compiler package implementation links identity prefix',
-      files: [
-        {
-          relPath: 'compiler/emission/src/package_test.rs',
-          text: 'const PREFIX: &str = "skiff-package-implementation-links-v1:sha256";\n',
-        },
-      ],
-      expectedViolations: 0,
-      expectedPackageImplementationLinksViolations: 1,
-    },
-    {
-      name: 'rejects compiler package implementation links identity helper',
-      files: [
-        {
-          relPath: 'compiler/emission/src/package_test.rs',
-          text: 'fn implementation_links_identity() {}\n',
-        },
-      ],
-      expectedViolations: 0,
-      expectedPackageImplementationLinksViolations: 1,
-    },
-    {
-      name: 'rejects runtime package implementation links duplicate owner',
-      files: [
-        {
-          relPath: 'runtime/package-test/src/lib.rs',
-          text: 'const PREFIX: &str = "skiff-package-implementation-links-v1:sha256";\nfn package_implementation_links_identity() {}\n',
-        },
-      ],
-      expectedViolations: 1,
-      expectedPackageImplementationLinksViolations: 2,
-    },
-    {
-      name: 'rejects script package implementation links duplicate owner',
-      files: [
-        {
-          relPath: 'scripts/local-package-identity.mjs',
-          text: 'const prefix = "skiff-package-implementation-links-v1:sha256";\nfunction packageImplementationLinksIdentity() {}\n',
-        },
-      ],
-      expectedViolations: 0,
-      expectedPackageImplementationLinksViolations: 2,
-    },
   ];
 
-  const failures = [];
   for (const testCase of cases) {
     const violations = collectOwnedDefinitionViolations(testCase.files);
     if (violations.length !== testCase.expectedViolations) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,
-      );
-    }
-    const packageImplementationLinksViolations =
-      collectPackageImplementationLinksIdentityViolations(testCase.files);
-    const expectedPackageImplementationLinksViolations =
-      testCase.expectedPackageImplementationLinksViolations ?? 0;
-    if (
-      packageImplementationLinksViolations.length
-      !== expectedPackageImplementationLinksViolations
-    ) {
-      failures.push(
-        `${testCase.name}: expected ${expectedPackageImplementationLinksViolations} package implementation links violation(s), got ${packageImplementationLinksViolations.length}`,
       );
     }
   }
@@ -1837,12 +1568,15 @@ pub struct ServiceRequirementKey {
   pub caller_package_build_id: Build, pub service_requirement_slot: u32,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageBinding { pub key: PackageRequirementKey, pub package: PackageArtifactRef }
+pub struct PackageBinding {
+  pub key: PackageRequirementKey, pub package: PackageArtifactRef,
+  pub collection_name_mapping: Map,
+}
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceSelectorBinding { pub key: ServiceRequirementKey, pub contract: ServiceContractRef }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceDeploymentOperationInput {
-  pub contract_operation_id: OperationId, pub package_public_path: String,
+  pub contract_operation_id: OperationId, pub package_callable_id: CallableId,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentOperationBinding {
@@ -1852,10 +1586,12 @@ pub struct DeploymentOperationBinding {
 pub enum IngressProtocol { Http, WebSocket, }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IngressSelector {
-  pub protocol: Protocol, pub host: String, pub method: Option<String>, pub path: String,
+  pub protocol: Protocol, pub method: Option<String>, pub path: String,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DeploymentIngressBinding { pub selector: IngressSelector, pub contract_operation_id: OperationId }
+pub struct DeploymentIngressBinding {
+  pub selector: IngressSelector, pub gateway_entry_key: GatewayEntryKey,
+}
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigLiteralBinding { pub path: String, pub value: Value }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1876,7 +1612,7 @@ pub struct ResourcePolicy { pub cpu_millis: u32, pub memory_bytes: u64 }
 pub struct ActivationPolicy { pub max_concurrency: u32, pub idle_timeout_ms: Option<u64> }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentPolicy {
-  pub timeout_ms: u64, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
+  pub timeout_ms: Option<u64>, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
   pub principal: String,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1885,7 +1621,8 @@ pub struct DeploymentDiagnosticText { pub display_name: String, pub notes: Map }
 pub struct ServiceDeploymentInput {
   pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
   pub implementation: Ref, pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
-  pub service_selectors: Vec<Svc>, pub ingress: Vec<Ingress>, pub config_literals: Vec<Config>,
+  pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
+  pub config_literals: Vec<Config>,
   pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
   pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
 }
@@ -1894,7 +1631,8 @@ pub struct ServiceDeployment {
   pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
   pub deployment_artifact_identity: Identity, pub implementation: Ref,
   pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
-  pub service_selectors: Vec<Svc>, pub ingress: Vec<Ingress>, pub config_literals: Vec<Config>,
+  pub service_selectors: Vec<Svc>, pub gateway_entries: Map, pub ingress: Vec<Ingress>,
+  pub config_literals: Vec<Config>,
   pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
   pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
 }
@@ -1920,9 +1658,9 @@ pub struct ActivationTemplate {
   pub resource_bindings: Vec<Resource>, pub policy: Policy,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GlobalIngressBinding {
+pub struct GatewayIngressBinding {
   pub selector: IngressSelector, pub deployment: ServiceDeploymentRef,
-  pub contract: ServiceContractRef, pub contract_operation_id: OperationId,
+  pub gateway_entry_key: GatewayEntryKey, pub gateway_entry_identity: GatewayEntryIdentity,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssembly {
@@ -1930,7 +1668,7 @@ pub struct RuntimeAssembly {
   pub resolved_deployments: Vec<Ref>, pub resolved_contracts: Vec<Ref>,
   pub resolved_packages: Vec<Ref>, pub package_link_plan: Plan,
   pub service_binding_templates: Vec<ServiceTemplate>,
-  pub activation_templates: Vec<ActivationTemplate>, pub global_ingress: Vec<Ingress>,
+  pub activation_templates: Vec<ActivationTemplate>, pub gateway_ingress: Vec<Ingress>,
 }
 `;
   const canonicalLinkPlanText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1974,6 +1712,26 @@ pub struct ActivationTemplate {
       }),
       expectedFailures: 2,
     },
+    {
+      name: 'rejects host regression in deployment ingress selector',
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          'pub protocol: Protocol, pub method:',
+          'pub protocol: Protocol, pub host: String, pub method:',
+        ),
+      }),
+      expectedFailures: 1,
+    },
+    ...['protocol', 'method', 'path'].map((field) => ({
+      name: `rejects missing canonical deployment ingress selector ${field}`,
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          new RegExp(`\\s*pub ${field}: [^,]+,`),
+          '',
+        ),
+      }),
+      expectedFailures: 1,
+    })),
     {
       name: 'rejects renamed canonical package link-plan leaf',
       files: canonicalDeploymentAssemblyFiles({
@@ -2043,6 +1801,30 @@ pub struct ActivationTemplate {
         }],
       }),
       expectedFailures: 4,
+    },
+    {
+      name: 'rejects legacy package public path deployment input',
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          'pub contract_operation_id: OperationId, pub package_callable_id: CallableId,',
+          'pub contract_operation_id: OperationId, pub package_public_path: String,',
+        ),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects second deployment operation input owner',
+      files: canonicalDeploymentAssemblyFiles({
+        extra: [{
+          relPath: 'deployment/model/src/operation_input.rs',
+          text: `#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentOperationInput {
+  pub contract_operation_id: OperationId, pub package_callable_id: CallableId,
+}
+`,
+        }],
+      }),
+      expectedFailures: 1,
     },
     {
       name: 'rejects legacy aggregate embedded in deployment',
@@ -2256,42 +2038,6 @@ pub struct ActivationTemplate {
     { shapeFailures: 1 },
   );
 
-  const serviceAssemblyDuplicateCases = [
-    {
-      name: 'rejects router service assembly hash implementation',
-      files: [{
-        relPath: 'router/src/artifacts/identity.ts',
-        text: 'function serviceAssemblyHashInput(value: unknown) { return value; }\n',
-      }],
-      expectedViolations: 1,
-    },
-    {
-      name: 'rejects renamed prefix plus hash implementation',
-      files: [{
-        relPath: 'scripts/local-identity.mjs',
-        text: 'const prefix = "skiff-service-assembly-v1"; createHash("sha256");\n',
-      }],
-      expectedViolations: 1,
-    },
-    {
-      name: 'allows CLI-only script adapters',
-      files: [{
-        relPath: 'scripts/lib/artifact-identity-validation.mjs',
-        text: 'spawn(path, ["runtime-program-build-id"]);\n',
-      }],
-      expectedViolations: 0,
-    },
-  ];
-  for (const testCase of serviceAssemblyDuplicateCases) {
-    const violations = collectServiceAssemblyIdentityViolations(testCase.files);
-    if (violations.length !== testCase.expectedViolations) {
-      failures.push(
-        `${testCase.name}: expected ${testCase.expectedViolations} service assembly violation(s), got ${violations.length}`,
-      );
-    }
-  }
-
-  failures.push(...devSyncArtifactPathSelfTestFailures());
   failures.push(...deprecatedPackageAbiRustSymbolSelfTestFailures());
 
   const adapterFixtureRequirement = [
@@ -2340,6 +2086,60 @@ mod tests {
     );
   }
 
+  const canonicalDependencyAdapterRequirement = [{
+    relPath: 'compiler/driver/source_compile/canonical_dependencies.rs',
+    helper: 'canonical package dependency identity validation',
+    rustUse: {
+      modulePath: 'skiff_artifact_identity',
+      symbol: 'validate_package_artifact_identities',
+    },
+  }];
+  const canonicalDependencyImportCases = [
+    {
+      name: 'allows grouped canonical dependency identity import',
+      text: `use skiff_artifact_identity::{
+  package_artifact_ref,
+  validate_package_artifact_identities,
+};
+`,
+      expectedFailures: 0,
+    },
+    {
+      name: 'allows split canonical dependency identity import',
+      text: `use skiff_artifact_identity::package_artifact_ref;
+use skiff_artifact_identity::validate_package_artifact_identities;
+`,
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects grouped import without canonical dependency identity symbol',
+      text: `use skiff_artifact_identity::{package_artifact_ref, validate_service_deployment_identity};
+`,
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects split import from a noncanonical identity module',
+      text: `use skiff_artifact_identity::package_artifact_ref;
+use local_identity::validate_package_artifact_identities;
+`,
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalDependencyImportCases) {
+    const importFailures = collectAdapterRequirementFailures(
+      canonicalDependencyAdapterRequirement,
+      new Map([[
+        canonicalDependencyAdapterRequirement[0].relPath,
+        testCase.text,
+      ]]),
+    );
+    if (importFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} adapter failure(s), got ${importFailures.length}`,
+      );
+    }
+  }
+
   if (failures.length > 0) {
     for (const failure of failures) {
       console.error(`FAIL ${failure}`);
@@ -2375,6 +2175,74 @@ function stripRustComments(text) {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/[^\n]*/g, '');
+}
+
+function rustIdentifierView(text) {
+  const output = text.split('');
+  const mask = (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      if (output[index] !== '\n') {
+        output[index] = ' ';
+      }
+    }
+  };
+  let index = 0;
+  while (index < text.length) {
+    if (text.startsWith('//', index)) {
+      const end = text.indexOf('\n', index + 2);
+      const stop = end === -1 ? text.length : end;
+      mask(index, stop);
+      index = stop;
+      continue;
+    }
+    if (text.startsWith('/*', index)) {
+      let depth = 1;
+      let cursor = index + 2;
+      while (cursor < text.length && depth > 0) {
+        if (text.startsWith('/*', cursor)) {
+          depth += 1;
+          cursor += 2;
+        } else if (text.startsWith('*/', cursor)) {
+          depth -= 1;
+          cursor += 2;
+        } else {
+          cursor += 1;
+        }
+      }
+      mask(index, cursor);
+      index = cursor;
+      continue;
+    }
+    const rawString = /^(?:br|r)(#{0,16})"/.exec(text.slice(index));
+    if (rawString !== null) {
+      const terminator = `"${rawString[1]}`;
+      const contentStart = index + rawString[0].length;
+      const close = text.indexOf(terminator, contentStart);
+      const end = close === -1 ? text.length : close + terminator.length;
+      mask(index, end);
+      index = end;
+      continue;
+    }
+    const quoteOffset = text[index] === 'b' && text[index + 1] === '"' ? 1 : 0;
+    if (text[index + quoteOffset] === '"') {
+      let cursor = index + quoteOffset + 1;
+      while (cursor < text.length) {
+        if (text[cursor] === '\\') {
+          cursor += 2;
+        } else if (text[cursor] === '"') {
+          cursor += 1;
+          break;
+        } else {
+          cursor += 1;
+        }
+      }
+      mask(index, cursor);
+      index = cursor;
+      continue;
+    }
+    index += 1;
+  }
+  return output.join('');
 }
 
 function cfgTestItemRange(text, attrIndex) {

@@ -1,0 +1,552 @@
+{
+  "requestCases": [
+    {
+      "name": "canonical HTTP bytes",
+      "kind": "http",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "request.start",
+        "requestId": "request-http-minimal-defaults",
+        "mode": "unary",
+        "caller": {
+          "kind": "gateway"
+        },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "assemblyGeneration": 0,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "ingress": {
+            "protocol": "http",
+            "method": "GET",
+            "path": "/"
+          }
+        },
+        "trace": {
+          "traceId": "trace-minimal",
+          "spanId": "span-minimal"
+        },
+        "httpRequest": {
+          "method": "GET",
+          "url": "https://example.com/",
+          "path": "/",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      },
+      "payloadHex": "",
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"request.start\",\"requestId\":\"request-http-minimal-defaults\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"assemblyGeneration\":0,\"deployment\":{\"serviceId\":\"example.com/service-1\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-1\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"ingress\":{\"protocol\":\"http\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace-minimal\",\"spanId\":\"span-minimal\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]},\"testEffectsEnabled\":false}"
+    },
+    {
+      "name": "websocketConnect full metadata",
+      "kind": "websocketConnect",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "request.start",
+        "requestId": "request-websocket-connect-full",
+        "mode": "unary",
+        "caller": {
+          "kind": "gateway"
+        },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "assemblyGeneration": 11,
+          "deployment": {
+            "serviceId": "example.com/service-2",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-2",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936",
+          "ingress": {
+            "protocol": "webSocket",
+            "method": null,
+            "path": "/chat"
+          }
+        },
+        "clientSession": {
+          "id": "client-websocket"
+        },
+        "deadline": {
+          "timeoutMs": 3000,
+          "expiresAt": "2030-01-01T00:00:03Z"
+        },
+        "trace": {
+          "traceId": "trace-websocket",
+          "spanId": "span-websocket",
+          "parentSpanId": "parent-websocket",
+          "sampled": true
+        },
+        "websocketConnect": {
+          "connectionId": "connection-1",
+          "url": "wss://socket.example.com/chat?room=one&room=two",
+          "query": [
+            {
+              "name": "room",
+              "value": "one"
+            },
+            {
+              "name": "room",
+              "value": "two"
+            }
+          ],
+          "headers": [
+            {
+              "name": "x-repeat",
+              "value": "a"
+            },
+            {
+              "name": "x-repeat",
+              "value": "b"
+            }
+          ],
+          "cookies": [
+            {
+              "name": "session",
+              "value": "opaque"
+            }
+          ],
+          "version": "1.2.3",
+          "websocketEntryId": "skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616",
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+        },
+        "testEffectsEnabled": true
+      },
+      "payloadHex": "",
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"request.start\",\"requestId\":\"request-websocket-connect-full\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"assemblyGeneration\":11,\"deployment\":{\"serviceId\":\"example.com/service-2\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-2\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936\",\"ingress\":{\"protocol\":\"webSocket\",\"method\":null,\"path\":\"/chat\"}},\"clientSession\":{\"id\":\"client-websocket\"},\"deadline\":{\"timeoutMs\":3000,\"expiresAt\":\"2030-01-01T00:00:03Z\"},\"trace\":{\"traceId\":\"trace-websocket\",\"spanId\":\"span-websocket\",\"parentSpanId\":\"parent-websocket\",\"sampled\":true},\"websocketConnect\":{\"connectionId\":\"connection-1\",\"url\":\"wss://socket.example.com/chat?room=one&room=two\",\"query\":[{\"name\":\"room\",\"value\":\"one\"},{\"name\":\"room\",\"value\":\"two\"}],\"headers\":[{\"name\":\"x-repeat\",\"value\":\"a\"},{\"name\":\"x-repeat\",\"value\":\"b\"}],\"cookies\":[{\"name\":\"session\",\"value\":\"opaque\"}],\"version\":\"1.2.3\",\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616\",\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936\"},\"testEffectsEnabled\":true}"
+    },
+    {
+      "name": "websocketConnect optional metadata absent",
+      "kind": "websocketConnect",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "request.start",
+        "requestId": "request-websocket-connect-minimal",
+        "mode": "unary",
+        "caller": {
+          "kind": "gateway"
+        },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "assemblyGeneration": 0,
+          "deployment": {
+            "serviceId": "example.com/service-3",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-3",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "ingress": {
+            "protocol": "webSocket",
+            "method": null,
+            "path": "/ws"
+          }
+        },
+        "trace": {
+          "traceId": "trace-websocket-minimal",
+          "spanId": "span-websocket-minimal"
+        },
+        "websocketConnect": {
+          "connectionId": "connection-minimal",
+          "url": "ws://example.test/ws",
+          "query": [],
+          "headers": [],
+          "cookies": [],
+          "websocketEntryId": "skiff-websocket-entry-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "testEffectsEnabled": false
+      },
+      "payloadHex": "",
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"request.start\",\"requestId\":\"request-websocket-connect-minimal\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"assemblyGeneration\":0,\"deployment\":{\"serviceId\":\"example.com/service-3\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-3\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"ingress\":{\"protocol\":\"webSocket\",\"method\":null,\"path\":\"/ws\"}},\"trace\":{\"traceId\":\"trace-websocket-minimal\",\"spanId\":\"span-websocket-minimal\"},\"websocketConnect\":{\"connectionId\":\"connection-minimal\",\"url\":\"ws://example.test/ws\",\"query\":[],\"headers\":[],\"cookies\":[],\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"testEffectsEnabled\":false}"
+    }
+  ],
+  "requestMutations": [
+    {
+      "name": "unknown request field",
+      "baseIndex": 1,
+      "setPath": "unknown",
+      "value": true
+    },
+    {
+      "name": "wrong websocket discriminator",
+      "baseIndex": 1,
+      "setPath": "routing.ingress.protocol",
+      "value": "websocketConnect"
+    },
+    {
+      "name": "websocket HTTP method mix",
+      "baseIndex": 1,
+      "setPath": "routing.ingress.method",
+      "value": "GET"
+    },
+    {
+      "name": "websocket server stream mode",
+      "baseIndex": 1,
+      "setPath": "mode",
+      "value": "serverStream"
+    },
+    {
+      "name": "missing routing gateway identity",
+      "baseIndex": 1,
+      "removePath": "routing.gatewayEntryIdentity"
+    },
+    {
+      "name": "missing websocket entry identity",
+      "baseIndex": 1,
+      "removePath": "websocketConnect.websocketEntryId"
+    },
+    {
+      "name": "missing metadata gateway identity",
+      "baseIndex": 1,
+      "removePath": "websocketConnect.gatewayEntryIdentity"
+    },
+    {
+      "name": "stale GatewayEntry v1 routing generation",
+      "baseIndex": 1,
+      "setPath": "routing.gatewayEntryIdentity",
+      "value": "skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+    },
+    {
+      "name": "stale GatewayEntry v1 metadata generation",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.gatewayEntryIdentity",
+      "value": "skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936"
+    },
+    {
+      "name": "mismatched gateway identity",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.gatewayEntryIdentity",
+      "value": "skiff-gateway-entry-v2:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "name": "uppercase websocket entry identity",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.websocketEntryId",
+      "value": "skiff-websocket-entry-v1:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "legacy gateway identity",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.gatewayEntryIdentity",
+      "value": "skiff-gateway-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "noncanonical connection id",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionId",
+      "value": "connection with spaces"
+    },
+    {
+      "name": "version null",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.version",
+      "value": null
+    },
+    {
+      "name": "websocket metadata unknown field",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.unknown",
+      "value": true
+    },
+    {
+      "name": "legacy receive event",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.receiveEvent",
+      "value": {}
+    },
+    {
+      "name": "legacy context codec",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.contextCodec",
+      "value": {}
+    },
+    {
+      "name": "legacy message metadata",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.message",
+      "value": {}
+    },
+    {
+      "name": "legacy body business schema",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.body",
+      "value": {}
+    },
+    {
+      "name": "legacy operation ABI id",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.operationAbiId",
+      "value": "legacy-operation"
+    },
+    {
+      "name": "legacy contract operation id",
+      "baseIndex": 1,
+      "setPath": "routing.contractOperationId",
+      "value": "legacy-operation"
+    },
+    {
+      "name": "legacy websocket adapter",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter",
+      "value": {
+        "kind": "receive"
+      }
+    },
+    {
+      "name": "HTTP metadata mixed into websocket",
+      "baseIndex": 1,
+      "setPath": "httpRequest",
+      "value": {}
+    },
+    {
+      "name": "websocket metadata mixed into HTTP",
+      "baseIndex": 0,
+      "setPath": "websocketConnect",
+      "value": {}
+    },
+    {
+      "name": "HTTP request missing metadata",
+      "baseIndex": 0,
+      "removePath": "httpRequest"
+    },
+    {
+      "name": "websocket request payload",
+      "baseIndex": 1,
+      "payloadHex": "00"
+    },
+    {
+      "name": "missing exact deployment",
+      "baseIndex": 1,
+      "removePath": "routing.deployment"
+    },
+    {
+      "name": "legacy ingress host",
+      "baseIndex": 1,
+      "setPath": "routing.ingress.host",
+      "value": "socket.example.com"
+    },
+    {
+      "name": "deployment artifact v3",
+      "baseIndex": 1,
+      "setPath": "routing.deployment.deploymentArtifactIdentity",
+      "value": "skiff-deployment-artifact-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "responseCases": [
+    {
+      "name": "websocketConnect accept minimal",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.end",
+        "requestId": "response-websocket-accept-minimal",
+        "payloadPresent": false,
+        "websocketConnect": {
+          "result": "accept"
+        }
+      },
+      "payloadHex": "",
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"response.end\",\"requestId\":\"response-websocket-accept-minimal\",\"payloadPresent\":false,\"websocketConnect\":{\"result\":\"accept\"}}"
+    },
+    {
+      "name": "websocketConnect accept full",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.end",
+        "requestId": "response-websocket-accept-full",
+        "payloadPresent": false,
+        "websocketConnect": {
+          "result": "accept",
+          "businessIdentity": "tenant-1",
+          "connectionPolicy": {
+            "maxConnections": 2,
+            "overflow": "close-oldest",
+            "closeCode": 4009,
+            "closeReason": "connection replaced"
+          }
+        }
+      },
+      "payloadHex": "",
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"response.end\",\"requestId\":\"response-websocket-accept-full\",\"payloadPresent\":false,\"websocketConnect\":{\"result\":\"accept\",\"businessIdentity\":\"tenant-1\",\"connectionPolicy\":{\"maxConnections\":2,\"overflow\":\"close-oldest\",\"closeCode\":4009,\"closeReason\":\"connection replaced\"}}}"
+    },
+    {
+      "name": "websocketConnect reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.end",
+        "requestId": "response-websocket-reject",
+        "payloadPresent": false,
+        "websocketConnect": {
+          "result": "reject",
+          "code": 1008,
+          "reason": "policy"
+        }
+      },
+      "payloadHex": "",
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v2\",\"type\":\"response.end\",\"requestId\":\"response-websocket-reject\",\"payloadPresent\":false,\"websocketConnect\":{\"result\":\"reject\",\"code\":1008,\"reason\":\"policy\"}}"
+    }
+  ],
+  "responseMutations": [
+    {
+      "name": "response unknown field",
+      "baseIndex": 0,
+      "setPath": "unknown",
+      "value": true
+    },
+    {
+      "name": "response wrong schema",
+      "baseIndex": 0,
+      "setPath": "schemaVersion",
+      "value": "skiff-runtime-frame-v1"
+    },
+    {
+      "name": "response wrong type",
+      "baseIndex": 0,
+      "setPath": "type",
+      "value": "response.start"
+    },
+    {
+      "name": "response payload flag true",
+      "baseIndex": 0,
+      "setPath": "payloadPresent",
+      "value": true
+    },
+    {
+      "name": "response payload bytes",
+      "baseIndex": 0,
+      "payloadHex": "00"
+    },
+    {
+      "name": "HTTP response metadata mix",
+      "baseIndex": 0,
+      "setPath": "httpResponse",
+      "value": {
+        "status": 200,
+        "headers": []
+      }
+    },
+    {
+      "name": "missing response result",
+      "baseIndex": 0,
+      "removePath": "websocketConnect.result"
+    },
+    {
+      "name": "wrong response discriminator",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.result",
+      "value": "connected"
+    },
+    {
+      "name": "accept carries reject code",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.code",
+      "value": 1008
+    },
+    {
+      "name": "accept carries reject reason",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.reason",
+      "value": "no"
+    },
+    {
+      "name": "accept carries context presence",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.contextPayloadPresent",
+      "value": false
+    },
+    {
+      "name": "accept carries context codec",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.contextCodec",
+      "value": {}
+    },
+    {
+      "name": "accept carries payload context",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.payloadContext",
+      "value": {}
+    },
+    {
+      "name": "accept carries message response",
+      "baseIndex": 0,
+      "setPath": "websocketConnect.messageResponse",
+      "value": {}
+    },
+    {
+      "name": "reject carries business identity",
+      "baseIndex": 2,
+      "setPath": "websocketConnect.businessIdentity",
+      "value": "tenant-1"
+    },
+    {
+      "name": "reject carries connection policy",
+      "baseIndex": 2,
+      "setPath": "websocketConnect.connectionPolicy",
+      "value": {
+        "maxConnections": 1,
+        "overflow": "reject-new"
+      }
+    },
+    {
+      "name": "reject missing code",
+      "baseIndex": 2,
+      "removePath": "websocketConnect.code"
+    },
+    {
+      "name": "reject missing reason",
+      "baseIndex": 2,
+      "removePath": "websocketConnect.reason"
+    },
+    {
+      "name": "reject code above u16",
+      "baseIndex": 2,
+      "setPath": "websocketConnect.code",
+      "value": 65536
+    },
+    {
+      "name": "policy max zero",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionPolicy.maxConnections",
+      "value": 0
+    },
+    {
+      "name": "policy max above u32",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionPolicy.maxConnections",
+      "value": 4294967296
+    },
+    {
+      "name": "policy wrong overflow",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionPolicy.overflow",
+      "value": "drop-new"
+    },
+    {
+      "name": "policy close code above u16",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionPolicy.closeCode",
+      "value": 65536
+    },
+    {
+      "name": "policy close reason null",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionPolicy.closeReason",
+      "value": null
+    },
+    {
+      "name": "policy unknown field",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.connectionPolicy.scope",
+      "value": "identity"
+    }
+  ]
+}

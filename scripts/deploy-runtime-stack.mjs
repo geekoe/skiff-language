@@ -9,6 +9,7 @@ import {
   renderRuntimeConfig,
   renderTelemetryConfig,
 } from './lib/runtime-stack-config.mjs';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './lib/activation-timeout.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { sourceKeyFromInputs } from './lib/source-key.mjs';
 
@@ -76,6 +77,31 @@ const serviceDbMongoUrl =
   args.serviceDbMongoUrl ||
   process.env.SKIFF_SERVICE_DB_MONGO_URL ||
   process.env.SERVICE_DB_MONGO_URL;
+if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
+  throw new Error(
+    'service DB Mongo URL is required; pass --service-db-mongo-url or set SKIFF_SERVICE_DB_MONGO_URL',
+  );
+}
+const httpMaxRequestBytes = readRequiredPositiveSafeInteger(
+  args.httpMaxRequestBytes ?? process.env.SKIFF_HTTP_MAX_REQUEST_BYTES,
+  args.httpMaxRequestBytes !== undefined
+    ? '--http-max-request-bytes'
+    : 'SKIFF_HTTP_MAX_REQUEST_BYTES',
+);
+const httpMaxResponseBytes = readRequiredPositiveSafeInteger(
+  args.httpMaxResponseBytes ?? process.env.SKIFF_HTTP_MAX_RESPONSE_BYTES,
+  args.httpMaxResponseBytes !== undefined
+    ? '--http-max-response-bytes'
+    : 'SKIFF_HTTP_MAX_RESPONSE_BYTES',
+);
+const activationPrepareTimeoutMs = readRequiredPositiveSafeInteger(
+  args.activationPrepareTimeoutMs
+    ?? process.env.SKIFF_ACTIVATION_PREPARE_TIMEOUT_MS
+    ?? String(DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS),
+  args.activationPrepareTimeoutMs !== undefined
+    ? '--activation-prepare-timeout-ms'
+    : 'SKIFF_ACTIVATION_PREPARE_TIMEOUT_MS',
+);
 const serviceDbEncryptionKeyringFile = readRemoteAbsolutePath(
   args.serviceDbEncryptionKeyringFile ||
     process.env.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE,
@@ -93,6 +119,9 @@ try {
   await writeRouterConfig(path.join(configDir, 'router.yml'), remoteSkiff, {
     telemetryEndpoint,
     serviceDbMongoUrl,
+    httpMaxRequestBytes,
+    httpMaxResponseBytes,
+    activationPrepareTimeoutMs,
   });
   await writeRuntimeConfig(path.join(configDir, 'runtime.yml'), remoteSkiff, {
     serviceDbEncryptionKeyringFile,
@@ -141,10 +170,10 @@ try {
     );
   }
 
-  if (deploySelection.has('artifact-identity')) {
+  if (deploySelection.has('compiler')) {
     await uploadBinary(
-      await binaryPathFor('artifact-identity'),
-      `${remoteSkiff}/bin/skiff-artifact-identity`,
+      await binaryPathFor('compiler'),
+      `${remoteSkiff}/bin/skiff-compiler`,
     );
   }
 
@@ -322,12 +351,16 @@ async function writeRouterConfig(file, remoteSkiff, options) {
   await writeFile(file, renderRouterConfig({
     profile: 'prod',
     host: '127.0.0.1',
-    artifactRoots: [`${remoteSkiff}/artifacts`],
-    identityCliPath: `${remoteSkiff}/bin/skiff-artifact-identity`,
+    environment: 'prod',
+    artifactsPath: `${remoteSkiff}/artifacts`,
+    ecosystemStoreCliPath: `${remoteSkiff}/bin/skiff-compiler`,
     releaseMode: true,
     devReload: false,
     requestTimeoutMs: 20000,
+    activationPrepareTimeoutMs: options.activationPrepareTimeoutMs,
     httpPort: 4000,
+    httpMaxRequestBytes: options.httpMaxRequestBytes,
+    httpMaxResponseBytes: options.httpMaxResponseBytes,
     runtimePort: 4001,
     runtimePath: '/runtime',
     telemetryEndpoint: options.telemetryEndpoint,
@@ -340,8 +373,8 @@ async function writeRuntimeConfig(file, remoteSkiff, options) {
   await writeFile(file, renderRuntimeConfig({
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: `${remoteSkiff}/runtime-home`,
+    environment: 'prod',
     serviceDbEncryptionKeyringFile: options.serviceDbEncryptionKeyringFile,
-    httpResponseMaxBytes: 8388608,
   }));
 }
 
@@ -374,7 +407,7 @@ module.exports = {
       script: 'src/router/server.ts',
       interpreter: NODE_BIN + '/node',
       interpreter_args: '--import tsx',
-      args: '--config ${options.remoteSkiff}/config/router.yml --release-mode',
+      args: '--config ${options.remoteSkiff}/config/router.yml',
       watch: false,
       autorestart: true,
       max_restarts: 5,
@@ -504,17 +537,16 @@ function selectedDeployTargetsFrom(rawOnly) {
 function expandDeploySelector(rawOnly) {
   switch (rawOnly) {
     case 'all':
-      return ['telemetry', 'router', 'runtime', 'artifact-identity'];
+      return ['telemetry', 'router', 'runtime', 'compiler'];
     case 'runtime':
-      return ['runtime', 'artifact-identity'];
+      return ['runtime'];
     case 'router':
-      return ['router', 'artifact-identity'];
-    case 'artifact-identity':
+      return ['router', 'compiler'];
     case 'telemetry':
       return [rawOnly];
     default:
       throw new Error(
-        `invalid --only ${rawOnly}; deploy supports all, runtime, router, artifact-identity, or telemetry. compiler is a build-only unit.`,
+        `invalid --only ${rawOnly}; deploy supports all, runtime, router, or telemetry. compiler is a build-only unit.`,
       );
   }
 }
@@ -570,6 +602,12 @@ function optionKey(arg) {
       return 'telemetryMongoUrl';
     case '--service-db-mongo-url':
       return 'serviceDbMongoUrl';
+    case '--http-max-request-bytes':
+      return 'httpMaxRequestBytes';
+    case '--activation-prepare-timeout-ms':
+      return 'activationPrepareTimeoutMs';
+    case '--http-max-response-bytes':
+      return 'httpMaxResponseBytes';
     case '--service-db-encryption-keyring-file':
       return 'serviceDbEncryptionKeyringFile';
     case '--telemetry-db':
@@ -609,6 +647,14 @@ function readOptionalBoolean(value, name) {
     return false;
   }
   throw new Error(`${name} must be true or false`);
+}
+
+function readRequiredPositiveSafeInteger(value, name) {
+  const integer = Number(value);
+  if (value === undefined || !Number.isSafeInteger(integer) || integer <= 0) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return integer;
 }
 
 function readRemoteAbsolutePath(value, name) {

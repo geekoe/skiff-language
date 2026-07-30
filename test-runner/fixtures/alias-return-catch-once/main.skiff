@@ -1,0 +1,73 @@
+import std
+
+type Box {
+  value: string
+}
+
+function makeBox(value: string) -> Box {
+  return Box { value: value }
+}
+
+impl Box {
+  function read(self: Box) -> string {
+    return self.value
+  }
+}
+
+function alias(value: bytes) -> bytes {
+  return value
+}
+
+function copied(value: bytes) -> bytes {
+  return bytes.fromHex(value.toHex())
+}
+
+function appendOnce(state: Array<string>, fail: bool) -> string {
+  state.push("effect")
+  if fail {
+    throw std.service.ProtocolError {
+      target: "alias-catch-fixture",
+      message: "expected fixture error"
+    }
+  }
+  return "ok"
+}
+
+function aliasThenCatch(state: Array<string>, fail: bool) -> string {
+  const decoded = alias(bytes.fromUtf8("value")).toUtf8String()
+  const result = catch<std.service.ProtocolError>(appendOnce(state, fail))
+  if result.tag == "ok" {
+    return decoded.concat(":").concat(result.value)
+  }
+  return decoded.concat(":error")
+}
+
+function copiedThenCatch(state: Array<string>) -> string {
+  const decoded = copied(bytes.fromUtf8("value")).toUtf8String()
+  const result = catch<std.service.ProtocolError>(appendOnce(state, false))
+  if result.tag == "ok" {
+    return decoded.concat(":").concat(result.value)
+  }
+  return decoded.concat(":error")
+}
+
+function caughtEffect(state: Array<string>, fail: bool) -> Array<bytes> {
+  const result = catch<std.service.ProtocolError>(appendOnce(state, fail))
+  const output = Array.empty<bytes>()
+  if result.tag == "ok" {
+    output.push(bytes.fromUtf8(result.value))
+  }
+  return output
+}
+
+function optionalAliasThenCatch(value: bytes?, state: Array<string>) -> string {
+  let decoded = "missing"
+  if value != null {
+    decoded = alias(value).toUtf8String()
+  }
+  const result = catch<std.service.ProtocolError>(appendOnce(state, false))
+  if result.tag == "ok" {
+    return decoded.concat(":").concat(result.value)
+  }
+  return decoded.concat(":error")
+}

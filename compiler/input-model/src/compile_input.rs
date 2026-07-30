@@ -23,8 +23,9 @@ pub struct PackageContractCompileDependency {
 ///
 /// Declared package dependencies are canonical PackageArtifacts and service
 /// calls are compiled solely against ServiceContracts. Additional canonical
-/// artifacts from the same package graph may close compiler-owned requirements
-/// after File IR is produced, but never participate in source resolution.
+/// artifacts from the same package graph remain unavailable to source
+/// resolution unless a compiler-owned dependency selector validates one exact
+/// artifact first; they may otherwise only close requirements after File IR.
 /// Legacy service configuration is adapted before this boundary and is never
 /// stored here.
 pub struct PackageCompileInput<'a, P: ?Sized> {
@@ -65,7 +66,8 @@ impl<'a, P: PackageCompileInputMetadata + ?Sized> PackageCompileInput<'a, P> {
     }
 
     /// Supplies canonical artifacts already produced by this compile graph.
-    /// They are candidates only for post-File-IR requirement closure.
+    /// A compiler-owned selector may admit one exact artifact; all other
+    /// entries are candidates only for post-File-IR requirement closure.
     pub fn with_available_canonical_packages(
         mut self,
         available_packages: &'a [PackageArtifact],

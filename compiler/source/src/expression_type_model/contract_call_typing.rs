@@ -1,6 +1,5 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef, ServiceContract,
+    BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef,
 };
 
 use crate::{
@@ -13,12 +12,12 @@ mod projected_environment;
 mod type_projection;
 
 pub(super) use projected_environment::ContractProjectionState;
+pub use type_projection::package_type_ref_from_contract_type;
 pub(super) use type_projection::{
     contract_source_assignability, contract_source_assignability_with_projections,
+    local_ir_json_compatible, package_type_target_assignable,
 };
-use type_projection::{
-    package_type_assignable, resolved_contract_type, ContractCallTypeProjection,
-};
+use type_projection::{resolved_contract_type, ContractCallTypeProjection};
 
 pub(super) enum ContractCallOutcome {
     NotContract,
@@ -36,7 +35,6 @@ pub(super) struct ContractCallTyping<'a, 'ctx> {
 
 struct ResolvedContractCall<'a> {
     alias: String,
-    contract: &'a ServiceContract,
     operation: &'a BoundaryOperationDescriptor,
 }
 
@@ -92,14 +90,13 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
 
     fn lookup_call(&self, path: &str) -> Option<ResolvedContractCall<'_>> {
         let (alias, stable_key) = dependency_source_address_parts(path)?;
-        let contract = self.dependency_analysis.contract(alias).ok()?;
+        self.dependency_analysis.contract(alias).ok()?;
         let operation = self
             .dependency_analysis
             .contract_operation_by_stable_key(alias, stable_key)
             .ok()?;
         Some(ResolvedContractCall {
             alias: alias.to_string(),
-            contract,
             operation,
         })
     }
@@ -171,11 +168,14 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                     }
                 },
             };
-            if !package_type_assignable(&actual_projected, &expected) {
-                let expected_label =
-                    resolved_contract_type(&parameter.ty, &call.alias, call.contract)
-                        .map(|ty| ty.source_text)
-                        .unwrap_or_else(|_| format!("{:?}", parameter.ty));
+            if !package_type_target_assignable(
+                &actual_projected,
+                &expected,
+                self.dependency_analysis,
+            ) {
+                let expected_label = resolved_contract_type(&parameter.ty, &call.alias)
+                    .map(|ty| ty.source_text)
+                    .unwrap_or_else(|_| format!("{:?}", parameter.ty));
                 diagnostics.push(format!(
                     "contract call `{path}` argument {} type mismatch: expected {expected_label}, found {}",
                     index + 1,
@@ -191,9 +191,13 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
         call: &ResolvedContractCall<'_>,
         diagnostics: &mut Vec<String>,
     ) -> Option<(ResolvedTypeRef, PackageTypeRef)> {
-        let projected = match package_type_ref_from_validated_contract_ref(
-            &call.operation.contract.return_value.ty,
-        ) {
+        let return_type = match &call.operation.contract.stream {
+            BoundaryStreamContract::ServerStream { item_type, .. } => item_type,
+            BoundaryStreamContract::Unary | BoundaryStreamContract::Unsupported { .. } => {
+                &call.operation.contract.return_value.ty
+            }
+        };
+        let projected = match package_type_ref_from_validated_contract_ref(return_type) {
             Ok(projected) => projected,
             Err(error) => {
                 diagnostics.push(format!(
@@ -202,12 +206,25 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 return None;
             }
         };
-        match resolved_contract_type(
-            &call.operation.contract.return_value.ty,
-            &call.alias,
-            call.contract,
-        ) {
-            Ok(resolved) => Some((resolved, projected)),
+        match resolved_contract_type(return_type, &call.alias) {
+            Ok(resolved) => Some(match call.operation.contract.stream {
+                BoundaryStreamContract::ServerStream { .. } => (
+                    ResolvedTypeRef {
+                        source_text: format!("Stream<{}>", resolved.source_text),
+                        ir: skiff_artifact_model::TypeRefIr::Builtin {
+                            name: "Stream".to_string(),
+                            args: vec![resolved.ir],
+                        },
+                    },
+                    PackageTypeRef::Container {
+                        name: "Stream".to_string(),
+                        arguments: vec![projected],
+                    },
+                ),
+                BoundaryStreamContract::Unary | BoundaryStreamContract::Unsupported { .. } => {
+                    (resolved, projected)
+                }
+            }),
             Err(error) => {
                 diagnostics.push(error);
                 None
@@ -241,27 +258,14 @@ fn operation_shape_diagnostics(
     operation: &skiff_artifact_model::BoundaryOperationContract,
 ) -> Vec<String> {
     let mut diagnostics = Vec::new();
-    if !matches!(operation.errors, BoundaryErrorContract::None) {
+    if matches!(operation.stream, BoundaryStreamContract::Unsupported { .. }) {
         diagnostics.push(format!(
-            "contract call `{path}` uses an error contract unsupported by source calls"
-        ));
-    }
-    if !matches!(operation.stream, BoundaryStreamContract::Unary) {
-        diagnostics.push(format!(
-            "contract call `{path}` uses a stream contract unsupported by unary source calls"
+            "contract call `{path}` uses unsupported stream semantics"
         ));
     }
     if !matches!(operation.callbacks, BoundaryCallbackContract::None) {
         diagnostics.push(format!(
             "contract call `{path}` uses a callback contract unsupported by source calls"
-        ));
-    }
-    if matches!(
-        operation.cancellation,
-        BoundaryCancellationContract::Unsupported { .. }
-    ) {
-        diagnostics.push(format!(
-            "contract call `{path}` uses unsupported cancellation semantics"
         ));
     }
     diagnostics

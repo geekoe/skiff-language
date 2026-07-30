@@ -15,6 +15,7 @@ use crate::{
     },
 };
 use compiler_input_model::{PackageCompilePolicy, PackageDependency};
+use skiff_artifact_model::PackageArtifact;
 
 use super::config_usage::ConfigUsageSeed;
 use super::entity::PublicationEntityModel;
@@ -139,6 +140,7 @@ pub struct PackageSourceModel {
     #[allow(dead_code)]
     dependency_config_requirements: ConfigRequirementSet,
     effective_config_requirements: ConfigRequirementSet,
+    execution_semantics: super::SourceExecutionSemantics,
 }
 
 pub struct PackageSourceModelInput<'a> {
@@ -148,6 +150,7 @@ pub struct PackageSourceModelInput<'a> {
     pub package_dependencies: &'a [PackageDependency],
     pub package_db_metadata_index: Option<PublicationDbMetadataIndex>,
     pub type_resolution_package_facts: Option<&'a [TypeResolutionPackageFacts<'a>]>,
+    pub type_resolution_package_artifacts: Option<&'a [PackageArtifact]>,
     pub entity_model: PublicationEntityModel,
     pub name_resolution: NameResolutionModel,
     pub policy: PackageCompilePolicy<'a>,
@@ -182,16 +185,23 @@ impl PackageSourceModel {
             &input.parsed_sources,
             &name_resolution,
         )?;
-        let type_resolution = TypeResolutionModel::build(
+        let mut type_resolution = TypeResolutionModel::build_with_compiler_owned_packages(
             &input.parsed_sources,
             input.package_aliases,
             input.package_dependencies,
             input.type_resolution_package_facts,
+            input.type_resolution_package_artifacts,
+            input.dependency_analysis,
             indexes.publication_type_symbols(),
         )
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("type resolution model failed:\n- {message}"),
         })?;
+        type_resolution
+            .index_service_api_contracts(input.dependency_analysis)
+            .map_err(|message| PublicationError::ContractValidation {
+                message: format!("service API type indexing failed:\n- {message}"),
+            })?;
         super::contract_type_resolution::validate_contract_type_uses(
             &input.parsed_sources,
             input.dependency_analysis,
@@ -239,6 +249,12 @@ impl PackageSourceModel {
         );
         let callable_effects = callable_analysis.effects;
         let callable_provenance = callable_analysis.provenance;
+        let execution_semantics = super::execution_semantics::analyze_source_execution_semantics(
+            &input.parsed_sources,
+            &expression_sources,
+            &resolved_call_targets,
+            &callable_effects,
+        )?;
         let executable_signatures = super::SourceExecutableSignatureFacts::build(
             &input.parsed_sources,
             &type_resolution,
@@ -262,6 +278,7 @@ impl PackageSourceModel {
             &export_bindings,
             &type_resolution,
             &executable_signatures,
+            &interface_signatures,
         )
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source callable signature resolution failed:\n- {message}"),
@@ -298,6 +315,7 @@ impl PackageSourceModel {
             own_config_requirements,
             dependency_config_requirements,
             effective_config_requirements,
+            execution_semantics,
         })
     }
 
@@ -377,6 +395,10 @@ impl PackageSourceModel {
 
     pub fn resolved_call_targets(&self) -> &ResolvedCallTargetFacts {
         &self.resolved_call_targets
+    }
+
+    pub fn execution_semantics(&self) -> &super::SourceExecutionSemantics {
+        &self.execution_semantics
     }
 
     #[cfg(any(test, feature = "test-support"))]

@@ -71,10 +71,10 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
     let conformance = facts
         .conformance(&conformance_key)
         .expect("validated conformance");
-    let expected_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let expected_id = fixture_type_id("example.payments", "User");
     assert!(matches!(
         conformance.canonical_substitutions.get("T"),
-        Some(PackageTypeRef::Contract { contract_type_id }) if contract_type_id == &expected_id
+        Some(PackageTypeRef::PackageSchema { package_schema_type_id, .. }) if package_schema_type_id == &expected_id
     ));
     assert!(matches!(
         conformance.canonical_substitutions.get("Self"),
@@ -85,7 +85,7 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
         .expect("validated method query");
     assert!(matches!(
         &method.exact_requirement.return_type,
-        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &expected_id
+        PackageTypeRef::PackageSchema { package_schema_type_id, .. } if package_schema_type_id == &expected_id
     ));
     assert!(matches!(
         &method.exact_requirement.parameters[2].ty,
@@ -93,8 +93,8 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
             if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
                 if name == "Array"
                 && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
-                        if contract_type_id == &expected_id)))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { package_schema_type_id, .. }
+                        if package_schema_type_id == &expected_id)))
     ));
     assert!(matches!(method.receiver_type, PackageTypeRef::Local { .. }));
 }
@@ -117,7 +117,7 @@ fn different_aliases_for_the_same_contract_identity_conform_exactly() {
         .expect("validated exact method");
     assert!(matches!(
         &method.exact_requirement.return_type,
-        PackageTypeRef::Contract { .. }
+        PackageTypeRef::PackageSchema { .. }
     ));
     assert!(!matches!(
         &method.exact_requirement.return_type,
@@ -170,7 +170,7 @@ fn different_contract_identity_cannot_conform_through_alias_shaped_symbols() {
         ("accounts", "example.accounts"),
     ]);
     let error = build_interface_model(&repository_source("accounts.User"), &dependencies)
-        .expect_err("different ContractTypeId must fail exact conformance")
+        .expect_err("different package schema identities must fail exact conformance")
         .to_string();
     assert!(
         error.contains("exact signature does not match interface"),
@@ -211,32 +211,25 @@ fn interface_conformance_fails_closed_for_missing_method_and_receiver_mismatch()
 }
 
 #[test]
-fn compiler_known_interfaces_stay_outside_source_exact_conformance_ownership() {
+fn ordinary_nominal_types_stay_outside_source_exact_conformance_ownership() {
     let model = build_interface_model(
         r#"
-            type ShortActor implements Actor<string> {}
-            type ShortFailure implements ErrorPayload {}
+            actor ShortActor id string {}
+            type ShortFailure {}
         "#,
         &SourceDependencyAnalysisInput::default(),
     )
-    .expect("compiler-known interface conformances keep their semantic owner");
+    .expect("ordinary nominal declarations should build");
 
     assert!(model.interface_signatures().conformances().next().is_none());
     let context = TypeResolutionContext::source("api");
     for selector in [
         "Actor<string>",
         "std.actor.Actor<string>",
-        "ErrorPayload",
-        "std.error.ErrorPayload",
+        "Missing",
+        "ShortActor",
+        "ShortFailure",
     ] {
-        assert!(matches!(
-            model
-                .type_resolution()
-                .classify_canonical_interface_owner(selector, &context),
-            crate::type_resolution_model::CanonicalInterfaceOwnerResolution::CompilerKnown { .. }
-        ));
-    }
-    for selector in ["Missing", "ShortActor"] {
         assert!(matches!(
             model
                 .type_resolution()
@@ -320,7 +313,7 @@ fn package_interface_dependency() -> (PackageSourceModel, Vec<FileIrUnit>) {
                 params: vec![
                     FunctionTypeParamIr {
                         name: "self".to_string(),
-                        ty: TypeRefIr::native("Self"),
+                        ty: TypeRefIr::builtin("Self"),
                     },
                     FunctionTypeParamIr {
                         name: "fallback".to_string(),
@@ -400,7 +393,7 @@ fn package_interface_conformance_stays_owned_by_canonical_package_facts() {
         .expect("local receiver resolves");
     let expected = model
         .type_resolution()
-        .resolve_type_text("pkg.Reader<string>", &context)
+        .resolve_type_text("any pkg.Reader<string>", &context)
         .expect("package interface resolves");
     let conformance = model
         .type_resolution()
@@ -421,16 +414,16 @@ fn package_interface_conformance_stays_owned_by_canonical_package_facts() {
     ));
     assert_eq!(
         conformance.interface.canonical_type_args,
-        vec![TypeRefIr::native("string")]
+        vec![TypeRefIr::builtin("string")]
     );
     assert_eq!(conformance.slots.len(), 1);
     assert_eq!(
         conformance.slots[0].params[1].ty,
-        TypeRefIr::native("string")
+        TypeRefIr::builtin("string")
     );
     assert_eq!(
         conformance.slots[0].return_type,
-        TypeRefIr::native("string")
+        TypeRefIr::builtin("string")
     );
 }
 

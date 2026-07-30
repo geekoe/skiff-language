@@ -357,14 +357,9 @@ fn runtime_type_identity_plan(descriptor: &Value) -> RuntimeTypeIdentityPlan {
     };
     let identity = object.get("identity").and_then(Value::as_object);
     RuntimeTypeIdentityPlan {
-        nominal: identity_string(identity, "nominal")
-            .or_else(|| string_property(object, "nominalIdentity")),
+        catch_identity: None,
         interface: identity_string(identity, "interface")
             .or_else(|| string_property(object, "interfaceIdentity")),
-        union: identity_string(identity, "union")
-            .or_else(|| string_property(object, "unionIdentity")),
-        union_branch: identity_string(identity, "unionBranch")
-            .or_else(|| string_property(object, "unionBranchIdentity")),
         method_projection: identity_string(identity, "methodProjection")
             .or_else(|| string_property(object, "methodProjectionIdentity")),
     }
@@ -943,11 +938,6 @@ fn std_record_plan(name: &str, fields: Vec<RuntimeRecordFieldPlan>) -> RuntimeTy
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn std_union_plan(name: &str, items: Vec<RuntimeTypePlan>) -> RuntimeTypePlan {
-    builtin_plan(name, RuntimeTypeNode::Union(items))
-}
-
-#[cfg(any(test, feature = "test-support"))]
 fn std_nullable_plan(inner: RuntimeTypePlan) -> RuntimeTypePlan {
     RuntimeTypePlan {
         label: "nullable".to_string(),
@@ -965,16 +955,6 @@ fn std_array_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
 #[cfg(any(test, feature = "test-support"))]
 fn std_stream_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
     builtin_plan("Stream", RuntimeTypeNode::Stream(Box::new(item)))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_literal_string_plan(value: &str) -> RuntimeTypePlan {
-    RuntimeTypePlan {
-        label: "literal".to_string(),
-        named_type_name: None,
-        identity: RuntimeTypeIdentityPlan::default(),
-        node: RuntimeTypeNode::LiteralString(value.to_string()),
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1027,119 +1007,6 @@ fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connection_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnection",
-        vec![
-            std_field("id", leaf_string_plan()),
-            std_field("businessIdentity", std_nullable_plan(leaf_string_plan())),
-            std_field("context", context),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_text_message_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.TextConnectionMessage",
-        vec![
-            std_field("tag", std_literal_string_plan("text")),
-            std_field("text", leaf_string_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_binary_message_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.BinaryConnectionMessage",
-        vec![
-            std_field("tag", std_literal_string_plan("binary")),
-            std_field("base64", leaf_string_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connection_message_plan() -> RuntimeTypePlan {
-    builtin_plan(
-        "std.websocket.ConnectionMessage",
-        RuntimeTypeNode::Representation {
-            type_name: "std.websocket.ConnectionMessage".to_string(),
-            payload: Box::new(std_union_plan(
-                "std.websocket.ConnectionMessage",
-                vec![
-                    std_websocket_text_message_plan(),
-                    std_websocket_binary_message_plan(),
-                ],
-            )),
-        },
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connect_result_plan(name: &str, context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_union_plan(
-        name,
-        vec![
-            std_record_plan(
-                "std.websocket.WebSocketConnectAccept",
-                vec![
-                    std_field("tag", std_literal_string_plan("accept")),
-                    std_field("context", context),
-                    std_field("businessIdentity", std_nullable_plan(leaf_string_plan())),
-                    std_field(
-                        "connectionPolicy",
-                        std_nullable_plan(std_websocket_connection_policy_plan()),
-                    ),
-                ],
-            ),
-            std_record_plan(
-                "std.websocket.WebSocketConnectReject",
-                vec![
-                    std_field("tag", std_literal_string_plan("reject")),
-                    std_field("code", leaf_integer_plan()),
-                    std_field("reason", leaf_string_plan()),
-                ],
-            ),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connection_policy_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnectionPolicy",
-        vec![
-            std_field("maxConnections", leaf_integer_plan()),
-            std_field(
-                "overflow",
-                std_union_plan(
-                    "std.websocket.WebSocketConnectionPolicy.overflow",
-                    vec![
-                        std_literal_string_plan("close-oldest"),
-                        std_literal_string_plan("reject-new"),
-                    ],
-                ),
-            ),
-            std_field("closeCode", std_nullable_plan(leaf_integer_plan())),
-            std_field("closeReason", std_nullable_plan(leaf_string_plan())),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_receive_event_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketReceiveEvent",
-        vec![
-            std_field("connection", std_websocket_connection_plan(context)),
-            std_field("message", std_websocket_connection_message_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
 fn std_runtime_builtin_node_from_descriptor(descriptor: &Value) -> Option<Result<RuntimeTypeNode>> {
     let (root, args) = generic_type_parts(descriptor)?;
     let root_name = type_name_root(&root);
@@ -1155,50 +1022,6 @@ fn std_runtime_builtin_node_from_descriptor(descriptor: &Value) -> Option<Result
             if args.is_empty() && root_name == "std.http.HttpClientStreamHandle" =>
         {
             std_http_client_stream_handle_plan().node
-        }
-        "ConnectionMessage"
-            if args.is_empty() && root_name == "std.websocket.ConnectionMessage" =>
-        {
-            std_websocket_connection_message_plan().node
-        }
-        "WebSocketConnection"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketConnection" | "std.websocket.WebSocketConnection"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_connection_plan(context).node
-        }
-        "WebSocketConnectResult"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketConnectResult" | "std.websocket.WebSocketConnectResult"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_connect_result_plan(root_name, context).node
-        }
-        "WebSocketReceiveEvent"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketReceiveEvent" | "std.websocket.WebSocketReceiveEvent"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_receive_event_plan(context).node
         }
         _ => return None,
     };
@@ -1302,7 +1125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn type_descriptor_identity_fields_parse_when_present() {
+    fn legacy_display_identity_fields_do_not_reconstruct_catch_identity() {
         let descriptor = json!({
             "kind": "builtin",
             "name": "pkg.UserView",
@@ -1318,9 +1141,8 @@ mod tests {
         let plan =
             RuntimeTypePlan::from_descriptor(&descriptor).expect("descriptor plan should build");
 
-        assert_eq!(plan.nominal_identity(), Some("type:pkg.UserView@1"));
+        assert_eq!(plan.catch_identity(), None);
         assert_eq!(plan.interface_identity(), Some("iface:pkg.Viewable@1"));
-        assert_eq!(plan.union_identity(), Some("union:pkg.UserView@1"));
         assert_eq!(
             plan.method_projection_identity(),
             Some("methodProjection:pkg.UserView.render@1")
@@ -1351,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn type_descriptor_union_branch_identity_can_differ_from_branch_label() {
+    fn legacy_union_display_identity_does_not_create_branch_identity() {
         let descriptor = json!({
             "kind": "union",
             "identity": {
@@ -1380,11 +1202,8 @@ mod tests {
             panic!("expected union plan");
         };
 
-        assert_eq!(plan.union_identity(), Some("union:pkg.Result@1"));
-        assert_eq!(
-            branches[0].union_branch_identity(),
-            Some("branch:pkg.Result.success@1")
-        );
+        assert_eq!(plan.catch_identity(), None);
+        assert_eq!(branches[0].catch_identity(), None);
         assert!(matches!(
             branches[0].node(),
             RuntimeTypeNode::LiteralString(value) if value == "ok"

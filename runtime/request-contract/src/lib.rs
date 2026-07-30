@@ -5,22 +5,21 @@ pub mod response_event;
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
     HttpAdapter, HttpAdapterCallable, HttpAdapterKind, HttpNameValue, RequestCancel,
-    RequestEffectDouble, RequestEnvelope, WebSocketAdapter, WebSocketAdapterKind,
-    WebSocketConnectRequest, WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage,
-    WebSocketMessageEncoding, WebSocketMessageTag, WebSocketPayloadSegment,
-    WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
+    RequestEffectDouble, RequestEnvelope,
 };
 pub use outbound::{
-    ActorFindControlRequest, ActorKeyControlMetadata, ActorPutControlRequest,
-    ActorRemoveControlRequest, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
-    RequestCancelControl, RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl,
-    RuntimeDeadlineControl, RuntimeTraceContextControl, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, OutboundResponse, RequestCancelControl, RuntimeDeadlineControl,
+    SpawnClaimControlRequest, SpawnCompleteControlRequest, SpawnFailControlRequest,
+    SpawnRenewControlRequest, SpawnSubmitControlRequest,
 };
 pub use response_event::{
-    BoundaryResponse, HttpResponseMetadata, ResponseError, ResponseEvent, ResponseStreamEvent,
-    WebSocketConnectResponse,
+    BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,
+    ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 pub use skiff_runtime_capability_context::{
-    RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
+    OrdinaryResponseErrorSource, RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };

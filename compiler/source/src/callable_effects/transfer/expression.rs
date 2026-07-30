@@ -1,12 +1,13 @@
-use skiff_artifact_model::CallableProvenanceUnknownReason;
+use skiff_artifact_model::{CallableProvenanceUnknownReason, ValueProjectionPath};
 
 use crate::shared::ast::{
-    BinaryOp, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector, DbWhereClause, Expr,
-    PatchOperation,
+    BinaryOp, DbBlockMode, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector,
+    DbWhereClause, Expr, PatchOperation, Stmt,
 };
 
 use super::{
-    super::provenance::{all_effects, join_effects, AbstractValue, EscapeLane},
+    super::analysis::ModuleConstantFact,
+    super::provenance::{AbstractValue, CallableState, EscapeLane},
     join_environments, Environment, Evaluator,
 };
 
@@ -17,12 +18,24 @@ impl Evaluator<'_, '_> {
         let reference = self.expression_may_be_reference(&key);
         let value = match expr {
             Expr::Literal(_) => AbstractValue::constant(reference),
-            Expr::Identifier(name) => env
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| AbstractValue::constant(reference)),
+            Expr::Identifier(name) => {
+                if let Some(value) = env.get(name) {
+                    value.clone()
+                } else {
+                    let key = crate::SourceSymbolKey::new(self.definition.module_path, name);
+                    match self.module_constants.get(&key) {
+                        Some(ModuleConstantFact::Exact) => AbstractValue::constant(reference),
+                        Some(ModuleConstantFact::Unsupported) => {
+                            self.state.mark_unknown(
+                                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+                            );
+                            AbstractValue::unknown(reference)
+                        }
+                        None => AbstractValue::unknown(reference),
+                    }
+                }
+            }
             Expr::DependencySourceAddress(_) => {
-                self.state.effects.requires_same_heap_identity = true;
                 self.state.effects.invokes_unknown_target = true;
                 self.state.effects.may_suspend = true;
                 self.state
@@ -32,14 +45,24 @@ impl Evaluator<'_, '_> {
             Expr::Binary { op, left, right } => {
                 let mut value = self.eval_expr(left, env);
                 let right = self.eval_expr(right, env);
-                if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (value.reference || right.reference)
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                    && value.reference
+                    && right.reference
+                    && (value.contains_direct_caller_reference()
+                        || right.contains_direct_caller_reference())
                 {
-                    self.state.effects.requires_same_heap_identity = true;
+                    let mut compared = value.clone();
+                    compared.join(&right);
+                    self.state.record_same_heap_identity(&compared);
                 }
                 value.join(&right);
                 value.reference = reference;
                 if !reference {
                     value.caller_references.clear();
+                    value.direct_caller_references.clear();
+                    value.fresh_roots.clear();
+                    value.fresh_references.clear();
+                    value.needs_fresh_root = false;
                 }
                 value
             }
@@ -48,6 +71,10 @@ impl Evaluator<'_, '_> {
                 value.reference = reference;
                 if !reference {
                     value.caller_references.clear();
+                    value.direct_caller_references.clear();
+                    value.fresh_roots.clear();
+                    value.fresh_references.clear();
+                    value.needs_fresh_root = false;
                 }
                 value
             }
@@ -56,31 +83,49 @@ impl Evaluator<'_, '_> {
             Expr::InterfaceBox { value, .. } => {
                 let mut value = self.eval_expr(value, env);
                 value.reference = true;
-                self.state.effects.requires_same_heap_identity = true;
                 self.state.record_escape(&value, EscapeLane::Callback);
                 value
             }
-            Expr::Field { object, .. } => {
-                let mut value = self.eval_expr(object, env);
-                value.reference = reference;
-                if !reference {
-                    value.caller_references.clear();
+            Expr::Field { object, field } => {
+                let value = self.eval_expr(object, env);
+                if let Some(field_value) = value.catch_field(field, reference) {
+                    field_value
+                } else {
+                    let Ok(path) = ValueProjectionPath::field(field.clone()) else {
+                        self.state.join(&CallableState::fail_closed(
+                            CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                        ));
+                        return AbstractValue::unknown(reference);
+                    };
+                    let mut value = self.project_value(&value, &path, reference, true);
+                    if reference
+                        && value
+                            .origins
+                            .contains(&super::super::provenance::Origin::Fresh)
+                        && value.fresh_roots.is_empty()
+                    {
+                        let local_candidate = self.allocate_fresh_container(
+                            key.preorder_index(),
+                            AbstractValue::default(),
+                        );
+                        value.join(&local_candidate);
+                    }
+                    value
                 }
-                value
             }
             Expr::Record { fields, .. } => {
                 let mut value = AbstractValue::default();
                 for (_, field) in fields {
                     value.join(&self.eval_expr(field, env));
                 }
-                value.with_fresh_container(true)
+                self.allocate_fresh_container(key.preorder_index(), value)
             }
             Expr::ObjectLiteral { entries } => {
                 let mut value = AbstractValue::default();
                 for entry in entries {
                     value.join(&self.eval_expr(&entry.value, env));
                 }
-                value.with_fresh_container(true)
+                self.allocate_fresh_container(key.preorder_index(), value)
             }
             Expr::Patch { operations, .. } => {
                 let mut value = AbstractValue::default();
@@ -92,47 +137,86 @@ impl Evaluator<'_, '_> {
                     };
                     value.join(&self.eval_expr(expression, env));
                 }
-                value.with_fresh_container(true)
+                self.allocate_fresh_container(key.preorder_index(), value)
             }
+            Expr::ValueBlock(value) => {
+                let mut nested = env.clone();
+                self.eval_block(&value.body, &mut nested);
+                let result = self.eval_expr(&value.tail, &mut nested);
+                let visible = env.keys().cloned().collect::<Vec<_>>();
+                for name in visible {
+                    if let Some(value) = nested.get(&name) {
+                        env.insert(name, value.clone());
+                    }
+                }
+                result
+            }
+            Expr::ConcurrentValue(value) => self
+                .eval_concurrent_block(&value.body, Some(&value.tail), env)
+                .unwrap_or_else(|| AbstractValue::unknown(reference)),
+            Expr::Timeout { value, .. } => self.eval_expr(value, env),
             Expr::Throw { value } => {
                 let value = self.eval_expr(value, env);
-                self.state.record_throw(&value);
+                self.state.record_wire_detached_throw(&value);
                 AbstractValue::constant(false)
             }
             Expr::Rethrow { exception } => {
-                self.eval_expr(exception, env);
-                self.mark_unsupported_control_flow();
-                AbstractValue::unknown(reference)
+                let exception = self.eval_expr(exception, env);
+                self.state.record_wire_detached_throw(&exception);
+                AbstractValue::constant(false)
             }
             Expr::Catch { try_expr, .. } => {
-                self.eval_expr(try_expr, env);
-                self.mark_unsupported_control_flow();
-                AbstractValue::unknown(reference)
+                let value = self.eval_expr(try_expr, env);
+                // A typed catch materializes an owner-local tagged result.
+                // Effects of evaluating the try expression remain exact, but
+                // the catch construct itself neither invokes an unknown target
+                // nor requires caller heap identity.
+                AbstractValue::catch_result(value, reference)
             }
             Expr::DbOperation(operation) => {
-                let inputs = self.eval_db_operation(operation, env);
-                self.state.record_escape(&inputs, EscapeLane::Database);
+                let persisted = self.eval_db_operation(operation, env);
+                self.state.record_persistent_escape(&persisted);
                 self.state.effects.may_suspend = true;
                 AbstractValue::fresh(reference)
             }
             Expr::DbQuery(query) => {
-                let inputs = self.eval_db_query(&query.query, env);
-                self.state.record_escape(&inputs, EscapeLane::Database);
+                self.eval_db_query(&query.query, env);
                 self.state.effects.may_suspend = true;
                 AbstractValue::fresh(reference)
             }
             Expr::DbTransaction(transaction) => {
                 let mut body_env = env.clone();
-                self.eval_block(&transaction.body, &mut body_env);
+                let result = match transaction.mode {
+                    DbBlockMode::Effect => {
+                        self.eval_block(&transaction.body, &mut body_env);
+                        AbstractValue::constant(false)
+                    }
+                    DbBlockMode::Value => {
+                        let Some((last, prefix)) = transaction.body.statements.split_last() else {
+                            self.state.mark_unknown(
+                                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+                            );
+                            return AbstractValue::unknown(reference);
+                        };
+                        for statement in prefix {
+                            self.eval_stmt(statement, &mut body_env);
+                        }
+                        let Stmt::Expr(result) = last else {
+                            self.eval_stmt(last, &mut body_env);
+                            self.state.mark_unknown(
+                                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+                            );
+                            return AbstractValue::unknown(reference);
+                        };
+                        self.eval_expr(result, &mut body_env)
+                    }
+                };
                 join_environments(env, &body_env);
                 self.state.effects.may_suspend = true;
-                self.state
-                    .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
-                AbstractValue::unknown(reference)
+                result
             }
             Expr::DbLeaseClaim(claim) => {
-                let key_value = self.eval_expr(&claim.key, env);
-                self.state.record_escape(&key_value, EscapeLane::Database);
+                self.eval_expr(&claim.key, env);
                 let mut body_env = env.clone();
                 if let Some(binding) = &claim.binding {
                     body_env.insert(binding.clone(), AbstractValue::fresh(true));
@@ -143,8 +227,7 @@ impl Evaluator<'_, '_> {
                 AbstractValue::fresh(reference)
             }
             Expr::DbLeaseRead(read) => {
-                let key_value = self.eval_expr(&read.key, env);
-                self.state.record_escape(&key_value, EscapeLane::Database);
+                self.eval_expr(&read.key, env);
                 self.state.effects.may_suspend = true;
                 AbstractValue::fresh(reference)
             }
@@ -158,12 +241,12 @@ impl Evaluator<'_, '_> {
         operation: &DbOperation,
         env: &mut Environment,
     ) -> AbstractValue {
-        let mut inputs = AbstractValue::default();
+        let mut persisted = AbstractValue::default();
         if let Some(selector) = &operation.selector {
-            inputs.join(&self.eval_db_selector(selector, env));
+            self.eval_db_selector(selector, env);
         }
         if let Some(query) = operation.independent_query() {
-            inputs.join(&self.eval_db_query(query, env));
+            self.eval_db_query(query, env);
         }
         for body in [&operation.body, &operation.insert_body]
             .into_iter()
@@ -172,10 +255,12 @@ impl Evaluator<'_, '_> {
             match body {
                 DbBody::ObjectFields { fields } => {
                     for field in fields {
-                        inputs.join(&self.eval_expr(&field.value, env));
+                        persisted.join(&self.eval_db_write_value(&field.value, env));
                     }
                 }
-                DbBody::Values { value } => inputs.join(&self.eval_expr(value, env)),
+                DbBody::Values { value } => {
+                    persisted.join(&self.eval_db_write_value(value, env));
+                }
             }
         }
         if let Some(change) = &operation.change {
@@ -185,13 +270,32 @@ impl Evaluator<'_, '_> {
                     | DbChangeOp::Inc { value, .. }
                     | DbChangeOp::AddToSet { value, .. }
                     | DbChangeOp::Remove { value, .. } => {
-                        inputs.join(&self.eval_expr(value, env));
+                        persisted.join(&self.eval_db_write_value(value, env));
                     }
                     DbChangeOp::Unset { .. } => {}
                 }
             }
         }
-        inputs
+        persisted
+    }
+
+    fn eval_db_write_value(&mut self, expression: &Expr, env: &mut Environment) -> AbstractValue {
+        let mut value = self.eval_expr(expression, env);
+        if self.contains_mutated_fresh_root(&value) {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+            value.unknown = true;
+        }
+        // A statically resolved field projection is encoded into the database
+        // write payload, so the stored value is detached from the source
+        // object's heap graph. Keep direct caller-owned values conservative:
+        // `payload = input` is still an observable database escape.
+        if is_static_field_projection(expression) && !value.unknown {
+            value.caller_references.clear();
+            value.direct_caller_references.clear();
+        }
+        value
     }
 
     fn eval_db_selector(&mut self, selector: &DbSelector, env: &mut Environment) -> AbstractValue {
@@ -225,10 +329,19 @@ impl Evaluator<'_, '_> {
         }
         inputs
     }
+}
 
-    fn mark_unsupported_control_flow(&mut self) {
-        join_effects(&mut self.state.effects, &all_effects());
-        self.state
-            .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
+fn is_static_field_projection(expression: &Expr) -> bool {
+    match expression {
+        Expr::Field { object, .. } => is_static_projection_root(object),
+        _ => false,
+    }
+}
+
+fn is_static_projection_root(expression: &Expr) -> bool {
+    match expression {
+        Expr::Identifier(_) => true,
+        Expr::Field { object, .. } => is_static_projection_root(object),
+        _ => false,
     }
 }

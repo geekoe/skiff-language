@@ -5,7 +5,7 @@ use crate::{publication_abi::OperationAbiRef, refs::FileIrRef, types::TypeRefIr}
 /// Package executable address inside typed File IR.
 ///
 /// This is a neutral package-code leaf. It is shared by legacy runtime DTOs and
-/// the canonical PackageArtifact, but is not owned by ServiceUnit.
+/// the canonical PackageArtifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OperationTargetRef {

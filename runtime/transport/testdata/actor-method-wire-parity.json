@@ -1,0 +1,324 @@
+[
+  {
+    "name": "invoke",
+    "accepted": true,
+    "payloadBase64": "AQID",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.invoke",
+      "invocationId": "inv:1",
+      "actorRef": {
+        "serviceId": "svc",
+        "actorTypeIdentity": "actor",
+        "actorIdTypeIdentity": "id",
+        "actorIdEncodingVersion": "v1",
+        "canonicalActorIdKeyBytesBase64": "AQ==",
+        "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "epoch": 7
+      },
+      "declarationOwner": {
+        "unit": { "kind": "service" },
+        "file": { "kind": "fileIrIdentity", "value": "file:1" },
+        "actorSymbol": "Counter"
+      },
+      "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "methodIdentity": "skiff-actor-method-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "argumentsEncodingVersion": "skiff-actor-arguments-v1",
+      "deadline": { "timeoutMs": 100, "expiresAt": "2026-07-25T00:00:00Z" },
+      "cancellationCorrelation": "cancel:1"
+    }
+  },
+  {
+    "name": "return",
+    "accepted": true,
+    "payloadBase64": "BA==",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.return",
+      "invocationId": "inv:1",
+      "returnEncodingVersion": "skiff-actor-return-v1"
+    }
+  },
+  {
+    "name": "upgrading error",
+    "accepted": true,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorUpgradingError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "retryAfterMs": 10
+      }
+    }
+  },
+  {
+    "name": "cancel deadline",
+    "accepted": true,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.cancel",
+      "invocationId": "inv:1",
+      "cancellationCorrelation": "cancel:1",
+      "reason": "deadlineExceeded"
+    }
+  },
+  {
+    "name": "missing epoch",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.invoke",
+      "invocationId": "inv:1",
+      "actorRef": {
+        "serviceId": "svc",
+        "actorTypeIdentity": "actor",
+        "actorIdTypeIdentity": "id",
+        "actorIdEncodingVersion": "v1",
+        "canonicalActorIdKeyBytesBase64": "AQ==",
+        "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "declarationOwner": {
+        "unit": { "kind": "service" },
+        "file": { "kind": "fileIrIdentity", "value": "file:1" },
+        "actorSymbol": "Counter"
+      },
+      "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "methodIdentity": "skiff-actor-method-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "argumentsEncodingVersion": "skiff-actor-arguments-v1",
+      "deadline": { "timeoutMs": 100, "expiresAt": "2026-07-25T00:00:00Z" },
+      "cancellationCorrelation": "cancel:1"
+    }
+  },
+  {
+    "name": "bad method identity",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.invoke",
+      "invocationId": "inv:1",
+      "actorRef": {
+        "serviceId": "svc",
+        "actorTypeIdentity": "actor",
+        "actorIdTypeIdentity": "id",
+        "actorIdEncodingVersion": "v1",
+        "canonicalActorIdKeyBytesBase64": "AQ==",
+        "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "epoch": 7
+      },
+      "declarationOwner": {
+        "unit": { "kind": "service" },
+        "file": { "kind": "fileIrIdentity", "value": "file:1" },
+        "actorSymbol": "Counter"
+      },
+      "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "methodIdentity": "bad",
+      "argumentsEncodingVersion": "skiff-actor-arguments-v1",
+      "deadline": { "timeoutMs": 100, "expiresAt": "2026-07-25T00:00:00Z" },
+      "cancellationCorrelation": "cancel:1"
+    }
+  },
+  {
+    "name": "extra field",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.cancel",
+      "invocationId": "inv:1",
+      "cancellationCorrelation": "cancel:1",
+      "reason": "cancelled",
+      "extra": true
+    }
+  },
+  {
+    "name": "unknown version",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "actor.method.cancel",
+      "invocationId": "inv:1",
+      "cancellationCorrelation": "cancel:1",
+      "reason": "cancelled"
+    }
+  },
+  {
+    "name": "error payload forbidden",
+    "accepted": false,
+    "payloadBase64": "AQ==",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorUpgradingError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "retryAfterMs": 10
+      }
+    }
+  },
+  {
+    "name": "non-canonical base64",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorUpgradingError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AB==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "retryAfterMs": 10
+      }
+    }
+  },
+  {
+    "name": "unsafe epoch",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorUpgradingError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 9007199254740992
+        },
+        "retryAfterMs": 10
+      }
+    }
+  },
+  {
+    "name": "unsafe retry after",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorUpgradingError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "retryAfterMs": 9007199254740992
+      }
+    }
+  },
+  {
+    "name": "version rejected error",
+    "accepted": true,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorVersionRejectedError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "requestedImplementationIdentity": "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "acceptedImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    }
+  },
+  {
+    "name": "incarnation replaced error",
+    "accepted": true,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorIncarnationReplacedError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "currentEpoch": 8
+      }
+    }
+  },
+  {
+    "name": "unsafe current epoch",
+    "accepted": false,
+    "payloadBase64": "",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v2",
+      "type": "actor.method.error",
+      "invocationId": "inv:1",
+      "error": {
+        "name": "actorIncarnationReplacedError",
+        "actorRef": {
+          "serviceId": "svc",
+          "actorTypeIdentity": "actor",
+          "actorIdTypeIdentity": "id",
+          "actorIdEncodingVersion": "v1",
+          "canonicalActorIdKeyBytesBase64": "AQ==",
+          "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "epoch": 7
+        },
+        "currentEpoch": 9007199254740992
+      }
+    }
+  }
+]

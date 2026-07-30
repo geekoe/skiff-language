@@ -3,8 +3,10 @@ use std::sync::Arc;
 use skiff_runtime_model::runtime_value::ActorRef;
 
 use crate::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CapabilityFuture,
-    CapabilityResult, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorInvocationOutcome, ActorInvocationRequest, ActorRemoveControlRequest,
+    ActorReplaceControlRequest, CapabilityFuture, CapabilityResult, OwnedExecutionControl,
+    SpawnSubmitControlRequest,
 };
 
 pub trait ActorCapabilityApi: Send + Sync {
@@ -21,29 +23,48 @@ pub trait ActorCapabilityApi: Send + Sync {
     fn spawn_service_protocol_identity(&self) -> &str;
     fn request_service_protocol_identity(&self) -> &str;
     fn operation_service_protocol_identity(&self) -> Option<&str>;
-    fn activation_identity(&self) -> Option<&str>;
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
     fn trace_id(&self) -> Option<&str>;
 
     // Actor storage and spawn control operations provided by the host/runtime.
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef>;
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorRef>;
 
     fn find_actor<'a>(
         &'a self,
         request: ActorFindControlRequest,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, Option<ActorRef>>;
 
-    fn remove_actor<'a>(&'a self, request: ActorRemoveControlRequest)
-        -> CapabilityFuture<'a, bool>;
+    fn remove_actor<'a>(
+        &'a self,
+        request: ActorRemoveControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, bool>;
 
     fn submit_spawn<'a>(
         &'a self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()>;
+
+    fn invoke_actor<'a>(
+        &'a self,
+        request: ActorInvocationRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorInvocationOutcome>;
 }
 
 #[derive(Clone)]
@@ -105,7 +126,7 @@ impl<'a> ActorCapabilityContext<'a> {
         self.inner.operation_service_protocol_identity()
     }
 
-    pub fn activation_identity(&self) -> Option<&str> {
+    pub fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.inner.activation_identity()
     }
 
@@ -113,31 +134,61 @@ impl<'a> ActorCapabilityContext<'a> {
         self.inner.trace_id()
     }
 
-    pub async fn put_actor(
+    pub async fn get_or_create_actor(
         &self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<ActorRef> {
-        self.inner.put_actor(request, object_payload).await
+        self.inner
+            .get_or_create_actor(request, bootstrap_payload, execution_control)
+            .await
+    }
+
+    pub async fn replace_actor(
+        &self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<ActorRef> {
+        self.inner
+            .replace_actor(request, bootstrap_payload, execution_control)
+            .await
     }
 
     pub async fn find_actor(
         &self,
         request: ActorFindControlRequest,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<Option<ActorRef>> {
-        self.inner.find_actor(request).await
+        self.inner.find_actor(request, execution_control).await
     }
 
-    pub async fn remove_actor(&self, request: ActorRemoveControlRequest) -> CapabilityResult<bool> {
-        self.inner.remove_actor(request).await
+    pub async fn remove_actor(
+        &self,
+        request: ActorRemoveControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<bool> {
+        self.inner.remove_actor(request, execution_control).await
     }
 
     pub async fn submit_spawn(
         &self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<()> {
-        self.inner.submit_spawn(request, args_payload).await
+        self.inner
+            .submit_spawn(request, args_payload, execution_control)
+            .await
+    }
+
+    pub async fn invoke_actor(
+        &self,
+        request: ActorInvocationRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<ActorInvocationOutcome> {
+        self.inner.invoke_actor(request, execution_control).await
     }
 }
 
@@ -152,30 +203,60 @@ impl<'a> ActorClient<'a> {
         Self { context }
     }
 
-    pub async fn put_actor(
+    pub async fn get_or_create_actor(
         &self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<ActorRef> {
-        self.context.put_actor(request, object_payload).await
+        self.context
+            .get_or_create_actor(request, bootstrap_payload, execution_control)
+            .await
+    }
+
+    pub async fn replace_actor(
+        &self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<ActorRef> {
+        self.context
+            .replace_actor(request, bootstrap_payload, execution_control)
+            .await
     }
 
     pub async fn find_actor(
         &self,
         request: ActorFindControlRequest,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<Option<ActorRef>> {
-        self.context.find_actor(request).await
+        self.context.find_actor(request, execution_control).await
     }
 
-    pub async fn remove_actor(&self, request: ActorRemoveControlRequest) -> CapabilityResult<bool> {
-        self.context.remove_actor(request).await
+    pub async fn remove_actor(
+        &self,
+        request: ActorRemoveControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<bool> {
+        self.context.remove_actor(request, execution_control).await
     }
 
     pub async fn submit_spawn(
         &self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<()> {
-        self.context.submit_spawn(request, args_payload).await
+        self.context
+            .submit_spawn(request, args_payload, execution_control)
+            .await
+    }
+
+    pub async fn invoke_actor(
+        &self,
+        request: ActorInvocationRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<ActorInvocationOutcome> {
+        self.context.invoke_actor(request, execution_control).await
     }
 }

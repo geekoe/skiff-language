@@ -5,6 +5,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -18,17 +19,15 @@ use crate::{
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context as capability_contract;
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CancellationToken,
-    ExecutionControlResult, FileCapabilityError, FileCapabilityFuture, RequestEffectDoubleControl,
-    SpawnSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
-    StreamRuntimeResult,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
+    ConnectionRequestRegistry, ConnectionRequestSession, ExecutionControlResult,
+    FileCapabilityError, FileCapabilityFuture, RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    StreamPoll, StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_eval::{
     capabilities as eval_capabilities,
     error::{Result, RuntimeError},
-};
-use skiff_runtime_linked_program::{
-    ExecutableAddr, ServiceDependencyConstraint, ServiceTimeoutConfig,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -36,12 +35,15 @@ use skiff_runtime_model::{
 };
 use skiff_runtime_request::{
     invocation_context_from_request, request_deadline_ms, OutboundRequestRegistry,
-    RequestEffectDouble, RequestEnvelope, RequestEvalAdapter, RequestEvalExecutionInputParts,
-    RuntimeOperation,
+    RequestEffectDouble, RequestEnvelope, RuntimeOperation,
 };
 
 mod actor;
+mod actor_method_adapter;
+mod assembly_execution_context;
 mod assembly_request_adapter;
+#[cfg(test)]
+mod carrier_delivery_tests;
 mod config;
 mod downcast;
 mod effects;
@@ -50,12 +52,12 @@ mod execution;
 mod factory;
 mod file_stream;
 mod http;
-mod outbound;
-mod request_adapter;
 mod request_contexts;
 mod websocket;
 
+use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
 use actor::{actor, RuntimeOwnedActorParts};
+pub(crate) use actor_method_adapter::{ActorMethodEvalExecution, ActorMethodEvalExecutionInput};
 use config::RuntimeConfigCapabilityContext;
 pub(crate) use downcast::concrete_stream_runtime;
 use downcast::{
@@ -63,32 +65,32 @@ use downcast::{
     concrete_test_double, concrete_test_effect_double_context, eval_test_double,
 };
 use effects::{RuntimeEffectDispatchContext, RuntimeTestEffectDoubleContext};
-use error::IntoEvalResult;
+use error::{ordinary_root_error_into_capability, root_result_into_capability, IntoEvalResult};
 use execution::RuntimeExecutionControl;
 use file_stream::{
     RuntimeFileCapabilitySource, RuntimeOwnedFileSourceStreamContext, RuntimeStreamCancelSignal,
     RuntimeStreamRuntime,
 };
 use http::{RuntimeHttpClientCapabilityContext, RuntimeTelemetryCapabilityContext};
-use outbound::{RetiredAssemblyOutboundServiceContext, RuntimeOutboundServiceContext};
-use websocket::RuntimeWebsocketCapabilityContext;
+use websocket::{
+    RuntimeConnectionRequestParts, RuntimeWebsocketCapabilityContext,
+    RuntimeWebsocketRequestCapabilityContext,
+};
 
+pub(crate) use assembly_execution_context::RuntimeAssemblyEvalAdapterContextInput;
 pub(crate) use assembly_request_adapter::{
-    assembly_request_eval_adapter, RuntimeAssemblyRequestEvalAdapterInput,
+    http_gateway_eval_adapter, websocket_connect_eval_adapter, websocket_jsonrpc_eval_adapter,
+    RuntimeHttpGatewayEvalAdapterInput, RuntimeWebSocketConnectEvalAdapterInput,
+    RuntimeWebSocketJsonRpcEvalAdapterInput,
 };
 pub(crate) use error::root_error_into_eval;
 pub(crate) use factory::actor_from_request;
-pub(crate) use factory::retired_assembly_outbound;
 #[cfg(any(test, feature = "test-support"))]
 pub use factory::TestActorCapabilityFactory;
 pub use factory::{
-    config_context, db_context, effects, execution_control, file_source, outbound, runtime_factory,
-    websocket, websocket_from_request,
+    config_context, db_context, effects, execution_control, file_source, runtime_factory,
+    websocket, websocket_from_request, websocket_from_runtime_request, websocket_rebinder,
+    websocket_rebinder_for_runtime_request,
 };
-pub(crate) use request_adapter::{
-    attach_request_error_diagnostic_frame, request_eval_adapter, RuntimeRequestEvalAdapterInput,
-};
-pub use request_contexts::{
-    effect_dispatch_context_from_request, outbound_service_context_from_request,
-};
+pub use request_contexts::effect_dispatch_context_from_request;
 pub use websocket::RuntimeOwnedWebsocketParts;

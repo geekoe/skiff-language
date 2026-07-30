@@ -178,7 +178,7 @@ const hostBoundaryTarget = {
     ],
     [
       'skiff-runtime-native-contract',
-      'host still consumes native contract metadata during current request and package-test assembly',
+      'host still consumes native contract metadata during current request and test-service assembly',
     ],
     [
       'skiff-runtime-linked-type-plan',
@@ -670,6 +670,40 @@ function runSelfTests() {
               && violation.message.includes('skiff-runtime-host is not allowed'),
           ),
           'expected skiff-runtime-model -> skiff-runtime-host to be rejected',
+        );
+      },
+    },
+    {
+      name: 'current DAG rejects request depending on transport',
+      run: () => {
+        const metadata = metadataFromRuntimeDag();
+        const requestPackage = metadata.packages.find((pkg) => pkg.name === 'skiff-runtime-request');
+        requestPackage.dependencies.push(runtimeDependency('skiff-runtime-transport'));
+        const result = checkRuntimeDag(metadata);
+        assert(
+          result.violations.some(
+            (violation) =>
+              violation.packageName === 'skiff-runtime-request'
+              && violation.message.includes('skiff-runtime-transport is not allowed'),
+          ),
+          'expected skiff-runtime-request -> skiff-runtime-transport to be rejected',
+        );
+      },
+    },
+    {
+      name: 'native cannot depend on linked-program execution internals',
+      run: () => {
+        const metadata = metadataFromRuntimeDag();
+        const nativePackage = metadata.packages.find((pkg) => pkg.name === 'skiff-runtime-native');
+        nativePackage.dependencies.push(runtimeDependency('skiff-runtime-linked-program'));
+        const result = checkRuntimeDag(metadata);
+        assert(
+          result.violations.some(
+            (violation) =>
+              violation.packageName === 'skiff-runtime-native'
+              && violation.message.includes('skiff-runtime-linked-program is not allowed'),
+          ),
+          'expected skiff-runtime-native -> skiff-runtime-linked-program to be rejected',
         );
       },
     },

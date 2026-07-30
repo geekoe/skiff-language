@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageTypeRef,
-    TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr,
+    NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
 
@@ -14,7 +14,7 @@ use crate::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
         Expr, ForBinding, FunctionDecl, Literal, SourceFile, Stmt, TypeRef, UnaryOp,
     },
-    shared::ast_utils::expr_path,
+    shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
     shared::prelude_registry::prelude_registry,
     shared::type_expr::TypeExpr,
@@ -28,13 +28,22 @@ use super::{
 mod contract_call_typing;
 mod db_projection;
 mod expression_assignability;
+mod object_materialization;
 
+pub use contract_call_typing::package_type_ref_from_contract_type;
 use contract_call_typing::{
-    contract_source_assignability_with_projections, ContractCallOutcome, ContractCallTyping,
-    ContractProjectionState,
+    contract_source_assignability_with_projections, package_type_target_assignable,
+    ContractCallOutcome, ContractCallTyping, ContractProjectionState,
 };
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
+pub use object_materialization::{
+    MaterializedObjectField, ObjectFieldValueSource, ObjectMaterializationKind,
+    TargetTypedObjectMaterialization,
+};
+use object_materialization::{
+    ObjectLiteralSource, ObjectLiteralSourceField, ObjectMaterializationState,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct ExpressionTypeModel {
@@ -42,6 +51,7 @@ pub struct ExpressionTypeModel {
     constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
+    object_materializations: BTreeMap<ExpressionKey, TargetTypedObjectMaterialization>,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +76,8 @@ impl ExpressionTypeModelBuildError {
 pub struct ExpressionTypeFact {
     pub ty: Option<ResolvedTypeRef>,
     pub span: SourceSpan,
+    pub test_effect_throw_payload_type: Option<TypeRefIr>,
+    stream_emit_target: Option<ResolvedTypeRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +197,18 @@ struct ConditionNarrowings {
     when_false: TypeNarrowing,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ExactTestEffectTarget {
+    Package {
+        package_build_id: skiff_artifact_model::PackageBuildId,
+        callable_id: skiff_artifact_model::PackageCallableId,
+    },
+    Service {
+        protocol_identity: skiff_artifact_model::ServiceProtocolIdentity,
+        operation_id: skiff_artifact_model::ContractOperationId,
+    },
+}
+
 #[derive(Clone, Debug, Default)]
 struct TypeNarrowing {
     env: BTreeMap<String, ResolvedTypeRef>,
@@ -209,14 +233,18 @@ struct OwnerChecker<'a> {
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
     dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
     return_type: Option<TypeRef>,
+    stream_chunk: Option<ResolvedTypeRef>,
     type_context: TypeResolutionContext<'a>,
     env: BTreeMap<String, ResolvedTypeRef>,
     contract_projection: ContractProjectionState,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
+    transparent_value_targets: BTreeMap<ExpressionKey, ExpressionKey>,
+    test_effect_declarations: BTreeMap<ExactTestEffectTarget, String>,
     facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         &'a mut BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
+    object_materialization: &'a mut ObjectMaterializationState,
     diagnostics: &'a mut Vec<String>,
 }
 
@@ -232,6 +260,7 @@ impl ExpressionTypeModel {
         let mut facts = BTreeMap::new();
         let mut constructor_validations = BTreeMap::new();
         let mut representation_constructor_validations = BTreeMap::new();
+        let mut object_materialization = ObjectMaterializationState::default();
         let mut diagnostics = Vec::new();
         for parsed in parsed_sources {
             check_source(
@@ -245,14 +274,27 @@ impl ExpressionTypeModel {
                 &mut facts,
                 &mut constructor_validations,
                 &mut representation_constructor_validations,
+                &mut object_materialization,
                 &mut diagnostics,
             );
+        }
+
+        for (key, source) in &object_materialization.sources {
+            if object_materialization.targeted.contains(key) {
+                continue;
+            }
+            diagnostics.push(format!(
+                "{}: object literal at {} requires an explicit target type",
+                key.module_path(),
+                span_label(source.span)
+            ));
         }
 
         let model = Self {
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materializations: object_materialization.facts,
         };
         if !diagnostics.is_empty() {
             return Err(ExpressionTypeModelBuildError { model, diagnostics });
@@ -276,45 +318,17 @@ impl ExpressionTypeModel {
         self.representation_constructor_validations.get(key)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn value_assignable_to_expected(
+    pub fn object_materialization(
         &self,
-        expression_sources: &ExpressionSourceMap,
-        type_resolution: &TypeResolutionModel,
-        type_context: &TypeResolutionContext<'_>,
-        annotation: Option<&TypeRef>,
-        value: &Expr,
-        actual: &ResolvedTypeRef,
-        expected: &ResolvedTypeRef,
-    ) -> bool {
-        ExpressionAssignability::new("", expression_sources, type_resolution, type_context, None)
-            .value_assignable_without_contract_projection(annotation, value, actual, expected)
+        key: &ExpressionKey,
+    ) -> Option<&TargetTypedObjectMaterialization> {
+        self.object_materializations.get(key)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn object_literal_assignability_diagnostics(
-        &self,
-        diagnostic_path: &str,
-        expression_sources: &ExpressionSourceMap,
-        type_resolution: &TypeResolutionModel,
-        type_context: &TypeResolutionContext<'_>,
-        annotation: Option<&TypeRef>,
-        value: &Expr,
-        value_key: &ExpressionKey,
-        actual: &ResolvedTypeRef,
-        expected: &ResolvedTypeRef,
-        context: &str,
-    ) -> Option<Vec<String>> {
-        ExpressionAssignability::new(
-            diagnostic_path,
-            expression_sources,
-            type_resolution,
-            type_context,
-            None,
-        )
-        .object_literal_assignability_diagnostics(
-            annotation, value, value_key, actual, expected, context,
-        )
+    /// Returns the `Stream<T>` chunk target recorded by the unified expression
+    /// checker for a `Stmt::Emit` root expression.
+    pub fn stream_emit_target(&self, key: &ExpressionKey) -> Option<&ResolvedTypeRef> {
+        self.facts.get(key)?.stream_emit_target.as_ref()
     }
 }
 
@@ -332,6 +346,7 @@ fn check_source(
         ExpressionKey,
         RepresentationConstructorValidation,
     >,
+    object_materialization: &mut ObjectMaterializationState,
     diagnostics: &mut Vec<String>,
 ) {
     let const_env = const_type_env(
@@ -358,6 +373,7 @@ fn check_source(
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         );
     }
@@ -385,6 +401,7 @@ fn check_source(
                 facts,
                 constructor_validations,
                 representation_constructor_validations,
+                object_materialization,
                 diagnostics,
             );
         }
@@ -420,6 +437,7 @@ fn check_source(
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         );
         let value_key = checker.peek_key();
@@ -454,6 +472,7 @@ fn check_source(
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         );
         checker.check_block(&test.body);
@@ -482,11 +501,23 @@ fn check_source(
                     facts,
                     constructor_validations,
                     representation_constructor_validations,
+                    object_materialization,
                     diagnostics,
                 );
                 checker.check_condition(where_expr, "db index where condition");
             }
         }
+    }
+}
+
+fn direct_stream_item_type(ty: &PackageTypeRef) -> Option<&PackageTypeRef> {
+    match ty {
+        PackageTypeRef::Container { name, arguments }
+            if name == "Stream" && arguments.len() == 1 =>
+        {
+            arguments.first()
+        }
+        _ => None,
     }
 }
 
@@ -549,6 +580,7 @@ fn check_function_owner(
         ExpressionKey,
         RepresentationConstructorValidation,
     >,
+    object_materialization: &mut ObjectMaterializationState,
     diagnostics: &mut Vec<String>,
 ) {
     let type_params = inherited_type_params
@@ -606,6 +638,7 @@ fn check_function_owner(
         facts,
         constructor_validations,
         representation_constructor_validations,
+        object_materialization,
         diagnostics,
     );
     checker.check_block(&function.body);
@@ -632,8 +665,15 @@ impl<'a> OwnerChecker<'a> {
             ExpressionKey,
             RepresentationConstructorValidation,
         >,
+        object_materialization: &'a mut ObjectMaterializationState,
         diagnostics: &'a mut Vec<String>,
     ) -> Self {
+        let stream_chunk = return_type.as_ref().and_then(|return_type| {
+            type_resolution
+                .resolve_type_ref(return_type, &type_context)
+                .ok()
+                .and_then(|return_type| stream_chunk_type(&return_type))
+        });
         let (contract_projection, projection_diagnostics) = ContractProjectionState::new(
             &env,
             &exact_bindings,
@@ -656,13 +696,17 @@ impl<'a> OwnerChecker<'a> {
             callable_signatures,
             dependency_analysis,
             return_type,
+            stream_chunk,
             type_context,
             env,
             contract_projection,
             path_refinements: BTreeMap::new(),
+            transparent_value_targets: BTreeMap::new(),
+            test_effect_declarations: BTreeMap::new(),
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         }
     }
@@ -690,8 +734,167 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_stmt(&mut self, stmt: &Stmt) -> bool {
         match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target,
+                target_probe: _,
+                declaration_start,
+                expect,
+                step_expect,
+                outcome,
+            } => {
+                // The synthetic target probe exists solely to obtain the same
+                // exact ResolvedCallTarget fact ordinary dependency calls use.
+                // It is not an invocation and therefore is not type-checked as
+                // a zero-argument call.
+                self.next_key();
+                self.next_key();
+                let Some(dependencies) = self.dependency_analysis else {
+                    self.diagnostics.push(format!(
+                        "{}: compiler test effect `{target}` has no dependency analysis",
+                        self.module_path
+                    ));
+                    return false;
+                };
+                let (signature, exact_target) = match dependencies.resolve_path(target) {
+                    crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Package {
+                        package_build_id,
+                        callable,
+                        ..
+                    } => {
+                        let Some(signature) = callable.signature().cloned() else {
+                            self.diagnostics.push(format!(
+                                "{}: compiler test effect target `{target}` has no exact signature",
+                                self.module_path
+                            ));
+                            return false;
+                        };
+                        (
+                            signature,
+                            ExactTestEffectTarget::Package {
+                                package_build_id: package_build_id.clone(),
+                                callable_id: callable.callable_id().clone(),
+                            },
+                        )
+                    }
+                    crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Contract {
+                        requirement,
+                        operation,
+                    } => {
+                        let contract = &operation.contract;
+                        let return_type = match &contract.stream {
+                            skiff_artifact_model::BoundaryStreamContract::Unary => {
+                                package_type_ref_from_contract_type(&contract.return_value.ty)
+                            }
+                            skiff_artifact_model::BoundaryStreamContract::ServerStream {
+                                item_type,
+                                ..
+                            } => PackageTypeRef::Container {
+                                name: "Stream".to_string(),
+                                arguments: vec![package_type_ref_from_contract_type(item_type)],
+                            },
+                            skiff_artifact_model::BoundaryStreamContract::Unsupported {
+                                ..
+                            } => {
+                                self.diagnostics.push(format!(
+                                    "{}: compiler test effect target `{target}` has an unsupported stream contract",
+                                    self.module_path
+                                ));
+                                return false;
+                            }
+                        };
+                        (
+                            skiff_artifact_model::PackageCallableSignature {
+                                type_params: Vec::new(),
+                                parameters: contract
+                                    .parameters
+                                    .iter()
+                                    .map(|parameter| {
+                                        skiff_artifact_model::PackageCallableParameter {
+                                            name: parameter.name.clone(),
+                                            ty: package_type_ref_from_contract_type(&parameter.ty),
+                                        }
+                                    })
+                                    .collect(),
+                                return_type,
+                                may_suspend: true,
+                            },
+                            ExactTestEffectTarget::Service {
+                                protocol_identity: requirement.expected_protocol_identity.clone(),
+                                operation_id: operation.operation_id.clone(),
+                            },
+                        )
+                    }
+                    _ => {
+                        self.diagnostics.push(format!(
+                            "{}: unresolved compiler test effect target `{target}`",
+                            self.module_path
+                        ));
+                        return false;
+                    }
+                };
+                if *declaration_start {
+                    if let Some(previous) = self
+                        .test_effect_declarations
+                        .insert(exact_target.clone(), target.clone())
+                    {
+                        self.diagnostics.push(format!(
+                            "{}: test effect targets `{previous}` and `{target}` resolve to the same exact target {exact_target:?}; use one explicit sequence",
+                            self.module_path
+                        ));
+                    }
+                }
+                if let Some(expect) = expect {
+                    let [parameter] = signature.parameters.as_slice() else {
+                        self.diagnostics.push(format!(
+                            "{}: test effect `{target}` expect requires exactly one parameter",
+                            self.module_path
+                        ));
+                        return false;
+                    };
+                    self.check_test_effect_request_subset(expect, &parameter.ty);
+                }
+                if let Some(step_expect) = step_expect {
+                    let [parameter] = signature.parameters.as_slice() else {
+                        self.diagnostics.push(format!(
+                            "{}: test effect `{target}` sequence step expect requires exactly one parameter",
+                            self.module_path
+                        ));
+                        return false;
+                    };
+                    self.check_test_effect_request_subset(step_expect, &parameter.ty);
+                }
+                match outcome {
+                    crate::shared::ast::TestEffectStepOutcome::Respond { value } => {
+                        self.check_test_effect_value(value, &signature.return_type, "respond");
+                        if direct_stream_item_type(&signature.return_type).is_some() {
+                            self.diagnostics.push(format!(
+                                "{}: test effect `{target}` cannot use respond for a direct Stream<T> target; use stream",
+                                self.module_path
+                            ));
+                        }
+                    }
+                    crate::shared::ast::TestEffectStepOutcome::Throw { value } => {
+                        self.check_test_effect_throw(value, target);
+                    }
+                    crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
+                        let Some(item) = direct_stream_item_type(&signature.return_type) else {
+                            self.diagnostics.push(format!(
+                                "{}: test effect `{target}` stream requires Stream<T> return",
+                                self.module_path
+                            ));
+                            return false;
+                        };
+                        for value in events {
+                            self.check_test_effect_value(value, item, "stream event");
+                        }
+                    }
+                }
+                false
+            }
             Stmt::Assert { condition, .. } => {
+                let narrowings = self.condition_narrowings(condition);
                 self.check_condition(condition, "condition");
+                self.apply_narrowing(&narrowings.when_true);
                 false
             }
             Stmt::Let {
@@ -755,9 +958,27 @@ impl<'a> OwnerChecker<'a> {
                 false
             }
             Stmt::Assign { target, value } => {
-                self.check_expr(target);
+                let expected = self.check_expr(target);
                 let value_key = self.peek_key();
                 let actual = self.check_expr(value);
+                if matches!(
+                    target,
+                    Expr::Field { object, .. }
+                        if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
+                ) {
+                    if let (Some(actual), Some(expected)) = (actual.as_ref(), expected.as_ref()) {
+                        self.check_value_assignable_to_expected(
+                            None,
+                            value,
+                            &value_key,
+                            actual,
+                            expected,
+                            None,
+                            "self field assignment",
+                            self.expression_span(&value_key),
+                        );
+                    }
+                }
                 if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
                     self.env.insert(name.clone(), actual);
                     let projected = self
@@ -766,6 +987,15 @@ impl<'a> OwnerChecker<'a> {
                         .cloned();
                     self.contract_projection.bind(name, projected);
                 }
+                self.invalidate_path_refinements_for_write(target);
+                false
+            }
+            Stmt::Timeout { body, .. } | Stmt::Serial { body } => {
+                self.check_block_scoped(body, &TypeNarrowing::default());
+                false
+            }
+            Stmt::Concurrent { body } => {
+                self.check_concurrent_block(body, None);
                 false
             }
             Stmt::If {
@@ -888,9 +1118,33 @@ impl<'a> OwnerChecker<'a> {
                 false
             }
             Stmt::DbTransaction { body } => self.check_block(body),
-            Stmt::Throw { value } | Stmt::Emit(value) => {
-                self.check_expr(value);
-                matches!(stmt, Stmt::Throw { .. })
+            Stmt::Throw { value } => {
+                let key = self.peek_key();
+                if let Some(actual) = self.check_expr(value) {
+                    self.validate_throw_payload(&key, &actual, "throw");
+                }
+                true
+            }
+            Stmt::Emit(value) => {
+                let value_key = self.peek_key();
+                let actual = self.check_expr(value);
+                let Some(expected) = self.stream_chunk.clone() else {
+                    return false;
+                };
+                self.record_stream_emit_target(&value_key, expected.clone());
+                if let Some(actual) = actual {
+                    self.check_value_assignable_to_expected(
+                        None,
+                        value,
+                        &value_key,
+                        &actual,
+                        &expected,
+                        None,
+                        "emit chunk",
+                        self.expression_span(&value_key),
+                    );
+                }
+                false
             }
             Stmt::Expr(value) => {
                 let ty = self.check_expr(value);
@@ -912,7 +1166,10 @@ impl<'a> OwnerChecker<'a> {
                 false
             }
             Stmt::Rethrow { exception } => {
-                self.check_expr(exception);
+                let key = self.peek_key();
+                if let Some(actual) = self.check_expr(exception) {
+                    self.validate_rethrow_operand(&key, &actual);
+                }
                 true
             }
             Stmt::Return(value) => {
@@ -922,6 +1179,144 @@ impl<'a> OwnerChecker<'a> {
                 true
             }
             Stmt::Break | Stmt::Continue => true,
+        }
+    }
+
+    fn check_test_effect_request_subset(&mut self, value: &Expr, expected: &PackageTypeRef) {
+        let Expr::ObjectLiteral { entries } = value else {
+            self.check_test_effect_value(value, expected, "expect");
+            return;
+        };
+        let resolved = resolved_package_type_ref(expected);
+        let Some(TypeRefIr::Record { fields }) = self
+            .type_resolution
+            .type_shape_ir(&resolved, &self.type_context)
+        else {
+            self.check_test_effect_value(value, expected, "expect");
+            return;
+        };
+        let mut selected = BTreeMap::new();
+        for entry in entries {
+            let Some(name) = object_literal_key_text(&entry.key) else {
+                self.diagnostics.push(format!(
+                    "{}: test effect expect subset keys must name static request fields",
+                    self.module_path
+                ));
+                continue;
+            };
+            let Some(ty) = fields.get(&name) else {
+                self.diagnostics.push(format!(
+                    "{}: test effect expect subset contains unknown request field `{name}`",
+                    self.module_path
+                ));
+                continue;
+            };
+            selected.insert(name, ty.clone());
+        }
+        let partial = ResolvedTypeRef {
+            ir: TypeRefIr::Record { fields: selected },
+            source_text: format!("subset<{}>", resolved.source_text),
+        };
+        let key = self.peek_key();
+        let actual = self.check_expr(value);
+        if let Some(actual) = actual {
+            self.check_value_assignable_to_expected(
+                None,
+                value,
+                &key,
+                &actual,
+                &partial,
+                None,
+                "test effect expect subset",
+                self.expression_span(&key),
+            );
+        }
+    }
+
+    fn check_test_effect_value(&mut self, value: &Expr, expected: &PackageTypeRef, context: &str) {
+        let key = self.peek_key();
+        let actual = self.check_expr(value);
+        let Some(actual) = actual else {
+            return;
+        };
+        if let (Some(projected), Some(dependencies)) = (
+            self.contract_projection.expression_type(&key),
+            self.dependency_analysis,
+        ) {
+            if package_type_target_assignable(projected, expected, dependencies) {
+                return;
+            }
+            self.diagnostics.push(format!(
+                "{}: test effect {context} package type is not assignable to the declared target at {}",
+                self.module_path,
+                self.expression_span_label(&key)
+            ));
+            return;
+        }
+        let resolved_expected = resolved_package_type_ref(expected);
+        self.check_value_assignable_to_expected(
+            None,
+            value,
+            &key,
+            &actual,
+            &resolved_expected,
+            Some(expected),
+            &format!("test effect {context}"),
+            self.expression_span(&key),
+        );
+    }
+
+    fn check_test_effect_throw(&mut self, value: &Expr, target: &str) {
+        let key = self.peek_key();
+        let Some(actual) = self.check_expr(value) else {
+            return;
+        };
+        if let Err(error) = self
+            .type_resolution
+            .catch_leaves(&actual, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: test effect `{target}` throw has invalid catch payload at {}: {error}",
+                self.module_path,
+                self.expression_span_label(&key),
+            ));
+            return;
+        }
+        if let Some(fact) = self.facts.get_mut(&key) {
+            fact.test_effect_throw_payload_type = Some(actual.ir);
+        }
+    }
+
+    fn validate_throw_payload(
+        &mut self,
+        key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        construct: &str,
+    ) {
+        if let Err(error) = self
+            .type_resolution
+            .catch_leaves(actual, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: {construct} payload `{}` has no valid nominal catch identity at {}: {error}",
+                self.module_path,
+                actual.source_text,
+                self.expression_span_label(key)
+            ));
+        }
+    }
+
+    fn validate_rethrow_operand(&mut self, key: &ExpressionKey, actual: &ResolvedTypeRef) {
+        if let Err(error) = self
+            .type_resolution
+            .exception_catch_leaves(actual, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: invalid rethrow operand `{}` at {}: {error}",
+                self.module_path,
+                actual.source_text,
+                self.expression_span_label(key)
+            ));
         }
     }
 
@@ -953,6 +1348,98 @@ impl<'a> OwnerChecker<'a> {
             .restore_bindings(saved_projected_env);
         self.path_refinements = saved_path_refinements;
         ty
+    }
+
+    fn check_value_block_expr(
+        &mut self,
+        root_key: &ExpressionKey,
+        value: &crate::shared::ast::ValueBlock,
+    ) -> Option<ResolvedTypeRef> {
+        let saved_env = self.env.clone();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
+        let saved_path_refinements = self.path_refinements.clone();
+        self.check_block(&value.body);
+        let tail_key = self.peek_key();
+        let ty = self.check_expr(&value.tail);
+        let projected = self.contract_projection.expression_type(&tail_key).cloned();
+        self.env = saved_env;
+        self.contract_projection
+            .restore_bindings(saved_projected_env);
+        self.path_refinements = saved_path_refinements;
+        self.transparent_value_targets
+            .insert(root_key.clone(), tail_key);
+        if let Some(projected) = projected {
+            self.contract_projection
+                .record_expression_type(root_key.clone(), projected);
+        }
+        ty
+    }
+
+    fn check_concurrent_block(
+        &mut self,
+        body: &Block,
+        tail: Option<(&ExpressionKey, &Expr)>,
+    ) -> Option<ResolvedTypeRef> {
+        let saved_env = self.env.clone();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
+        let saved_path_refinements = self.path_refinements.clone();
+        let mut sibling_env = saved_env.clone();
+        let mut sibling_projected_env = saved_projected_env.clone();
+
+        for statement in &body.statements {
+            self.env = sibling_env.clone();
+            self.contract_projection
+                .restore_bindings(sibling_projected_env.clone());
+            self.path_refinements = saved_path_refinements.clone();
+            self.check_stmt(statement);
+
+            if let Stmt::Let {
+                mutable: false,
+                name,
+                ..
+            } = statement
+            {
+                if let Some(ty) = self.env.get(name).cloned() {
+                    sibling_env.insert(name.clone(), ty);
+                }
+                match self
+                    .contract_projection
+                    .binding_snapshot()
+                    .get(name)
+                    .cloned()
+                {
+                    Some(projected) => {
+                        sibling_projected_env.insert(name.clone(), projected);
+                    }
+                    None => {
+                        sibling_projected_env.remove(name);
+                    }
+                }
+            }
+        }
+
+        let result = tail.map(|(root_key, tail)| {
+            self.env = sibling_env;
+            self.contract_projection
+                .restore_bindings(sibling_projected_env);
+            self.path_refinements = saved_path_refinements.clone();
+            let tail_key = self.peek_key();
+            let ty = self.check_expr(tail);
+            let projected = self.contract_projection.expression_type(&tail_key).cloned();
+            self.transparent_value_targets
+                .insert(root_key.clone(), tail_key);
+            if let Some(projected) = projected {
+                self.contract_projection
+                    .record_expression_type(root_key.clone(), projected);
+            }
+            ty
+        });
+
+        self.env = saved_env;
+        self.contract_projection
+            .restore_bindings(saved_projected_env);
+        self.path_refinements = saved_path_refinements;
+        result.flatten()
     }
 
     fn apply_narrowing(&mut self, narrowing: &TypeNarrowing) {
@@ -1199,6 +1686,22 @@ impl<'a> OwnerChecker<'a> {
     fn check_return_value(&mut self, value: &Expr) {
         let value_key = self.peek_key();
         let actual = self.check_expr(value);
+        if self.stream_chunk.is_some() {
+            match actual.as_ref() {
+                Some(actual) if type_ir_is_void_or_null(&actual.ir) => return,
+                Some(actual) if stream_chunk_type(actual).is_none() => {
+                    self.diagnostics.push(format!(
+                        "{}: stream producer completion type mismatch at {}: expected null, found {}",
+                        self.module_path,
+                        self.expression_span_label(&value_key),
+                        actual.source_text
+                    ));
+                    return;
+                }
+                None => return,
+                Some(_) => {}
+            }
+        }
         let (Some(annotation), Some(actual)) = (self.return_type.clone(), actual) else {
             return;
         };
@@ -1244,12 +1747,25 @@ impl<'a> OwnerChecker<'a> {
     ) -> Option<ResolvedTypeRef> {
         let key = self.next_key();
         let refined_ty = expr_path(expr).and_then(|path| self.path_refinements.get(&path).cloned());
-        let ty = match expr {
-            Expr::Literal(literal) => self.literal_type(literal),
-            Expr::Identifier(name) => refined_ty.clone().or_else(|| self.env.get(name).cloned()),
-            Expr::DependencySourceAddress(source) => {
-                if diagnose_unknown_field {
-                    let message = format!(
+        let package_constant = expr_path(expr).and_then(|path| {
+            self.dependency_analysis
+                .and_then(|dependencies| dependencies.package_constant_by_source_path(&path))
+                .map(|(_, _, constant)| constant.ty().clone())
+        });
+        let ty = if let Some(package_constant) = package_constant {
+            self.consume_static_package_value_descendants(expr);
+            self.contract_projection
+                .record_expression_type(key.clone(), package_constant.clone());
+            Some(resolved_package_type_ref(&package_constant))
+        } else {
+            match expr {
+                Expr::Literal(literal) => self.literal_type(literal),
+                Expr::Identifier(name) => {
+                    refined_ty.clone().or_else(|| self.env.get(name).cloned())
+                }
+                Expr::DependencySourceAddress(source) => {
+                    if diagnose_unknown_field {
+                        let message = format!(
                         "{}: dependency source address `{}/{}` is not a value at {}; use `{}/{} as I` to box a public instance or call an exported callable",
                         self.module_path,
                         source.dependency_ref,
@@ -1258,154 +1774,217 @@ impl<'a> OwnerChecker<'a> {
                         source.dependency_ref,
                         source.public_path
                     );
-                    self.diagnostics.push(message);
+                        self.diagnostics.push(message);
+                    }
+                    None
                 }
-                None
-            }
-            Expr::Binary { op, left, right } => {
-                let db_relational = db_predicate_fields.is_some()
-                    && matches!(
-                        op,
-                        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                Expr::Binary { op, left, right } => {
+                    let db_relational = db_predicate_fields.is_some()
+                        && matches!(
+                            op,
+                            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                        );
+                    let db_logical =
+                        db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
+                    let db_field_relational = db_relational
+                        && db_predicate_fields
+                            .is_some_and(|fields| Self::is_db_field_operand(left, fields));
+                    let left_ty = if db_field_relational {
+                        self.check_db_field_operand(
+                            left,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else if db_logical {
+                        self.check_db_predicate_expr(
+                            left,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else {
+                        self.check_expr(left)
+                    };
+                    let right_ty = if db_logical {
+                        self.check_db_predicate_expr(
+                            right,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else {
+                        match op {
+                            BinaryOp::And => {
+                                let narrowing = self.condition_narrowings(left).when_true;
+                                self.check_expr_scoped(right, &narrowing)
+                            }
+                            BinaryOp::Or => {
+                                let narrowing = self.condition_narrowings(left).when_false;
+                                self.check_expr_scoped(right, &narrowing)
+                            }
+                            _ => self.check_expr(right),
+                        }
+                    };
+                    self.check_binary_operands(
+                        &key,
+                        *op,
+                        left_ty.as_ref(),
+                        right_ty.as_ref(),
+                        db_field_relational,
                     );
-                let db_logical =
-                    db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
-                let db_field_relational = db_relational
-                    && db_predicate_fields
-                        .is_some_and(|fields| Self::is_db_field_operand(left, fields));
-                let left_ty = if db_field_relational {
-                    self.check_db_field_operand(left, db_predicate_fields.expect("checked above"))
-                } else if db_logical {
-                    self.check_db_predicate_expr(left, db_predicate_fields.expect("checked above"))
-                } else {
-                    self.check_expr(left)
-                };
-                let right_ty = if db_logical {
-                    self.check_db_predicate_expr(right, db_predicate_fields.expect("checked above"))
-                } else {
-                    match op {
-                        BinaryOp::And => {
-                            let narrowing = self.condition_narrowings(left).when_true;
-                            self.check_expr_scoped(right, &narrowing)
-                        }
-                        BinaryOp::Or => {
-                            let narrowing = self.condition_narrowings(left).when_false;
-                            self.check_expr_scoped(right, &narrowing)
-                        }
-                        _ => self.check_expr(right),
-                    }
-                };
-                self.check_binary_operands(
-                    &key,
-                    *op,
-                    left_ty.as_ref(),
-                    right_ty.as_ref(),
-                    db_field_relational,
-                );
-                self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
-            }
-            Expr::Unary { op, expr } => {
-                let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not) {
-                    self.check_db_predicate_expr(expr, db_predicate_fields.expect("checked above"))
-                } else {
-                    self.check_expr(expr)
-                };
-                self.check_unary_operand(&key, *op, operand_ty.as_ref());
-                self.unary_type(*op)
-            }
-            Expr::Call { callee, args } => {
-                self.check_callee_expr(callee);
-                let arg_types = args
-                    .iter()
-                    .map(|arg| {
-                        let key = self.peek_key();
-                        (key, self.check_expr(arg))
-                    })
-                    .collect::<Vec<_>>();
-                self.call_type(&key, callee, args, &arg_types)
-            }
-            Expr::Generic { callee, .. } => {
-                if diagnose_unknown_field {
-                    self.check_expr(callee)
-                } else {
-                    self.check_callee_expr(callee)
+                    self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
                 }
-            }
-            Expr::InterfaceBox { value, interface } => {
-                let value_ty = self.check_expr(value);
-                let selector = match self
-                    .type_resolution
-                    .resolve_canonical_interface_selector_type_ref(interface, &self.type_context)
-                {
-                    Ok(selector) => selector,
-                    Err(error) => {
-                        self.diagnostics.push(format!(
-                            "{}: interface boxing selector `{}` failed at {}: {error}",
-                            self.module_path,
-                            interface.name,
-                            self.expression_span_label(&key)
-                        ));
-                        return None;
+                Expr::Unary { op, expr } => {
+                    let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not)
+                    {
+                        self.check_db_predicate_expr(
+                            expr,
+                            db_predicate_fields.expect("checked above"),
+                        )
+                    } else {
+                        self.check_expr(expr)
+                    };
+                    self.check_unary_operand(&key, *op, operand_ty.as_ref());
+                    self.unary_type(*op)
+                }
+                Expr::Call { callee, args } => {
+                    self.check_callee_expr(callee);
+                    let arg_types = args
+                        .iter()
+                        .map(|arg| {
+                            let key = self.peek_key();
+                            (key, self.check_expr(arg))
+                        })
+                        .collect::<Vec<_>>();
+                    self.call_type(&key, callee, args, &arg_types)
+                }
+                Expr::Generic { callee, .. } => {
+                    if diagnose_unknown_field {
+                        self.check_expr(callee)
+                    } else {
+                        self.check_callee_expr(callee)
                     }
-                };
-                let Some(value_ty) = value_ty else {
-                    return None;
-                };
-                let Some(receiver) = self
-                    .type_resolution
-                    .concrete_nominal_record_symbol(&value_ty, &self.type_context)
-                else {
-                    self.diagnostics.push(format!(
+                }
+                Expr::InterfaceBox { value, interface } => {
+                    let value_ty = self.check_expr(value);
+                    let selector = match self
+                        .type_resolution
+                        .resolve_canonical_interface_selector_type_ref(
+                            interface,
+                            &self.type_context,
+                        ) {
+                        Ok(selector) => selector,
+                        Err(error) => {
+                            self.diagnostics.push(format!(
+                                "{}: interface boxing selector `{}` failed at {}: {error}",
+                                self.module_path,
+                                interface.name,
+                                self.expression_span_label(&key)
+                            ));
+                            return None;
+                        }
+                    };
+                    let Some(value_ty) = value_ty else {
+                        return None;
+                    };
+                    let Some(receiver) = self
+                        .type_resolution
+                        .concrete_nominal_record_symbol(&value_ty, &self.type_context)
+                    else {
+                        self.diagnostics.push(format!(
                         "{}: interface boxing source at {} must be a concrete nominal record, found {}",
                         self.module_path,
                         self.expression_span_label(&key),
                         value_ty.source_text
                     ));
-                    return None;
-                };
-                let expected_interface = ResolvedTypeRef {
-                    source_text: selector.source_text.clone(),
-                    ir: selector.identity.clone(),
-                };
-                match self.type_resolution.concrete_type_conforms_to_interface(
-                    &value_ty,
-                    &expected_interface,
-                    &self.type_context,
-                ) {
-                    Ok(Some(_)) => Some(ResolvedTypeRef {
-                        source_text: format!("any {}", selector.source_text),
+                        return None;
+                    };
+                    let expected_interface = ResolvedTypeRef {
+                        source_text: selector.source_text.clone(),
                         ir: TypeRefIr::AnyInterface {
-                            interface: selector.instantiation_ref,
+                            interface: selector.instantiation_ref.clone(),
                         },
-                    }),
-                    Ok(None) => {
-                        self.diagnostics.push(format!(
+                    };
+                    match self.type_resolution.concrete_type_conforms_to_interface(
+                        &value_ty,
+                        &expected_interface,
+                        &self.type_context,
+                    ) {
+                        Ok(Some(_)) => Some(ResolvedTypeRef {
+                            source_text: format!("any {}", selector.source_text),
+                            ir: TypeRefIr::AnyInterface {
+                                interface: selector.instantiation_ref,
+                            },
+                        }),
+                        Ok(None) => {
+                            self.diagnostics.push(format!(
                             "{}: type {} does not explicitly implement interface {} for boxing at {}",
                             self.module_path,
                             receiver,
                             selector.source_text,
                             self.expression_span_label(&key)
                         ));
-                        None
-                    }
-                    Err(error) => {
-                        self.diagnostics.push(format!(
-                            "{}: interface boxing conformance check failed at {}: {error}",
-                            self.module_path,
-                            self.expression_span_label(&key)
-                        ));
-                        None
+                            None
+                        }
+                        Err(error) => {
+                            self.diagnostics.push(format!(
+                                "{}: interface boxing conformance check failed at {}: {error}",
+                                self.module_path,
+                                self.expression_span_label(&key)
+                            ));
+                            None
+                        }
                     }
                 }
-            }
-            Expr::Field { object, field } => {
-                let object_ty = if diagnose_unknown_field {
-                    self.check_expr(object)
-                } else {
-                    self.check_callee_expr(object)
-                };
-                object_ty.and_then(|object_ty| {
-                    let field_ty = self.record_field_type(&object_ty, field);
+                Expr::Field { object, field } => {
+                    let object_key = self.peek_key();
+                    let object_ty = if diagnose_unknown_field {
+                        self.check_expr(object)
+                    } else {
+                        self.check_callee_expr(object)
+                    };
+                    object_ty.and_then(|object_ty| {
+                    let field_ty =
+                        if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
+                            && self
+                                .type_resolution
+                                .actor_type_resolution(&object_ty, &self.type_context)
+                                .is_some()
+                        {
+                            self.type_resolution.actor_state_field_type(
+                                &object_ty,
+                                field,
+                                &self.type_context,
+                            )
+                        } else {
+                            self.record_field_type(&object_ty, field)
+                        };
+                    if let (
+                        Some(dependency_analysis),
+                        Some(PackageTypeRef::PackageSchema {
+                            package_id,
+                            stable_schema_key,
+                            package_schema_type_id,
+                        }),
+                    ) = (
+                        self.dependency_analysis,
+                        self.contract_projection.expression_type(&object_key),
+                    ) {
+                        if let Some(record) = dependency_analysis.exact_package_type(
+                            package_id,
+                            stable_schema_key,
+                            package_schema_type_id,
+                        ) {
+                            if let skiff_artifact_model::ContractTypeDescriptor::Record {
+                                fields,
+                            } = &record.canonical_descriptor.descriptor
+                            {
+                                if let Some(field_type) = fields.get(field) {
+                                    self.contract_projection.record_expression_type(
+                                        key.clone(),
+                                        contract_call_typing::package_type_ref_from_contract_type(
+                                            field_type,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if diagnose_unknown_field && field_ty.is_none() {
                         self.diagnostics.push(format!(
                             "{}: unknown field `{field}` on {} at {}",
@@ -1416,128 +1995,212 @@ impl<'a> OwnerChecker<'a> {
                     }
                     field_ty
                 })
-            }
-            Expr::Record {
-                type_name,
-                type_args,
-                fields,
-            } => {
-                let mut field_types = Vec::new();
-                let mut provided_field_keys = Vec::new();
-                for (name, value) in fields {
-                    let value_key = self.peek_key();
-                    provided_field_keys.push((name.clone(), value_key));
-                    let value_ty = self.check_expr(value);
-                    field_types.push(value_ty);
                 }
-                self.validate_constructor(
-                    &key,
+                Expr::Record {
                     type_name,
                     type_args,
                     fields,
-                    &field_types,
-                    &provided_field_keys,
-                )
-            }
-            Expr::ObjectLiteral { entries } => {
-                let fields = entries
-                    .iter()
-                    .map(|entry| {
-                        let ty = self.check_expr(&entry.value);
-                        object_literal_key_text(&entry.key).and_then(|key| ty.map(|ty| (key, ty)))
+                } => {
+                    let mut field_types = Vec::new();
+                    let mut provided_field_keys = Vec::new();
+                    for (name, value) in fields {
+                        let value_key = self.peek_key();
+                        provided_field_keys.push((name.clone(), value_key));
+                        let value_ty = self.check_expr(value);
+                        field_types.push(value_ty);
+                    }
+                    self.validate_constructor(
+                        &key,
+                        type_name,
+                        type_args,
+                        fields,
+                        &field_types,
+                        &provided_field_keys,
+                    )
+                }
+                Expr::ObjectLiteral { entries } => {
+                    let source_fact = self.expression_sources.fact(&key);
+                    let mut fields = BTreeMap::new();
+                    let mut source_fields = Vec::with_capacity(entries.len());
+                    for (index, entry) in entries.iter().enumerate() {
+                        let value_key = self.peek_key();
+                        let actual = self.check_expr(&entry.value);
+                        let Some(name) = object_literal_key_text(&entry.key) else {
+                            continue;
+                        };
+                        if let Some(actual) = &actual {
+                            fields.insert(name.clone(), actual.clone());
+                        }
+                        source_fields.push(ObjectLiteralSourceField {
+                            name,
+                            expression: value_key,
+                            actual,
+                            value_span: record_field_value_source_span(source_fact, index),
+                        });
+                    }
+                    self.object_materialization.sources.insert(
+                        key.clone(),
+                        ObjectLiteralSource {
+                            span: source_fact
+                                .map(|fact| fact.span)
+                                .unwrap_or_else(SourceSpan::synthetic),
+                            fields: source_fields,
+                        },
+                    );
+                    Some(ResolvedTypeRef {
+                        ir: TypeRefIr::Record {
+                            fields: fields
+                                .iter()
+                                .map(|(name, ty)| (name.clone(), ty.ir.clone()))
+                                .collect(),
+                        },
+                        source_text: "{}".to_string(),
                     })
-                    .flatten()
-                    .collect::<BTreeMap<_, _>>();
-                Some(ResolvedTypeRef {
-                    ir: TypeRefIr::Record {
-                        fields: fields
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), ty.ir.clone()))
-                            .collect(),
-                    },
-                    source_text: "{}".to_string(),
-                })
-            }
-            Expr::Patch { operations, .. } => {
-                for operation in operations {
-                    match operation {
-                        crate::shared::ast::PatchOperation::Set { value, .. }
-                        | crate::shared::ast::PatchOperation::Inc { value, .. } => {
-                            self.check_expr(value);
+                }
+                Expr::Patch { operations, .. } => {
+                    for operation in operations {
+                        match operation {
+                            crate::shared::ast::PatchOperation::Set { value, .. }
+                            | crate::shared::ast::PatchOperation::Inc { value, .. } => {
+                                self.check_expr(value);
+                            }
                         }
                     }
+                    None
                 }
-                None
-            }
-            Expr::Throw { value } => {
-                self.check_expr(value);
-                None
-            }
-            Expr::Rethrow { exception } => {
-                self.check_expr(exception);
-                None
-            }
-            Expr::Catch {
-                catch_type,
-                try_expr,
-            } => {
-                let try_ty = self.check_expr(try_expr)?;
-                let catch_ty = self
-                    .type_resolution
-                    .resolve_type_ref(catch_type, &self.type_context)
-                    .ok()?;
-                Some(catch_result_type(try_ty, catch_ty))
-            }
-            Expr::DbOperation(operation) => {
-                self.check_db_operation_children(operation);
-                self.db_operation_type(operation)
-            }
-            Expr::DbQuery(query) => {
-                self.check_db_query_block(&query.query, &query.target);
-                self.db_query_type(&query.target)
-            }
-            Expr::DbTransaction(transaction) => {
-                let mut last = None;
-                for stmt in &transaction.body.statements {
-                    if let Stmt::Expr(value) = stmt {
-                        last = self.check_expr(value);
-                    } else {
-                        self.check_stmt(stmt);
-                    }
+                Expr::ValueBlock(value) => self.check_value_block_expr(&key, value),
+                Expr::ConcurrentValue(value) => {
+                    self.check_concurrent_block(&value.body, Some((&key, &value.tail)))
                 }
-                match transaction.mode {
-                    DbBlockMode::Effect => self.resolve_builtin("null"),
-                    DbBlockMode::Value => last,
-                }
-            }
-            Expr::DbLeaseClaim(claim) => {
-                self.check_expr(&claim.key);
-                if let Some(binding) = &claim.binding {
-                    if let Ok(target) = self
-                        .type_resolution
-                        .resolve_type_ref(&claim.target, &self.type_context)
+                Expr::Timeout { value, .. } => {
+                    let value_key = self.peek_key();
+                    let ty = self.check_expr(value);
+                    self.transparent_value_targets
+                        .insert(key.clone(), value_key.clone());
+                    if let Some(projected) = self
+                        .contract_projection
+                        .expression_type(&value_key)
+                        .cloned()
                     {
-                        let previous = self.env.insert(binding.clone(), target);
-                        self.check_block(&claim.body);
-                        if let Some(previous) = previous {
-                            self.env.insert(binding.clone(), previous);
+                        self.contract_projection
+                            .record_expression_type(key.clone(), projected);
+                    }
+                    ty
+                }
+                Expr::Throw { value } => {
+                    if let Some(actual) = self.check_expr(value) {
+                        self.validate_throw_payload(&key, &actual, "throw expression");
+                    }
+                    None
+                }
+                Expr::Rethrow { exception } => {
+                    if let Some(actual) = self.check_expr(exception) {
+                        self.validate_rethrow_operand(&key, &actual);
+                    }
+                    None
+                }
+                Expr::Catch {
+                    catch_type,
+                    try_expr,
+                } => {
+                    let try_ty = self.check_expr(try_expr)?;
+                    let catch_ty = match self
+                        .type_resolution
+                        .resolve_type_ref(catch_type, &self.type_context)
+                    {
+                        Ok(catch_ty) => catch_ty,
+                        Err(error) => {
+                            self.diagnostics.push(format!(
+                                "{}: catch type cannot be resolved at {}: {error}",
+                                self.module_path,
+                                self.expression_span_label(&key)
+                            ));
+                            return None;
+                        }
+                    };
+                    if let Err(error) = self
+                        .type_resolution
+                        .catch_leaves(&catch_ty, &self.type_context)
+                    {
+                        self.diagnostics.push(format!(
+                            "{}: invalid catch type `{}` at {}: {error}",
+                            self.module_path,
+                            catch_ty.source_text,
+                            self.expression_span_label(&key)
+                        ));
+                    }
+                    Some(catch_result_type(try_ty, catch_ty))
+                }
+                Expr::DbOperation(operation) => {
+                    self.check_db_operation_children(operation);
+                    self.db_operation_type(operation)
+                }
+                Expr::DbQuery(query) => {
+                    self.check_db_query_block(&query.query, &query.target);
+                    self.db_query_type(&query.target)
+                }
+                Expr::DbTransaction(transaction) => {
+                    let mut last = None;
+                    for stmt in &transaction.body.statements {
+                        if let Stmt::Expr(value) = stmt {
+                            last = self.check_expr(value);
                         } else {
-                            self.env.remove(binding);
+                            self.check_stmt(stmt);
+                        }
+                    }
+                    match transaction.mode {
+                        DbBlockMode::Effect => self.resolve_builtin("null"),
+                        DbBlockMode::Value => last,
+                    }
+                }
+                Expr::DbLeaseClaim(claim) => {
+                    self.check_expr(&claim.key);
+                    if let Some(binding) = &claim.binding {
+                        if let Ok(target) = self
+                            .type_resolution
+                            .resolve_type_ref(&claim.target, &self.type_context)
+                        {
+                            let previous = self.env.insert(binding.clone(), target);
+                            self.check_block(&claim.body);
+                            if let Some(previous) = previous {
+                                self.env.insert(binding.clone(), previous);
+                            } else {
+                                self.env.remove(binding);
+                            }
+                        } else {
+                            self.check_block(&claim.body);
                         }
                     } else {
                         self.check_block(&claim.body);
                     }
-                } else {
-                    self.check_block(&claim.body);
+                    self.resolve_builtin("bool")
                 }
-                self.resolve_builtin("bool")
-            }
-            Expr::DbLeaseRead(read) => {
-                self.check_expr(&read.key);
-                Some(db_lease_read_type())
+                Expr::DbLeaseRead(read) => {
+                    self.check_expr(&read.key);
+                    Some(db_lease_read_type())
+                }
             }
         };
-        let ty = refined_ty.or(ty);
+        let ty = refined_ty.clone().or(ty);
+        if let (Some(refined_ty), Some(dependency_analysis)) =
+            (refined_ty.as_ref(), self.dependency_analysis)
+        {
+            match ContractProjectionState::project_resolved_type(
+                refined_ty,
+                self.type_resolution,
+                dependency_analysis,
+                &self.type_context,
+            ) {
+                Ok(projected) => self
+                    .contract_projection
+                    .record_expression_type(key.clone(), projected),
+                Err(error) => self.diagnostics.push(format!(
+                    "{}: refined expression exact type projection failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(&key)
+                )),
+            }
+        }
         if let Expr::Identifier(name) = expr {
             self.contract_projection.inherit_identifier(&key, name);
         }
@@ -1570,9 +2233,23 @@ impl<'a> OwnerChecker<'a> {
             ExpressionTypeFact {
                 ty: ty.clone(),
                 span,
+                test_effect_throw_payload_type: None,
+                stream_emit_target: None,
             },
         );
         ty
+    }
+
+    fn record_stream_emit_target(&mut self, key: &ExpressionKey, target: ResolvedTypeRef) {
+        let Some(fact) = self.facts.get_mut(key) else {
+            self.diagnostics.push(format!(
+                "{}: emit target fact could not be recorded at {}",
+                self.module_path,
+                self.expression_span_label(key)
+            ));
+            return;
+        };
+        fact.stream_emit_target = Some(target);
     }
 
     fn validate_constructor(
@@ -1609,6 +2286,53 @@ impl<'a> OwnerChecker<'a> {
         let mut duplicate_fields = Vec::new();
         let mut unknown_fields = Vec::new();
         let mut type_mismatches = Vec::new();
+        let exact_field_types = self
+            .dependency_analysis
+            .and_then(|dependency_analysis| {
+                let direct = type_name.split_once('.').and_then(|(alias, stable_key)| {
+                    dependency_analysis.direct_package_type(alias, stable_key)
+                });
+                let projected = || {
+                    let PackageTypeRef::PackageSchema {
+                        package_id,
+                        stable_schema_key,
+                        package_schema_type_id,
+                    } = ContractProjectionState::project_resolved_type(
+                        &target.ty,
+                        self.type_resolution,
+                        dependency_analysis,
+                        &self.type_context,
+                    )
+                    .ok()?
+                    else {
+                        return None;
+                    };
+                    dependency_analysis.exact_package_type(
+                        &package_id,
+                        &stable_schema_key,
+                        &package_schema_type_id,
+                    )
+                };
+                direct.or_else(projected).and_then(|record| {
+                    let skiff_artifact_model::ContractTypeDescriptor::Record { fields } =
+                        &record.canonical_descriptor.descriptor
+                    else {
+                        return None;
+                    };
+                    Some(
+                        fields
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    contract_call_typing::package_type_ref_from_contract_type(ty),
+                                )
+                            })
+                            .collect::<BTreeMap<_, _>>(),
+                    )
+                })
+            })
+            .unwrap_or_default();
         for (index, (field_name, value_key)) in provided_field_keys.iter().enumerate() {
             let name_span = record_field_name_source_span(source_fact, index);
             let value_span = record_field_value_source_span(source_fact, index);
@@ -1669,7 +2393,7 @@ impl<'a> OwnerChecker<'a> {
                     value_key,
                     actual,
                     expected,
-                    None,
+                    exact_field_types.get(field_name),
                     &context,
                     record_field_value_source_span(source_fact, index),
                 ) {
@@ -1750,15 +2474,43 @@ impl<'a> OwnerChecker<'a> {
         if let Some(change) = &operation.change {
             for op in &change.ops {
                 match op {
-                    DbChangeOp::Set { value, .. }
-                    | DbChangeOp::Inc { value, .. }
-                    | DbChangeOp::AddToSet { value, .. }
-                    | DbChangeOp::Remove { value, .. } => {
+                    DbChangeOp::Set { path, value }
+                    | DbChangeOp::Inc { path, value }
+                    | DbChangeOp::AddToSet { path, value }
+                    | DbChangeOp::Remove { path, value } => {
+                        self.validate_db_change_path(&operation.target, &path.segments);
                         self.check_expr(value);
                     }
-                    DbChangeOp::Unset { .. } => {}
+                    DbChangeOp::Unset { path } => {
+                        self.validate_db_change_path(&operation.target, &path.segments);
+                    }
                 }
             }
+        }
+    }
+
+    fn validate_db_change_path(&mut self, target: &TypeRef, path: &[String]) {
+        let Ok(target_type) = self
+            .type_resolution
+            .resolve_type_ref(target, &self.type_context)
+        else {
+            return;
+        };
+        if let Err(error) = DbProjectionTypeResolver::new(
+            self.module_path,
+            self.type_resolution,
+            self.publication_db_metadata,
+        )
+        .project_read_type(&target.name, target_type.ir, &[path.to_vec()])
+        {
+            if error.contains("has no DB metadata") {
+                return;
+            }
+            self.diagnostics.push(format!(
+                "{}: db change field path `{}` is invalid: {error}",
+                self.module_path,
+                path.join(".")
+            ));
         }
     }
 
@@ -1856,6 +2608,16 @@ impl<'a> OwnerChecker<'a> {
         ty
     }
 
+    fn invalidate_path_refinements_for_write(&mut self, target: &Expr) {
+        let Some(path) = expr_path(target) else {
+            self.path_refinements.clear();
+            return;
+        };
+        let descendant_prefix = format!("{path}.");
+        self.path_refinements
+            .retain(|refined, _| refined != &path && !refined.starts_with(&descendant_prefix));
+    }
+
     fn is_db_field_operand(expr: &Expr, fields: &BTreeMap<String, ResolvedTypeRef>) -> bool {
         Self::db_field_operand_root(expr, fields).is_some()
     }
@@ -1886,6 +2648,42 @@ impl<'a> OwnerChecker<'a> {
         let key = self.peek_key();
         self.next_index += 1;
         key
+    }
+
+    fn consume_static_package_value_descendants(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Field { object, .. } => {
+                self.next_key();
+                self.consume_static_package_value_descendants(object);
+            }
+            Expr::Generic { callee, .. } => {
+                self.next_key();
+                self.consume_static_package_value_descendants(callee);
+            }
+            Expr::Timeout { value, .. } => {
+                self.next_key();
+                self.consume_static_package_value_descendants(value);
+            }
+            Expr::ValueBlock(_) | Expr::ConcurrentValue(_) => {}
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::DependencySourceAddress(_)
+            | Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Call { .. }
+            | Expr::Record { .. }
+            | Expr::ObjectLiteral { .. }
+            | Expr::Patch { .. }
+            | Expr::InterfaceBox { .. }
+            | Expr::Throw { .. }
+            | Expr::Rethrow { .. }
+            | Expr::Catch { .. }
+            | Expr::DbOperation(_)
+            | Expr::DbQuery(_)
+            | Expr::DbTransaction(_)
+            | Expr::DbLeaseClaim(_)
+            | Expr::DbLeaseRead(_) => {}
+        }
     }
 
     fn peek_key(&self) -> ExpressionKey {
@@ -2113,7 +2911,12 @@ impl<'a> OwnerChecker<'a> {
             Expr::Generic { callee, type_args } => (callee.as_ref(), type_args.as_slice()),
             _ => (callee, &[][..]),
         };
-        if let Some(return_type) = self.runtime_receiver_call_type(key, callee) {
+        if let Some(return_type) = self.runtime_receiver_call_type(key, callee, args, arg_types) {
+            return Some(return_type);
+        }
+        if let Some(return_type) =
+            self.actor_receiver_call_type(key, callee, type_args, args, arg_types)
+        {
             return Some(return_type);
         }
         if let Some(return_type) =
@@ -2123,6 +2926,11 @@ impl<'a> OwnerChecker<'a> {
         }
         if let Some(return_type) =
             self.package_interface_receiver_call_type(key, callee, type_args, args, arg_types)
+        {
+            return Some(return_type);
+        }
+        if let Some(return_type) =
+            self.package_receiver_call_type(key, callee, type_args, args, arg_types)
         {
             return Some(return_type);
         }
@@ -2164,8 +2972,102 @@ impl<'a> OwnerChecker<'a> {
                 }
             }
         }
+        if type_args.is_empty() {
+            let signature = self.dependency_analysis.and_then(|dependency_analysis| {
+                let (canonical_dependency_ref, callable) =
+                    dependency_analysis.package_callable_by_source_path(&path)?;
+                let type_dependency_ref = dependency_source_address_parts(&path)
+                    .map(|(dependency_ref, _)| dependency_ref)
+                    .filter(|dependency_ref| {
+                        self.type_resolution
+                            .is_top_level_package_dependency_ref(dependency_ref)
+                    })
+                    .unwrap_or(canonical_dependency_ref);
+                Some((
+                    type_dependency_ref.to_string(),
+                    callable.signature()?.clone(),
+                ))
+            });
+            if let Some((dependency_ref, signature)) = signature {
+                let canonical_dependency_ref = self
+                    .type_resolution
+                    .canonical_package_dependency_ref(&dependency_ref)
+                    .to_string();
+                // Resolve each parameter independently: an owner/slot diagnostic
+                // must fail the compile without erasing an exact return fact.
+                let expected = signature
+                    .parameters
+                    .iter()
+                    .map(|parameter| {
+                        (
+                            parameter.name.clone(),
+                            self.type_resolution
+                                .rehydrate_package_signature_type_for_dependency(
+                                    &canonical_dependency_ref,
+                                    &parameter.ty,
+                                )
+                                .or_else(|_| {
+                                    self.type_resolution
+                                        .rehydrate_package_signature_type_for_dependency(
+                                            &dependency_ref,
+                                            &parameter.ty,
+                                        )
+                                })
+                                .map(|exact| {
+                                    let ordinary =
+                                        self.type_resolution.bind_package_type_refs_to_dependency(
+                                            &resolved_package_type_ref(&exact),
+                                            &canonical_dependency_ref,
+                                        );
+                                    (ordinary, exact)
+                                }),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                self.validate_dependency_package_call_params(
+                    key, &path, &expected, args, arg_types,
+                );
+
+                let exact_projection = match self
+                    .type_resolution
+                    .rehydrate_package_signature_type_for_dependency(
+                        &dependency_ref,
+                        &signature.return_type,
+                    ) {
+                    Ok(return_type) => return_type,
+                    Err(error) => {
+                        self.diagnostics.push(format!(
+                            "{}: call `{path}` return dependency type resolution failed at {}: {error}",
+                            self.module_path,
+                            self.expression_span_label(key),
+                        ));
+                        return None;
+                    }
+                };
+                let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
+                    &resolved_package_type_ref(&exact_projection),
+                    &dependency_ref,
+                );
+                let projected_return = self
+                    .type_resolution
+                    .rehydrate_package_signature_type_for_dependency(
+                        &canonical_dependency_ref,
+                        &signature.return_type,
+                    )
+                    .unwrap_or_else(|_| exact_projection.clone());
+                self.contract_projection
+                    .record_expression_type(key.clone(), projected_return);
+                return Some(resolved_return);
+            }
+        }
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
             return Some(return_type);
+        }
+        if matches!(
+            path.as_str(),
+            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
+        ) {
+            return self.actor_registry_intrinsic_call_type(&path, type_args, args, arg_types);
         }
         match self.type_resolution.resolve_representation_constructor(
             &path,
@@ -2206,7 +3108,7 @@ impl<'a> OwnerChecker<'a> {
                     &path,
                     params.iter().map(String::as_str),
                     &native_context,
-                    prelude_registry().native_type_params(&path).unwrap_or(&[]),
+                    prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
                     type_args,
                 );
                 if native_context.module_path != self.module_path {
@@ -2226,12 +3128,18 @@ impl<'a> OwnerChecker<'a> {
                     self.validate_resolved_call_params(&path, expected.params, args, arg_types);
                 }
             }
-            return self.resolve_callable_return_type(
+            let resolved_return_type = self.resolve_callable_return_type(
                 &return_type,
                 &native_context,
-                prelude_registry().native_type_params(&path).unwrap_or(&[]),
+                prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
                 type_args,
-            );
+            )?;
+            return Some(if native_context.module_path == self.module_path {
+                resolved_return_type
+            } else {
+                self.type_resolution
+                    .externalize_local_type_refs(&resolved_return_type, native_context.module_path)
+            });
         }
         if let Some(signature) = self.local_callable_signature(&path).cloned() {
             let signature_context = TypeResolutionContext::with_type_params(
@@ -2356,6 +3264,45 @@ impl<'a> OwnerChecker<'a> {
             if expected.complete {
                 self.validate_resolved_call_params(&path, expected.params, args, arg_types);
             }
+            if let Some(exact_signature) = signature.exact_signature {
+                let substitutions = signature
+                    .type_params
+                    .iter()
+                    .zip(type_args)
+                    .map(|(param, argument)| {
+                        self.project_source_binding_type(argument)
+                            .and_then(|projected| {
+                                projected.ok_or_else(|| {
+                                    format!(
+                                        "call `{path}` type argument `{param}` has no exact package projection"
+                                    )
+                                })
+                            })
+                            .map(|projected| (param.clone(), projected))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>();
+                let projected_return = match substitutions {
+                    Ok(substitutions) => {
+                        substitute_package_type(&exact_signature.return_type, &substitutions)
+                    }
+                    Err(error) => Err(error),
+                };
+                match projected_return {
+                    Ok(projected_return) => {
+                        let resolved_return = resolved_package_type_ref(&projected_return);
+                        self.contract_projection
+                            .record_expression_type(key.clone(), projected_return);
+                        return Some(resolved_return);
+                    }
+                    Err(error) => {
+                        self.diagnostics.push(format!(
+                            "{}: call `{path}` exact return type substitution failed: {error}",
+                            self.module_path
+                        ));
+                        return None;
+                    }
+                }
+            }
             let package_return_type = qualify_package_signature_type_text(
                 &signature.return_type,
                 &package_root,
@@ -2382,7 +3329,7 @@ impl<'a> OwnerChecker<'a> {
                     .resolve_type_ref(ty, &self.type_context)
                     .ok()
                     .map(|item| ResolvedTypeRef {
-                        ir: TypeRefIr::Native {
+                        ir: TypeRefIr::Builtin {
                             name: "Array".to_string(),
                             args: vec![item.ir],
                         },
@@ -2420,16 +3367,10 @@ impl<'a> OwnerChecker<'a> {
         let params = params
             .enumerate()
             .filter_map(|(index, raw)| {
-                if let Some(resolved) =
-                    self.exact_type_arg_substitution(raw, type_params, type_args)
-                {
-                    return Some((format!("arg{index}"), resolved));
-                }
-                let text = self.substitute_type_params_in_text(raw, type_params, type_args);
-                match self.type_resolution.resolve_type_text(&text, context) {
-                    Ok(resolved) => Some((format!("arg{index}"), resolved)),
-                    Err(error) => {
-                        let _ = (callable, error);
+                match self.resolve_callable_signature_type(raw, context, type_params, type_args) {
+                    Some(resolved) => Some((format!("arg{index}"), resolved)),
+                    None => {
+                        let _ = callable;
                         complete = false;
                         None
                     }
@@ -2446,13 +3387,26 @@ impl<'a> OwnerChecker<'a> {
         type_params: &[String],
         type_args: &[TypeRef],
     ) -> Option<ResolvedTypeRef> {
-        if let Some(resolved) = self.exact_type_arg_substitution(raw, type_params, type_args) {
-            return Some(resolved);
-        }
-        let substituted = self.substitute_type_params_in_text(raw, type_params, type_args);
-        self.type_resolution
-            .resolve_type_text(&substituted, context)
-            .ok()
+        self.resolve_callable_signature_type(raw, context, type_params, type_args)
+    }
+
+    fn resolve_callable_signature_type(
+        &self,
+        raw: &str,
+        context: &TypeResolutionContext<'_>,
+        type_params: &[String],
+        type_args: &[TypeRef],
+    ) -> Option<ResolvedTypeRef> {
+        self.exact_type_arg_substitution(raw, type_params, type_args)
+            .or_else(|| self.structured_type_arg_substitution(raw, context, type_params, type_args))
+            .or_else(|| {
+                // Omitted generic arguments can still leave a declaration type
+                // concrete when the type does not depend on any type parameter.
+                (type_params.is_empty() || type_args.is_empty())
+                    .then(|| self.type_resolution.resolve_type_text(raw, context).ok())
+                    .flatten()
+                    .filter(|resolved| !type_contains_type_param(&resolved.ir))
+            })
     }
 
     fn exact_type_arg_substitution(
@@ -2467,6 +3421,40 @@ impl<'a> OwnerChecker<'a> {
         self.type_resolution
             .resolve_type_ref(arg, &self.type_context)
             .ok()
+    }
+
+    fn structured_type_arg_substitution(
+        &self,
+        raw: &str,
+        context: &TypeResolutionContext<'_>,
+        type_params: &[String],
+        type_args: &[TypeRef],
+    ) -> Option<ResolvedTypeRef> {
+        if type_params.is_empty() || type_params.len() != type_args.len() {
+            return None;
+        }
+        let generic_context = TypeResolutionContext::with_type_params(
+            context.module_path,
+            type_params.iter().cloned().collect(),
+        );
+        let generic = self
+            .type_resolution
+            .resolve_type_text(raw, &generic_context)
+            .ok()?;
+        let substitutions = type_params
+            .iter()
+            .zip(type_args)
+            .map(|(param, argument)| {
+                self.type_resolution
+                    .resolve_type_ref(argument, &self.type_context)
+                    .map(|resolved| (param.clone(), resolved.ir))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .ok()?;
+        Some(resolved_type_from_ir(&substitute_type_params_in_ir(
+            &generic.ir,
+            &substitutions,
+        )))
     }
 
     fn project_callable_package_type(
@@ -2586,35 +3574,56 @@ impl<'a> OwnerChecker<'a> {
         }
     }
 
-    fn substitute_type_params_in_text(
-        &self,
-        raw: &str,
-        type_params: &[String],
-        type_args: &[TypeRef],
-    ) -> String {
-        if type_params.is_empty() || type_args.is_empty() {
-            return raw.to_string();
+    fn validate_dependency_package_call_params(
+        &mut self,
+        call_key: &ExpressionKey,
+        callable: &str,
+        expected: &[(String, Result<(ResolvedTypeRef, PackageTypeRef), String>)],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
+        if expected.len() != args.len() {
+            self.diagnostics.push(format!(
+                "{}: call `{callable}` arity mismatch: expected {} arguments, found {}",
+                self.module_path,
+                expected.len(),
+                args.len()
+            ));
         }
-        let substitutions = type_params
-            .iter()
-            .zip(type_args)
-            .map(|(param, arg)| {
-                let resolved = self
-                    .type_resolution
-                    .resolve_type_ref(arg, &self.type_context)
-                    .map(|ty| ty.source_text)
-                    .unwrap_or_else(|_| arg.name.clone());
-                (param.clone(), resolved)
-            })
-            .collect::<BTreeMap<_, _>>();
-        TypeExpr::parse(raw)
-            .map_named_types(|name| {
-                substitutions
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.to_string())
-            })
-            .to_type_string()
+        for (index, (name, expected)) in expected.iter().enumerate() {
+            let (expected, exact_expected) = match expected {
+                Ok(expected) => expected,
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: call `{callable}` parameter {} `{name}` dependency type resolution failed at {}: {error}",
+                        self.module_path,
+                        index + 1,
+                        self.expression_span_label(call_key),
+                    ));
+                    continue;
+                }
+            };
+            let Some((key, actual)) = arg_types.get(index) else {
+                continue;
+            };
+            let Some(actual) = actual else {
+                continue;
+            };
+            if type_contains_type_param(&expected.ir) || type_contains_type_param(&actual.ir) {
+                continue;
+            }
+            let context = format!("call `{callable}` argument {}", index + 1);
+            self.check_value_assignable_to_expected(
+                None,
+                &args[index],
+                key,
+                actual,
+                expected,
+                Some(exact_expected),
+                &context,
+                self.expression_span(key),
+            );
+        }
     }
 
     fn config_intrinsic_call_type(
@@ -2645,11 +3654,63 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         key: &ExpressionKey,
         callee: &Expr,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
         let offset = 1 + receiver_object_offset_in_callee(callee)?;
         let receiver_ty = self.expression_type_at_offset(key, offset)?;
         let return_type = builtin_receiver_call_return_type(&receiver_ty, method_name)?;
+        let receiver_root = runtime_receiver_root_from_type_ref(&receiver_ty.ir);
+        if receiver_root.as_deref() == Some("Array") && method_name == "push" {
+            self.validate_array_push_args(&receiver_ty, args, arg_types);
+        }
+        if receiver_root.as_deref() == Some("string") && method_name == "contains" {
+            self.validate_resolved_call_params(
+                "string.contains",
+                vec![(
+                    "needle".to_string(),
+                    resolved_type_from_ir(&builtin_type("string")),
+                )],
+                args,
+                arg_types,
+            );
+        }
+        if receiver_root.as_deref() == Some("JsonObject") {
+            match method_name {
+                "get" | "has" | "delete" => self.validate_resolved_call_params(
+                    &format!("JsonObject.{method_name}"),
+                    vec![(
+                        "field".to_string(),
+                        resolved_type_from_ir(&builtin_type("string")),
+                    )],
+                    args,
+                    arg_types,
+                ),
+                "set" => self.validate_resolved_call_params(
+                    "JsonObject.set",
+                    vec![
+                        (
+                            "field".to_string(),
+                            resolved_type_from_ir(&builtin_type("string")),
+                        ),
+                        (
+                            "value".to_string(),
+                            resolved_type_from_ir(&builtin_type("Json")),
+                        ),
+                    ],
+                    args,
+                    arg_types,
+                ),
+                _ => {}
+            }
+        }
+        if receiver_root.as_deref() == Some("Map") && matches!(method_name, "has" | "set") {
+            self.validate_map_has_or_set_args(&receiver_ty, method_name, args, arg_types);
+        }
+        if receiver_root.as_deref() == Some("bytes") && method_name == "toHex" {
+            self.validate_resolved_call_params("bytes.toHex", Vec::new(), args, arg_types);
+        }
         if let Some(projected) =
             self.expression_projection_at_offset(key, offset)
                 .and_then(|receiver| {
@@ -2660,6 +3721,181 @@ impl<'a> OwnerChecker<'a> {
                 .record_expression_type(key.clone(), projected);
         }
         Some(return_type)
+    }
+
+    fn actor_receiver_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        callee: &Expr,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
+        let (_, method_name) = receiver_call_parts(callee)?;
+        let offset = 1 + receiver_object_offset_in_callee(callee)?;
+        let receiver_ty = self.expression_type_at_offset(key, offset)?;
+        let (params, return_type) = self.type_resolution.actor_method_signature(
+            &receiver_ty,
+            method_name,
+            &self.type_context,
+        )?;
+        let callable = format!("{}.{}", receiver_ty.source_text, method_name);
+        if !type_args.is_empty() {
+            self.diagnostics.push(format!(
+                "{}: actor method `{callable}` does not accept explicit method type arguments",
+                self.module_path
+            ));
+        }
+        let params = params
+            .iter()
+            .skip(usize::from(
+                params.first().is_some_and(|param| param.name == "self"),
+            ))
+            .enumerate()
+            .map(|(index, param)| {
+                (
+                    format!("arg{index}"),
+                    ResolvedTypeRef {
+                        source_text: type_ref_debug_text(&param.ty),
+                        ir: param.ty.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.validate_resolved_call_params(&callable, params, args, arg_types);
+        Some(ResolvedTypeRef {
+            source_text: type_ref_debug_text(&return_type),
+            ir: return_type,
+        })
+    }
+
+    fn actor_registry_intrinsic_call_type(
+        &mut self,
+        path: &str,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
+        if type_args.len() != 1 {
+            self.diagnostics.push(format!(
+                "{}: actor registry intrinsic `{path}` expects exactly one actor type argument, found {}",
+                self.module_path,
+                type_args.len()
+            ));
+            return None;
+        }
+        let actor_ty = match self
+            .type_resolution
+            .resolve_type_ref(&type_args[0], &self.type_context)
+        {
+            Ok(actor_ty) => actor_ty,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: actor registry intrinsic `{path}` has unresolved actor type: {error}",
+                    self.module_path
+                ));
+                return None;
+            }
+        };
+        let Some(actor) = self
+            .type_resolution
+            .actor_type_resolution(&actor_ty, &self.type_context)
+        else {
+            self.diagnostics.push(format!(
+                "{}: actor registry intrinsic `{path}` type argument `{}` is not an actor declaration",
+                self.module_path, actor_ty.source_text
+            ));
+            return None;
+        };
+        let needs_bootstrap = matches!(path, "std.actor.getOrCreate" | "std.actor.replace");
+        let expected_arity = if needs_bootstrap { 2 } else { 1 };
+        if args.len() != expected_arity {
+            self.diagnostics.push(format!(
+                "{}: actor registry intrinsic `{path}` expects {expected_arity} arguments, found {}",
+                self.module_path,
+                args.len()
+            ));
+        } else {
+            let mut params = vec![("id".to_string(), actor.id_type.clone())];
+            if needs_bootstrap {
+                params.push((
+                    "bootstrap".to_string(),
+                    ResolvedTypeRef {
+                        source_text: "{}".to_string(),
+                        ir: TypeRefIr::Record {
+                            fields: actor
+                                .fields
+                                .iter()
+                                .map(|(name, ty)| (name.clone(), ty.ir.clone()))
+                                .collect(),
+                        },
+                    },
+                ));
+            }
+            self.validate_resolved_call_params(path, params, args, arg_types);
+        }
+        match path {
+            "std.actor.find" => Some(nullable_type(actor.ty)),
+            "std.actor.remove" => self.resolve_builtin("bool"),
+            _ => Some(actor.ty),
+        }
+    }
+
+    fn validate_array_push_args(
+        &mut self,
+        receiver_ty: &ResolvedTypeRef,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
+        let Some(expected) =
+            array_item_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
+        else {
+            return;
+        };
+        if args.len() != 1 {
+            self.diagnostics.push(format!(
+                "{}: call `Array.push` arity mismatch: expected 1 arguments, found {}",
+                self.module_path,
+                args.len()
+            ));
+            return;
+        }
+        let Some((key, Some(actual))) = arg_types.first() else {
+            return;
+        };
+        self.check_value_assignable_to_expected(
+            None,
+            &args[0],
+            key,
+            actual,
+            &expected,
+            None,
+            "call `Array.push` argument 1",
+            self.expression_span(key),
+        );
+    }
+
+    fn validate_map_has_or_set_args(
+        &mut self,
+        receiver_ty: &ResolvedTypeRef,
+        method_name: &str,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
+        let Some(key_ty) = map_key_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
+        else {
+            return;
+        };
+        let mut params = vec![("key".to_string(), key_ty)];
+        if method_name == "set" {
+            let Some(value_ty) =
+                map_value_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
+            else {
+                return;
+            };
+            params.push(("value".to_string(), value_ty));
+        }
+        self.validate_resolved_call_params(&format!("Map.{method_name}"), params, args, arg_types);
     }
 
     fn any_interface_receiver_call_type(
@@ -2764,6 +4000,190 @@ impl<'a> OwnerChecker<'a> {
         })
     }
 
+    fn package_receiver_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        callee: &Expr,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
+        let (_, method_name) = receiver_call_parts(callee)?;
+        let offset = 1 + receiver_object_offset_in_callee(callee)?;
+        let receiver_key = ExpressionKey::new(
+            key.module_path().to_string(),
+            key.owner().clone(),
+            key.preorder_index().checked_add(offset)?,
+        );
+        let receiver_ty = self.expression_type_at_offset(key, offset)?;
+        let receiver_method = self
+            .type_resolution
+            .package_receiver_method_resolution(&receiver_ty.ir, method_name)?;
+        let source_path = format!(
+            "{}/{}",
+            receiver_method.dependency_ref, receiver_method.source_method_path
+        );
+        let dependency_analysis = self.dependency_analysis?;
+        let Some((canonical_dependency_ref, callable)) =
+            dependency_analysis.package_callable_by_source_path(&source_path)
+        else {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` has no exact callable implementation member at {}",
+                self.module_path,
+                self.expression_span_label(key)
+            ));
+            return None;
+        };
+        if canonical_dependency_ref != receiver_method.canonical_dependency_ref {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` resolves to dependency `{canonical_dependency_ref}` instead of `{}`",
+                self.module_path, receiver_method.canonical_dependency_ref
+            ));
+            return None;
+        }
+        let signature = callable.signature()?.clone();
+        let receiver_param_count = receiver_method.receiver_type_params.len();
+        if signature
+            .parameters
+            .first()
+            .map(|parameter| parameter.name.as_str())
+            != Some("self")
+            || signature.type_params.len() < receiver_param_count
+            || signature.type_params.len() - receiver_param_count != type_args.len()
+        {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` has an invalid receiver/generic signature",
+                self.module_path
+            ));
+            return None;
+        }
+        let mut substitutions = signature
+            .type_params
+            .iter()
+            .take(receiver_param_count)
+            .cloned()
+            .zip(
+                receiver_method
+                    .receiver_type_arguments
+                    .iter()
+                    .cloned()
+                    .map(|local_type| PackageTypeRef::Local { local_type }),
+            )
+            .collect::<BTreeMap<_, _>>();
+        for (type_param, type_arg) in signature
+            .type_params
+            .iter()
+            .skip(receiver_param_count)
+            .zip(type_args)
+        {
+            let projected = match self.project_source_binding_type(type_arg) {
+                Ok(Some(projected)) => projected,
+                Ok(None) => {
+                    self.diagnostics.push(format!(
+                        "{}: package receiver method `{source_path}` type argument `{type_param}` has no exact package projection",
+                        self.module_path
+                    ));
+                    return None;
+                }
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: package receiver method `{source_path}` type argument `{type_param}` projection failed: {error}",
+                        self.module_path
+                    ));
+                    return None;
+                }
+            };
+            substitutions.insert(type_param.clone(), projected);
+        }
+
+        let exact_parameters = signature
+            .parameters
+            .iter()
+            .map(|parameter| {
+                substitute_package_type(&parameter.ty, &substitutions).and_then(|ty| {
+                    self.type_resolution
+                        .rehydrate_package_signature_type_for_dependency(
+                            &receiver_method.dependency_ref,
+                            &ty,
+                        )
+                        .map(|exact| (parameter.name.clone(), exact))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let exact_parameters = match exact_parameters {
+            Ok(parameters) => parameters,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: package receiver method `{source_path}` parameter substitution failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(key)
+                ));
+                return None;
+            }
+        };
+        let expected_receiver = self.type_resolution.bind_package_type_refs_to_dependency(
+            &resolved_package_type_ref(&exact_parameters[0].1),
+            &receiver_method.dependency_ref,
+        );
+        if !self.type_resolution.assignable_in_context(
+            &receiver_ty,
+            &expected_receiver,
+            &self.type_context,
+        ) {
+            self.diagnostics.push(format!(
+                "{}: package receiver method `{source_path}` receiver type mismatch at {}: expected {}, found {}",
+                self.module_path,
+                self.expression_span_label(&receiver_key),
+                expected_receiver.source_text,
+                receiver_ty.source_text
+            ));
+            return None;
+        }
+        let expected = exact_parameters
+            .iter()
+            .skip(1)
+            .map(|(name, exact)| {
+                (
+                    name.clone(),
+                    Ok((
+                        self.type_resolution.bind_package_type_refs_to_dependency(
+                            &resolved_package_type_ref(exact),
+                            &receiver_method.dependency_ref,
+                        ),
+                        exact.clone(),
+                    )),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.validate_dependency_package_call_params(key, &source_path, &expected, args, arg_types);
+
+        let exact_return = match substitute_package_type(&signature.return_type, &substitutions)
+            .and_then(|ty| {
+                self.type_resolution
+                    .rehydrate_package_signature_type_for_dependency(
+                        &receiver_method.dependency_ref,
+                        &ty,
+                    )
+            }) {
+            Ok(return_type) => return_type,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: package receiver method `{source_path}` return substitution failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(key)
+                ));
+                return None;
+            }
+        };
+        let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
+            &resolved_package_type_ref(&exact_return),
+            &receiver_method.dependency_ref,
+        );
+        self.contract_projection
+            .record_expression_type(key.clone(), exact_return);
+        Some(resolved_return)
+    }
+
     fn expression_type_at_offset(
         &self,
         key: &ExpressionKey,
@@ -2800,6 +4220,17 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .resolve_type_ref(&operation.target, &self.type_context)
             .ok()?;
+        if self
+            .type_resolution
+            .actor_type_resolution(&target, &self.type_context)
+            .is_some()
+        {
+            self.diagnostics.push(format!(
+                "{}: actor handle type `{}` cannot be used as a database object",
+                self.module_path, target.source_text
+            ));
+            return None;
+        }
         let read = self.db_read_type(operation, &target)?;
         match operation.op {
             crate::shared::ast::DbOperationKind::Find if operation.many => Some(array_type(read)),
@@ -2916,13 +4347,36 @@ impl<'a> OwnerChecker<'a> {
         context: &str,
         fallback_span: SourceSpan,
     ) -> bool {
+        let target_key = self.transparent_value_target_key(value_key);
+        let target_value = transparent_value_target(value);
+        if matches!(target_value, Expr::ObjectLiteral { .. }) {
+            let target_actual = self
+                .facts
+                .get(&target_key)
+                .and_then(|fact| fact.ty.clone())
+                .unwrap_or_else(|| actual.clone());
+            return self.materialize_target_typed_object_literal(
+                annotation,
+                target_value,
+                &target_key,
+                &target_actual,
+                expected,
+                context,
+            );
+        }
         let assignability = ExpressionAssignability::new(
             self.module_path,
             self.expression_sources,
             self.type_resolution,
             &self.type_context,
-            None,
+            self.dependency_analysis,
         );
+        let package_json_context = context.starts_with("call `std.json.encode` argument ");
+        let assignability = if package_json_context {
+            assignability.with_package_json_context()
+        } else {
+            assignability
+        };
         let expected_projected = match self.dependency_analysis {
             Some(dependency_analysis) => Some(match exact_expected {
                 Some(expected) => Ok(expected.clone()),
@@ -2974,10 +4428,15 @@ impl<'a> OwnerChecker<'a> {
             }
         };
         let assignable = match contract_assignable {
-            Some(assignable) => assignable,
-            None => match assignability
-                .value_assignable_to_expected(annotation, value, actual, expected, None)
-            {
+            Some(true) => true,
+            Some(false) if !package_json_context => false,
+            Some(false) | None => match assignability.value_assignable_to_expected(
+                annotation,
+                value,
+                actual,
+                expected,
+                self.contract_projection.expression_type(value_key),
+            ) {
                 Ok(assignable) => assignable,
                 Err(error) => {
                     self.diagnostics.push(format!(
@@ -3000,8 +4459,145 @@ impl<'a> OwnerChecker<'a> {
                 return false;
             }
         }
+        if let (Some(expected), Some(actual)) = (
+            expected_projected.as_ref(),
+            self.contract_projection.expression_type(value_key),
+        ) {
+            self.diagnostics.push(format!(
+                "{}: {context} canonical type identity mismatch at {}: expected {expected:?}, found {actual:?}",
+                self.module_path,
+                span_label(fallback_span),
+            ));
+        }
         self.push_type_mismatch(context, fallback_span, expected, actual);
         false
+    }
+
+    fn transparent_value_target_key(&self, key: &ExpressionKey) -> ExpressionKey {
+        let mut target = key.clone();
+        let mut visited = BTreeSet::new();
+        while visited.insert(target.clone()) {
+            let Some(next) = self.transparent_value_targets.get(&target) else {
+                break;
+            };
+            target = next.clone();
+        }
+        target
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_target_typed_object_literal(
+        &mut self,
+        annotation: Option<&TypeRef>,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+        context: &str,
+    ) -> bool {
+        self.object_materialization
+            .targeted
+            .insert(value_key.clone());
+        let assignability = ExpressionAssignability::new(
+            self.module_path,
+            self.expression_sources,
+            self.type_resolution,
+            &self.type_context,
+            self.dependency_analysis,
+        );
+        let assignability = if context.starts_with("call `std.json.encode` argument ") {
+            assignability.with_package_json_context()
+        } else {
+            assignability
+        };
+        let plan = match assignability.object_literal_materialization_plan(
+            annotation, value, value_key, actual, expected, context,
+        ) {
+            Ok(plan) => plan,
+            Err(diagnostics) => {
+                self.diagnostics.extend(diagnostics);
+                return false;
+            }
+        };
+        let Some(source) = self.object_materialization.sources.get(value_key).cloned() else {
+            self.diagnostics.push(format!(
+                "{}: {context} target-typed object literal is missing source facts at {}",
+                self.module_path,
+                self.expression_span_label(value_key)
+            ));
+            return false;
+        };
+        let provided = source
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field))
+            .collect::<BTreeMap<_, _>>();
+        let mut fields = Vec::with_capacity(plan.fields.len());
+        let mut valid = true;
+        for (name, ty) in &plan.fields {
+            let source = if let Some(provided) = provided.get(name.as_str()) {
+                if let Some(actual) = &provided.actual {
+                    valid &= self.check_value_assignable_to_expected(
+                        None,
+                        object_literal_field_value(value, name)
+                            .expect("materialization plan field must exist in object literal"),
+                        &provided.expression,
+                        actual,
+                        ty,
+                        None,
+                        &format!("{context} object literal field `{name}`"),
+                        provided.value_span,
+                    );
+                } else {
+                    // Exact contract-derived and flow-assigned bindings can be
+                    // name-resolved without carrying a structural
+                    // ResolvedTypeRef. Once the enclosing object has selected
+                    // a unique target, retain that exact field target for the
+                    // identifier instead of abandoning recursive
+                    // materialization.
+                    if !expression_accepts_contextual_target(
+                        object_literal_field_value(value, name)
+                            .expect("materialization plan field must exist in object literal"),
+                    ) {
+                        self.diagnostics.push(format!(
+                            "{}: {context} object literal field `{name}` has no resolved expression type at {}",
+                            self.module_path,
+                            span_label(provided.value_span)
+                        ));
+                        valid = false;
+                    }
+                }
+                ObjectFieldValueSource::Provided {
+                    expression: provided.expression.clone(),
+                }
+            } else if self.type_resolution.is_nullable(ty) {
+                ObjectFieldValueSource::SyntheticNull
+            } else {
+                self.diagnostics.push(format!(
+                    "{}: {context} materialization plan omitted required object literal field `{name}` at {}",
+                    self.module_path,
+                    span_label(source.span)
+                ));
+                valid = false;
+                continue;
+            };
+            fields.push(MaterializedObjectField {
+                name: name.clone(),
+                ty: ty.clone(),
+                source,
+            });
+        }
+        if valid {
+            self.object_materialization.facts.insert(
+                value_key.clone(),
+                TargetTypedObjectMaterialization {
+                    resolved_target: plan.resolved_target,
+                    kind: plan.kind,
+                    fields,
+                },
+            );
+        }
+        valid
     }
 
     fn push_type_mismatch(
@@ -3178,7 +4774,7 @@ fn generic_type_params(name: &str) -> Vec<String> {
 }
 
 fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
-    let TypeRefIr::Native { name, args } = &ty.ir else {
+    let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     match name.as_str() {
@@ -3196,8 +4792,21 @@ fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
     }
 }
 
+fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
+    let TypeRefIr::Builtin { name, args } = &ty.ir else {
+        return None;
+    };
+    matches!(name.as_str(), "Stream" | "std.stream.Stream")
+        .then_some(args)
+        .filter(|args| args.len() == 1)
+        .map(|args| ResolvedTypeRef {
+            ir: args[0].clone(),
+            source_text: type_ref_debug_text(&args[0]),
+        })
+}
+
 fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTypeRef)> {
-    let TypeRefIr::Native { name, args } = &ty.ir else {
+    let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     if name != "Map" || args.len() != 2 {
@@ -3241,8 +4850,11 @@ fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, Package
 fn type_contains_type_param(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::Native { args, .. } | TypeRefIr::Union { items: args } => {
+        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
             args.iter().any(type_contains_type_param)
+        }
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            arguments.iter().any(type_contains_type_param)
         }
         TypeRefIr::Nullable { inner } => type_contains_type_param(inner),
         TypeRefIr::AnyInterface { interface } => interface
@@ -3264,7 +4876,8 @@ fn type_contains_type_param(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. } => false,
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. } => false,
     }
 }
 
@@ -3273,7 +4886,12 @@ fn native_return_type_context<'a>(
     fallback: &TypeResolutionContext<'a>,
 ) -> TypeResolutionContext<'a> {
     path.rsplit_once('.')
-        .map(|(module_path, _)| {
+        .and_then(|(owner, _)| {
+            prelude_registry()
+                .type_decl_module(owner)
+                .or_else(|| (!prelude_registry().is_prelude_type_name(owner)).then_some(owner))
+        })
+        .map(|module_path| {
             TypeResolutionContext::with_type_params(module_path, fallback.type_params.clone())
         })
         .unwrap_or_else(|| {
@@ -3286,7 +4904,7 @@ fn native_return_type_context<'a>(
 
 fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeRef {
     ResolvedTypeRef {
-        ir: TypeRefIr::Native {
+        ir: TypeRefIr::Builtin {
             name: name.to_string(),
             args: vec![target.ir.clone()],
         },
@@ -3296,7 +4914,7 @@ fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeR
 
 fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> ResolvedTypeRef {
     ResolvedTypeRef {
-        ir: TypeRefIr::Native {
+        ir: TypeRefIr::Builtin {
             name: "CatchResult".to_string(),
             args: vec![value.ir, error.ir],
         },
@@ -3314,17 +4932,18 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
             }
             Some(resolved_type_from_ir(&union_type_ir(field_types)))
         }
-        TypeRefIr::Native { name, args } if name == "CatchResult" && args.len() == 2 => match field
-        {
-            "tag" => Some(resolved_type_from_ir(&union_type_ir(vec![
-                literal_string_type("ok"),
-                literal_string_type("err"),
-            ]))),
-            _ => None,
-        },
-        TypeRefIr::Native { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
             match field {
-                "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Native {
+                "tag" => Some(resolved_type_from_ir(&union_type_ir(vec![
+                    literal_string_type("ok"),
+                    literal_string_type("err"),
+                ]))),
+                _ => None,
+            }
+        }
+        TypeRefIr::Builtin { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
+            match field {
+                "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Builtin {
                     name: "bool".to_string(),
                     args: Vec::new(),
                 })),
@@ -3332,10 +4951,12 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
                 _ => None,
             }
         }
-        TypeRefIr::Native { name, args } if name == "Exception" && args.len() == 1 => match field {
-            "error" => Some(resolved_type_from_ir(&args[0])),
-            _ => None,
-        },
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
+            match field {
+                "error" => Some(resolved_type_from_ir(&args[0])),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -3371,7 +4992,7 @@ fn builtin_receiver_call_return_type(
         BuiltinReceiverPublicReturnType::Receiver => receiver_ty.ir.clone(),
         BuiltinReceiverPublicReturnType::ArrayItem => array_item_type_ir(&receiver_ty.ir)?,
         BuiltinReceiverPublicReturnType::MapValue => map_value_type_ir(&receiver_ty.ir)?,
-        BuiltinReceiverPublicReturnType::MapKeyArray => TypeRefIr::Native {
+        BuiltinReceiverPublicReturnType::MapKeyArray => TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![map_key_type_ir(&receiver_ty.ir)?],
         },
@@ -3416,9 +5037,25 @@ fn builtin_receiver_call_return_projection(
     }
 }
 
-fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
+pub fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
     match ty {
-        TypeRefIr::Native { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
+        TypeRefIr::Builtin { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
+        TypeRefIr::PackageSymbol { symbol } if is_official_std_package_ref(&symbol.package) => {
+            Some(canonical_runtime_receiver_root(&symbol.symbol_path).to_string())
+        }
+        TypeRefIr::ServiceSymbol { symbol }
+            if prelude_registry()
+                .known_type_symbol(&format!("{}.{}", symbol.module_path, symbol.symbol))
+                == Some(format!("{}.{}", symbol.module_path, symbol.symbol)) =>
+        {
+            Some(
+                canonical_runtime_receiver_root(&format!(
+                    "{}.{}",
+                    symbol.module_path, symbol.symbol
+                ))
+                .to_string(),
+            )
+        }
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
         } => Some("string".to_string()),
@@ -3430,12 +5067,21 @@ fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
     }
 }
 
+fn is_official_std_package_ref(package: &PackageRefIr) -> bool {
+    match package {
+        PackageRefIr::PackageId { package_id } => {
+            package_id == crate::shared::id::SKIFF_STD_PUBLICATION_ID
+        }
+        PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",
+    }
+}
+
 fn canonical_runtime_receiver_root(root: &str) -> &str {
     skiff_artifact_model::canonical_runtime_receiver_root(root)
 }
 
 fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (matches!(
@@ -3446,7 +5092,7 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn map_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
@@ -3454,7 +5100,7 @@ fn map_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn map_key_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
@@ -3508,7 +5154,7 @@ fn narrow_type_by_tag(
 fn discriminated_record_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
     match ty {
         TypeRefIr::Union { items } => Some(items.clone()),
-        TypeRefIr::Native { name, args } if name == "CatchResult" && args.len() == 2 => {
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
             Some(catch_result_branch_types(&args[0], &args[1]))
         }
         TypeRefIr::Record { .. } => Some(vec![ty.clone()]),
@@ -3563,7 +5209,7 @@ fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
 }
 
 fn exception_type_ir(error: TypeRefIr) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: "Exception".to_string(),
         args: vec![error],
     }
@@ -3579,7 +5225,7 @@ fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
 }
 
 fn db_lease_read_type() -> ResolvedTypeRef {
-    let string = TypeRefIr::Native {
+    let string = TypeRefIr::Builtin {
         name: "string".to_string(),
         args: Vec::new(),
     };
@@ -3597,7 +5243,7 @@ fn db_lease_read_type() -> ResolvedTypeRef {
 
 fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
     ResolvedTypeRef {
-        ir: TypeRefIr::Native {
+        ir: TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![item.ir],
         },
@@ -3609,6 +5255,29 @@ fn object_literal_key_text(key: &crate::shared::ast::ObjectLiteralKey) -> Option
     match key {
         crate::shared::ast::ObjectLiteralKey::Name(name) => Some(name.clone()),
     }
+}
+
+fn transparent_value_target(expression: &Expr) -> &Expr {
+    match expression {
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            transparent_value_target(&value.tail)
+        }
+        Expr::Timeout { value, .. } => transparent_value_target(value),
+        _ => expression,
+    }
+}
+
+fn object_literal_field_value<'a>(value: &'a Expr, name: &str) -> Option<&'a Expr> {
+    let Expr::ObjectLiteral { entries } = value else {
+        return None;
+    };
+    entries.iter().find_map(|entry| {
+        (object_literal_key_text(&entry.key).as_deref() == Some(name)).then_some(&entry.value)
+    })
+}
+
+fn expression_accepts_contextual_target(value: &Expr) -> bool {
+    matches!(value, Expr::Identifier(_))
 }
 
 fn expr_is_null_literal(expr: &Expr) -> bool {
@@ -3669,8 +5338,8 @@ fn qualify_package_signature_type_text(
 
 fn type_ref_debug_text(ty: &TypeRefIr) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
+        TypeRefIr::Builtin { name, args } => format!(
             "{name}<{}>",
             args.iter()
                 .map(type_ref_debug_text)
@@ -3699,6 +5368,20 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
             symbol.symbol_path()
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_debug_text(base),
+            arguments
+                .iter()
+                .map(type_ref_debug_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::AnyInterface { interface } => {
             let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map_or_else(
@@ -3726,8 +5409,144 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
     }
 }
 
+fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
+    let ir = package_type_ref_ir(ty);
+    ResolvedTypeRef {
+        source_text: type_ref_debug_text(&ir),
+        ir,
+    }
+}
+
+fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
+    match ty {
+        PackageTypeRef::Local { local_type } => ordinary_package_local_type_ir(local_type),
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.clone(),
+                },
+                symbol_path: stable_schema_key.clone(),
+                abi_expectation: None,
+            },
+        },
+        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments.iter().map(package_type_ref_ir).collect(),
+        },
+        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(package_type_ref_ir(inner)),
+        },
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => TypeRefIr::AnyInterface {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: serde_json::to_string(&package_type_ref_ir(interface))
+                    .expect("PackageTypeRef interface identity must serialize"),
+                canonical_type_args: arguments.iter().map(package_type_ref_ir).collect(),
+            },
+        },
+    }
+}
+
+fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
+    let recurse = ordinary_package_local_type_ir;
+    match ty {
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.clone(),
+                },
+                symbol_path: stable_schema_key.clone(),
+                abi_expectation: None,
+            },
+        },
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: args.iter().map(recurse).collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments.iter().map(recurse).collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), recurse(ty)))
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items.iter().map(recurse).collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(recurse(inner)),
+        },
+        TypeRefIr::AnyInterface { interface } => {
+            let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map(|identity| recurse(&identity))
+                .and_then(|identity| serde_json::to_string(&identity))
+                .unwrap_or_else(|_| interface.interface_abi_id.clone());
+            TypeRefIr::AnyInterface {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id,
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(recurse)
+                        .collect(),
+                },
+            }
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|parameter| skiff_artifact_model::FunctionTypeParamIr {
+                    name: parameter.name.clone(),
+                    ty: recurse(&parameter.ty),
+                })
+                .collect(),
+            return_type: Box::new(recurse(return_type)),
+        },
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+fn nominal_base_debug_text(base: &NominalTypeRefBaseIr) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => format!("#{type_index}"),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("{module_path}#{type_index}"),
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
+    }
+}
+
 fn builtin_type(name: &str) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: name.to_string(),
         args: Vec::new(),
     }
@@ -3742,16 +5561,16 @@ fn literal_string_type(value: &str) -> TypeRefIr {
 }
 
 fn type_ir_is_void_or_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if args.is_empty() && (name == "void" || name == "null"))
+    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && (name == "void" || name == "null"))
         || type_ir_is_null(ty)
 }
 
 fn type_ir_is_never(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if args.is_empty() && name == "never")
+    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && name == "never")
 }
 
 fn type_ir_is_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, .. } if name == "null")
+    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
         || matches!(
             ty,
             TypeRefIr::Literal {
@@ -3780,12 +5599,27 @@ fn record_field_value_source_span(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
 
     use crate::{
-        parsed_sources::parse_publication_sources, publication_db_metadata_index,
-        source_graph::CompilerSourceFile, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
+        build_package_from_parsed_sources_with_dependency_analysis,
+        contract_dependency_test_fixture::resolved_contract_fixture,
+        parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+        publication_db_metadata_index, source_graph::CompilerSourceFile,
+        CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependencyAnalysisFacts,
+        PackageDependencyCallableAnalysis, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
+        SourceDependencyAnalysisInput,
     };
+    use skiff_artifact_model::{
+        CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+        CallableProvenanceUnknownReason, CallableSemanticFacts, PackageBuildId, PackageCallableId,
+        PackageCallableParameter, PackageCallableSignature, PackageLocalAbiIdentity,
+        PackageTypeRef,
+    };
+    use skiff_compiler_input::CompilerPlatformSources;
 
     use super::*;
 
@@ -3794,13 +5628,43 @@ mod tests {
     fn expression_type_result(
         source_text: &str,
     ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        expression_type_result_with_source_role(source_text, false)
+    }
+
+    fn test_expression_type_result(
+        source_text: &str,
+    ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        expression_type_result_with_source_role(source_text, true)
+    }
+
+    fn expression_type_result_with_source_role(
+        source_text: &str,
+        is_test_file: bool,
+    ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+        let relative_path = if is_test_file {
+            "internal/any_interface.test.skiff"
+        } else {
+            "internal/any_interface.skiff"
+        };
+        let module_path = if is_test_file {
+            "internal.any_interface.__test"
+        } else {
+            ANY_INTERFACE_MODULE
+        };
         let source = CompilerSourceFile::parse(
-            PathBuf::from("internal/any_interface.skiff"),
-            ANY_INTERFACE_MODULE.to_string(),
+            PathBuf::from(relative_path),
+            module_path.to_string(),
             false,
-            false,
+            is_test_file,
             source_text.to_string(),
-            "internal/any_interface.skiff",
+            relative_path,
         )
         .expect("test source should parse");
         let parsed_sources = parse_publication_sources(&PathBuf::from("/test"), &[source])
@@ -3809,6 +5673,7 @@ mod tests {
             &parsed_sources,
             &BTreeMap::new(),
             &[],
+            None,
             None,
             &PublicationTypeSymbolIndex::default(),
         )
@@ -3854,6 +5719,645 @@ mod tests {
               {body}
             "#
         )
+    }
+
+    #[test]
+    fn nullable_union_alias_record_field_matches_nullable_parameter() {
+        expression_type_result(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+              type Request { format: Format? }
+
+              function consume(format: Format?) -> void {}
+
+              function run(input: Request) -> void {
+                consume(input.format)
+              }
+            "#,
+        )
+        .expect("nullable union alias field should match the same local parameter type");
+    }
+
+    #[test]
+    fn nullable_union_alias_does_not_drop_null_from_record_field() {
+        let error = expression_type_result(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+              type Request { format: Format? }
+
+              function consume(format: Format) -> void {}
+
+              function run(input: Request) -> void {
+                consume(input.format)
+              }
+            "#,
+        )
+        .expect_err("nullable union alias field must not match a non-null parameter");
+        assert!(
+            error.message().contains("argument 1 type mismatch"),
+            "unexpected diagnostic: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn nullable_union_alias_rejects_non_member_literal() {
+        let error = expression_type_result(
+            r#"
+              alias Format = "png" | "jpeg" | "webp"
+
+              function consume(format: Format?) -> void {}
+
+              function run() -> void {
+                consume("gif")
+              }
+            "#,
+        )
+        .expect_err("non-member literal must not enter a nullable union alias");
+        assert!(
+            error.message().contains("argument 1 type mismatch"),
+            "unexpected diagnostic: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn actor_self_field_assignment_requires_declared_field_type() {
+        let error = expression_type_result(
+            r#"
+              actor Counter id string {
+                count: number,
+              }
+
+              impl Counter {
+                function corrupt() -> void {
+                  self.count = "not a number"
+                }
+              }
+            "#,
+        )
+        .expect_err("Actor self field assignment must be type checked");
+        assert!(
+            error
+                .message()
+                .contains("self field assignment type mismatch"),
+            "unexpected diagnostic: {}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn explicit_actor_registry_intrinsics_return_nominal_handles() {
+        expression_type_result(
+            r#"
+              actor UserActor id string {
+                displayName: string,
+                loginCount: number,
+              }
+
+              impl UserActor {
+                function label() -> string { return self.displayName }
+              }
+
+              function load(id: string) -> UserActor {
+                const actor: UserActor = std.actor.getOrCreate<UserActor>(
+                  id,
+                  { displayName: "Ada", loginCount: 1 }
+                )
+                const label: string = actor.label()
+                const found: UserActor? = std.actor.find<UserActor>(id)
+                const removed: bool = std.actor.remove<UserActor>(id)
+                return actor
+              }
+            "#,
+        )
+        .expect("actor declarations should be nominal handle types for registry results");
+    }
+
+    #[test]
+    fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
+        let error = expression_type_result(
+            r#"
+              type User { id: string }
+              actor UserActor id string { displayName: string }
+
+              function invalid() -> void {
+                std.actor.find<User>("u1")
+                std.actor.find<UserActor>(42)
+                std.actor.replace<UserActor>("u1", { displayName: 42 })
+                const actor = std.actor.getOrCreate<UserActor>("u1", { displayName: "Ada" })
+                const leaked = actor.displayName
+                const stored = db require UserActor("u1")
+              }
+            "#,
+        )
+        .expect_err("invalid actor registry uses must fail");
+        let message = error.message();
+        assert!(message.contains("is not an actor declaration"), "{message}");
+        assert!(message.contains("argument 1"), "{message}");
+        assert!(
+            message.contains("argument 2 object literal field"),
+            "{message}"
+        );
+        assert!(message.contains("unknown field `displayName`"), "{message}");
+        assert!(
+            message.contains("cannot be used as a database object"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn explicit_actor_cannot_be_constructed_as_a_record() {
+        let error = expression_type_result(
+            r#"
+              actor UserActor id string { displayName: string }
+              function invalid() -> UserActor {
+                return UserActor { displayName: "Ada" }
+              }
+            "#,
+        )
+        .expect_err("ordinary actor construction must fail");
+        assert!(
+            error.message().contains("nominal handle")
+                && error.message().contains("cannot be constructed directly"),
+            "{}",
+            error.message()
+        );
+    }
+
+    #[test]
+    fn catch_leaves_accept_nominal_representations_aliases_unions_and_rethrow_envelopes() {
+        expression_type_result(
+            r#"
+              type RecordFailure { message: string }
+              type PrimitiveFailure = string
+              type GenericFailure<T> { value: T }
+              alias TransparentFailure = RecordFailure
+              type FailureUnion discriminator "kind" =
+                RecordFailure |
+                { kind: "synthetic", message: string } |
+                "literal"
+
+              function throwEveryShape(
+                record: RecordFailure,
+                primitive: PrimitiveFailure,
+                generic: GenericFailure<string>,
+                transparent: TransparentFailure,
+                named: FailureUnion,
+                anonymous: RecordFailure | PrimitiveFailure
+              ) -> void {
+                throw record
+                throw primitive
+                throw generic
+                throw transparent
+                throw named
+                throw anonymous
+              }
+
+              function catchEveryShape(value: RecordFailure) -> void {
+                const record = catch<RecordFailure>(value)
+                const primitive = catch<PrimitiveFailure>(value)
+                const generic = catch<GenericFailure<string>>(value)
+                const transparent = catch<TransparentFailure>(value)
+                const named = catch<FailureUnion>(value)
+                const anonymous = catch<RecordFailure | PrimitiveFailure>(value)
+              }
+
+              function rethrowStatement(
+                exception: Exception<GenericFailure<string>>
+              ) -> void {
+                rethrow exception
+              }
+
+              function rethrowExpression(
+                exception: Exception<GenericFailure<string>>
+              ) -> GenericFailure<string> {
+                return rethrow exception
+              }
+            "#,
+        )
+        .expect("nominal catch identities and generic rethrow envelopes should be accepted");
+    }
+
+    #[test]
+    fn catch_leaves_reject_every_non_nominal_shape_at_throw_and_catch() {
+        let cases = [
+            ("primitive", "string", ""),
+            ("literal", "\"literal\"", ""),
+            ("anonymous record", "{ message: string }", ""),
+            ("container", "Array<string>", ""),
+            (
+                "interface",
+                "any Marker",
+                "interface Marker { function value(self: Self) -> string }",
+            ),
+            ("unknown", "unknown", ""),
+            ("function", "fn(input: string) -> string", ""),
+            ("nullable", "RecordFailure?", ""),
+            ("unconstrained generic", "T", ""),
+            ("mixed union", "RecordFailure | string", ""),
+        ];
+
+        for (label, invalid_type, declarations) in cases {
+            let type_params = (label == "unconstrained generic")
+                .then_some("<T>")
+                .unwrap_or("");
+            let source = format!(
+                r#"
+                  type RecordFailure {{ message: string }}
+                  {declarations}
+                  function invalid{type_params}(
+                    value: {invalid_type},
+                    valid: RecordFailure
+                  ) -> void {{
+                    throw value
+                    const attempted = catch<{invalid_type}>(valid)
+                  }}
+                "#,
+            );
+            let message = match expression_type_result(&source) {
+                Ok(_) => panic!("{label} should be rejected"),
+                Err(error) => error.message(),
+            };
+            assert!(
+                message.contains("throw payload") && message.contains("invalid catch type"),
+                "{label}: {message}"
+            );
+            assert!(
+                message.contains(" at "),
+                "{label} diagnostics must retain a source location: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn rethrow_requires_exception_with_valid_non_empty_catch_leaves() {
+        let message = expression_type_result(
+            r#"
+              type Failure { message: string }
+
+              function wrongEnvelope(value: Failure) -> void {
+                rethrow value
+              }
+
+              function invalidPayload(value: Exception<string>) -> void {
+                rethrow value
+              }
+            "#,
+        )
+        .expect_err("invalid rethrow operands must fail in source typing")
+        .message();
+
+        assert!(
+            message.contains("rethrow operand must be Exception<E>"),
+            "{message}"
+        );
+        assert!(
+            message.contains("unwrapped primitive or container `string`"),
+            "{message}"
+        );
+        assert!(message.matches(" at ").count() >= 2, "{message}");
+    }
+
+    #[test]
+    fn package_and_service_test_effect_throw_use_open_nominal_payloads() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+
+        let source_text = r#"
+          type ArbitraryFailure { message: string }
+
+          test "open throws" effects {
+            dep/tools.run {
+              throw: ArbitraryFailure { message: "package" },
+            },
+            echo/run {
+              throw: ArbitraryFailure { message: "service" },
+            },
+          } {
+            assert true
+          }
+        "#;
+        let source = CompilerSourceFile::parse(
+            PathBuf::from("internal/open_errors.test.skiff"),
+            "internal.open_errors.__test".to_string(),
+            false,
+            true,
+            source_text.to_string(),
+            "internal/open_errors.test.skiff",
+        )
+        .expect("test effect source parses");
+        let parsed_sources = parse_publication_sources(
+            Path::new("/tmp/open-error-test-effects"),
+            std::slice::from_ref(&source),
+        )
+        .expect("test effect source facts build");
+
+        let callable = PackageDependencyCallableAnalysis::new(
+            PackageCallableId::new("callable:dep-tools-run"),
+            CallableSemanticFacts {
+                effects: CallableEffectSummary::Analyzed {
+                    effects: CallableMayEffects {
+                        writes_caller_reachable: false,
+                        returns_caller_alias: false,
+                        throws_caller_alias: false,
+                        escapes_caller_value: false,
+                        requires_same_heap_identity: false,
+                        invokes_unknown_target: false,
+                        may_suspend: false,
+                    },
+                },
+                provenance: CallableProvenanceSummary::Unknown {
+                    reason: CallableProvenanceUnknownReason::AnalysisPending,
+                },
+                resolved_call_targets: BTreeMap::new(),
+            },
+        )
+        .with_signature(PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: vec![PackageCallableParameter {
+                name: "input".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("string"),
+                },
+            }],
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            may_suspend: false,
+        });
+        let dependencies = SourceDependencyAnalysisInput::new(
+            [(
+                "dep".to_string(),
+                PackageDependencyAnalysisFacts::new(
+                    PackageBuildId::new("build:dep"),
+                    PackageLocalAbiIdentity::new("abi:dep"),
+                    BTreeMap::from([("tools.run".to_string(), callable)]),
+                ),
+            )],
+            [resolved_contract_fixture(
+                "echo",
+                "example.echo",
+                "run",
+                "input",
+                "output",
+            )],
+        )
+        .expect("exact dependency analysis facts build");
+        let package_aliases = BTreeMap::new();
+        let package_dependencies = Vec::new();
+
+        build_package_from_parsed_sources_with_dependency_analysis(
+            CompileParsedPackageSourcesInput {
+                parsed_sources,
+                production_sources: Vec::new(),
+                diagnostic_root: Path::new("/tmp/open-error-test-effects"),
+                publication_api: None,
+                package_aliases: &package_aliases,
+                package_dependencies: &package_dependencies,
+                package_facts: None,
+                package_artifacts: None,
+                policy: PackageCompilePolicy::new("example.com/open-error-test-effects"),
+            },
+            &dependencies,
+        )
+        .expect("test-effect throw accepts any nominal payload independent of declared sets");
+    }
+
+    #[test]
+    fn typed_catch_value_requires_and_respects_tag_narrowing() {
+        expression_type_result(
+            r#"
+              type Payload { value: string }
+              type Failure = string
+
+              function make() -> Payload {
+                return Payload { value: "ok" }
+              }
+
+              function equalBranch() -> Payload? {
+                const attempted = catch<Failure>(make())
+                if attempted.tag == "ok" { return attempted.value }
+                return null
+              }
+
+              function reverseComparison() -> Payload? {
+                const attempted = catch<Failure>(make())
+                if "ok" != attempted.tag { return null }
+                return attempted.value
+              }
+
+              function earlyReturn() -> Payload? {
+                const attempted = catch<Failure>(make())
+                if attempted.tag != "ok" { return null }
+                return attempted.value
+              }
+
+              function nestedCatch() -> Payload? {
+                const outer = catch<Failure>(equalBranch())
+                if outer.tag != "ok" { return null }
+                return outer.value
+              }
+            "#,
+        )
+        .expect("ok-tag branches must expose the exact catch success type");
+
+        let unnarrowed = expression_type_result(
+            r#"
+              type Payload { value: string }
+              type Failure = string
+              function make() -> Payload { return Payload { value: "ok" } }
+              function invalid() -> Payload {
+                const attempted = catch<Failure>(make())
+                return attempted.value
+              }
+            "#,
+        )
+        .expect_err("an un-narrowed catch result must not expose value")
+        .message();
+        assert!(
+            unnarrowed.contains("unknown field `value` on CatchResult"),
+            "{unnarrowed}"
+        );
+
+        let error_branch = expression_type_result(
+            r#"
+              type Payload { value: string }
+              type Failure = string
+              function make() -> Payload { return Payload { value: "ok" } }
+              function invalid() -> Payload? {
+                const attempted = catch<Failure>(make())
+                if attempted.tag == "err" { return attempted.value }
+                return null
+              }
+            "#,
+        )
+        .expect_err("the error branch must not expose the success value")
+        .message();
+        assert!(
+            error_branch.contains("unknown field `value`"),
+            "{error_branch}"
+        );
+    }
+
+    #[test]
+    fn test_assertion_true_flow_narrows_stable_bindings() {
+        test_expression_type_result(
+            r#"
+              type Payload { value: string }
+              type Failure = string
+
+              function make() -> Payload {
+                return Payload { value: "ok" }
+              }
+
+              function maybe() -> Payload? {
+                return make()
+              }
+
+              test "nullable local" {
+                const value: Payload? = maybe()
+                assert value != null
+                assert value.value == "ok"
+              }
+
+              test "tagged catch result" {
+                const attempted = catch<Failure>(make())
+                assert attempted.tag == "ok"
+                assert attempted.value.value == "ok"
+              }
+
+              test "conjunction" {
+                const value: Payload? = maybe()
+                const attempted = catch<Failure>(make())
+                assert value != null && attempted.tag == "ok"
+                assert value.value == attempted.value.value
+              }
+
+              test "nested test block" {
+                const value: Payload? = maybe()
+                if true {
+                  assert value != null
+                  assert value.value == "ok"
+                }
+              }
+            "#,
+        )
+        .expect("assertions in tests must carry their true-flow narrowing forward");
+    }
+
+    #[test]
+    fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
+        let cases = [
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "opposite null assertion" {
+                    const value: Payload? = maybe()
+                    assert value == null
+                    assert value.value == "ok"
+                  }
+                "#,
+                "opposite null assertion",
+            ),
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "unstable call" {
+                    assert maybe() != null
+                    assert maybe().value == "ok"
+                  }
+                "#,
+                "unstable call expression",
+            ),
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "reassignment" {
+                    let value: Payload? = maybe()
+                    assert value != null
+                    value = null
+                    assert value.value == "ok"
+                  }
+                "#,
+                "reassignment",
+            ),
+            (
+                r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  test "branch merge" {
+                    const value: Payload? = maybe()
+                    if true {
+                      assert value != null
+                    }
+                    assert value.value == "ok"
+                  }
+                "#,
+                "branch merge",
+            ),
+        ];
+
+        for (source, label) in cases {
+            let error = test_expression_type_result(source)
+                .expect_err("invalid assert narrowing must fail closed")
+                .message();
+            assert!(
+                error.contains("nullable") || error.contains("unknown field"),
+                "{label} should retain the unsafe optional type, got:\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn self_field_resolution_keeps_actor_and_record_owners_distinct() {
+        expression_type_result(
+            r#"
+              type User { name: string }
+              type Box<T> { value: T }
+              actor UserActor id string { name: string }
+
+              impl User {
+                function name() -> string { return self.name }
+              }
+              impl Box<T> {
+                function get() -> T { return self.value }
+              }
+              impl UserActor {
+                function name() -> string { return self.name }
+              }
+            "#,
+        )
+        .expect("ordinary, generic, and actor self fields must use their canonical static owner");
+
+        let error = expression_type_result(
+            r#"
+              type User { name: string }
+              actor UserActor id string { name: string }
+
+              impl User {
+                function invalid() -> string { return self.missing }
+              }
+              impl UserActor {
+                function invalid() -> string { return self.missing }
+              }
+            "#,
+        )
+        .expect_err("unknown ordinary and actor self fields must both fail closed")
+        .message();
+        assert!(error.contains("unknown field `missing` on User"), "{error}");
+        assert!(
+            error.contains("unknown field `missing` on UserActor"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -4130,6 +6634,7 @@ mod tests {
             &BTreeMap::new(),
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -4284,6 +6789,7 @@ mod tests {
             &package_aliases,
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -4364,6 +6870,7 @@ mod tests {
             &package_aliases,
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -4382,13 +6889,13 @@ mod tests {
         let user_ir = TypeRefIr::Record {
             fields: BTreeMap::from([(
                 "name".to_string(),
-                TypeRefIr::Native {
+                TypeRefIr::Builtin {
                     name: "string".to_string(),
                     args: Vec::new(),
                 },
             )]),
         };
-        let result_ir = TypeRefIr::Native {
+        let result_ir = TypeRefIr::Builtin {
             name: "DbUpsertResult".to_string(),
             args: vec![user_ir.clone()],
         };
@@ -4396,7 +6903,7 @@ mod tests {
             record_field_type_from_ir(&result_ir, "inserted")
                 .expect("inserted field should resolve")
                 .ir,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "bool".to_string(),
                 args: Vec::new(),
             }
@@ -4455,6 +6962,7 @@ mod tests {
             &parsed_sources,
             &package_aliases,
             &[],
+            None,
             None,
             &PublicationTypeSymbolIndex::default(),
         )
@@ -4560,6 +7068,7 @@ mod tests {
             &parsed_sources,
             &BTreeMap::new(),
             &[],
+            None,
             None,
             &PublicationTypeSymbolIndex::default(),
         )

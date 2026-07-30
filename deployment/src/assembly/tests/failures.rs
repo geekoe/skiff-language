@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_identity::assign_package_artifact_identities;
 use skiff_artifact_model::{
-    ContractOperationId, PackageBuildId, PackageConfigRequirement, PackageLocalAbiIdentity,
+    ContractOperationId, GatewayEntryIdentity, PackageBuildId, PackageConfigRequirement,
+    PackageLocalAbiIdentity, GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use super::fixtures::*;
@@ -110,6 +111,30 @@ fn package_edges_reject_version_abi_and_build_lookup_mismatches() {
     assert!(matches!(
         error,
         AssemblyResolutionError::MissingPackageArtifact(_)
+    ));
+
+    let mut mapping_drift = package_binding(&root_package, "dependency", &dependency);
+    mapping_drift.collection_name_mapping.insert(
+        "package_secret".to_string(),
+        "mapped_package_secret".to_string(),
+    );
+    let drifted = deployment(
+        &root_contract,
+        &root_package,
+        "mapping-drift",
+        vec![mapping_drift],
+        Vec::new(),
+    );
+    let error = resolve_runtime_assembly(
+        &[deployment_ref(&drifted)],
+        &[drifted],
+        std::slice::from_ref(&root_contract),
+        &candidates,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AssemblyResolutionError::PackageRequirementMismatch { .. }
     ));
 
     let mut wrong_version_binding = valid_binding.clone();
@@ -321,7 +346,7 @@ fn selectors_and_operations_must_describe_exact_template_edges() {
 }
 
 #[test]
-fn global_ingress_collision_fails_instead_of_last_wins() {
+fn deployment_gateway_ingress_allows_same_selector_for_distinct_services() {
     let contract_a = contract("service.ingress-a");
     let contract_b = contract("service.ingress-b");
     let package_a = package("package.ingress-a", &[], &[]);
@@ -340,19 +365,73 @@ fn global_ingress_collision_fails_instead_of_last_wins() {
         Vec::new(),
         Vec::new(),
     );
-    add_http_ingress(&mut deployment_a, &contract_a, "api.test", "/call");
-    add_http_ingress(&mut deployment_b, &contract_b, "api.test", "/call");
+    add_http_ingress(&mut deployment_a, &contract_a, "/v1/models");
+    add_http_ingress(&mut deployment_b, &contract_b, "/v1/models");
 
-    let error = resolve_runtime_assembly(
+    let assembly = resolve_runtime_assembly(
         &[deployment_ref(&deployment_b), deployment_ref(&deployment_a)],
-        &[deployment_a, deployment_b],
+        &[deployment_a.clone(), deployment_b.clone()],
         &[contract_a, contract_b],
         &[package_b, package_a],
     )
-    .unwrap_err();
+    .unwrap();
+    assert_eq!(assembly.gateway_ingress.len(), 2);
+    assert_ne!(
+        assembly.gateway_ingress[0].deployment,
+        assembly.gateway_ingress[1].deployment
+    );
+    assert_eq!(
+        assembly.gateway_ingress[0].selector,
+        assembly.gateway_ingress[1].selector
+    );
+}
+
+#[test]
+fn deployment_gateway_ingress_rejects_missing_key_and_wrong_identity() {
+    let contract = contract("service.ingress-invalid");
+    let package = package("package.ingress-invalid", &[], &[]);
+    let mut deployment = deployment(
+        &contract,
+        &package,
+        "revision-invalid",
+        Vec::new(),
+        Vec::new(),
+    );
+    add_http_ingress(&mut deployment, &contract, "/call");
+
+    let mut missing = deployment.clone();
+    missing.gateway_entries.clear();
     assert!(matches!(
-        error,
-        AssemblyResolutionError::IngressCollision { .. }
+        resolve_runtime_assembly(
+            &[deployment_ref(&missing)],
+            &[missing],
+            std::slice::from_ref(&contract),
+            std::slice::from_ref(&package),
+        )
+        .unwrap_err(),
+        AssemblyResolutionError::Artifact(_)
+    ));
+
+    let mut wrong_identity = deployment;
+    wrong_identity
+        .gateway_entries
+        .values_mut()
+        .next()
+        .unwrap()
+        .gateway_entry_identity = GatewayEntryIdentity::parse(format!(
+        "{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}",
+        "f".repeat(64)
+    ))
+    .unwrap();
+    assert!(matches!(
+        resolve_runtime_assembly(
+            &[deployment_ref(&wrong_identity)],
+            &[wrong_identity],
+            &[contract],
+            &[package],
+        )
+        .unwrap_err(),
+        AssemblyResolutionError::Artifact(_)
     ));
 }
 

@@ -138,19 +138,28 @@ test('operational failure preserves prior reports and stops the serial session i
 });
 
 test('configured package resolution fails closed before probe and explicit absence is a skip', async () => {
+  const configuredCrateNames = MANAGED_CRATE_NAMES.slice(1);
+  const missingCrateNames = MANAGED_CRATE_NAMES.filter(
+    (crateName) => !configuredCrateNames.includes(crateName),
+  );
+  assert.equal(missingCrateNames.length, 1);
+  const missingCratePattern = new RegExp(
+    `configured public API crate\\(s\\) missing.*${escapeRegExp(missingCrateNames[0])}`,
+  );
+
   assert.throws(
     () => resolveConfiguredPackages(
-      { packages: MANAGED_CRATE_NAMES.slice(1).map(packageInfo) },
+      { packages: configuredCrateNames.map(packageInfo) },
       MANAGED_CRATE_NAMES,
     ),
-    /configured public API crate\(s\) missing.*compiler-contract/,
+    missingCratePattern,
   );
 
   const missingCalls = [];
   await assert.rejects(
     runCratePublicApiGate({
       dependencies: fakeDependencies(missingCalls, {
-        packages: MANAGED_CRATE_NAMES.slice(1).map(packageInfo),
+        packages: configuredCrateNames.map(packageInfo),
       }),
       options: allConfiguredOptions(),
       report() {},
@@ -223,6 +232,10 @@ function allConfiguredOptions() {
 
 function packageInfo(name) {
   return { name };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function assertOrdered(values, expected) {

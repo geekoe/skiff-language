@@ -2,10 +2,13 @@ use std::{collections::BTreeMap, fmt};
 
 use crate::{
     compile_requirements::ServiceCallRef,
-    executable::{CallTargetIr, ExprIr},
+    executable::{CallTargetIr, ExprIr, StmtIr, TestEffectRegisterTargetIr},
 };
 
-use super::{file_ir_expressions, FileIrExpressionOwner, FileIrUnit, ServiceCallRefIndex};
+use super::{
+    file_ir_expressions, validate_file_ir_type_refs, FileIrExpressionOwner,
+    FileIrTypeRefValidationError, FileIrUnit, ServiceCallRefIndex,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileIrServiceCallOwner {
@@ -22,6 +25,7 @@ pub struct FileIrServiceCallSite {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileIrServiceCallValidationError {
+    InvalidTypeRef(FileIrTypeRefValidationError),
     DuplicateRef {
         first_index: usize,
         duplicate_index: usize,
@@ -38,6 +42,7 @@ pub enum FileIrServiceCallValidationError {
 impl fmt::Display for FileIrServiceCallValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidTypeRef(error) => write!(formatter, "File IR type ref is invalid: {error}"),
             Self::DuplicateRef {
                 first_index,
                 duplicate_index,
@@ -96,6 +101,7 @@ pub fn file_ir_service_call_sites(
 pub fn validate_file_ir_service_calls(
     unit: &FileIrUnit,
 ) -> Result<(), FileIrServiceCallValidationError> {
+    validate_file_ir_type_refs(unit).map_err(FileIrServiceCallValidationError::InvalidTypeRef)?;
     validate_unique_refs(&unit.external_refs.service_call_refs)?;
 
     let mut used = vec![false; unit.external_refs.service_call_refs.len()];
@@ -108,6 +114,32 @@ pub fn validate_file_ir_service_calls(
             });
         };
         *referenced = true;
+    }
+    for (executable_index, executable) in unit.executables.iter().enumerate() {
+        for statement in &executable.body.statements {
+            let StmtIr::TestEffectRegister {
+                target:
+                    TestEffectRegisterTargetIr::ContractOperation {
+                        service_call_ref_index,
+                    },
+                ..
+            } = statement
+            else {
+                continue;
+            };
+            let index = service_call_ref_index.index() as usize;
+            let Some(referenced) = used.get_mut(index) else {
+                return Err(FileIrServiceCallValidationError::IndexOutOfRange {
+                    site: FileIrServiceCallSite {
+                        owner: FileIrServiceCallOwner::Executable { executable_index },
+                        expression_index: 0,
+                        service_call_ref_index: *service_call_ref_index,
+                    },
+                    table_len: used.len(),
+                });
+            };
+            *referenced = true;
+        }
     }
     if let Some(index) = used.iter().position(|referenced| !referenced) {
         return Err(FileIrServiceCallValidationError::OrphanRef { index });
@@ -149,7 +181,8 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        CallIr, ContractOperationId, ExprIr, ExternalRefTable, FileIrUnit, ServiceProtocolIdentity,
+        CallIr, ContractOperationId, ExprIr, ExternalRefTable, FileIrUnit, InstructionSourceSite,
+        ServiceProtocolIdentity, SyntheticInstructionSiteReason,
     };
 
     use super::*;
@@ -242,7 +275,7 @@ mod tests {
         if unit.constants.is_empty() {
             unit.constants.push(crate::ConstIr {
                 name: "calls".to_string(),
-                ty: crate::TypeRefIr::native("void"),
+                ty: crate::TypeRefIr::builtin("void"),
                 body: crate::ExecutableBody::default(),
                 source_span: None,
             });
@@ -251,6 +284,9 @@ mod tests {
             call: CallIr {
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(index),
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),

@@ -9,16 +9,15 @@ import {
   uniqueCrates,
 } from '../lib/crate-public-api-policy.mjs';
 
-test('managed public API policy declares only the two terminal producer owners', () => {
-  assert.deepEqual(MANAGED_CRATE_NAMES, [
+test('managed public API policy declares the current owner set', () => {
+  const expectedManagedCrateNames = [
+    'skiff-deployment',
     'skiff-compiler-contract',
     'skiff-compiler',
-  ]);
-  assert.deepEqual(MANAGED_CRATE_HELP_NAMES, [
-    'skiff-compiler-contract',
-    'skiff-compiler',
-  ]);
-  assert.equal(new Set(MANAGED_CRATE_NAMES).size, 2);
+  ];
+  assert.deepEqual(MANAGED_CRATE_NAMES, expectedManagedCrateNames);
+  assert.deepEqual(MANAGED_CRATE_HELP_NAMES, expectedManagedCrateNames);
+  assert.equal(new Set(MANAGED_CRATE_NAMES).size, expectedManagedCrateNames.length);
   assert.deepEqual(new Set(MANAGED_CRATE_HELP_NAMES), new Set(MANAGED_CRATE_NAMES));
 });
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ContractOperationId, ContractTypeId, ContractTypeRef};
+use crate::{ContractOperationId, ContractTypeRef, PackageSchemaTypeRef};
 
 use super::BoundaryValuePlan;
 
@@ -17,24 +17,6 @@ pub struct BoundaryParameter {
 pub struct BoundaryReturn {
     pub ty: ContractTypeRef,
     pub value_plan: BoundaryValuePlan,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum BoundaryErrorContract {
-    None,
-    Typed {
-        payload_type: ContractTypeRef,
-        value_plan: BoundaryValuePlan,
-    },
-    Unsupported {
-        reason: BoundaryFeatureUnavailableReason,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,25 +44,10 @@ pub enum BoundaryStreamContract {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum BoundaryCancellationContract {
-    NotCancellable,
-    Cooperative,
-    Unsupported {
-        reason: BoundaryFeatureUnavailableReason,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
 pub enum BoundaryCallbackContract {
     None,
     RequestScoped {
-        interface_type_ids: Vec<ContractTypeId>,
+        interface_types: Vec<PackageSchemaTypeRef>,
         lifetime: BoundaryCallbackLifetime,
         expiration_error: BoundaryCallbackExpirationError,
     },
@@ -131,19 +98,16 @@ pub struct BoundaryEffectGuarantee {
 pub struct BoundaryOperationContract {
     pub parameters: Vec<BoundaryParameter>,
     pub return_value: BoundaryReturn,
-    pub errors: BoundaryErrorContract,
     pub stream: BoundaryStreamContract,
-    pub cancellation: BoundaryCancellationContract,
     pub callbacks: BoundaryCallbackContract,
-    pub may_suspend: bool,
     pub effect_guarantee: BoundaryEffectGuarantee,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BoundaryOperationDescriptor {
-    /// Real service-contract operation identity derived from its service
-    /// coordinate, contract version, and stable key.
+    /// Real service-contract operation identity derived from its service id
+    /// and stable public API key. Human-readable version labels are excluded.
     pub operation_id: ContractOperationId,
     pub stable_key: String,
     pub contract: BoundaryOperationContract,

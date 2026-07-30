@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use skiff_runtime_transport::protocol::{TelemetryEvent, TelemetrySource, TelemetryTopic};
+use skiff_runtime_model::service_error::ErrorCorrelation;
+use skiff_runtime_transport::protocol::{
+    TelemetryEvent, TelemetrySource, TelemetryTopic, TelemetryVisibility,
+};
 
 pub trait TelemetryEmitter: std::fmt::Debug + Send + Sync {
     fn emit(&self, event: TelemetryEvent) -> bool;
@@ -64,6 +67,28 @@ impl RequestTelemetryContext {
         error: Option<Map<String, Value>>,
         attrs: Option<Map<String, Value>>,
     ) {
+        self.emit_trace_event(name.into(), duration_ms, error, attrs, None);
+    }
+
+    pub fn emit_trace_with_error_correlation(
+        &self,
+        name: impl Into<String>,
+        duration_ms: Option<f64>,
+        error: Option<Map<String, Value>>,
+        attrs: Option<Map<String, Value>>,
+        correlation: &ErrorCorrelation,
+    ) {
+        self.emit_trace_event(name.into(), duration_ms, error, attrs, Some(correlation));
+    }
+
+    fn emit_trace_event(
+        &self,
+        name: String,
+        duration_ms: Option<f64>,
+        error: Option<Map<String, Value>>,
+        attrs: Option<Map<String, Value>>,
+        correlation: Option<&ErrorCorrelation>,
+    ) {
         let mut event = telemetry_event(
             TelemetryTopic::Trace,
             telemetry_timestamp_now(),
@@ -75,11 +100,14 @@ impl RequestTelemetryContext {
         event.activation_identity = self.activation_identity.clone();
         event.runtime_id = self.runtime_id.clone();
         event.request_id = self.request_id.clone();
-        event.trace_id = self.trace_id.clone();
+        event.trace_id = correlation
+            .map(|correlation| correlation.trace_id.clone())
+            .or_else(|| self.trace_id.clone());
+        event.error_id = correlation.map(|correlation| correlation.error_id.clone());
         event.span_id = self.span_id.clone();
         event.parent_span_id = self.parent_span_id.clone();
         event.target = self.target.clone();
-        event.name = Some(name.into());
+        event.name = Some(name);
         event.duration_ms = duration_ms;
         event.error = error;
         event.attrs = attrs;
@@ -96,6 +124,7 @@ pub fn telemetry_event(
         topic,
         ts: ts.into(),
         source,
+        visibility: TelemetryVisibility::Operational,
         service_id: None,
         revision_id: None,
         build_id: None,
@@ -108,6 +137,7 @@ pub fn telemetry_event(
         request_id: None,
         client_request_id: None,
         trace_id: None,
+        error_id: None,
         span_id: None,
         parent_span_id: None,
         target: None,

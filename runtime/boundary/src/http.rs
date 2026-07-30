@@ -254,6 +254,7 @@ pub fn http_response_stream_event_from_wire(
     })?;
     match tag {
         "start" => {
+            require_exact_fields(object, &["tag", "status", "headers"], "start")?;
             let status = value_integer_field(object, "status")?;
             if !(100..=599).contains(&status) {
                 return Err(RuntimeError::Decode(
@@ -268,6 +269,7 @@ pub fn http_response_stream_event_from_wire(
             })
         }
         "chunk" => {
+            require_exact_fields(object, &["tag", "value"], "chunk")?;
             let value = object.get("value").ok_or_else(|| {
                 RuntimeError::Decode(
                     "HttpResponseStreamEvent.chunk.value must be bytes".to_string(),
@@ -280,11 +282,32 @@ pub fn http_response_stream_event_from_wire(
             })?;
             Ok(HttpBoundaryResponseStreamEvent::Chunk(bytes))
         }
-        "end" => Ok(HttpBoundaryResponseStreamEvent::End),
+        "end" => {
+            require_exact_fields(object, &["tag"], "end")?;
+            Ok(HttpBoundaryResponseStreamEvent::End)
+        }
         other => Err(RuntimeError::Decode(format!(
             "unsupported HttpResponseStreamEvent tag {other}"
         ))),
     }
+}
+
+fn require_exact_fields(
+    object: &serde_json::Map<String, Value>,
+    expected: &[&str],
+    variant: &str,
+) -> Result<()> {
+    let mut actual = object.keys().map(String::as_str).collect::<Vec<_>>();
+    let mut expected = expected.to_vec();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    if actual == expected {
+        return Ok(());
+    }
+    Err(RuntimeError::Decode(format!(
+        "HttpResponseStreamEvent.{variant} fields must be exactly {}",
+        expected.join(", ")
+    )))
 }
 
 fn alloc_name_value_array(
@@ -400,6 +423,7 @@ fn value_name_value_array_field(
             let object = item.as_object().ok_or_else(|| {
                 RuntimeError::Decode("HttpResponseStreamEvent.header must be an object".to_string())
             })?;
+            require_exact_fields(object, &["name", "value"], "header")?;
             Ok(HttpBoundaryNameValue {
                 name: value_string_field(object, "name")?.to_string(),
                 value: value_string_field(object, "value")?.to_string(),
@@ -557,6 +581,25 @@ mod tests {
         .expect("chunk should parse");
 
         assert_eq!(event, HttpBoundaryResponseStreamEvent::Chunk(vec![7, 8, 9]));
+    }
+
+    #[test]
+    fn http_response_stream_event_rejects_malformed_or_extra_fields() {
+        for malformed in [
+            json!({"tag": "start", "status": 200}),
+            json!({"tag": "chunk", "value": bytes_value(&[1]), "extra": true}),
+            json!({"tag": "end", "value": bytes_value(&[])}),
+            json!({
+                "tag": "start",
+                "status": 200,
+                "headers": [{"name": "x", "value": "y", "extra": "z"}]
+            }),
+        ] {
+            assert!(
+                http_response_stream_event_from_wire(&malformed).is_err(),
+                "malformed event must fail: {malformed}"
+            );
+        }
     }
 
     fn name_value_descriptor() -> Value {

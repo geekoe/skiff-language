@@ -18,21 +18,34 @@ use skiff_runtime_boundary::{
 };
 use skiff_runtime_host::eval_capability_adapter;
 use skiff_runtime_model::{
-    error::WirePayload,
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
+    runtime_value::{
+        HeapHandle, HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueCarrier,
+    },
+    service_error::{
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity,
+        NominalTypeIdentity, PlatformBuiltinErrorIdentity, RequestException,
+    },
 };
 use skiff_runtime_request::cancellation::CancellationToken;
 use tokio::time::sleep;
 
 use super::*;
 use crate::eval::InterpreterEnv as Env;
-use skiff_artifact_model::{builtin_receiver_op_by_name, DbMetadataIr, PublicationResourceRef};
-use skiff_runtime_linked_program::{LoadedPublicationResource, PublicationResourceTable};
+use skiff_artifact_model::{
+    builtin_receiver_op_by_name, DbMetadataIr, FileIrRef, PackageArtifactRef, PackageBuildId,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PublicationResourceRef, TypeDescriptorIr,
+    TypeExport,
+};
+use skiff_runtime_capability_context::{
+    DbCapabilityTarget, DbCapabilityTargetId, DbProviderTargetMetadata,
+};
+use skiff_runtime_linked_program::{
+    linked::{DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr, TypeDeclarationIr},
+    DbObjectTargetId, LinkedNamedUnionBranch, LoadedPublicationResource, PublicationResourceTable,
+    RuntimeExecutionPackage,
+};
 
-const PROTOCOL_OUTBOUND: &str =
-    "skiff-protocol-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-const BUILD_OUTBOUND: &str = "skiff-service-build-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const STD_HTTP_HEADER_TYPE_INDEX: usize = 0;
 const STD_HTTP_QUERY_PARAM_TYPE_INDEX: usize = 1;
 const STD_HTTP_REQUEST_TYPE_INDEX: usize = 2;
@@ -42,107 +55,61 @@ const STD_HTTP_CLIENT_REQUEST_TYPE_INDEX: usize = 5;
 const STD_HTTP_CLIENT_RESPONSE_TYPE_INDEX: usize = 6;
 const STD_HTTP_CLIENT_STREAM_HANDLE_TYPE_INDEX: usize = 7;
 const STD_HTTP_SSE_EVENT_TYPE_INDEX: usize = 8;
+const STD_DURATION_TYPE_INDEX: usize = 9;
+const STD_FILE_IMMUTABLE_TYPE_INDEX: usize = 10;
+const STD_FILE_CREATE_OPTIONS_TYPE_INDEX: usize = 11;
+const STD_FILE_INFO_TYPE_INDEX: usize = 12;
+const STD_RESOURCE_INFO_TYPE_INDEX: usize = 13;
+const STD_RESOURCE_ERROR_TYPE_INDEX: usize = 14;
 
 fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capability_adapter::runtime_factory()
 }
 
+fn test_instruction_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
+
+fn local_execution_catch_identity(type_index: usize) -> CatchIdentity {
+    local_execution_catch_identity_for_addr(service_type_addr(type_index))
+}
+
+fn local_execution_catch_identity_for_addr(addr: TypeAddr) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr,
+            type_arguments: Vec::new(),
+        },
+    ))
+}
+
 use crate::{
-    eval::error::{
-        unwrap_diagnostic_source_context, BudgetReason, RuntimeError, TypeIdentity, UserException,
-    },
+    eval::error::{unwrap_diagnostic_source_context, RuntimeError},
+    eval::exceptions::request_exception_for_rethrow,
     eval::program::{
         anonymous_type_decl, types::PackageSymbolKey, CallIr, ConstAddr, ConstIr, ExecutableAddr,
         ExecutableKind, ExprRefIr, FileAddr, FileDeclarations, FileLinkTargets, GatewayConfig,
         LinkOverlay, LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr,
         LinkedFileUnit, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-        MetadataValue, NativeTarget, PackageUnit, ParamIr, ResolvedSymbol, RuntimeActivation,
-        RuntimeProgram, RuntimeTypeContext, ServiceDependencyConstraint,
-        ServiceDependencySymbolRef, ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr,
-        TypeAddr, TypeDeclIr, UnitAddr,
+        MetadataValue, NativeTarget, ParamIr, ResolvedSymbol, RuntimeProgram, RuntimeTypeContext,
+        ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, StmtRefIr, TypeAddr, TypeDeclIr,
+        UnitAddr,
     },
     eval::{
-        capabilities::{OutboundServiceContext, StreamPoll, StreamRuntime, TypedStreamSink},
+        capabilities::{StreamPoll, StreamRuntime, TypedStreamSink},
         native_capability::project_runtime_native_capability_context,
         native_invocation::resolve_runtime_native_invocation,
         program_execution::{
             executable_type_param_names, OwnedProgramExecutionContext, ProgramExecutionInput,
         },
         program_invocation::{ProgramInvocationContext, ProgramInvocationInput},
-        service_dispatch::outbound_control_and_payload_for_test,
         TestEffectDouble,
     },
     type_descriptor::{PlanContext, RuntimeTypePlanLinkedExt},
 };
 use skiff_runtime_native::dispatch::NativeDispatch;
-
-fn account_lookup_symbol() -> ServiceDependencySymbolRef {
-    ServiceDependencySymbolRef {
-        dependency_ref: "account".to_string(),
-        operation: account_lookup_operation_ref(),
-    }
-}
-
-const ACCOUNT_LOOKUP_OPERATION_ABI_ID: &str = "operation:account:lookup";
-const REMOTE_READER_INTERFACE_ABI_ID: &str = "svc.main.RemoteReader";
-const REMOTE_READER_METHOD_ABI_ID: &str = "method:svc.main.RemoteReader.read";
-const REMOTE_READER_PUBLIC_INSTANCE: &str = "reader";
-const REMOTE_READER_PUBLIC_PATH: &str = "reader.read";
-const REMOTE_READER_OPERATION_ABI_ID: &str = "operation:account:reader.read";
-
-fn account_lookup_operation_ref() -> skiff_artifact_model::OperationAbiRef {
-    skiff_artifact_model::OperationAbiRef {
-        operation_abi_id: ACCOUNT_LOOKUP_OPERATION_ABI_ID.to_string(),
-        kind: skiff_artifact_model::PublicationOperationKind::PublicFunction,
-        public_path: "lookup".to_string(),
-        public_instance_key: None,
-        interface: None,
-        method_abi_id: None,
-        display_name: "lookup".to_string(),
-    }
-}
-
-fn remote_reader_interface_ref() -> skiff_artifact_model::InterfaceInstantiationRef {
-    skiff_artifact_model::InterfaceInstantiationRef {
-        interface_abi_id: REMOTE_READER_INTERFACE_ABI_ID.to_string(),
-        canonical_type_args: Vec::new(),
-    }
-}
-
-fn remote_reader_interface_json() -> serde_json::Value {
-    json!({
-        "interfaceAbiId": REMOTE_READER_INTERFACE_ABI_ID,
-        "canonicalTypeArgs": []
-    })
-}
-
-fn remote_reader_interface_method_target() -> serde_json::Value {
-    json!({
-        "kind": "interfaceMethod",
-        "interface": remote_reader_interface_json(),
-        "methodAbiId": REMOTE_READER_METHOD_ABI_ID,
-        "slot": 0
-    })
-}
-
-fn remote_reader_operation_ref() -> skiff_artifact_model::OperationAbiRef {
-    skiff_artifact_model::OperationAbiRef {
-        operation_abi_id: REMOTE_READER_OPERATION_ABI_ID.to_string(),
-        kind: skiff_artifact_model::PublicationOperationKind::PublicInstanceMethod,
-        public_path: REMOTE_READER_PUBLIC_PATH.to_string(),
-        public_instance_key: Some(REMOTE_READER_PUBLIC_INSTANCE.to_string()),
-        interface: Some(remote_reader_interface_ref()),
-        method_abi_id: Some(REMOTE_READER_METHOD_ABI_ID.to_string()),
-        display_name: REMOTE_READER_PUBLIC_PATH.to_string(),
-    }
-}
-
-fn remote_reader_symbol() -> ServiceDependencySymbolRef {
-    ServiceDependencySymbolRef {
-        dependency_ref: "account".to_string(),
-        operation: remote_reader_operation_ref(),
-    }
-}
 
 fn linked_builtin_type(name: &str) -> LinkedTypeRef {
     LinkedTypeRef::Native {
@@ -175,7 +142,9 @@ fn local_const_receiver_target(executable_index: usize) -> serde_json::Value {
 
 #[tokio::test]
 async fn runtime_program_executes_route_by_executable_addr() {
-    let program = Arc::new(program_with_executable(run_executable()));
+    let mut program = program_with_executable(run_executable());
+    install_run_result_type(&mut program);
+    let program = Arc::new(program);
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     set_request_string_arg(&mut frame, "input", "Ada");
@@ -212,6 +181,7 @@ fn linked_ir_rejects_legacy_provider_call_target() {
     let error = serde_json::from_value::<LinkedExprIr>(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": {
                 "kind": "provider",
                 "target": {
@@ -238,6 +208,7 @@ async fn runtime_program_executes_receiver_builtin_call() {
     executable.body.expressions.push(expression(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": receiver_builtin_target("string", "concat"),
             "args": [
                 { "expression": 0 },
@@ -268,6 +239,7 @@ async fn runtime_program_executes_local_const_receiver_executable_call() {
     run.body.expressions.push(expression(json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": local_const_receiver_target(1),
             "args": []
         }
@@ -461,7 +433,9 @@ async fn runtime_program_executes_bytes_natives_without_json_registry() {
 
 #[tokio::test]
 async fn runtime_program_executes_time_sleep_native_without_json_registry() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(20)));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        time_sleep_executable(20),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -474,9 +448,29 @@ async fn runtime_program_executes_time_sleep_native_without_json_registry() {
     assert!(started_at.elapsed() >= Duration::from_millis(10));
 }
 
+#[test]
+fn std_builtin_package_types_resolve_to_exact_nominal_plans() {
+    let program = program_with_executable_and_std_builtins(run_executable());
+    let addr = ExecutableAddr::service(0, 0);
+
+    for (type_index, expected_name) in [
+        (STD_DURATION_TYPE_INDEX, "std.time.Duration"),
+        (STD_FILE_IMMUTABLE_TYPE_INDEX, "std.file.ImmutableFile"),
+        (STD_FILE_CREATE_OPTIONS_TYPE_INDEX, "std.file.CreateOptions"),
+        (STD_FILE_INFO_TYPE_INDEX, "std.file.FileInfo"),
+        (STD_HTTP_REQUEST_TYPE_INDEX, "std.http.HttpRequest"),
+        (STD_RESOURCE_INFO_TYPE_INDEX, "std.resource.ResourceInfo"),
+    ] {
+        let plan = std_http_type_plan_for_test(&program, &addr, type_index);
+        assert_eq!(plan.named_type_name.as_deref(), Some(expected_name));
+    }
+}
+
 #[tokio::test]
 async fn runtime_program_time_sleep_negative_returns_immediately() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(-1)));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        time_sleep_executable(-1),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -493,7 +487,9 @@ async fn runtime_program_time_sleep_negative_returns_immediately() {
 
 #[tokio::test]
 async fn runtime_program_time_sleep_observes_cancellation() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(100)));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        time_sleep_executable(100),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
     let cancellation = frame.cancellation.clone();
@@ -513,12 +509,16 @@ async fn runtime_program_time_sleep_observes_cancellation() {
         .await
         .expect("cancellation task should complete");
 
-    assert!(matches!(error, RuntimeError::Cancelled));
+    assert!(error.is_cancellation_terminal());
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[tokio::test]
 async fn runtime_program_time_sleep_observes_deadline() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(100)));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        time_sleep_executable(100),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     frame.execution_budget = std::sync::Arc::new(crate::execution_budget::ExecutionBudget::new(
@@ -534,13 +534,12 @@ async fn runtime_program_time_sleep_observes_deadline() {
     .expect("std.time.sleep should observe request deadline")
     .expect_err("expired std.time.sleep should fail");
 
-    assert!(matches!(
-        error,
-        RuntimeError::ExecutionBudgetExceeded {
-            reason: BudgetReason::DeadlineExceeded,
-            ..
-        }
-    ));
+    assert!(
+        matches!(&error, RuntimeError::ScopeTerminal(_)),
+        "direct eval must retain the current scope deadline owner: {error:?}"
+    );
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[tokio::test]
@@ -590,7 +589,7 @@ async fn runtime_program_executes_package_function_call() {
         package_call_executable(),
         package_echo_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    replace_single_package(&mut program, "example.com/pkg", Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -629,9 +628,12 @@ async fn runtime_program_stream_variable_crosses_nested_package_producers() {
     package_file
         .executables
         .push(package_string_stream_forwarder_executable(1, None));
-    program.packages = vec![Arc::new(package_unit("example.com/stream-forwarders"))];
-    program.package_files = vec![vec![Arc::new(package_file)]];
-    program.package_resources = vec![Default::default()];
+    program.packages = vec![runtime_package(
+        "example.com/stream-forwarders",
+        0,
+        vec![Arc::new(package_file)],
+        Default::default(),
+    )];
 
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -652,7 +654,7 @@ async fn runtime_program_executes_package_function_call_by_package_id_ref() {
         })),
         package_echo_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    replace_single_package(&mut program, "example.com/pkg", Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -684,7 +686,7 @@ async fn runtime_program_executes_package_function_call_by_dependency_ref() {
         })),
         package_echo_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    replace_single_package(&mut program, "example.com/pkg", Default::default());
     program
         .link_overlay
         .package_slots_by_dependency_ref
@@ -713,7 +715,7 @@ async fn runtime_program_substitutes_package_generic_type_args_for_native_wrappe
         package_generic_json_decode_call_executable(),
         generic_json_decode_native_wrapper_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("skiff.run/std"))];
+    replace_single_package(&mut program, "skiff.run/std", Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -741,7 +743,7 @@ async fn runtime_program_substitutes_generic_type_args_for_config_native_wrapper
         package_generic_config_require_call_executable(),
         generic_config_require_wrapper_executable(),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/config"))];
+    replace_single_package(&mut program, "example.com/config", Default::default());
 
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let mut frame = test_invocation("svc.main.run");
@@ -783,7 +785,9 @@ async fn runtime_program_json_decode_native_missing_type_args_fails_invalid_arti
         .await
         .expect_err("std.json.decode without direct typeArgs should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.decode"));
@@ -823,7 +827,9 @@ async fn runtime_program_json_encode_native_missing_type_args_fails_invalid_arti
         .await
         .expect_err("std.json.encode without direct typeArgs should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.encode"));
@@ -842,7 +848,9 @@ async fn runtime_program_json_native_missing_t0_type_arg_fails_invalid_artifact(
         .await
         .expect_err("std.json.decode without T0 typeArg should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.decode"));
@@ -861,7 +869,9 @@ async fn runtime_program_json_native_unresolved_type_arg_fails_invalid_artifact(
         .await
         .expect_err("std.json.decode with unresolved direct typeArgs should fail closed");
 
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("invalid artifact remains ordinary");
     assert_eq!(payload.code, "InvalidArtifact");
     let message = payload.message;
     assert!(message.contains("std.json.decode"));
@@ -936,9 +946,9 @@ async fn runtime_program_resource_exists_returns_false_for_invalid_and_missing_p
 
 #[tokio::test]
 async fn runtime_program_resource_text_missing_path_throws_resource_error() {
-    let program = Arc::new(program_with_executable(resource_text_native_executable(
-        "missing.txt",
-    )));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_text_native_executable("missing.txt"),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -946,14 +956,14 @@ async fn runtime_program_resource_text_missing_path_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for missing resources");
 
-    assert_resource_error(&error, "missing.txt");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
-    let program = Arc::new(program_with_executable(resource_text_native_executable(
-        "./bad",
-    )));
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_text_native_executable("./bad"),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -961,12 +971,13 @@ async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for invalid paths");
 
-    assert_resource_error(&error, "./bad");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
-    let mut program = program_with_executable(resource_text_native_executable("bad.txt"));
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("bad.txt"));
     program.service_resources = resource_table("bad.txt", &[0xff, 0xfe]);
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -975,11 +986,11 @@ async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
         .await
         .expect_err("std.resource.text should throw ResourceError for invalid UTF-8");
 
-    assert_resource_error(&error, "bad.txt");
+    assert_resource_exception(&error);
 }
 
 #[tokio::test]
-async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape() {
+async fn runtime_program_resource_json_syntax_error_throws_request_local_json_decode_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", b"{");
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
@@ -989,11 +1000,11 @@ async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape
         .await
         .expect_err("std.resource.json should map syntax errors to std.json.DecodeError");
 
-    assert_resource_json_decode_error(&error, "bad.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
-async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape() {
+async fn runtime_program_resource_json_type_error_throws_request_local_json_decode_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", b"[]");
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
@@ -1003,7 +1014,7 @@ async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape()
         .await
         .expect_err("std.resource.json should map type errors to std.json.DecodeError");
 
-    assert_resource_json_decode_error(&error, "bad.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
@@ -1042,12 +1053,14 @@ async fn runtime_program_resource_json_rejects_stream_return_type() {
         .await
         .expect_err("std.resource.json should not decode resource bytes as a Stream");
 
-    assert_resource_json_decode_error(&error, "stream.json");
+    assert_resource_json_decode_exception(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
-    let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
+    let mut program = program_with_executable_and_std_builtins(
+        resource_json_object_native_executable("bad.json"),
+    );
     program.service_resources = resource_table("bad.json", &[0xff, 0xfe]);
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -1056,7 +1069,154 @@ async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
         .await
         .expect_err("std.resource.json should throw ResourceError for invalid UTF-8");
 
-    assert_resource_error(&error, "bad.json");
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_bytes_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_bytes_native_executable("missing.bin"),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.bytes should throw ResourceError for missing resources");
+
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_info_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        resource_info_native_executable("missing.bin"),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.info should throw ResourceError for missing resources");
+
+    assert_resource_exception(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_direct_native_resource_error_catch_preserves_exact_exception() {
+    let program = Arc::new(program_with_executable_and_std_builtins(
+        catch_resource_text_native_executable("missing.txt"),
+    ));
+    let file = Arc::clone(
+        program
+            .service_files
+            .first()
+            .expect("test program service file"),
+    );
+    let executable = file
+        .executables
+        .first()
+        .expect("test program executable")
+        .clone();
+    let interpreter = Interpreter::with_program(Arc::clone(&program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+    let invocation_context = program_invocation_context(&interpreter, &frame);
+    let context = invocation_context.execution_context();
+    let mut heap = RequestHeap::default();
+    let mut env = Env::default();
+
+    let caught = interpreter
+        .eval_program_expr_ref(
+            context,
+            &mut heap,
+            &mut env,
+            &ExecutableAddr::service(0, 0),
+            file.as_ref(),
+            &executable,
+            ExprRefIr { expression: 2 },
+        )
+        .await
+        .expect("catch<ResourceError> should catch the direct native failure");
+    let caught_handle = caught
+        .as_heap_handle()
+        .expect("catch result should be a request-local object");
+    let tag = heap
+        .object_field_carrier(caught_handle, "tag")
+        .expect("catch tag should be readable")
+        .expect("catch result should have a tag");
+    assert_eq!(tag.value(), &RuntimeValue::String("err".to_string()));
+    let exception_handle = heap
+        .object_field_carrier(caught_handle, "exception")
+        .expect("catch exception should be readable")
+        .expect("err result should have an exception")
+        .as_heap_handle()
+        .expect("caught exception should remain a request-local handle");
+    let HeapNode::Exception(exception) = heap
+        .get(exception_handle)
+        .expect("caught exception handle should resolve")
+    else {
+        panic!("caught err payload should be an exception node");
+    };
+    assert_resource_request_exception(exception);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_requires_std_package_type() {
+    let program = Arc::new(program_with_executable(resource_text_native_executable(
+        "missing.txt",
+    )));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("ResourceError projection must require the canonical std package type");
+
+    assert_resource_error_invalid_artifact(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_rejects_wrong_std_type_shape() {
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
+    replace_std_resource_error_type(
+        &mut program,
+        anonymous_type_decl(
+            "ResourceError",
+            linked_record_descriptor(vec![("message", linked_builtin_type("string"))]),
+        ),
+    );
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("ResourceError projection must reject a non-canonical std type shape");
+
+    assert_resource_error_invalid_artifact(&error);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_error_rejects_std_implementation_only_type() {
+    let mut program =
+        program_with_executable_and_std_builtins(resource_text_native_executable("missing.txt"));
+    let package = program.packages.first().expect("std package test fixture");
+    let mut artifact = package.artifact().clone();
+    artifact.package_local_abi.public_symbols.clear();
+    program.packages[0] = crate::eval::test_support::runtime_execution_package_from_artifact(
+        0,
+        artifact,
+        package.files().to_vec(),
+        package.static_resources().clone(),
+    );
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("implementation-only ResourceError must not become publicly catchable");
+
+    assert_resource_error_invalid_artifact(&error);
 }
 
 #[tokio::test]
@@ -1065,9 +1225,12 @@ async fn runtime_program_resource_package_call_site_reads_package_resource() {
         service_calls_package_resource_text_executable(),
         resource_text_native_executable("prompts/system.md"),
     );
-    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
     program.service_resources = resource_table("prompts/system.md", b"service text");
-    program.package_resources = vec![resource_table("prompts/system.md", b"package text")];
+    replace_single_package(
+        &mut program,
+        "example.com/pkg",
+        resource_table("prompts/system.md", b"package text"),
+    );
     let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -1082,22 +1245,27 @@ async fn runtime_program_resource_package_call_site_reads_package_resource() {
 async fn runtime_program_config_reads_called_package_slot_scope() {
     let mut program = program_with_executable(run_executable());
     program.packages = vec![
-        Arc::new(package_unit("skiff.run/track")),
-        Arc::new(package_unit("skiff.run/http-session")),
+        runtime_package(
+            "skiff.run/track",
+            0,
+            vec![Arc::new(package_file_unit(
+                "file:track",
+                "track.main",
+                package_call_config_reader_executable(),
+            ))],
+            Default::default(),
+        ),
+        runtime_package(
+            "skiff.run/http-session",
+            1,
+            vec![Arc::new(package_file_unit(
+                "file:http-session",
+                "httpSession.main",
+                config_require_string_executable("sessionSecret"),
+            ))],
+            Default::default(),
+        ),
     ];
-    program.package_files = vec![
-        vec![Arc::new(package_file_unit(
-            "file:track",
-            "track.main",
-            package_call_config_reader_executable(),
-        ))],
-        vec![Arc::new(package_file_unit(
-            "file:http-session",
-            "httpSession.main",
-            config_require_string_executable("sessionSecret"),
-        ))],
-    ];
-    program.package_resources = vec![Default::default(), Default::default()];
     let target = "package.skiff.run%2Ftrack.record";
     program
         .routes
@@ -1435,15 +1603,16 @@ fn runtime_program_deeply_nested_stream_producers_run_to_completion() {
 }
 
 /// The real acceptance test for the root fix: drive a 40-deep forwarding stream
-/// producer chain on a *small* (1 MiB) stack — both the executor thread and the
-/// runtime's worker thread are sized to 1 MiB. The pre-fix co-driven model nested
-/// one future per producer level on a single native stack and overflowed/aborted
-/// well before depth 40 at 1 MiB. With every producer running in its own
-/// `tokio::spawn`ed task, the consumer only polls the bounded channel, so the
-/// native stack depth is constant regardless of nesting depth and the chain
-/// completes on the small stack. This distinguishes the root fix from the
-/// 64 MiB worker-stack mitigation: if the producers were still co-driven, this
-/// test would abort the process.
+/// producer chain while the Tokio worker that polls spawned producers has a
+/// *small* (1 MiB) stack. The outer libtest thread keeps its ordinary stack: the
+/// test is about producer-task isolation, not whether an entire debug runtime
+/// can be constructed and driven inside 1 MiB.
+///
+/// The pre-fix co-driven model nested one future per producer level on the
+/// worker's native stack and overflowed/aborted well before depth 40 at 1 MiB.
+/// With every producer running in its own `tokio::spawn`ed task, each worker poll
+/// sees one producer and the chain completes. This distinguishes the root fix
+/// from the 64 MiB worker-stack mitigation.
 #[test]
 fn runtime_program_deeply_nested_stream_producers_are_stack_depth_independent() {
     let depth: usize = std::env::var("SKIFF_NESTED_PRODUCER_DEPTH")
@@ -1456,41 +1625,32 @@ fn runtime_program_deeply_nested_stream_producers_are_stack_depth_independent() 
     // this would overflow and abort the process.
     let stack_bytes: usize = 1024 * 1024;
 
-    let handle = std::thread::Builder::new()
-        .name("nested-stream-producer-small-stack-test".to_string())
-        .stack_size(stack_bytes)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .thread_stack_size(stack_bytes)
-                .enable_all()
-                .build()
-                .expect("multi-thread runtime should build");
-            runtime.block_on(async move {
-                let mut executables = vec![local_stream_aggregate_route_executable()];
-                for level in 1..depth {
-                    executables.push(forwarding_string_stream_producer_executable(level + 1));
-                }
-                executables.push(local_string_stream_producer_executable());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("nested-stream-producer-small-stack-worker")
+        .thread_stack_size(stack_bytes)
+        .enable_all()
+        .build()
+        .expect("multi-thread runtime should build");
+    runtime.block_on(async move {
+        let mut executables = vec![local_stream_aggregate_route_executable()];
+        for level in 1..depth {
+            executables.push(forwarding_string_stream_producer_executable(level + 1));
+        }
+        executables.push(local_string_stream_producer_executable());
 
-                let program = Arc::new(program_with_executables(executables));
-                let interpreter = Interpreter::with_program(program, runtime_factory());
-                let frame = test_invocation("svc.main.run");
+        let program = Arc::new(program_with_executables(executables));
+        let interpreter = Interpreter::with_program(program, runtime_factory());
+        let frame = test_invocation("svc.main.run");
 
-                let value = execute_test_program_route(&interpreter, &frame)
-                    .await
-                    .expect("deep producer chain should run depth-independently on a small stack");
+        let value = execute_test_program_route(&interpreter, &frame)
+            .await
+            .expect("deep producer chain should run depth-independently on a small worker stack");
 
-                // Every forwarding level passes items through unchanged, so the
-                // leaf's "a","b","c" must still aggregate to "abc".
-                assert_eq!(value, json!("abc"));
-            });
-        })
-        .expect("small-stack test worker thread should spawn");
-
-    handle
-        .join()
-        .expect("deep producer chain must complete on a 1 MiB stack (depth-independent)");
+        // Every forwarding level passes items through unchanged, so the
+        // leaf's "a","b","c" must still aggregate to "abc".
+        assert_eq!(value, json!("abc"));
+    });
 }
 
 #[tokio::test]
@@ -1743,8 +1903,35 @@ async fn runtime_program_http_stream_event_helper_uses_native_signature_inside_h
     );
 }
 
+#[tokio::test]
+async fn runtime_program_http_stream_chunk_and_end_construct_canonical_wire_events() {
+    for (executable, expected) in [
+        (
+            http_stream_chunk_helper_in_http_handler_executable(),
+            json!({
+                "tag": "chunk",
+                "value": { "__skiffBytesBase64": "aGVsbG8gd29ybGQ=" }
+            }),
+        ),
+        (
+            http_stream_end_helper_in_http_handler_executable(),
+            json!({ "tag": "end" }),
+        ),
+    ] {
+        let program = Arc::new(program_with_executable_and_std_http_types(executable));
+        let interpreter = Interpreter::with_program(program, runtime_factory());
+        let mut frame = test_invocation("svc.main.run");
+        set_request_http_arg(&mut frame, "request");
+
+        let value = execute_test_program_route(&interpreter, &frame)
+            .await
+            .expect("HTTP stream event constructor should use its exact native signature");
+        assert_eq!(value, expected);
+    }
+}
+
 #[test]
-fn test_host_operation_double_matches_bytes_request_without_materializing_actual_input() {
+fn test_host_operation_double_materializes_typed_request_without_consuming_actual_input() {
     let program = Arc::new(program_with_executable(run_executable()));
     let interpreter = Interpreter::with_program_test_effect_doubles(
         program,
@@ -1766,11 +1953,9 @@ fn test_host_operation_double_matches_bytes_request_without_materializing_actual
         )]),
         runtime_factory(),
     );
-    let mut heap = RequestHeap::new(RequestHeapLimits {
-        max_materialize_output_bytes: 1,
-        ..RequestHeapLimits::default()
-    });
+    let mut heap = RequestHeap::default();
     let input = http_client_request_runtime_value(&mut heap);
+    let input_before = input.clone();
     let arg_type = json!({ "kind": "builtin", "name": "std.http.HttpClientRequest", "args": [] });
     let return_type =
         json!({ "kind": "builtin", "name": "std.http.HttpClientResponse", "args": [] });
@@ -1787,19 +1972,66 @@ fn test_host_operation_double_matches_bytes_request_without_materializing_actual
             &mut heap,
         )
         .expect("test double should dispatch")
-        .expect("test double should match bytes input without materializing it");
+        .expect("test double should match the materialized bytes input");
 
     assert!(matches!(value, RuntimeValue::Heap(_)));
-    assert_eq!(heap.stats().materialize_output_bytes, 0);
+    assert_eq!(input, input_before);
+    assert!(heap.stats().materialize_output_bytes > 0);
 }
 
 #[test]
-fn test_host_operation_double_rejects_public_http_target_id() {
+fn test_host_operation_double_fails_closed_for_invalid_request_heap_handle() {
     let program = Arc::new(program_with_executable(run_executable()));
     let interpreter = Interpreter::with_program_test_effect_doubles(
         program,
         HashMap::from([(
-            "std.http.request".to_string(),
+            "std.http.client.request".to_string(),
+            TestEffectDouble {
+                expect_request: Some(json!({ "method": "POST" })),
+                response: json!({
+                    "status": 204,
+                    "headers": [],
+                    "body": { "__skiffBytesBase64": "" }
+                }),
+            },
+        )]),
+        runtime_factory(),
+    );
+    let mut heap = RequestHeap::default();
+    let invalid_input = RuntimeValue::Heap(HeapHandle::new(42, 0));
+    let arg_plan = RuntimeTypePlan::from_descriptor(
+        &json!({ "kind": "builtin", "name": "std.http.HttpClientRequest", "args": [] }),
+    )
+    .expect("arg plan should build");
+    let return_plan = RuntimeTypePlan::from_descriptor(
+        &json!({ "kind": "builtin", "name": "std.http.HttpClientResponse", "args": [] }),
+    )
+    .expect("return plan should build");
+
+    let error = interpreter
+        .dispatch_test_http_effect_invocation_double(
+            "std.http.client.request",
+            Some(&invalid_input),
+            Some(&arg_plan),
+            Some(&return_plan),
+            &mut heap,
+        )
+        .expect("test double should dispatch")
+        .expect_err("invalid request heap handle must fail closed");
+
+    assert!(
+        error.to_string().contains("invalid heap handle 42:0"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn test_host_operation_double_does_not_alias_distinct_binding_key() {
+    let program = Arc::new(program_with_executable(run_executable()));
+    let interpreter = Interpreter::with_program_test_effect_doubles(
+        program,
+        HashMap::from([(
+            "std.http.client.request".to_string(),
             TestEffectDouble {
                 expect_request: None,
                 response: json!({
@@ -1830,7 +2062,7 @@ fn test_host_operation_double_rejects_public_http_target_id() {
 
     assert!(
         result.is_none(),
-        "runtime HTTP effect doubles must be keyed by stable bindingKey"
+        "runtime HTTP effect doubles must match the exact bindingKey"
     );
 }
 
@@ -1886,9 +2118,9 @@ async fn runtime_program_stream_producer_cancelled_across_task_boundary_on_consu
 
 #[tokio::test]
 async fn runtime_program_create_from_stream_prefers_producer_error_after_consumer_error() {
-    let program = Arc::new(program_with_executables(vec![
+    let program = Arc::new(program_with_executables_and_std_builtins(vec![
         create_from_stream_route_executable(),
-        bytes_stream_emit_then_bad_emit_producer_executable(),
+        bytes_stream_emit_then_typed_throw_producer_executable(),
     ]));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
@@ -1897,17 +2129,12 @@ async fn runtime_program_create_from_stream_prefers_producer_error_after_consume
         .await
         .expect_err("producer error should win over missing file store consumer error");
 
-    assert!(
-        error
-            .to_string()
-            .contains("stream emit item: expected runtime bytes"),
-        "unexpected error: {error}"
-    );
+    assert_json_decode_exception_identity(&error);
 }
 
 #[tokio::test]
 async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
-    let program = Arc::new(program_with_executable(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         emit_response_stream_helper_executable(),
     ));
     let interpreter = Interpreter::with_program(program.clone(), runtime_factory());
@@ -1936,9 +2163,9 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
         .await
         .expect("stream item should enqueue");
     let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
+        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("bytes")],
+            args: vec![skiff_artifact_model::TypeRefIr::builtin("bytes")],
         })
         .expect("stream plan should build");
     let mut heap = RequestHeap::default();
@@ -1980,7 +2207,9 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
         )
         .await
         .expect_err("stream item conversion should enforce request heap budget");
-    let payload = error.payload();
+    let payload = error
+        .ordinary_payload()
+        .expect("resource limit remains ordinary");
     assert_eq!(payload.code, "ResourceLimitExceeded");
     assert_eq!(
         payload
@@ -2097,8 +2326,12 @@ async fn runtime_program_emit_response_stream_uses_response_sink_not_inner_sink(
         )
         .await
         .expect_err("archive sink cancellation should stop nested forwarding");
-    let payload = error.payload();
-    assert_eq!(payload.code, "CancelError", "unexpected error: {error}");
+    assert!(
+        error.is_cancellation_terminal(),
+        "unexpected error: {error}"
+    );
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[tokio::test]
@@ -2167,85 +2400,6 @@ async fn runtime_program_executes_match_statement() {
 }
 
 #[tokio::test]
-async fn runtime_program_catches_typed_throw_expression() {
-    let program = Arc::new(program_with_executables_and_local_error_type(
-        vec![catch_throw_executable()],
-        "AuthError",
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("catch expression should catch matching typed throw");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "address",
-            "addr": serde_json::to_value(service_type_addr(0)).unwrap()
-        })
-    );
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadTypeDebug"],
-        "service:file[0]:type[0]"
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["message"], "denied");
-}
-
-#[tokio::test]
-async fn runtime_program_catches_without_type_catches_user_exception() {
-    let program = Arc::new(program_with_executables_and_local_error_type(
-        vec![catch_throw_without_catch_type_executable()],
-        "AuthError",
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("catch without type should catch matching user throw");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "address",
-            "addr": serde_json::to_value(service_type_addr(0)).unwrap()
-        })
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["message"], "denied");
-}
-
-#[tokio::test]
-async fn runtime_program_catches_builtin_error_throw_expression() {
-    let program = Arc::new(program_with_executable(
-        catch_builtin_decode_error_throw_executable(),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("builtin error catch should catch matching typed throw");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "std.json.DecodeError"
-        })
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["target"], "test.decode");
-    assert_eq!(value["exception"]["error"]["message"], "denied");
-}
-
-#[tokio::test]
 async fn runtime_program_catches_nonmatching_builtin_error_throw_expression() {
     let program = Arc::new(program_with_executable(
         catch_builtin_decode_error_throw_with_catch_type_executable("std.service.ProtocolError"),
@@ -2261,36 +2415,12 @@ async fn runtime_program_catches_nonmatching_builtin_error_throw_expression() {
         RuntimeError::UserException(exception) => {
             assert_eq!(
                 exception.actual_payload_type(),
-                &TypeIdentity::builtin("std.json.DecodeError")
+                Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
             );
-            assert_no_legacy_skiff_type_key(&exception.envelope());
+            assert!(exception.request().local_value().is_some());
         }
         other => panic!("expected uncaught std.json.DecodeError user exception, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn runtime_program_catches_native_decode_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable(
-        catch_native_decode_error_executable(),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let value = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect("std.json.DecodeError catch should catch std.json.decode failure");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "std.json.DecodeError"
-        })
-    );
-    assert_no_legacy_skiff_type_key(&value["exception"]);
-    assert_eq!(value["exception"]["error"]["target"], "std.json.decode");
 }
 
 #[tokio::test]
@@ -2309,196 +2439,42 @@ async fn runtime_program_accepts_std_http_error_builtin_catch_type() {
     assert_eq!(value["value"], 7);
 }
 
-#[tokio::test]
-async fn runtime_program_catches_without_type_does_not_catch_native_decode_error() {
-    let program = Arc::new(program_with_executable(
-        catch_native_decode_error_without_catch_type_executable(),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-
-    let error = execute_test_program_route(&interpreter, &frame)
-        .await
-        .expect_err("catch without type must not catch native std.json.DecodeError");
-
-    let payload = runtime_error_leaf(&error).payload();
-    assert_eq!(payload.code, "std.json.DecodeError");
-    assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["target"].as_str()),
-        Some("std.json.decode")
-    );
-}
-
-#[tokio::test]
-async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
-    let program = Arc::new(program_with_executable(
-        catch_time_sleep_without_catch_type_executable(100),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-    let cancellation = frame.cancellation.clone();
-    let cancel_task = tokio::spawn(async move {
-        sleep(Duration::from_millis(10)).await;
-        cancellation.cancel();
-    });
-
-    let error = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe cancellation")
-    .expect_err("catch without type must not swallow cancellation");
-    cancel_task
-        .await
-        .expect("cancellation task should complete");
-
-    assert!(matches!(
-        runtime_error_leaf(&error),
-        RuntimeError::Cancelled
-    ));
-}
-
-#[tokio::test]
-async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable(
-        catch_time_sleep_with_catch_type_executable(100, "CancelError"),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation("svc.main.run");
-    let cancellation = frame.cancellation.clone();
-    let cancel_task = tokio::spawn(async move {
-        sleep(Duration::from_millis(10)).await;
-        cancellation.cancel();
-    });
-
-    let value = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe cancellation")
-    .expect("CancelError catch should catch cancellation");
-    cancel_task
-        .await
-        .expect("cancellation task should complete");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "CancelError"
-        })
-    );
-    assert_eq!(
-        value["exception"]["error"]["message"],
-        "request was cancelled"
-    );
-}
-
-#[tokio::test]
-async fn runtime_program_catches_without_type_does_not_swallow_execution_budget() {
-    let program = Arc::new(program_with_executable(
-        catch_time_sleep_without_catch_type_executable(100),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let mut frame = test_invocation("svc.main.run");
-    frame.execution_budget = Arc::new(crate::execution_budget::ExecutionBudget::new(
-        crate::execution_budget::ExecutionBudgetConfig::runtime_default(),
-        Some(std::time::Instant::now() + Duration::from_millis(15)),
-    ));
-
-    let error = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe request deadline")
-    .expect_err("catch without type must not swallow execution budget");
-
-    assert!(matches!(
-        runtime_error_leaf(&error),
-        RuntimeError::ExecutionBudgetExceeded {
-            reason: BudgetReason::DeadlineExceeded,
-            ..
-        }
-    ));
-}
-
-#[tokio::test]
-async fn runtime_program_catches_timeout_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable(
-        catch_time_sleep_with_catch_type_executable(100, "TimeoutError"),
-    ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let mut frame = test_invocation("svc.main.run");
-    frame.execution_budget = Arc::new(crate::execution_budget::ExecutionBudget::new(
-        crate::execution_budget::ExecutionBudgetConfig::runtime_default(),
-        Some(std::time::Instant::now() + Duration::from_millis(15)),
-    ));
-
-    let value = tokio::time::timeout(
-        Duration::from_secs(1),
-        execute_test_program_route(&interpreter, &frame),
-    )
-    .await
-    .expect("std.time.sleep catch test should observe request deadline")
-    .expect("TimeoutError catch should catch execution budget");
-
-    assert_eq!(value["tag"], "err");
-    assert_eq!(
-        value["exception"]["__skiffActualPayloadType"],
-        json!({
-            "kind": "builtin",
-            "name": "TimeoutError"
-        })
-    );
-    assert_eq!(value["exception"]["error"]["reason"], "deadlineExceeded");
-}
-
 #[test]
-fn user_exception_rethrow_envelope_accepts_erased_payload() {
-    let exception = UserException::from_typed_payload(
-        json!({ "message": "denied" }),
-        TypeIdentity::address(service_type_addr(0)),
-        Some(TypeIdentity::address(service_type_addr(0))),
+fn request_local_rethrow_preserves_identity_source_stack_and_correlation() {
+    let identity = local_execution_catch_identity(0);
+    let source = test_instruction_site();
+    let stack = vec![ExceptionStackFrame::Local {
+        site: source.clone(),
+    }];
+    let correlation = ErrorCorrelation {
+        trace_id: "trace-driver-local".to_string(),
+        error_id: "trace-driver-local:local-error:1".to_string(),
+    };
+    let exception = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::from("denied"), identity.clone()),
+        source.clone(),
+        stack.clone(),
+        correlation.clone(),
     )
-    .expect("typed user exception should be constructed");
+    .expect("request-local exception");
+    let mut heap = RequestHeap::default();
+    let handle = heap
+        .alloc_exception(exception.clone())
+        .expect("request-local exception node");
+    let exception_value = RuntimeValueCarrier::unidentified(RuntimeValue::Heap(handle));
 
-    let mut envelope = exception.envelope();
-    envelope["__skiffActualPayloadTypeDebug"] = json!("svc.main.AuthError");
-    let rethrown = UserException::from_envelope(envelope).expect("envelope should rethrow");
+    let rethrown = request_exception_for_rethrow(&exception_value, &heap)
+        .expect("rethrow must use the existing request-local exception node");
 
-    assert_eq!(
-        rethrown.actual_payload_type(),
-        &TypeIdentity::address(service_type_addr(0))
-    );
-    assert_eq!(
-        rethrown.envelope().pointer("/error/message"),
-        Some(&json!("denied"))
-    );
-    assert!(rethrown.envelope().pointer("/error/__skiffType").is_none());
-}
-
-#[test]
-fn user_exception_rethrow_rejects_string_payload_type_identity() {
-    let exception = UserException::from_typed_payload(
-        json!({ "message": "denied" }),
-        TypeIdentity::address(service_type_addr(0)),
-        Some(TypeIdentity::address(service_type_addr(0))),
-    )
-    .expect("typed user exception should be constructed");
-
-    let mut envelope = exception.envelope();
-    envelope["__skiffActualPayloadType"] = json!("service:file[0]:type[0]");
-
-    let error = UserException::from_envelope(envelope)
-        .expect_err("string payload type must not rebuild TypeIdentity");
-    assert!(error.to_string().contains("invalid actual payload type"));
+    assert_eq!(rethrown.local_catch_identity(), Some(&identity));
+    assert_eq!(rethrown.source(), &source);
+    assert_eq!(rethrown.stack(), stack);
+    assert_eq!(rethrown.correlation(), &correlation);
+    assert_eq!(rethrown, exception);
+    assert!(matches!(
+        heap.get(handle).expect("same request-local exception node"),
+        HeapNode::Exception(stored) if stored == &rethrown
+    ));
 }
 
 #[tokio::test]
@@ -2517,7 +2493,7 @@ async fn runtime_program_does_not_catch_same_named_error_with_different_type_add
         RuntimeError::UserException(exception) => {
             assert_eq!(
                 exception.actual_payload_type(),
-                &TypeIdentity::address(service_type_addr(1))
+                Some(&local_execution_catch_identity(1))
             );
         }
         other => panic!("expected user exception, got {other:?}"),
@@ -2594,7 +2570,7 @@ async fn runtime_program_db_rejects_old_dotted_builtin_surface() {
 
 #[tokio::test]
 async fn runtime_program_db_rejects_negative_offset_before_querying() {
-    let program = program_with_executable(db_negative_offset_executable());
+    let program = program_with_thread_db_target(db_negative_offset_executable());
     let service_db = Arc::new(
         skiff_runtime_service_db::ServiceDbRuntime::new(
             "example.com/svc".to_string(),
@@ -2621,7 +2597,7 @@ async fn runtime_program_db_rejects_negative_offset_before_querying() {
 
 #[tokio::test]
 async fn runtime_program_db_rejects_after_pagination_before_querying() {
-    let program = program_with_executable(db_after_executable());
+    let program = program_with_thread_db_target(db_after_executable());
     let service_db = Arc::new(
         skiff_runtime_service_db::ServiceDbRuntime::new(
             "example.com/svc".to_string(),
@@ -2670,13 +2646,15 @@ fn runtime_type_plan_resolves_package_db_object_symbol_from_file_declarations() 
         name: "BrowserSession".to_string(),
         descriptor: db_object_descriptor.clone(),
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     }];
-    program.packages = vec![Arc::new(package_unit("skiff.run/http-session"))];
-    program.package_files = vec![vec![Arc::new(package_file)]];
-    program.package_resources = vec![Default::default()];
+    program.packages = vec![runtime_package(
+        "skiff.run/http-session",
+        0,
+        vec![Arc::new(package_file)],
+        Default::default(),
+    )];
     program.types.descriptors.insert(
         TypeAddr {
             unit: UnitAddr::Package(0),
@@ -2753,18 +2731,14 @@ async fn runtime_program_db_query_value_evaluates_conditional_predicates_and_opt
             }
         ])
     );
-    assert_eq!(
-        value["mixed"]["target"],
-        json!({
-            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-            "typeName": "Thread"
-        })
-    );
+    assert_eq!(value["mixed"]["target"], thread_db_target_json());
 }
 
 #[tokio::test]
 async fn runtime_program_db_many_key_selector_is_rejected() {
-    let program = Arc::new(program_with_executable(db_many_key_selector_executable()));
+    let program = Arc::new(program_with_thread_db_target(
+        db_many_key_selector_executable(),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     frame.service_db = Some(
@@ -2791,687 +2765,6 @@ async fn runtime_program_db_many_key_selector_is_rejected() {
     );
 }
 
-#[tokio::test]
-async fn runtime_program_constructs_outbound_service_request_start() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![account_service_dependency("unary")];
-    program.timeout.default_ms = Some(1000);
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.request.extra.insert(
-        "trace".to_string(),
-        json!({
-            "traceId": "trace-caller",
-            "spanId": "span-caller",
-            "sampled": true
-        }),
-    );
-    frame.request.extra.insert(
-        "deadline".to_string(),
-        json!({
-            "timeoutMs": 5000,
-            "expiresAt": "2999-01-01T00:00:00Z"
-        }),
-    );
-    let mut heap = RequestHeap::default();
-    let (request, payload) = outbound_control_and_payload_for_test(
-        &interpreter,
-        &outbound_context(&frame),
-        &mut heap,
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .expect("outbound request should build");
-
-    assert_eq!(request.mode, "unary");
-    assert_eq!(request.caller.kind, "service");
-    assert_eq!(request.caller.target, "svc.main.run");
-    assert_eq!(request.service_id.as_deref(), Some("skiff.run/account"));
-    assert_eq!(request.build_id, BUILD_OUTBOUND);
-    assert_eq!(request.service_protocol_identity, PROTOCOL_OUTBOUND);
-    assert_eq!(request.target, "lookup");
-    assert_eq!(request.trace.trace_id, "trace-caller");
-    assert_eq!(request.trace.parent_span_id.as_deref(), Some("span-caller"));
-    assert_eq!(request.trace.sampled, Some(true));
-    assert_eq!(
-        request
-            .deadline
-            .as_ref()
-            .map(|deadline| deadline.timeout_ms),
-        Some(1000)
-    );
-
-    let mut decoded_heap = RequestHeap::default();
-    let decoded = decode_payload(
-        &payload,
-        &json!({
-            "kind": "record",
-            "fields": {
-                "userId": { "kind": "builtin", "name": "string", "args": [] }
-            }
-        }),
-        &mut decoded_heap,
-    )
-    .expect("payload should decode");
-    let RuntimeValue::Heap(handle) = decoded else {
-        panic!("expected decoded args record");
-    };
-    let fields = match decoded_heap.get(handle).expect("args handle should exist") {
-        HeapNode::Object(object) => object.fields(),
-        other => panic!("expected object args, got {other:?}"),
-    };
-    assert_eq!(
-        fields.get("userId"),
-        Some(&RuntimeValue::String("user-1".to_string()))
-    );
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_call_missing_alias_fails_closed() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let program = Arc::new(program_with_executable(run_executable()));
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    let mut heap = RequestHeap::default();
-    let error = outbound_control_and_payload_for_test(
-        &interpreter,
-        &outbound_context(&frame),
-        &mut heap,
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        Vec::new(),
-    )
-    .expect_err("missing service dependency should fail closed");
-
-    assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
-    assert!(error
-        .to_string()
-        .contains("service dependency alias account is not declared"));
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_call_missing_operation_fails_closed() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    let mut dependency = account_service_dependency("unary");
-    dependency.publication_abi.operation_abi.clear();
-    program.service_dependencies = vec![dependency];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    let mut heap = RequestHeap::default();
-
-    let error = outbound_control_and_payload_for_test(
-        &interpreter,
-        &outbound_context(&frame),
-        &mut heap,
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .expect_err("missing service dependency operation should fail closed");
-
-    assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
-    assert!(error
-        .to_string()
-        .contains("service dependency alias account does not declare operationAbiId"));
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_server_stream_returns_stream_handle() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![account_service_dependency("serverStream")];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let (sender, mut router_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.router_sender = Some(sender);
-    let mut heap = RequestHeap::default();
-
-    let value = crate::eval::service_dispatch::call_outbound_service(
-        &interpreter,
-        &outbound_context(&frame),
-        &interpreter.stream_runtime,
-        &mut heap,
-        &Env::default(),
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .await
-    .expect("serverStream dependency call should return a stream handle");
-
-    let request = router_receiver
-        .recv()
-        .await
-        .expect("outbound request.start should be sent");
-    let (header, _payload) = request_start_control(request);
-    assert_eq!(header.mode, "serverStream");
-    assert_eq!(
-        header.operation_abi_id.as_deref(),
-        Some(ACCOUNT_LOOKUP_OPERATION_ABI_ID)
-    );
-    assert_eq!(
-        header.selector.as_deref(),
-        Some("operation:operation:account:lookup")
-    );
-
-    let outbound = frame
-        .outbound_requests
-        .sender(&header.request_id)
-        .expect("serverStream outbound response should remain pending");
-    outbound
-        .send(crate::request::OutboundResponse::Start {
-            http_response: crate::request::HttpResponseMetadata {
-                status: 200,
-                headers: Vec::new(),
-            },
-        })
-        .expect("response.start should send");
-    let item_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::native("string"))
-            .expect("string item plan should build");
-    let payload = encode_payload_plan(
-        &RuntimeValue::String("stream-item".to_string()),
-        &item_plan,
-        &PayloadBoundary::runtime_internal(),
-        &RequestHeap::default(),
-    )
-    .expect("chunk payload should encode");
-    outbound
-        .send(crate::request::OutboundResponse::Chunk { seq: 0, payload })
-        .expect("response.chunk should send");
-    outbound
-        .send(crate::request::OutboundResponse::End {
-            payload: Vec::new(),
-        })
-        .expect("response.end should send");
-
-    let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
-            name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
-        })
-        .expect("stream plan should build");
-    let stream_value = RuntimeBoundaryCodec::new(
-        &stream_plan,
-        BoundaryUse::NativeReturn,
-        "serverStream test result",
-    )
-    .to_wire_json_internal_handle(&value, &mut heap)
-    .expect("stream handle should materialize for test");
-    let item = interpreter
-        .stream_runtime
-        .next(&stream_value)
-        .await
-        .expect("stream item should decode");
-    assert!(matches!(
-        item,
-        StreamPoll::Item(serde_json::Value::String(value)) if value == "stream-item"
-    ));
-    let end = interpreter
-        .stream_runtime
-        .next(&stream_value)
-        .await
-        .expect("stream should end");
-    assert!(matches!(end, StreamPoll::End));
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_server_stream_includes_service_timeout_deadline() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![account_service_dependency("serverStream")];
-    program.timeout.default_ms = Some(120_000);
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let (sender, mut router_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.router_sender = Some(sender);
-    let mut heap = RequestHeap::default();
-
-    let value = crate::eval::service_dispatch::call_outbound_service(
-        &interpreter,
-        &outbound_context(&frame),
-        &interpreter.stream_runtime,
-        &mut heap,
-        &Env::default(),
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .await
-    .expect("serverStream dependency call should return a stream handle");
-
-    let request = router_receiver
-        .recv()
-        .await
-        .expect("outbound request.start should be sent");
-    let (header, _payload) = request_start_control(request);
-    assert_eq!(header.mode, "serverStream");
-    assert_eq!(
-        header.deadline.as_ref().map(|deadline| deadline.timeout_ms),
-        Some(120_000)
-    );
-
-    drop(value);
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_server_stream_chunks_use_request_heap_budget() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut dependency = account_service_dependency("serverStream");
-    dependency.publication_abi.operation_abi[0]
-        .public_signature
-        .return_type = skiff_artifact_model::TypeRefIr::Native {
-        name: "Stream".to_string(),
-        args: vec![skiff_artifact_model::TypeRefIr::native("bytes")],
-    };
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![dependency];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let (sender, mut router_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.router_sender = Some(sender);
-    frame.request_heap_limits = RequestHeapLimits {
-        max_estimated_bytes: 1,
-        ..RequestHeapLimits::default()
-    };
-    let mut heap = RequestHeap::default();
-
-    let value = crate::eval::service_dispatch::call_outbound_service(
-        &interpreter,
-        &outbound_context(&frame),
-        &interpreter.stream_runtime,
-        &mut heap,
-        &Env::default(),
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .await
-    .expect("serverStream dependency call should return a stream handle");
-
-    let request = router_receiver
-        .recv()
-        .await
-        .expect("outbound request.start should be sent");
-    let (header, _payload) = request_start_control(request);
-    let outbound = frame
-        .outbound_requests
-        .sender(&header.request_id)
-        .expect("serverStream outbound response should remain pending");
-    outbound
-        .send(crate::request::OutboundResponse::Start {
-            http_response: crate::request::HttpResponseMetadata {
-                status: 200,
-                headers: Vec::new(),
-            },
-        })
-        .expect("response.start should send");
-    let item_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::native("bytes"))
-            .expect("bytes item plan should build");
-    let mut encode_heap = RequestHeap::default();
-    let bytes_handle = encode_heap
-        .alloc_bytes(vec![0_u8; 16])
-        .expect("bytes response should allocate for encoding");
-    let payload = encode_payload_plan(
-        &RuntimeValue::Heap(bytes_handle),
-        &item_plan,
-        &PayloadBoundary::runtime_internal(),
-        &encode_heap,
-    )
-    .expect("chunk payload should encode");
-    outbound
-        .send(crate::request::OutboundResponse::Chunk { seq: 0, payload })
-        .expect("response.chunk should send");
-
-    let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
-            name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("bytes")],
-        })
-        .expect("stream plan should build");
-    let stream_value = RuntimeBoundaryCodec::new(
-        &stream_plan,
-        BoundaryUse::NativeReturn,
-        "serverStream bytes budget test result",
-    )
-    .to_wire_json_internal_handle(&value, &mut heap)
-    .expect("stream handle should materialize for test");
-    let error = interpreter
-        .stream_runtime
-        .next(&stream_value)
-        .await
-        .expect_err("chunk decode should enforce request heap budget");
-    let error = crate::error::RuntimeError::from(error);
-    let payload = error.payload();
-    assert_eq!(payload.code, "ResourceLimitExceeded");
-    assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["resource"].as_str()),
-        Some("requestHeap"),
-        "unexpected error: {error}"
-    );
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_server_stream_decode_error_cancels_outbound() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![account_service_dependency("serverStream")];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let (sender, mut router_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.router_sender = Some(sender);
-    let mut heap = RequestHeap::default();
-
-    let value = crate::eval::service_dispatch::call_outbound_service(
-        &interpreter,
-        &outbound_context(&frame),
-        &interpreter.stream_runtime,
-        &mut heap,
-        &Env::default(),
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .await
-    .expect("serverStream dependency call should return a stream handle");
-
-    let request = router_receiver
-        .recv()
-        .await
-        .expect("outbound request.start should be sent");
-    let (header, _payload) = request_start_control(request);
-    let outbound = frame
-        .outbound_requests
-        .sender(&header.request_id)
-        .expect("serverStream outbound response should remain pending");
-    outbound
-        .send(crate::request::OutboundResponse::Start {
-            http_response: crate::request::HttpResponseMetadata {
-                status: 200,
-                headers: Vec::new(),
-            },
-        })
-        .expect("response.start should send");
-    outbound
-        .send(crate::request::OutboundResponse::Chunk {
-            seq: 0,
-            payload: vec![0xff, 0x00],
-        })
-        .expect("invalid response.chunk should send");
-
-    let stream_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::Native {
-            name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
-        })
-        .expect("stream plan should build");
-    let stream_value = RuntimeBoundaryCodec::new(
-        &stream_plan,
-        BoundaryUse::NativeReturn,
-        "serverStream test result",
-    )
-    .to_wire_json_internal_handle(&value, &mut heap)
-    .expect("stream handle should materialize for test");
-    let error = interpreter
-        .stream_runtime
-        .next(&stream_value)
-        .await
-        .expect_err("invalid chunk payload should fail stream polling");
-    assert!(
-        error.to_string().contains("decode") || error.to_string().contains("payload"),
-        "unexpected decode error: {error}"
-    );
-    assert!(
-        frame.outbound_requests.sender(&header.request_id).is_none(),
-        "decode error should clear pending outbound response"
-    );
-
-    let cancel = tokio::time::timeout(std::time::Duration::from_secs(1), router_receiver.recv())
-        .await
-        .expect("request.cancel should be sent after decode error")
-        .expect("router channel should stay open");
-    let cancel_header = request_cancel_control(cancel);
-    assert_eq!(cancel_header.request_id, header.request_id);
-    assert_eq!(cancel_header.reason, "protocol_error");
-}
-
-#[tokio::test]
-async fn runtime_program_service_dependency_expired_deadline_fails_before_send() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![account_service_dependency("unary")];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.router_sender = Some(sender);
-    frame.request.extra.insert(
-        "deadline".to_string(),
-        json!({
-            "timeoutMs": 5000,
-            "expiresAt": "2020-01-01T00:00:00Z"
-        }),
-    );
-    let mut heap = RequestHeap::default();
-
-    let error = crate::eval::service_dispatch::call_outbound_service(
-        &interpreter,
-        &outbound_context(&frame),
-        &interpreter.stream_runtime,
-        &mut heap,
-        &Env::default(),
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .await
-    .expect_err("expired caller deadline should fail before outbound send");
-
-    let payload = error.payload();
-    assert_eq!(payload.code, "TimeoutError");
-    assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["reason"].as_str()),
-        Some("deadlineExceeded")
-    );
-    assert!(receiver.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn runtime_program_constructs_outbound_service_dependency_request_start() {
-    let symbol = account_lookup_symbol();
-    let call = outbound_service_dependency_call(symbol.clone());
-    let mut program = program_with_executable(run_executable());
-    program.service_dependencies = vec![account_service_dependency("unary")];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program.clone(), runtime_factory());
-    let mut heap = RequestHeap::default();
-    let frame = test_invocation_for_program("svc.main.run", runtime_activation);
-
-    let (request, _payload) = outbound_control_and_payload_for_test(
-        &interpreter,
-        &outbound_context(&frame),
-        &mut heap,
-        &ExecutableAddr::service(0, 0),
-        &call,
-        &symbol,
-        vec![RuntimeValue::String("user-1".to_string())],
-    )
-    .expect("service dependency outbound request should build");
-
-    assert_eq!(request.service_id.as_deref(), Some("skiff.run/account"));
-    assert_eq!(request.build_id, BUILD_OUTBOUND);
-    assert_eq!(request.service_protocol_identity, PROTOCOL_OUTBOUND);
-    assert_eq!(request.target, "lookup");
-}
-
-#[tokio::test]
-async fn any_interface_remote_unary_dispatch_uses_operation_table_and_outbound() {
-    let task = spawn_remote_any_program(
-        remote_any_reader_call_executable("unary"),
-        remote_reader_service_dependency("unary"),
-    );
-    let RemoteAnyProgramTask {
-        handle,
-        mut router_receiver,
-        outbound_requests,
-    } = task;
-
-    let request = router_receiver
-        .recv()
-        .await
-        .expect("remote any dispatch should send outbound request.start");
-    let (header, _payload) = request_start_control(request);
-    assert_eq!(header.mode, "unary");
-    assert_eq!(header.target, REMOTE_READER_PUBLIC_PATH);
-    assert_eq!(
-        header.operation_abi_id.as_deref(),
-        Some(REMOTE_READER_OPERATION_ABI_ID)
-    );
-    assert_eq!(
-        header.selector.as_deref(),
-        Some("operation:operation:account:reader.read")
-    );
-    send_outbound_unary_string_response(&outbound_requests, &header.request_id, "remote-ok");
-
-    let value = handle
-        .await
-        .expect("remote any task should join")
-        .expect("remote any unary dispatch should complete");
-    assert_eq!(value, RuntimeValue::String("remote-ok".to_string()));
-}
-
-#[tokio::test]
-async fn any_interface_remote_server_stream_dispatch_can_be_consumed_by_for() {
-    let task = spawn_remote_any_program(
-        remote_any_reader_stream_for_executable(),
-        remote_reader_service_dependency("serverStream"),
-    );
-    let RemoteAnyProgramTask {
-        handle,
-        mut router_receiver,
-        outbound_requests,
-    } = task;
-
-    let request = router_receiver
-        .recv()
-        .await
-        .expect("remote any serverStream dispatch should send outbound request.start");
-    let (header, _payload) = request_start_control(request);
-    assert_eq!(header.mode, "serverStream");
-    assert_eq!(
-        header.operation_abi_id.as_deref(),
-        Some(REMOTE_READER_OPERATION_ABI_ID)
-    );
-    send_outbound_stream_strings(&outbound_requests, &header.request_id, ["a", "b"]);
-
-    let value = handle
-        .await
-        .expect("remote any stream task should join")
-        .expect("remote any serverStream for-in should complete");
-    assert_eq!(value, RuntimeValue::String("ab".to_string()));
-}
-
-#[tokio::test]
-async fn any_interface_remote_direct_and_indirect_dispatch_hit_same_operation_on_distinct_paths() {
-    let executable = remote_any_direct_then_indirect_executable();
-    let expressions = &executable.body.expressions;
-    assert!(matches!(
-        &expressions[0],
-        LinkedExprIr::Call {
-            call: CallIr {
-                target: LinkedCallTarget::ServiceDependencySymbol { .. },
-                ..
-            }
-        }
-    ));
-    assert!(matches!(
-        &expressions[3],
-        LinkedExprIr::Call {
-            call: CallIr {
-                target: LinkedCallTarget::InterfaceMethod { .. },
-                ..
-            }
-        }
-    ));
-
-    let task = spawn_remote_any_program(executable, remote_reader_service_dependency("unary"));
-    let RemoteAnyProgramTask {
-        handle,
-        mut router_receiver,
-        outbound_requests,
-    } = task;
-
-    let direct = router_receiver
-        .recv()
-        .await
-        .expect("direct service dependency call should send first request");
-    let (direct_header, _payload) = request_start_control(direct);
-    assert_eq!(
-        direct_header.operation_abi_id.as_deref(),
-        Some(REMOTE_READER_OPERATION_ABI_ID)
-    );
-    send_outbound_unary_string_response(&outbound_requests, &direct_header.request_id, "D");
-
-    let indirect = router_receiver
-        .recv()
-        .await
-        .expect("indirect remote any call should send second request");
-    let (indirect_header, _payload) = request_start_control(indirect);
-    assert_eq!(
-        indirect_header.operation_abi_id.as_deref(),
-        Some(REMOTE_READER_OPERATION_ABI_ID)
-    );
-    assert_eq!(indirect_header.target, direct_header.target);
-    send_outbound_unary_string_response(&outbound_requests, &indirect_header.request_id, "I");
-
-    let value = handle
-        .await
-        .expect("direct/indirect task should join")
-        .expect("direct/indirect dispatch should complete");
-    assert_eq!(value, RuntimeValue::String("DI".to_string()));
-}
-
 struct ProgramTestInvocation {
     request: RequestEnvelope,
     operation: RuntimeOperation,
@@ -3484,7 +2777,6 @@ struct ProgramTestInvocation {
     service_http_response_max_bytes: usize,
     config: RuntimeConfigView,
     package_configs: Vec<RuntimeConfigView>,
-    runtime_activation: Arc<RuntimeActivation>,
     service_db: Option<skiff_runtime_service_db::ServiceDbCapabilityFactory>,
     file_runtime: Arc<crate::host::file_runtime::FileRuntime>,
     db_request_state: Arc<tokio::sync::Mutex<skiff_runtime_service_db::DbRequestState>>,
@@ -3547,6 +2839,13 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
     let operation_abi_id = format!("operation:{target}");
     let cancellation = CancellationToken::new();
     let cancelled = cancellation.cancel_flag();
+    let mut request_extra = serde_json::Map::new();
+    request_extra.insert(
+        "trace".to_string(),
+        json!({
+            "traceId": "trace-program"
+        }),
+    );
     ProgramTestInvocation {
         request: RequestEnvelope {
             request_id: "request-program".to_string(),
@@ -3561,12 +2860,11 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
             activation_identity: None,
             ingress_selector: None,
             http_adapter: None,
-            websocket_adapter: None,
             binary_http: None,
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
-            extra: serde_json::Map::new(),
+            extra: request_extra,
         },
         operation: RuntimeOperation {
             operation_abi_id: Some(operation_abi_id),
@@ -3586,21 +2884,6 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
         service_http_response_max_bytes: DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         config: RuntimeConfigView::empty(),
         package_configs: Vec::new(),
-        runtime_activation: Arc::new(RuntimeActivation {
-            service: ServiceMeta {
-                id: String::new(),
-                display_name: None,
-                metadata: Default::default(),
-            },
-            version: String::new(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: Default::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: GatewayConfig::default(),
-        }),
         service_db: None,
         file_runtime: Arc::new(crate::host::file_runtime::FileRuntime::new(
             None,
@@ -3614,30 +2897,6 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
         router_sender: None,
         outbound_requests: Arc::new(crate::host::OutboundRequestRegistry::default()),
         actor_factory: eval_capability_adapter::TestActorCapabilityFactory::default(),
-    }
-}
-
-fn test_invocation_for_program(
-    target: &str,
-    runtime_activation: RuntimeActivation,
-) -> ProgramTestInvocation {
-    let mut invocation = test_invocation(target);
-    invocation.runtime_activation = Arc::new(runtime_activation);
-    invocation.service_id = invocation.runtime_activation.service.id.clone();
-    invocation
-}
-
-fn runtime_activation_from_program(program: &RuntimeProgram) -> RuntimeActivation {
-    RuntimeActivation {
-        service: program.service.clone(),
-        version: program.version.clone(),
-        package_configs: Vec::new(),
-        service_dependencies: program.service_dependencies.clone(),
-        timeout: program.timeout.clone(),
-        operation_route_bindings: program.operation_route_bindings.clone(),
-        db: program.db.clone(),
-        actors: program.actors.clone(),
-        gateway: program.gateway.clone(),
     }
 }
 
@@ -3664,151 +2923,6 @@ fn test_db_context(
             ),
         ),
     )
-}
-
-fn test_outbound_context(frame: &ProgramTestInvocation) -> OutboundServiceContext {
-    let execution = concrete_execution_control(frame);
-    eval_capability_adapter::outbound(
-        eval_capability_adapter::outbound_service_context_from_request(
-            &frame.request,
-            frame.operation.target.as_str(),
-            frame.execution_budget.clone(),
-            execution.cancellation_token(),
-            frame.request_heap_limits.clone(),
-            frame.router_sender.clone(),
-            frame.outbound_requests.clone(),
-            &frame.runtime_activation.service_dependencies,
-            &frame.runtime_activation.timeout,
-        ),
-    )
-}
-
-fn outbound_context(frame: &ProgramTestInvocation) -> OutboundServiceContext {
-    test_outbound_context(frame)
-}
-
-struct RemoteAnyProgramTask {
-    handle: tokio::task::JoinHandle<crate::eval::error::Result<RuntimeValue>>,
-    router_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::host::RouterWriterMessage>,
-    outbound_requests: Arc<crate::host::OutboundRequestRegistry>,
-}
-
-fn spawn_remote_any_program(
-    executable: LinkedExecutable,
-    dependency: ServiceDependencyConstraint,
-) -> RemoteAnyProgramTask {
-    let mut program = program_with_executable(executable);
-    program.service_dependencies = vec![dependency];
-    let program = Arc::new(program);
-    let runtime_activation = runtime_activation_from_program(&program);
-    let interpreter = Interpreter::with_program(program, runtime_factory());
-    let (sender, router_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut frame = test_invocation_for_program("svc.main.run", runtime_activation);
-    frame.router_sender = Some(sender);
-    let invocation_context = program_invocation_context(&interpreter, &frame);
-    let context = invocation_context.execution_context();
-    let context = Arc::new(OwnedProgramExecutionContext::capture(&context));
-    let outbound_requests = frame.outbound_requests.clone();
-    let handle = tokio::spawn(async move {
-        let context = context.borrow();
-        let mut heap = context.request_heap();
-        let run_addr = ExecutableAddr::service(0, 0);
-        interpreter
-            .call_program_executable(
-                context,
-                &mut heap,
-                &Env::new(),
-                &run_addr,
-                &run_addr,
-                &BTreeMap::new(),
-                Vec::new(),
-            )
-            .await
-    });
-    RemoteAnyProgramTask {
-        handle,
-        router_receiver,
-        outbound_requests,
-    }
-}
-
-fn send_outbound_unary_string_response(
-    outbound_requests: &crate::host::OutboundRequestRegistry,
-    request_id: &str,
-    value: &str,
-) {
-    let payload = encode_string_payload(value);
-    outbound_requests
-        .sender(request_id)
-        .expect("outbound response should be registered")
-        .send(crate::request::OutboundResponse::End { payload })
-        .expect("unary outbound response should send");
-}
-
-fn send_outbound_stream_strings<const N: usize>(
-    outbound_requests: &crate::host::OutboundRequestRegistry,
-    request_id: &str,
-    values: [&str; N],
-) {
-    let outbound = outbound_requests
-        .sender(request_id)
-        .expect("serverStream outbound response should be registered");
-    outbound
-        .send(crate::request::OutboundResponse::Start {
-            http_response: crate::request::HttpResponseMetadata {
-                status: 200,
-                headers: Vec::new(),
-            },
-        })
-        .expect("response.start should send");
-    for (seq, value) in values.into_iter().enumerate() {
-        outbound
-            .send(crate::request::OutboundResponse::Chunk {
-                seq: seq as u64,
-                payload: encode_string_payload(value),
-            })
-            .expect("response.chunk should send");
-    }
-    outbound
-        .send(crate::request::OutboundResponse::End {
-            payload: Vec::new(),
-        })
-        .expect("response.end should send");
-}
-
-fn encode_string_payload(value: &str) -> Vec<u8> {
-    let plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::native("string"))
-            .expect("string payload plan should build");
-    encode_payload_plan(
-        &RuntimeValue::String(value.to_string()),
-        &plan,
-        &PayloadBoundary::runtime_internal(),
-        &RequestHeap::default(),
-    )
-    .expect("string payload should encode")
-}
-
-fn request_start_control(
-    message: crate::host::RouterWriterMessage,
-) -> (crate::request::RequestStartControl, Vec<u8>) {
-    match message {
-        crate::host::RouterWriterMessage::Control(
-            crate::request::OutboundControlMessage::RequestStart { request, payload },
-        ) => (request, payload),
-        other => panic!("expected request.start control command, got {other:?}"),
-    }
-}
-
-fn request_cancel_control(
-    message: crate::host::RouterWriterMessage,
-) -> crate::request::RequestCancelControl {
-    match message {
-        crate::host::RouterWriterMessage::Control(
-            crate::request::OutboundControlMessage::RequestCancel { request },
-        ) => request,
-        other => panic!("expected request.cancel control command, got {other:?}"),
-    }
 }
 
 async fn execute_test_program_route(
@@ -3864,10 +2978,8 @@ fn program_invocation_context<'a>(
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
-        runtime_activation: frame.runtime_activation.clone(),
         actor: actor.clone(),
         spawn: actor,
-        outbound: test_outbound_context(frame),
         request_heap_limits: frame.request_heap_limits.clone(),
     };
     ProgramInvocationContext::new(ProgramInvocationInput {
@@ -4053,7 +3165,7 @@ fn db_metadata(mut value: Value) -> Vec<DbMetadataIr> {
     serde_json::from_value(value).expect("test db metadata should decode as typed IR")
 }
 
-fn thread_db_metadata() -> Vec<DbMetadataIr> {
+fn thread_db_metadata() -> Vec<DbProviderTargetMetadata> {
     db_metadata(json!([
         {
             "kind": "object",
@@ -4074,6 +3186,24 @@ fn thread_db_metadata() -> Vec<DbMetadataIr> {
             "indexes": []
         }
     ]))
+    .into_iter()
+    .enumerate()
+    .map(|(index, metadata)| {
+        let type_name = metadata.type_name.clone();
+        let target_id = thread_db_object_target_id(index);
+        DbProviderTargetMetadata {
+            target: DbCapabilityTarget::new(
+                DbCapabilityTargetId {
+                    package_artifact_ref: target_id.package_artifact_ref,
+                    file_ir_ref: target_id.file_ir_ref,
+                    type_index: target_id.type_index,
+                },
+                type_name,
+            ),
+            metadata,
+        }
+    })
+    .collect()
 }
 
 fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgram {
@@ -4096,16 +3226,14 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
             source_map: Default::default(),
             declarations: FileDeclarations::default(),
             link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
             executables,
             external_refs: Default::default(),
         })],
         packages: Vec::new(),
-        package_files: Vec::new(),
         service_resources: Default::default(),
-        package_resources: Vec::new(),
-        service_dependencies: Vec::new(),
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
         routes: HashMap::from([("svc.main.run".to_string(), addr.clone())]),
@@ -4123,8 +3251,12 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
 fn program_with_executables_and_std_http_types(
     executables: Vec<LinkedExecutable>,
 ) -> RuntimeProgram {
+    program_with_executables_and_std_builtins(executables)
+}
+
+fn program_with_executables_and_std_builtins(executables: Vec<LinkedExecutable>) -> RuntimeProgram {
     let mut program = program_with_executables(executables);
-    install_std_http_types(&mut program);
+    install_std_builtin_package_types(&mut program);
     program
 }
 
@@ -4132,16 +3264,71 @@ fn program_with_executable_and_std_http_types(executable: LinkedExecutable) -> R
     program_with_executables_and_std_http_types(vec![executable])
 }
 
-fn install_std_http_types(program: &mut RuntimeProgram) {
+fn program_with_executable_and_std_builtins(executable: LinkedExecutable) -> RuntimeProgram {
+    program_with_executables_and_std_builtins(vec![executable])
+}
+
+fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
     let package_slot = program.packages.len();
     assert_eq!(
         package_slot, 0,
         "std HTTP test fixture currently expects an otherwise package-free program"
     );
-    program
-        .packages
-        .push(Arc::new(package_unit("skiff.run/std")));
-    program.package_resources.push(Default::default());
+    let declarations = std_builtin_type_declarations(package_slot);
+    let std_file = Arc::new(std_builtin_file_unit(
+        declarations
+            .iter()
+            .map(|(_, declaration)| declaration.clone())
+            .collect(),
+    ));
+    let std_file_ref = FileIrRef {
+        file_ir_identity: std_file.file_ir_identity.clone(),
+        module_path: std_file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(std_file.source_ast_hash.clone()),
+    };
+    let resources = PublicationResourceTable::default();
+    let mut std_package = crate::eval::test_support::runtime_execution_package_artifact_fixture(
+        "skiff.run/std",
+        "1.0.0",
+        "skiff.run/std:build",
+        "skiff.run/std:abi",
+        &[Arc::clone(&std_file)],
+        &resources,
+    );
+    std_package.package_local_abi.public_symbols.insert(
+        "std.resource.ResourceError".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:std.resource.ResourceError".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            is_alias: false,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    );
+    std_package.implementation_links.types.insert(
+        "std.resource.ResourceError".to_string(),
+        TypeExport {
+            file: std_file_ref,
+            type_index: STD_RESOURCE_ERROR_TYPE_INDEX as u32,
+            symbol: "ResourceError".to_string(),
+            is_interface: false,
+            descriptor: None,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+        },
+    );
+    program.packages.push(
+        crate::eval::test_support::runtime_execution_package_from_artifact(
+            package_slot,
+            std_package,
+            vec![Arc::clone(&std_file)],
+            resources,
+        ),
+    );
     program
         .link_overlay
         .package_slots_by_id
@@ -4150,14 +3337,6 @@ fn install_std_http_types(program: &mut RuntimeProgram) {
         .link_overlay
         .package_slots_by_dependency_ref
         .insert("std".to_string(), package_slot);
-
-    let declarations = std_http_type_declarations(package_slot);
-    program.package_files.push(vec![Arc::new(std_http_file_unit(
-        declarations
-            .iter()
-            .map(|(_, declaration)| declaration.clone())
-            .collect(),
-    ))]);
     for (index, (symbol_path, declaration)) in declarations.into_iter().enumerate() {
         let addr = std_http_type_addr_for_package(package_slot, index);
         program.types.descriptors.insert(addr.clone(), declaration);
@@ -4172,6 +3351,30 @@ fn install_std_http_types(program: &mut RuntimeProgram) {
                 .insert_package(PackageSymbolKey::new(package_slot, short_path), addr);
         }
     }
+    program.link_overlay.symbols.insert_package(
+        PackageSymbolKey::new(package_slot, "std.resource.ResourceError"),
+        ResolvedSymbol::Type {
+            addr: std_http_type_addr_for_package(package_slot, STD_RESOURCE_ERROR_TYPE_INDEX),
+        },
+    );
+}
+
+fn replace_std_resource_error_type(program: &mut RuntimeProgram, declaration: TypeDeclIr) {
+    let addr = std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX);
+    let package = program.packages.first().expect("std package test fixture");
+    let mut files = package.files().to_vec();
+    let file = Arc::make_mut(
+        files
+            .first_mut()
+            .expect("std package test fixture should have one file"),
+    );
+    file.types[STD_RESOURCE_ERROR_TYPE_INDEX] = declaration.clone();
+    let artifact = package.artifact().clone();
+    let resources = package.static_resources().clone();
+    program.packages[0] = crate::eval::test_support::runtime_execution_package_from_artifact(
+        0, artifact, files, resources,
+    );
+    program.types.descriptors.insert(addr, declaration);
 }
 
 fn program_with_executables_and_local_error_type(
@@ -4284,7 +3487,7 @@ fn std_http_type_plan_for_test(
     .expect("std HTTP fixture type plan should build")
 }
 
-fn std_http_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
+fn std_builtin_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
     LinkedFileUnit {
         schema_version: "skiff-file-ir-v3".to_string(),
         file_ir_identity: "file:std-http".to_string(),
@@ -4295,6 +3498,7 @@ fn std_http_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
         source_map: Default::default(),
         declarations: FileDeclarations::default(),
         link_targets: FileLinkTargets::default(),
+        actor_declarations: Vec::new(),
         types,
         constants: Vec::new(),
         executables: Vec::new(),
@@ -4302,14 +3506,14 @@ fn std_http_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
     }
 }
 
-fn std_http_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDeclIr)> {
+fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDeclIr)> {
     let header = LinkedTypeRef::Address {
         addr: std_http_type_addr_for_package(package_slot, STD_HTTP_HEADER_TYPE_INDEX),
     };
     let query_param = LinkedTypeRef::Address {
         addr: std_http_type_addr_for_package(package_slot, STD_HTTP_QUERY_PARAM_TYPE_INDEX),
     };
-    vec![
+    let mut declarations = vec![
         (
             "std.http.HttpHeader",
             anonymous_type_decl(
@@ -4360,17 +3564,29 @@ fn std_http_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDec
             anonymous_type_decl(
                 "std.http.HttpResponseStreamEvent",
                 LinkedTypeDescriptor::Union {
-                    variants: vec![
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("start")),
-                            ("status", linked_builtin_type("integer")),
-                            ("headers", linked_array_type(header.clone())),
-                        ]),
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("chunk")),
-                            ("value", linked_builtin_type("bytes")),
-                        ]),
-                        linked_record_type(vec![("tag", linked_literal_string("end"))]),
+                    branches: vec![
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "start",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("start")),
+                                ("status", linked_builtin_type("integer")),
+                                ("headers", linked_array_type(header.clone())),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "chunk",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("chunk")),
+                                ("value", linked_builtin_type("bytes")),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "end",
+                            linked_record_type(vec![("tag", linked_literal_string("end"))]),
+                        ),
                     ],
                 },
             ),
@@ -4418,27 +3634,139 @@ fn std_http_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDec
             anonymous_type_decl(
                 "std.http.HttpSseEvent",
                 LinkedTypeDescriptor::Union {
-                    variants: vec![
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("response")),
-                            ("status", linked_builtin_type("integer")),
-                            ("headers", linked_array_type(header)),
-                        ]),
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("body")),
-                            ("value", linked_builtin_type("bytes")),
-                        ]),
-                        linked_record_type(vec![
-                            ("tag", linked_literal_string("event")),
-                            ("event", linked_nullable_type(linked_builtin_type("string"))),
-                            ("id", linked_nullable_type(linked_builtin_type("string"))),
-                            ("data", linked_builtin_type("string")),
-                        ]),
+                    branches: vec![
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "response",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("response")),
+                                ("status", linked_builtin_type("integer")),
+                                ("headers", linked_array_type(header)),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "body",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("body")),
+                                ("value", linked_builtin_type("bytes")),
+                            ]),
+                        ),
+                        linked_discriminated_union_branch(
+                            "tag",
+                            "event",
+                            linked_record_type(vec![
+                                ("tag", linked_literal_string("event")),
+                                ("event", linked_nullable_type(linked_builtin_type("string"))),
+                                ("id", linked_nullable_type(linked_builtin_type("string"))),
+                                ("data", linked_builtin_type("string")),
+                            ]),
+                        ),
                     ],
                 },
             ),
         ),
-    ]
+    ];
+    declarations.extend([
+        (
+            "std.time.Duration",
+            anonymous_type_decl(
+                "std.time.Duration",
+                LinkedTypeDescriptor::Alias {
+                    target: linked_builtin_type("integer"),
+                },
+            ),
+        ),
+        (
+            "std.file.ImmutableFile",
+            anonymous_type_decl(
+                "std.file.ImmutableFile",
+                linked_record_descriptor(vec![
+                    ("id", linked_builtin_type("string")),
+                    ("size", linked_builtin_type("integer")),
+                    ("sha256", linked_builtin_type("string")),
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                ]),
+            ),
+        ),
+        (
+            "std.file.CreateOptions",
+            anonymous_type_decl(
+                "std.file.CreateOptions",
+                linked_record_descriptor(vec![
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                    (
+                        "purpose",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                ]),
+            ),
+        ),
+        (
+            "std.file.FileInfo",
+            anonymous_type_decl(
+                "std.file.FileInfo",
+                linked_record_descriptor(vec![
+                    ("id", linked_builtin_type("string")),
+                    ("size", linked_builtin_type("integer")),
+                    ("sha256", linked_builtin_type("string")),
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                    (
+                        "purpose",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                    ("createdAt", linked_builtin_type("string")),
+                ]),
+            ),
+        ),
+        (
+            "std.resource.ResourceInfo",
+            anonymous_type_decl(
+                "std.resource.ResourceInfo",
+                linked_record_descriptor(vec![
+                    ("path", linked_builtin_type("string")),
+                    ("size", linked_builtin_type("integer")),
+                    ("sha256", linked_builtin_type("string")),
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                ]),
+            ),
+        ),
+        (
+            "std.resource.ResourceError",
+            anonymous_type_decl(
+                "ResourceError",
+                linked_record_descriptor(vec![
+                    ("path", linked_builtin_type("string")),
+                    ("message", linked_builtin_type("string")),
+                ]),
+            ),
+        ),
+    ]);
+    declarations
 }
 
 fn linked_record_descriptor(fields: Vec<(&str, LinkedTypeRef)>) -> LinkedTypeDescriptor {
@@ -4450,6 +3778,18 @@ fn linked_record_descriptor(fields: Vec<(&str, LinkedTypeRef)>) -> LinkedTypeDes
 fn linked_record_type(fields: Vec<(&str, LinkedTypeRef)>) -> LinkedTypeRef {
     LinkedTypeRef::Record {
         fields: linked_field_map(fields),
+    }
+}
+
+fn linked_discriminated_union_branch(
+    discriminator_field: &str,
+    discriminator_value: &str,
+    payload_type: LinkedTypeRef,
+) -> LinkedNamedUnionBranch {
+    LinkedNamedUnionBranch::SyntheticDiscriminator {
+        payload_type,
+        discriminator_field: discriminator_field.to_string(),
+        discriminator_value: discriminator_value.to_string(),
     }
 }
 
@@ -4492,26 +3832,6 @@ fn runtime_error_leaf(error: &RuntimeError) -> &RuntimeError {
     unwrap_diagnostic_source_context(error)
 }
 
-fn assert_no_legacy_skiff_type_key(value: &Value) {
-    match value {
-        Value::Object(object) => {
-            assert!(
-                !object.contains_key("__skiffType"),
-                "exception envelope must not contain legacy __skiffType metadata: {value}"
-            );
-            for child in object.values() {
-                assert_no_legacy_skiff_type_key(child);
-            }
-        }
-        Value::Array(items) => {
-            for child in items {
-                assert_no_legacy_skiff_type_key(child);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn assert_unsupported_foreground_wait_error(error: &RuntimeError) {
     assert!(
         error
@@ -4526,7 +3846,7 @@ fn program_with_service_and_package_executables(
     package_executable: LinkedExecutable,
 ) -> RuntimeProgram {
     let mut program = program_with_executable(service_executable);
-    program.package_files = vec![vec![Arc::new(LinkedFileUnit {
+    let linked_file = Arc::new(LinkedFileUnit {
         schema_version: "skiff-file-ir-v3".to_string(),
         file_ir_identity: "file:pkg".to_string(),
         source_ast_hash: "source:pkg".to_string(),
@@ -4536,25 +3856,150 @@ fn program_with_service_and_package_executables(
         source_map: Default::default(),
         declarations: FileDeclarations::default(),
         link_targets: FileLinkTargets::default(),
+        actor_declarations: Vec::new(),
         types: Vec::new(),
         constants: Vec::new(),
         executables: vec![package_executable],
         external_refs: Default::default(),
-    })]];
+    });
+    program.packages = vec![runtime_package(
+        "skiff.test/package-placeholder",
+        0,
+        vec![linked_file],
+        Default::default(),
+    )];
     program
 }
 
-fn package_unit(package_id: &str) -> PackageUnit {
-    PackageUnit::empty(
+fn runtime_package(
+    package_id: &str,
+    code_slot: usize,
+    files: Vec<Arc<LinkedFileUnit>>,
+    static_resources: PublicationResourceTable,
+) -> Arc<RuntimeExecutionPackage> {
+    crate::eval::test_support::runtime_execution_package_fixture(
         package_id,
-        "1.0.0",
-        format!("{package_id}:build"),
-        format!("{package_id}:abi"),
+        code_slot,
+        files,
+        static_resources,
     )
+}
+
+fn replace_single_package(
+    program: &mut RuntimeProgram,
+    package_id: &str,
+    static_resources: PublicationResourceTable,
+) {
+    let files = program
+        .packages
+        .first()
+        .expect("single-package fixture must install linked package code")
+        .files()
+        .to_vec();
+    program.packages = vec![runtime_package(package_id, 0, files, static_resources)];
 }
 
 fn program_with_executable(executable: LinkedExecutable) -> RuntimeProgram {
     program_with_executables(vec![executable])
+}
+
+fn install_run_result_type(program: &mut RuntimeProgram) {
+    let declaration = anonymous_type_decl(
+        "RunResult",
+        LinkedTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("label".to_string(), linked_builtin_type("string")),
+                ("copy".to_string(), linked_builtin_type("string")),
+            ]),
+        },
+    );
+    Arc::make_mut(
+        program
+            .service_files
+            .get_mut(0)
+            .expect("run fixture should have one service file"),
+    )
+    .types
+    .push(declaration.clone());
+    program
+        .types
+        .descriptors
+        .insert(service_type_addr(0), declaration);
+}
+
+fn program_with_thread_db_target(executable: LinkedExecutable) -> RuntimeProgram {
+    let target_id = thread_db_object_target_id(0);
+    let mut file = package_file_unit(
+        &target_id.file_ir_ref.file_ir_identity,
+        &target_id.file_ir_ref.module_path,
+        run_executable(),
+    );
+    file.executables.clear();
+    file.declarations.types.insert(
+        "Thread".to_string(),
+        TypeDeclarationIr {
+            type_index: target_id.type_index,
+            symbol: "Thread".to_string(),
+            source_span: None,
+        },
+    );
+    let thread_type = LinkedTypeRef::DbObjectSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "svc.main".to_string(),
+            symbol: "Thread".to_string(),
+        },
+    };
+    file.declarations.db.insert(
+        "Thread".to_string(),
+        DbDeclarationIr {
+            type_ref: thread_type,
+            type_name: "Thread".to_string(),
+            collection_name: "Thread".to_string(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: linked_builtin_type("string"),
+            },
+            fields: Vec::new(),
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    let declaration = anonymous_type_decl(
+        "Thread",
+        LinkedTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    file.types.push(declaration.clone());
+
+    let mut program = program_with_executable(executable);
+    program.packages.push(
+        crate::eval::test_support::runtime_execution_package_fixture_with_identity(
+            &target_id.package_artifact_ref.package_id,
+            &target_id.package_artifact_ref.package_version,
+            target_id.package_artifact_ref.package_build_id.as_str(),
+            target_id
+                .package_artifact_ref
+                .package_local_abi_identity
+                .as_str(),
+            0,
+            vec![Arc::new(file)],
+            Default::default(),
+        ),
+    );
+    let addr = TypeAddr {
+        unit: UnitAddr::Package(0),
+        file: FileAddr::FileIrIdentity(target_id.file_ir_ref.file_ir_identity.clone()),
+        type_index: target_id.type_index,
+    };
+    program.types.descriptors.insert(addr.clone(), declaration);
+    program
+        .types
+        .exported_types
+        .insert_package(PackageSymbolKey::new(0, "svc.main.Thread"), addr);
+    program
 }
 
 fn executable_body(value: Value) -> LinkedExecutableBody {
@@ -4567,328 +4012,6 @@ fn expression(value: Value) -> LinkedExprIr {
 
 fn statement(value: Value) -> LinkedStmtIr {
     serde_json::from_value(value).expect("typed statement should deserialize")
-}
-
-fn outbound_service_dependency_call(
-    symbol: ServiceDependencySymbolRef,
-) -> crate::eval::program::CallIr {
-    crate::eval::program::CallIr {
-        target: crate::eval::program::LinkedCallTarget::ServiceDependencySymbol { symbol },
-        args: Vec::new(),
-        type_args: BTreeMap::new(),
-        metadata: BTreeMap::new(),
-    }
-}
-
-fn account_service_dependency(mode: &str) -> ServiceDependencyConstraint {
-    let operation = account_lookup_operation_ref();
-    let return_type = match mode {
-        "serverStream" => skiff_artifact_model::TypeRefIr::Native {
-            name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
-        },
-        _ => skiff_artifact_model::TypeRefIr::native("string"),
-    };
-    let public_signature = skiff_artifact_model::CanonicalPublicCallableSignature {
-        params: vec![skiff_artifact_model::FunctionTypeParamIr {
-            name: "userId".to_string(),
-            ty: skiff_artifact_model::TypeRefIr::native("string"),
-        }],
-        return_type,
-        may_suspend: false,
-    };
-    ServiceDependencyConstraint {
-        id: "skiff.run/account".to_string(),
-        version: "0.1.0".to_string(),
-        alias: "account".to_string(),
-        build_id: BUILD_OUTBOUND.to_string(),
-        service_protocol_identity: PROTOCOL_OUTBOUND.to_string(),
-        publication_abi: skiff_artifact_model::PublicationAbiUnit {
-            operation_exports: vec![operation.clone()],
-            operation_abi: vec![skiff_artifact_model::PublicationOperationAbi {
-                operation: operation.clone(),
-                public_signature,
-                schema_closure: Vec::new(),
-                stream_effect_throw_config: BTreeMap::new(),
-            }],
-            ..Default::default()
-        },
-    }
-}
-
-fn remote_reader_service_dependency(mode: &str) -> ServiceDependencyConstraint {
-    let operation = remote_reader_operation_ref();
-    let return_type = match mode {
-        "serverStream" => skiff_artifact_model::TypeRefIr::Native {
-            name: "Stream".to_string(),
-            args: vec![skiff_artifact_model::TypeRefIr::native("string")],
-        },
-        _ => skiff_artifact_model::TypeRefIr::native("string"),
-    };
-    let public_signature = skiff_artifact_model::CanonicalPublicCallableSignature {
-        params: Vec::new(),
-        return_type,
-        may_suspend: false,
-    };
-    ServiceDependencyConstraint {
-        id: "skiff.run/account".to_string(),
-        version: "0.1.0".to_string(),
-        alias: "account".to_string(),
-        build_id: BUILD_OUTBOUND.to_string(),
-        service_protocol_identity: PROTOCOL_OUTBOUND.to_string(),
-        publication_abi: skiff_artifact_model::PublicationAbiUnit {
-            operation_exports: vec![operation.clone()],
-            operation_abi: vec![skiff_artifact_model::PublicationOperationAbi {
-                operation: operation.clone(),
-                public_signature,
-                schema_closure: Vec::new(),
-                stream_effect_throw_config: BTreeMap::new(),
-            }],
-            public_instances: vec![skiff_artifact_model::PublicationPublicInstanceExport {
-                public_instance_key: REMOTE_READER_PUBLIC_INSTANCE.to_string(),
-                interfaces: vec![remote_reader_interface_ref()],
-                source_call_method_index: vec![skiff_artifact_model::SourceCallMethodIndexEntry {
-                    method_name: "read".to_string(),
-                    operation: operation.clone(),
-                }],
-                method_operations: vec![operation],
-            }],
-            ..Default::default()
-        },
-    }
-}
-
-fn remote_any_reader_call_executable(mode: &str) -> LinkedExecutable {
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: Some(linked_builtin_type("string")),
-        self_type: None,
-        slots: SlotLayoutIr::default(),
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [
-                        { "statement": 0 }
-                    ]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "return",
-                    "value": { "expression": 2 }
-                }
-            ],
-            "expressions": [
-                { "kind": "literal", "value": { "kind": "null" } },
-                {
-                    "kind": "interfaceBox",
-                    "value": { "expression": 0 },
-                    "interface": remote_reader_interface_json(),
-                    "source": remote_reader_box_source(mode)
-                },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": remote_reader_interface_method_target(),
-                        "args": [
-                            { "expression": 1 }
-                        ]
-                    }
-                }
-            ]
-        })),
-    }
-}
-
-fn remote_any_reader_stream_for_executable() -> LinkedExecutable {
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: Some(linked_builtin_type("string")),
-        self_type: None,
-        slots: SlotLayoutIr {
-            slots: vec![
-                SlotIr {
-                    index: 0,
-                    name: "out".to_string(),
-                    kind: "local".to_string(),
-                },
-                SlotIr {
-                    index: 1,
-                    name: "item".to_string(),
-                    kind: "local".to_string(),
-                },
-            ],
-            frame_size: 2,
-        },
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [
-                        { "statement": 0 },
-                        { "statement": 1 },
-                        { "statement": 3 }
-                    ]
-                },
-                {
-                    "label": "body",
-                    "statements": [
-                        { "statement": 2 }
-                    ]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "let",
-                    "slot": 0,
-                    "value": { "expression": 3 }
-                },
-                {
-                    "kind": "forIn",
-                    "itemSlot": 1,
-                    "itemType": serde_json::to_value(linked_builtin_type("string")).unwrap(),
-                    "iterable": { "expression": 2 },
-                    "body": "body"
-                },
-                {
-                    "kind": "assign",
-                    "target": { "kind": "slot", "slot": 0 },
-                    "value": { "expression": 6 }
-                },
-                {
-                    "kind": "return",
-                    "value": { "expression": 7 }
-                }
-            ],
-            "expressions": [
-                { "kind": "literal", "value": { "kind": "null" } },
-                {
-                    "kind": "interfaceBox",
-                    "value": { "expression": 0 },
-                    "interface": remote_reader_interface_json(),
-                    "source": remote_reader_box_source("serverStream")
-                },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": remote_reader_interface_method_target(),
-                        "args": [
-                            { "expression": 1 }
-                        ]
-                    }
-                },
-                { "kind": "literal", "value": { "kind": "string", "value": "" } },
-                { "kind": "loadSlot", "slot": 0 },
-                { "kind": "loadSlot", "slot": 1 },
-                {
-                    "kind": "binary",
-                    "op": "add",
-                    "left": { "expression": 4 },
-                    "right": { "expression": 5 }
-                },
-                { "kind": "loadSlot", "slot": 0 }
-            ]
-        })),
-    }
-}
-
-fn remote_any_direct_then_indirect_executable() -> LinkedExecutable {
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: Some(linked_builtin_type("string")),
-        self_type: None,
-        slots: SlotLayoutIr::default(),
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [
-                        { "statement": 0 }
-                    ]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "return",
-                    "value": { "expression": 4 }
-                }
-            ],
-            "expressions": [
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": {
-                            "kind": "serviceDependencySymbol",
-                            "symbol": serde_json::to_value(remote_reader_symbol()).unwrap()
-                        },
-                        "args": []
-                    }
-                },
-                { "kind": "literal", "value": { "kind": "null" } },
-                {
-                    "kind": "interfaceBox",
-                    "value": { "expression": 1 },
-                    "interface": remote_reader_interface_json(),
-                    "source": remote_reader_box_source("unary")
-                },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": remote_reader_interface_method_target(),
-                        "args": [
-                            { "expression": 2 }
-                        ]
-                    }
-                },
-                {
-                    "kind": "binary",
-                    "op": "add",
-                    "left": { "expression": 0 },
-                    "right": { "expression": 3 }
-                }
-            ]
-        })),
-    }
-}
-
-fn remote_reader_box_source(mode: &str) -> serde_json::Value {
-    let return_type = match mode {
-        "serverStream" => linked_stream_type(linked_builtin_type("string")),
-        _ => linked_builtin_type("string"),
-    };
-    json!({
-        "kind": "remote",
-        "dependencyRef": "account",
-        "publicInstanceKey": REMOTE_READER_PUBLIC_INSTANCE,
-        "operations": {
-            "interface": remote_reader_interface_json(),
-            "slots": [
-                {
-                    "slot": 0,
-                    "methodAbiId": REMOTE_READER_METHOD_ABI_ID,
-                    "signature": {
-                        "params": [],
-                        "returnType": serde_json::to_value(return_type).unwrap()
-                    },
-                    "operationAbiId": REMOTE_READER_OPERATION_ABI_ID
-                }
-            ]
-        },
-        "calleeProtocolIdentity": PROTOCOL_OUTBOUND
-    })
 }
 
 fn old_db_builtin_executable() -> LinkedExecutable {
@@ -4957,10 +4080,7 @@ fn db_negative_offset_executable() -> LinkedExecutable {
                     "operation": {
                         "op": "find",
                         "many": true,
-                        "target": {
-                            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-                            "typeName": "Thread"
-                        },
+                        "target": thread_db_target_json(),
                         "query": {
                             "order": [
                                 {
@@ -5011,10 +4131,7 @@ fn db_after_executable() -> LinkedExecutable {
                     "operation": {
                         "op": "find",
                         "many": true,
-                        "target": {
-                            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-                            "typeName": "Thread"
-                        },
+                        "target": thread_db_target_json(),
                         "query": {
                             "after": { "expression": 1 }
                         },
@@ -5143,10 +4260,7 @@ fn db_many_key_selector_executable() -> LinkedExecutable {
                     "operation": {
                         "op": "find",
                         "many": true,
-                        "target": {
-                            "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
-                            "typeName": "Thread"
-                        },
+                        "target": thread_db_target_json(),
                         "selector": { "kind": "key", "value": { "expression": 0 } },
                         "resultType": { "kind": "builtin", "name": "Json" }
                     }
@@ -5161,6 +4275,7 @@ fn db_call_expr_without_type<const N: usize>(op: &str, args: [Value; N]) -> Valu
     json!({
         "kind": "call",
         "call": {
+            "site": test_instruction_site(),
             "target": {
                 "kind": "builtin",
                 "op": op
@@ -5217,9 +4332,31 @@ fn db_field_path_json(field: &str) -> Value {
 
 fn thread_db_target_json() -> Value {
     json!({
+        "targetId": thread_db_object_target_id(0),
         "typeRef": { "kind": "dbObjectSymbol", "symbol": { "modulePath": "svc.main", "symbol": "Thread" } },
         "typeName": "Thread"
     })
+}
+
+fn thread_db_object_target_id(index: usize) -> DbObjectTargetId {
+    let file_ir_identity = format!("test-file-Thread-{index}");
+    DbObjectTargetId {
+        package_artifact_ref: PackageArtifactRef {
+            package_id: format!("test.local/provider-Thread-{index}"),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new(format!("test-build-Thread-{index}")),
+            package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
+                "test-abi-Thread-{index}"
+            )),
+        },
+        file_ir_ref: FileIrRef {
+            source_ast_hash: Some(format!("source:{file_ir_identity}")),
+            file_ir_identity,
+            module_path: "svc.main".to_string(),
+            artifact_path: None,
+        },
+        type_index: index,
+    }
 }
 
 fn literal_string_expr(value: &str) -> Value {
@@ -5294,6 +4431,7 @@ fn self_local_call_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -5372,6 +4510,7 @@ fn receiver_builtin_array_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("Array", "push"),
                         "args": [
                             { "expression": 0 },
@@ -5414,6 +4553,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5429,6 +4569,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5450,6 +4591,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5464,6 +4606,7 @@ fn bytes_concat_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("bytes", "toUtf8String"),
                         "args": [{ "expression": 5 }]
                     }
@@ -5501,6 +4644,7 @@ fn bytes_from_utf8_invalid_arg_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5548,6 +4692,7 @@ fn time_sleep_executable(ms: i64) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -5559,89 +4704,6 @@ fn time_sleep_executable(ms: i64) -> LinkedExecutable {
                         "args": [{ "expression": 0 }]
                     }
                 }
-            ]
-        })),
-    }
-}
-
-fn catch_time_sleep_without_catch_type_executable(ms: i64) -> LinkedExecutable {
-    catch_time_sleep_with_optional_catch_type_executable(ms, None)
-}
-
-fn catch_time_sleep_with_catch_type_executable(ms: i64, catch_type_name: &str) -> LinkedExecutable {
-    catch_time_sleep_with_optional_catch_type_executable(ms, Some(catch_type_name))
-}
-
-fn catch_time_sleep_with_optional_catch_type_executable(
-    ms: i64,
-    catch_type_name: Option<&str>,
-) -> LinkedExecutable {
-    let catch_expression = match catch_type_name {
-        Some(catch_type_name) => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "catchType": {
-                "kind": "builtin",
-                "name": catch_type_name
-            },
-            "body": { "expression": 2 }
-        }),
-        None => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "body": { "expression": 2 }
-        }),
-    };
-
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: None,
-        self_type: None,
-        slots: SlotLayoutIr {
-            slots: vec![SlotIr {
-                index: 0,
-                name: "$catch0".to_string(),
-                kind: "temp".to_string(),
-            }],
-            frame_size: 1,
-        },
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [{ "statement": 0 }]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "return",
-                    "value": { "expression": 3 }
-                }
-            ],
-            "expressions": [
-                { "kind": "literal", "value": { "kind": "number", "value": ms } },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": {
-                            "kind": "native",
-                            "target": {
-                                "namespace": "std.time",
-                                "symbol": "sleep",
-                                "bindingKey": "std.time.sleep"
-                            }
-                        },
-                        "args": [{ "expression": 0 }]
-                    }
-                },
-                { "kind": "loadSlot", "slot": 0 },
-                catch_expression
             ]
         })),
     }
@@ -5744,6 +4806,7 @@ fn package_call_executable_with_symbol(_symbol: Value) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -5796,6 +4859,7 @@ fn telemetry_emit_native_direct_call_executable() -> LinkedExecutable {
                                 metadata: BTreeMap::new(),
                             },
                         },
+                        site: test_instruction_site(),
                         args: vec![
                             ExprRefIr { expression: 0 },
                             ExprRefIr { expression: 1 },
@@ -5803,6 +4867,7 @@ fn telemetry_emit_native_direct_call_executable() -> LinkedExecutable {
                         ],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
+                        actor_metadata: None,
                     },
                 },
             ],
@@ -5817,6 +4882,102 @@ fn resource_text_native_executable(path: &str) -> LinkedExecutable {
         path,
         None,
         builtin_type("string"),
+    )
+}
+
+fn catch_resource_text_native_executable(path: &str) -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "$catch0".to_string(),
+                kind: "temp".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [{
+                "label": "entry",
+                "statements": [{
+                    "statement": 0
+                }]
+            }],
+            "statements": [{
+                "kind": "return",
+                "value": {
+                    "expression": 2
+                }
+            }],
+            "expressions": [
+                {
+                    "kind": "literal",
+                    "value": {
+                        "kind": "string",
+                        "value": path
+                    }
+                },
+                {
+                    "kind": "call",
+                    "call": {
+                        "site": test_instruction_site(),
+                        "target": {
+                            "kind": "native",
+                            "target": {
+                                "namespace": "std.resource",
+                                "symbol": "text",
+                                "bindingKey": "std.resource.text"
+                            }
+                        },
+                        "args": [{
+                            "expression": 0
+                        }]
+                    }
+                },
+                {
+                    "kind": "catch",
+                    "tryExpression": {
+                        "expression": 1
+                    },
+                    "catchSlot": 0,
+                    "catchType": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(
+                            std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
+                        ).unwrap()
+                    },
+                    "body": {
+                        "expression": 0
+                    }
+                }
+            ]
+        })),
+    }
+}
+
+fn resource_bytes_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "bytes",
+        "std.resource.bytes",
+        path,
+        None,
+        builtin_type("bytes"),
+    )
+}
+
+fn resource_info_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "info",
+        "std.resource.info",
+        path,
+        None,
+        std_http_type_ref(STD_RESOURCE_INFO_TYPE_INDEX),
     )
 }
 
@@ -5866,6 +5027,7 @@ fn resource_native_executable(
     return_type: LinkedTypeRef,
 ) -> LinkedExecutable {
     let mut call = json!({
+        "site": test_instruction_site(),
         "target": {
             "kind": "native",
             "target": {
@@ -5946,6 +5108,7 @@ fn service_calls_package_resource_text_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -5984,34 +5147,69 @@ fn builtin_type(name: &str) -> LinkedTypeRef {
     }
 }
 
-fn assert_resource_error(error: &RuntimeError, path: &str) {
-    let payload = error.payload();
-    assert_eq!(payload.code, "std.resource.ResourceError");
+fn assert_resource_exception(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.resource.ResourceError, got {error:?}");
+    };
+    assert_resource_request_exception(exception.request());
+}
+
+fn assert_resource_request_exception(exception: &RequestException) {
+    let expected_site = test_instruction_site();
     assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["path"].as_str()),
-        Some(path),
-        "unexpected payload: {payload:?}"
+        exception.local_catch_identity(),
+        Some(&local_execution_catch_identity_for_addr(
+            std_http_type_addr(STD_RESOURCE_ERROR_TYPE_INDEX)
+        ))
+    );
+    assert!(exception.local_value().is_some());
+    assert_eq!(exception.source(), &expected_site);
+    assert_eq!(
+        exception.stack(),
+        [ExceptionStackFrame::Local {
+            site: expected_site,
+        }]
     );
 }
 
-fn assert_resource_json_decode_error(error: &RuntimeError, path: &str) {
-    let payload = error.payload();
-    assert_eq!(payload.code, "std.json.DecodeError");
-    assert_eq!(
-        payload
-            .details
-            .as_ref()
-            .and_then(|details| details["target"].as_str()),
-        Some("std.resource.json"),
-        "unexpected payload: {payload:?}"
-    );
+fn assert_resource_error_invalid_artifact(error: &RuntimeError) {
+    let RuntimeError::InvalidArtifact(message) = runtime_error_leaf(error) else {
+        panic!("expected invalid ResourceError projection artifact, got {error:?}");
+    };
     assert!(
-        payload.message.contains(path),
-        "decode error message should include resource path {path}: {payload:?}"
+        message.contains("std.resource.ResourceError"),
+        "invalid artifact should identify the required ResourceError type: {message}"
     );
+}
+
+fn assert_resource_json_decode_exception(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.json.DecodeError, got {error:?}");
+    };
+    let expected_site = test_instruction_site();
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
+    );
+    assert!(exception.request().local_value().is_some());
+    assert_eq!(exception.request().source(), &expected_site);
+    assert_eq!(
+        exception.request().stack(),
+        [ExceptionStackFrame::Local {
+            site: expected_site,
+        }]
+    );
+}
+
+fn assert_json_decode_exception_identity(error: &RuntimeError) {
+    let RuntimeError::UserException(exception) = runtime_error_leaf(error) else {
+        panic!("expected request-local std.json.DecodeError, got {error:?}");
+    };
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
+    );
+    assert!(exception.request().local_value().is_some());
 }
 
 fn for_in_value_block_executable() -> LinkedExecutable {
@@ -6164,6 +5362,7 @@ fn local_stream_aggregate_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -6232,6 +5431,7 @@ fn local_stream_first_item_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -6292,6 +5492,7 @@ fn local_const_receiver_stream_first_item_route_executable() -> LinkedExecutable
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": local_const_receiver_target(1),
                         "args": []
                     }
@@ -6437,6 +5638,7 @@ fn forwarding_string_stream_producer_executable(next_index: usize) -> LinkedExec
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, next_index)).unwrap()
@@ -6571,6 +5773,7 @@ fn outer_string_stream_from_sse_producer_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 3)).unwrap()
@@ -6581,6 +5784,7 @@ fn outer_string_stream_from_sse_producer_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 2)).unwrap()
@@ -6812,6 +6016,7 @@ fn stream_variable_json_object_length_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": receiver_builtin_target("JsonObject", "length"),
                         "args": [
                             { "expression": 3 }
@@ -6852,6 +6057,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -6862,6 +6068,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -6882,7 +6089,7 @@ fn create_from_stream_route_executable() -> LinkedExecutable {
     }
 }
 
-fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
+fn bytes_stream_emit_then_typed_throw_producer_executable() -> LinkedExecutable {
     LinkedExecutable {
         kind: ExecutableKind::Function,
         symbol: "svc.main.produce".to_string(),
@@ -6915,9 +6122,8 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                     "value": { "expression": 1 }
                 },
                 {
-                    "kind": "emit",
-                    "operation": "emit",
-                    "value": { "expression": 2 }
+                    "kind": "expr",
+                    "value": { "expression": 5 }
                 }
             ],
             "expressions": [
@@ -6925,6 +6131,7 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -6938,7 +6145,34 @@ fn bytes_stream_emit_then_bad_emit_producer_executable() -> LinkedExecutable {
                         ]
                     }
                 },
-                { "kind": "literal", "value": { "kind": "string", "value": "not bytes" } }
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "fixture.stream.producer" }
+                },
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "typed producer terminal" }
+                },
+                {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "fields": {
+                        "target": { "expression": 2 },
+                        "message": { "expression": 3 }
+                    }
+                },
+                {
+                    "kind": "throw",
+                    "site": test_instruction_site(),
+                    "value": { "expression": 4 },
+                    "payloadType": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    }
+                }
             ]
         })),
     }
@@ -6977,9 +6211,11 @@ fn emit_response_stream_call_ir() -> CallIr {
                 metadata: BTreeMap::new(),
             },
         },
+        site: test_instruction_site(),
         args: vec![ExprRefIr { expression: 0 }],
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     }
 }
 
@@ -6993,9 +6229,11 @@ fn create_from_stream_call_ir() -> CallIr {
                 metadata: BTreeMap::new(),
             },
         },
+        site: test_instruction_site(),
         args: vec![ExprRefIr { expression: 0 }, ExprRefIr { expression: 1 }],
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     }
 }
 
@@ -7058,6 +6296,7 @@ fn local_native_stream_wrapper_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7147,6 +6386,7 @@ fn local_native_sse_forwarding_stream_producer_executable() -> LinkedExecutable 
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7234,6 +6474,7 @@ fn http_stream_effect_in_http_handler_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7295,6 +6536,7 @@ fn http_stream_start_helper_in_http_handler_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -7310,6 +6552,81 @@ fn http_stream_start_helper_in_http_handler_executable() -> LinkedExecutable {
                     }
                 }
             ]
+        })),
+    }
+}
+
+fn http_stream_chunk_helper_in_http_handler_executable() -> LinkedExecutable {
+    http_stream_event_helper_executable(
+        "streamChunk",
+        "std.http.stream.chunk",
+        vec![json!({
+            "kind": "field",
+            "object": { "expression": 0 },
+            "field": "body"
+        })],
+        vec![json!({ "expression": 1 })],
+    )
+}
+
+fn http_stream_end_helper_in_http_handler_executable() -> LinkedExecutable {
+    http_stream_event_helper_executable("streamEnd", "std.http.stream.end", vec![], vec![])
+}
+
+fn http_stream_event_helper_executable(
+    symbol: &str,
+    binding_key: &str,
+    extra_expressions: Vec<Value>,
+    args: Vec<Value>,
+) -> LinkedExecutable {
+    let mut expressions = vec![json!({ "kind": "loadSlot", "slot": 0 })];
+    expressions.extend(extra_expressions);
+    let call_index = expressions.len();
+    expressions.push(json!({
+        "kind": "call",
+        "call": {
+            "site": test_instruction_site(),
+            "target": {
+                "kind": "native",
+                "target": {
+                    "namespace": "std.http",
+                    "symbol": symbol,
+                    "bindingKey": binding_key
+                }
+            },
+            "args": args
+        }
+    }));
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "request".to_string(),
+            slot: 0,
+            ty: std_http_type_ref(STD_HTTP_REQUEST_TYPE_INDEX),
+        }],
+        return_type: Some(std_http_type_ref(STD_HTTP_RESPONSE_STREAM_EVENT_TYPE_INDEX)),
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "request".to_string(),
+                kind: "param".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [{
+                "label": "entry",
+                "statements": [{ "statement": 0 }]
+            }],
+            "statements": [{
+                "kind": "return",
+                "value": { "expression": call_index }
+            }],
+            "expressions": expressions
         })),
     }
 }
@@ -7454,18 +6771,6 @@ fn type_pattern_match_executable() -> LinkedExecutable {
     }
 }
 
-fn catch_throw_executable() -> LinkedExecutable {
-    catch_throw_with_type_addrs_executable(service_type_addr(0), service_type_addr(0))
-}
-
-fn catch_throw_without_catch_type_executable() -> LinkedExecutable {
-    catch_throw_with_optional_type_addr_executable(service_type_addr(0), None)
-}
-
-fn catch_builtin_decode_error_throw_executable() -> LinkedExecutable {
-    catch_builtin_decode_error_throw_with_catch_type_executable("std.json.DecodeError")
-}
-
 fn catch_builtin_decode_error_throw_with_catch_type_executable(
     catch_type_name: &str,
 ) -> LinkedExecutable {
@@ -7504,14 +6809,19 @@ fn catch_builtin_decode_error_throw_with_catch_type_executable(
                 { "kind": "literal", "value": { "kind": "string", "value": "test.decode" } },
                 { "kind": "literal", "value": { "kind": "string", "value": "denied" } },
                 {
-                    "kind": "mapLiteral",
-                    "entries": {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "fields": {
                         "target": { "expression": 0 },
                         "message": { "expression": 1 }
                     }
                 },
                 {
                     "kind": "throw",
+                    "site": test_instruction_site(),
                     "value": { "expression": 2 },
                     "payloadType": {
                         "kind": "builtin",
@@ -7532,14 +6842,6 @@ fn catch_builtin_decode_error_throw_with_catch_type_executable(
             ]
         })),
     }
-}
-
-fn catch_native_decode_error_executable() -> LinkedExecutable {
-    catch_native_decode_error_with_catch_type_executable(Some("std.json.DecodeError"))
-}
-
-fn catch_native_decode_error_without_catch_type_executable() -> LinkedExecutable {
-    catch_native_decode_error_with_catch_type_executable(None)
 }
 
 fn catch_literal_with_catch_type_executable(catch_type_name: &str) -> LinkedExecutable {
@@ -7591,116 +6893,20 @@ fn catch_literal_with_catch_type_executable(catch_type_name: &str) -> LinkedExec
     }
 }
 
-fn catch_native_decode_error_with_catch_type_executable(
-    catch_type_name: Option<&str>,
-) -> LinkedExecutable {
-    let catch_expression = match catch_type_name {
-        Some(catch_type_name) => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "catchType": {
-                "kind": "builtin",
-                "name": catch_type_name
-            },
-            "body": { "expression": 2 }
-        }),
-        None => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 1 },
-            "catchSlot": 0,
-            "body": { "expression": 2 }
-        }),
-    };
-
-    LinkedExecutable {
-        kind: ExecutableKind::Function,
-        symbol: "run".to_string(),
-        type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: None,
-        self_type: None,
-        slots: SlotLayoutIr {
-            slots: vec![SlotIr {
-                index: 0,
-                name: "$catch0".to_string(),
-                kind: "temp".to_string(),
-            }],
-            frame_size: 1,
-        },
-        may_suspend: false,
-        body: executable_body(json!({
-            "blocks": [
-                {
-                    "label": "entry",
-                    "statements": [
-                        { "statement": 0 }
-                    ]
-                }
-            ],
-            "statements": [
-                {
-                    "kind": "return",
-                    "value": { "expression": 3 }
-                }
-            ],
-            "expressions": [
-                { "kind": "literal", "value": { "kind": "string", "value": "{" } },
-                {
-                    "kind": "call",
-                    "call": {
-                        "target": {
-                            "kind": "native",
-                            "target": {
-                                "namespace": "std.json",
-                                "symbol": "decode",
-                                "bindingKey": "std.json.decode"
-                            }
-                        },
-                        "args": [
-                            { "expression": 0 }
-                        ],
-                        "typeArgs": {
-                            "T0": { "kind": "builtin", "name": "JsonObject" }
-                        }
-                    }
-                },
-                { "kind": "loadSlot", "slot": 0 },
-                catch_expression
-            ]
-        })),
-    }
-}
-
 fn catch_throw_with_type_addrs_executable(
     throw_type_addr: TypeAddr,
     catch_type_addr: TypeAddr,
 ) -> LinkedExecutable {
-    catch_throw_with_optional_type_addr_executable(throw_type_addr, Some(catch_type_addr))
-}
-
-fn catch_throw_with_optional_type_addr_executable(
-    throw_type_addr: TypeAddr,
-    catch_type_addr: Option<TypeAddr>,
-) -> LinkedExecutable {
-    let catch_expression = match catch_type_addr {
-        Some(catch_type_addr) => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 2 },
-            "catchSlot": 0,
-            "catchType": {
-                "kind": "address",
-                "addr": serde_json::to_value(catch_type_addr).unwrap()
-            },
-            "body": { "expression": 4 }
-        }),
-        None => json!({
-            "kind": "catch",
-            "tryExpression": { "expression": 2 },
-            "catchSlot": 0,
-            "body": { "expression": 4 }
-        }),
-    };
+    let catch_expression = json!({
+        "kind": "catch",
+        "tryExpression": { "expression": 2 },
+        "catchSlot": 0,
+        "catchType": {
+            "kind": "address",
+            "addr": serde_json::to_value(catch_type_addr).unwrap()
+        },
+        "body": { "expression": 4 }
+    });
 
     LinkedExecutable {
         kind: ExecutableKind::Function,
@@ -7736,13 +6942,18 @@ fn catch_throw_with_optional_type_addr_executable(
             "expressions": [
                 { "kind": "literal", "value": { "kind": "string", "value": "denied" } },
                 {
-                    "kind": "mapLiteral",
-                    "entries": {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(&throw_type_addr).unwrap()
+                    },
+                    "fields": {
                         "message": { "expression": 0 }
                     }
                 },
                 {
                     "kind": "throw",
+                    "site": test_instruction_site(),
                     "value": { "expression": 1 },
                     "payloadType": {
                         "kind": "address",
@@ -7893,6 +7104,7 @@ fn package_stream_chain_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
@@ -7904,6 +7116,7 @@ fn package_stream_chain_route_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -7938,6 +7151,7 @@ fn package_string_stream_forwarder_executable(
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
@@ -8026,6 +7240,7 @@ fn package_file_unit(
         source_map: Default::default(),
         declarations: FileDeclarations::default(),
         link_targets: FileLinkTargets::default(),
+        actor_declarations: Vec::new(),
         types: Vec::new(),
         constants: Vec::new(),
         executables: vec![executable],
@@ -8062,6 +7277,7 @@ fn package_call_config_reader_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": {
@@ -8111,6 +7327,7 @@ fn config_require_string_executable(path: &str) -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "builtin",
                             "op": "config.require"
@@ -8119,7 +7336,7 @@ fn config_require_string_executable(path: &str) -> LinkedExecutable {
                             { "expression": 0 }
                         ],
                         "typeArgs": {
-                            "T": { "kind": "builtin", "name": "string" }
+                            "T0": { "kind": "builtin", "name": "string" }
                         }
                     }
                 }
@@ -8158,6 +7375,7 @@ fn package_generic_json_decode_call_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -8207,6 +7425,7 @@ fn package_generic_config_require_call_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
@@ -8268,6 +7487,7 @@ fn generic_json_decode_native_wrapper_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8321,6 +7541,7 @@ fn generic_config_require_wrapper_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "builtin",
                             "op": "config.require"
@@ -8371,6 +7592,7 @@ fn json_decode_native_missing_type_args_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8460,6 +7682,7 @@ fn json_encode_native_missing_type_args_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8511,6 +7734,7 @@ fn json_decode_native_missing_t0_type_arg_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8565,6 +7789,7 @@ fn json_decode_native_unresolved_type_arg_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8648,6 +7873,7 @@ fn json_native_direct_type_args_with_nullable_json_object_return_executable() ->
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8667,6 +7893,7 @@ fn json_native_direct_type_args_with_nullable_json_object_return_executable() ->
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {
@@ -8686,6 +7913,7 @@ fn json_native_direct_type_args_with_nullable_json_object_return_executable() ->
                 {
                     "kind": "call",
                     "call": {
+                        "site": test_instruction_site(),
                         "target": {
                             "kind": "native",
                             "target": {

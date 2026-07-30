@@ -38,6 +38,7 @@ fn config_rejects_top_level_artifact_key() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "artifact: service-assembly.json",
             "",
         ]
@@ -49,12 +50,12 @@ fn config_rejects_top_level_artifact_key() {
 
     assert_eq!(
         error.to_string(),
-        "runtime config no longer supports artifact; use artifactRoots for local runtime artifact load paths"
+        "runtime config no longer supports artifact; Router bootstrap owns artifactsPath"
     );
 }
 
 #[test]
-fn config_does_not_require_artifacts() {
+fn config_reads_required_environment_without_runtime_artifact_ownership() {
     let temp = TempDir::new("config-root");
     let config_path = temp.path.join("runtime.yml");
     write(
@@ -62,6 +63,7 @@ fn config_does_not_require_artifacts() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "",
         ]
         .join("\n"),
@@ -71,11 +73,11 @@ fn config_does_not_require_artifacts() {
     let config = RuntimeFileConfig::load(&config_path).expect("config should load");
 
     assert_eq!(config.runtime_home, temp.path.join(".runtime-home"));
-    assert!(config.artifact_roots.is_empty());
+    assert_eq!(config.environment, "test");
 }
 
 #[test]
-fn config_reads_runtime_artifact_roots() {
+fn config_rejects_legacy_plural_artifact_roots() {
     let temp = TempDir::new("config-artifact-roots");
     let config_path = temp.path.join("runtime.yml");
     write(
@@ -83,6 +85,7 @@ fn config_reads_runtime_artifact_roots() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "artifactRoots:",
             "  - artifacts",
             "  - /var/lib/skiff/artifacts",
@@ -92,15 +95,62 @@ fn config_reads_runtime_artifact_roots() {
     )
     .expect("config should be written");
 
-    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+    let error = RuntimeFileConfig::load(&config_path)
+        .expect_err("plural artifact roots must not be accepted");
+    assert!(error
+        .to_string()
+        .contains("no longer supports artifactRoots"));
+}
 
-    assert_eq!(
-        config.artifact_roots,
-        vec![
-            temp.path.join("artifacts"),
-            PathBuf::from("/var/lib/skiff/artifacts")
-        ]
-    );
+#[test]
+fn config_rejects_invalid_environment_and_all_runtime_artifact_fields() {
+    let temp = TempDir::new("config-required-bootstrap");
+    let cases = [
+        (
+            "missing-environment",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\n",
+            "runtime config environment is required",
+        ),
+        (
+            "null-environment",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nenvironment: null\n",
+            "runtime config environment is required",
+        ),
+        (
+            "artifact-root",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nenvironment: test\nartifactRoot: null\n",
+            "no longer supports artifactRoot",
+        ),
+        (
+            "empty-environment",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nenvironment: \"\"\n",
+            "runtime config environment is invalid",
+        ),
+        (
+            "invalid-environment",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nenvironment: ..\n",
+            "runtime config environment is invalid",
+        ),
+        (
+            "hyphen-plural",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nenvironment: test\nartifact-roots:\n  - legacy\n",
+            "no longer supports artifact-roots",
+        ),
+        (
+            "plural-only",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nenvironment: test\nartifactRoots:\n  - legacy\n",
+            "no longer supports artifactRoots",
+        ),
+    ];
+    for (name, text, expected) in cases {
+        let config_path = temp.path.join(format!("{name}.yml"));
+        write(&config_path, text).expect("config should be written");
+        let error = RuntimeFileConfig::load(&config_path).expect_err(name);
+        assert!(
+            error.to_string().contains(expected),
+            "{name} returned unexpected error: {error}"
+        );
+    }
 }
 
 #[test]
@@ -112,6 +162,7 @@ fn config_resolves_relative_service_db_encryption_keyring_file() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "serviceDb:",
             "  encryption:",
             "    keyringFile: secrets/service-db-keyring.json",
@@ -139,6 +190,7 @@ fn config_preserves_absolute_service_db_encryption_keyring_file() {
         [
             "router: ws://127.0.0.1:4001/runtime".to_string(),
             "runtime-home: .runtime-home".to_string(),
+            "environment: test".to_string(),
             "serviceDb:".to_string(),
             "  encryption:".to_string(),
             format!("    keyringFile: {}", keyring_path.display()),
@@ -165,6 +217,7 @@ fn config_defaults_service_db_encryption_keyring_file_when_missing() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "",
         ]
         .join("\n"),
@@ -185,6 +238,7 @@ fn config_rejects_empty_service_db_encryption_keyring_file() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "serviceDb:",
             "  encryption:",
             "    keyringFile: \"\"",
@@ -203,7 +257,7 @@ fn config_rejects_empty_service_db_encryption_keyring_file() {
 }
 
 #[test]
-fn config_ignores_legacy_mongo_url() {
+fn config_rejects_runtime_owned_mongo_url() {
     let temp = TempDir::new("config-mongo-url");
     let config_path = temp.path.join("runtime.yml");
     write(
@@ -211,6 +265,7 @@ fn config_ignores_legacy_mongo_url() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "mongo-url: mongodb://global",
             "",
         ]
@@ -218,9 +273,31 @@ fn config_ignores_legacy_mongo_url() {
     )
     .expect("config should be written");
 
-    let config = RuntimeFileConfig::load(&config_path).expect("mongo-url should be ignored");
+    let error = RuntimeFileConfig::load(&config_path).expect_err("mongo-url should be rejected");
+    assert!(error.to_string().contains("unknown field `mongo-url`"));
+}
 
-    assert_eq!(config.router, "ws://127.0.0.1:4001/runtime");
+#[test]
+fn config_rejects_service_db_mongo_url() {
+    let temp = TempDir::new("config-service-db-mongo-url");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "environment: test",
+            "serviceDb:",
+            "  mongoUrl: mongodb://runtime-owned",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let error =
+        RuntimeFileConfig::load(&config_path).expect_err("serviceDb.mongoUrl should be rejected");
+    assert!(error.to_string().contains("unknown field `mongoUrl`"));
 }
 
 #[test]
@@ -232,6 +309,7 @@ fn config_reading_http_response_max_bytes_from_runtime_config() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  response:",
             "    maxBytes: 12345",
@@ -255,6 +333,7 @@ fn config_rejects_http_response_max_bytes_zero() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  response:",
             "    maxBytes: 0",
@@ -281,6 +360,7 @@ fn config_rejects_http_response_max_bytes_too_large() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  response:",
             "    maxBytes: 18446744073709551616.0",
@@ -307,6 +387,7 @@ fn config_defaults_http_response_max_bytes_when_missing() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "",
         ]
         .join("\n"),
@@ -329,6 +410,7 @@ fn config_reads_runtime_http_egress_proxy() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  egress:",
             "    proxy: http://127.0.0.1:7897",
@@ -355,6 +437,7 @@ fn config_defaults_runtime_http_egress_proxy_when_missing() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "",
         ]
         .join("\n"),
@@ -375,6 +458,7 @@ fn config_rejects_runtime_http_egress_proxy_without_http_scheme() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  egress:",
             "    proxy: socks5://127.0.0.1:7897",
@@ -401,6 +485,7 @@ fn config_rejects_runtime_http_egress_proxy_invalid_url() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  egress:",
             "    proxy: http://",
@@ -427,6 +512,7 @@ fn config_rejects_runtime_http_egress_proxy_with_non_string_value() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "http:",
             "  egress:",
             "    proxy: 7897",
@@ -453,6 +539,7 @@ fn config_rejects_top_level_artifacts_key() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "artifacts: artifact-root",
             "",
         ]
@@ -475,6 +562,7 @@ fn config_rejects_services_list() {
         [
             "router: ws://127.0.0.1:4001/runtime",
             "runtime-home: .runtime-home",
+            "environment: test",
             "services:",
             "  - artifact: service-assembly.json",
             "",

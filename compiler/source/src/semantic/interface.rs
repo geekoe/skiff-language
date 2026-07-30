@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
-    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
+    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, NominalTypeRefBaseIr,
+    ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 
@@ -16,11 +17,6 @@ use crate::{
 };
 
 use super::SemanticPublication;
-
-const ACTOR_INTERFACE_MODULE: &str = "std.actor";
-const ACTOR_INTERFACE_SYMBOL: &str = "Actor";
-const ERROR_PAYLOAD_INTERFACE_MODULE: &str = "std.error";
-const ERROR_PAYLOAD_INTERFACE_SYMBOL: &str = "ErrorPayload";
 
 #[derive(Debug, Clone)]
 pub struct InterfaceDeclFact {
@@ -95,7 +91,6 @@ pub struct InterfaceSemantics {
     types_by_bare: BTreeMap<String, Vec<SourceSymbolKey>>,
     conformances: Vec<InterfaceConformanceFact>,
     conformances_by_receiver: BTreeMap<SourceSymbolKey, Vec<usize>>,
-    actor_conformances_by_receiver: BTreeMap<SourceSymbolKey, usize>,
 }
 
 /// Validated declaration owner recorded by interface semantics.
@@ -148,7 +143,6 @@ impl InterfaceSemantics {
         let impl_methods = ImplMethodIndex::build(publication, &index)?;
         let mut conformances: Vec<InterfaceConformanceFact> = Vec::new();
         let mut conformances_by_receiver = BTreeMap::<SourceSymbolKey, Vec<usize>>::new();
-        let mut actor_conformances_by_receiver = BTreeMap::<SourceSymbolKey, usize>::new();
         let mut seen = BTreeSet::<(SourceSymbolKey, SourceSymbolKey)>::new();
 
         for source in &publication.sources {
@@ -188,20 +182,6 @@ impl InterfaceSemantics {
                     };
                     validate_conformance_requirements(&index, &impl_methods, &fact)?;
                     let index_in_vec = conformances.len();
-                    if fact.interface.symbol == actor_interface_symbol_key() {
-                        if let Some(existing) = actor_conformances_by_receiver
-                            .insert(receiver_symbol.clone(), index_in_vec)
-                        {
-                            let previous = &conformances[existing];
-                            return Err(CompileError::Semantic(format!(
-                                "actor type {}.{} implements both {} and {}; an actor type can only implement one std.actor.Actor<Id> instantiation",
-                                source.module_path,
-                                ty.name,
-                                interface_instantiation_display(&previous.interface),
-                                interface_instantiation_display(&fact.interface)
-                            )));
-                        }
-                    }
                     conformances_by_receiver
                         .entry(receiver_symbol.clone())
                         .or_default()
@@ -218,7 +198,6 @@ impl InterfaceSemantics {
             types_by_bare: index.types_by_bare,
             conformances,
             conformances_by_receiver,
-            actor_conformances_by_receiver,
         })
     }
 
@@ -245,21 +224,6 @@ impl InterfaceSemantics {
             .get(receiver)
             .into_iter()
             .flatten()
-            .map(|index| &self.conformances[*index])
-    }
-
-    pub fn actor_conformance_for_receiver(
-        &self,
-        receiver: &SourceSymbolKey,
-    ) -> Option<&InterfaceConformanceFact> {
-        self.actor_conformances_by_receiver
-            .get(receiver)
-            .map(|index| &self.conformances[*index])
-    }
-
-    pub fn actor_conformances(&self) -> impl Iterator<Item = &InterfaceConformanceFact> {
-        self.actor_conformances_by_receiver
-            .values()
             .map(|index| &self.conformances[*index])
     }
 
@@ -553,18 +517,6 @@ impl InterfaceIndex {
             interfaces_by_bare: BTreeMap::new(),
             types_by_bare: BTreeMap::new(),
         };
-        index.insert_compiler_known_interface(
-            actor_interface_symbol_key(),
-            vec!["Id".to_string()],
-        )?;
-        index.insert_compiler_known_interface(
-            SourceSymbolKey::new(
-                ERROR_PAYLOAD_INTERFACE_MODULE,
-                ERROR_PAYLOAD_INTERFACE_SYMBOL,
-            ),
-            Vec::new(),
-        )?;
-
         for source in &publication.sources {
             index.index_source_types(source.module_path, source.ast);
             for interface in &source.ast.interfaces {
@@ -603,6 +555,20 @@ impl InterfaceIndex {
                 symbol,
                 SourceTypeFact {
                     type_params: ty.type_params.clone(),
+                    kind: SourceTypeKind::Nominal,
+                },
+            );
+        }
+        for actor in &ast.actors {
+            let symbol = SourceSymbolKey::new(module_path, &actor.name);
+            self.types_by_bare
+                .entry(actor.name.clone())
+                .or_default()
+                .push(symbol.clone());
+            self.source_types.insert(
+                symbol,
+                SourceTypeFact {
+                    type_params: Vec::new(),
                     kind: SourceTypeKind::Nominal,
                 },
             );
@@ -1009,8 +975,30 @@ fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
             );
             !index.source_types.contains_key(&key) && !index.interfaces.contains_key(&key)
         }
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             args.iter().any(|arg| contains_external_nominal(arg, index))
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let external_base = match base {
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    let key = SourceSymbolKey::new(
+                        symbol
+                            .module_path
+                            .strip_prefix("root.")
+                            .unwrap_or(&symbol.module_path),
+                        &symbol.symbol,
+                    );
+                    !index.source_types.contains_key(&key) && !index.interfaces.contains_key(&key)
+                }
+                NominalTypeRefBaseIr::PackageSchema { .. } => true,
+                NominalTypeRefBaseIr::LocalType { .. }
+                | NominalTypeRefBaseIr::PublicationType { .. }
+                | NominalTypeRefBaseIr::PackageSymbol { .. } => false,
+            };
+            external_base
+                || arguments
+                    .iter()
+                    .any(|argument| contains_external_nominal(argument, index))
         }
         TypeRefIr::Record { fields } => fields
             .values()
@@ -1032,6 +1020,7 @@ fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
             .canonical_type_args
             .iter()
             .any(|arg| contains_external_nominal(arg, index)),
+        TypeRefIr::PackageSchema { .. } => true,
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::PackageSymbol { .. }
@@ -1123,11 +1112,18 @@ fn substitute_requirement_type(
         }
     }
     Ok(match ty {
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| substitute_requirement_type(arg, interface, conformance))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_requirement_type(argument, interface, conformance))
                 .collect::<Result<Vec<_>>>()?,
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
@@ -1186,6 +1182,7 @@ fn substitute_requirement_type(
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. } => ty.clone(),
     })
@@ -1201,12 +1198,13 @@ fn receiver_type_ref(conformance: &InterfaceConformanceFact) -> TypeRefIr {
 }
 
 fn is_self_type(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, args } if name == "Self" && args.is_empty())
+    matches!(ty, TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty())
 }
 
 fn contains_self_type(ty: &TypeRefIr) -> bool {
     match ty {
-        TypeRefIr::Native { args, .. } => is_self_type(ty) || args.iter().any(contains_self_type),
+        TypeRefIr::Builtin { args, .. } => is_self_type(ty) || args.iter().any(contains_self_type),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments.iter().any(contains_self_type),
         TypeRefIr::Record { fields } => fields.values().any(contains_self_type),
         TypeRefIr::Union { items } => items.iter().any(contains_self_type),
         TypeRefIr::Nullable { inner } => contains_self_type(inner),
@@ -1224,6 +1222,7 @@ fn contains_self_type(ty: &TypeRefIr) -> bool {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
@@ -1325,7 +1324,7 @@ fn resolve_type_expr(
                 });
             }
             if is_builtin_type(normalized) || is_builtin_generic_type(normalized) {
-                return Ok(TypeRefIr::Native {
+                return Ok(TypeRefIr::Builtin {
                     name: normalized.to_string(),
                     args: resolved_args,
                 });
@@ -1348,7 +1347,7 @@ fn resolve_type_expr(
                     },
                 });
             }
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: normalized.to_string(),
                 args: resolved_args,
             }
@@ -1621,16 +1620,12 @@ fn is_builtin_type(name: &str) -> bool {
 fn is_builtin_generic_type(name: &str) -> bool {
     matches!(
         name.rsplit('.').next().unwrap_or(name),
-        "Array" | "Map" | "Set" | "Result" | "Stream" | "ActorRef"
+        "Array" | "Map" | "Set" | "Result" | "Stream"
     )
 }
 
 fn is_probable_external_interface(name: &str) -> bool {
     !name.starts_with("root.") && name.contains('.')
-}
-
-pub fn actor_interface_symbol_key() -> SourceSymbolKey {
-    SourceSymbolKey::new(ACTOR_INTERFACE_MODULE, ACTOR_INTERFACE_SYMBOL)
 }
 
 pub fn interface_instantiation_display(interface: &InterfaceInstantiation) -> String {
@@ -1696,8 +1691,8 @@ pub fn object_safety_diagnostics_display(
 
 fn type_ref_display(ty: &TypeRefIr) -> String {
     match ty {
-        TypeRefIr::Native { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Native { name, args } => format!(
+        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
+        TypeRefIr::Builtin { name, args } => format!(
             "{name}<{}>",
             args.iter()
                 .map(type_ref_display)
@@ -1713,6 +1708,20 @@ fn type_ref_display(ty: &TypeRefIr) -> String {
             symbol.symbol_path()
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
+        TypeRefIr::AppliedNominal { base, arguments } => format!(
+            "{}<{}>",
+            nominal_base_display(base),
+            arguments
+                .iter()
+                .map(type_ref_display)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TypeRefIr::Record { fields } => format!(
             "{{ {} }}",
             fields
@@ -1762,6 +1771,23 @@ fn type_ref_display(ty: &TypeRefIr) -> String {
                 .join(", "),
             type_ref_display(return_type)
         ),
+    }
+}
+
+fn nominal_base_display(base: &NominalTypeRefBaseIr) -> String {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => format!("$localType{type_index}"),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("publicationType({module_path}:{type_index})"),
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
+        NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => format!("{package_id}::{stable_schema_key}"),
     }
 }
 
@@ -1934,7 +1960,7 @@ mod tests {
             }
             "#,
         );
-        let interface = inst("Reader", vec![TypeRefIr::native("string")]);
+        let interface = inst("Reader", vec![TypeRefIr::builtin("string")]);
 
         let slots = semantics.method_slots_for_interface(&interface).unwrap();
 
@@ -1946,19 +1972,19 @@ mod tests {
             vec![
                 FunctionTypeParamIr {
                     name: "self".to_string(),
-                    ty: TypeRefIr::native("Self"),
+                    ty: TypeRefIr::builtin("Self"),
                 },
                 FunctionTypeParamIr {
                     name: "fallback".to_string(),
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::builtin("string"),
                 },
             ]
         );
         assert_eq!(
             slots[0].return_type,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Array".to_string(),
-                args: vec![TypeRefIr::native("string")],
+                args: vec![TypeRefIr::builtin("string")],
             }
         );
         assert_eq!(
@@ -1985,9 +2011,9 @@ mod tests {
         );
         let receiver = TypeInstantiationPattern {
             symbol: SourceSymbolKey::new("test", "Box"),
-            args: vec![TypeRefIr::native("string")],
+            args: vec![TypeRefIr::builtin("string")],
         };
-        let interface = inst("Reader", vec![TypeRefIr::native("string")]);
+        let interface = inst("Reader", vec![TypeRefIr::builtin("string")]);
 
         let conformance = semantics
             .local_conformance_for_receiver_instantiation(&receiver, &interface)

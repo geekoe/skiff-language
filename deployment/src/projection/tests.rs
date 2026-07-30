@@ -1,30 +1,46 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities, contract_operation_id,
-    contract_type_id,
+    package_schema_index_identity, package_schema_type_id, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::*;
 
 use super::*;
 
 mod eligibility;
+mod operation_bindings;
 
 struct ProjectionFixture {
     input: ServiceDeploymentInput,
     contract: ServiceContract,
     implementation: PackageArtifact,
     callable_id: PackageCallableId,
+    package_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 }
 
 impl ProjectionFixture {
     fn new() -> Self {
         let service_id = "example.echo";
         let contract_version = "1.0.0";
-        let payload_id = contract_type_id(service_id, contract_version, "payload").unwrap();
+        let package_id = "example.provider";
+        let payload_descriptor = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "message".to_string(),
+                    ContractTypeRef::builtin("string"),
+                )]),
+            },
+        };
+        let payload_id =
+            package_schema_type_id(package_id, "payload", &payload_descriptor).unwrap();
+        let payload_ref =
+            ContractTypeRef::package_schema(package_id, "payload", payload_id.clone());
         let echo_id = contract_operation_id(service_id, contract_version, "echo").unwrap();
         let repeat_id = contract_operation_id(service_id, contract_version, "repeat").unwrap();
-        let operation_contract = operation_contract(payload_id.clone());
+        let operation_contract = operation_contract(payload_ref.clone());
         let mut contract = ServiceContract {
             schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
             service_id: service_id.to_string(),
@@ -48,22 +64,10 @@ impl ProjectionFixture {
                     },
                 ),
             ]),
-            boundary_schema: BTreeMap::from([(
-                payload_id.clone(),
-                ContractSchemaType {
-                    contract_type_id: payload_id.clone(),
-                    stable_key: "payload".to_string(),
-                    shape: ContractTypeShape {
-                        nameability: ContractTypeNameability::PublicNameable,
-                        descriptor: ContractTypeDescriptor::Record {
-                            fields: BTreeMap::from([(
-                                "message".to_string(),
-                                ContractTypeRef::builtin("string"),
-                            )]),
-                        },
-                    },
-                },
-            )]),
+            package_type_requirements: vec![PackageTypeRequirement {
+                package_id: package_id.to_string(),
+                required_type_ids: vec![payload_id.clone()],
+            }],
             diagnostic_text: ContractDiagnosticText {
                 service: "Echo".to_string(),
                 operations: BTreeMap::new(),
@@ -72,7 +76,7 @@ impl ProjectionFixture {
         };
         assign_service_contract_identities(&mut contract).unwrap();
 
-        let callable_id = PackageCallableId::new("callable:handle");
+        let callable_id = PackageCallableId::new("pkg-callable:example.provider:handle");
         let facts = safe_facts();
         let requirements = BoundaryImplementationRequirements {
             config: vec![BoundaryConfigRequirement {
@@ -82,12 +86,12 @@ impl ProjectionFixture {
             }],
             state: vec![
                 BoundaryStateRequirement {
-                    key: "echo-state".to_string(),
-                    kind: BoundaryStateKind::Database,
-                },
-                BoundaryStateRequirement {
                     key: "echo-db".to_string(),
                     kind: BoundaryStateKind::ExternalResource,
+                },
+                BoundaryStateRequirement {
+                    key: "echo-state".to_string(),
+                    kind: BoundaryStateKind::Database,
                 },
             ],
             native_capabilities: Vec::new(),
@@ -104,10 +108,10 @@ impl ProjectionFixture {
         };
         let mut implementation = PackageArtifact {
             schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
-            package_id: "example.provider".to_string(),
+            package_id: package_id.to_string(),
             package_version: "2.0.0".to_string(),
             package_build_id: PackageBuildId::new("unassigned"),
-            files: vec![file],
+            files: vec![file.clone()],
             static_resources: Vec::new(),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
@@ -116,22 +120,77 @@ impl ProjectionFixture {
                     PackageLocalAbiSymbol::Callable {
                         callable_id: callable_id.clone(),
                         signature: PackageCallableSignature {
+                            type_params: Vec::new(),
                             parameters: vec![PackageCallableParameter {
                                 name: "input".to_string(),
-                                ty: PackageTypeRef::Contract {
-                                    contract_type_id: payload_id.clone(),
+                                ty: PackageTypeRef::PackageSchema {
+                                    package_id: package_id.to_string(),
+                                    stable_schema_key: "payload".to_string(),
+                                    package_schema_type_id: payload_id.clone(),
                                 },
                             }],
-                            return_type: PackageTypeRef::Contract {
-                                contract_type_id: payload_id,
+                            return_type: PackageTypeRef::PackageSchema {
+                                package_id: package_id.to_string(),
+                                stable_schema_key: "payload".to_string(),
+                                package_schema_type_id: payload_id.clone(),
                             },
-                            throw_types: Vec::new(),
                             may_suspend: true,
                         },
                     },
                 )]),
+                implementation_symbols: BTreeMap::new(),
             },
-            implementation_links: PackageImplementationLinks::default(),
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: package_id.to_string(),
+                package_schema_index_identity: package_schema_index_identity(
+                    package_id,
+                    &BTreeMap::from([(
+                        "payload".to_string(),
+                        PackageSchemaIndexEntry {
+                            package_schema_type_id: payload_id.clone(),
+                            public_path: Some("payload".to_string()),
+                            nameability: ContractTypeNameability::PublicNameable,
+                        },
+                    )]),
+                )
+                .unwrap(),
+            },
+            package_schema_type_records: BTreeMap::from([(
+                payload_id.clone(),
+                PackageSchemaTypeRecordRef {
+                    package_id: package_id.to_string(),
+                    package_schema_type_id: payload_id.clone(),
+                },
+            )]),
+            implementation_links: PackageImplementationLinks {
+                functions: BTreeMap::from([(
+                    "handle".to_string(),
+                    ExecutableExport {
+                        file: file.clone(),
+                        executable_index: 0,
+                        symbol: "handle".to_string(),
+                        signature: ExecutableSignatureIr {
+                            params: vec![ParamIr {
+                                name: "input".to_string(),
+                                slot: 0,
+                                ty: TypeRefIr::PackageSchema {
+                                    package_id: package_id.to_string(),
+                                    stable_schema_key: "payload".to_string(),
+                                    package_schema_type_id: payload_id.clone(),
+                                },
+                            }],
+                            return_type: TypeRefIr::PackageSchema {
+                                package_id: package_id.to_string(),
+                                stable_schema_key: "payload".to_string(),
+                                package_schema_type_id: payload_id.clone(),
+                            },
+                            self_type: None,
+                            may_suspend: true,
+                        },
+                    },
+                )]),
+                ..PackageImplementationLinks::default()
+            },
             callable_links: BTreeMap::from([(
                 callable_id.clone(),
                 PackageCallableLinkFact {
@@ -147,6 +206,10 @@ impl ProjectionFixture {
                     path: "echo.token".to_string(),
                     value_type: "string".to_string(),
                     required: true,
+                }],
+                state: vec![PackageStateRequirement {
+                    key: "echo-state".to_string(),
+                    kind: StateBindingKind::Database,
                 }],
                 resources: vec![PackageResourceRequirement {
                     key: "echo-db".to_string(),
@@ -178,15 +241,16 @@ impl ProjectionFixture {
             operation_bindings: vec![
                 ServiceDeploymentOperationInput {
                     contract_operation_id: repeat_id,
-                    package_public_path: "handle".to_string(),
+                    package_callable_id: callable_id.clone(),
                 },
                 ServiceDeploymentOperationInput {
                     contract_operation_id: echo_id,
-                    package_public_path: "handle".to_string(),
+                    package_callable_id: callable_id.clone(),
                 },
             ],
             package_bindings: Vec::new(),
             service_selectors: Vec::new(),
+            gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
             config_literals: vec![ConfigLiteralBinding {
                 path: "echo.token".to_string(),
@@ -208,7 +272,7 @@ impl ProjectionFixture {
                 version: "1".to_string(),
             }],
             policy: DeploymentPolicy {
-                timeout_ms: 1_000,
+                timeout_ms: Some(1_000),
                 resources: ResourcePolicy {
                     cpu_millis: 100,
                     memory_bytes: 1_048_576,
@@ -224,11 +288,21 @@ impl ProjectionFixture {
                 notes: BTreeMap::new(),
             },
         };
+        let package_schema_records = BTreeMap::from([(
+            payload_id.clone(),
+            PackageSchemaTypeRecord {
+                package_id: package_id.to_string(),
+                stable_schema_key: "payload".to_string(),
+                package_schema_type_id: payload_id,
+                canonical_descriptor: payload_descriptor,
+            },
+        )]);
         Self {
             input,
             contract,
             implementation,
             callable_id,
+            package_schema_records,
         }
     }
 
@@ -237,19 +311,95 @@ impl ProjectionFixture {
             self.input.clone(),
             &self.contract,
             std::slice::from_ref(&self.implementation),
+            &self.package_schema_records,
         )
     }
 
     fn refresh_implementation_ref(&mut self) {
-        assign_package_artifact_identities(&mut self.implementation).unwrap();
+        if let Err(error) = assign_package_artifact_identities(&mut self.implementation) {
+            assert!(
+                matches!(
+                    error,
+                    skiff_artifact_identity::ArtifactIdentityError::InvalidPackageArtifact { .. }
+                ) && validate_package_boundary_projections(&self.implementation).is_err(),
+                "unexpected PackageArtifact identity assignment failure: {error}"
+            );
+        }
         self.input.implementation = package_ref(&self.implementation);
+    }
+
+    fn refresh_contract_ref(&mut self) {
+        if let Err(error) = assign_service_contract_identities(&mut self.contract) {
+            assert!(
+                matches!(
+                    error,
+                    skiff_artifact_identity::ArtifactIdentityError::InvalidServiceContract { .. }
+                ) && self.contract.operations.values().any(|descriptor| {
+                    validate_boundary_operation_contract(&descriptor.contract).is_err()
+                }),
+                "unexpected ServiceContract identity assignment failure: {error}"
+            );
+        }
+        self.input.contract = contract_ref(&self.contract);
+    }
+
+    fn set_provider_may_suspend(&mut self, may_suspend: bool) {
+        let PackageLocalAbiSymbol::Callable { signature, .. } = self
+            .implementation
+            .package_local_abi
+            .public_symbols
+            .get_mut("handle")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        signature.may_suspend = may_suspend;
+        self.implementation
+            .implementation_links
+            .functions
+            .get_mut("handle")
+            .unwrap()
+            .signature
+            .may_suspend = may_suspend;
+        let CallableEffectSummary::Analyzed { effects } = &mut self
+            .implementation
+            .callable_semantic_facts
+            .get_mut(&self.callable_id)
+            .unwrap()
+            .effects
+        else {
+            unreachable!()
+        };
+        effects.may_suspend = may_suspend;
+        let BoundaryCallableProjection::Available {
+            implementation_requirements,
+            ..
+        } = self
+            .implementation
+            .boundary_projections
+            .get_mut(&self.callable_id)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        implementation_requirements.complete_may_effects.may_suspend = may_suspend;
+        self.refresh_implementation_ref();
     }
 }
 
 #[test]
 fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
     let fixture = ProjectionFixture::new();
+    assert_eq!(
+        fixture.input.schema_version,
+        "skiff-service-deployment-input-v5"
+    );
     let deployment = fixture.project().unwrap();
+    assert_eq!(deployment.schema_version, "skiff-service-deployment-v4");
+    assert!(deployment
+        .deployment_artifact_identity
+        .as_str()
+        .starts_with(DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX));
     assert_eq!(deployment.operation_bindings.len(), 2);
     assert!(deployment
         .operation_bindings
@@ -260,8 +410,132 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
         .windows(2)
         .all(|pair| { pair[0].contract_operation_id < pair[1].contract_operation_id }));
     let wire = serde_json::to_string(&deployment).unwrap();
+    assert!(wire.contains("packageCallableId"));
     assert!(!wire.contains("packagePublicPath"));
     skiff_artifact_identity::validate_service_deployment_identity(&deployment).unwrap();
+}
+
+#[test]
+fn code_free_contract_admits_both_provider_summaries_and_exact_refs_change_identity() {
+    let mut non_suspending = ProjectionFixture::new();
+    non_suspending.set_provider_may_suspend(false);
+    let mut suspending = ProjectionFixture::new();
+    suspending.set_provider_may_suspend(true);
+
+    assert_eq!(non_suspending.contract, suspending.contract);
+    assert_eq!(
+        non_suspending.contract.service_protocol_identity,
+        suspending.contract.service_protocol_identity
+    );
+    assert_eq!(
+        non_suspending.contract.operations,
+        suspending.contract.operations
+    );
+    assert_ne!(
+        non_suspending.implementation.package_build_id,
+        suspending.implementation.package_build_id
+    );
+
+    let non_suspending_deployment = non_suspending
+        .project()
+        .expect("a concrete non-suspending provider must be deployable");
+    let suspending_deployment = suspending
+        .project()
+        .expect("a concrete suspending provider must be deployable");
+    assert_ne!(
+        non_suspending_deployment.implementation,
+        suspending_deployment.implementation
+    );
+    assert_ne!(
+        non_suspending_deployment.deployment_artifact_identity,
+        suspending_deployment.deployment_artifact_identity
+    );
+
+    let non_suspending_root =
+        skiff_artifact_identity::service_deployment_ref(&non_suspending_deployment);
+    let non_suspending_assembly = crate::assembly::resolve_runtime_assembly(
+        std::slice::from_ref(&non_suspending_root),
+        std::slice::from_ref(&non_suspending_deployment),
+        std::slice::from_ref(&non_suspending.contract),
+        std::slice::from_ref(&non_suspending.implementation),
+    )
+    .expect("the non-suspending provider must assemble");
+    let suspending_root = skiff_artifact_identity::service_deployment_ref(&suspending_deployment);
+    let suspending_assembly = crate::assembly::resolve_runtime_assembly(
+        std::slice::from_ref(&suspending_root),
+        std::slice::from_ref(&suspending_deployment),
+        std::slice::from_ref(&suspending.contract),
+        std::slice::from_ref(&suspending.implementation),
+    )
+    .expect("the suspending provider must assemble");
+    assert_ne!(
+        non_suspending_assembly.resolved_packages,
+        suspending_assembly.resolved_packages
+    );
+    assert_ne!(
+        non_suspending_assembly.assembly_identity,
+        suspending_assembly.assembly_identity
+    );
+}
+
+#[test]
+fn projection_preserves_validated_gateway_entries_and_selector_key_bindings() {
+    let mut fixture = ProjectionFixture::new();
+    let key = GatewayEntryKey::parse("echo-http").unwrap();
+    let entry = crate::fixtures::gateway_entry_fixture(fixture.callable_id.clone());
+    fixture
+        .input
+        .gateway_entries
+        .insert(key.clone(), entry.clone());
+    fixture.input.ingress = vec![
+        DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: "/echo-alias".to_string(),
+            },
+            gateway_entry_key: key.clone(),
+        },
+        DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: "/echo".to_string(),
+            },
+            gateway_entry_key: key.clone(),
+        },
+    ];
+
+    let deployment = fixture.project().unwrap();
+    assert_eq!(
+        deployment.gateway_entries,
+        BTreeMap::from([(key.clone(), entry)])
+    );
+    assert_eq!(deployment.ingress.len(), 2);
+    assert!(deployment
+        .ingress
+        .iter()
+        .all(|binding| binding.gateway_entry_key == key));
+}
+
+#[test]
+fn projection_accepts_zero_operation_contract_and_empty_gateway_surface() {
+    let mut fixture = ProjectionFixture::new();
+    fixture.contract.operations.clear();
+    fixture.contract.package_type_requirements.clear();
+    assign_service_contract_identities(&mut fixture.contract).unwrap();
+    fixture.input.contract = contract_ref(&fixture.contract);
+    fixture.input.operation_bindings.clear();
+    fixture.input.gateway_entries.clear();
+    fixture.input.ingress.clear();
+    fixture.package_schema_records.clear();
+
+    let deployment = fixture
+        .project()
+        .expect("a zero-operation contract must project with no gateway surface");
+    assert!(deployment.operation_bindings.is_empty());
+    assert!(deployment.gateway_entries.is_empty());
+    assert!(deployment.ingress.is_empty());
 }
 
 #[test]
@@ -289,13 +563,6 @@ fn operation_mapping_failures_are_structured_and_fail_closed() {
         fixture.project(),
         Err(ProjectionError::UnknownOperationBinding { .. })
     ));
-
-    let mut fixture = ProjectionFixture::new();
-    fixture.input.operation_bindings[0].package_public_path = "missing".to_string();
-    assert!(matches!(
-        fixture.project(),
-        Err(ProjectionError::UnknownPublicPath { .. })
-    ));
 }
 
 #[test]
@@ -310,7 +577,8 @@ fn unavailable_callable_and_nominal_descriptor_mismatch_fail_closed() {
     fixture.refresh_implementation_ref();
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::BoundaryUnavailable { .. })
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
 
     let mut fixture = ProjectionFixture::new();
@@ -330,7 +598,125 @@ fn unavailable_callable_and_nominal_descriptor_mismatch_fail_closed() {
     fixture.refresh_implementation_ref();
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::OperationContractMismatch { .. })
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
+    ));
+}
+
+#[test]
+fn package_owned_operation_requires_exact_owner_key_and_type_id() {
+    ProjectionFixture::new()
+        .project()
+        .expect("the exact Package-owned operation must pass");
+
+    for replacement in [
+        ContractTypeRef::package_schema(
+            "example.foreign",
+            "payload",
+            ProjectionFixture::new()
+                .package_schema_records
+                .keys()
+                .next()
+                .unwrap()
+                .clone(),
+        ),
+        ContractTypeRef::package_schema(
+            "example.provider",
+            "other",
+            ProjectionFixture::new()
+                .package_schema_records
+                .keys()
+                .next()
+                .unwrap()
+                .clone(),
+        ),
+        ContractTypeRef::package_schema(
+            "example.provider",
+            "payload",
+            PackageSchemaTypeId::new("package-schema-type:wrong"),
+        ),
+    ] {
+        let mut fixture = ProjectionFixture::new();
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = fixture
+            .implementation
+            .boundary_projections
+            .get_mut(&fixture.callable_id)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        operation_contract.parameters[0].ty = replacement;
+        fixture.refresh_implementation_ref();
+        assert!(matches!(
+            fixture.project(),
+            Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+                | ProjectionError::InvalidTypedArtifact { .. })
+        ));
+    }
+}
+
+#[test]
+fn deployment_requires_the_exact_validated_package_schema_closure() {
+    let mut missing = ProjectionFixture::new();
+    missing.package_schema_records.clear();
+    assert!(matches!(
+        missing.project(),
+        Err(ProjectionError::PackageSchemaClosureMismatch { .. })
+    ));
+
+    let mut extra = ProjectionFixture::new();
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Enumeration {
+            variants: vec!["extra".to_string()],
+        },
+    };
+    let extra_id =
+        package_schema_type_id("example.provider", "extra", &descriptor).expect("extra type id");
+    extra.package_schema_records.insert(
+        extra_id.clone(),
+        PackageSchemaTypeRecord {
+            package_id: "example.provider".to_string(),
+            stable_schema_key: "extra".to_string(),
+            package_schema_type_id: extra_id,
+            canonical_descriptor: descriptor,
+        },
+    );
+    assert!(matches!(
+        extra.project(),
+        Err(ProjectionError::PackageSchemaClosureMismatch { .. })
+    ));
+
+    let mut foreign_owner = ProjectionFixture::new();
+    foreign_owner
+        .package_schema_records
+        .values_mut()
+        .next()
+        .unwrap()
+        .package_id = "example.foreign".to_string();
+    assert!(matches!(
+        foreign_owner.project(),
+        Err(ProjectionError::InvalidTypedArtifact {
+            artifact: "PackageSchemaTypeRecord closure",
+            ..
+        })
+    ));
+
+    let mut bad_hash = ProjectionFixture::new();
+    bad_hash
+        .package_schema_records
+        .values_mut()
+        .next()
+        .unwrap()
+        .stable_schema_key = "tampered".to_string();
+    assert!(matches!(
+        bad_hash.project(),
+        Err(ProjectionError::InvalidTypedArtifact {
+            artifact: "PackageSchemaTypeRecord closure",
+            ..
+        })
     ));
 }
 
@@ -348,6 +734,24 @@ fn required_activation_bindings_and_protocol_identity_are_exact() {
     assert!(matches!(
         fixture.project(),
         Err(ProjectionError::MissingRequirementBinding { kind: "state", .. })
+    ));
+
+    let mut fixture = ProjectionFixture::new();
+    fixture.input.state_bindings[0].kind = StateBindingKind::Queue;
+    assert!(matches!(
+        fixture.project(),
+        Err(ProjectionError::RequirementBindingMismatch { kind: "state", .. })
+    ));
+
+    let mut fixture = ProjectionFixture::new();
+    fixture.input.state_bindings.push(StateBinding {
+        requirement_key: "unexpected".to_string(),
+        kind: StateBindingKind::Database,
+        namespace: "unexpected".to_string(),
+    });
+    assert!(matches!(
+        fixture.project(),
+        Err(ProjectionError::ExtraRequirementBinding { kind: "state", .. })
     ));
 
     let mut fixture = ProjectionFixture::new();
@@ -459,6 +863,11 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         package_id: dependency_a.package_id.clone(),
         exact_version: dependency_a.package_version.clone(),
         expected_local_abi: dependency_a.package_local_abi.local_abi_identity.clone(),
+        collection_name_mapping: BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )]),
+        expected_package_build: None,
     }];
     fixture.refresh_implementation_ref();
     let binding_key = PackageRequirementKey {
@@ -468,6 +877,10 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
     fixture.input.package_bindings = vec![PackageBinding {
         key: binding_key,
         package: package_ref(&dependency_a),
+        collection_name_mapping: BTreeMap::from([(
+            "package_secret".to_string(),
+            "mapped_package_secret".to_string(),
+        )]),
     }];
 
     assert!(matches!(
@@ -475,6 +888,7 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
             fixture.input.clone(),
             &fixture.contract,
             std::slice::from_ref(&fixture.implementation),
+            &fixture.package_schema_records,
         ),
         Err(ProjectionError::MissingRequirementBinding {
             kind: "package artifact",
@@ -486,14 +900,36 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         fixture.input.clone(),
         &fixture.contract,
         &[fixture.implementation.clone(), dependency_a],
+        &fixture.package_schema_records,
     )
     .unwrap();
+    let mut drifted = fixture.input.clone();
+    drifted.package_bindings[0].collection_name_mapping.insert(
+        "package_secret".to_string(),
+        "drifted_package_secret".to_string(),
+    );
+    assert!(matches!(
+        project_service_deployment(
+            drifted,
+            &fixture.contract,
+            &[
+                fixture.implementation.clone(),
+                dependency_artifact("resource-a")
+            ],
+            &fixture.package_schema_records,
+        ),
+        Err(ProjectionError::RequirementBindingMismatch {
+            kind: "package",
+            ..
+        })
+    ));
     let dependency_b = dependency_artifact("resource-b");
     fixture.input.package_bindings[0].package = package_ref(&dependency_b);
     let second = project_service_deployment(
         fixture.input,
         &fixture.contract,
         &[fixture.implementation, dependency_b],
+        &fixture.package_schema_records,
     )
     .unwrap();
     assert_ne!(
@@ -517,6 +953,8 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
         package_id: dependency.package_id.clone(),
         exact_version: dependency.package_version.clone(),
         expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        collection_name_mapping: BTreeMap::new(),
+        expected_package_build: None,
     }];
     let BoundaryCallableProjection::Available {
         implementation_requirements,
@@ -543,6 +981,7 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
             package_requirement_alias: "util".to_string(),
         },
         package: package_ref(&dependency),
+        collection_name_mapping: BTreeMap::new(),
     }];
     fixture.input.config_literals.push(ConfigLiteralBinding {
         path: "dependency.only".to_string(),
@@ -554,9 +993,75 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
             fixture.input,
             &fixture.contract,
             &[fixture.implementation, dependency],
+            &fixture.package_schema_records,
         ),
-        Err(ProjectionError::CallableFactsMismatch { .. })
+        Err(ProjectionError::InvalidPackageBoundaryProjections { .. }
+            | ProjectionError::InvalidTypedArtifact { .. })
     ));
+}
+
+#[test]
+fn every_package_in_the_resolved_closure_gets_boundary_admission() {
+    let mut fixture = ProjectionFixture::new();
+    let mut dependency = fixture.implementation.clone();
+    let dependency_projection = serde_json::to_value(
+        skiff_artifact_identity::package_artifact_build_identity_projection(&dependency).unwrap(),
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = dependency
+        .boundary_projections
+        .get_mut(&fixture.callable_id)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let BoundaryValuePlan::Linkable { encoding, .. } =
+        &mut operation_contract.return_value.value_plan
+    else {
+        unreachable!()
+    };
+    *encoding = BoundaryValueEncoding::OpaqueCapability;
+    mechanically_rehash_forged_package(&mut dependency, dependency_projection);
+    let dependency_identity_admitted =
+        skiff_artifact_identity::validate_package_artifact_identities(&dependency).is_ok();
+
+    fixture.implementation.package_requirements = vec![PackageRequirement {
+        alias: "util".to_string(),
+        package_id: dependency.package_id.clone(),
+        exact_version: dependency.package_version.clone(),
+        expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        collection_name_mapping: BTreeMap::new(),
+        expected_package_build: None,
+    }];
+    fixture.refresh_implementation_ref();
+    fixture.input.package_bindings = vec![PackageBinding {
+        key: PackageRequirementKey {
+            caller_package_build_id: fixture.implementation.package_build_id.clone(),
+            package_requirement_alias: "util".to_string(),
+        },
+        package: package_ref(&dependency),
+        collection_name_mapping: BTreeMap::new(),
+    }];
+
+    let error = project_service_deployment(
+        fixture.input,
+        &fixture.contract,
+        &[fixture.implementation, dependency.clone()],
+        &fixture.package_schema_records,
+    )
+    .unwrap_err();
+    match error {
+        ProjectionError::InvalidPackageBoundaryProjections { build_id, .. } => {
+            assert!(dependency_identity_admitted);
+            assert_eq!(build_id, dependency.package_build_id);
+        }
+        ProjectionError::InvalidTypedArtifact { .. } => {
+            assert!(!dependency_identity_admitted);
+        }
+        error => panic!("expected identity or canonical boundary rejection, got {error}"),
+    }
 }
 
 fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
@@ -576,7 +1081,17 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.util".to_string(),
+            package_schema_index_identity: package_schema_index_identity(
+                "example.util",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),
@@ -584,6 +1099,7 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
+            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -604,6 +1120,32 @@ fn package_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
     }
 }
 
+fn mechanically_rehash_forged_package(
+    artifact: &mut PackageArtifact,
+    mut canonical_projection: serde_json::Value,
+) {
+    canonical_projection["boundaryProjections"] =
+        serde_json::to_value(&artifact.boundary_projections).unwrap();
+    let bytes = skiff_canonical_json::canonical_json_bytes(&canonical_projection).unwrap();
+    artifact.package_build_id = PackageBuildId::new(skiff_artifact_identity::framed_identity(
+        skiff_artifact_identity::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        &hex::encode(Sha256::digest(bytes)),
+    ));
+}
+
+fn mechanically_rehash_forged_contract(
+    contract: &mut ServiceContract,
+    mut canonical_projection: serde_json::Value,
+) {
+    canonical_projection["operations"] = serde_json::to_value(&contract.operations).unwrap();
+    let bytes = skiff_canonical_json::canonical_json_bytes(&canonical_projection).unwrap();
+    contract.service_protocol_identity =
+        ServiceProtocolIdentity::new(skiff_artifact_identity::framed_identity(
+            skiff_artifact_identity::SERVICE_PROTOCOL_IDENTITY_PREFIX,
+            &hex::encode(Sha256::digest(bytes)),
+        ));
+}
+
 fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {
     ServiceContractRef {
         service_id: contract.service_id.clone(),
@@ -612,22 +1154,19 @@ fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {
     }
 }
 
-fn operation_contract(payload_id: ContractTypeId) -> BoundaryOperationContract {
+fn operation_contract(payload_type: ContractTypeRef) -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: vec![BoundaryParameter {
             name: "input".to_string(),
-            ty: ContractTypeRef::contract(payload_id.clone()),
+            ty: payload_type.clone(),
             value_plan: linkable_plan(BoundaryValueOwner::Caller),
         }],
         return_value: BoundaryReturn {
-            ty: ContractTypeRef::contract(payload_id),
+            ty: payload_type,
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: true,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -655,6 +1194,7 @@ fn safe_facts() -> CallableSemanticFacts {
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],
+            direct_return_origins: vec![ValueProvenance::Fresh],
             throw_origins: Vec::new(),
             escape_lanes: Vec::new(),
         },

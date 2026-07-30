@@ -1,4 +1,4 @@
-use skiff_artifact_model::{PackageLocalAbiSymbol, PackageRefIr};
+use skiff_artifact_model::{ContractTypeDescriptor, PackageLocalAbiSymbol, PackageRefIr};
 
 mod common;
 use common::{
@@ -6,6 +6,46 @@ use common::{
     package_project::compile_package_project,
     TestDir,
 };
+
+#[test]
+fn ordinary_nominal_records_keep_public_schema_fields() {
+    let temp = TestDir::new("skiff-compiler", "nominal-record-schema-fields");
+    temp.write("package.yml", "id: example.com/errors\nversion: 1.0.0\n");
+    temp.write(
+        "api.yml",
+        "Ordinary: errors.Ordinary\nFailure: errors.Failure\n",
+    );
+    temp.write(
+        "errors.skiff",
+        r#"type Ordinary {
+  value: string,
+}
+
+type Failure {
+  code: string,
+  message: string,
+}
+"#,
+    );
+
+    let project = compile_package_project(temp.path()).expect("record schemas should compile");
+    let records = &project.package.package_schema_type_records;
+    for (stable_key, expected) in [
+        ("Ordinary", vec!["value"]),
+        ("Failure", vec!["code", "message"]),
+    ] {
+        let entry = &project.package.package_schema_index.types[stable_key];
+        let record = &records[&entry.package_schema_type_id];
+        let ContractTypeDescriptor::Record { fields } = &record.canonical_descriptor.descriptor
+        else {
+            panic!("{stable_key} must remain a record");
+        };
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
 
 #[test]
 fn package_schema_references_require_a_declared_dependency() {

@@ -1,0 +1,7 @@
+id: test.skiff/alias-return-catch-once-tests
+version: 1.0.0
+packages:
+  - id: test.skiff/alias-return-catch-once
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl

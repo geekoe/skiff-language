@@ -7,9 +7,12 @@ use crate::file_ir::{
     DbOpKindIr, DbOperationIr, DbOrderEntryIr, DbPredicateCompareOpIr, DbPredicateIr,
     DbProjectionIr, DbQueryIr, DbQueryValueIr, DbRetentionIr, DbRetentionUnitIr, DbSelectorIr,
     DbTargetIr, DbTransactionIr, ExprIr, ExprRefIr, FieldPathIr, FileIrUnit, FunctionTypeParamIr,
-    LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr, TypeDescriptorIr, TypeRefIr,
+    InstructionSourceSite, LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr,
+    SyntheticInstructionSiteReason, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
 use skiff_compiler_core::db_projection::project_db_read_type;
+use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 use skiff_compiler_source::{
     semantic::DbAttachmentIndex, LocalDbObjectIndex, PublicationDbMetadata,
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, SourceSymbolKey,
@@ -195,35 +198,21 @@ fn lower_publication_db_metadata(
     package_aliases: &BTreeMap<String, Vec<String>>,
     external_type_symbols: &PublicationTypeSymbolIndex,
 ) -> Result<DbMetadataIr> {
-    let type_ref = db_object_type_ref(ServiceSymbolRef {
-        module_path: metadata.module_path.clone(),
-        symbol: metadata.type_name.clone(),
+    let type_ref = metadata.canonical_type_ref.clone().unwrap_or_else(|| {
+        db_object_type_ref(ServiceSymbolRef {
+            module_path: metadata.module_path.clone(),
+            symbol: metadata.type_name.clone(),
+        })
     });
     let empty_local_db_objects = LocalDbObjectIndex::default();
     let empty_publication_db_metadata = PublicationDbMetadataIndex::default();
     let source_alias_targets = BTreeMap::new();
     let key = DbObjectKeyIr {
         name: metadata.key.name.clone(),
-        ty: lower_type_ref(
-            &metadata.key.ty,
-            &BTreeMap::new(),
-            &empty_local_db_objects,
-            &empty_publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            &source_alias_targets,
-            TypeLoweringContext::value(),
-        )?,
-    };
-    let mut field_types = BTreeMap::new();
-    let mut field_type_texts = BTreeMap::new();
-    field_types.insert(key.name.clone(), key.ty.clone());
-    field_type_texts.insert(metadata.key.name.clone(), metadata.key.ty.name.clone());
-    for (field_name, field_ty) in &metadata.field_types {
-        field_types.insert(
-            field_name.clone(),
-            lower_type_ref(
-                field_ty,
+        ty: match &metadata.canonical_key_type {
+            Some(ty) => ty.clone(),
+            None => lower_type_ref(
+                &metadata.key.ty,
                 &BTreeMap::new(),
                 &empty_local_db_objects,
                 &empty_publication_db_metadata,
@@ -232,6 +221,28 @@ fn lower_publication_db_metadata(
                 &source_alias_targets,
                 TypeLoweringContext::value(),
             )?,
+        },
+    };
+    let mut field_types = BTreeMap::new();
+    let mut field_type_texts = BTreeMap::new();
+    field_types.insert(key.name.clone(), key.ty.clone());
+    field_type_texts.insert(metadata.key.name.clone(), metadata.key.ty.name.clone());
+    for (field_name, field_ty) in &metadata.field_types {
+        field_types.insert(
+            field_name.clone(),
+            match metadata.canonical_field_types.get(field_name) {
+                Some(ty) => ty.clone(),
+                None => lower_type_ref(
+                    field_ty,
+                    &BTreeMap::new(),
+                    &empty_local_db_objects,
+                    &empty_publication_db_metadata,
+                    package_aliases,
+                    external_type_symbols,
+                    &source_alias_targets,
+                    TypeLoweringContext::value(),
+                )?,
+            },
         );
         field_type_texts.insert(field_name.clone(), field_ty.name.clone());
     }
@@ -523,13 +534,36 @@ fn expand_db_storage_type_ref(
                 TypeDescriptorIr::Alias { target } => {
                     expand_db_storage_type_ref(target, unit, seen_local_types)?
                 }
-                TypeDescriptorIr::Union { variants } => TypeRefIr::Union {
-                    items: variants
+                TypeDescriptorIr::Representation { representation } => {
+                    expand_db_storage_type_ref(representation, unit, seen_local_types)?
+                }
+                TypeDescriptorIr::Union { branches } => TypeRefIr::Union {
+                    items: branches
                         .iter()
-                        .map(|variant| expand_db_storage_type_ref(variant, unit, seen_local_types))
+                        .map(|branch| {
+                            let branch_type = match branch {
+                                NamedUnionBranchIr::ConcreteNominal { nominal_type, .. } => {
+                                    nominal_type
+                                }
+                                NamedUnionBranchIr::SyntheticDiscriminator {
+                                    payload_type, ..
+                                } => payload_type,
+                                NamedUnionBranchIr::Literal { value } => {
+                                    return Ok(TypeRefIr::Literal {
+                                        value: value.clone(),
+                                    });
+                                }
+                            };
+                            expand_db_storage_type_ref(branch_type, unit, seen_local_types)
+                        })
                         .collect::<Result<Vec<_>>>()?,
                 },
-                TypeDescriptorIr::Native { .. } => ty.clone(),
+                TypeDescriptorIr::Interface => {
+                    return Err(CompileError::Semantic(format!(
+                        "interface type `{}` cannot be used as db storage",
+                        decl.name
+                    )));
+                }
             };
             seen_local_types.remove(type_index);
             Ok(expanded)
@@ -545,13 +579,88 @@ fn expand_db_storage_type_ref(
                 })
                 .collect::<Result<BTreeMap<_, _>>>()?,
         }),
-        TypeRefIr::Native { name, args } => Ok(TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| expand_db_storage_type_ref(arg, unit, seen_local_types))
                 .collect::<Result<Vec<_>>>()?,
         }),
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let NominalTypeRefBaseIr::LocalType { type_index } = base else {
+                return Ok(TypeRefIr::AppliedNominal {
+                    base: base.clone(),
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| {
+                            expand_db_storage_type_ref(argument, unit, seen_local_types)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                });
+            };
+            let Some(decl) = unit.type_table.get(*type_index as usize) else {
+                return Err(CompileError::Semantic(format!(
+                    "missing local type index {type_index} while lowering applied db storage type"
+                )));
+            };
+            if decl.type_params.len() != arguments.len() {
+                return Err(CompileError::Semantic(format!(
+                    "db storage type `{}` expects {} type arguments, found {}",
+                    decl.name,
+                    decl.type_params.len(),
+                    arguments.len()
+                )));
+            }
+            if !seen_local_types.insert(*type_index) {
+                return Ok(ty.clone());
+            }
+            let substitutions = decl
+                .type_params
+                .iter()
+                .cloned()
+                .zip(arguments.iter().cloned())
+                .collect::<BTreeMap<_, _>>();
+            let expand = |ty: &TypeRefIr, seen: &mut BTreeSet<u32>| {
+                let substituted = substitute_type_params_in_type_ref_ref(ty, &substitutions);
+                expand_db_storage_type_ref(&substituted, unit, seen)
+            };
+            let expanded = match &decl.descriptor {
+                TypeDescriptorIr::Record { fields } => TypeRefIr::Record {
+                    fields: fields
+                        .iter()
+                        .map(|(name, ty)| Ok((name.clone(), expand(ty, seen_local_types)?)))
+                        .collect::<Result<BTreeMap<_, _>>>()?,
+                },
+                TypeDescriptorIr::Alias { target } => expand(target, seen_local_types)?,
+                TypeDescriptorIr::Representation { representation } => {
+                    expand(representation, seen_local_types)?
+                }
+                TypeDescriptorIr::Union { branches } => TypeRefIr::Union {
+                    items: branches
+                        .iter()
+                        .map(|branch| match branch {
+                            NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                                expand(nominal_type, seen_local_types)
+                            }
+                            NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                                expand(payload_type, seen_local_types)
+                            }
+                            NamedUnionBranchIr::Literal { value } => Ok(TypeRefIr::Literal {
+                                value: value.clone(),
+                            }),
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+                TypeDescriptorIr::Interface => {
+                    return Err(CompileError::Semantic(format!(
+                        "interface type `{}` cannot be used as db storage",
+                        decl.name
+                    )));
+                }
+            };
+            seen_local_types.remove(type_index);
+            Ok(expanded)
+        }
         TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
             inner: Box::new(expand_db_storage_type_ref(inner, unit, seen_local_types)?),
         }),
@@ -591,6 +700,7 @@ fn expand_db_storage_type_ref(
             )?),
         }),
         TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -693,30 +803,30 @@ pub(super) fn db_operation_result_type_ir(
     };
     let write_target = target;
     match operation.op {
-        DbOperationKind::Find if operation.many => Ok(TypeRefIr::Native {
+        DbOperationKind::Find if operation.many => Ok(TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![read_target],
         }),
         DbOperationKind::Find | DbOperationKind::Optional => Ok(TypeRefIr::Nullable {
             inner: Box::new(read_target),
         }),
-        DbOperationKind::Insert if operation.many => Ok(TypeRefIr::native("DbInsertManyResult")),
-        DbOperationKind::Update if operation.many => Ok(TypeRefIr::native("DbUpdateManyResult")),
-        DbOperationKind::Delete if operation.many => Ok(TypeRefIr::native("DbDeleteManyResult")),
+        DbOperationKind::Insert if operation.many => Ok(TypeRefIr::builtin("DbInsertManyResult")),
+        DbOperationKind::Update if operation.many => Ok(TypeRefIr::builtin("DbUpdateManyResult")),
+        DbOperationKind::Delete if operation.many => Ok(TypeRefIr::builtin("DbDeleteManyResult")),
         DbOperationKind::Require => Ok(read_target),
         DbOperationKind::Insert => Ok(write_target),
         DbOperationKind::Update | DbOperationKind::Replace => Ok(TypeRefIr::Nullable {
             inner: Box::new(write_target),
         }),
-        DbOperationKind::Upsert => Ok(TypeRefIr::Native {
+        DbOperationKind::Upsert => Ok(TypeRefIr::Builtin {
             name: "DbUpsertResult".to_string(),
             args: vec![write_target],
         }),
-        DbOperationKind::Delete | DbOperationKind::Exists => Ok(TypeRefIr::Native {
+        DbOperationKind::Delete | DbOperationKind::Exists => Ok(TypeRefIr::Builtin {
             name: "bool".to_string(),
             args: Vec::new(),
         }),
-        DbOperationKind::Count => Ok(TypeRefIr::Native {
+        DbOperationKind::Count => Ok(TypeRefIr::Builtin {
             name: "number".to_string(),
             args: Vec::new(),
         }),
@@ -750,7 +860,7 @@ fn db_read_result_type_text(db: &DbMetadataIr, projection: Option<&DbProjectionI
         return db_full_result_type_text(db);
     };
     type_ref_ir_type_text(
-        &db_read_result_type_ir(db, TypeRefIr::native(&db.type_name), Some(projection))
+        &db_read_result_type_ir(db, TypeRefIr::builtin(&db.type_name), Some(projection))
             .expect("validated DB projection must have a result type"),
     )
 }
@@ -760,7 +870,7 @@ fn db_full_result_type_text(db: &DbMetadataIr) -> String {
 }
 
 pub(super) fn db_query_type_ref(object: TypeRefIr) -> TypeRefIr {
-    TypeRefIr::Native {
+    TypeRefIr::Builtin {
         name: "DbQuery".to_string(),
         args: vec![object],
     }
@@ -809,6 +919,9 @@ impl<'a> FunctionLowerer<'a> {
                 target: CallTargetIr::Builtin {
                     op: "db.transaction".to_string(),
                 },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                },
                 args: vec![block_arg],
                 type_args: BTreeMap::new(),
                 metadata: db_builtin_metadata("transaction", None),
@@ -822,16 +935,8 @@ impl<'a> FunctionLowerer<'a> {
             .resolve_db_operation_target(&operation.target.name)?
             .clone();
         self.validate_db_operation_semantics(operation, &db_metadata)?;
-        let target_type_ref = lower_type_ref(
-            &operation.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref =
+            self.lower_resolved_db_target_type(&operation.target, &db_metadata)?;
         let target = DbTargetIr {
             type_ref: target_type_ref.clone(),
             type_name: db_metadata.canonical_type_name.clone(),
@@ -903,16 +1008,7 @@ impl<'a> FunctionLowerer<'a> {
         let db_metadata = self
             .resolve_db_operation_target(&query.target.name)?
             .clone();
-        let target_type_ref = lower_type_ref(
-            &query.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref = self.lower_resolved_db_target_type(&query.target, &db_metadata)?;
         let target = DbTargetIr {
             type_ref: target_type_ref.clone(),
             type_name: db_metadata.canonical_type_name.clone(),
@@ -943,16 +1039,7 @@ impl<'a> FunctionLowerer<'a> {
             .resolve_db_operation_target(&claim.target.name)?
             .clone();
         validate_db_lease_slot(&db_metadata, &claim.slot)?;
-        let target_type_ref = lower_type_ref(
-            &claim.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref = self.lower_resolved_db_target_type(&claim.target, &db_metadata)?;
         let target_type_text = type_ref_ir_type_text(&target_type_ref);
         let target = DbTargetIr {
             type_ref: target_type_ref,
@@ -982,7 +1069,7 @@ impl<'a> FunctionLowerer<'a> {
                 slot: claim.slot.clone(),
                 binding_slot,
                 body,
-                result_type: TypeRefIr::native("bool"),
+                result_type: TypeRefIr::builtin("bool"),
                 source_span: None,
             },
         })
@@ -991,16 +1078,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_db_lease_read(&mut self, read: &DbLeaseRead) -> Result<ExprIr> {
         let db_metadata = self.resolve_db_operation_target(&read.target.name)?.clone();
         validate_db_lease_slot(&db_metadata, &read.slot)?;
-        let target_type_ref = lower_type_ref(
-            &read.target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.db_target_type_context(),
-        )?;
+        let target_type_ref = self.lower_resolved_db_target_type(&read.target, &db_metadata)?;
         let target = DbTargetIr {
             type_ref: target_type_ref,
             type_name: db_metadata.canonical_type_name.clone(),
@@ -1043,6 +1121,26 @@ impl<'a> FunctionLowerer<'a> {
         Err(CompileError::Semantic(format!(
             "db operation target `{target_name}` is not a declared db object in File IR unit expression"
         )))
+    }
+
+    fn lower_resolved_db_target_type(
+        &self,
+        target: &skiff_syntax::ast::TypeRef,
+        metadata: &DbMetadataIr,
+    ) -> Result<TypeRefIr> {
+        if matches!(metadata.type_ref, TypeRefIr::PackageSymbol { .. }) {
+            return Ok(metadata.type_ref.clone());
+        }
+        lower_type_ref(
+            target,
+            self.type_indices,
+            self.local_db_objects,
+            self.publication_db_metadata,
+            self.package_aliases,
+            self.external_type_symbols,
+            self.source_alias_targets,
+            self.db_target_type_context(),
+        )
     }
 
     pub(super) fn validate_db_operation_semantics(
@@ -1637,14 +1735,14 @@ impl<'a> FunctionLowerer<'a> {
                         .then(|| self.infer_expr_type_ir(value))
                         .flatten()
                 })
-                .unwrap_or_else(|| TypeRefIr::native("Json"));
+                .unwrap_or_else(|| TypeRefIr::builtin("Json"));
             (self.lower_expr(value)?, result_type)
         } else {
             (
                 self.push_expr(ExprIr::Literal {
                     value: LiteralIr::Null,
                 }),
-                TypeRefIr::native("null"),
+                TypeRefIr::builtin("null"),
             )
         };
 
@@ -1896,14 +1994,14 @@ fn is_parent_db_path(parent: &FieldPath, child: &FieldPath) -> bool {
 fn is_numeric_db_field(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, args } if args.is_empty() && matches!(name.as_str(), "number" | "integer")
+        TypeRefIr::Builtin { name, args } if args.is_empty() && matches!(name.as_str(), "number" | "integer")
     )
 }
 
 fn is_array_db_field(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, .. } if name == "Array"
+        TypeRefIr::Builtin { name, .. } if name == "Array"
     )
 }
 
@@ -1936,9 +2034,9 @@ pub(super) fn db_lease_read_result_type_ir() -> TypeRefIr {
     TypeRefIr::Nullable {
         inner: Box::new(TypeRefIr::Record {
             fields: BTreeMap::from([
-                ("expiresAt".to_string(), TypeRefIr::native("string")),
-                ("owner".to_string(), TypeRefIr::native("string")),
-                ("requestId".to_string(), TypeRefIr::native("string")),
+                ("expiresAt".to_string(), TypeRefIr::builtin("string")),
+                ("owner".to_string(), TypeRefIr::builtin("string")),
+                ("requestId".to_string(), TypeRefIr::builtin("string")),
             ]),
         }),
     }

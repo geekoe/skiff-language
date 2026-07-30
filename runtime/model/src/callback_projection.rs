@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    BoundaryCallbackOperation, ContractLiteral, ContractTypeId, ContractTypeRef,
+    BoundaryCallbackOperation, ContractLiteral, ContractTypeRef, PackageSchemaTypeRef,
 };
 
 use crate::runtime_value::{
@@ -15,14 +15,14 @@ use crate::runtime_value::{
 /// domains.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallbackContractProjection {
-    canonical_contract_type_id: ContractTypeId,
+    canonical_package_schema_type: PackageSchemaTypeRef,
     local_interface_abi_id: String,
     operations: Vec<CallbackContractOperationProjection>,
 }
 
 impl CallbackContractProjection {
     pub fn build(
-        canonical_contract_type_id: ContractTypeId,
+        canonical_package_schema_type: PackageSchemaTypeRef,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         interface: &InterfaceValue,
     ) -> Result<Self, CallbackContractProjectionError> {
@@ -126,20 +126,19 @@ impl CallbackContractProjection {
                 receiver_call_abi: *receiver_call_abi,
                 parameters: contract_operation.parameters.clone(),
                 return_type: contract_operation.return_type.clone(),
-                may_suspend: contract_operation.may_suspend,
             });
         }
         operations.sort_by_key(CallbackContractOperationProjection::slot);
 
         Ok(Self {
-            canonical_contract_type_id,
+            canonical_package_schema_type,
             local_interface_abi_id: interface.interface().to_string(),
             operations,
         })
     }
 
-    pub fn canonical_contract_type_id(&self) -> &ContractTypeId {
-        &self.canonical_contract_type_id
+    pub fn canonical_package_schema_type(&self) -> &PackageSchemaTypeRef {
+        &self.canonical_package_schema_type
     }
 
     pub fn local_interface_abi_id(&self) -> &str {
@@ -172,7 +171,6 @@ pub struct CallbackContractOperationProjection {
     receiver_call_abi: InterfaceReceiverCallAbi,
     parameters: Vec<ContractTypeRef>,
     return_type: ContractTypeRef,
-    may_suspend: bool,
 }
 
 impl CallbackContractOperationProjection {
@@ -206,10 +204,6 @@ impl CallbackContractOperationProjection {
 
     pub fn return_type(&self) -> &ContractTypeRef {
         &self.return_type
-    }
-
-    pub const fn may_suspend(&self) -> bool {
-        self.may_suspend
     }
 }
 
@@ -256,12 +250,11 @@ fn contract_type_matches_local(contract: &ContractTypeRef, local: &InterfaceMeth
             },
             InterfaceMethodType::Literal(InterfaceMethodLiteral::String(local_value)),
         ) => value == local_value,
-        // Contract nominal leaves have one fixed File-IR execution projection:
-        // opaque `unknown`. This validates the typed lowering rule without ever
-        // comparing a ContractTypeId to a local TypeAddr or ABI string.
-        (ContractTypeRef::Contract { .. }, InterfaceMethodType::Builtin { name, arguments }) => {
-            name == "unknown" && arguments.is_empty()
-        }
+        // A Package-owned nominal type can only match an execution type carrying
+        // the same owner, stable schema key and type id. InterfaceMethodType does
+        // not yet retain that mapping, so accepting any local shape here would
+        // erase nominal identity. Fail closed until the exact mapping exists.
+        (ContractTypeRef::PackageSchema { .. }, _) => false,
         _ => false,
     }
 }
@@ -311,6 +304,7 @@ mod tests {
             InterfaceMethodTarget, RuntimeValue,
         },
     };
+    use skiff_artifact_model::PackageSchemaTypeId;
 
     fn local_interface(method_name: &str, method_abi_id: &str) -> InterfaceValue {
         InterfaceValue::new(
@@ -345,23 +339,42 @@ mod tests {
             BoundaryCallbackOperation {
                 parameters: Vec::new(),
                 return_type: ContractTypeRef::builtin("bool"),
-                may_suspend: false,
             },
         )])
+    }
+
+    fn package_schema_type(
+        package_id: &str,
+        stable_schema_key: &str,
+        type_id: &str,
+    ) -> PackageSchemaTypeRef {
+        PackageSchemaTypeRef {
+            package_id: package_id.to_string(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new(type_id),
+        }
     }
 
     #[test]
     fn callback_contract_projection_separates_identity_domains_and_maps_by_name() {
         let projection = CallbackContractProjection::build(
-            ContractTypeId::new("contract-type:callback-probe"),
+            package_schema_type(
+                "skiff.run/observer",
+                "api.Observer",
+                "package-schema-type:observer",
+            ),
             &operations(),
             &local_interface("invoke", "method-abi:callback-probe:invoke"),
         )
         .expect("typed admitted method metadata should project");
 
         assert_eq!(
-            projection.canonical_contract_type_id().as_str(),
-            "contract-type:callback-probe"
+            projection.canonical_package_schema_type(),
+            &package_schema_type(
+                "skiff.run/observer",
+                "api.Observer",
+                "package-schema-type:observer",
+            )
         );
         assert_eq!(
             projection.local_interface_abi_id(),
@@ -377,7 +390,11 @@ mod tests {
     fn callback_contract_projection_rejects_order_or_string_identity_shortcuts() {
         assert!(matches!(
             CallbackContractProjection::build(
-                ContractTypeId::new("interface-abi:observer"),
+                package_schema_type(
+                    "skiff.run/observer",
+                    "api.Observer",
+                    "package-schema-type:observer",
+                ),
                 &operations(),
                 &local_interface("different", "method-abi:callback-probe:invoke"),
             ),
@@ -385,7 +402,11 @@ mod tests {
         ));
         assert!(matches!(
             CallbackContractProjection::build(
-                ContractTypeId::new("contract-type:callback-probe"),
+                package_schema_type(
+                    "skiff.run/observer",
+                    "api.Observer",
+                    "package-schema-type:observer",
+                ),
                 &operations(),
                 &local_interface("invoke", ""),
             ),
@@ -394,17 +415,12 @@ mod tests {
     }
 
     #[test]
-    fn callback_contract_projection_validates_contract_nominal_execution_projection() {
-        let callback_id = ContractTypeId::new("contract-type:callback-probe");
-        let payload_id = ContractTypeId::new("contract-type:payload");
-        let operations = BTreeMap::from([(
-            "invoke".to_string(),
-            BoundaryCallbackOperation {
-                parameters: vec![ContractTypeRef::contract(payload_id.clone())],
-                return_type: ContractTypeRef::contract(payload_id),
-                may_suspend: false,
-            },
-        )]);
+    fn callback_contract_projection_rejects_package_nominal_without_exact_execution_identity() {
+        let callback_type = package_schema_type(
+            "skiff.run/observer",
+            "api.Observer",
+            "package-schema-type:observer",
+        );
         let interface = InterfaceValue::new(
             "interface-abi:observer".to_string(),
             InterfaceCarrier::Local {
@@ -432,6 +448,39 @@ mod tests {
                 payload: RuntimeValue::Bool(true),
             },
         );
-        assert!(CallbackContractProjection::build(callback_id, &operations, &interface).is_ok());
+        for payload_type in [
+            ContractTypeRef::package_schema(
+                "skiff.run/types",
+                "api.Payload",
+                PackageSchemaTypeId::new("package-schema-type:payload"),
+            ),
+            ContractTypeRef::package_schema(
+                "skiff.run/other-types",
+                "api.Payload",
+                PackageSchemaTypeId::new("package-schema-type:payload"),
+            ),
+            ContractTypeRef::package_schema(
+                "skiff.run/types",
+                "api.OtherPayload",
+                PackageSchemaTypeId::new("package-schema-type:payload"),
+            ),
+            ContractTypeRef::package_schema(
+                "skiff.run/types",
+                "api.Payload",
+                PackageSchemaTypeId::new("package-schema-type:other-payload"),
+            ),
+        ] {
+            let operations = BTreeMap::from([(
+                "invoke".to_string(),
+                BoundaryCallbackOperation {
+                    parameters: vec![payload_type.clone()],
+                    return_type: payload_type,
+                },
+            )]);
+            assert!(matches!(
+                CallbackContractProjection::build(callback_type.clone(), &operations, &interface),
+                Err(CallbackContractProjectionError::SignatureMismatch { .. })
+            ));
+        }
     }
 }

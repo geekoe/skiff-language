@@ -264,7 +264,217 @@ fn shared_native_alias_callees_win_over_builtin_roots() {
 }
 
 #[test]
-fn std_http_json_infers_native_type_arg_from_record_payload() {
+fn bytes_from_base64_lowers_to_exact_native_binding() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function jwtPayload(value: string) -> bytes {
+                return bytes.fromBase64(value)
+            }
+        "#,
+        "internal/base64.skiff",
+        "internal.base64",
+    )
+    .expect("Base64 decoder fixture should compile");
+    let artifact_value = artifact.value();
+    let callable = executable_entry(&artifact_value, "jwtPayload");
+    let calls = call_exprs(callable);
+
+    assert!(
+        has_native_call(&calls, "std.bytes", "fromBase64", "core.bytes.fromBase64"),
+        "bytes.fromBase64 should lower through the exact canonical native binding"
+    );
+
+    for (name, source, expected) in [
+        (
+            "missing_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromBase64()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromBase64("YQ==", "Yg==")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromBase64(1)
+                }
+            "#,
+            "call `bytes.fromBase64` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run() -> string {
+                    return bytes.fromBase64("YQ==")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/base64_{name}.skiff"),
+            format!("internal.base64_{name}"),
+        )
+        .expect_err("invalid bytes.fromBase64 call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn bytes_from_hex_lowers_to_exact_native_binding() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function exactChunk(value: string) -> bytes {
+                return bytes.fromHex(value)
+            }
+        "#,
+        "internal/hex.skiff",
+        "internal.hex",
+    )
+    .expect("hex decoder fixture should compile");
+    let artifact_value = artifact.value();
+    let callable = executable_entry(&artifact_value, "exactChunk");
+    let calls = call_exprs(callable);
+
+    assert!(
+        has_native_call(&calls, "std.bytes", "fromHex", "core.bytes.fromHex"),
+        "bytes.fromHex should lower through the exact canonical native binding"
+    );
+
+    for (name, source, expected) in [
+        (
+            "missing_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromHex()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromHex("61", "62")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromHex(1)
+                }
+            "#,
+            "call `bytes.fromHex` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run() -> string {
+                    return bytes.fromHex("61")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/hex_{name}.skiff"),
+            format!("internal.hex_{name}"),
+        )
+        .expect_err("invalid bytes.fromHex call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn bytes_concat_lowers_to_exact_native_binding_and_rejects_malformed_calls() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function multipart(chunks: Array<bytes>) -> bytes {
+                return bytes.concat(chunks)
+            }
+        "#,
+        "internal/bytes_concat.skiff",
+        "internal.bytes_concat",
+    )
+    .expect("bytes concat fixture should compile");
+    let artifact_value = artifact.value();
+    let callable = executable_entry(&artifact_value, "multipart");
+    let calls = call_exprs(callable);
+
+    assert!(
+        has_native_call(&calls, "std.bytes", "concat", "core.bytes.concat"),
+        "bytes.concat should lower through the exact canonical native binding"
+    );
+
+    for (name, source, expected) in [
+        (
+            "missing_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.concat()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(chunks: Array<bytes>) -> bytes {
+                    return bytes.concat(chunks, chunks)
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.concat(Array.empty<string>())
+                }
+            "#,
+            "call `bytes.concat` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(chunks: Array<bytes>) -> string {
+                    return bytes.concat(chunks)
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/bytes_concat_{name}.skiff"),
+            format!("internal.bytes_concat_{name}"),
+        )
+        .expect_err("invalid bytes.concat call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn std_http_json_lowers_to_exact_std_package_callables() {
     let artifact = compile_package_file_ir(
         r#"
             import std
@@ -297,15 +507,11 @@ fn std_http_json_infers_native_type_arg_from_record_payload() {
     let plain = executable_entry(&artifact_value, "plain");
     let with_headers = executable_entry(&artifact_value, "withHeaders");
 
-    assert_eq!(
-        native_call(plain, "std.http", "json")["typeArgs"]["T0"]["kind"],
-        "localType",
-        "std.http.json should carry direct native typeArgs.T0 for the payload record"
-    );
-    assert_eq!(
-        native_call(with_headers, "std.http", "jsonWithHeaders")["typeArgs"]["T0"]["kind"],
-        "localType",
-        "std.http.jsonWithHeaders should carry direct native typeArgs.T0 for the payload record"
+    assert_package_callable(plain, "std", "pkg-callable:skiff.run/std:std.http.json");
+    assert_package_callable(
+        with_headers,
+        "std",
+        "pkg-callable:skiff.run/std:std.http.jsonWithHeaders",
     );
 }
 
@@ -416,14 +622,24 @@ fn generic_impl_receiver_call_lowers_to_static_executable() {
     .expect("generic impl receiver fixture should compile");
     let artifact_value = artifact.value();
     let method_index = executable_index(&artifact_value, "Box<T>.unwrap");
+    let method = executable_entry(&artifact_value, "Box<T>.unwrap");
+    assert_eq!(method["typeParams"], serde_json::json!(["T"]));
     let run = executable_entry(&artifact_value, "run");
 
-    assert!(
-        call_exprs(run).into_iter().any(|call| {
+    let call = call_exprs(run)
+        .into_iter()
+        .find(|call| {
             call["target"]["kind"] == "localExecutable"
                 && call["target"]["executableIndex"].as_u64() == Some(method_index)
+        })
+        .expect("generic impl receiver call should lower to the impl method executable");
+    assert_eq!(
+        call["typeArgs"]["T0"],
+        serde_json::json!({
+            "kind": "builtin",
+            "name": "string"
         }),
-        "generic impl receiver call should lower to the impl method executable"
+        "Box<string>.unwrap must instantiate Box<T>.unwrap with the exact typed receiver argument"
     );
     assert!(
         dynamic_receiver_call(run, "unwrap").is_none(),
@@ -477,6 +693,331 @@ fn json_object_receiver_call_lowers_to_receiver_builtin() {
 }
 
 #[test]
+fn json_object_get_enforces_exact_receiver_arity_key_and_return_type() {
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> Json {
+                    return value.get("field")
+                }
+            "#,
+            "receiver method `get`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: JsonObject) -> Json {
+                    return value.get()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: JsonObject) -> Json {
+                    return value.get("field", "other")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_key",
+            r#"
+                function run(value: JsonObject) -> Json {
+                    return value.get(1)
+                }
+            "#,
+            "call `JsonObject.get` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.get("field")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/json_object_get_{name}.skiff"),
+            format!("internal.json_object_get_{name}"),
+        )
+        .expect_err("invalid JsonObject.get call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn json_object_has_enforces_exact_receiver_and_arity() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function jsonObjectField(value: JsonObject, field: string) -> bool {
+                return value.has(field)
+            }
+        "#,
+        "internal/json_object_has.skiff",
+        "internal.json_object_has",
+    )
+    .expect("JsonObject.has with one string argument should compile");
+    let artifact_value = artifact.value();
+    let function = executable_entry(&artifact_value, "jsonObjectField");
+    assert!(
+        receiver_builtin_call(function, "JsonObject", "has").is_some(),
+        "JsonObject.has should lower to its exact receiver builtin target"
+    );
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> bool {
+                    return value.has("field")
+                }
+            "#,
+            "receiver method `has`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.has()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.has("field", "other")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.has(1)
+                }
+            "#,
+            "call `JsonObject.has` argument 1",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/json_object_has_{name}.skiff"),
+            format!("internal.json_object_has_{name}"),
+        )
+        .expect_err("invalid JsonObject.has call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn map_has_and_set_enforce_generic_key_value_and_return_types() {
+    let artifact = compile_package_file_ir(
+        r#"
+            type Item { value: string }
+
+            function run(items: Map<string, Item>, key: string, value: Item) -> bool {
+                items.set(key, value)
+                return items.has(key)
+            }
+        "#,
+        "internal/map_has_set.skiff",
+        "internal.map_has_set",
+    )
+    .expect("well-typed Map.has/set calls should compile");
+    let artifact_value = artifact.value();
+    let function = executable_entry(&artifact_value, "run");
+    assert!(receiver_builtin_call(function, "Map", "has").is_some());
+    assert!(receiver_builtin_call(function, "Map", "set").is_some());
+
+    for (name, source, expected) in [
+        (
+            "has_wrong_key",
+            r#"
+                function run(value: Map<string, number>) -> bool {
+                    return value.has(1)
+                }
+            "#,
+            "call `Map.has` argument 1",
+        ),
+        (
+            "has_extra",
+            r#"
+                function run(value: Map<string, number>) -> bool {
+                    return value.has("key", "extra")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "set_wrong_key",
+            r#"
+                function run(value: Map<string, number>) -> void {
+                    value.set(1, 2)
+                }
+            "#,
+            "call `Map.set` argument 1",
+        ),
+        (
+            "set_wrong_value",
+            r#"
+                function run(value: Map<string, number>) -> void {
+                    value.set("key", "value")
+                }
+            "#,
+            "call `Map.set` argument 2",
+        ),
+        (
+            "set_missing",
+            r#"
+                function run(value: Map<string, number>) -> void {
+                    value.set("key")
+                }
+            "#,
+            "expected 2 arguments",
+        ),
+        (
+            "has_wrong_return",
+            r#"
+                function run(value: Map<string, number>) -> string {
+                    return value.has("key")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/map_has_set_{name}.skiff"),
+            format!("internal.map_has_set_{name}"),
+        )
+        .expect_err("invalid Map.has/set call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn json_object_delete_enforces_exact_receiver_key_and_return() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function removeField(value: JsonObject, field: string) -> bool {
+                return value.delete(field)
+            }
+        "#,
+        "internal/json_object_delete.skiff",
+        "internal.json_object_delete",
+    )
+    .expect("JsonObject.delete with one string argument should compile");
+    let artifact_value = artifact.value();
+    let function = executable_entry(&artifact_value, "removeField");
+    assert!(
+        receiver_builtin_call(function, "JsonObject", "delete").is_some(),
+        "JsonObject.delete should lower to its exact receiver builtin target"
+    );
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> bool {
+                    return value.delete("field")
+                }
+            "#,
+            "receiver method `delete`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.delete()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.delete("field", "other")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_key",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.delete(1)
+                }
+            "#,
+            "call `JsonObject.delete` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(value: JsonObject) -> string {
+                    return value.delete("field")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/json_object_delete_{name}.skiff"),
+            format!("internal.json_object_delete_{name}"),
+        )
+        .expect_err("invalid JsonObject.delete call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn explicitly_typed_json_object_local_in_transaction_lowers_set_to_receiver_builtin() {
+    let artifact = compile_package_file_ir(
+        r#"
+            alias Metadata = JsonObject
+
+            function run(runId: string, sourceRunId: string) -> void {
+                db transaction {
+                    const successorMetadata: Metadata = {
+                      successorOf: runId,
+                      reason: "failed-with-new-input",
+                    }
+                    successorMetadata.set("runtimeBindingsSourceRunId", sourceRunId)
+                }
+            }
+        "#,
+        "internal/drain_checkpoint_store.skiff",
+        "internal.drain_checkpoint_store",
+    )
+    .expect("drain-checkpoint-shaped JsonObject.set fixture should compile");
+    let artifact_value = artifact.value();
+    let run = executable_entry(&artifact_value, "run");
+
+    assert!(
+        receiver_builtin_call(run, "JsonObject", "set").is_some(),
+        "explicit JsonObject local must lower set to the exact JsonObject receiver builtin"
+    );
+    assert!(
+        receiver_builtin_call(run, "Map", "set").is_none(),
+        "JsonObject.set must not be selected through a method-name-only Map fallback"
+    );
+}
+
+#[test]
 fn chained_string_receiver_call_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"
@@ -511,9 +1052,13 @@ fn package_string_receiver_facts_flow_through_config_and_db_body() {
         r#"
 id: example.com/example
 version: 1.0.0
+state:
+  database:
+    kind: database
 "#,
     )
     .unwrap();
+    fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
     fs::write(
         temp.path().join("internal").join("db_receiver.skiff"),
         r#"
@@ -562,6 +1107,74 @@ version: 1.0.0
 }
 
 #[test]
+fn string_contains_enforces_exact_receiver_and_arity() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function run(value: string) -> bool {
+                return value.contains("@")
+            }
+        "#,
+        "internal/string_contains.skiff",
+        "internal.string_contains",
+    )
+    .expect("string.contains with one string argument should compile");
+    let artifact_value = artifact.value();
+    let run = executable_entry(&artifact_value, "run");
+    assert!(
+        receiver_builtin_call(run, "string", "contains").is_some(),
+        "string.contains should lower to its exact receiver builtin target"
+    );
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: number) -> bool {
+                    return value.contains("@")
+                }
+            "#,
+            "receiver method `contains`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: string) -> bool {
+                    return value.contains()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: string) -> bool {
+                    return value.contains("@", ".")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run(value: string) -> bool {
+                    return value.contains(1)
+                }
+            "#,
+            "call `string.contains` argument 1",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/string_contains_{name}.skiff"),
+            format!("internal.string_contains_{name}"),
+        )
+        .expect_err("invalid string.contains call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"
@@ -585,6 +1198,72 @@ fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
     assert!(
         receiver_builtin_call(run, "Array", "push").is_some(),
         "Array.push should lower to receiverBuiltin"
+    );
+}
+
+#[test]
+fn union_element_array_push_lowers_to_receiver_builtin() {
+    let project = compile_root_alias_array_push(
+        r#"
+            function run() -> Array<root.types.Modality> {
+                const items = Array.empty<root.types.Modality>()
+                items.push("text")
+                items.push("image")
+                return items
+            }
+        "#,
+    )
+    .expect("Array<root alias literal union>.push should compile");
+    let artifact = module_artifact(&project.package, "types_overlay");
+    let artifact_value = artifact.value();
+    let run = executable_entry(&artifact_value, "run");
+
+    assert_eq!(
+        call_exprs(run)
+            .iter()
+            .filter(|call| receiver_builtin_call_matches(call, "Array", "push"))
+            .count(),
+        2,
+        "each union element Array.push should lower to receiverBuiltin",
+    );
+}
+
+#[test]
+fn union_element_array_push_rejects_nonmembers_and_wrong_receivers() {
+    let nonmember = compile_root_alias_array_push(
+        r#"
+            function run() -> Array<root.types.Modality> {
+                const items = Array.empty<root.types.Modality>()
+                items.push("document")
+                return items
+            }
+        "#,
+    )
+    .expect_err("Array literal-union push must reject nonmembers")
+    .to_string();
+    assert!(
+        nonmember.contains("Array.push")
+            && nonmember.contains("argument 1")
+            && nonmember.contains("document"),
+        "nonmember error should identify the exact push argument, got:\n{nonmember}",
+    );
+
+    let wrong_receiver = compile_root_alias_array_push(
+        r#"
+            function run() -> number {
+                const value: number = 1
+                value.push("text")
+                return value
+            }
+        "#,
+    )
+    .expect_err("non-array receivers must not acquire Array.push")
+    .to_string();
+    assert!(
+        wrong_receiver.contains("receiver method `push`")
+            && wrong_receiver.contains("number")
+            && wrong_receiver.contains("must resolve"),
+        "wrong receiver error should stay fail closed, got:\n{wrong_receiver}",
     );
 }
 
@@ -668,6 +1347,68 @@ fn stream_item_bytes_to_string_contains_receiver_chain_lowers_to_receiver_builti
 }
 
 #[test]
+fn bytes_to_hex_lowers_to_exact_receiver_builtin_and_rejects_near_misses() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function encode(value: bytes) -> string {
+                return value.toHex()
+            }
+        "#,
+        "internal/bytes_to_hex_receiver.skiff",
+        "internal.bytes_to_hex_receiver",
+    )
+    .expect("bytes.toHex receiver fixture should compile");
+    let artifact_value = artifact.value();
+    let encode = executable_entry(&artifact_value, "encode");
+    let call = receiver_builtin_call(encode, "bytes", "toHex")
+        .expect("bytes.toHex should lower to receiverBuiltin");
+    assert_eq!(
+        call["target"]["op"]["canonicalKey"],
+        "receiver:bytes.toHex@1"
+    );
+    assert_eq!(call["target"]["op"]["signatureVersion"], 1);
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> string {
+                    return value.toHex()
+                }
+            "#,
+            "toHex",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: bytes) -> string {
+                    return value.toHex(1)
+                }
+            "#,
+            "expected 0 arguments",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run(value: bytes) -> bytes {
+                    return value.toHex()
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/bytes_to_hex_{name}.skiff"),
+            format!("internal.bytes_to_hex_{name}"),
+        )
+        .expect_err("invalid bytes.toHex call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"
@@ -700,58 +1441,33 @@ fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
 }
 
 #[test]
-fn actor_ref_receiver_call_is_rejected() {
-    let error = compile_package_file_ir(
+fn generic_nominal_match_pattern_emits_applied_nominal_type_pattern() {
+    let artifact = compile_package_file_ir(
         r#"
-            type ThreadActor {
-              id: string
+            type Box<T> {
+              value: T
             }
 
-            function run(actor: ActorRef<ThreadActor>) -> void {
-                actor.receive("ping")
-                return
-            }
-        "#,
-        "internal/actor_receiver.skiff",
-        "internal.actor_receiver",
-    )
-    .expect_err("ActorRef receiver calls should be rejected")
-    .to_string();
-
-    assert!(
-        error.contains("ActorRef receiver method calls are no longer supported"),
-        "unexpected ActorRef receiver error: {error}"
-    );
-}
-
-#[test]
-fn nominal_match_pattern_is_rejected_before_runtime_type_lookup() {
-    let error = compile_package_file_ir(
-        r#"
-            type User {
-              status: string
-            }
-
-            function run(user: User) -> string {
-                match user {
-                  User { status } => {
-                    return status
+            function run(boxed: Box<string>) -> string {
+                match boxed {
+                  Box<string> { value } => {
+                    return "matched"
                   }
                   _ => {
-                    return "unknown"
+                    return "missing"
                   }
                 }
             }
         "#,
-        "internal/nominal_pattern.skiff",
-        "internal.nominal_pattern",
+        "internal/generic_nominal_pattern.skiff",
+        "internal.generic_nominal_pattern",
     )
-    .expect_err("nominal match pattern should be rejected before File IR emits PatternIr::Type")
-    .to_string();
+    .expect("generic nominal pattern should lower to PatternIr::Type");
 
     assert!(
-        error.contains("nominal pattern `User` cannot match an erased runtime value"),
-        "unexpected nominal pattern error: {error}"
+        json_contains_applied_nominal_pattern(&artifact.value()),
+        "generic nominal pattern must preserve ordered arguments in PatternIr::Type: {}",
+        artifact.value()
     );
 }
 
@@ -1254,11 +1970,14 @@ fn compile_package_file_ir(
     module_path: impl AsRef<str>,
 ) -> Result<PublishedFileIrArtifact, PackageProjectCompileError> {
     let temp = TestDir::new("skiff-compiler", "runtime-slots-package");
-    fs::write(
-        temp.path().join("package.yml"),
-        "id: example.com/runtime-slots\nversion: 1.0.0\n",
-    )
-    .expect("package manifest should be written");
+    let package_manifest = if source.contains("db object ") {
+        "id: example.com/runtime-slots\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n"
+    } else {
+        "id: example.com/runtime-slots\nversion: 1.0.0\n"
+    };
+    fs::write(temp.path().join("package.yml"), package_manifest)
+        .expect("package manifest should be written");
+    fs::write(temp.path().join("api.yml"), "{}\n").expect("api.yml should be written");
     let source_file = temp.path().join(source_path.as_ref());
     fs::create_dir_all(
         source_file
@@ -1270,6 +1989,26 @@ fn compile_package_file_ir(
 
     let project = compile_package_project(temp.path())?;
     Ok(module_artifact(&project.package, module_path.as_ref()).clone())
+}
+
+fn compile_root_alias_array_push(
+    overlay_source: &str,
+) -> Result<common::package_project::PublishedPackageProject, PackageProjectCompileError> {
+    let temp = TestDir::new("skiff-compiler", "union-array-push");
+    fs::write(
+        temp.path().join("package.yml"),
+        "id: example.com/union-array-push\nversion: 1.0.0\n",
+    )
+    .expect("package manifest should be written");
+    fs::write(temp.path().join("api.yml"), "{}\n").expect("api.yml should be written");
+    fs::write(
+        temp.path().join("types.skiff"),
+        r#"alias Modality = "text" | "image" | "video" | "audio""#,
+    )
+    .expect("production type source should be written");
+    fs::write(temp.path().join("types_overlay.skiff"), overlay_source)
+        .expect("overlay source should be written");
+    compile_package_project(temp.path())
 }
 
 fn executable_entry<'a>(artifact: &'a Value, name: &str) -> &'a Value {
@@ -1398,6 +2137,24 @@ fn json_contains_pattern_type(value: &Value) -> bool {
     }
 }
 
+fn json_contains_applied_nominal_pattern(value: &Value) -> bool {
+    if value.get("kind").and_then(Value::as_str) == Some("type") {
+        let ty = &value["ty"];
+        if ty["kind"] == "appliedNominal"
+            && ty["base"]["kind"] == "localType"
+            && ty["arguments"][0]["kind"] == "builtin"
+            && ty["arguments"][0]["name"] == "string"
+        {
+            return true;
+        }
+    }
+    match value {
+        Value::Array(items) => items.iter().any(json_contains_applied_nominal_pattern),
+        Value::Object(object) => object.values().any(json_contains_applied_nominal_pattern),
+        _ => false,
+    }
+}
+
 fn count_field_exprs(value: &Value, field: &str) -> usize {
     let current = usize::from(
         value.get("kind").and_then(Value::as_str) == Some("field")
@@ -1431,15 +2188,16 @@ fn has_native_call(
     })
 }
 
-fn native_call<'a>(executable: &'a Value, namespace: &str, symbol_name: &str) -> &'a Value {
-    call_exprs(executable)
-        .into_iter()
-        .find(|call| {
-            call["target"]["kind"] == "native"
-                && call["target"]["target"]["namespace"] == namespace
-                && call["target"]["target"]["symbol"] == symbol_name
-        })
-        .unwrap_or_else(|| panic!("native call {namespace}.{symbol_name} should be present"))
+fn assert_package_callable(executable: &Value, dependency_ref: &str, package_callable_id: &str) {
+    assert!(
+        call_exprs(executable).into_iter().any(|call| {
+            call["target"]["kind"] == "packageCallable"
+                && call["target"]["packageRef"]["kind"] == "dependency"
+                && call["target"]["packageRef"]["dependencyRef"] == dependency_ref
+                && call["target"]["packageCallableId"] == package_callable_id
+        }),
+        "package callable {dependency_ref}/{package_callable_id} should be present in {executable}"
+    );
 }
 
 fn expr_for_ref<'a>(executable: &'a Value, expr_ref: &Value) -> &'a Value {

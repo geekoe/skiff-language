@@ -1,0 +1,98 @@
+{
+  "externalAuthoring": {
+    "package.yml services[]": {
+      "fields": ["alias", "id", "version"]
+    },
+    "service.yml": {
+      "fields": ["id", "serviceCalls"],
+      "testServiceExtension": {
+        "kind": "test"
+      }
+    },
+    "http.yml": {
+      "topLevel": "named entry mapping"
+    },
+    "websocket.yml": {
+      "physicalEntryCount": 1,
+      "requiredFields": ["path"],
+      "optionalFields": ["connect", "jsonRpc"]
+    },
+    "config.<profile>.yml": {
+      "fields": ["config", "secrets", "state", "resources", "timeout", "quota", "principal", "lifecycle"]
+    }
+  },
+  "runtimeAssemblyProjection": {
+    "argv": ["assembly", "<build|publish>", "--artifact-root", "<artifact-root>", "--environment", "<environment>", "--root-deployment", "<exact ServiceDeploymentRef JSON>", "..."],
+    "persistentAuthoring": false
+  },
+  "recordPaths": {
+    "PackageArtifact": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/package.json",
+    "ServiceContract": "records/service-contracts/<service-id>/<contract-version>/<protocol-sha256>.json",
+    "ServiceDeployment": "records/service-deployments/<service-id>/<contract-version>/<deployment-revision>/<deployment-sha256>.json",
+    "RuntimeAssembly": "records/runtime-assemblies/<assembly-sha256>.json",
+    "FileIrUnit": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/file-ir/<file-ir-sha256>.json",
+    "staticResource": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/resources/<content-sha256>.blob"
+  },
+  "coordinateEncoding": {
+    ".": "~d",
+    "/": "~s",
+    "~": "rejected"
+  },
+  "coordinateExamples": {
+    "a.b/c/d": "a~db~sc~sd",
+    "a.b/c..d": "a~db~sc~d~dd"
+  },
+  "pointerPaths": {
+    "PackageArtifact": "pointers/package-artifacts/<package-id>/<package-version>.json",
+    "ServiceContract": "pointers/service-contracts/<service-id>/<contract-version>.json",
+    "ServiceDeployment": "pointers/service-deployments/<service-id>/<contract-version>.json",
+    "RuntimeAssembly": "pointers/runtime-assemblies/<release>.json",
+    "EnvironmentActivationState": "environments/<environment>/activation.json"
+  },
+  "activationStateFields": {
+    "state": ["schemaVersion", "environment", "committed", "pending"],
+    "committed": ["generation", "assembly"],
+    "pending": ["activationId", "expectedGeneration", "candidateGeneration", "assembly", "participantReplicaIds"]
+  },
+  "activationRequest": {
+    "schemaVersion": "skiff-assembly-activation-request-v1",
+    "fields": ["schemaVersion", "environment", "activationId", "expectedGeneration", "assembly"],
+    "controlEndpoint": "POST /__skiff/activate-assembly"
+  },
+  "controlWireFields": {
+    "prepare": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "prepared": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "reject": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId", "reason"],
+    "commit": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "abort": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "register": ["type", "environment", "generation", "assembly", "replicaId"]
+  },
+  "runtimeAssemblyFrame": {
+    "schemaVersion": "skiff-runtime-frame-v1",
+    "type": "assembly.activation",
+    "headerFields": ["schemaVersion", "type", "control"],
+    "payloadBytes": 0,
+    "routerToRuntime": ["prepare", "commit", "abort"],
+    "runtimeToRouter": ["prepared", "reject", "register"]
+  },
+  "runtimeAssemblyRequestRouting": {
+    "kind": "runtimeAssembly",
+    "fields": ["kind", "assemblyIdentity", "assemblyGeneration", "gatewayEntryIdentity", "ingress"],
+    "ingressFields": ["protocol", "host", "method", "path"],
+    "ingressProtocol": "http",
+    "forbiddenFields": ["contractOperationId", "gatewayEntryKey", "deployment", "activationIdentity"]
+  },
+  "runtimeAssemblyRequestHeader": {
+    "requiredFields": ["schemaVersion", "type", "requestId", "mode", "caller", "routing", "trace", "httpRequest"],
+    "optionalFields": ["clientSession", "deadline", "testEffectsEnabled"],
+    "callerFields": ["kind"],
+    "callerKind": "gateway",
+    "defaultFalseFields": ["testEffectsEnabled"],
+    "payload": "opaque HTTP request body bytes",
+    "forbiddenFields": ["target", "operationAbiId", "selector", "serviceId", "version", "buildId", "serviceProtocolIdentity", "activationIdentity", "gatewayEntryIdentity", "businessIdentity", "websocketEntryId", "httpAdapter", "websocketAdapter", "testEffectDoubles"]
+  },
+  "ecosystemStoreAdapter": {
+    "argv": ["__ecosystem-store", "--artifact-root", "<artifact-root>"],
+    "operations": ["ensureEnvironmentBootstrap", "readEnvironment", "prepareEnvironment", "abortEnvironment", "commitEnvironment", "readRouterSnapshot"]
+  }
+}

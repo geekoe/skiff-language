@@ -1,0 +1,411 @@
+{
+  "schemaVersion": 1,
+  "validCases": [
+    {
+      "name": "public-fixed-service-error",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-public-1",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[123,125],\"traceId\":\"trace-public-1\",\"errorId\":\"error-public-1\"}",
+      "expected": {
+        "kind": "publicTypedError",
+        "packageId": "example.com/errors",
+        "stableSchemaKey": "not-found",
+        "packageSchemaTypeId": "type:not-found",
+        "traceId": "trace-public-1",
+        "errorId": "error-public-1"
+      }
+    },
+    {
+      "name": "internal-fixed-service-error",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-internal-1",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"The service could not complete the request.\",\"traceId\":\"trace-internal-1\",\"errorId\":\"error-internal-1\"}}",
+      "expected": {
+        "kind": "internalError",
+        "traceId": "trace-internal-1",
+        "errorId": "error-internal-1"
+      }
+    },
+    {
+      "name": "platform-fixed-service-error",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-platform-1",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"platformError\",\"builtinErrorIdentity\":\"std.db.ConflictError\",\"encodedPayload\":[123,125],\"traceId\":\"trace-platform-1\",\"errorId\":\"error-platform-1\"}",
+      "expected": {
+        "kind": "platformError",
+        "builtinErrorIdentity": "std.db.ConflictError",
+        "traceId": "trace-platform-1",
+        "errorId": "error-platform-1"
+      }
+    },
+    {
+      "name": "generic-control-same-safe-values-as-internal",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-control-1",
+        "errorKind": "control",
+        "error": {
+          "code": "InternalError",
+          "message": "The service could not complete the request.",
+          "status": 500,
+          "details": {
+            "traceId": "trace-control-only"
+          }
+        }
+      },
+      "payloadUtf8": "",
+      "expected": {
+        "kind": "control",
+        "code": "InternalError"
+      }
+    }
+  ],
+  "invalidCases": [
+    {
+      "name": "legacy-v1-generic-response-error",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control",
+        "error": {
+          "code": "InternalError",
+          "message": "legacy"
+        }
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "missing-error-kind",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "error": {
+          "code": "InternalError",
+          "message": "missing kind"
+        }
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "unknown-error-kind",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "service"
+      },
+      "payloadUtf8": "{}"
+    },
+    {
+      "name": "wrong-envelope-type",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.end",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    },
+    {
+      "name": "fixed-header-extra-field",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService",
+        "legacy": true
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    },
+    {
+      "name": "fixed-missing-request-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    },
+    {
+      "name": "fixed-empty-request-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    },
+    {
+      "name": "fixed-carries-generic-error",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService",
+        "error": {
+          "code": "InternalError",
+          "message": "must not classify"
+        }
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    },
+    {
+      "name": "fixed-empty-payload",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "control-missing-error",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control"
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "control-nonempty-payload",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control",
+        "error": {
+          "code": "InternalError",
+          "message": "control"
+        }
+      },
+      "payloadUtf8": "{}"
+    },
+    {
+      "name": "control-error-extra-field",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control",
+        "error": {
+          "code": "InternalError",
+          "message": "control",
+          "legacy": true
+        }
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "control-empty-code",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control",
+        "error": {
+          "code": " ",
+          "message": "control"
+        }
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "control-empty-message",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control",
+        "error": {
+          "code": "InternalError",
+          "message": ""
+        }
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "control-invalid-status-low",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "control",
+        "error": {
+          "code": "InternalError",
+          "message": "control",
+          "status": 399
+        }
+      },
+      "payloadUtf8": ""
+    },
+    {
+      "name": "fixed-malformed-json",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{"
+    },
+    {
+      "name": "fixed-unknown-envelope-kind",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"genericError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    },
+    {
+      "name": "fixed-envelope-extra-field",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"},\"legacy\":true}"
+    },
+    {
+      "name": "fixed-public-missing-type-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"encodedPayload\":[123],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-whitespace-package-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\" example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[123],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-whitespace-schema-key",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found \",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[123],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-whitespace-type-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\" type:not-found \",\"encodedPayload\":[123],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-empty-encoded-payload",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-non-byte-encoded-payload",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[256],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-encoded-payload-not-array",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":\"e30=\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-whitespace-trace-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[123],\"traceId\":\" trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-public-empty-error-id",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"publicTypedError\",\"packageId\":\"example.com/errors\",\"stableSchemaKey\":\"not-found\",\"packageSchemaTypeId\":\"type:not-found\",\"encodedPayload\":[123],\"traceId\":\"trace-1\",\"errorId\":\"\"}"
+    },
+    {
+      "name": "fixed-platform-unknown-identity",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"platformError\",\"builtinErrorIdentity\":\"std.resource.ResourceError\",\"encodedPayload\":[123],\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}"
+    },
+    {
+      "name": "fixed-internal-payload-extra-field",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\"safe\",\"traceId\":\"trace-1\",\"errorId\":\"error-1\",\"stack\":[]}}"
+    },
+    {
+      "name": "fixed-internal-empty-message",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "response.error",
+        "requestId": "request-invalid",
+        "errorKind": "fixedService"
+      },
+      "payloadUtf8": "{\"kind\":\"internalError\",\"payload\":{\"message\":\" \",\"traceId\":\"trace-1\",\"errorId\":\"error-1\"}}"
+    }
+  ]
+}

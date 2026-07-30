@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     CallableSemanticFacts, ContractRequirement, FileIrUnit, PackageArtifact, PackageBuildId,
     PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement, PackageRuntimeRequirements,
-    ServiceCallRef, ServiceRequirement, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageSchemaIndexRef, PackageSchemaTypeRecordRef, ServiceCallRef, ServiceRequirement,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
@@ -23,6 +24,7 @@ use super::{
         ProjectedPackageResource,
     },
     runtime_requirements::project_runtime_requirements,
+    schema::project_package_schema,
 };
 
 pub fn project_compiled_package_artifact(
@@ -40,11 +42,30 @@ pub fn project_compiled_package_artifact(
         &input.package_requirements,
     )?;
     let callable_signatures = input.projection.callable_signatures().clone();
+    let schema = project_package_schema(
+        input.package_id,
+        &export_links,
+        input.resolved_package_schemas,
+    )?;
+    let resolved_package_schema_type_records = input
+        .resolved_package_schemas
+        .iter()
+        .flat_map(|schema| schema.records().iter())
+        .map(|(id, record)| (id.clone(), record.clone()))
+        .chain(
+            schema
+                .records
+                .iter()
+                .map(|(id, record)| (id.clone(), record.clone())),
+        )
+        .collect();
     let runtime_requirements = project_runtime_requirements(
         input.package_id,
         input.projection.source().config_requirements(),
+        input.projection.state_requirements(),
+        input.projection.lowering(),
     )?;
-    project_package_artifact_facts(ProjectedPackageFacts {
+    let projected = project_package_artifact_facts(ProjectedPackageFacts {
         package_id: input.package_id,
         package_version: input.package_version,
         api_exports: &api_exports,
@@ -57,8 +78,14 @@ pub fn project_compiled_package_artifact(
         runtime_requirements,
         callable_semantic_facts: input.projection.source().callable_semantic_facts().clone(),
         callable_signatures,
+        package_schema_index: schema.index,
+        package_schema_type_records: schema.records,
+        resolved_package_schema_type_records,
+        package_schema_refs_by_source: schema.refs_by_source,
+        resolved_package_schemas: input.resolved_package_schemas,
         service_call_refs: input.service_call_refs,
-    })
+    })?;
+    Ok(projected)
 }
 
 pub(super) struct ProjectedPackageFacts<'a> {
@@ -74,6 +101,18 @@ pub(super) struct ProjectedPackageFacts<'a> {
     pub runtime_requirements: PackageRuntimeRequirements,
     pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
     pub callable_signatures: ProjectionPackageCallableSignatureFacts,
+    pub package_schema_index: skiff_artifact_model::PackageSchemaIndex,
+    pub package_schema_type_records: BTreeMap<
+        skiff_artifact_model::PackageSchemaTypeId,
+        skiff_artifact_model::PackageSchemaTypeRecord,
+    >,
+    pub resolved_package_schema_type_records: BTreeMap<
+        skiff_artifact_model::PackageSchemaTypeId,
+        skiff_artifact_model::PackageSchemaTypeRecord,
+    >,
+    pub package_schema_refs_by_source:
+        BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
+    pub resolved_package_schemas: &'a [skiff_compiler_projection_input::ResolvedPackageSchema],
     pub service_call_refs: Vec<ServiceCallRef>,
 }
 
@@ -88,6 +127,8 @@ pub(super) fn project_package_artifact_facts(
         &input.callable_semantic_facts,
         &input.callable_signatures,
         &input.runtime_requirements,
+        &input.package_schema_refs_by_source,
+        input.resolved_package_schemas,
     )?;
     validate_canonical_config_projection(
         input.package_id,
@@ -104,7 +145,28 @@ pub(super) fn project_package_artifact_facts(
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: callables.public_symbols,
+            implementation_symbols: callables.implementation_symbols,
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: input.package_id.to_string(),
+            package_schema_index_identity: input
+                .package_schema_index
+                .package_schema_index_identity
+                .clone(),
+        },
+        package_schema_type_records: input
+            .package_schema_type_records
+            .iter()
+            .map(|(type_id, record)| {
+                (
+                    type_id.clone(),
+                    PackageSchemaTypeRecordRef {
+                        package_id: record.package_id.clone(),
+                        package_schema_type_id: type_id.clone(),
+                    },
+                )
+            })
+            .collect(),
         implementation_links: callables.implementation_links,
         callable_links: callables.callable_links,
         package_requirements: std::mem::take(&mut input.package_requirements),
@@ -126,6 +188,9 @@ pub(super) fn project_package_artifact_facts(
     })?;
     Ok(ProjectedPackageArtifact {
         artifact,
+        package_schema_index: input.package_schema_index,
+        package_schema_type_records: input.package_schema_type_records,
+        resolved_package_schema_type_records: input.resolved_package_schema_type_records,
         file_ir_units: input.file_ir_units,
         resources: input.resources,
     })
@@ -157,6 +222,10 @@ fn normalize_artifact_lists(artifact: &mut PackageArtifact) {
         .runtime_requirements
         .config
         .sort_by(|left, right| left.path.cmp(&right.path));
+    artifact
+        .runtime_requirements
+        .state
+        .sort_by(|left, right| left.key.cmp(&right.key));
     artifact
         .runtime_requirements
         .resources

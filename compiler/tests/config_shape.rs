@@ -31,6 +31,38 @@ function configured() -> string {
             },
         ]
     );
+    let skiff_artifact_model::PackageLocalAbiSymbol::Callable { callable_id, .. } =
+        &project.package.artifact.package_local_abi.public_symbols["configured"]
+    else {
+        panic!("configured must resolve to a public callable");
+    };
+    let skiff_artifact_model::BoundaryCallableProjection::Available {
+        implementation_requirements,
+        ..
+    } = &project.package.artifact.boundary_projections[callable_id]
+    else {
+        panic!("direct config intrinsic caller must be boundary available");
+    };
+    assert_eq!(
+        implementation_requirements.config,
+        vec![
+            skiff_artifact_model::BoundaryConfigRequirement {
+                path: "app.region".to_string(),
+                value_type: "string".to_string(),
+                required: false,
+            },
+            skiff_artifact_model::BoundaryConfigRequirement {
+                path: "app.token".to_string(),
+                value_type: "string".to_string(),
+                required: true,
+            },
+        ]
+    );
+    let semantic_facts = &project.package.artifact.callable_semantic_facts[callable_id];
+    assert!(
+        semantic_facts.resolved_call_targets.is_empty(),
+        "config intrinsic must not publish an external or unknown target fact"
+    );
 }
 
 #[test]
@@ -136,6 +168,33 @@ function configured() -> string {
         binding_error.contains("local binding config")
             && binding_error.contains("reserved prelude name")
     );
+}
+
+#[test]
+fn config_intrinsic_aliases_indirect_calls_and_unknown_methods_remain_rejected() {
+    for (name, source, expected) in [
+        (
+            "config-alias",
+            r#"
+function configured() -> string? {
+  const read = config.optional<string>
+  return read("app.token")
+}
+"#,
+            "cannot be aliased or called indirectly",
+        ),
+        (
+            "config-unknown-method",
+            r#"function configured() -> string { return config.unknown("app.token") }"#,
+            "config only exposes direct",
+        ),
+    ] {
+        let error = compile_error(package_with_source(name, source));
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} in compile error: {error}"
+        );
+    }
 }
 
 fn package_with_source(name: &str, source: &str) -> TestDir {

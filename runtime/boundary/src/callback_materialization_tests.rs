@@ -16,7 +16,7 @@ use crate::{
         RecoverableBehaviorHooks, RecoverableBoundaryCodec, RecoverableEncodedLocalInterfaceSelf,
         RecoverableInterfaceConformanceRequest, RecoverableInterfaceMethodTableRequest,
         RecoverableLocalInterfaceEncodeRequest, RecoverableLocalInterfaceRestoreRequest,
-        RecoverableRemoteInterfaceCarrierRequest, RecoverableRestoredLocalInterfaceSelf,
+        RecoverableRestoredLocalInterfaceSelf,
     },
 };
 
@@ -56,14 +56,6 @@ impl RecoverableBehaviorHooks for CountingRecoverableHooks {
         &self,
         _request: RecoverableInterfaceMethodTableRequest<'_>,
     ) -> crate::Result<Option<skiff_runtime_model::runtime_value::InterfaceMethodTable>> {
-        self.calls.set(self.calls.get() + 1);
-        Ok(None)
-    }
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        _request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> crate::Result<Option<skiff_runtime_model::runtime_value::RemoteOperationTable>> {
         self.calls.set(self.calls.get() + 1);
         Ok(None)
     }

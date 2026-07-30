@@ -1,15 +1,15 @@
 use super::env::Flow;
 use crate::error::{Result, RuntimeError};
 use skiff_runtime_linked_program::LinkedExecutable;
-use skiff_runtime_model::runtime_value::RuntimeValue;
+use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 
 pub struct FlowCompletionPolicy;
 
 impl FlowCompletionPolicy {
-    pub fn callable_value(flow: Flow, symbol: &str) -> Result<RuntimeValue> {
+    pub fn callable_value(flow: Flow, symbol: &str) -> Result<RuntimeValueCarrier> {
         match flow {
             Flow::Return(value) => Ok(value),
-            Flow::Continue | Flow::Parked => Ok(RuntimeValue::Null),
+            Flow::Continue | Flow::Parked => Ok(RuntimeValue::Null.into()),
             Flow::Break | Flow::LoopContinue => Err(RuntimeError::Decode(format!(
                 "callable {symbol} exited with break/continue outside a loop"
             ))),
@@ -19,10 +19,19 @@ impl FlowCompletionPolicy {
         }
     }
 
-    pub fn const_value(flow: Flow, name: &str) -> Result<RuntimeValue> {
+    pub fn actor_callable_value(flow: Flow, symbol: &str) -> Result<RuntimeValueCarrier> {
+        if matches!(flow, Flow::Parked) {
+            return Err(RuntimeError::Unsupported(format!(
+                "Actor method {symbol} reached a coroutine suspension point"
+            )));
+        }
+        Self::callable_value(flow, symbol)
+    }
+
+    pub fn const_value(flow: Flow, name: &str) -> Result<RuntimeValueCarrier> {
         match flow {
             Flow::Return(value) => Ok(value),
-            Flow::Continue | Flow::Parked => Ok(RuntimeValue::Null),
+            Flow::Continue | Flow::Parked => Ok(RuntimeValue::Null.into()),
             Flow::Break | Flow::LoopContinue => Err(RuntimeError::Decode(format!(
                 "const {name} exited with break/continue outside a loop"
             ))),
@@ -32,7 +41,7 @@ impl FlowCompletionPolicy {
         }
     }
 
-    pub fn value_block_value(flow: Flow) -> Result<Option<RuntimeValue>> {
+    pub fn value_block_value(flow: Flow) -> Result<Option<RuntimeValueCarrier>> {
         match flow {
             Flow::Continue => Ok(None),
             Flow::Return(value) => Ok(Some(value)),
@@ -48,9 +57,9 @@ impl FlowCompletionPolicy {
         }
     }
 
-    pub fn non_returning_expression_value(flow: Flow, label: &str) -> Result<RuntimeValue> {
+    pub fn non_returning_expression_value(flow: Flow, label: &str) -> Result<RuntimeValueCarrier> {
         match flow {
-            Flow::Continue => Ok(RuntimeValue::Null),
+            Flow::Continue => Ok(RuntimeValue::Null.into()),
             Flow::Parked => Err(RuntimeError::Decode(format!(
                 "{label} expression exited with parked wait"
             ))),

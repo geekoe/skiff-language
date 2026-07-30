@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{assign_file_ir_identity, assign_package_artifact_identities};
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, ConstIr, ExecutableBody, ExprIr, PackageArtifact, PackageCallableId,
-    PackageCallableRef, PackageLocalAbiIdentity, PackageRefIr, PackageRequirement, TypeRefIr,
+    CallIr, CallTargetIr, ConstIr, ExecutableBody, ExprIr, InstructionSourceSite, PackageArtifact,
+    PackageCallableId, PackageCallableRef, PackageLocalAbiIdentity, PackageRefIr,
+    PackageRequirement, SyntheticInstructionSiteReason, TypeRefIr,
 };
 
 use crate::emission::{
@@ -147,6 +148,8 @@ fn package_requirement(alias: &str, package_id: &str) -> PackageRequirement {
         package_id: package_id.to_string(),
         exact_version: "1.0.0".to_string(),
         expected_local_abi: PackageLocalAbiIdentity::new(format!("abi:{package_id}")),
+        collection_name_mapping: BTreeMap::new(),
+        expected_package_build: None,
     }
 }
 
@@ -166,7 +169,7 @@ fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRef
     if file.unit.constants.is_empty() {
         file.unit.constants.push(ConstIr {
             name: "package_calls".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody::default(),
             source_span: None,
         });
@@ -176,6 +179,9 @@ fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRef
             target: CallTargetIr::PackageCallable {
                 package_ref,
                 package_callable_id: callable.package_callable_id,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),

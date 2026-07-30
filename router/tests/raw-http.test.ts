@@ -16,7 +16,6 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RuntimeRegisterEnvelope
 } from '../src/protocol/envelope.js';
-import { DEFAULT_HTTP_BODY_LIMIT_BYTES } from '../src/router/httpGateway.js';
 import {
   DEFAULT_TEST_BUILD_ID,
   loadHttpRouteManifest,
@@ -298,7 +297,7 @@ describe('router raw HTTP gateway', () => {
     expect(frame).toBeDefined();
     expect(frame!.payloadBytes).toEqual(body);
     expect(frame!.header).toMatchObject({
-      schemaVersion: 'skiff-runtime-frame-v1',
+      schemaVersion: 'skiff-runtime-frame-v2',
       type: 'request.start',
       mode: 'unary',
       caller: {
@@ -337,7 +336,7 @@ describe('router raw HTTP gateway', () => {
     );
   });
 
-  it('allows requests above the old 1 MiB limit with the default HTTP body limit', async () => {
+  it('allows requests within the configured HTTP request ceiling', async () => {
     const manifest = loadRawHttpManifest();
     const harness = await RouterHarness.rawHttp({ manifest });
     const runtime = await harness.registerRuntime({
@@ -359,7 +358,6 @@ describe('router raw HTTP gateway', () => {
     });
     const [frame] = await framesPromise;
 
-    expect(DEFAULT_HTTP_BODY_LIMIT_BYTES).toBe(64 * 1024 * 1024);
     expect(response.status).toBe(204);
     expect(frame!.payloadBytes.byteLength).toBe(body.byteLength);
     expect(frame!.payloadBytes[0]).toBe(65);
@@ -371,7 +369,7 @@ describe('router raw HTTP gateway', () => {
     const registryManifest = loadRawHttpManifest({
       serviceId: 'skiff.run/registry',
       protocolIdentity:
-        'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666'
+        'skiff-service-protocol-v5:sha256:6666666666666666666666666666666666666666666666666666666666666666'
     });
     const manifest = mergeLoadedManifests([accountManifest, registryManifest]);
     const harness = await RouterHarness.create({ manifest });
@@ -441,7 +439,7 @@ describe('router raw HTTP gateway', () => {
     const fallbackManifest = loadRawHttpManifest({
       serviceId: 'skiff.run/fallback',
       protocolIdentity:
-        'skiff-protocol-v1:sha256:7777777777777777777777777777777777777777777777777777777777777777'
+        'skiff-service-protocol-v5:sha256:7777777777777777777777777777777777777777777777777777777777777777'
     });
     const manifest = mergeLoadedManifests([accountManifest, fallbackManifest]);
     const harness = await RouterHarness.create({ manifest });
@@ -864,7 +862,7 @@ describe('router raw HTTP gateway', () => {
       service: {
         id: 'skiff.run/sample',
         revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
-        protocolIdentity: 'skiff-protocol-v1:sha256:7777777777777777777777777777777777777777777777777777777777777777'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:7777777777777777777777777777777777777777777777777777777777777777'
       },
       operations: [
         {
@@ -1017,7 +1015,7 @@ describe('router raw HTTP gateway', () => {
       service: {
         id: 'skiff.run/sample',
         revisionId: '4444444444444444444444444444444444444444444444444444444444444444',
-        protocolIdentity: 'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555'
       },
       operations: [
         {
@@ -1103,7 +1101,7 @@ describe('router raw HTTP gateway', () => {
       service: {
         id: 'skiff.run/sample',
         revisionId: '5555555555555555555555555555555555555555555555555555555555555555',
-        protocolIdentity: 'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:6666666666666666666666666666666666666666666666666666666666666666'
       },
       operations: [],
       gateway: {
@@ -1301,7 +1299,7 @@ describe('router raw HTTP gateway', () => {
 
   it('resolves raw HTTP activation by service and operation when services share a protocol', async () => {
     const sharedProtocolIdentity =
-      'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666';
+      'skiff-service-protocol-v5:sha256:6666666666666666666666666666666666666666666666666666666666666666';
     const serviceA = loadRawHttpManifest({
       serviceId: 'skiff.run/sample-a',
       protocolIdentity: sharedProtocolIdentity
@@ -1533,7 +1531,7 @@ describe('router raw HTTP gateway', () => {
           id: 'skiff.run/sample',
           revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
           protocolIdentity:
-            'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+            'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555'
         },
         operations: [
           {
@@ -1783,7 +1781,7 @@ describe('router raw HTTP gateway', () => {
       service: {
         id: 'skiff.run/sample',
         revisionId: '7777777777777777777777777777777777777777777777777777777777777777',
-        protocolIdentity: 'skiff-protocol-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:3333333333333333333333333333333333333333333333333333333333333333'
       },
       operations: [
         {
@@ -1821,7 +1819,7 @@ describe('router raw HTTP gateway', () => {
       service: {
         id: 'skiff.run/sample',
         revisionId: '8888888888888888888888888888888888888888888888888888888888888888',
-        protocolIdentity: 'skiff-protocol-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:4444444444444444444444444444444444444444444444444444444444444444'
       },
       operations: [
         {

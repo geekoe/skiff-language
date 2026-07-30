@@ -1,4 +1,6 @@
-use super::{EffectDispatchContext, HttpEffectContext, TestEffectDoubleContext};
+use super::{
+    EffectDispatchContext, HttpEffectContext, PreparedTestHttpSelfIngress, TestEffectDoubleContext,
+};
 use skiff_runtime_capability_context::{HttpRuntimeOptions, StreamRuntime};
 
 #[derive(Clone)]
@@ -47,5 +49,20 @@ impl HttpClientCapabilityContext {
 
     pub fn test_effect_double_context(&self) -> TestEffectDoubleContext {
         self.test_effect_doubles.clone()
+    }
+
+    pub(crate) fn prepare_test_http_self_ingress(
+        &self,
+        input: &serde_json::Value,
+    ) -> crate::error::Result<Option<PreparedTestHttpSelfIngress>> {
+        self.effects
+            .test_http_self_ingress()
+            .map_or(Ok(None), |context| context.prepare(input))
+    }
+
+    pub(crate) fn is_test_http_self_ingress(&self, input: &serde_json::Value) -> bool {
+        self.effects
+            .test_http_self_ingress()
+            .is_some_and(|context| context.matches(input))
     }
 }

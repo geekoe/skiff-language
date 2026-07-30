@@ -164,7 +164,7 @@ async fn sse_cancel_while_waiting_for_body_closes_connection_early() {
         .next_event()
         .await
         .expect_err("cancel should stop pending sse read");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
     drop(stream);
 
     tokio::time::timeout(Duration::from_secs(1), closed_rx)

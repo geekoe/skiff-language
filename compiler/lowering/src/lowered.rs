@@ -4,7 +4,9 @@ use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
     publication_local_refs::rewrite_publication_local_refs,
-    source_file_lowering::{compile_package_source_file_ir_unit, PackageSourceLoweringInput},
+    source_file_lowering::{
+        compile_package_source_file_ir_unit, finalize_actor_identities, PackageSourceLoweringInput,
+    },
     type_ref_ir_source_text_with_local_types, CompiledPackageSource, EntryFunctionSignature,
     EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex,
 };
@@ -14,6 +16,7 @@ use crate::file_ir::{
     ServiceSymbolRef, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 use skiff_artifact_identity::type_ref_abi_key;
+use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
 use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
@@ -114,6 +117,7 @@ impl LoweredPackage {
                     source_alias_targets: model.resolutions().alias_targets_for_module(module_path),
                     type_resolution: model.type_resolution(),
                     expression_types: Some(model.expression_types()),
+                    execution_semantics: Some(model.execution_semantics()),
                     callable_return_types: &callable_return_types,
                     executable_signatures: model.executable_signatures(),
                     interface_signatures: Some(model.interface_signatures()),
@@ -129,10 +133,22 @@ impl LoweredPackage {
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
         })?;
 
-        rewrite_publication_local_refs(&mut file_ir_units, Some(model.policy().package_id()))
-            .map_err(|error| PublicationError::ContractValidation {
-                message: format!("File IR external ref rebuild failed: {error}"),
-            })?;
+        let package_dependency_abi_expectations = model
+            .type_resolution()
+            .package_dependency_abi_expectations();
+        let package_dependency_abi_expectations_by_package_id = model
+            .type_resolution()
+            .package_dependency_abi_expectations_by_package_id();
+        rewrite_publication_local_refs(
+            &mut file_ir_units,
+            Some(model.policy().package_id()),
+            Some(model.type_resolution()),
+            &package_dependency_abi_expectations,
+            &package_dependency_abi_expectations_by_package_id,
+        )
+        .map_err(|error| PublicationError::ContractValidation {
+            message: format!("File IR type finalization failed: {error}"),
+        })?;
 
         // File IR `link_targets` (the set of names a package/service can link and
         // encode across its boundary) are no longer driven by the per-declaration
@@ -141,6 +157,14 @@ impl LoweredPackage {
         // reachable from a re-exported symbol's signature must be LINKABLE even if
         // it is not itself a public writable name.
         derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed());
+        finalize_actor_identities(&mut file_ir_units).map_err(|error| {
+            PublicationError::ContractValidation {
+                message: format!("Actor identity finalization failed: {error}"),
+            }
+        })?;
+        for unit in &mut file_ir_units {
+            assign_file_ir_identity(unit);
+        }
 
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
         let entrypoint_abi = EntrypointAbiIndex::build(&file_ir_units)
@@ -416,13 +440,37 @@ fn projection_visible_type_ref(
                 },
             })
             .unwrap_or_else(|| ty.clone()),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| projection_visible_type_ref(arg, publication_type_names))
                 .collect(),
         },
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            let base = match base {
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => publication_type_names
+                    .get(&(module_path.clone(), *type_index))
+                    .map(|symbol| NominalTypeRefBaseIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: module_path.clone(),
+                            symbol: symbol.clone(),
+                        },
+                    })
+                    .unwrap_or_else(|| base.clone()),
+                _ => base.clone(),
+            };
+            TypeRefIr::AppliedNominal {
+                base,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| projection_visible_type_ref(argument, publication_type_names))
+                    .collect(),
+            }
+        }
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
@@ -482,6 +530,7 @@ fn projection_visible_type_ref(
         TypeRefIr::LocalType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
@@ -685,12 +734,33 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
             TypeDescriptorIr::Alias { target } => {
                 collect_type_ref_named_locations(&index, &module_path, target, &mut refs);
             }
-            TypeDescriptorIr::Union { variants } => {
-                for variant in variants {
-                    collect_type_ref_named_locations(&index, &module_path, variant, &mut refs);
+            TypeDescriptorIr::Representation { representation } => {
+                collect_type_ref_named_locations(&index, &module_path, representation, &mut refs);
+            }
+            TypeDescriptorIr::Union { branches } => {
+                for branch in branches {
+                    match branch {
+                        NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                            collect_type_ref_named_locations(
+                                &index,
+                                &module_path,
+                                nominal_type,
+                                &mut refs,
+                            );
+                        }
+                        NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                            collect_type_ref_named_locations(
+                                &index,
+                                &module_path,
+                                payload_type,
+                                &mut refs,
+                            );
+                        }
+                        NamedUnionBranchIr::Literal { .. } => {}
+                    }
                 }
             }
-            TypeDescriptorIr::Native { .. } => {}
+            TypeDescriptorIr::Interface => {}
         }
         // Interfaces declared in this module contribute their operation signatures.
         if let Some(interface) = unit.declarations.interfaces.get(&ty.name) {
@@ -780,12 +850,6 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
             );
         }
     }
-
-    // link_targets feed the File IR identity hash, so recompute it now that the
-    // closure has settled.
-    for unit in units.iter_mut() {
-        assign_file_ir_identity(unit);
-    }
 }
 
 fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut Vec<(usize, u32)>) {
@@ -805,22 +869,6 @@ fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut V
                 match &call.target {
                     CallTargetIr::LocalExecutable { executable_index } => {
                         executable_seeds.push((unit_index, *executable_index));
-                    }
-                    CallTargetIr::ExternalServiceSymbol { symbol } => {
-                        let Some(target_unit_index) = units
-                            .iter()
-                            .position(|unit| unit.module_path == symbol.module_path)
-                        else {
-                            continue;
-                        };
-                        if let Some(declaration) = units[target_unit_index]
-                            .declarations
-                            .executables
-                            .get(&symbol.symbol)
-                        {
-                            executable_seeds
-                                .push((target_unit_index, declaration.executable_index));
-                        }
                     }
                     CallTargetIr::PublicationExecutable {
                         module_path,
@@ -863,9 +911,42 @@ fn collect_type_ref_named_locations(
     out: &mut Vec<PublicationTypeLocation>,
 ) {
     match ty {
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_type_ref_named_locations(index, module_path, arg, out);
+            }
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            match base {
+                NominalTypeRefBaseIr::LocalType { type_index } => {
+                    if let Some(location) = index.resolve_local(module_path, *type_index) {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                } => {
+                    if let Some(location) = index.resolve_local(module_path, *type_index) {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    if let Some(location) =
+                        index.resolve_module_symbol(&symbol.module_path, &symbol.symbol)
+                    {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+                    if let Some(location) = index.resolve_source_path(&symbol.symbol_path) {
+                        out.push(location);
+                    }
+                }
+                NominalTypeRefBaseIr::PackageSchema { .. } => {}
+            }
+            for argument in arguments {
+                collect_type_ref_named_locations(index, module_path, argument, out);
             }
         }
         TypeRefIr::LocalType { type_index } => {
@@ -919,7 +1000,9 @@ fn collect_type_ref_named_locations(
             }
             collect_type_ref_named_locations(index, module_path, return_type, out);
         }
-        TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
+        TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
     }
 }
 

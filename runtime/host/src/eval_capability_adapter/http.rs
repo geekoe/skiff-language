@@ -15,15 +15,25 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         ))
     }
 
+    fn is_test_http_self_ingress(
+        &self,
+        input: &Value,
+    ) -> capability_contract::CapabilityResult<bool> {
+        Ok(self.0.is_test_http_self_ingress(input))
+    }
+
     fn dispatch_http_request<'a>(
         &'a self,
         input: &'a Value,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            self.0
-                .dispatch_http_request(input)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                self.0
+                    .dispatch_http_request_with_current_scope(input, execution_control)
+                    .await,
+            )
+            .await
         })
     }
 
@@ -31,12 +41,19 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         &'a self,
         input: &'a Value,
         expected_body_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            self.0
-                .dispatch_http_stream(input, expected_body_item_type)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                self.0
+                    .dispatch_http_stream_with_current_scope(
+                        input,
+                        expected_body_item_type,
+                        execution_control,
+                    )
+                    .await,
+            )
+            .await
         })
     }
 
@@ -44,12 +61,19 @@ impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilit
         &'a self,
         input: &'a Value,
         expected_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::HttpCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            self.0
-                .dispatch_http_sse(input, expected_item_type)
-                .await
-                .map_err(capability_contract::CapabilityError::opaque)
+            root_result_into_capability(
+                self.0
+                    .dispatch_http_sse_with_current_scope(
+                        input,
+                        expected_item_type,
+                        execution_control,
+                    )
+                    .await,
+            )
+            .await
         })
     }
 }
@@ -67,6 +91,22 @@ impl capability_contract::TelemetryCapabilityApi for RuntimeTelemetryCapabilityC
     ) -> capability_contract::CapabilityResult<Value> {
         self.0
             .emit_native(target, args)
-            .map_err(capability_contract::CapabilityError::opaque)
+            .map_err(ordinary_root_error_into_capability)
+    }
+}
+
+impl capability_contract::RestrictedServiceDiagnosticSink for RuntimeTelemetryCapabilityContext {
+    fn submit(
+        &self,
+        diagnostic: &capability_contract::RestrictedServiceDiagnostic,
+    ) -> capability_contract::CapabilityResult<()> {
+        if self.0.emit_restricted_service_diagnostic(diagnostic) {
+            Ok(())
+        } else {
+            Err(capability_contract::CapabilityError::provider_unavailable(
+                "restricted-service-diagnostic",
+                "request telemetry emitter did not accept the diagnostic",
+            ))
+        }
     }
 }

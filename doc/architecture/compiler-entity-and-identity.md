@@ -10,7 +10,7 @@ nominal identity 和 contract revision 的长期内部分层。Runtime 只作为
 本文负责：
 
 - compiler 如何把源码名字和 manifest/public API 路径解析为编译期 entity。
-- publication 顶层 entity、函数局部 entity、type parameter 和 external entity 的 id 空间。
+- Package 顶层 entity、函数局部 entity、type parameter 和 external entity 的 id 空间。
 - `root`、`std`、package alias、service alias 这类 resolver root 与 entity 的区别。
 - public path、source selector、declaration anchor、ABI nominal identity 和 contract revision 的归属。
 - closure-only ABI type 如何不可命名但有 identity。
@@ -53,7 +53,7 @@ Runtime address   -> 某次 activation/linking 后的执行地址或 slot
 - public path 是 lookup / export surface，不是 entity id，也不是 nominal type identity。
 - source module path 不是 public source path。
 - source selector 不是 export。
-- 裸 source selector 不是 ABI nominal identity；`PublicationIdentity + SourceSelector + kind` 可以作为第一版 source
+- 裸 source selector 不是 ABI nominal identity；`PackageNominalIdentity + SourceSelector + kind` 可以作为第一版 source
   declaration anchor。
 - File IR `type_index` 不是跨 file / package 稳定 identity。
 - runtime `TypeAddr` / `ExecutableAddr` 不是 artifact 或 ABI nominal identity。
@@ -85,7 +85,6 @@ enum EntityKind {
     Parameter,
     PatternBinding,
     TypeParameter,
-    PackageCapability,
     ExternalPackageSymbol,
     ExternalServiceOperation,
     ExternalServiceInstance,
@@ -95,13 +94,13 @@ enum EntityKind {
 
 分类规则：
 
-- 顶层 `type`、`alias`、`interface`、`function`、`const`、DB object 是 publication source entity。
+- 顶层 `type`、`alias`、`interface`、`function`、`const`、DB object 是 Package source entity。
 - `impl` method 是 receiver method namespace 中的 entity，不进入普通顶层 source selector。
 - 函数参数、局部变量、pattern binding、catch binding 等是 local entity。
 - type parameter 是 type namespace 中的 local entity。
-- package capability alias 是受控 receiver root entity，可以在 package source 中被调用，但不是普通 first-class runtime value。
 - external package symbol 是 dependency package 的 public symbol 在当前 compilation 中的引用实体。
-- external service operation / instance 是 remote linkage entity，不能和 package local symbol 合并。
+- external service operation / instance 是service-boundary linkage entity，不能和package local symbol合并；
+  物理同进程也不改变该分类。
 - std / prelude / compiler-known built-in symbol 解析为 `BuiltinEntityId`，不是 `root` source entity，也不是
   package dependency entity。
 
@@ -154,31 +153,30 @@ enum EntityId {
     ImplMethod(ImplMethodEntityId),
     Local(LocalEntityId),
     TypeParameter(TypeParameterEntityId),
-    PackageCapability(PackageCapabilityEntityId),
     ExternalPackage(ExternalPackageEntityId),
     ExternalService(ExternalServiceEntityId),
     Builtin(BuiltinEntityId),
 }
 ```
 
-`TopLevelEntityId` 属于当前 publication 的 entity table：
+`TopLevelEntityId` 属于当前 Package 的 entity table：
 
 ```rust
-struct PublicationEntityTable {
-    publication: PublicationId,
+struct PackageEntityTable {
+    package_id: PackageId,
     entities: Vec<TopLevelEntity>,
 }
 
 struct TopLevelEntityId {
-    publication_local_index: u32,
+    package_local_index: u32,
 }
 ```
 
-`PublicationEntityTable.publication` 是 source compile owner id；ABI owner 使用下文的
-`PublicationIdentity`。`publication_local_index` 只是当前 compiler table 的 owner-local handle，不是 ABI
+`PackageEntityTable.package_id`是source compile owner id；Local ABI nominal owner使用下文的
+`PackageNominalIdentity`。`package_local_index` 只是当前 compiler table 的 owner-local handle，不是 ABI
 nominal identity 输入，也不是 source declaration anchor。顶层 declaration 如果进入 ABI / schema
 closure，必须另外投影到结构化 source declaration anchor；不能把 declaration 在文件、module 或
-publication table 中的序号当作稳定身份。
+Package table 中的序号当作稳定身份。
 
 `LocalEntityId` 属于一个 executable / const initializer / callback / pattern owner：
 
@@ -215,35 +213,31 @@ struct BuiltinEntityId {
 ```
 
 `EntityId` 是跨 source compile model 传递的 typed id，因此每个 variant 必须包含 owner 或指向一个
-owner-local table。`TopLevelEntityId { publication_local_index }` 只能在它所属的
-`PublicationEntityTable` owner 上下文内解释；如果顶层 entity id 需要脱离该 table 跨 artifact /
+owner-local table。`TopLevelEntityId { package_local_index }` 只能在它所属的
+`PackageEntityTable` owner 上下文内解释；如果顶层 entity id 需要脱离该 table 跨 artifact /
 package 边界流动，必须先投影为 declaration anchor、ABI nominal id 或 contract revision，不能裸传 local
 index。
 
 Lowering 可以把这些 id 投影成 File IR local indexes、slot indexes、type parameter indexes 或 link
 targets，但投影后的数字仍必须有 owner context。裸 `3` 不是 stable identity。
 
-## Publication Entity Table
+## Package Entity Table
 
-一个 package 或 service 在 source compile 阶段共享同一种 publication entity table。package 和
-service 的差异不在 entity table，而在 projection / linkage policy。
+Package是唯一source compile owner。Service首先是Package，因此不会引入另一种entity table或compile
+kind；两者的差异只出现在`service.yml.serviceCalls`选择、`http.yml`/`websocket.yml` external ingress
+与后续ServiceContract/Deployment projection。
 
 ```rust
-enum PublicationKind {
-    Package,
-    Service,
-}
-
-struct PublicationEntityModel {
-    kind: PublicationKind,
-    top_level: PublicationEntityTable,
+struct PackageEntityModel {
+    package_id: PackageId,
+    top_level: PackageEntityTable,
     module_index: ModulePathIndex,
     resolver_roots: ResolverRootTable,
     local_tables: Vec<LocalEntityTable>,
 }
 ```
 
-`PublicationEntityTable` 覆盖当前 production source set 中所有顶层声明。文件和 module path 只是 lookup
+`PackageEntityTable` 覆盖当前 production source set 中所有顶层声明。文件和 module path 只是 lookup
 组织结构，不是 runtime 地址，也不是 public path。
 
 Source selector 是 source-layer lookup key，也是第一版顶层 source declaration anchor 的名字部分。典型
@@ -259,7 +253,7 @@ Source selector 解析应先从 resolver root 进入 `ModulePathIndex`，再落�
 root.<modulePath>.<symbol> -> TopLevelEntityId
 ```
 
-Source selector 不携带 publication id，不是外部源码可写名字，也不是 ABI nominal identity。字符串可以作为
+Source selector 不携带 Package id，不是外部源码可写名字，也不是 ABI nominal identity。字符串可以作为
 source metadata surface 或诊断显示，但 compiler 内部 index 应使用结构化 key。作为 declaration anchor
 时，它必须保留完整 module path、source symbol name 和 declaration kind；不能替换成 declaration
 ordinal。
@@ -281,16 +275,16 @@ enum SourceDeclarationKind {
 }
 ```
 
-Public API graph 记录 public path 到当前 publication source entity 的关系，但 public path 不替代
+Public API graph 记录 public path 到当前 Package source entity 的关系，但 public path 不替代
 `EntityId`。外部 dependency ABI symbols 可以进入 schema closure、signature 或 dependency facts，不作为
-当前 publication public path 的 source target。
+当前 Package public path 的 source target。
 
-第一版中，当前 publication 的 source declaration anchor 使用结构化 source selector 加 declaration
+第一版中，当前 Package 的 source declaration anchor 使用结构化 source selector 加 declaration
 kind：
 
 ```rust
 struct SourceDeclarationAnchor {
-    publication: PublicationIdentity,
+    package: PackageNominalIdentity,
     selector: SourceSelector,
     kind: SourceDeclarationKind,
 }
@@ -315,7 +309,7 @@ owner 的 declaration anchor；method 的签名变化体现在 owner 的 contrac
 ## Local Entity Tables
 
 局部 entity table 由函数、method、const initializer、callback、match arm 等 owner 拥有。局部 entity
-不进入 publication 顶层表，不进入 public API graph，不参与 ABI nominal identity 或 contract revision。
+不进入 Package 顶层表，不进入 public API graph，不参与 ABI nominal identity 或 contract revision。
 
 ```rust
 struct LexicalScope {
@@ -345,7 +339,7 @@ Resolver root 是 name/path lookup 起点，不是 entity。它不能作为普�
 
 ```rust
 enum ResolverRoot {
-    CurrentPublicationRoot,
+    CurrentPackageRoot,
     StdRoot,
     PackageDependency { alias: PackageAlias, dependency_slot: u32 },
     ServiceDependency { alias: ServiceAlias, dependency_slot: u32 },
@@ -355,11 +349,12 @@ enum ResolverRoot {
 
 规则：
 
-- `root` 指向当前 publication source set 的 module/top-level lookup。
+- `root` 指向当前 Package source set 的 module/top-level lookup。
 - `std` 指向 compiler-provided platform namespace。
 - package alias 指向 dependency package public surface，后续调用使用 local linkage。
-- service alias 指向 service dependency public operation / public instance surface，后续调用使用 remote linkage。
-- `config` 指向 publication config requirement API，不是普通 runtime object。
+- service alias指向service dependency public operation/public instance surface，后续调用使用service-boundary
+  linkage。
+- `config`指向当前Package声明、由activation提供的config requirement API，不是普通runtime object。
 
 Resolver root 不创建 `EntityId`。如果某个 language feature 未来允许把 package、service、config 或
 namespace 当作 first-class value，它必须显式引入新的 entity kind 和 runtime value layout；不能复用
@@ -423,13 +418,14 @@ Service reference：
 svc.someOperation
   -> ExternalServiceEntityId
   -> service dependency operation / public instance metadata / protocol expectation
-  -> remote linkage
+  -> service-boundary linkage
 ```
 
 二者不能合并成同一种 external symbol：
 
 - package callable 可以在当前 runtime program 中 local link 到 executable target。
-- service operation 是 remote call contract，必须携带 service dependency、operation target、mode、protocol revision 和 boundary schema expectation。
+- service operation是service-call contract，必须携带service dependency、`ContractOperationId`、mode、
+  expected `ServiceProtocolIdentity`与boundary schema expectation；第一版即使同进程也不能退化成本地调用。
 - service public instance 是 remote receiver root metadata，不是 dependency package object。
 - package public path 和 service operation path 即使 display string 相同，也必须产生不同 entity kind。
 
@@ -449,7 +445,7 @@ Runtime 不再通过字符串判断一次 call 是 package call 还是 service c
 
 `BuiltinCallableId` 是 `BuiltinEntityId` 在 call position 的投影（call-target 视角的 builtin 句柄），不是另一个
 独立 id space；二者必须能互相对应。builtin 不进入 `AbiSymbolId`，因为它不是 package / service boundary 上
-可观察的 published symbol。
+可观察的released public symbol。
 
 ## Type And Value Namespaces
 
@@ -524,9 +520,9 @@ enum PublicSourceEntityKind {
 }
 ```
 
-Public API target 必须是当前 publication 中可公开的顶层 source entity。它不能是 `LocalEntityId`、
+Public API target必须是当前Package中可公开的顶层source entity。它不能是`LocalEntityId`、
 `TypeParameterEntityId`、`PathPrefix`、`ResolverRoot` 或普通 external dependency symbol。外部 package /
-service / std ABI symbols 可以出现在 schema closure、signature、binding requirement 或 dependency lock
+service/std symbols可以出现在signature、PackageSchema closure或dependency requirement
 中，但不是 public path 的 source target。
 
 public path 改变是 source API surface 改变，但 public path 不是 nominal type identity。显式 public
@@ -544,14 +540,14 @@ DeclarationAnchor -> 这是哪个 declaration / symbol
 Descriptor        -> 这个 declaration 的结构、签名或 schema 形状
 ```
 
-第一版 source declaration anchor 使用 `PublicationIdentity + SourceSelector + kind`。`PublicationIdentity`
-是 ABI owner identity，不是 build id。它固定由 stable publication id 和显式 ABI epoch 组成；`abi_epoch`
-默认值为 `0`，只有开发者或 registry policy 明确要求切断 nominal lineage 时才递增。普通 publication
+第一版 source declaration anchor 使用 `PackageNominalIdentity + SourceSelector + kind`。`PackageNominalIdentity`
+是 ABI owner identity，不是 build id。它固定由 stable Package id 和显式 ABI epoch 组成；`abi_epoch`
+默认值为 `0`，只有开发者或 registry policy 明确要求切断 nominal lineage 时才递增。普通 Package
 version、source hash 和 build id 不进入 nominal declaration anchor。
 
 ```rust
-struct PublicationIdentity {
-    id: PublicationId,
+struct PackageNominalIdentity {
+    package_id: PackageId,
     abi_epoch: AbiEpoch,
 }
 ```
@@ -562,7 +558,7 @@ struct PublicationIdentity {
 - 同一个 declaration anchor 下，descriptor 可以变化。
 - descriptor 变化必须改变 contract / schema revision，即使 declaration anchor 和 public path 没变。
 - declaration anchor 变化必须改变 nominal identity，即使 descriptor 完全相同。
-- 同一 `PublicationIdentity` 下，同一 source declaration anchor 跨 publication versions 保持 nominal
+- 同一 `PackageNominalIdentity` 下，同一 source declaration anchor 跨 Package versions 保持 nominal
   identity；compatibility 由 contract / schema revision 判断。
 
 例如：
@@ -577,7 +573,7 @@ type Id = string
 type Id = number
 ```
 
-如果它仍在同一个 source selector 和 `PublicationIdentity` 下，`AbiTypeId` 仍表示“同一个 nominal
+如果它仍在同一个 source selector 和 `PackageNominalIdentity` 下，`AbiTypeId` 仍表示“同一个 nominal
 declaration”，但 descriptor / schema revision 必须变化，package ABI contract revision 或 service
 protocol revision 也必须变化。Compatibility 检查据此判断这是同一类型的不兼容演进，而不是把它误认为
 完全无关的新类型。
@@ -594,8 +590,20 @@ Contract revision 应基于 canonical ABI graph，而不是源码声明顺序：
 
 ## ABI Nominal Identity And Contract Revision
 
-ABI nominal identity 是 package / service boundary 上可观察 declaration 的稳定身份。它用于 type equality、
-schema closure graph references、operation projection 和 artifact linking。
+本文的ABI nominal identity是Package Local ABI与compiler type equality所需的source declaration身份。它用于
+同一linked program中的type equality、Local ABI closure与artifact linking；它不是ServiceContract wire type
+identity。跨service payload只使用
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md)定义的
+`PackageSchemaTypeId`：
+
+- `AbiTypeId`由Package nominal owner、source declaration anchor与type arguments确定，descriptor变化不改变
+  “这是哪个source type”；
+- `PackageSchemaTypeId`由Package id、唯一canonical public path与canonical descriptor确定，descriptor变化
+  必然改变content identity；
+- closure-only Local ABI type可以有`AbiTypeId`，但第一版不能获得`PackageSchemaTypeId`，也不能进入
+  ServiceContract payload；
+- ServiceContract只引用`PackageSchemaTypeId`，不得把`AbiTypeId`、source selector或closure-only identity
+  当作wire type。
 
 ```rust
 enum AbiSymbolId {
@@ -610,13 +618,13 @@ enum AbiSymbolId {
 
 具体 bytes / string encoding 由 artifact identity 层定义，但 nominal identity 的语义输入只能包含：
 
-- owning publication identity。
+- owning Package identity。
 - declaration anchor，包括 external declaration anchor。
 - symbol kind。
 - 对泛型实例化而言，完整 type arguments 的 ABI nominal ids。
 
 ABI nominal identity 可以引用 source declaration anchor 作为输入，但不能暴露 source selector 作为外部源码
-路径。`AbiTypeId` 不吞入 descriptor bytes、schema hash、publication version 或 build id；无关 public API
+路径。`AbiTypeId` 不吞入 descriptor bytes、schema hash、Package version 或 build id；无关 public API
 改动和同 declaration 的 descriptor 演进不应导致 nominal type identity 整体 churn。
 
 Descriptor / schema / signature 变化由 contract revision 表示：
@@ -632,9 +640,10 @@ struct AbiContractRevision {
 或某个 callable / const fact 的 nominal id）；同一个 nominal symbol 在一份 fact 里只出现一次，避免 nominal
 id 与 contract revision 各存一份导致不一致。
 
-Package ABI expectation、service protocol revision 和 compatibility checking 必须同时消费 nominal
-`AbiSymbolId` 和对应 `AbiContractRevision`。Type equality 只使用 `AbiTypeId`；wire compatibility 和
-protocol matching 使用 contract revision。
+Package Local ABI expectation与compatibility checking同时消费nominal`AbiSymbolId`和对应
+`AbiContractRevision`。Compiler type equality使用`AbiTypeId`；service wire compatibility与protocol
+matching则消费`PackageSchemaTypeId` closure和`ServiceProtocolIdentity`，不读取本节的Local ABI
+contract revision补事实。
 
 ## ABI Type Identity
 
@@ -645,7 +654,7 @@ protocol matching 使用 contract revision。
 - public type body、alias target、interface method signature 引用的 named type。
 - public const declared type。
 - public instance receiver type 和 interface identities。
-- schema closure 中的 closure-only named type。
+- Package Local ABI closure中的closure-only named type。
 
 ```rust
 struct AbiTypeFact {
@@ -667,12 +676,12 @@ enum AbiDeclarationAnchor {
 }
 
 struct ExternalDeclarationAnchor {
-    owner_publication: PublicationIdentity,
-    declaration: PublishedDeclarationId,
+    owner_package: PackageNominalIdentity,
+    declaration: ExternalDeclarationId,
     kind: AbiDeclarationKind,
 }
 
-struct PublishedDeclarationId {
+struct ExternalDeclarationId {
     stable_id: String,
 }
 
@@ -696,9 +705,9 @@ enum TypeNameability {
 ABI nominal symbol instantiation、contract revision 和 runtime linking。它也不能退化成 consumer 看到的
 public path，因为 public path 是 lookup/export surface，不是 declaration anchor。
 
-`PublishedDeclarationId.stable_id` 是 dependency 发布时固化的不透明 token，由发布方 artifact 生成并冻结。
+`ExternalDeclarationId.stable_id`是dependency artifact生成并冻结的不透明token。
 它不是 display path、public path 或 source selector，consumer 不得反解析或据它重建源码名字；它只作为跨
-artifact 引用同一 published declaration 的稳定 key。这与“display string 不作 canonical map key”不冲突：
+artifact引用同一external declaration的稳定key。这与“display string不作canonical map key”不冲突：
 被禁止的是把诊断/显示用的人类可读字符串当 key，而不是禁止使用稳定不透明 id。
 
 `ClosureOnly` type 是 ABI-visible 但 source-unnameable：compiler / IDE 可以通过 inference 使用它，
@@ -785,8 +794,9 @@ Artifact DTO 可以继续使用局部 index 和 structured symbol refs，但必�
 - Package / service symbol refs 必须是结构化 key，不是 display string。
 - Package exports table 只列 public path -> declaration / link target；closure-only types 不应混入 public
   exports table。
-- ABI/schema closure table 必须能表达 explicit public type 与 closure-only type 的区别。
-- service operation refs 必须保留 remote linkage metadata，不能和 package local export refs 合并。
+- Package Local ABI closure table必须能表达explicit public type与closure-only type的区别；
+  PackageSchema index只接受有唯一canonical public path的schema-closed named type。
+- service operation refs必须保留service-boundary linkage metadata，不能和package local export refs合并。
 
 长期目标是 artifact projection 明确产出：
 
@@ -809,13 +819,13 @@ struct AbiIdentityProjection {
 
 - resolver roots。
 - source selector resolution。
-- publication and local entity tables。
+- Package and local entity tables。
 - entity refs for source use sites。
 - public API bindings。
 - resolved type facts。
-- ABI type facts needed by publication API graph。
+- ABI type facts needed by Package API graph。
 
-`LoweredPublication` owns:
+`LoweredPackage` owns:
 
 - File IR local tables and local indexes。
 - slot layout derived from local entity refs。
@@ -825,7 +835,7 @@ struct AbiIdentityProjection {
 Artifact projection owns:
 
 - public export table。
-- ABI / schema closure table。
+- Package Local ABI closure与独立PackageSchema records/index。
 - package ABI expectation and service protocol projection。
 - structured package and service dependency refs。
 
@@ -833,7 +843,7 @@ Runtime linking owns:
 
 - artifact refs / ABI ids to runtime addresses。
 - linked package export overlay。
-- remote service operation dispatch metadata。
+- service-boundary operation dispatch metadata。
 - runtime dispatch indexes。
 
 No downstream stage should rediscover identity by parsing display type names, AST text, artifact JSON paths or public path
@@ -857,13 +867,13 @@ Diagnostic display strings are not canonical map keys.
 
 Architecture-level tests should cover:
 
-- `root` resolves as `ResolverRoot::CurrentPublicationRoot` and cannot be used as an entity final result。
+- `root` resolves as `ResolverRoot::CurrentPackageRoot` and cannot be used as an entity final result。
 - `root.<module>.<symbol>` resolves to a top-level entity id。
 - path prefix such as `pkg.user` is not treated as an entity unless a full path resolves to a valid final result。
 - local variable and parameter references resolve to local entity ids, then lower to slots。
 - type parameter references resolve to type-parameter entity ids, not short strings。
 - package callable reference resolves to `ExternalPackageEntityId` and lowers to local package linkage。
-- service operation reference resolves to `ExternalServiceEntityId` and lowers to remote service linkage。
+- service operation reference resolves to`ExternalServiceEntityId`and lowers toservice-boundary linkage。
 - same display path under package alias and service alias does not produce the same entity kind。
 - literals and anonymous temporaries do not create source entities。
 - closure-only return type can be inferred and passed to another API requiring the same `AbiTypeId`。

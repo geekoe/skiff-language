@@ -1,14 +1,16 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fs, path::Path};
+
+#[cfg(test)]
+use std::path::PathBuf;
 
 use serde::Deserialize;
-use skiff_compiler_core::{prelude_registry::validate_package_api_public_path, registry_helpers};
+use skiff_compiler_core::prelude_registry::validate_package_api_public_path;
+use skiff_compiler_input::{
+    platform_sources::CompilerPlatformSourceSnapshot, read_publication_api_yml,
+    CompilerPlatformSources,
+};
 
 use crate::{
-    api_yml::read_publication_api_yml,
     package_export_resolver::package_public_path,
     shared::id::{SKIFF_STD_PUBLICATION_ID, STD_SOURCE_ALIAS},
     shared::parser::parse_source,
@@ -23,20 +25,6 @@ use super::{
 };
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct SplitStdRegistryManifest {
-    schema_version: Option<String>,
-    #[serde(default)]
-    packages: Vec<SplitStdRegistryPackage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SplitStdRegistryPackage {
-    id: String,
-    path: String,
-}
-
-#[derive(Debug, Deserialize, Default)]
 struct SplitPackageManifest {
     id: Option<String>,
     api: Option<serde_yaml::Value>,
@@ -45,23 +33,23 @@ struct SplitPackageManifest {
 
 #[derive(Debug, Clone)]
 struct PreludeExportMapping {
+    package_id: String,
     source_module: String,
     public_module: String,
+    public_path: String,
 }
 
 impl PreludeRegistry {
-    pub(super) fn load_std_registry(&mut self, std_dir: &Path) -> Result<(), String> {
-        let std_registry_path = std_dir.join("registry.yml");
+    pub(super) fn load_std_registry(
+        &mut self,
+        platform_sources: &CompilerPlatformSources,
+    ) -> Result<(), String> {
+        platform_sources
+            .revalidate()
+            .map_err(|error| error.to_string())?;
+        let std_registry_path = platform_sources.registry_path();
         let std_registry_text = fs::read_to_string(&std_registry_path)
             .map_err(|error| format!("failed to read {}: {error}", std_registry_path.display()))?;
-        let std_registry = serde_yaml::from_str::<SplitStdRegistryManifest>(&std_registry_text)
-            .map_err(|error| format!("failed to parse {}: {error}", std_registry_path.display()))?;
-        if std_registry.schema_version.as_deref() != Some("skiff-std-registry-v1") {
-            return Err(format!(
-                "{}: schemaVersion must be skiff-std-registry-v1",
-                std_registry_path.display()
-            ));
-        }
 
         self.package_id = PRELUDE_REGISTRY_ID.to_string();
         self.package_version = "1.0.0".to_string();
@@ -71,25 +59,23 @@ impl PreludeRegistry {
         self.prelude_roots = vec!["std".to_string(), "config".to_string()];
         self.manifest_fingerprint =
             crate::shared::json_utils::sha256_hex(std_registry_text.as_bytes());
-        let std_package_exports = std_registry
-            .packages
-            .iter()
-            .map(|package| {
-                validate_std_registry_package_id(&std_registry_path, &package.id)?;
-                let package_dir = official_registry_package_dir(
-                    std_dir,
-                    &std_registry_path,
-                    &package.id,
-                    &package.path,
-                )?;
-                package_export_mappings(&package.id, &package_dir)
-                    .map(|modules| (package.id.clone(), modules))
+        let std_package_exports = platform_sources
+            .official_package_roots()
+            .map_err(|error| error.to_string())?
+            .map(|(package_id, package_dir)| {
+                package_export_mappings(package_id, package_dir)
+                    .map(|modules| (package_id.to_string(), modules))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         self.root_projections = BTreeMap::from([(
             "std".to_string(),
             root_projection_mappings("std", std_package_exports.values().flatten()),
         )]);
+        self.package_public_paths = std_package_exports
+            .values()
+            .flatten()
+            .map(|export| (export.package_id.clone(), export.public_path.clone()))
+            .collect();
         self.export_modules = vec![
             "std.collection".to_string(),
             "std.string".to_string(),
@@ -98,10 +84,11 @@ impl PreludeRegistry {
             "std.error".to_string(),
             "config".to_string(),
         ];
-        for package in std_registry.packages {
-            validate_std_registry_package_id(&std_registry_path, &package.id)?;
-            official_registry_package_dir(std_dir, &std_registry_path, &package.id, &package.path)?;
-            if let Some(modules) = std_package_exports.get(&package.id) {
+        for (package_id, _) in platform_sources
+            .official_package_roots()
+            .map_err(|error| error.to_string())?
+        {
+            if let Some(modules) = std_package_exports.get(package_id) {
                 self.export_modules
                     .extend(modules.iter().map(|export| export.public_module.clone()));
             }
@@ -121,18 +108,20 @@ impl PreludeRegistry {
 
     pub(super) fn load_split_sources(
         &mut self,
-        prelude_dir: &Path,
-        std_dir: &Path,
+        source_snapshot: &CompilerPlatformSourceSnapshot,
     ) -> Result<(), String> {
-        let mut files = Vec::new();
-        collect_split_skiff_files(prelude_dir, std_dir, &mut files)?;
-        if files.is_empty() {
-            return Err(format!(
-                "no .skiff files found under {} and {}",
-                prelude_dir.display(),
-                std_dir.display()
-            ));
+        let mut sources = source_snapshot
+            .sources()
+            .iter()
+            .map(|(logical_path, text)| {
+                snapshot_module_path(logical_path)
+                    .map(|module_path| (module_path, logical_path.as_path(), text.as_str()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if sources.is_empty() {
+            return Err("compiler platform source snapshot contains no .skiff files".to_string());
         }
+        sources.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
 
         self.type_decls.clear();
         self.type_decls_by_symbol.clear();
@@ -140,19 +129,27 @@ impl PreludeRegistry {
         self.type_aliases_by_symbol.clear();
         self.declared_native_bindings.clear();
         self.raw_declared_native_bindings.clear();
-        let mut source_parts = Vec::new();
-        self.source_modules = files
+        self.source_modules = sources
             .iter()
-            .map(|(module_path, _)| module_symbol_root(&self.package_id, module_path))
+            .map(|(module_path, _, _)| module_symbol_root(&self.package_id, module_path))
             .collect();
         self.source_modules.sort();
         self.source_modules.dedup();
-        for (module_path, path) in files {
-            let text = fs::read_to_string(&path)
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            source_parts.push((module_path.clone(), text.clone()));
-            self.add_source(&module_path, &text)
-                .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+        self.prelude_identity_parts = sources
+            .iter()
+            .filter_map(|(_, logical_path, text)| {
+                logical_path
+                    .strip_prefix("prelude")
+                    .ok()
+                    .map(|relative| (relative, *text))
+            })
+            .flat_map(|(relative, text)| {
+                [relative.to_string_lossy().into_owned(), text.to_string()]
+            })
+            .collect();
+        for (module_path, logical_path, text) in &sources {
+            self.add_source(module_path, text)
+                .map_err(|error| format!("failed to parse {}: {error}", logical_path.display()))?;
         }
         self.schema_stable_types = self
             .type_decls
@@ -165,12 +162,12 @@ impl PreludeRegistry {
         self.schema_stable_types.sort();
         self.schema_stable_types.dedup();
         self.source_fingerprint = source_fingerprint(
-            source_parts
+            sources
                 .iter()
-                .map(|(module_path, text)| (module_path.as_str(), text.as_str())),
+                .map(|(module_path, _, text)| (module_path.as_str(), *text)),
         );
-        for (module_path, text) in source_parts {
-            self.validate_source_type_refs(&module_path, &text)
+        for (module_path, _, text) in sources {
+            self.validate_source_type_refs(&module_path, text)
                 .map_err(|error| format!("failed to validate {module_path}: {error}"))?;
         }
         self.validate_export_modules()?;
@@ -183,24 +180,29 @@ impl PreludeRegistry {
         Ok(())
     }
 
-    fn add_source(
-        &mut self,
-        module_path: &str,
-        text: &str,
-    ) -> Result<(), crate::shared::error::CompileError> {
-        let source = parse_source(text)?;
+    fn add_source(&mut self, module_path: &str, text: &str) -> Result<(), String> {
+        let source = parse_source(text).map_err(|error| error.to_string())?;
         let symbol_root = module_symbol_root(&self.package_id, module_path);
         for ty in source.types {
+            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&ty.name).is_some() {
+                return Err(format!(
+                    "standard_library source must not declare compiler builtin type {}",
+                    ty.name
+                ));
+            }
             let symbol = format!("{}.{}", symbol_root, ty.name);
             self.type_symbols.insert(ty.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
-            if ty.is_native {
-                self.native_type_names.insert(ty.name.clone());
-            }
             self.type_decls_by_symbol.insert(symbol, ty.clone());
             self.type_decls.insert(ty.name.clone(), ty);
         }
         for alias in source.aliases {
+            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&alias.name).is_some() {
+                return Err(format!(
+                    "standard_library source must not declare compiler builtin type {}",
+                    alias.name
+                ));
+            }
             let symbol = format!("{}.{}", symbol_root, alias.name);
             self.type_symbols.insert(alias.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
@@ -208,6 +210,14 @@ impl PreludeRegistry {
             self.type_aliases.insert(alias.name.clone(), alias);
         }
         for interface in source.interfaces {
+            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&interface.name)
+                .is_some()
+            {
+                return Err(format!(
+                    "standard_library source must not declare compiler builtin type {}",
+                    interface.name
+                ));
+            }
             let symbol = format!("{}.{}", symbol_root, interface.name);
             self.type_symbols
                 .insert(interface.name.clone(), symbol.clone());
@@ -300,7 +310,7 @@ impl PreludeRegistry {
                 .join(", ");
             return format!("{root}<{args}>");
         }
-        if name.contains('.') || self.native_type_names.contains(name) || name == "Duration" {
+        if name.contains('.') || self.builtin_type_names.contains(name) {
             return name.to_string();
         }
         if let Some(symbol) = self.type_symbols.get(name) {
@@ -319,6 +329,32 @@ impl PreludeRegistry {
     }
 }
 
+fn snapshot_module_path(logical_path: &Path) -> Result<String, String> {
+    let parent = logical_path.parent().ok_or_else(|| {
+        format!(
+            "platform source snapshot path {} has no logical root",
+            logical_path.display()
+        )
+    })?;
+    let stem = logical_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| {
+            format!(
+                "platform source snapshot path {} has no UTF-8 module name",
+                logical_path.display()
+            )
+        })?;
+    match parent.to_str() {
+        Some("prelude") => Ok(stem.to_string()),
+        Some("std") => Ok(format!("std.{stem}")),
+        _ => Err(format!(
+            "platform source snapshot path {} has unknown logical root",
+            logical_path.display()
+        )),
+    }
+}
+
 fn native_method_shape_params(
     owner: &str,
     method: &crate::shared::ast::InterfaceOperation,
@@ -330,6 +366,7 @@ fn native_method_shape_params(
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn collect_plain_files(
     root: &Path,
     dir: &Path,
@@ -358,81 +395,6 @@ pub(super) fn collect_plain_files(
     }
 }
 
-fn collect_split_skiff_files(
-    prelude_dir: &Path,
-    std_dir: &Path,
-    files: &mut Vec<(String, PathBuf)>,
-) -> Result<(), String> {
-    for entry in fs::read_dir(prelude_dir)
-        .map_err(|error| format!("failed to read {}: {error}", prelude_dir.display()))?
-    {
-        let path = entry
-            .map_err(|error| format!("failed to read {}: {error}", prelude_dir.display()))?
-            .path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("skiff") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        files.push((stem.to_string(), path));
-    }
-
-    let registry_path = std_dir.join("registry.yml");
-    let registry_text = fs::read_to_string(&registry_path)
-        .map_err(|error| format!("failed to read {}: {error}", registry_path.display()))?;
-    let registry = serde_yaml::from_str::<SplitStdRegistryManifest>(&registry_text)
-        .map_err(|error| format!("failed to parse {}: {error}", registry_path.display()))?;
-    for package in registry.packages {
-        validate_std_registry_package_id(&registry_path, &package.id)?;
-        let package_dir =
-            official_registry_package_dir(std_dir, &registry_path, &package.id, &package.path)?;
-        collect_std_package_skiff_files(&package_dir, files)?;
-    }
-    files.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    Ok(())
-}
-
-fn collect_std_package_skiff_files(
-    package_dir: &Path,
-    files: &mut Vec<(String, PathBuf)>,
-) -> Result<(), String> {
-    for entry in fs::read_dir(package_dir)
-        .map_err(|error| format!("failed to read {}: {error}", package_dir.display()))?
-    {
-        let path = entry
-            .map_err(|error| format!("failed to read {}: {error}", package_dir.display()))?
-            .path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("skiff") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        if stem.ends_with(".test") || stem.ends_with("_test") {
-            continue;
-        }
-        files.push((format!("std.{stem}"), path));
-    }
-    Ok(())
-}
-
-fn validate_std_registry_package_id(registry_path: &Path, package_id: &str) -> Result<(), String> {
-    registry_helpers::validate_std_registry_package_id(package_id)
-        .map_err(|error| format!("{}: {error}", registry_path.display()))
-}
-
-fn official_registry_package_dir(
-    std_dir: &Path,
-    registry_path: &Path,
-    package_id: &str,
-    package_path: &str,
-) -> Result<PathBuf, String> {
-    registry_helpers::validate_official_registry_package_path(package_id, package_path)
-        .map_err(|error| format!("{}: {error}", registry_path.display()))?;
-    Ok(std_dir.join(package_path))
-}
-
 fn package_export_mappings(
     package_id: &str,
     package_dir: &Path,
@@ -457,7 +419,8 @@ fn package_export_mappings(
         violations.push("exports has been removed; use top-level api".to_string());
     }
     let api = read_publication_api_yml(package_dir).map_err(|error| error.to_string())?;
-    let entries = validate_package_api_export_entries(&api, public_root, &mut violations);
+    let entries =
+        validate_package_api_export_entries(&api, package_id, public_root, &mut violations);
     if !violations.is_empty() {
         return Err(format!(
             "{}: {}",
@@ -470,9 +433,12 @@ fn package_export_mappings(
         left.public_module
             .cmp(&right.public_module)
             .then_with(|| left.source_module.cmp(&right.source_module))
+            .then_with(|| left.public_path.cmp(&right.public_path))
     });
     modules.dedup_by(|left, right| {
-        left.public_module == right.public_module && left.source_module == right.source_module
+        left.public_module == right.public_module
+            && left.source_module == right.source_module
+            && left.public_path == right.public_path
     });
     Ok(modules)
 }
@@ -488,15 +454,18 @@ fn std_registry_public_root(package_id: &str) -> &str {
 fn validate_package_api_export_entries(
     api: &compiler_input_model::PublicationApiSpec,
     package_id: &str,
+    public_root: &str,
     violations: &mut Vec<String>,
 ) -> Vec<PreludeExportMapping> {
     let mut entries = Vec::new();
     for entry in api.entries() {
         let public_path = entry.public_module_path_segment();
-        validate_package_api_public_path(&public_path, package_id, violations);
+        validate_package_api_public_path(&public_path, public_root, violations);
         entries.push(PreludeExportMapping {
+            package_id: package_id.to_string(),
             source_module: entry.source_module_hint().to_string(),
-            public_module: package_public_path(package_id, &public_path),
+            public_module: package_public_path(public_root, &public_path),
+            public_path: package_public_path(public_root, &entry.public_path_string()),
         });
     }
     entries

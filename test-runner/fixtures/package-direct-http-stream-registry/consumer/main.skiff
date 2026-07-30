@@ -1,0 +1,14 @@
+import std
+import helper
+
+function configured() -> string {
+  return config.require<string>("app.token")
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  const events = helper/events.response(request.body)
+  for event in events {
+    emit(event)
+  }
+  return null
+}

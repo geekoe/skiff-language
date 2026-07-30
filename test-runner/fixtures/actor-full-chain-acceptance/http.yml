@@ -1,0 +1,8 @@
+probe:
+  method: POST
+  path: /probe
+  kind: typedJson
+  handler: main.__skiffHttpProbe
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

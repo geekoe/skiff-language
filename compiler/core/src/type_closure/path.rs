@@ -5,6 +5,7 @@ use crate::type_ref::TypeRefVisitPathSegment;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeClosureTraceSegment {
     NativeArg { name: String, index: usize },
+    AppliedNominalArgument { index: usize },
     RecordField { name: String },
     UnionItem { index: usize },
     NullableInner,
@@ -13,14 +14,20 @@ pub enum TypeClosureTraceSegment {
     FunctionReturn,
     Nominal { module_path: String, name: String },
     AliasTarget,
+    RepresentationTarget,
     DeclarationField { name: String },
-    DeclarationVariant { index: usize },
+    NamedUnionBranch { index: usize },
+    NamedUnionConcreteType,
+    NamedUnionSyntheticPayload,
 }
 
 impl From<TypeRefVisitPathSegment> for TypeClosureTraceSegment {
     fn from(segment: TypeRefVisitPathSegment) -> Self {
         match segment {
             TypeRefVisitPathSegment::NativeArg { name, index } => Self::NativeArg { name, index },
+            TypeRefVisitPathSegment::AppliedNominalArgument { index } => {
+                Self::AppliedNominalArgument { index }
+            }
             TypeRefVisitPathSegment::RecordField { name } => Self::RecordField { name },
             TypeRefVisitPathSegment::UnionItem { index } => Self::UnionItem { index },
             TypeRefVisitPathSegment::NullableInner => Self::NullableInner,
@@ -91,7 +98,7 @@ impl TypeClosureGuardPolicy for RepresentationIndirectionGuards {
     ) -> bool {
         inherited
             || matches!(segment, TypeClosureTraceSegment::NullableInner)
-            || matches!(parent, TypeRefIr::Native { name, .. } if matches!(name.as_str(), "Array" | "Map"))
+            || matches!(parent, TypeRefIr::Builtin { name, .. } if matches!(name.as_str(), "Array" | "Map"))
             || matches!(
                 (parent, segment),
                 (
@@ -105,7 +112,7 @@ impl TypeClosureGuardPolicy for RepresentationIndirectionGuards {
 fn is_null(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
-        TypeRefIr::Native { name, args } if name == "null" && args.is_empty()
+        TypeRefIr::Builtin { name, args } if name == "null" && args.is_empty()
     ) || matches!(
         ty,
         TypeRefIr::Literal {

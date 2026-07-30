@@ -2,10 +2,18 @@ use super::{
     artifacts::TypedExecutionContract, runtime::TypedExecutionRuntime,
     scenario::TypedExecutionFixture,
 };
+use skiff_runtime_eval::error::RuntimeError;
+use skiff_runtime_model::{
+    runtime_value::{HeapNode, RuntimeValue},
+    service_error::PlatformBuiltinErrorIdentity,
+};
 
 #[tokio::test]
 async fn typed_execution_callback_native_uses_production_service_materialization() {
-    let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::callback()).await;
+    let fixture = TypedExecutionFixture::admit_contract(
+        TypedExecutionContract::callback().with_callback_owner_may_suspend(true),
+    )
+    .await;
     let receiver_activation_id = fixture
         .eval_target
         .activation_context()
@@ -81,14 +89,37 @@ async fn typed_execution_callback_native_rejects_wrong_mapping_before_provider_o
         )
         .await
         .expect_err("same-count but wrong-name callback mappings must fail closed");
-    let message = mapping_error.to_string();
+    let RuntimeError::UserException(exception) = mapping_error else {
+        panic!("callback protocol mismatch must remain a typed user exception: {mapping_error}")
+    };
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity())
+    );
+    let RuntimeValue::Heap(payload_handle) = exception
+        .request()
+        .local_value()
+        .expect("platform protocol error must expose its caller-local payload")
+        .value()
+    else {
+        panic!("platform protocol error payload must remain a record")
+    };
+    let HeapNode::Object(payload) = heap
+        .get(*payload_handle)
+        .expect("platform protocol error payload must remain in the caller heap")
+    else {
+        panic!("platform protocol error payload must remain an object")
+    };
+    let Some(RuntimeValue::String(message)) = payload.fields().get("message") else {
+        panic!("platform protocol error payload must retain its message field")
+    };
     assert!(
         message.contains("contract operation different has no same-name local method"),
-        "projection should reject the explicit stable-name mismatch: {mapping_error}"
+        "projection should reject the explicit stable-name mismatch: {message}"
     );
     assert!(
         !message.contains("provide missing block entry")
             && !message.contains("CallbackProbe.invoke missing block entry"),
-        "mapping mismatch must fail before provider or owner executable entry: {mapping_error}"
+        "mapping mismatch must fail before provider or owner executable entry: {message}"
     );
 }

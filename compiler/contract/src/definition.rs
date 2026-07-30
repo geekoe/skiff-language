@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use skiff_artifact_model::{BoundaryOperationContract, ContractTypeShape};
+use skiff_artifact_model::{
+    BoundaryOperationContract, PackageSchemaTypeId, PackageTypeRequirement,
+};
 
 /// Strict typed input for the code-free ServiceContract producer.
 ///
@@ -14,7 +16,7 @@ pub struct ServiceContractDefinition {
     pub service_id: String,
     pub contract_version: String,
     pub operations: BTreeMap<String, BoundaryOperationContract>,
-    pub boundary_schema: BTreeMap<String, ContractTypeShape>,
+    pub package_type_requirements: Vec<PackageTypeRequirement>,
     pub diagnostic_text: ServiceContractDefinitionDiagnosticText,
 }
 
@@ -23,5 +25,5 @@ pub struct ServiceContractDefinition {
 pub struct ServiceContractDefinitionDiagnosticText {
     pub service: String,
     pub operations: BTreeMap<String, String>,
-    pub types: BTreeMap<String, String>,
+    pub types: BTreeMap<PackageSchemaTypeId, String>,
 }

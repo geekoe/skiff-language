@@ -5,8 +5,9 @@ use std::sync::{
 
 use skiff_artifact_model::{
     ActivationPolicy, AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity,
-    DeploymentPolicy, DeploymentRevision, PackageBuildId, ResourcePolicy, ServiceContractRef,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey,
+    DeploymentPolicy, DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey, IngressProtocol,
+    IngressSelector, PackageBuildId, ResourcePolicy, ServiceContractRef, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirementKey, WebSocketEntryId,
 };
 
 use super::*;
@@ -37,7 +38,7 @@ fn empty_owned_bindings() -> ActivationOwnedBindings {
         state_bindings: Vec::new(),
         resource_bindings: Vec::new(),
         policy: DeploymentPolicy {
-            timeout_ms: 1_000,
+            timeout_ms: Some(1_000),
             resources: ResourcePolicy {
                 cpu_millis: 100,
                 memory_bytes: 1_024,
@@ -255,6 +256,75 @@ fn activation_context_request_switch_is_explicit_and_restores_receiver() {
         request.switch_to(other_generation),
         Err(ActivationContextError::CrossAssemblyActivationSwitch)
     ));
+}
+
+#[test]
+fn activation_context_websocket_entry_is_typed_optional_and_matches_all_exact_facts() {
+    let without_entry = activation(
+        "websocket-zero",
+        "r1",
+        "assembly-a",
+        7,
+        "replica-a",
+        "websocket-zero-build",
+        Vec::new(),
+    );
+    assert_eq!(without_entry.websocket_entry_id(), None);
+
+    let identity = ActivationIdentity {
+        assembly_identity: AssemblyIdentity::new("assembly-a"),
+        assembly_generation: 7,
+        runtime_replica_id: "replica-a".to_string(),
+        deployment: deployment("websocket-owner", "r1"),
+    };
+    let selector = IngressSelector {
+        protocol: IngressProtocol::WebSocket,
+        method: None,
+        path: "/connect".to_string(),
+    };
+    let key = GatewayEntryKey::parse("websocket").unwrap();
+    let gateway_identity =
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "1".repeat(64)))
+            .unwrap();
+    let entry_id = WebSocketEntryId::parse(format!(
+        "skiff-websocket-entry-v1:sha256:{}",
+        "2".repeat(64)
+    ))
+    .unwrap();
+    let context = ActivationContext::new_with_websocket_entry(
+        identity,
+        PackageBuildId::new("websocket-build"),
+        empty_owned_bindings(),
+        Some((
+            selector.clone(),
+            key.clone(),
+            gateway_identity.clone(),
+            entry_id.clone(),
+        )),
+        Vec::new(),
+    )
+    .expect("typed WebSocket entry should build");
+
+    assert_eq!(context.websocket_entry_id(), Some(&entry_id));
+    assert!(context.websocket_entry_matches(&selector, &key, &gateway_identity, &entry_id));
+
+    let wrong_selector = IngressSelector {
+        path: "/wrong".to_string(),
+        ..selector.clone()
+    };
+    let wrong_key = GatewayEntryKey::parse("websocket:wrong").unwrap();
+    let wrong_gateway_identity =
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "3".repeat(64)))
+            .unwrap();
+    let wrong_entry_id = WebSocketEntryId::parse(format!(
+        "skiff-websocket-entry-v1:sha256:{}",
+        "4".repeat(64)
+    ))
+    .unwrap();
+    assert!(!context.websocket_entry_matches(&wrong_selector, &key, &gateway_identity, &entry_id));
+    assert!(!context.websocket_entry_matches(&selector, &wrong_key, &gateway_identity, &entry_id));
+    assert!(!context.websocket_entry_matches(&selector, &key, &wrong_gateway_identity, &entry_id));
+    assert!(!context.websocket_entry_matches(&selector, &key, &gateway_identity, &wrong_entry_id));
 }
 
 #[test]

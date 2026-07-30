@@ -99,13 +99,6 @@ function validateRouterCounters(router, reasons) {
     'router.httpStream.backpressureCancels',
     reasons,
   );
-  expectCounter(router?.websocketReceive?.inFlight, 'router.websocketReceive.inFlight', reasons);
-  expectCounter(router?.websocketReceive?.queued, 'router.websocketReceive.queued', reasons);
-  expectCounter(
-    router?.websocketReceive?.abortOnClose,
-    'router.websocketReceive.abortOnClose',
-    reasons,
-  );
 }
 
 function expectCounter(value, name, reasons) {

@@ -30,16 +30,16 @@ if (!cli.noRefresh) {
 }
 const targetDir = cargoTargetDir(skiffRoot);
 const runtimeManifest = path.join(skiffRoot, 'runtime', 'Cargo.toml');
-const identityManifest = path.join(skiffRoot, 'artifact-identity', 'Cargo.toml');
+const compilerManifest = path.join(skiffRoot, 'compiler', 'Cargo.toml');
 const cargoRuntimeBinary = path.join(
   targetDir,
   'debug',
   process.platform === 'win32' ? 'runtime.exe' : 'runtime',
 );
-const cargoIdentityCli = path.join(
+const cargoEcosystemStoreCli = path.join(
   targetDir,
   'debug',
-  process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity',
+  process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
 );
 
 await mkdir(targetDir, { recursive: true });
@@ -49,34 +49,33 @@ await run('cargo', ['build', '--manifest-path', runtimeManifest, '--bin', 'runti
 });
 await run(
   'cargo',
-  ['build', '--manifest-path', identityManifest, '--bin', 'skiff-artifact-identity'],
+  ['build', '--manifest-path', compilerManifest, '--bin', 'skiff-compiler'],
   skiffRoot,
   {
     ...cargoBuildEnv(skiffRoot),
     CARGO_TARGET_DIR: targetDir,
   },
 );
-
 const binary = await stat(cargoRuntimeBinary);
 if (!binary.isFile()) {
   throw new Error(`runtime binary was not produced at ${cargoRuntimeBinary}`);
 }
-const identityCliBinary = await stat(cargoIdentityCli);
-if (!identityCliBinary.isFile()) {
-  throw new Error(`artifact identity CLI was not produced at ${cargoIdentityCli}`);
+const ecosystemStoreCliBinary = await stat(cargoEcosystemStoreCli);
+if (!ecosystemStoreCliBinary.isFile()) {
+  throw new Error(`ecosystem store CLI was not produced at ${cargoEcosystemStoreCli}`);
 }
 
 await mkdir(paths.runtimeBinDir, { recursive: true });
 await installManagedBinary(cargoRuntimeBinary, paths.runtimeBinary);
-await installManagedBinary(cargoIdentityCli, paths.identityCli);
+await installManagedBinary(cargoEcosystemStoreCli, paths.ecosystemStoreCli);
 
 const installed = await stat(paths.runtimeBinary);
 if (!installed.isFile()) {
   throw new Error(`runtime binary was not installed at ${paths.runtimeBinary}`);
 }
-const installedIdentityCli = await stat(paths.identityCli);
-if (!installedIdentityCli.isFile()) {
-  throw new Error(`artifact identity CLI was not installed at ${paths.identityCli}`);
+const installedEcosystemStoreCli = await stat(paths.ecosystemStoreCli);
+if (!installedEcosystemStoreCli.isFile()) {
+  throw new Error(`ecosystem store CLI was not installed at ${paths.ecosystemStoreCli}`);
 }
 
 const refresh = cli.noRefresh
@@ -101,11 +100,11 @@ if (!cli.noRefresh) {
 console.log(JSON.stringify({
   devHome: paths.devHome,
   runtimeBinary: paths.runtimeBinary,
-  identityCli: paths.identityCli,
+  ecosystemStoreCli: paths.ecosystemStoreCli,
   runtimeConfig: paths.runtimeConfig,
   runtimeHome: paths.runtimeHome,
   cargoRuntimeBinary,
-  cargoIdentityCli,
+  cargoEcosystemStoreCli,
   cargoTargetDir: targetDir,
   refresh,
 }, null, 2));

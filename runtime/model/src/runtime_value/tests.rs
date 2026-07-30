@@ -3,10 +3,22 @@ use std::collections::BTreeMap;
 use crate::request_heap::RequestHeap;
 
 use super::{
-    runtime_map_has, runtime_values_equal, HeapHandle, InterfaceCarrier, InterfaceValue,
-    RemoteOperationSlot, RemoteOperationTable, RuntimeMap, RuntimeObject, RuntimeObjectFields,
-    RuntimeValue, RuntimeValueKey,
+    runtime_map_has, runtime_values_equal, CallbackCapabilityCarrier, HeapHandle, InterfaceCarrier,
+    InterfaceValue, RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
 };
+
+fn callback_interface(interface: &str, capability_id: &str) -> InterfaceValue {
+    InterfaceValue::new(
+        interface.to_string(),
+        InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+            "runtime-a",
+            "activation-a",
+            1,
+            interface,
+            capability_id,
+        )),
+    )
+}
 
 #[test]
 fn heap_runtime_value_equality_uses_handle_identity() {
@@ -88,22 +100,7 @@ fn runtime_equality_uses_heap_identity_for_non_bytes_nodes() {
 fn runtime_equality_rejects_interface_wrapper_before_heap_identity_shortcut() {
     let mut heap = RequestHeap::default();
     let interface = heap
-        .alloc_interface(InterfaceValue::new(
-            "pkg.Reader".to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "reader-service".to_string(),
-                public_instance_key: "readers/default".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "pkg.Reader".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:pkg.Reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        ))
+        .alloc_interface(callback_interface("pkg.Reader", "reader-default"))
         .expect("interface should allocate");
     let value = RuntimeValue::Heap(interface);
 
@@ -130,22 +127,7 @@ fn runtime_equality_rejects_interface_wrapper_before_heap_identity_shortcut() {
 fn runtime_equality_compares_null_and_interface_without_interface_equality() {
     let mut heap = RequestHeap::default();
     let interface = heap
-        .alloc_interface(InterfaceValue::new(
-            "pkg.Reader".to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "reader-service".to_string(),
-                public_instance_key: "readers/default".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "pkg.Reader".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:pkg.Reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        ))
+        .alloc_interface(callback_interface("pkg.Reader", "reader-default"))
         .expect("interface should allocate");
     let value = RuntimeValue::Heap(interface);
 
@@ -159,40 +141,10 @@ fn runtime_equality_compares_null_and_interface_without_interface_equality() {
 fn runtime_equality_still_rejects_interface_against_non_null_values() {
     let mut heap = RequestHeap::default();
     let first = heap
-        .alloc_interface(InterfaceValue::new(
-            "pkg.Reader".to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "reader-service".to_string(),
-                public_instance_key: "readers/default".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "pkg.Reader".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:pkg.Reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        ))
+        .alloc_interface(callback_interface("pkg.Reader", "reader-default"))
         .expect("interface should allocate");
     let second = heap
-        .alloc_interface(InterfaceValue::new(
-            "pkg.Reader".to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "reader-service".to_string(),
-                public_instance_key: "readers/other".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "pkg.Reader".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:pkg.Reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        ))
+        .alloc_interface(callback_interface("pkg.Reader", "reader-other"))
         .expect("interface should allocate");
     let first_value = RuntimeValue::Heap(first);
     let second_value = RuntimeValue::Heap(second);
@@ -277,22 +229,7 @@ fn runtime_map_has_returns_false_for_non_map_like_values() {
 fn runtime_map_has_fails_closed_for_interface_heap_values() {
     let mut heap = RequestHeap::default();
     let interface = heap
-        .alloc_interface(InterfaceValue::new(
-            "pkg.Reader".to_string(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "reader-service".to_string(),
-                public_instance_key: "readers/default".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "pkg.Reader".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:pkg.Reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        ))
+        .alloc_interface(callback_interface("pkg.Reader", "reader-default"))
         .expect("interface should allocate");
     let receiver = RuntimeValue::Heap(interface);
 
@@ -301,7 +238,7 @@ fn runtime_map_has_fails_closed_for_interface_heap_values() {
     assert!(
         error
             .to_string()
-            .contains("any interface pkg.Reader (remote) is not map-like"),
+            .contains("any interface pkg.Reader (callback capability) is not map-like"),
         "unexpected error: {error}"
     );
 }

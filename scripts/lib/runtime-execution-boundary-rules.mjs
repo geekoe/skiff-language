@@ -32,7 +32,7 @@ export function checkRuntimeExecutionBoundaryRules(
   checkSingleDispatcher(registry, sources, ownerMatches, violations);
   checkActivationOwnership(registry, sources, ownerMatches, violations);
   checkOwnedContextSpawns(registry, sources, violations);
-  checkHostRequestEntry(ownerMatches, violations);
+  checkHostRequestChain(ownerMatches, violations);
   checkRecoverableCallbackRejection(registry, sources, violations);
   checkRouterServiceRejection(registry, sources, ownerMatches, violations);
 }
@@ -52,6 +52,24 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
   for (const source of sourcesWithin(subject.discoveryRoots, subject.language, sources)) {
     for (const match of source.identifiers.matchAll(candidateRegexp)) {
       const symbol = match[1] ?? match[2];
+      const functionOwnsBoundary = !match[2]
+        || match[2].includes('in_process_boundary')
+        || (
+          canonicalOwner
+          && rustFunctionCallsOwner(
+            source.identifiers,
+            match.index,
+            canonicalOwner.symbol,
+          )
+        )
+        || rustFunctionCallsOwner(
+          source.identifiers,
+          match.index,
+          'execute_service_call',
+        );
+      if (!functionOwnsBoundary) {
+        continue;
+      }
       const isCanonical = canonicalOwner
         && symbol === canonicalOwner.symbol
         && canonical.some((entry) => entry.relPath === source.relPath && entry.index === match.index);
@@ -74,7 +92,7 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
     }
   }
 
-  const remoteRule = /\b(?:[A-Za-z0-9_]*RemoteBoundary[A-Za-z0-9_]*|[A-Za-z0-9_]*remote_boundary[A-Za-z0-9_]*|select_remote(?:_boundary)?|dispatch_remote(?:_service)?|fallback_to_remote|remote_fallback|BoundaryKind\s*::\s*Remote)\b/g;
+  const remoteRule = /\b(?:select_remote(?:_boundary)?|dispatch_remote(?:_service)?|fallback_to_remote|remote_fallback)\b|\bBoundaryKind\s*::\s*Remote\b/g;
   for (const source of sourcesWithin(subject.discoveryRoots, subject.language, sources)) {
     addPatternViolations(
       source,
@@ -86,7 +104,7 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
     );
   }
 
-  checkLegacyServiceEdges(registry, subject, sources, violations);
+  checkRetiredServiceExecution(subject, sources, violations);
 
   if (canonicalOwner) {
     for (const root of subject.zones?.canonicalCallers ?? []) {
@@ -128,30 +146,31 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
   }
 }
 
-function checkLegacyServiceEdges(registry, subject, sources, violations) {
-  const fenceOwner = registry.owners.find(({ role }) => role === 'legacy-service-path-fence');
-  if (!fenceOwner) {
-    return;
-  }
-  const edge = /\bservice_dispatch\s*::\s*call_outbound_service(?:_operation)?\s*\(/g;
-  const fence = new RegExp(
-    `\\b(?:self\\s*\\.\\s*)?${escapeRuntimeExecutionBoundaryRegexp(fenceOwner.symbol)}\\s*\\(`,
-  );
-  for (const source of sourcesWithin(subject.zones?.legacyServiceEdges ?? [], 'rust', sources)) {
-    for (const match of source.identifiers.matchAll(edge)) {
-      const blockStart = enclosingBlockStart(source.identifiers, match.index);
-      const prefix = source.identifiers.slice(blockStart, match.index);
-      if (!fence.test(prefix)) {
-        violations.push(runtimeExecutionBoundaryViolation({
-          id: 'legacy-outbound-service-edge',
-          subject: subject.id,
-          ownerRole: fenceOwner.role,
-          relPath: source.relPath,
-          line: lineNumberAt(source.identifiers, match.index),
-          matched: match[0],
-          detail: 'legacy outbound service edge is not dominated by the assembly fail-closed fence',
-        }));
-      }
+function checkRetiredServiceExecution(subject, sources, violations) {
+  const retiredPatterns = [
+    /\bensure_legacy_service_path_allowed\b/g,
+    /\b(?:pub\s+)?mod\s+service_dispatch\b|\bservice_dispatch\s*::/g,
+    /\b(?:trait|struct|type)\s+(?:OutboundServiceApi|OutboundServiceContext|ServiceDispatchContext)\b/g,
+    /\b(?:RetiredAssemblyOutboundServiceContext|RuntimeOutboundServiceContext|outbound_service_context_from_request|retired_assembly_outbound)\b/g,
+    /\bInterfaceCarrier\s*::\s*Remote\b/g,
+    /\b(?:RequestStartControl|OutboundServiceRequestStart|OutboundStartedRequest)\b/g,
+    /\bOutboundControlMessage\s*::\s*RequestStart\b/g,
+    /\bresponse_(?:start|chunk|end|error)_to_outbound\b/g,
+  ];
+  for (const source of sourcesWithin(
+    subject.zones?.retiredServiceExecution ?? [],
+    'rust',
+    sources,
+  )) {
+    for (const pattern of retiredPatterns) {
+      addPatternViolations(
+        source,
+        pattern,
+        'legacy-runtime-service-execution',
+        subject.id,
+        'retired outbound service execution and remote interface carriers must have zero runtime owners',
+        violations,
+      );
     }
   }
 }
@@ -255,8 +274,13 @@ function checkOwnedContextSpawns(registry, sources, violations) {
   }
 }
 
-function checkHostRequestEntry(ownerMatches, violations) {
-  for (const match of ownerMatches.get('host-request-entry') ?? []) {
+function checkHostRequestChain(ownerMatches, violations) {
+  const requestChainOwners = [
+    ...(ownerMatches.get('host-request-route-lookup') ?? []),
+    ...(ownerMatches.get('assembly-request-wire') ?? []),
+    ...(ownerMatches.get('assembly-request-spawn') ?? []),
+  ];
+  for (const match of requestChainOwners) {
     const forbidden = /\b(?:lookup_operation_in_state|lookup_request_operation|route_registry|lazy_[A-Za-z0-9_]*|load_[A-Za-z0-9_]*artifact|legacy_[A-Za-z0-9_]*|fallback_[A-Za-z0-9_]*)\b/g;
     for (const entry of match.item.identifiers.matchAll(forbidden)) {
       violations.push(runtimeExecutionBoundaryViolation({
@@ -390,18 +414,6 @@ function rustFunctionCallsOwner(text, declarationIndex, ownerSymbol) {
   return new RegExp(
     `\\b${escapeRuntimeExecutionBoundaryRegexp(ownerSymbol)}\\s*\\(`,
   ).test(text.slice(brace + 1, close));
-}
-
-function enclosingBlockStart(text, index) {
-  const stack = [];
-  for (let cursor = 0; cursor < index; cursor += 1) {
-    if (text[cursor] === '{') {
-      stack.push(cursor + 1);
-    } else if (text[cursor] === '}') {
-      stack.pop();
-    }
-  }
-  return stack.at(-1) ?? 0;
 }
 
 function callRange(text, index) {

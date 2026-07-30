@@ -1,0 +1,32 @@
+unary:
+  method: POST
+  path: /unary
+  kind: rawHttp
+  handler: entry.__test.unary
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+plain:
+  method: POST
+  path: /plain
+  kind: rawHttp
+  handler: entry.__test.plain
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+stream:
+  method: POST
+  path: /stream
+  kind: rawHttp
+  handler: entry.__test.stream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+slow:
+  method: GET
+  path: /slow
+  kind: rawHttp
+  handler: entry.__test.slow
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

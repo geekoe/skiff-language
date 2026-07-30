@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   decodeRuntimeFrame,
   encodeBinaryFrame,
   encodeRuntimeFrame,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+  RUNTIME_FRAME_SCHEMA_VERSION,
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS
 } from '../src/protocol/envelope.js';
@@ -11,8 +15,13 @@ import { decodeRuntimePayload, encodeRuntimePayload } from './helpers/runtimePay
 import {
   runtimeFrameHeaderFixtures,
   runtimeFrameHeaderSchemas,
+  validateResponseErrorFrame,
   validateRouterToRuntimeFrameHeader,
+  validateTelemetryEvent,
   validateRuntimeToRouterFrameHeader,
+  type ProtocolEnvelopeObjectSchema,
+  type ProtocolEnvelopeSchema,
+  type ProtocolSchemaProperty,
   type RouterToRuntimeFrameHeaderName,
   type RuntimeProtocolFrameHeaderName,
   type RuntimeToRouterFrameHeaderName
@@ -30,9 +39,12 @@ const runtimeFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
   'runtime.health',
-  'actor.put.request',
-  'actor.put.response',
-  'actor.put.error',
+  'actor.getOrCreate.request',
+  'actor.getOrCreate.response',
+  'actor.getOrCreate.error',
+  'actor.replace.request',
+  'actor.replace.response',
+  'actor.replace.error',
   'actor.find.request',
   'actor.find.response',
   'actor.find.error',
@@ -56,6 +68,7 @@ const runtimeFrameHeaderTypes = [
   'spawn.fail.error',
   'request.start',
   'package-test.start',
+  'router.bootstrap',
   'router.control',
   'runtime.registered',
   'response.start',
@@ -63,14 +76,18 @@ const runtimeFrameHeaderTypes = [
   'response.error',
   'response.chunk',
   'request.cancel',
-  'connection.send'
+  'connection.send',
+  'connection.request',
+  'connection.request.cancel',
+  'connection.response'
 ] as const satisfies readonly RuntimeProtocolFrameHeaderName[];
 
 const runtimeToRouterFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
   'runtime.health',
-  'actor.put.request',
+  'actor.getOrCreate.request',
+  'actor.replace.request',
   'actor.find.request',
   'actor.remove.request',
   'spawn.submit.request',
@@ -84,14 +101,19 @@ const runtimeToRouterFrameHeaderTypes = [
   'response.error',
   'response.chunk',
   'request.cancel',
-  'connection.send'
+  'connection.send',
+  'connection.request',
+  'connection.request.cancel'
 ] as const satisfies readonly RuntimeToRouterFrameHeaderName[];
 
 const routerToRuntimeFrameHeaderTypes = [
   'runtime.registered',
+  'router.bootstrap',
   'router.control',
-  'actor.put.response',
-  'actor.put.error',
+  'actor.getOrCreate.response',
+  'actor.getOrCreate.error',
+  'actor.replace.response',
+  'actor.replace.error',
   'actor.find.response',
   'actor.find.error',
   'actor.remove.response',
@@ -109,13 +131,580 @@ const routerToRuntimeFrameHeaderTypes = [
   'request.start',
   'package-test.start',
   'request.cancel',
+  'connection.response',
   'response.start',
   'response.end',
   'response.error',
   'response.chunk'
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
 
+function protocolEnvelopeSchemaBranches(
+  schema: ProtocolEnvelopeSchema
+): readonly ProtocolEnvelopeObjectSchema[] {
+  return 'oneOf' in schema ? schema.oneOf : [schema];
+}
+
+function matchesProtocolEnvelopeSchema(
+  schema: ProtocolEnvelopeSchema,
+  value: unknown
+): boolean {
+  const matchingBranches = protocolEnvelopeSchemaBranches(schema).filter((branch) =>
+    matchesProtocolObjectShape(
+      branch.required,
+      branch.properties,
+      branch.additionalProperties,
+      value
+    )
+  );
+  return matchingBranches.length === 1;
+}
+
+function matchesProtocolSchemaProperty(
+  schema: ProtocolSchemaProperty,
+  value: unknown
+): boolean {
+  const types: readonly string[] =
+    typeof schema.type === 'string' ? [schema.type] : schema.type;
+  if (!types.some((type) => matchesProtocolSchemaType(type, value))) {
+    return false;
+  }
+  if (
+    schema.enum !== undefined &&
+    !schema.enum.some((candidate) => Object.is(candidate, value))
+  ) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    if (schema.minLength !== undefined && value.length < schema.minLength) {
+      return false;
+    }
+    if (schema.pattern !== undefined && !new RegExp(schema.pattern).test(value)) {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    if (schema.minimum !== undefined && value < schema.minimum) {
+      return false;
+    }
+    if (schema.maximum !== undefined && value > schema.maximum) {
+      return false;
+    }
+  }
+  if (types.includes('object') && isProtocolObject(value)) {
+    return matchesProtocolObjectShape(
+      schema.required ?? [],
+      schema.properties ?? {},
+      schema.additionalProperties ?? true,
+      value
+    );
+  }
+  const itemSchema = schema.items;
+  if (types.includes('array') && itemSchema !== undefined && Array.isArray(value)) {
+    return value.every((item) => matchesProtocolSchemaProperty(itemSchema, item));
+  }
+  return true;
+}
+
+function matchesProtocolSchemaType(type: string, value: unknown): boolean {
+  switch (type) {
+    case 'any':
+      return true;
+    case 'null':
+      return value === null;
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'array':
+      return Array.isArray(value);
+    case 'object':
+      return isProtocolObject(value);
+    default:
+      return false;
+  }
+}
+
+function matchesProtocolObjectShape(
+  required: readonly string[],
+  properties: Record<string, ProtocolSchemaProperty>,
+  additionalProperties: boolean,
+  value: unknown
+): boolean {
+  if (!isProtocolObject(value)) {
+    return false;
+  }
+  if (
+    required.some(
+      (field) => !Object.prototype.hasOwnProperty.call(value, field)
+    )
+  ) {
+    return false;
+  }
+  for (const [field, fieldValue] of Object.entries(value)) {
+    const property = properties[field];
+    if (property === undefined) {
+      if (!additionalProperties) {
+        return false;
+      }
+      continue;
+    }
+    if (!matchesProtocolSchemaProperty(property, fieldValue)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isProtocolObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const actorControlActivationIdentityCorpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../runtime/transport/testdata/actor-control-activation-identity.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  valid: Record<string, unknown>;
+  invalid: Array<{ label: string; value: unknown }>;
+};
+
+const serviceErrorResponseV2Corpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../runtime/transport/testdata/service-error-response-v2.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  validCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+    payloadUtf8: string;
+    expected: Record<string, unknown>;
+  }>;
+  invalidCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+    payloadUtf8: string;
+  }>;
+};
+
+const runtimeAssemblyRequestCorpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  requestStartHeaders: Array<Record<string, unknown>>;
+  legacyRequestStartHeaders: Array<Record<string, unknown>>;
+};
+
+const runtimeWebSocketConnectWireCorpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../cross-system-fixtures/package-service-ecosystem/runtime-websocket-connect-wire.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  requestCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+  }>;
+  responseCases: Array<{
+    name: string;
+    header: Record<string, unknown>;
+  }>;
+};
+
+const serviceErrorResponseV2HeaderInvalidCaseNames = new Set([
+  'legacy-v1-generic-response-error',
+  'missing-error-kind',
+  'unknown-error-kind',
+  'wrong-envelope-type',
+  'fixed-header-extra-field',
+  'fixed-missing-request-id',
+  'fixed-empty-request-id',
+  'fixed-carries-generic-error',
+  'control-missing-error',
+  'control-error-extra-field',
+  'control-empty-code',
+  'control-empty-message',
+  'control-invalid-status-low'
+]);
+
+const serviceErrorResponseV2PayloadOnlyInvalidCaseNames = new Set([
+  'fixed-empty-payload',
+  'control-nonempty-payload',
+  'fixed-malformed-json',
+  'fixed-unknown-envelope-kind',
+  'fixed-envelope-extra-field',
+  'fixed-public-missing-type-id',
+  'fixed-public-whitespace-package-id',
+  'fixed-public-whitespace-schema-key',
+  'fixed-public-whitespace-type-id',
+  'fixed-public-empty-encoded-payload',
+  'fixed-public-non-byte-encoded-payload',
+  'fixed-public-encoded-payload-not-array',
+  'fixed-public-whitespace-trace-id',
+  'fixed-public-empty-error-id',
+  'fixed-platform-unknown-identity',
+  'fixed-internal-payload-extra-field',
+  'fixed-internal-empty-message'
+]);
+
+const observabilityFixture = JSON.parse(
+  readFileSync(
+    new URL('../../doc/architecture/fixtures/observability-minimal.json', import.meta.url),
+    'utf8'
+  )
+) as {
+  valid: {
+    batch: {
+      events: Array<Record<string, unknown>>;
+    };
+  };
+  invalidCases: Array<{
+    name: string;
+    payload: {
+      events?: Array<Record<string, unknown>>;
+    };
+  }>;
+};
+
 describe('runtime protocol fixtures and schemas', () => {
+  it('registers disjoint legacy, HTTP, websocketConnect, and websocketJsonRpc request.start schema branches', () => {
+    const schema = runtimeFrameHeaderSchemas['request.start'];
+    expect('oneOf' in schema).toBe(true);
+    if (!('oneOf' in schema)) throw new Error('request.start schema must be oneOf');
+    expect(schema.oneOf).toHaveLength(4);
+    expect(runtimeAssemblyRequestCorpus.requestStartHeaders.length).toBeGreaterThan(0);
+    expect(runtimeAssemblyRequestCorpus.legacyRequestStartHeaders.length).toBeGreaterThan(0);
+    expect(runtimeWebSocketConnectWireCorpus.requestCases).toHaveLength(3);
+
+    for (const header of runtimeAssemblyRequestCorpus.requestStartHeaders) {
+      expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
+        true
+      );
+    }
+    for (const testCase of runtimeWebSocketConnectWireCorpus.requestCases) {
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+    }
+    const websocketJsonRpc = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'request.start',
+      requestId: 'request-websocket-jsonrpc-schema',
+      mode: 'unary',
+      caller: { kind: 'gateway' },
+      routing: {
+        kind: 'runtimeAssembly',
+        assemblyIdentity:
+          'skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        assemblyGeneration: 11,
+        deployment: {
+          serviceId: 'example.com/chat',
+          contractVersion: '1.0.0',
+          deploymentRevision: 'chat-current',
+          deploymentArtifactIdentity:
+            'skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+        },
+        gatewayEntryIdentity:
+          'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        ingress: {
+          protocol: 'webSocket',
+          method: 'status.get',
+          path: '/chat'
+        }
+      },
+      trace: {
+        traceId: 'trace-websocket-jsonrpc',
+        spanId: 'span-websocket-jsonrpc'
+      },
+      websocketJsonRpc: {
+        profile: 'jsonrpc-2.0-text',
+        connectionId: 'connection-1',
+        websocketEntryId:
+          'skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616',
+        gatewayEntryIdentity:
+          'skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        businessIdentity: 'tenant-1'
+      },
+      testEffectsEnabled: false
+    };
+    expect(matchesProtocolEnvelopeSchema(schema, websocketJsonRpc)).toBe(true);
+
+    const staleHttpRouting = structuredClone(
+      runtimeAssemblyRequestCorpus.requestStartHeaders[0]!
+    );
+    (staleHttpRouting.routing as Record<string, unknown>).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    expect(matchesProtocolEnvelopeSchema(schema, staleHttpRouting)).toBe(false);
+
+    const staleConnectRouting = structuredClone(
+      runtimeWebSocketConnectWireCorpus.requestCases[1]!.header
+    );
+    (staleConnectRouting.routing as Record<string, unknown>).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936';
+    expect(matchesProtocolEnvelopeSchema(schema, staleConnectRouting)).toBe(false);
+
+    const staleConnectMetadata = structuredClone(
+      runtimeWebSocketConnectWireCorpus.requestCases[1]!.header
+    );
+    (
+      staleConnectMetadata.websocketConnect as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936';
+    expect(matchesProtocolEnvelopeSchema(schema, staleConnectMetadata)).toBe(false);
+
+    const staleJsonRpcRouting = structuredClone(websocketJsonRpc);
+    (
+      staleJsonRpcRouting.routing as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+    expect(matchesProtocolEnvelopeSchema(schema, staleJsonRpcRouting)).toBe(false);
+
+    const staleJsonRpcMetadata = structuredClone(websocketJsonRpc);
+    (
+      staleJsonRpcMetadata.websocketJsonRpc as Record<string, unknown>
+    ).gatewayEntryIdentity =
+      'skiff-gateway-entry-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+    expect(matchesProtocolEnvelopeSchema(schema, staleJsonRpcMetadata)).toBe(false);
+
+    for (const header of runtimeAssemblyRequestCorpus.legacyRequestStartHeaders) {
+      expect(matchesProtocolEnvelopeSchema(schema, header), String(header.requestId)).toBe(
+        true
+      );
+    }
+
+    const forgedCaller = structuredClone(runtimeAssemblyRequestCorpus.requestStartHeaders[0]!);
+    (forgedCaller.caller as Record<string, unknown>).target = 'forged-handler';
+    expect(matchesProtocolEnvelopeSchema(schema, forgedCaller)).toBe(false);
+
+    const websocket = structuredClone(runtimeAssemblyRequestCorpus.requestStartHeaders[0]!);
+    const routing = websocket.routing as Record<string, unknown>;
+    (routing.ingress as Record<string, unknown>).protocol = 'webSocket';
+    expect(matchesProtocolEnvelopeSchema(schema, websocket)).toBe(false);
+  });
+
+  it('matches websocketConnect and websocketJsonRpc response branches declaratively', () => {
+    const schema = runtimeFrameHeaderSchemas['response.end'];
+    expect('oneOf' in schema).toBe(true);
+    if (!('oneOf' in schema)) throw new Error('response.end schema must be oneOf');
+    expect(schema.oneOf).toHaveLength(6);
+    expect(runtimeWebSocketConnectWireCorpus.responseCases).toHaveLength(3);
+
+    for (const testCase of runtimeWebSocketConnectWireCorpus.responseCases) {
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+    }
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: 'request-websocket-jsonrpc-schema',
+        payloadPresent: true,
+        websocketJsonRpc: { outcome: 'success' }
+      })
+    ).toBe(true);
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: 'request-websocket-jsonrpc-schema',
+        payloadPresent: false,
+        websocketJsonRpc: { outcome: 'deadlineExceeded' }
+      })
+    ).toBe(true);
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: 'request-websocket-jsonrpc-schema',
+        payloadPresent: false,
+        websocketJsonRpc: { outcome: 'cancelled' }
+      })
+    ).toBe(false);
+  });
+
+  it('evaluates the response.error declarative oneOf against the shared header corpus', () => {
+    const schema = runtimeFrameHeaderSchemas['response.error'];
+    expect(schema.oneOf).toHaveLength(2);
+    expect(serviceErrorResponseV2HeaderInvalidCaseNames.size).toBe(13);
+    expect(serviceErrorResponseV2PayloadOnlyInvalidCaseNames.size).toBe(17);
+    expect(
+      [
+        ...serviceErrorResponseV2HeaderInvalidCaseNames,
+        ...serviceErrorResponseV2PayloadOnlyInvalidCaseNames
+      ].sort()
+    ).toEqual(serviceErrorResponseV2Corpus.invalidCases.map(({ name }) => name).sort());
+
+    for (const testCase of serviceErrorResponseV2Corpus.validCases) {
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+    }
+
+    for (const testCase of serviceErrorResponseV2Corpus.invalidCases) {
+      if (serviceErrorResponseV2HeaderInvalidCaseNames.has(testCase.name)) {
+        expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+          false
+        );
+        continue;
+      }
+      expect(
+        serviceErrorResponseV2PayloadOnlyInvalidCaseNames.has(testCase.name),
+        testCase.name
+      ).toBe(true);
+      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
+        true
+      );
+      expect(
+        validateResponseErrorFrame(
+          testCase.header,
+          Buffer.from(testCase.payloadUtf8, 'utf8')
+        ).ok,
+        testCase.name
+      ).toBe(false);
+    }
+  });
+
+  it('validates the shared service_error_response_v2 corpus without changing payload bytes', () => {
+    expect(serviceErrorResponseV2Corpus.validCases).toHaveLength(4);
+    expect(serviceErrorResponseV2Corpus.invalidCases.length).toBeGreaterThanOrEqual(20);
+
+    for (const testCase of serviceErrorResponseV2Corpus.validCases) {
+      const payloadBytes = Buffer.from(testCase.payloadUtf8, 'utf8');
+      const result = validateResponseErrorFrame(testCase.header, payloadBytes);
+      expect(result.ok, testCase.name).toBe(true);
+      if (!result.ok) {
+        continue;
+      }
+      expect(result.envelope.payloadBytes, testCase.name).toBe(payloadBytes);
+      expect(result.envelope.header.errorKind, testCase.name).toBe(
+        testCase.header.errorKind
+      );
+      if ('serviceError' in result.envelope) {
+        expect(result.envelope.serviceError.kind, testCase.name).toBe(testCase.expected.kind);
+        if (result.envelope.serviceError.kind === 'internalError') {
+          expect(result.envelope.serviceError.payload.traceId, testCase.name).toBe(
+            testCase.expected.traceId
+          );
+          expect(result.envelope.serviceError.payload.errorId, testCase.name).toBe(
+            testCase.expected.errorId
+          );
+        } else {
+          expect(result.envelope.serviceError.traceId, testCase.name).toBe(
+            testCase.expected.traceId
+          );
+          expect(result.envelope.serviceError.errorId, testCase.name).toBe(
+            testCase.expected.errorId
+          );
+          if (result.envelope.serviceError.kind === 'publicTypedError') {
+            expect(result.envelope.serviceError.packageId, testCase.name).toBe(
+              testCase.expected.packageId
+            );
+            expect(result.envelope.serviceError.stableSchemaKey, testCase.name).toBe(
+              testCase.expected.stableSchemaKey
+            );
+            expect(result.envelope.serviceError.packageSchemaTypeId, testCase.name).toBe(
+              testCase.expected.packageSchemaTypeId
+            );
+          } else {
+            expect(result.envelope.serviceError.builtinErrorIdentity, testCase.name).toBe(
+              testCase.expected.builtinErrorIdentity
+            );
+          }
+        }
+      } else {
+        expect(result.envelope.header.errorKind, testCase.name).toBe('control');
+      }
+    }
+
+    for (const testCase of serviceErrorResponseV2Corpus.invalidCases) {
+      expect(
+        validateResponseErrorFrame(
+          testCase.header,
+          Buffer.from(testCase.payloadUtf8, 'utf8')
+        ).ok,
+        testCase.name
+      ).toBe(false);
+    }
+  });
+
+  it('rejects legacy cancellation from both ordinary response.error channels', () => {
+    const fixedResult = validateResponseErrorFrame(
+      {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId: 'legacy-fixed-cancel',
+        errorKind: 'fixedService'
+      },
+      Buffer.from(
+        JSON.stringify({
+          kind: 'platformError',
+          builtinErrorIdentity: 'CancelError',
+          encodedPayload: [1],
+          traceId: 'trace-legacy-fixed-cancel',
+          errorId: 'error-legacy-fixed-cancel'
+        }),
+        'utf8'
+      )
+    );
+    const controlResult = validateResponseErrorFrame(
+      {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId: 'legacy-control-cancel',
+        errorKind: 'control',
+        error: {
+          code: 'CancelError',
+          message: 'legacy cancellation must not become an ordinary response'
+        }
+      },
+      new Uint8Array()
+    );
+
+    expect.soft(fixedResult.ok).toBe(false);
+    expect.soft(controlResult.ok).toBe(false);
+    if (!fixedResult.ok) {
+      expect(fixedResult.error).toContain('builtinErrorIdentity is not supported');
+    }
+    if (!controlResult.ok) {
+      expect(controlResult.error).toContain(
+        'error.code is reserved for internal cancellation'
+      );
+    }
+  });
+
+  it('validates telemetry visibility and correlation against the shared fixture', () => {
+    for (const event of observabilityFixture.valid.batch.events) {
+      expect(validateTelemetryEvent(event)).toEqual({ ok: true, envelope: event });
+    }
+    const invalidEvents = observabilityFixture.invalidCases
+      .filter((testCase) => testCase.name.startsWith('telemetry-batch-'))
+      .flatMap((testCase) => testCase.payload.events ?? []);
+    expect(invalidEvents).toHaveLength(8);
+    for (const event of invalidEvents) {
+      expect(validateTelemetryEvent(event).ok).toBe(false);
+    }
+  });
+
   it('maps Contract H cancel situations to stable request.cancel reasons', () => {
     const expected = {
       caller_abort: 'caller_cancel',
@@ -169,7 +758,7 @@ describe('runtime protocol fixtures and schemas', () => {
   it('returns clear validation errors for malformed runtime frame headers', () => {
     expect(
       validateRuntimeToRouterFrameHeader({
-        schemaVersion: 'skiff-runtime-frame-v1',
+        schemaVersion: 'skiff-runtime-frame-v2',
         type: 'response.end'
       })
     ).toEqual({
@@ -178,9 +767,10 @@ describe('runtime protocol fixtures and schemas', () => {
     });
     expect(
       validateRuntimeToRouterFrameHeader({
-        schemaVersion: 'skiff-runtime-frame-v1',
+        schemaVersion: 'skiff-runtime-frame-v2',
         type: 'response.error',
         requestId: 'request-1',
+        errorKind: 'control',
         error: {
           code: 'Broken'
         }
@@ -192,8 +782,17 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(validateRuntimeToRouterFrameHeader({ type: 'not.real' })).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error'
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, connection.request, connection.request.cancel, response.start, response.chunk, response.end, response.error'
     });
+  });
+
+  it('hard-cuts the ambiguous actor.put wire operation', () => {
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+        type: 'actor.put.request'
+      })
+    ).toMatchObject({ ok: false });
   });
 
   it('accepts and rejects service-independent runtime capability frames', () => {
@@ -246,7 +845,29 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('rejects non-canonical runtime registration identities', () => {
+  it('accepts exact current ServiceProtocolIdentity v5 and rejects legacy v4/v3 registration', () => {
+    const currentRegistration = {
+      ...runtimeFrameHeaderFixtures['runtime.register'],
+      serviceProtocolIdentity:
+        'skiff-service-protocol-v5:sha256:2222222222222222222222222222222222222222222222222222222222222222'
+    };
+    expect(validateRuntimeToRouterFrameHeader(currentRegistration)).toEqual({
+      ok: true,
+      envelope: currentRegistration
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['runtime.register'],
+        serviceProtocolIdentity:
+          'skiff-service-protocol-v3:sha256:2222222222222222222222222222222222222222222222222222222222222222'
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
+    });
+
     expect(
       validateRuntimeToRouterFrameHeader({
         ...runtimeFrameHeaderFixtures['runtime.register'],
@@ -255,7 +876,29 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-protocol-v1:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['runtime.register'],
+        serviceProtocolIdentity:
+          'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111'
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['runtime.register'],
+        protocolVersion: 'skiff-protocol-v1'
+      })
+    ).toEqual({
+      ok: false,
+      error: 'invalid runtime.register frame header envelope: protocolVersion is not supported'
     });
 
     expect(
@@ -294,17 +937,32 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('rejects non-canonical router request identities', () => {
+  it('requires current ServiceProtocolIdentity v5 on retained legacy request.start', () => {
     expect(
       validateRouterToRuntimeFrameHeader({
         ...runtimeFrameHeaderFixtures['request.start'],
-        serviceProtocolIdentity: 'skiff-protocol-v1:sha256:not-a-real-hash'
+        serviceProtocolIdentity:
+          'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111'
       })
     ).toEqual({
       ok: false,
       error:
-        'invalid request.start envelope: serviceProtocolIdentity must be skiff-protocol-v1:sha256:<64 lowercase hex>'
+        'invalid request.start envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
     });
+
+    for (const serviceProtocolIdentity of [
+      'skiff-service-protocol-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'skiff-service-protocol-v4:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'skiff-service-protocol-v5:sha256:1111',
+      'skiff-service-protocol-v5:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    ]) {
+      expect(
+        validateRouterToRuntimeFrameHeader({
+          ...runtimeFrameHeaderFixtures['request.start'],
+          serviceProtocolIdentity
+        })
+      ).toMatchObject({ ok: false });
+    }
 
     expect(
       validateRouterToRuntimeFrameHeader({
@@ -318,13 +976,53 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
+  it('requires current ServiceProtocolIdentity v5 on spawn submit, claim, and claimed items', () => {
+    const legacyV1 =
+      'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+    const legacyV3 =
+      'skiff-service-protocol-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+    const legacyV4 =
+      'skiff-service-protocol-v4:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+    const invalidV5 = [
+      'skiff-service-protocol-v5:sha256:1111',
+      'skiff-service-protocol-v5:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    ];
+
+    for (const serviceProtocolIdentity of [legacyV1, legacyV3, legacyV4, ...invalidV5]) {
+      expect(
+        validateRuntimeToRouterFrameHeader({
+          ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+          serviceProtocolIdentity
+        })
+      ).toMatchObject({ ok: false });
+      expect(
+        validateRuntimeToRouterFrameHeader({
+          ...runtimeFrameHeaderFixtures['spawn.claim.request'],
+          serviceProtocolIdentity
+        })
+      ).toMatchObject({ ok: false });
+      expect(
+        validateRouterToRuntimeFrameHeader({
+          ...runtimeFrameHeaderFixtures['spawn.claim.response'],
+          item: {
+            ...runtimeFrameHeaderFixtures['spawn.claim.response'].item,
+            serviceProtocolIdentity
+          }
+        })
+      ).toMatchObject({ ok: false });
+    }
+  });
+
   it('accepts optional serviceId on router request.start frames', () => {
     const requestEnvelope = {
       ...runtimeFrameHeaderFixtures['request.start'],
       serviceId: 'example.com/hello'
     };
 
-    expect(runtimeFrameHeaderSchemas['request.start'].properties.serviceId).toEqual({
+    const requestStartSchema = runtimeFrameHeaderSchemas['request.start'];
+    expect('oneOf' in requestStartSchema).toBe(true);
+    if (!('oneOf' in requestStartSchema)) throw new Error('request.start schema must be oneOf');
+    expect(requestStartSchema.oneOf[0].properties.serviceId).toEqual({
       type: 'string'
     });
     expect(validateRouterToRuntimeFrameHeader(requestEnvelope)).toEqual({
@@ -886,9 +1584,12 @@ describe('runtime protocol fixtures and schemas', () => {
 describe('runtime binary frame foundations', () => {
   it('covers the runtime binary frame header set', () => {
     for (const type of runtimeFrameHeaderTypes) {
-      expect(runtimeFrameHeaderSchemas[type]).toBeDefined();
+      const schema = runtimeFrameHeaderSchemas[type];
+      expect(schema).toBeDefined();
       expect(runtimeFrameHeaderFixtures[type]).toBeDefined();
-      expect(runtimeFrameHeaderSchemas[type].properties.type.enum).toContain(type);
+      for (const branch of protocolEnvelopeSchemaBranches(schema)) {
+        expect(branch.properties.type?.enum).toContain(type);
+      }
       expect(runtimeFrameHeaderFixtures[type].type).toBe(type);
       expect(runtimeFrameHeaderFixtures[type]).not.toHaveProperty('payload');
       expect(runtimeFrameHeaderFixtures[type]).not.toHaveProperty('payloadBytes');
@@ -920,75 +1621,97 @@ describe('runtime binary frame foundations', () => {
     expect(
       validateRuntimeToRouterFrameHeader({
         ...runtimeFrameHeaderFixtures['spawn.submit.request'],
-        actorRef: runtimeFrameHeaderFixtures['actor.put.response'].actorRef,
+        actorRef: runtimeFrameHeaderFixtures['actor.getOrCreate.response'].actorRef,
         methodName: 'receive'
       })
     ).toEqual({
       ok: false,
-      error: 'invalid spawn.submit.request envelope: actorRef is not supported'
+      error: 'invalid spawn.submit.request frame header envelope: actorRef is not supported'
     });
   });
 
-  it('requires package-test activation identity on spawn submit, claim, and descriptor frames', () => {
-    const packageTestBuildId =
-      'skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const activationIdentity = 'skiff-package-test-run-v1:example.com~hello:test-a:run:1';
-    const validSubmit = {
-      ...runtimeFrameHeaderFixtures['spawn.submit.request'],
-      buildId: packageTestBuildId,
-      activationIdentity
-    };
-    const validClaim = {
-      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
-      buildId: packageTestBuildId,
-      activationIdentity
-    };
-    const validResponse = {
-      ...runtimeFrameHeaderFixtures['spawn.claim.response'],
-      item: {
-        ...runtimeFrameHeaderFixtures['spawn.claim.response'].item,
-        buildId: packageTestBuildId,
-        activationIdentity
-      }
-    };
+  it('enforces the shared structured activation identity corpus on every actor/spawn request', () => {
+    const requestTypes = [
+      'actor.getOrCreate.request',
+      'actor.replace.request',
+      'actor.find.request',
+      'actor.remove.request',
+      'spawn.submit.request',
+      'spawn.claim.request',
+      'spawn.renew.request',
+      'spawn.complete.request',
+      'spawn.fail.request'
+    ] as const;
 
-    for (const header of [validSubmit, validClaim]) {
+    for (const type of requestTypes) {
+      const header = runtimeFrameHeaderFixtures[type];
+      expect(header.activationIdentity).toEqual(
+        actorControlActivationIdentityCorpus.valid
+      );
       expect(validateRuntimeToRouterFrameHeader(header)).toEqual({
         ok: true,
         envelope: header
       });
-      const { activationIdentity: _activationIdentity, ...missingActivation } = header;
-      expect(validateRuntimeToRouterFrameHeader(missingActivation)).toEqual({
-        ok: false,
-        error: expect.stringContaining('package-test build')
+      expect(runtimeFrameHeaderSchemas[type].required).toContain('activationIdentity');
+      expect(runtimeFrameHeaderSchemas[type].properties.activationIdentity).toEqual({
+        type: 'object',
+        required: [
+          'assemblyIdentity',
+          'generation',
+          'runtimeReplicaId',
+          'deploymentRevision'
+        ],
+        properties: {
+          assemblyIdentity: { type: 'string' },
+          generation: { type: 'integer' },
+          runtimeReplicaId: { type: 'string' },
+          deploymentRevision: { type: 'string' }
+        },
+        additionalProperties: false
       });
+
+      const { activationIdentity: _activationIdentity, ...missingActivation } = header;
+      expect(validateRuntimeToRouterFrameHeader(missingActivation).ok).toBe(false);
+
       expect(
         validateRuntimeToRouterFrameHeader({
           ...header,
-          activationIdentity: 'skiff-runtime-activation-v1:opaque:wrong-kind'
+          serviceDisplayName: 'legacy-inference'
         })
       ).toEqual({
         ok: false,
-        error: expect.stringContaining('skiff-package-test-run-v1')
+        error: `invalid ${type} frame header envelope: serviceDisplayName is not supported`
       });
-    }
 
-    expect(validateRouterToRuntimeFrameHeader(validResponse)).toEqual({
-      ok: true,
-      envelope: validResponse
-    });
-    const { activationIdentity: _activationIdentity, ...itemWithoutActivation } =
-      validResponse.item;
-    expect(
-      validateRouterToRuntimeFrameHeader({ ...validResponse, item: itemWithoutActivation })
-    ).toEqual({
-      ok: false,
-      error: expect.stringContaining('package-test build')
-    });
-
-    for (const header of [validClaim, validResponse]) {
+      for (const invalid of actorControlActivationIdentityCorpus.invalid) {
+        expect(
+          validateRuntimeToRouterFrameHeader({
+            ...header,
+            activationIdentity: invalid.value
+          }),
+          `${type} accepted ${invalid.label}`
+        ).toMatchObject({ ok: false });
+      }
       const decoded = decodeRuntimeFrame(encodeRuntimeFrame(header));
       expect(decoded.header).toEqual(header);
+    }
+
+    const claimResponse = runtimeFrameHeaderFixtures['spawn.claim.response'];
+    expect(validateRouterToRuntimeFrameHeader(claimResponse)).toEqual({
+      ok: true,
+      envelope: claimResponse
+    });
+    for (const invalid of actorControlActivationIdentityCorpus.invalid) {
+      expect(
+        validateRouterToRuntimeFrameHeader({
+          ...claimResponse,
+          item: {
+            ...claimResponse.item,
+            activationIdentity: invalid.value
+          }
+        }),
+        `spawn claim descriptor accepted ${invalid.label}`
+      ).toMatchObject({ ok: false });
     }
   });
 
@@ -1171,20 +1894,20 @@ describe('runtime binary frame foundations', () => {
       runtimeFrameHeaderFixtures['response.end'];
 
     expect(() => decodeRuntimeFrame(encodeBinaryFrame(requestStart))).toThrow(
-      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v1'
+      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v2'
     );
     expect(() => decodeRuntimeFrame(encodeBinaryFrame(responseEnd))).toThrow(
-      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v1'
+      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v2'
     );
     expect(validateRouterToRuntimeFrameHeader(requestStart)).toEqual({
       ok: false,
       error:
-        'invalid request.start frame header envelope: schemaVersion must be one of skiff-runtime-frame-v1'
+        'invalid request.start frame header envelope: schemaVersion must be one of skiff-runtime-frame-v2'
     });
     expect(validateRuntimeToRouterFrameHeader(responseEnd)).toEqual({
       ok: false,
       error:
-        'invalid response.end frame header envelope: schemaVersion must be one of skiff-runtime-frame-v1'
+        'invalid response.end frame header envelope: schemaVersion must be one of skiff-runtime-frame-v2'
     });
   });
 
@@ -1272,7 +1995,6 @@ describe('runtime binary frame foundations', () => {
     const websocketConnect = {
       result: 'accept',
       businessIdentity: 'user-1',
-      contextPayloadPresent: false,
       connectionPolicy: {
         maxConnections: 1,
         overflow: 'close-oldest'
@@ -1327,7 +2049,7 @@ describe('runtime binary frame foundations', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be a positive integer'
+        'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be an unsigned non-zero 32-bit integer'
     });
   });
 
@@ -1363,6 +2085,151 @@ describe('runtime binary frame foundations', () => {
     expect(validateRuntimeToRouterFrameHeader(withoutTarget)).toEqual({
       ok: false,
       error: 'invalid connection.send envelope: exactly one of businessIdentity or connectionId must be set'
+    });
+  });
+
+  it('accepts strict connection request, cancel, and response frame headers', () => {
+    const websocketEntryId =
+      `skiff-websocket-entry-v1:sha256:${'a'.repeat(64)}`;
+    const request = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request',
+      requestId: 'connection-request-1',
+      serviceId: 'example.com/chat',
+      websocketEntryId,
+      connectionId: 'connection-1',
+      profile: 'jsonrpc-2.0-text',
+      method: 'chat.send',
+      deadline: {
+        timeoutMs: 1000,
+        expiresAt: '2030-01-02T03:04:05Z'
+      }
+    };
+    expect(validateRuntimeToRouterFrameHeader(request)).toEqual({
+      ok: true,
+      envelope: request
+    });
+    const cancel = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request.cancel',
+      requestId: request.requestId,
+      reason: 'caller_cancel'
+    };
+    expect(validateRuntimeToRouterFrameHeader(cancel)).toEqual({
+      ok: true,
+      envelope: cancel
+    });
+    const response = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.response',
+      requestId: request.requestId,
+      outcome: 'remote',
+      remote: {
+        code: -32603,
+        message: ' peer failed ',
+        dataPresent: true
+      }
+    };
+    expect(validateRouterToRuntimeFrameHeader(response)).toEqual({
+      ok: true,
+      envelope: response
+    });
+  });
+
+  it('rejects unknown fields and invalid connection response branches', () => {
+    const websocketEntryId =
+      `skiff-websocket-entry-v1:sha256:${'a'.repeat(64)}`;
+    const request = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.request',
+      requestId: 'connection-request-1',
+      serviceId: 'example.com/chat',
+      websocketEntryId,
+      connectionId: 'connection-1',
+      profile: 'jsonrpc-2.0-text',
+      method: 'chat.send',
+      deadline: {
+        timeoutMs: 1000,
+        expiresAt: '2030-01-02T03:04:05Z'
+      }
+    };
+    for (const expiresAt of [
+      '2030-02-30T03:04:05Z',
+      '2030-01-02T03:04:05suffixZ',
+      '2030-01-02T24:04:05Z',
+      '2030-01-02T03:04:05+24:00'
+    ]) {
+      expect(validateRuntimeToRouterFrameHeader({
+        ...request,
+        deadline: {
+          ...request.deadline,
+          expiresAt
+        }
+      }).ok).toBe(false);
+    }
+    expect(validateRuntimeToRouterFrameHeader({
+      ...request,
+      deadline: {
+        ...request.deadline,
+        timeoutMs: Number.MAX_SAFE_INTEGER + 1
+      }
+    }).ok).toBe(false);
+
+    const base = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'connection.response',
+      requestId: 'connection-request-1'
+    };
+    expect(validateRouterToRuntimeFrameHeader({
+      ...base,
+      outcome: 'protocolError',
+      unexpected: true
+    }).ok).toBe(false);
+    expect(validateRouterToRuntimeFrameHeader({
+      ...base,
+      outcome: 'remote'
+    }).ok).toBe(false);
+    expect(validateRouterToRuntimeFrameHeader({
+      ...base,
+      outcome: 'success',
+      remote: {
+        code: 1,
+        message: 'forbidden',
+        dataPresent: false
+      }
+    }).ok).toBe(false);
+  });
+
+  it('requires service, entry, and connection identity for direct connection.send targets', () => {
+    const {
+      businessIdentity: _businessIdentity,
+      websocketEntryId: _websocketEntryId,
+      ...base
+    } = runtimeFrameHeaderFixtures['connection.send'];
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...base,
+        connectionId: 'connection-1'
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid connection.send envelope: websocketEntryId must be a non-empty string for connectionId target'
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...base,
+        websocketEntryId: 'entry-1',
+        connectionId: 'connection-1'
+      })
+    ).toEqual({
+      ok: true,
+      envelope: {
+        ...base,
+        websocketEntryId: 'entry-1',
+        connectionId: 'connection-1'
+      }
     });
   });
 

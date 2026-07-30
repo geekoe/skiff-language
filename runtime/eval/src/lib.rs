@@ -2,6 +2,12 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+mod actor_dispatch;
+pub mod actor_executor;
+#[cfg(test)]
+#[path = "assembly_execution/ordinary/test_runtime.rs"]
+pub(crate) mod actor_executor_test_runtime;
+pub mod actor_instance;
 mod assembly_execution;
 mod assembly_seam;
 pub mod binary_http_boundary;
@@ -35,20 +41,21 @@ pub mod recoverable_behavior;
 pub mod recoverable_spawn_payload;
 pub mod request_boundary;
 pub mod request_diagnostic;
+mod runtime_http_gateway;
 pub mod runtime_ops;
 pub mod runtime_value_view;
-pub mod service_dispatch;
+mod runtime_websocket_connect;
+mod runtime_websocket_jsonrpc;
 pub mod source_context;
 pub mod spawn_ops;
 pub mod stream_callback;
+mod test_effect_registry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod type_descriptor;
 pub mod type_projection;
-pub mod websocket_adapter;
 
 use env::{Env, Flow};
-use mutable_path::{apply_collection_mutation, CollectionMutation};
 use runtime_ops::*;
 
 pub use assembly_execution::{
@@ -59,9 +66,13 @@ pub use assembly_execution::{
     start_in_process_boundary_dispatch_probe_for_test,
     take_in_process_boundary_dispatch_records_for_test, InProcessBoundaryDispatchRecord,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub fn provider_stream_tasks_active_for_test() -> usize {
+    assembly_execution::provider_stream_tasks_active_for_test()
+}
 pub use assembly_seam::{
-    RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget,
-    RuntimeAssemblyServiceCallTarget,
+    AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError,
+    RuntimeAssemblyEvalTarget, RuntimeAssemblyServiceCallTarget,
 };
 pub use entrypoint::{
     EvalRequestEffectDouble, EvalRequestExecutionInput, EvalRequestExecutor,
@@ -71,25 +82,24 @@ pub use program_invocation::ProgramInvocationContext as EvalProgramContext;
 pub use request_boundary::{
     EvalRequestInvocation, EvalRequestInvocationArg, EvalRequestInvocationArgFrom,
     EvalRequestInvocationCallable, EvalRequestInvocationHttpAdapter, EvalRequestInvocationHttpKind,
-    EvalRequestInvocationInput, EvalRequestInvocationMode, EvalRequestInvocationWebSocketAdapter,
-    EvalRequestInvocationWebSocketConnectRequest, EvalRequestInvocationWebSocketContextCodec,
-    EvalRequestInvocationWebSocketContextExpectation, EvalRequestInvocationWebSocketKind,
-    EvalRequestInvocationWebSocketMessage, EvalRequestInvocationWebSocketMessageEncoding,
-    EvalRequestInvocationWebSocketMessageTag, EvalRequestInvocationWebSocketNameValue,
-    EvalRequestInvocationWebSocketPayloadSegment, EvalRequestInvocationWebSocketPayloadSegmentKind,
-    EvalRequestInvocationWebSocketReceiveRequest, EvalRequestWebSocketAdapterResult,
-    EvalRequestWebSocketConnectResponse, EvalRequestWebSocketConnectResult,
-    EvalRequestWebSocketContextCodec,
+    EvalRequestInvocationInput, EvalRequestInvocationMode,
+};
+pub use runtime_http_gateway::{RuntimeHttpGatewayCallable, RuntimeHttpGatewayExecutionTarget};
+pub use runtime_websocket_connect::{
+    RuntimeWebSocketConnectCallable, RuntimeWebSocketConnectExecutionTarget,
+    RuntimeWebSocketConnectRequest, RuntimeWebSocketConnectResult, RuntimeWebSocketNameValue,
+};
+pub use runtime_websocket_jsonrpc::{
+    RuntimeWebSocketJsonRpcCallable, RuntimeWebSocketJsonRpcExecutionOutcome,
+    RuntimeWebSocketJsonRpcExecutionTarget, RuntimeWebSocketJsonRpcExecutionTerminal,
+    RuntimeWebSocketJsonRpcRequest, RUNTIME_WEBSOCKET_JSONRPC_MAX_PAYLOAD_BYTES,
 };
 
-use serde_json::Value;
 use skiff_runtime_linked_program::{
-    ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
+    ExecutableAddr, LinkOverlay, LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext,
 };
 use skiff_runtime_model::{
-    request_heap::RequestHeap,
-    runtime_value::{RuntimeObjectFields, RuntimeValue},
-    type_plan::RuntimeTypePlan,
+    request_heap::RequestHeap, runtime_value::RuntimeValue, type_plan::RuntimeTypePlan,
 };
 
 use crate::{
@@ -107,10 +117,8 @@ pub use capabilities::TestEffectDouble;
 pub struct EvalRuntimeProgram {
     pub service_id: String,
     pub service_files: Vec<Arc<LinkedFileUnit>>,
-    pub packages: Vec<Arc<PackageUnit>>,
-    pub package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+    pub packages: Vec<Arc<RuntimeExecutionPackage>>,
     pub service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-    pub package_resources: Vec<skiff_runtime_linked_program::PublicationResourceTable>,
     pub spawn_routes: HashMap<String, ExecutableAddr>,
     pub link_overlay: LinkOverlay,
     pub types: RuntimeTypeContext,
@@ -121,13 +129,9 @@ pub trait EvalRuntimeProgramSource {
 
     fn service_files(&self) -> &[Arc<LinkedFileUnit>];
 
-    fn packages(&self) -> &[Arc<PackageUnit>];
-
-    fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>];
+    fn packages(&self) -> &[Arc<RuntimeExecutionPackage>];
 
     fn service_resources(&self) -> &skiff_runtime_linked_program::PublicationResourceTable;
-
-    fn package_resources(&self) -> &[skiff_runtime_linked_program::PublicationResourceTable];
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr>;
 
@@ -140,10 +144,8 @@ impl EvalRuntimeProgram {
     fn new(
         service_id: impl Into<String>,
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-        package_resources: Vec<skiff_runtime_linked_program::PublicationResourceTable>,
         spawn_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
@@ -152,9 +154,7 @@ impl EvalRuntimeProgram {
             service_id: service_id.into(),
             service_files,
             packages,
-            package_files,
             service_resources,
-            package_resources,
             spawn_routes,
             link_overlay,
             types,
@@ -166,9 +166,7 @@ impl EvalRuntimeProgram {
             source.service_id(),
             source.service_files().to_vec(),
             source.packages().to_vec(),
-            source.package_files().to_vec(),
             source.service_resources().clone(),
-            source.package_resources().to_vec(),
             source.spawn_routes().clone(),
             source.link_overlay().clone(),
             source.types().clone(),
@@ -180,19 +178,17 @@ impl EvalRuntimeProgram {
             &self.service_id,
             &self.service_files,
             &self.packages,
-            &self.package_files,
             &self.service_resources,
-            &self.package_resources,
             &self.spawn_routes,
             &self.link_overlay,
             &self.types,
         )
     }
 
-    pub fn resource_view(&self) -> skiff_runtime_linked_program::RuntimeProgramResourceView<'_> {
-        skiff_runtime_linked_program::RuntimeProgramResourceView::new(
+    pub fn resource_view(&self) -> skiff_runtime_linked_program::RuntimeExecutionResourceView<'_> {
+        skiff_runtime_linked_program::RuntimeExecutionResourceView::new(
             &self.service_resources,
-            &self.package_resources,
+            &self.packages,
         )
     }
 }
@@ -206,20 +202,12 @@ impl EvalRuntimeProgramSource for EvalRuntimeProgram {
         &self.service_files
     }
 
-    fn packages(&self) -> &[Arc<PackageUnit>] {
+    fn packages(&self) -> &[Arc<RuntimeExecutionPackage>] {
         &self.packages
-    }
-
-    fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
-        &self.package_files
     }
 
     fn service_resources(&self) -> &skiff_runtime_linked_program::PublicationResourceTable {
         &self.service_resources
-    }
-
-    fn package_resources(&self) -> &[skiff_runtime_linked_program::PublicationResourceTable] {
-        &self.package_resources
     }
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {
@@ -242,11 +230,23 @@ pub struct Interpreter {
     _stream_runtime_owner: Option<capabilities::StreamRuntimeOwner>,
     pub http_options: HttpRuntimeOptions,
     test_effect_doubles: TestEffectDoubleContext,
+    test_effects_enabled: bool,
+    runtime_test_effects: test_effect_registry::RuntimeTestEffectRegistry,
     /// Stream-producer calls whose result was bound to a value (e.g. `const s =
     /// producer(...)`) instead of being consumed inline by a `for-in`. The
     /// prepared producer is parked here keyed by the stream id it feeds, and is
     /// driven concurrently the first time that stream value is consumed.
     pub deferred_stream_producers: program_stream::DeferredStreamProducerRegistry,
+}
+
+/// Opaque, request-independent ownership of one inline test-effect registry.
+///
+/// Runtime orchestration uses this context to let an exact nested ingress borrow
+/// its parent test case's effects without exposing registry internals.
+#[derive(Clone, Default)]
+#[doc(hidden)]
+pub struct TestEffectCaseContext {
+    registry: test_effect_registry::RuntimeTestEffectRegistry,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -293,8 +293,47 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options: HttpRuntimeOptions::from_env(),
             test_effect_doubles,
+            test_effects_enabled: false,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
+    }
+
+    pub fn for_runtime_assembly_with_test_effect_double_sequences(
+        test_effect_doubles: HashMap<String, Vec<TestEffectDouble>>,
+        runtime_factory: EvalRuntimeFactory,
+    ) -> Self {
+        let stream_runtime = runtime_factory.stream_runtime();
+        let test_effect_doubles = runtime_factory.one_shot_test_effect_double_sequences(
+            test_effect_doubles,
+            &stream_runtime,
+            true,
+        );
+        let stream_runtime_owner = stream_runtime.owner();
+        Self {
+            program: None,
+            native_registry: NativeRegistry,
+            stream_runtime,
+            _stream_runtime_owner: Some(stream_runtime_owner),
+            http_options: HttpRuntimeOptions::from_env(),
+            test_effect_doubles,
+            test_effects_enabled: true,
+            runtime_test_effects: Default::default(),
+            deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn for_runtime_assembly_with_test_effect_case_context(
+        test_effect_case: TestEffectCaseContext,
+        runtime_factory: EvalRuntimeFactory,
+    ) -> Self {
+        let mut interpreter = Self::for_runtime_assembly_with_test_effect_double_sequences(
+            HashMap::new(),
+            runtime_factory,
+        );
+        interpreter.runtime_test_effects = test_effect_case.registry;
+        interpreter
     }
 
     pub fn with_program(
@@ -408,6 +447,8 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options,
             test_effect_doubles,
+            test_effects_enabled,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
     }
@@ -433,12 +474,27 @@ impl Interpreter {
             _stream_runtime_owner: Some(stream_runtime_owner),
             http_options,
             test_effect_doubles,
+            test_effects_enabled,
+            runtime_test_effects: Default::default(),
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
         }
     }
 
     pub fn test_effect_double_context(&self) -> TestEffectDoubleContext {
         self.test_effect_doubles.clone()
+    }
+
+    pub fn ensure_test_effects_consumed(&self) -> Result<()> {
+        self.test_effect_doubles.ensure_fully_consumed()
+    }
+
+    pub fn finalize_test_case(&self) -> Result<()> {
+        let runtime_result = self.runtime_test_effects.finalize();
+        let legacy_result = self.test_effect_doubles.finalize();
+        match (runtime_result, legacy_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), result) => result,
+        }
     }
 
     pub(crate) fn clone_for_stream_producer(&self) -> Self {
@@ -449,6 +505,8 @@ impl Interpreter {
             _stream_runtime_owner: None,
             http_options: self.http_options.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
+            test_effects_enabled: self.test_effects_enabled,
+            runtime_test_effects: self.runtime_test_effects.clone(),
             deferred_stream_producers: self.deferred_stream_producers.clone(),
         }
     }

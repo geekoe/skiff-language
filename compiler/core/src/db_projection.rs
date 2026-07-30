@@ -170,7 +170,7 @@ mod tests {
     use super::*;
 
     fn native(name: &str) -> TypeRefIr {
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: name.to_string(),
             args: Vec::new(),
         }

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     boundary::BoundaryOperationDescriptor,
-    compile_identity::{ContractOperationId, ContractTypeId, ServiceProtocolIdentity},
-    contract_types::ContractSchemaType,
+    compile_identity::{ContractOperationId, PackageSchemaTypeId, ServiceProtocolIdentity},
+    contract_types::PackageTypeRequirement,
 };
 
 /// Human-facing text is carried with the artifact but is deliberately outside
@@ -16,7 +16,7 @@ use crate::{
 pub struct ContractDiagnosticText {
     pub service: String,
     pub operations: BTreeMap<ContractOperationId, String>,
-    pub types: BTreeMap<ContractTypeId, String>,
+    pub types: BTreeMap<PackageSchemaTypeId, String>,
 }
 
 /// Independent, code-free service protocol artifact.
@@ -32,7 +32,7 @@ pub struct ServiceContract {
     pub contract_version: String,
     pub service_protocol_identity: ServiceProtocolIdentity,
     pub operations: BTreeMap<ContractOperationId, BoundaryOperationDescriptor>,
-    pub boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    pub package_type_requirements: Vec<PackageTypeRequirement>,
     pub diagnostic_text: ContractDiagnosticText,
 }
 
@@ -45,12 +45,12 @@ mod tests {
     #[test]
     fn service_contract_wire_rejects_missing_and_provider_fields() {
         let minimal = json!({
-            "schemaVersion": "skiff-service-contract-v2",
+            "schemaVersion": "skiff-service-contract-v5",
             "serviceId": "example.echo",
             "contractVersion": "1.0.0",
             "serviceProtocolIdentity": "protocol",
             "operations": {},
-            "boundarySchema": {},
+            "packageTypeRequirements": [],
             "diagnosticText": { "service": "", "operations": {}, "types": {} }
         });
         serde_json::from_value::<ServiceContract>(minimal.clone())
@@ -59,7 +59,7 @@ mod tests {
         for field in [
             "serviceProtocolIdentity",
             "operations",
-            "boundarySchema",
+            "packageTypeRequirements",
             "diagnosticText",
         ] {
             let mut missing = minimal.clone();

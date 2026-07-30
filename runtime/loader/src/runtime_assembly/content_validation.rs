@@ -4,7 +4,8 @@ use anyhow::Context;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::ArtifactRelativePath;
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageOperationTarget,
+    validate_boundary_operation_contract, validate_package_boundary_projections, FileIrRef,
+    FileIrUnit, PackageArtifact, PackageArtifactRef, PackageOperationTarget,
     PublicationResourceRef, RuntimeAssembly, ServiceContract, ServiceContractRef,
 };
 
@@ -23,6 +24,13 @@ pub(super) fn validate_contract_ref(
     skiff_artifact_identity::validate_service_contract_identities(contract)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("contract content is invalid for ref {reference:?}"))?;
+    for (operation_id, descriptor) in &contract.operations {
+        validate_boundary_operation_contract(&descriptor.contract).with_context(|| {
+            format!(
+                "contract operation {operation_id} has an invalid canonical boundary contract for ref {reference:?}"
+            )
+        })?;
+    }
     let actual = ServiceContractRef {
         service_id: contract.service_id.clone(),
         contract_version: contract.contract_version.clone(),
@@ -41,6 +49,12 @@ pub(super) fn validate_package_ref(
     skiff_artifact_identity::validate_package_artifact_identities(artifact)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("package content is invalid for ref {reference:?}"))?;
+    validate_package_boundary_projections(artifact).with_context(|| {
+        format!(
+            "package {} has invalid canonical boundary projections for ref {reference:?}",
+            artifact.package_build_id
+        )
+    })?;
     let actual = PackageArtifactRef {
         package_id: artifact.package_id.clone(),
         package_version: artifact.package_version.clone(),
@@ -73,19 +87,29 @@ pub(super) fn validate_file_ref_path(
     Ok(())
 }
 
+pub(super) fn validate_file_content<V>(
+    package: &PackageArtifactRef,
+    reference: &FileIrRef,
+    file: &FileIrUnit,
+    validate_identity: &V,
+) -> anyhow::Result<()>
+where
+    V: Fn(&FileIrUnit) -> anyhow::Result<()> + ?Sized,
+{
+    validate_identity(file).with_context(|| {
+        format!(
+            "File IR content is invalid for {} in package {}",
+            reference.file_ir_identity, package.package_build_id
+        )
+    })?;
+    validate_file_ref(package, reference, file)
+}
+
 pub(super) fn validate_file_ref(
     package: &PackageArtifactRef,
     reference: &FileIrRef,
     file: &FileIrUnit,
 ) -> anyhow::Result<()> {
-    skiff_artifact_identity::validate_file_ir_identity(file)
-        .map_err(anyhow::Error::from)
-        .with_context(|| {
-            format!(
-                "File IR content is invalid for {} in package {}",
-                reference.file_ir_identity, package.package_build_id
-            )
-        })?;
     if file.file_ir_identity != reference.file_ir_identity
         || file.module_path != reference.module_path
         || reference

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use skiff_artifact_model::{CallableEffectSummary, PackageCallableParameter};
 
@@ -62,15 +62,13 @@ fn build_executable_signature_facts_with_may_suspend(
             builder.insert(
                 SourceSymbolKey::new(module_path, &function.name),
                 function,
-                BTreeSet::new(),
+                Vec::new(),
                 false,
                 module_path,
             )?;
         }
         for implementation in &parsed.ast().impls {
-            let inherited_type_params = generic_type_parameter_names(&implementation.target)
-                .into_iter()
-                .collect::<BTreeSet<_>>();
+            let inherited_type_params = generic_type_parameter_names(&implementation.target);
             for method in &implementation.method_bodies {
                 builder.insert(
                     SourceSymbolKey::new(
@@ -117,12 +115,15 @@ impl ExecutableSignatureBuilder<'_> {
         &mut self,
         source_key: SourceSymbolKey,
         function: &FunctionDecl,
-        mut type_params: BTreeSet<String>,
+        mut type_params: Vec<String>,
         is_impl_method: bool,
         module_path: &str,
     ) -> Result<(), String> {
         type_params.extend(function.type_params.iter().cloned());
-        let context = TypeResolutionContext::with_type_params(module_path, type_params);
+        let context = TypeResolutionContext::with_type_params(
+            module_path,
+            type_params.iter().cloned().collect(),
+        );
         let parameters = function
             .params
             .iter()
@@ -141,6 +142,7 @@ impl ExecutableSignatureBuilder<'_> {
         let receiver = executable_receiver(function, is_impl_method, &self.resolver, &context)?;
         let may_suspend = self.may_suspend.get(&source_key)?;
         let signature = SourceExecutableSignature {
+            type_params,
             parameters,
             return_type,
             receiver,

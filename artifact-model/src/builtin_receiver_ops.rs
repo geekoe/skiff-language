@@ -2,6 +2,8 @@ use std::fmt;
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
+use crate::{CallableMayEffects, ValueProvenance};
+
 pub const RECEIVER_BUILTIN_CAPABILITY_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -230,6 +232,222 @@ pub struct BuiltinReceiverOpSpec {
     pub public_return_type: BuiltinReceiverPublicReturnType,
     pub mutates_receiver: bool,
     pub throws: BuiltinReceiverThrowSemantics,
+}
+
+/// Audited callable semantics for an exact canonical receiver target.
+///
+/// This registry is deliberately independent from receiver support: a
+/// supported operation without an entry remains fail closed for source
+/// callable-effect analysis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinReceiverCallableSemantics {
+    pub op: BuiltinReceiverOp,
+    pub effects: CallableMayEffects,
+    pub return_provenance: ValueProvenance,
+}
+
+const fn detached_scalar_receiver(
+    receiver: BuiltinReceiverRoot,
+    method: BuiltinReceiverMethod,
+) -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver,
+            method,
+            signature_version: 1,
+            canonical_key: canonical_key(receiver, method, 1),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Fresh,
+    }
+}
+
+const fn mutating_array_push() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::Array,
+            method: BuiltinReceiverMethod::Push,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::Array,
+                BuiltinReceiverMethod::Push,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
+const fn mutating_json_object_set() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::JsonObject,
+            method: BuiltinReceiverMethod::Set,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::JsonObject,
+                BuiltinReceiverMethod::Set,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
+const fn mutating_map_set() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::Map,
+            method: BuiltinReceiverMethod::Set,
+            signature_version: 1,
+            canonical_key: canonical_key(BuiltinReceiverRoot::Map, BuiltinReceiverMethod::Set, 1),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
+const fn mutating_json_object_delete() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::JsonObject,
+            method: BuiltinReceiverMethod::Delete,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::JsonObject,
+                BuiltinReceiverMethod::Delete,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
+const fn receiver_reachable_get(receiver: BuiltinReceiverRoot) -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver,
+            method: BuiltinReceiverMethod::Get,
+            signature_version: 1,
+            canonical_key: canonical_key(receiver, BuiltinReceiverMethod::Get, 1),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: true,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::CallerParameter { index: 0 },
+    }
+}
+
+pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantics] = &[
+    detached_scalar_receiver(BuiltinReceiverRoot::Array, BuiltinReceiverMethod::Length),
+    mutating_array_push(),
+    detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::Length),
+    detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::ToHex),
+    detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Floor),
+    detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Ceil),
+    detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Round),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::Concat,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::Contains,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::EndsWith,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::Lowercase,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::StartsWith,
+    ),
+    receiver_reachable_get(BuiltinReceiverRoot::Map),
+    detached_scalar_receiver(BuiltinReceiverRoot::Map, BuiltinReceiverMethod::Has),
+    mutating_map_set(),
+    receiver_reachable_get(BuiltinReceiverRoot::JsonObject),
+    detached_scalar_receiver(BuiltinReceiverRoot::JsonObject, BuiltinReceiverMethod::Has),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Date,
+        BuiltinReceiverMethod::AddMilliseconds,
+    ),
+    detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::Compare),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Date,
+        BuiltinReceiverMethod::DiffMilliseconds,
+    ),
+    detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::IsBefore),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Date,
+        BuiltinReceiverMethod::ToEpochMilliseconds,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Duration,
+        BuiltinReceiverMethod::ToMilliseconds,
+    ),
+    mutating_json_object_set(),
+    mutating_json_object_delete(),
+];
+
+pub fn builtin_receiver_callable_semantics(
+    op: BuiltinReceiverOp,
+) -> Option<&'static BuiltinReceiverCallableSemantics> {
+    BUILTIN_RECEIVER_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.op == op)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,7 +1057,156 @@ const fn canonical_key(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    #[test]
+    fn callable_semantics_registry_is_sparse_exact_and_safe() {
+        let expected = BTreeSet::from([
+            "receiver:Array.length@1",
+            "receiver:Array.push@1",
+            "receiver:Date.addMilliseconds@1",
+            "receiver:Date.compare@1",
+            "receiver:Date.diffMilliseconds@1",
+            "receiver:Date.isBefore@1",
+            "receiver:Date.toEpochMilliseconds@1",
+            "receiver:Duration.toMilliseconds@1",
+            "receiver:JsonObject.delete@1",
+            "receiver:JsonObject.get@1",
+            "receiver:JsonObject.has@1",
+            "receiver:JsonObject.set@1",
+            "receiver:Map.get@1",
+            "receiver:Map.has@1",
+            "receiver:Map.set@1",
+            "receiver:bytes.length@1",
+            "receiver:bytes.toHex@1",
+            "receiver:number.ceil@1",
+            "receiver:number.floor@1",
+            "receiver:number.round@1",
+            "receiver:string.concat@1",
+            "receiver:string.contains@1",
+            "receiver:string.endsWith@1",
+            "receiver:string.lowercase@1",
+            "receiver:string.startsWith@1",
+        ]);
+        let actual = BUILTIN_RECEIVER_CALLABLE_SEMANTICS
+            .iter()
+            .map(|semantics| semantics.op.canonical_key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), BUILTIN_RECEIVER_CALLABLE_SEMANTICS.len());
+
+        for semantics in BUILTIN_RECEIVER_CALLABLE_SEMANTICS {
+            let op = SUPPORTED_RECEIVER_BUILTIN_OPS
+                .iter()
+                .find(|spec| spec.op == semantics.op)
+                .map(|spec| spec.op)
+                .expect("callable receiver semantics must name a supported exact op");
+            assert_eq!(builtin_receiver_callable_semantics(op), Some(semantics));
+            let mutates_receiver = matches!(
+                semantics.op.canonical_key,
+                "receiver:Array.push@1"
+                    | "receiver:Map.set@1"
+                    | "receiver:JsonObject.set@1"
+                    | "receiver:JsonObject.delete@1"
+            );
+            let aliases_receiver = matches!(
+                semantics.op.canonical_key,
+                "receiver:JsonObject.get@1" | "receiver:Map.get@1"
+            );
+            assert_eq!(
+                semantics.effects,
+                CallableMayEffects {
+                    writes_caller_reachable: mutates_receiver,
+                    returns_caller_alias: aliases_receiver,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                }
+            );
+            assert_eq!(
+                semantics.return_provenance,
+                if aliases_receiver {
+                    ValueProvenance::CallerParameter { index: 0 }
+                } else if mutates_receiver {
+                    ValueProvenance::Constant
+                } else {
+                    ValueProvenance::Fresh
+                }
+            );
+        }
+
+        let mutable_array = builtin_receiver_op_by_name("Array", "push")
+            .expect("Array.push must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(mutable_array).is_some());
+        let mutable_json_object = builtin_receiver_op_by_name("JsonObject", "set")
+            .expect("JsonObject.set must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(mutable_json_object).is_some());
+        let mutable_map = builtin_receiver_op_by_name("Map", "set")
+            .expect("Map.set must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(mutable_map).is_some());
+        let deleting_json_object = builtin_receiver_op_by_name("JsonObject", "delete")
+            .expect("JsonObject.delete must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(deleting_json_object).is_some());
+
+        for missing in [builtin_receiver_op_by_name("string", "replaceAll").unwrap()] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(missing),
+                None,
+                "{} must remain fail closed",
+                missing.canonical_key
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_to_hex_callable_semantics_are_exact() {
+        let exact =
+            builtin_receiver_op_by_name("bytes", "toHex").expect("bytes.toHex op should exist");
+        let semantics = builtin_receiver_callable_semantics(exact)
+            .expect("bytes.toHex callable semantics should exist");
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:bytes.toHex@2",
+                ..exact
+            },
+            BuiltinReceiverOp {
+                receiver: BuiltinReceiverRoot::StringText,
+                canonical_key: "receiver:bytes.toHex@1",
+                ..exact
+            },
+            BuiltinReceiverOp {
+                method: BuiltinReceiverMethod::ToBase64,
+                canonical_key: "receiver:bytes.toHex@1",
+                ..exact
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
+            );
+        }
+    }
 
     #[test]
     fn date_and_duration_receiver_ops_publish_integer_return_types() {
@@ -855,6 +1222,176 @@ mod tests {
                 spec.public_return_type,
                 BuiltinReceiverPublicReturnType::Fixed("integer"),
                 "{root}.{method} should publish integer return type"
+            );
+        }
+    }
+
+    #[test]
+    fn number_ceil_callable_semantics_are_exact_and_detached() {
+        let op = builtin_receiver_op_by_name("number", "ceil")
+            .expect("number.ceil receiver op should exist");
+        let semantics =
+            builtin_receiver_callable_semantics(op).expect("number.ceil semantics should exist");
+
+        assert_eq!(op.canonical_key, "receiver:number.ceil@1");
+        assert_eq!(
+            builtin_receiver_op_spec_by_name("number", "ceil")
+                .expect("number.ceil spec should exist")
+                .public_return_type,
+            BuiltinReceiverPublicReturnType::Fixed("number")
+        );
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:number.ceil@2",
+                ..op
+            },
+            BuiltinReceiverOp {
+                canonical_key: "receiver:Number.ceil@1",
+                ..op
+            },
+            BuiltinReceiverOp {
+                method: BuiltinReceiverMethod::Floor,
+                canonical_key: "receiver:number.ceil@1",
+                ..op
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
+            );
+        }
+    }
+
+    #[test]
+    fn map_get_callable_semantics_are_exact_and_receiver_reachable() {
+        let op =
+            builtin_receiver_op_by_name("Map", "get").expect("Map.get receiver op should exist");
+        let semantics =
+            builtin_receiver_callable_semantics(op).expect("Map.get semantics should exist");
+
+        assert_eq!(op.canonical_key, "receiver:Map.get@1");
+        assert_eq!(
+            builtin_receiver_op_spec_by_name("Map", "get")
+                .expect("Map.get spec should exist")
+                .public_return_type,
+            BuiltinReceiverPublicReturnType::MapValue
+        );
+        assert_eq!(
+            semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: true,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(
+            semantics.return_provenance,
+            ValueProvenance::CallerParameter { index: 0 }
+        );
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:Map.get@2",
+                ..op
+            },
+            BuiltinReceiverOp {
+                canonical_key: "receiver:map.get@1",
+                ..op
+            },
+            BuiltinReceiverOp {
+                receiver: BuiltinReceiverRoot::JsonObject,
+                canonical_key: "receiver:Map.get@1",
+                ..op
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
+            );
+        }
+    }
+
+    #[test]
+    fn map_has_and_set_callable_semantics_are_exact() {
+        let has = builtin_receiver_op_by_name("Map", "has").expect("Map.has op should exist");
+        let has_semantics =
+            builtin_receiver_callable_semantics(has).expect("Map.has semantics should exist");
+        assert_eq!(
+            has_semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(has_semantics.return_provenance, ValueProvenance::Fresh);
+
+        let set = builtin_receiver_op_by_name("Map", "set").expect("Map.set op should exist");
+        let set_semantics =
+            builtin_receiver_callable_semantics(set).expect("Map.set semantics should exist");
+        assert_eq!(
+            set_semantics.effects,
+            CallableMayEffects {
+                writes_caller_reachable: true,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        );
+        assert_eq!(set_semantics.return_provenance, ValueProvenance::Constant);
+
+        for lookalike in [
+            BuiltinReceiverOp {
+                signature_version: 2,
+                canonical_key: "receiver:Map.has@2",
+                ..has
+            },
+            BuiltinReceiverOp {
+                receiver: BuiltinReceiverRoot::JsonObject,
+                canonical_key: "receiver:Map.has@1",
+                ..has
+            },
+            BuiltinReceiverOp {
+                canonical_key: "receiver:Map.has@1",
+                ..set
+            },
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(lookalike),
+                None,
+                "{} must remain fail closed",
+                lookalike.canonical_key
             );
         }
     }

@@ -26,6 +26,18 @@ impl<'a> PackageExportResolver<'a> {
     }
 
     pub fn resolve_package_symbol_path(&self, path: &str) -> Option<ResolvedPackageSymbol> {
+        if let Some((root, source_path)) = path.split_once('/') {
+            if source_path.is_empty()
+                || source_path.contains('/')
+                || !self.is_package_dependency_root(root)
+            {
+                return None;
+            }
+            return Some(ResolvedPackageSymbol {
+                dependency_ref: root.to_string(),
+                symbol_path: source_path.to_string(),
+            });
+        }
         let (root, rest) = path.split_once('.')?;
         if !(self.is_package_dependency_root(root) || Self::is_default_package_root(root)) {
             return None;
@@ -60,5 +72,20 @@ impl<'a> PackageExportResolver<'a> {
             }
         }
         rest.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_dependency_source_type_path_without_rewriting_it_as_public() {
+        let roots = BTreeMap::from([("widget".to_string(), vec!["api".to_string()])]);
+        let resolved = PackageExportResolver::new(&roots)
+            .resolve_package_symbol_path("widget/internal.codec.Private")
+            .unwrap();
+        assert_eq!(resolved.dependency_ref, "widget");
+        assert_eq!(resolved.symbol_path, "internal.codec.Private");
     }
 }

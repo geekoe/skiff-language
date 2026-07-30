@@ -38,7 +38,8 @@ pub(super) fn validate_package_import_dependencies(
         if PackageExportResolver::is_complex_package_id(package_id)
             && !dependencies.iter().any(|dependency| {
                 dependency.id == package_id
-                    && dependency.alias.as_deref() == Some(import_path.as_str())
+                    && (dependency.alias.as_deref() == Some(import_path.as_str())
+                        || dependency.top_level_alias.as_deref() == Some(import_path.as_str()))
             })
         {
             violations.push(format!(

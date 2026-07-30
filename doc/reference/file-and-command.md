@@ -124,6 +124,32 @@ rename / move / list / delete 是 DB 操作；文件内容仍指向不可变 `Fi
 
 Skiff 可以保证 workspace 的持久化、隔离、quota、挂载和生命周期钩子，但不承诺跨应用的强 POSIX transaction。并发正确性由应用自己保证；Skiff 可以后续提供 advisory lock，但不能把目录 mutation 包装成 portable DB transaction。
 
+### Package static resources
+
+`package.yml` 可以用顶层 `resources` 声明随当前 PackageArtifact 一起构建的静态资源。
+Service 首先是 Package，因此 service 代码也只使用其 `package.yml` 的资源声明；`service.yml` 不拥有第二份
+resource surface。
+
+`resources` 是字符串路径列表。每个路径都是相对 Package root 的 canonical logical path，并且必须：
+
+- 使用 `/` 分隔；
+- 不是绝对路径、Windows 绝对路径、glob、空路径或尾随 `/` 的目录路径；
+- 不包含空 segment、`.`、`..` 或 hidden file/directory segment；
+- 不指向 `.skiff` source 或 Skiff control file；
+- 按 exact-case 解析到普通文件，不能是目录或 symlink。
+
+同一个 `package.yml` 中的 logical path 必须唯一。Compiler 读取资源 bytes、长度和 SHA-256，并把资源
+content reference 写入 PackageArtifact；artifact writer 可按 content hash 去重存储。Package source archive、
+package pull 和 dev sync 都必须把这些文件纳入输入闭包。
+
+资源内容属于 Package build 输入，但不属于 Package Local ABI、PackageSchema、
+ServiceProtocolIdentity 或 GatewayEntryIdentity。只改资源内容会产生新的 PackageArtifact/build identity，
+不会改变这些接口身份。
+
+运行时始终按当前执行 callable 的 Package owner 查找资源。`std.resource.exists(path)` 对无效或缺失路径返回
+`false`；`std.resource.text(path)` 与 `std.resource.json<T>(path)` 抛 resource error。`text` 要求 UTF-8；
+`json<T>` 先按 UTF-8 读取，再按目标类型执行 schema-directed JSON decode。
+
 ## Transaction Boundary
 
 文件内容写入不是 service-owned DB transaction 的一部分。事务可见性应由业务 DB 中的引用控制。

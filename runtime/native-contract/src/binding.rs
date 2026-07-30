@@ -1,12 +1,11 @@
-use skiff_artifact_model::{NativeSignatureDef, NativeTarget};
-
 use super::NativeRequiredContext;
+use skiff_artifact_model::{NativeSignatureDef, NativeTarget};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NativeBindingKey(&'static str);
 
 impl NativeBindingKey {
-    pub fn from_static(value: &'static str) -> Self {
+    pub const fn from_static(value: &'static str) -> Self {
         Self(value)
     }
 

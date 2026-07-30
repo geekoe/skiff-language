@@ -4,9 +4,11 @@ use crate::file_ir::{
     validate_file_ir_service_calls, AssignTargetIr, BoxSourceIr, CallIr, CallTargetIr,
     ExecutableBody, ExprIr, ExternalRefTable, FileIrServiceCallValidationError, FileIrUnit,
     InterfaceDeclIr, MetadataValue, PackageCallableRef, PatternIr, ServiceCallRefIndex, StmtIr,
-    TypeDescriptorIr, TypeRefIr,
+    TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::{ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION};
+use skiff_artifact_model::{
+    NamedUnionBranchIr, NominalTypeRefBaseIr, ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+};
 
 pub(super) fn required_receiver_builtin_capability_version(unit: &FileIrUnit) -> u32 {
     let has_receiver_builtin = unit
@@ -158,7 +160,46 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
             }
         }
         StmtIr::Assign { target, .. } => collect_assign_target_external_refs(target, refs),
+        StmtIr::TestEffectRegister {
+            target,
+            expect,
+            step_expect,
+            outcome,
+        } => {
+            if let TestEffectRegisterTargetIr::PackageCallable {
+                package_ref,
+                callable_id,
+            } = target
+            {
+                push_unique(
+                    &mut refs.package_callables,
+                    PackageCallableRef {
+                        package_ref: package_ref.clone(),
+                        package_callable_id: callable_id.clone(),
+                    },
+                );
+            }
+            if let Some(expect) = expect {
+                collect_type_ref_external_refs(&expect.request_type, refs);
+            }
+            if let Some(step_expect) = step_expect {
+                collect_type_ref_external_refs(&step_expect.request_type, refs);
+            }
+            match outcome {
+                TestEffectOutcomeIr::Respond { value_type, .. } => {
+                    collect_type_ref_external_refs(value_type, refs)
+                }
+                TestEffectOutcomeIr::Throw { payload_type, .. } => {
+                    collect_type_ref_external_refs(payload_type, refs)
+                }
+                TestEffectOutcomeIr::Stream { item_type, .. } => {
+                    collect_type_ref_external_refs(item_type, refs)
+                }
+            }
+        }
         StmtIr::Let { .. }
+        | StmtIr::Timeout { .. }
+        | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::ForIn { .. }
         | StmtIr::Assert { .. }
@@ -175,6 +216,9 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
 
 fn collect_assign_target_external_refs(target: &AssignTargetIr, refs: &mut ExternalRefTable) {
     match target {
+        AssignTargetIr::ActorSelfField { field_type, .. } => {
+            collect_type_ref_external_refs(field_type, refs);
+        }
         AssignTargetIr::Slot { .. }
         | AssignTargetIr::Field { .. }
         | AssignTargetIr::Index { .. } => {
@@ -185,7 +229,9 @@ fn collect_assign_target_external_refs(target: &AssignTargetIr, refs: &mut Exter
 
 fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
     match expr {
-        ExprIr::Construct { type_ref, .. } => collect_type_ref_external_refs(type_ref, refs),
+        ExprIr::Construct { type_ref, .. } | ExprIr::RepresentationWrap { type_ref, .. } => {
+            collect_type_ref_external_refs(type_ref, refs)
+        }
         ExprIr::InterfaceBox {
             interface, source, ..
         } => {
@@ -204,9 +250,7 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
             }
         }
         ExprIr::Catch { catch_type, .. } => {
-            if let Some(ty) = catch_type {
-                collect_type_ref_external_refs(ty, refs);
-            }
+            collect_type_ref_external_refs(catch_type, refs);
         }
         ExprIr::DbOperation { operation } => {
             collect_type_ref_external_refs(&operation.target.type_ref, refs);
@@ -227,6 +271,12 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
             collect_type_ref_external_refs(&read.target.type_ref, refs);
             collect_type_ref_external_refs(&read.result_type, refs);
         }
+        ExprIr::ActorSelfField { field_type, .. } => {
+            collect_type_ref_external_refs(field_type, refs);
+        }
+        ExprIr::LoadPackageConst { symbol } => {
+            push_unique(&mut refs.package_symbols, symbol.clone());
+        }
         ExprIr::Literal { .. }
         | ExprIr::LoadSlot { .. }
         | ExprIr::LoadConst { .. }
@@ -237,7 +287,9 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         | ExprIr::Binary { .. }
         | ExprIr::Throw { .. }
         | ExprIr::Rethrow { .. }
-        | ExprIr::ValueBlock { .. } => {}
+        | ExprIr::Timeout { .. }
+        | ExprIr::ValueBlock { .. }
+        | ExprIr::ConcurrentValue { .. } => {}
     }
 }
 
@@ -262,8 +314,8 @@ fn collect_metadata_external_refs(metadata: &MetadataValue, refs: &mut ExternalR
 
 fn collect_call_target_external_refs(target: &CallTargetIr, refs: &mut ExternalRefTable) {
     match target {
-        CallTargetIr::ExternalServiceSymbol { symbol } => {
-            push_unique(&mut refs.service_symbols, symbol.clone());
+        CallTargetIr::ActorMethod { actor, .. } => {
+            push_unique(&mut refs.service_symbols, actor.clone());
         }
         CallTargetIr::ServiceDependencySymbol { symbol } => {
             push_unique(&mut refs.service_dependency_symbols, symbol.clone());
@@ -301,7 +353,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        validate_file_ir_service_calls, ContractOperationId, ServiceProtocolIdentity,
+        validate_file_ir_service_calls, ContractOperationId, PackageRefIr, PackageSymbolRef,
+        ServiceProtocolIdentity, TypeDeclIr,
     };
 
     use super::*;
@@ -314,7 +367,7 @@ mod tests {
         unit.external_refs.service_call_refs = vec![later.clone(), earlier.clone()];
         unit.constants.push(skiff_artifact_model::ConstIr {
             name: "calls".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody {
                 expressions: vec![service_call(0), service_call(1), service_call(0)],
                 ..ExecutableBody::default()
@@ -326,6 +379,21 @@ mod tests {
 
         assert_eq!(unit.external_refs.service_call_refs, vec![earlier, later]);
         assert_eq!(service_call_indices(&unit), vec![1, 0, 1]);
+        assert!(unit.constants[0]
+            .body
+            .expressions
+            .iter()
+            .all(|expression| matches!(
+                expression,
+                ExprIr::Call {
+                    call: CallIr {
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
+                        ..
+                    },
+                }
+            )));
         validate_file_ir_service_calls(&unit).unwrap();
     }
 
@@ -340,11 +408,74 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn rebuild_collects_representation_wrap_target_and_child_external_refs() {
+        let package_symbol = |symbol_path: &str| PackageSymbolRef {
+            package: PackageRefIr::Dependency {
+                dependency_ref: "model".to_string(),
+            },
+            symbol_path: symbol_path.to_string(),
+            abi_expectation: Some("local-abi:model".to_string()),
+        };
+        let payload = package_symbol("payload");
+        let first_argument = package_symbol("First");
+        let second_argument = package_symbol("Second");
+        let mut unit = FileIrUnit::empty("consumer.main", "source");
+        unit.type_table.push(TypeDeclIr {
+            name: "Generic".to_string(),
+            descriptor: TypeDescriptorIr::Representation {
+                representation: TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            },
+            type_params: vec!["T".to_string(), "U".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        unit.constants.push(skiff_artifact_model::ConstIr {
+            name: "wrapped".to_string(),
+            ty: TypeRefIr::builtin("void"),
+            body: ExecutableBody {
+                expressions: vec![
+                    ExprIr::LoadPackageConst {
+                        symbol: payload.clone(),
+                    },
+                    ExprIr::RepresentationWrap {
+                        value: skiff_artifact_model::ExprRefIr { expression: 0 },
+                        type_ref: TypeRefIr::AppliedNominal {
+                            base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                            arguments: vec![
+                                TypeRefIr::PackageSymbol {
+                                    symbol: first_argument.clone(),
+                                },
+                                TypeRefIr::PackageSymbol {
+                                    symbol: second_argument.clone(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+                ..ExecutableBody::default()
+            },
+            source_span: None,
+        });
+
+        rebuild_external_refs_for_file_ir_unit(&mut unit).unwrap();
+
+        assert_eq!(
+            unit.external_refs.package_symbols,
+            vec![payload, first_argument, second_argument]
+        );
+    }
+
     fn service_call(index: u32) -> ExprIr {
         ExprIr::Call {
             call: CallIr {
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(index),
+                },
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
@@ -399,13 +530,24 @@ fn collect_type_ref_external_refs_from_descriptor(
                 collect_type_ref_external_refs(field, refs);
             }
         }
-        TypeDescriptorIr::Union { variants } => {
-            for variant in variants {
-                collect_type_ref_external_refs(variant, refs);
+        TypeDescriptorIr::Representation { representation } => {
+            collect_type_ref_external_refs(representation, refs);
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        collect_type_ref_external_refs(nominal_type, refs);
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        collect_type_ref_external_refs(payload_type, refs);
+                    }
+                    NamedUnionBranchIr::Literal { .. } => {}
+                }
             }
         }
         TypeDescriptorIr::Alias { target } => collect_type_ref_external_refs(target, refs),
-        TypeDescriptorIr::Native { .. } => {}
+        TypeDescriptorIr::Interface => {}
     }
 }
 
@@ -417,9 +559,25 @@ fn collect_type_ref_external_refs(ty: &TypeRefIr, refs: &mut ExternalRefTable) {
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             push_unique(&mut refs.service_symbols, symbol.clone());
         }
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_type_ref_external_refs(arg, refs);
+            }
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            match base {
+                NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                    push_unique(&mut refs.service_symbols, symbol.clone());
+                }
+                NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+                    push_unique(&mut refs.package_symbols, symbol.clone());
+                }
+                NominalTypeRefBaseIr::LocalType { .. }
+                | NominalTypeRefBaseIr::PublicationType { .. }
+                | NominalTypeRefBaseIr::PackageSchema { .. } => {}
+            }
+            for argument in arguments {
+                collect_type_ref_external_refs(argument, refs);
             }
         }
         TypeRefIr::Record { fields } => {
@@ -447,7 +605,10 @@ fn collect_type_ref_external_refs(ty: &TypeRefIr, refs: &mut ExternalRefTable) {
             }
             collect_type_ref_external_refs(return_type, refs);
         }
-        TypeRefIr::LocalType { .. } | TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
         TypeRefIr::PublicationType { .. } => {}
     }
 }

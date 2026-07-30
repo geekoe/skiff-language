@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn generic_callable_binders_survive_executable_and_public_signature_handoff() {
+    let model = build_model(
+        r#"
+            function submit<T, Id>(id: Id) -> T? {
+                return null
+            }
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+    )
+    .expect("generic callable signature builds");
+
+    let executable = model
+        .executable_signatures()
+        .signature(&crate::SourceSymbolKey::new("api", "submit"))
+        .expect("generic executable signature");
+    assert_eq!(executable.type_params, ["T", "Id"]);
+    assert!(matches!(
+        &executable.parameters[0].ty,
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::TypeParam { name }
+        } if name == "Id"
+    ));
+
+    let public = model
+        .callable_signatures()
+        .signature("submit")
+        .expect("generic public signature");
+    assert_eq!(public.type_params, ["T", "Id"]);
+    assert!(matches!(
+        &public.return_type,
+        PackageTypeRef::Nullable { inner }
+            if matches!(
+                inner.as_ref(),
+                PackageTypeRef::Local {
+                    local_type: TypeRefIr::TypeParam { name }
+                } if name == "T"
+            )
+    ));
+}
+
+#[test]
 fn explicit_receiver_is_owned_by_the_executable_fact_and_trimmed_once_from_public_view() {
     let dependency_analysis = contract_dependencies();
     let publication_api = PublicationApiSpec::from_public_instances(vec![
@@ -75,6 +117,7 @@ fn public_view_fails_when_its_canonical_executable_fact_is_missing() {
         model.export_bindings(),
         model.type_resolution(),
         &executable_signatures,
+        model.interface_signatures(),
     )
     .expect_err("public view cannot reconstruct a missing executable fact");
     assert!(error.contains("has no exact source executable signature fact"));
@@ -103,25 +146,32 @@ fn duplicate_source_executable_fact_fails_closed() {
 }
 
 #[test]
-fn inline_source_shape_with_contract_nominal_has_no_local_projection_fallback() {
+fn inline_source_shape_preserves_nested_contract_nominal_identity() {
     let dependency_analysis = contract_dependencies();
-    let (parsed_sources, type_resolution) = parsed_type_model(
+    let model = build_model(
         "function submit(input: { user: payments.User }) -> void {}",
-        "inline-contract-shape",
-    );
-    let effects = crate::SourceCallableEffectFacts::analysis_pending(&parsed_sources);
-    let error = SourceExecutableSignatureFacts::build(
-        &parsed_sources,
-        &type_resolution,
         &dependency_analysis,
-        &effects,
+        &BTreeMap::new(),
     )
-    .expect_err("inline source shape cannot erase its contract nominal");
-    assert!(
-        error.contains("embeds a contract nominal")
-            && error.contains("no exact PackageTypeRef representation"),
-        "unexpected error: {error}"
-    );
+    .expect("inline source shape should retain the exact nested contract nominal");
+    let signature = model
+        .executable_signatures()
+        .signature(&crate::SourceSymbolKey::new("api", "submit"))
+        .expect("submit executable signature");
+    let PackageTypeRef::Local {
+        local_type: TypeRefIr::Record { fields },
+    } = &signature.parameters[0].ty
+    else {
+        panic!("inline record should remain a structural local type")
+    };
+    assert!(matches!(
+        fields.get("user"),
+        Some(TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        }) if package_id == "example.payments.package" && stable_schema_key == "User"
+    ));
 }
 
 #[test]
@@ -172,8 +222,14 @@ fn parsed_type_model(
     let parsed_sources =
         parse_publication_sources(&fixture_root, &[source]).expect("fixture source facts build");
     let type_symbols = crate::publication_type_symbols(&parsed_sources);
-    let type_resolution =
-        TypeResolutionModel::build(&parsed_sources, &BTreeMap::new(), &[], None, &type_symbols)
-            .expect("ordinary source types resolve before exact projection");
+    let type_resolution = TypeResolutionModel::build(
+        &parsed_sources,
+        &BTreeMap::new(),
+        &[],
+        None,
+        None,
+        &type_symbols,
+    )
+    .expect("ordinary source types resolve before exact projection");
     (parsed_sources, type_resolution)
 }

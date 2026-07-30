@@ -1,9 +1,11 @@
 mod operation;
 mod projection;
+mod validation;
 mod value;
 
 pub use operation::*;
 pub use projection::*;
+pub use validation::*;
 pub use value::*;
 
 #[cfg(test)]
@@ -74,6 +76,136 @@ mod tests {
     }
 
     #[test]
+    fn caller_projection_path_wire_is_structured_and_strict() {
+        let provenance = ValueProvenance::CallerParameterProjection {
+            index: 2,
+            path: ValueProjectionPath::new(vec![
+                ValueProjectionStep::Field {
+                    name: "state".to_string(),
+                },
+                ValueProjectionStep::ContainerElement {},
+            ])
+            .unwrap(),
+        };
+        let wire = json!({
+            "kind": "callerParameterProjection",
+            "index": 2,
+            "path": {
+                "steps": [
+                    { "kind": "field", "name": "state" },
+                    { "kind": "containerElement" }
+                ]
+            }
+        });
+        assert_eq!(serde_json::to_value(&provenance).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ValueProvenance>(wire).unwrap(),
+            provenance
+        );
+
+        let mut too_long = Vec::new();
+        for _ in 0..=MAX_VALUE_PROJECTION_PATH_STEPS {
+            too_long.push(json!({ "kind": "containerElement" }));
+        }
+        for invalid in [
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": { "steps": [] }
+            }),
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": { "steps": [{ "kind": "field", "name": "" }] }
+            }),
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": { "steps": [{ "kind": "field", "name": " padded " }] }
+            }),
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": { "steps": too_long }
+            }),
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": {
+                    "steps": [{ "kind": "containerElement", "name": "forbidden" }]
+                }
+            }),
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": {
+                    "steps": [{ "kind": "unknown" }]
+                }
+            }),
+            json!({
+                "kind": "callerParameterProjection",
+                "index": 2,
+                "path": {
+                    "steps": [{ "kind": "containerElement" }],
+                    "extra": true
+                }
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<ValueProvenance>(invalid.clone()).is_err(),
+                "invalid caller projection path must fail strict decoding: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn analyzed_provenance_wire_requires_direct_return_origins() {
+        let summary = CallableProvenanceSummary::Analyzed {
+            return_origins: vec![
+                ValueProvenance::Fresh,
+                ValueProvenance::CallerParameterProjection {
+                    index: 0,
+                    path: ValueProjectionPath::field("payload").unwrap(),
+                },
+            ],
+            direct_return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        };
+        let wire = json!({
+            "kind": "analyzed",
+            "returnOrigins": [
+                { "kind": "fresh" },
+                {
+                    "kind": "callerParameterProjection",
+                    "index": 0,
+                    "path": {
+                        "steps": [{ "kind": "field", "name": "payload" }]
+                    }
+                }
+            ],
+            "directReturnOrigins": [{ "kind": "fresh" }],
+            "throwOrigins": [],
+            "escapeLanes": []
+        });
+        assert_eq!(serde_json::to_value(&summary).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<CallableProvenanceSummary>(wire.clone()).unwrap(),
+            summary
+        );
+
+        let mut missing_direct = wire;
+        missing_direct
+            .as_object_mut()
+            .expect("fixture is an object")
+            .remove("directReturnOrigins");
+        assert!(
+            serde_json::from_value::<CallableProvenanceSummary>(missing_direct).is_err(),
+            "directReturnOrigins is a required semantic fact, not a compatibility default"
+        );
+    }
+
+    #[test]
     fn available_projection_wire_is_contract_agnostic_and_descriptor_is_strict() {
         let operation_contract = operation_contract();
         let projection = BoundaryCallableProjection::Available {
@@ -91,6 +223,24 @@ mod tests {
             serde_json::from_value::<BoundaryCallableProjection>(wire.clone()).unwrap(),
             projection
         );
+
+        let mut legacy_operation = serde_json::to_value(&operation_contract).unwrap();
+        legacy_operation["errors"] = json!({ "kind": "none" });
+        assert!(
+            serde_json::from_value::<BoundaryOperationContract>(legacy_operation).is_err(),
+            "operation-specific errors must not re-enter the open channel contract"
+        );
+        for (field, value) in [
+            ("maySuspend", json!(false)),
+            ("cancellation", json!({ "kind": "notCancellable" })),
+        ] {
+            let mut legacy_operation = serde_json::to_value(&operation_contract).unwrap();
+            legacy_operation[field] = value;
+            assert!(
+                serde_json::from_value::<BoundaryOperationContract>(legacy_operation).is_err(),
+                "provider-owned {field} must not re-enter the operation contract"
+            );
+        }
 
         for forbidden in ["descriptor", "operationId", "stableKey"] {
             let mut invalid = wire.clone();
@@ -141,11 +291,8 @@ mod tests {
                     lifetime: BoundaryValueLifetime::Call,
                 },
             },
-            errors: BoundaryErrorContract::None,
             stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
             callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
             effect_guarantee: BoundaryEffectGuarantee {
                 detached_parameters: true,
                 detached_return: true,
@@ -174,6 +321,7 @@ mod tests {
             },
             provenance: CallableProvenanceSummary::Analyzed {
                 return_origins: Vec::new(),
+                direct_return_origins: Vec::new(),
                 throw_origins: Vec::new(),
                 escape_lanes: Vec::new(),
             },

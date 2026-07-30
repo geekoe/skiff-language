@@ -6,16 +6,14 @@ use skiff_runtime_boundary::{
     binary::decode_payload_plan,
     payload::{PayloadBoundary, PayloadBoundaryKind},
 };
-use skiff_runtime_capability_context::{
-    RequestPayloadContext, RequestPayloadEncoding, StreamRuntimeError,
-};
+use skiff_runtime_capability_context::{RequestPayloadContext, RequestPayloadEncoding};
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_linked_program::ConstAddr;
 use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable};
 use skiff_runtime_linked_type_plan::{PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapNode, RuntimeValue},
+    runtime_value::{HeapNode, RuntimeValue, RuntimeValueCarrier},
     type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan},
 };
 
@@ -28,6 +26,7 @@ use super::{
     },
     capabilities::{ExecutionControl, StreamCancelSignal, StreamPoll, TypedStreamSink},
     env::{Env, Flow},
+    exceptions::annotate_runtime_type_plan,
     flow_completion::FlowCompletionPolicy,
     invocation::{
         BinaryHttpRequestPlan, EvalBoundaryProjection, EvalInvocation, EvalProgramProjection,
@@ -40,8 +39,8 @@ use super::{
         decode_spawn_args_payload, executable_request_recoverable_expected_plan,
     },
     runtime_ops::{
-        runtime_coerce_required_plan, runtime_empty_object, runtime_from_wire_required_plan,
-        runtime_to_wire_required_plan,
+        runtime_carrier_for_plan, runtime_coerce_required_plan, runtime_empty_object,
+        runtime_from_wire_required_plan, runtime_to_wire_required_plan,
     },
     stream_callback::{
         map_callback_error, map_eval_error, EvalStreamExecutionError, EvalStreamResult,
@@ -50,8 +49,10 @@ use super::{
 };
 use crate::{
     capabilities::StreamConsumerCleanup,
-    error::{Result, RuntimeError},
+    error::{stream_runtime_error_from_eval, Result, RuntimeError},
 };
+
+mod current_scope;
 
 pub struct ProgramInvocationInput<'a> {
     pub request: RequestPayloadContext<'a>,
@@ -315,7 +316,7 @@ impl Interpreter {
                     let response_plan =
                         RuntimeTypePlan::from_linked(return_type_ref, &plan_context)?;
                     runtime_response_value_required_plan(
-                        value,
+                        value.into_value(),
                         Some(&response_plan),
                         &format!(
                             "response {}",
@@ -324,7 +325,7 @@ impl Interpreter {
                         &mut invocation.heap,
                     )
                 } else {
-                    runtime_to_wire(&value, &invocation.heap)
+                    runtime_to_wire(value.value(), &invocation.heap)
                 }
             }
             Ok(Flow::Continue | Flow::Parked) => Ok(Value::Null),
@@ -479,7 +480,7 @@ impl Interpreter {
                 {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-                    Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+                    Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
                 }
             };
             let consumer_future = self.consume_binary_http_response_stream(
@@ -665,7 +666,7 @@ impl Interpreter {
                 {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-                    Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+                    Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
                 }
             };
             let consumer_future = self.consume_binary_http_response_stream(
@@ -911,7 +912,7 @@ impl Interpreter {
                 {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-                    Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+                    Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
                 }
             };
             let consumer_future = self.consume_runtime_response_stream(
@@ -1011,20 +1012,18 @@ impl Interpreter {
     where
         F: FnMut(Value, &RuntimeTypePlan) -> std::result::Result<(), E>,
     {
-        let execution = context.execution();
         let stream_runtime = context.stream_runtime();
         let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
         loop {
-            map_eval_error(execution.add_instruction_units(1))?;
-            let item = map_eval_error(
-                stream_runtime
-                    .next_with_cancellation(
-                        stream_value,
-                        cancel_signals,
-                        [execution.cancellation_token()],
-                    )
-                    .await,
-            )?;
+            let item = current_scope::next(
+                &context.execution_context,
+                &stream_runtime,
+                stream_value,
+                cancel_signals,
+            )
+            .await
+            .map_err(EvalStreamExecutionError::Eval)?;
+            let item = map_eval_error(item)?;
             let item = match map_eval_error(Self::external_wire_stream_item(
                 item,
                 "server-stream response",
@@ -1064,37 +1063,88 @@ impl Interpreter {
     where
         F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
     {
-        let execution = context.execution();
+        self.consume_binary_http_response_stream_with_context(
+            &context.execution_context,
+            stream_value,
+            item_type,
+            cancel_signals,
+            false,
+            on_event,
+        )
+        .await
+    }
+
+    pub(crate) async fn consume_in_process_binary_http_response_stream<F, E>(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+        stream_value: &Value,
+        item_type: &RuntimeTypePlan,
+        cancel_signals: &[StreamCancelSignal],
+        on_event: &mut F,
+    ) -> EvalStreamResult<(), E>
+    where
+        F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
+    {
+        self.consume_binary_http_response_stream_with_context(
+            context,
+            stream_value,
+            item_type,
+            cancel_signals,
+            true,
+            on_event,
+        )
+        .await
+    }
+
+    async fn consume_binary_http_response_stream_with_context<F, E>(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+        stream_value: &Value,
+        item_type: &RuntimeTypePlan,
+        cancel_signals: &[StreamCancelSignal],
+        allow_internal_items: bool,
+        on_event: &mut F,
+    ) -> EvalStreamResult<(), E>
+    where
+        F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
+    {
         let stream_runtime = context.stream_runtime();
         let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
         loop {
-            map_eval_error(execution.add_instruction_units(1))?;
-            let item = map_eval_error(
-                stream_runtime
-                    .next_with_cancellation(
-                        stream_value,
-                        cancel_signals,
-                        [execution.cancellation_token()],
-                    )
-                    .await,
-            )?;
-            let item = match map_eval_error(Self::external_wire_stream_item(item, "HTTP response"))?
-            {
-                Some(item) => item,
-                None => {
-                    cleanup.reached_end();
-                    return Ok(());
-                }
-            };
+            let item = current_scope::next(context, &stream_runtime, stream_value, cancel_signals)
+                .await
+                .map_err(EvalStreamExecutionError::Eval)?;
+            let item = map_eval_error(item)?;
             let mut heap = context.request_heap();
-            let coerced = map_eval_error(runtime_from_wire_required_plan(
-                &item,
-                Some(item_type),
-                "HTTP response stream item",
-                &mut heap,
-            ))?;
+            let item = if allow_internal_items {
+                match map_eval_error(crate::program_stream::materialize_runtime_stream_item(
+                    item, None, &mut heap,
+                ))? {
+                    Some(item) => item,
+                    None => {
+                        cleanup.reached_end();
+                        return Ok(());
+                    }
+                }
+            } else {
+                let item =
+                    match map_eval_error(Self::external_wire_stream_item(item, "HTTP response"))? {
+                        Some(item) => item,
+                        None => {
+                            cleanup.reached_end();
+                            return Ok(());
+                        }
+                    };
+                map_eval_error(runtime_from_wire_required_plan(
+                    &item,
+                    Some(item_type),
+                    "HTTP response stream item",
+                    &mut heap,
+                ))?
+                .into()
+            };
             let wire = map_eval_error(runtime_to_wire_required_plan(
-                &coerced,
+                item.value(),
                 Some(item_type),
                 "HTTP response stream item",
                 &mut heap,
@@ -1190,7 +1240,7 @@ impl Interpreter {
 
         let mut env = invocation.env()?;
         let self_value = runtime_empty_object(&mut heap)?;
-        invocation.declare_self(&mut env, self_value)?;
+        invocation.declare_self(&mut env, self_value.into())?;
 
         Ok(PreparedProgramInvocation {
             executable_invocation: invocation,
@@ -1257,7 +1307,8 @@ pub fn executable_request_payload_plan<'p>(
         .iter()
         .skip(usize::from(explicit_self_param))
     {
-        let ty = RuntimeTypePlan::from_linked(&parameter.ty, &ctx)?;
+        let mut ty = RuntimeTypePlan::from_linked(&parameter.ty, &ctx)?;
+        annotate_runtime_type_plan(&mut ty, &parameter.ty, program)?;
         let required = !matches!(ty.node(), RuntimeTypeNode::Nullable(_));
         fields.push(RuntimeRecordFieldPlan {
             name: parameter.name.clone(),
@@ -1300,9 +1351,9 @@ fn declare_runtime_value_request_parameters(
         build_id: actor_context.request_build_id(),
     };
     let decoded = decode_request_args_payload(request, args_plan, heap, Some(spawn_decode))?;
-    let object = match &decoded {
+    let object_handle = match &decoded {
         RuntimeValue::Heap(handle) => match heap.get(*handle)? {
-            HeapNode::Object(object) => object.fields().clone(),
+            HeapNode::Object(_) => *handle,
             _ => {
                 return Err(RuntimeError::Decode(
                     "decoded request payload must be an args record".to_string(),
@@ -1316,9 +1367,8 @@ fn declare_runtime_value_request_parameters(
         }
     };
     for parameter in request_params {
-        let value = object
-            .get(&parameter.name)
-            .cloned()
+        let value = heap
+            .object_field_carrier(object_handle, &parameter.name)?
             .ok_or_else(|| RuntimeError::Protocol {
                 target: request.target().to_string(),
                 message: format!("missing required request parameter {}", parameter.name),
@@ -1343,16 +1393,11 @@ fn decode_request_args_payload(
     heap: &mut RequestHeap,
     spawn_decode: Option<RecoverableSpawnDecodeContext<'_>>,
 ) -> Result<RuntimeValue> {
-    match request.payload_encoding() {
+    let value = match request.payload_encoding() {
         RequestPayloadEncoding::RuntimeBinary => {
             let boundary =
                 PayloadBoundary::external_untrusted(PayloadBoundaryKind::InboundServiceCall);
-            Ok(decode_payload_plan(
-                request.payload_bytes(),
-                args_plan,
-                &boundary,
-                heap,
-            )?)
+            decode_payload_plan(request.payload_bytes(), args_plan, &boundary, heap)?
         }
         RequestPayloadEncoding::RecoverableSpawnPayload => {
             let spawn_decode = spawn_decode.ok_or_else(|| {
@@ -1372,15 +1417,17 @@ fn decode_request_args_payload(
                 spawn_decode.artifact_identity,
                 spawn_decode.build_id,
             )?;
-            Ok(decode_spawn_args_payload(
+            decode_spawn_args_payload(
                 request.payload_bytes(),
                 &expected,
                 &boundary,
                 heap,
                 &behavior_hooks,
-            )?)
+            )?
         }
-    }
+    };
+    runtime_carrier_for_plan(value, args_plan, "request payload", heap)
+        .map(RuntimeValueCarrier::into_value)
 }
 
 #[cfg(test)]
@@ -1396,8 +1443,8 @@ mod recoverable_spawn_payload_tests {
     use skiff_runtime_capability_context::{RequestPayloadContext, RequestPayloadEncoding};
     use skiff_runtime_linked_program::{
         ExecutableAddr, ExecutableKind, LinkOverlay, LinkedExecutable, LinkedExecutableBody,
-        LinkedFileUnit, LinkedTypeRef, PackageUnit, ParamIr, RuntimeTypeContext, SlotIr,
-        SlotLayoutIr,
+        LinkedFileUnit, LinkedTypeRef, ParamIr, RuntimeExecutionPackage, RuntimeTypeContext,
+        SlotIr, SlotLayoutIr,
     };
     use skiff_runtime_model::{
         request_heap::RequestHeap,
@@ -1410,8 +1457,7 @@ mod recoverable_spawn_payload_tests {
 
     struct TestProgram {
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         spawn_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
@@ -1422,7 +1468,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: Vec::new(),
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext::default(),
@@ -1434,7 +1479,6 @@ mod recoverable_spawn_payload_tests {
                 "skiff.test/invocation",
                 &self.service_files,
                 &self.packages,
-                &self.package_files,
                 &self.spawn_routes,
                 &self.link_overlay,
                 &self.types,
@@ -1520,7 +1564,8 @@ mod recoverable_spawn_payload_tests {
             program: program.projection(),
             addr: &addr,
             executable: &executable,
-            artifact_identity: "skiff-protocol-v1:sha256:test",
+            artifact_identity:
+                "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             build_id: "skiff-service-build-v1:sha256:test",
         };
 
@@ -1555,6 +1600,10 @@ mod recoverable_spawn_payload_tests {
 
 #[cfg(test)]
 mod stream_cleanup_tests;
+
+#[cfg(test)]
+#[path = "program_invocation/current_scope_tests.rs"]
+mod current_scope_tests;
 
 #[cfg(all(test, any()))]
 mod tests {
@@ -1595,10 +1644,7 @@ mod tests {
                 external_refs: Default::default(),
             })],
             packages: Vec::new(),
-            package_files: Vec::new(),
             service_resources: Default::default(),
-            package_resources: Vec::new(),
-            service_dependencies: Vec::new(),
             timeout: Default::default(),
             operation_route_bindings: Vec::new(),
             routes: Default::default(),

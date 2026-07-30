@@ -1,74 +1,66 @@
 import { parseArgs } from 'node:util';
 
-import { loadRouterArtifactRoot } from '../artifacts/loadArtifactRoot.js';
-import { loadManifestFiles } from '../manifest/loadManifest.js';
+import { AssemblyActivationCoordinator } from './assemblyActivationCoordinator.js';
+import { AssemblyControlPlane } from './assemblyControlPlane.js';
+import { AssemblyHttpGateway } from './assemblyHttpGateway.js';
+import { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import {
-  RouterActiveSnapshotStore,
-  snapshotFromArtifacts,
-  snapshotFromManifest
-} from './activeSnapshot.js';
-import { loadRouterConfig, type RouterConfigOverrides } from './config.js';
-import {
-  RouterControlPlane,
-  type ReloadArtifactsOverrides
-} from './controlPlane.js';
-import { HttpGateway } from './httpGateway.js';
+  loadRouterConfig,
+  runtimeBootstrapForRouterConfig,
+  type RouterConfigOverrides
+} from './config.js';
+import { FilesystemRuntimeAssemblySnapshotLoader } from './filesystemRuntimeAssemblySnapshotLoader.js';
+import { connectMongoAssemblyActivationStateStore } from './mongoAssemblyActivationStateStore.js';
 import { RuntimeDispatcher } from './runtimeDispatcher.js';
 import { RuntimeEndpoint } from './runtimeEndpoint.js';
 import { RuntimeRegistry } from './runtimeRegistry.js';
-import { RouterTelemetryProducer } from '../telemetry/producer.js';
-import { WebSocketGateway } from '../gateway/webSocketGateway.js';
+import { RouterActiveAssemblySnapshotStore } from './runtimeAssemblySnapshot.js';
+import { WebSocketGenerationLifecycleRouter } from './webSocketGenerationLifecycleRouter.js';
+import { ActorRuntimeDisconnectController } from './actorRuntimeDisconnectController.js';
+import { ProductionActorMethodRouter } from './productionActorMethodRouter.js';
+import { RuntimeAssemblyActorMethodCatalog } from './runtimeAssemblyActorMethodCatalog.js';
+import { ActorOwnerLeaseIdleController } from './actorOwnerLeaseIdleController.js';
+import { AssemblyWebSocketGateway } from '../gateway/webSocketGateway.js';
+import { WebSocketRpcBridge } from '../gateway/webSocketRpcBridge.js';
 
 const args = parseArgs({
   options: {
     config: { type: 'string', default: 'router.yml' },
-    'artifact-root': { type: 'string', multiple: true },
-    devReload: { type: 'boolean' },
-    'dev-reload': { type: 'boolean' },
+    'activation-prepare-timeout-ms': { type: 'string' },
+    'artifacts-path': { type: 'string' },
+    environment: { type: 'string' },
     host: { type: 'string' },
-    'http-body-limit-bytes': { type: 'string' },
+    'http-max-request-bytes': { type: 'string' },
+    'http-max-response-bytes': { type: 'string' },
     'http-port': { type: 'string' },
-    'identity-cli-path': { type: 'string' },
-    manifest: { type: 'string' },
-    profile: { type: 'string' },
-    releaseMode: { type: 'boolean' },
-    'release-mode': { type: 'boolean' },
-    'runtime-path': { type: 'string' },
-    'runtime-port': { type: 'string' },
     'request-timeout-ms': { type: 'string' },
-    'websocket-path': { type: 'string' }
+    'runtime-path': { type: 'string' },
+    'runtime-port': { type: 'string' }
   }
 });
 
 const overrides: RouterConfigOverrides = {};
+if (args.values['activation-prepare-timeout-ms'] !== undefined) {
+  overrides.activationPrepareTimeoutMs =
+    args.values['activation-prepare-timeout-ms'];
+}
+if (args.values['artifacts-path'] !== undefined) {
+  overrides.artifactsPath = args.values['artifacts-path'];
+}
+if (args.values.environment !== undefined) {
+  overrides.environment = args.values.environment;
+}
 if (args.values.host !== undefined) {
   overrides.host = args.values.host;
 }
-if (args.values['artifact-root'] !== undefined) {
-  overrides.artifactRoots = args.values['artifact-root'];
+if (args.values['http-max-request-bytes'] !== undefined) {
+  overrides.httpMaxRequestBytes = args.values['http-max-request-bytes'];
 }
-const devReloadOverride = args.values.devReload ?? args.values['dev-reload'];
-if (devReloadOverride !== undefined) {
-  overrides.devReload = devReloadOverride;
+if (args.values['http-max-response-bytes'] !== undefined) {
+  overrides.httpMaxResponseBytes = args.values['http-max-response-bytes'];
 }
 if (args.values['http-port'] !== undefined) {
   overrides.httpPort = args.values['http-port'];
-}
-if (args.values['http-body-limit-bytes'] !== undefined) {
-  overrides.httpBodyLimitBytes = args.values['http-body-limit-bytes'];
-}
-if (args.values['identity-cli-path'] !== undefined) {
-  overrides.identityCliPath = args.values['identity-cli-path'];
-}
-if (args.values.manifest !== undefined) {
-  overrides.manifest = args.values.manifest;
-}
-if (args.values.profile !== undefined) {
-  overrides.profile = args.values.profile;
-}
-const releaseModeOverride = args.values.releaseMode ?? args.values['release-mode'];
-if (releaseModeOverride !== undefined) {
-  overrides.releaseMode = releaseModeOverride;
 }
 if (args.values['request-timeout-ms'] !== undefined) {
   overrides.requestTimeoutMs = args.values['request-timeout-ms'];
@@ -79,134 +71,162 @@ if (args.values['runtime-path'] !== undefined) {
 if (args.values['runtime-port'] !== undefined) {
   overrides.runtimePort = args.values['runtime-port'];
 }
-if (args.values['websocket-path'] !== undefined) {
-  overrides.websocketPath = args.values['websocket-path'];
-}
 
 const config = await loadRouterConfig(args.values.config, overrides);
-
-const routerArtifacts = config.artifactRoots
-  ? await loadRouterArtifactRoot(config.artifactRoots, artifactLoadOptions())
-  : undefined;
-const initialSnapshot = routerArtifacts
-  ? snapshotFromArtifacts(routerArtifacts)
-  : snapshotFromManifest(await loadManifestFiles(config.manifests));
-const snapshotStore = new RouterActiveSnapshotStore(initialSnapshot);
-const registry = new RuntimeRegistry();
-const runtimeEndpoint = new RuntimeEndpoint({ registry });
-const dispatcher = new RuntimeDispatcher({
-  registry,
-  frameSender: runtimeEndpoint
+if (config.environment === undefined) {
+  throw new Error('router config environment is required for active RuntimeAssembly routing');
+}
+if (config.rewrite.length > 0) {
+  throw new Error('router rewrite-to-service rules are not supported by RuntimeAssembly ingress');
+}
+const snapshots = new RouterActiveAssemblySnapshotStore();
+const activation = await connectMongoAssemblyActivationStateStore({
+  mongoUrl: config.serviceDb.mongoUrl
 });
+await activation.store.ensureIndexes();
+const assemblyLoader = new FilesystemRuntimeAssemblySnapshotLoader(config.artifactsPath);
+const registry = new AssemblyRuntimeRegistry(snapshots);
+const runtimeRegistry = new RuntimeRegistry();
+const actorDisconnect = new ActorRuntimeDisconnectController(
+  runtimeRegistry.actorManager()
+);
+const runtimeEndpoint = new RuntimeEndpoint({
+  registry: runtimeRegistry,
+  assemblyRegistry: registry,
+  bootstrap: runtimeBootstrapForRouterConfig(config),
+  actorRuntimeDisconnect: actorDisconnect,
+});
+const actorCatalog = new RuntimeAssemblyActorMethodCatalog(snapshots);
+const actorMethods = new ProductionActorMethodRouter({
+    registry: runtimeRegistry,
+    runtimeDirectory: {
+      actorRuntimeCandidates: (serviceId) =>
+        registry.actorRuntimeCandidates(serviceId),
+      runtimeConnection: (runtimeId) => {
+        const ws = registry.connectionForReplica(runtimeId);
+        return ws === undefined ? undefined : { runtimeId, ws };
+      },
+    },
+    disconnectController: actorDisconnect,
+    catalog: actorCatalog,
+    send: (ws, bytes) => ws.send(bytes),
+    ownerLeaseTtlMs: 120_000,
+});
+runtimeEndpoint.setActorMethods(actorMethods);
+let actorIdle: ActorOwnerLeaseIdleController;
+actorIdle = new ActorOwnerLeaseIdleController(
+  runtimeRegistry.actorManager(),
+  {
+    sendIdleEviction: async ({ fence }) => {
+      await actorMethods.evictIdleOwner(fence);
+      await actorIdle.acknowledgeEviction({
+        type: 'actor.owner.idle.evict.ack',
+        fence,
+      });
+    },
+  },
+  { nowMilliseconds: Date.now },
+  60_000
+);
+const actorIdleSweep = setInterval(() => {
+  void actorIdle.sweep().catch((error: unknown) => {
+    console.error({
+      event: 'actor.owner_idle_sweep_error',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}, 5_000);
+actorIdleSweep.unref();
+const coordinator = new AssemblyActivationCoordinator({
+  environment: config.environment,
+  stateStore: activation.store,
+  assemblyLoader,
+  snapshots,
+  registry,
+  participants: runtimeRegistry,
+  controlSender: runtimeEndpoint,
+  prepareTimeoutMs: config.activationPrepareTimeoutMs
+});
+runtimeEndpoint.setCoordinator(coordinator);
+await coordinator.initialize();
+
+const dispatcher = new RuntimeDispatcher({ registry, frameSender: runtimeEndpoint });
 runtimeEndpoint.setDispatcher(dispatcher);
-registry.setServiceVersionIndex(initialSnapshot.versionByService);
-registry.setActivationLookup(initialSnapshot.activationByServiceOperation);
-const controlPlane = new RouterControlPlane({
-  controlBroadcaster: runtimeEndpoint,
+const webSocketRpcBridge = new WebSocketRpcBridge({
+  endpoint: runtimeEndpoint,
+  dispatcher
+});
+const generationLifecycle = new WebSocketGenerationLifecycleRouter({
+  dispatcher,
+  sender: runtimeEndpoint
+});
+runtimeEndpoint.setWebSocketGenerationLifecycle(generationLifecycle);
+registry.setConnectionPinCounter(generationLifecycle);
+const controlPlane = new AssemblyControlPlane({
+  coordinator,
   dispatcher,
   registry,
-  snapshotStore,
-  requestTimeoutMs: config.requestTimeoutMs,
-  ...(config.artifactRoots
-    ? {
-        reloadArtifacts: async (reloadOverrides?: ReloadArtifactsOverrides) =>
-          snapshotFromArtifacts(
-            await loadRouterArtifactRoot(
-              reloadOverrides?.artifactRoots ?? config.artifactRoots!,
-              artifactLoadOptions(reloadOverrides)
-            )
-          )
-      }
-    : {})
+  runtimeRegistry,
+  snapshots
 });
-const runtimeListenOptions = {
+const runtimeServer = await runtimeEndpoint.listen({
+  controlPlane,
   host: config.host,
   port: config.runtimePort,
-  path: config.runtimePath,
-  controlPlane
-};
-const runtimeServer = await runtimeEndpoint.listen(
-  initialSnapshot.control
-    ? {
-        ...runtimeListenOptions,
-        control: initialSnapshot.control
-      }
-    : runtimeListenOptions
-);
-const telemetryProducer = config.telemetry
-  ? new RouterTelemetryProducer(config.telemetry)
-  : undefined;
-telemetryProducer?.start();
-
-const gateway = new HttpGateway({
-  manifest: initialSnapshot.manifest,
+  path: config.runtimePath
+});
+const httpGateway = new AssemblyHttpGateway({
+  snapshots,
   dispatcher,
-  ...(initialSnapshot.activationByServiceOperation.size > 0
-    ? {
-        activationByServiceOperation:
-          initialSnapshot.activationByServiceOperation
-      }
-    : {}),
-  snapshotStore,
   host: config.host,
-  ...(config.httpBodyLimitBytes !== undefined
-    ? { bodyLimitBytes: config.httpBodyLimitBytes }
-    : {}),
   port: config.httpPort,
   requestTimeoutMs: config.requestTimeoutMs,
-  rewrite: config.rewrite,
-  ...(telemetryProducer ? { telemetry: telemetryProducer } : {})
+  maxRequestBytes: config.httpMaxRequestBytes,
+  maxResponseBytes: config.httpMaxResponseBytes
 });
-const httpServer = await gateway.listen();
-
-const webSocketGateway = initialSnapshot.manifest.websocketEntry
-  ? new WebSocketGateway({
-      manifest: initialSnapshot.manifest,
-      dispatcher,
-      runtimeConnectionSend: runtimeEndpoint,
-      ...(initialSnapshot.activationByServiceOperation.size > 0
-        ? {
-            activationByServiceOperation:
-              initialSnapshot.activationByServiceOperation
-          }
-        : {}),
-      snapshotStore,
-      server: httpServer.server,
-      host: config.host,
-      path: config.websocketPath,
-      requestTimeoutMs: config.requestTimeoutMs,
-      rewrite: config.rewrite
-    })
-  : undefined;
-const webSocketServer = webSocketGateway ? await webSocketGateway.listen() : undefined;
-
-controlPlane.setLoopRiskCounterSources({
-  httpStream: () => gateway.streamLifecycleCounters(),
-  websocketReceive: () =>
-    webSocketGateway?.receiveLifecycleCounters() ?? {
-      inFlight: 0,
-      queued: 0,
-      abortOnClose: 0
-    }
+const httpServer = await httpGateway.listen();
+const webSocketGateway = new AssemblyWebSocketGateway({
+  server: httpServer.server,
+  snapshots,
+  dispatcher,
+  rpcBridge: webSocketRpcBridge,
+  generationLifecycle,
+  runtimeConnectionSend: runtimeEndpoint,
+  selectRuntime: (binding) =>
+    registry.actorRuntimeCandidates(binding.deployment.serviceId)[0],
+  runtimeOwner: (sender, serviceId) => {
+    const replicaId = registry.replicaIdForConnection(sender);
+    const replica =
+      replicaId === undefined
+        ? undefined
+        : registry.snapshot().find(
+            (candidate) => candidate.replicaId === replicaId
+          );
+    return replica === undefined
+      ? undefined
+      : {
+          serviceId,
+          assemblyIdentity: replica.assemblyIdentity,
+          assemblyGeneration: replica.generation,
+          replicaId: replica.replicaId
+        };
+  },
+  requestTimeoutMs: config.requestTimeoutMs
 });
+webSocketGateway.listen();
+const active = snapshots.get();
 
 console.log(
   JSON.stringify(
     {
       event: 'router.started',
+      environment: active.environment,
+      activeAssembly: active.assembly.assemblyIdentity,
+      generation: active.generation,
       http: httpServer.url,
-      websocket: webSocketServer?.url,
+      websocket: httpServer.url.replace(/^http:/, 'ws:'),
       runtime: runtimeServer.url,
-      control: `http://${runtimeServer.host}:${runtimeServer.port}`,
-      artifactRoots: initialSnapshot.control?.artifactRoots,
-      devReload: config.devReload,
-      releaseMode: config.releaseMode,
-      serviceId: initialSnapshot.manifest.service.id,
-      websocketReceive: initialSnapshot.manifest.websocketEntry
-        ? {
-            operation: initialSnapshot.manifest.websocketEntry.receive.operation
-          }
-        : undefined,
+      control: `http://${runtimeServer.host}:${runtimeServer.port}`
     },
     null,
     2
@@ -214,42 +234,33 @@ console.log(
 );
 
 async function shutdown(): Promise<void> {
-  await webSocketGateway?.close();
-  await gateway.close();
-  await telemetryProducer?.shutdown();
-  await runtimeEndpoint.close();
+  clearInterval(actorIdleSweep);
+  const failures: unknown[] = [];
+  for (const close of [
+    () => webSocketGateway.close(),
+    () => webSocketRpcBridge.cleanup(),
+    () => httpGateway.close(),
+    () => runtimeEndpoint.close(),
+    () => activation.client.close()
+  ]) {
+    try {
+      await close();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'router shutdown failed');
+  }
 }
 
-process.on('SIGINT', () => {
-  shutdown()
-    .then(() => process.exit(0))
-    .catch((error: unknown) => {
-      console.error(error);
-      process.exit(1);
-    });
-});
-
-process.on('SIGTERM', () => {
-  shutdown()
-    .then(() => process.exit(0))
-    .catch((error: unknown) => {
-      console.error(error);
-      process.exit(1);
-    });
-});
-
-function artifactLoadOptions(overrides?: ReloadArtifactsOverrides) {
-  return {
-    ...(config.devReload !== undefined ? { devReload: config.devReload } : {}),
-    ...(config.identityCliPath !== undefined ? { identityCliPath: config.identityCliPath } : {}),
-    ...(config.releaseMode !== undefined ? { releaseMode: config.releaseMode } : {}),
-    ...(config.telemetry !== undefined ? { telemetry: config.telemetry } : {}),
-    ...(config.fileBackend !== undefined ? { fileBackend: config.fileBackend } : {}),
-    ...(overrides?.serviceDb !== undefined
-      ? { serviceDb: overrides.serviceDb }
-      : config.serviceDb !== undefined
-        ? { serviceDb: config.serviceDb }
-        : {}),
-    configProfile: overrides?.configProfile ?? config.profile
-  };
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    shutdown()
+      .then(() => process.exit(0))
+      .catch((error: unknown) => {
+        console.error(error);
+        process.exit(1);
+      });
+  });
 }

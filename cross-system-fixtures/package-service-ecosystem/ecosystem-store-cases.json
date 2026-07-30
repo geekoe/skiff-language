@@ -1,0 +1,121 @@
+{
+  "argv": ["__ecosystem-store", "--artifact-root", "<artifact-root>"],
+  "emptyAssembly": {
+    "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+  },
+  "workflow": [
+    {
+      "operation": "ensureEnvironmentBootstrap",
+      "environment": "test"
+    },
+    {
+      "operation": "readEnvironment",
+      "environment": "test"
+    },
+    {
+      "operation": "prepareEnvironment",
+      "environment": "test",
+      "activationId": "activation-1",
+      "expectedGeneration": 0,
+      "candidateGeneration": 1,
+      "assembly": {
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+      },
+      "participantReplicaIds": ["runtime-a", "runtime-b"]
+    },
+    {
+      "operation": "abortEnvironment",
+      "environment": "test",
+      "activationId": "activation-1",
+      "expectedGeneration": 0
+    },
+    {
+      "operation": "prepareEnvironment",
+      "environment": "test",
+      "activationId": "activation-2",
+      "expectedGeneration": 0,
+      "candidateGeneration": 1,
+      "assembly": {
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+      },
+      "participantReplicaIds": ["runtime-a", "runtime-b"]
+    },
+    {
+      "operation": "commitEnvironment",
+      "environment": "test",
+      "activationId": "activation-2",
+      "expectedGeneration": 0,
+      "candidateGeneration": 1,
+      "assembly": {
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+      },
+      "connectedReplicaIds": ["runtime-a", "runtime-b"],
+      "preparedReplicaIds": ["runtime-a", "runtime-b"]
+    },
+    {
+      "operation": "ensureEnvironmentBootstrap",
+      "environment": "test"
+    },
+    {
+      "operation": "readRouterSnapshot",
+      "assembly": {
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+      }
+    }
+  ],
+  "invalidRequests": [
+    {
+      "name": "unknown operation",
+      "request": {
+        "operation": "latestEnvironment",
+        "environment": "test"
+      }
+    },
+    {
+      "name": "unknown common artifact field",
+      "request": {
+        "operation": "readEnvironment",
+        "environment": "test",
+        "artifactKind": "RuntimeAssembly"
+      }
+    },
+    {
+      "name": "raw path request",
+      "request": {
+        "operation": "readRouterSnapshot",
+        "assembly": {
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        },
+        "path": "records/runtime-assemblies/latest.json"
+      }
+    },
+    {
+      "name": "stale prepare generation",
+      "request": {
+        "operation": "prepareEnvironment",
+        "environment": "test",
+        "activationId": "activation-stale",
+        "expectedGeneration": 99,
+        "candidateGeneration": 100,
+        "assembly": {
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        },
+        "participantReplicaIds": ["runtime-a"]
+      }
+    },
+    {
+      "name": "empty participants",
+      "request": {
+        "operation": "prepareEnvironment",
+        "environment": "test",
+        "activationId": "activation-empty",
+        "expectedGeneration": 0,
+        "candidateGeneration": 1,
+        "assembly": {
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f"
+        },
+        "participantReplicaIds": []
+      }
+    }
+  ]
+}

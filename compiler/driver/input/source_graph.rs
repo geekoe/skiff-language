@@ -1,6 +1,5 @@
 use crate::input::{PublicationManifest, PublicationResourceInput, SourceTree};
 
-use skiff_compiler_source::source_graph::CompilerSourceFile;
 pub use skiff_compiler_source::source_graph::PublicationSourceGraph;
 
 /// Parsed package code and manifest facts consumed by one PackageCompileInput.
@@ -40,10 +39,6 @@ impl PackageSourceInput {
 
     pub fn resources(&self) -> &[PublicationResourceInput] {
         &self.resources
-    }
-
-    pub(crate) fn production_sources(&self) -> Vec<CompilerSourceFile> {
-        self.source_graph.production_files()
     }
 }
 

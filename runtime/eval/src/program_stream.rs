@@ -14,26 +14,47 @@ use skiff_runtime_linked_program::{
     LinkedFileUnit, LinkedStmtIr, LinkedTypeRef, ReceiverCallAbi,
 };
 use skiff_runtime_model::{
-    request_heap::{deep_clone_runtime_value_between_heaps, RequestHeap},
-    runtime_value::RuntimeValue,
+    request_heap::{
+        deep_clone_runtime_value_between_heaps, deep_clone_runtime_value_carrier_between_heaps,
+        RequestHeap,
+    },
+    runtime_value::{RuntimeValue, RuntimeValueCarrier},
     type_plan::RuntimeTypePlan,
 };
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink},
-    env::{check_cancelled, Env, Flow},
+    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink, TypedStreamSink},
+    env::{Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
-    runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan},
+    runtime_ops::{
+        runtime_carrier_for_plan, runtime_carrier_from_wire_required_plan, runtime_from_wire,
+    },
     Interpreter,
 };
 use crate::{
-    assembly_execution::RuntimeExecutionProjection,
+    assembly_execution::{
+        service_error_channel::{CanonicalServiceErrorChannel, ServiceErrorImportContext},
+        RuntimeExecutionProjection,
+    },
     capabilities::StreamConsumerCleanup,
-    error::{Result, RuntimeError},
+    error::{
+        materialize_stream_runtime_error, stream_runtime_error_from_eval,
+        RequestHeapOwnedStreamError, Result, RuntimeError,
+    },
+    test_effect_registry::TestEffectTarget,
     type_projection::EvalTypeProjection,
 };
+
+mod current_scope;
+
+#[cfg(test)]
+#[path = "program_stream/current_scope_tests.rs"]
+mod current_scope_tests;
+#[cfg(test)]
+#[path = "program_stream/supervised_executable_tests.rs"]
+mod supervised_executable_tests;
 
 impl Interpreter {
     #[allow(clippy::too_many_arguments)]
@@ -51,43 +72,45 @@ impl Interpreter {
         item_type: Option<RuntimeTypePlan>,
         cancel_signals: &[StreamCancelSignal],
     ) -> Result<Flow> {
-        let execution = context.execution();
         let stream_runtime = context.stream_runtime();
-        let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value);
+        let supervision = env.stream_consumer_supervision_for(&stream_value);
+        let mut cleanup = match &supervision {
+            Some(supervision) => supervision.consumer_cleanup(&stream_value),
+            None => StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value),
+        };
         loop {
-            execution.add_instruction_units(1)?;
-            check_cancelled(&execution, env)?;
-            let item = stream_runtime
-                .next_with_cancellation(
-                    &stream_value,
-                    cancel_signals,
-                    [execution.cancellation_token()],
-                )
-                .await?;
-            let item_value = match item {
-                StreamPoll::InternalItem(item) => {
-                    let (value, source_heap) = item.into_parts();
-                    deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?
-                }
-                StreamPoll::Item(item) => {
-                    if let Some(item_type) = item_type.as_ref() {
-                        runtime_from_wire_required_plan(
-                            &item,
-                            Some(item_type),
-                            "stream item",
-                            heap,
-                        )?
-                    } else {
-                        runtime_from_wire(&item, heap)?
+            let item = current_scope::next_with_actor(
+                &context,
+                heap,
+                &stream_runtime,
+                &stream_value,
+                cancel_signals,
+                1,
+            )
+            .await?;
+            let item = match item {
+                Ok(item) => item,
+                Err(error) => {
+                    if matches!(&error, StreamRuntimeError::Producer(_)) {
+                        if let Some(supervision) = &supervision {
+                            supervision.observe_producer_error(&stream_value);
+                        }
                     }
+                    return Err(materialize_consumed_stream_error(
+                        self, &context, error, heap,
+                    )?);
                 }
-                StreamPoll::End => {
+            };
+            let item_value = match materialize_runtime_stream_item(item, item_type.as_ref(), heap)?
+            {
+                Some(item) => item,
+                None => {
                     cleanup.reached_end();
                     return Ok(Flow::Continue);
                 }
             };
             let flow = self
-                .exec_program_for_in_body(
+                .exec_program_for_in_body_carrier(
                     context.clone(),
                     heap,
                     env,
@@ -215,8 +238,8 @@ impl Interpreter {
         producer_addr: &ExecutableAddr,
         producer_executable: &LinkedExecutable,
         producer_type_args: &BTreeMap<String, LinkedTypeRef>,
-        producer_self: RuntimeValue,
-        producer_args: Vec<RuntimeValue>,
+        producer_self: RuntimeValueCarrier,
+        producer_args: Vec<RuntimeValueCarrier>,
     ) -> Result<Option<RuntimeValue>> {
         if !executable_body_contains_emit(producer_executable) {
             return Ok(None);
@@ -235,11 +258,14 @@ impl Interpreter {
         };
 
         let mut producer_heap = context.request_heap();
-        let producer_self =
-            deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, &producer_self)?;
+        let producer_self = deep_clone_runtime_value_carrier_between_heaps(
+            heap,
+            &mut producer_heap,
+            &producer_self,
+        )?;
         let mut cloned_args = Vec::with_capacity(producer_args.len());
         for arg in &producer_args {
-            cloned_args.push(deep_clone_runtime_value_between_heaps(
+            cloned_args.push(deep_clone_runtime_value_carrier_between_heaps(
                 heap,
                 &mut producer_heap,
                 arg,
@@ -261,6 +287,9 @@ impl Interpreter {
             producer_heap,
             producer_env,
             producer_addr: producer_addr.clone(),
+            // The already-evaluated explicit-self path receives a context that
+            // already contains the exact required call site.
+            producer_site: None,
             producer_self: Some(producer_self),
             producer_type_args: producer_type_args.clone(),
             producer_args: cloned_args,
@@ -309,6 +338,25 @@ impl Interpreter {
             consumer,
         )
         .await
+    }
+
+    pub(crate) fn attach_deferred_http_response_sink(
+        &self,
+        stream_value: &Value,
+        item_type: RuntimeTypePlan,
+        request_generation: Option<u64>,
+    ) -> Result<()> {
+        let id = stream_id(stream_value).ok_or_else(|| {
+            RuntimeError::Decode(
+                "raw HTTP response stream is not a canonical Stream value".to_string(),
+            )
+        })?;
+        self.deferred_stream_producers.attach_response_sink(
+            id,
+            stream_value,
+            item_type,
+            request_generation,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -417,16 +465,17 @@ impl Interpreter {
         cancel_signal: &StreamCancelSignal,
         consumption: &SupervisedStreamConsumptionLease,
     ) -> StreamRuntimeResult<()> {
-        let execution = context.execution();
         loop {
-            match stream_runtime
-                .next_with_cancellation(
-                    stream_value,
-                    std::slice::from_ref(cancel_signal),
-                    [execution.cancellation_token()],
-                )
-                .await
-            {
+            let item = current_scope::next(
+                &context,
+                stream_runtime,
+                stream_value,
+                std::slice::from_ref(cancel_signal),
+                0,
+            )
+            .await
+            .map_err(stream_runtime_error_from_eval)?;
+            match item {
                 Ok(StreamPoll::Item(_) | StreamPoll::InternalItem(_)) => continue,
                 Ok(StreamPoll::End) => {
                     consumption.observe_end();
@@ -510,7 +559,7 @@ impl Interpreter {
                         return Err(error);
                     }
                 };
-                args.push(stream_value);
+                args.push(stream_value.into());
                 arg_producers.push(nested);
             } else {
                 let arg = self
@@ -524,14 +573,15 @@ impl Interpreter {
                         *arg,
                     )
                     .await?;
-                let arg = deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, &arg)?;
+                let arg =
+                    deep_clone_runtime_value_carrier_between_heaps(heap, &mut producer_heap, &arg)?;
                 args.push(arg);
             }
         }
         let producer_self = receiver
             .as_ref()
             .map(|receiver| {
-                deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, receiver)
+                deep_clone_runtime_value_carrier_between_heaps(heap, &mut producer_heap, receiver)
             })
             .transpose()?;
         let mut producer_env = env.clone();
@@ -549,6 +599,7 @@ impl Interpreter {
             producer_heap,
             producer_env,
             producer_addr: producer.addr,
+            producer_site: Some(producer.call.site),
             producer_self,
             producer_type_args: producer.call.type_args,
             producer_args: args,
@@ -583,15 +634,38 @@ impl Interpreter {
         let type_projection = EvalTypeProjection::from_execution_projection(program.clone());
         let (addr, receiver_const, producer_self, call) = match &call.target {
             LinkedCallTarget::Executable { addr } => (addr.clone(), None, None, call.clone()),
+            LinkedCallTarget::PackageDirect { call: target } => {
+                if self.test_effects_enabled {
+                    let effect_target = TestEffectTarget::package_callable(
+                        target.dependency_package_build_id().clone(),
+                        target.package_callable_id().clone(),
+                    );
+                    if self.runtime_test_effects.contains_target(&effect_target) {
+                        // Inline effects replace the package callable itself.
+                        // Do not turn a real `emit` body into a deferred
+                        // producer before ordinary call dispatch gets a chance
+                        // to consume the registered stream outcome. Keeping an
+                        // exhausted target in the registry also preserves the
+                        // required sequence-exhaustion error instead of
+                        // falling through to production code.
+                        return Ok(None);
+                    }
+                }
+                (
+                    target.executable_addr().clone(),
+                    target.receiver_const().cloned(),
+                    None,
+                    call.clone(),
+                )
+            }
             LinkedCallTarget::LocalExecutable { .. }
-            | LinkedCallTarget::ExternalServiceSymbol { .. }
+            | LinkedCallTarget::ServiceDependencySymbol { .. }
             | LinkedCallTarget::PackageSymbol { .. } => {
                 return Err(RuntimeError::InvalidArtifact(format!(
                     "RuntimeProgram call target {} was not linked before execution",
                     program_call_target_kind(&call.target)
                 )));
             }
-            LinkedCallTarget::ServiceDependencySymbol { .. } => return Ok(None),
             LinkedCallTarget::LocalConstReceiverExecutable {
                 const_addr,
                 executable_addr,
@@ -632,6 +706,49 @@ impl Interpreter {
     }
 }
 
+/// Moves either an in-process producer item or an external wire item into the consumer heap
+/// under one exact item plan. Boundary consumers use this same transfer before applying their
+/// protocol codec.
+pub(crate) fn materialize_runtime_stream_item(
+    item: StreamPoll,
+    item_type: Option<&RuntimeTypePlan>,
+    heap: &mut RequestHeap,
+) -> Result<Option<RuntimeValueCarrier>> {
+    match item {
+        StreamPoll::InternalItem(item) => {
+            let (value, source_heap) = item.into_parts();
+            let local_carrier = match &value {
+                RuntimeValue::Heap(handle) => source_heap.local_carrier_cell(*handle)?,
+                _ => None,
+            };
+            let carrier = if let Some(carrier) = local_carrier {
+                deep_clone_runtime_value_carrier_between_heaps(&source_heap, heap, &carrier)?
+            } else {
+                deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?.into()
+            };
+            match item_type {
+                Some(plan) => {
+                    runtime_carrier_for_plan(carrier, plan, "stream item", heap).map(Some)
+                }
+                None => Ok(Some(carrier)),
+            }
+        }
+        StreamPoll::Item(item) => {
+            let carrier = match item_type {
+                Some(item_type) => runtime_carrier_from_wire_required_plan(
+                    &item,
+                    Some(item_type),
+                    "stream item",
+                    heap,
+                )?,
+                None => runtime_from_wire(&item, heap)?.into(),
+            };
+            Ok(Some(carrier))
+        }
+        StreamPoll::End => Ok(None),
+    }
+}
+
 fn prepared_stream_consumer_mismatch_error() -> RuntimeError {
     RuntimeError::Decode(
         "supervised stream consumer used a different Stream value than its prepared producer"
@@ -645,8 +762,51 @@ fn prepared_stream_error_after_drain(
 ) -> RuntimeError {
     match drain_result {
         Ok(()) => consumer_error,
-        Err(error) => RuntimeError::from(error),
+        Err(error) => match error.fixed_service_failure_parts() {
+            Some((error, _)) => RuntimeError::FixedServiceFailure(error.clone()),
+            None => RuntimeError::from(error),
+        },
     }
+}
+
+fn materialize_consumed_stream_error(
+    interpreter: &Interpreter,
+    context: &ProgramExecutionContext<'_>,
+    error: StreamRuntimeError,
+    caller_heap: &mut RequestHeap,
+) -> Result<RuntimeError> {
+    let Some((fixed, import)) = error.fixed_service_failure_parts() else {
+        return materialize_stream_runtime_error(error, caller_heap);
+    };
+    let fixed = fixed.clone();
+    let Some((
+        caller_package_build_id,
+        caller_executable_addr,
+        call_site,
+        caller_stack_at_site,
+        remote_service_id,
+        remote_operation_id,
+    )) = import
+    else {
+        return Ok(RuntimeError::FixedServiceFailure(fixed));
+    };
+    let target = context.runtime_assembly_target()?;
+    let projection = RuntimeExecutionProjection::for_context(interpreter, context)?;
+    let exception = CanonicalServiceErrorChannel::import_caller_failure(
+        fixed,
+        ServiceErrorImportContext {
+            execution_image: target.execution_image().as_ref(),
+            type_view: projection.type_view(),
+            caller_heap,
+            caller_package_build_id,
+            caller_executable_addr,
+            call_site,
+            caller_stack_at_site,
+            remote_service_id,
+            remote_operation_id,
+        },
+    )?;
+    Ok(RuntimeError::UserException(exception))
 }
 
 fn stream_item_plan_from_return_type(
@@ -685,7 +845,7 @@ fn stream_item_plan_from_return_type(
 pub struct StreamProducerCall {
     pub addr: ExecutableAddr,
     pub receiver_const: Option<ConstAddr>,
-    pub producer_self: Option<RuntimeValue>,
+    pub producer_self: Option<RuntimeValueCarrier>,
     pub call: CallIr,
     pub item_type: RuntimeTypePlan,
 }
@@ -725,9 +885,10 @@ pub struct StreamProducerExecution {
     producer_heap: RequestHeap,
     producer_env: Env,
     producer_addr: ExecutableAddr,
-    producer_self: Option<RuntimeValue>,
+    producer_site: Option<skiff_artifact_model::InstructionSourceSite>,
+    producer_self: Option<RuntimeValueCarrier>,
     producer_type_args: std::collections::BTreeMap<String, LinkedTypeRef>,
-    producer_args: Vec<RuntimeValue>,
+    producer_args: Vec<RuntimeValueCarrier>,
     sink: StreamSink,
 }
 
@@ -798,6 +959,41 @@ impl DeferredStreamProducerRegistry {
             .expect("deferred stream producer registry poisoned")
             .remove(id)
     }
+
+    fn attach_response_sink(
+        &self,
+        id: &str,
+        stream_value: &Value,
+        item_type: RuntimeTypePlan,
+        request_generation: Option<u64>,
+    ) -> Result<()> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("deferred stream producer registry poisoned");
+        let producer = entries.get_mut(id).ok_or_else(|| {
+            RuntimeError::Decode(format!(
+                "raw HTTP response stream {id} is not a parked deferred producer"
+            ))
+        })?;
+        if producer.stream_value != *stream_value
+            || producer.stream_runtime.request_scope_generation() != request_generation
+        {
+            return Err(RuntimeError::Decode(format!(
+                "raw HTTP response stream {id} does not belong to the current request"
+            )));
+        }
+        if producer.producer_env.response_stream_sink.is_some() {
+            return Err(RuntimeError::Decode(format!(
+                "raw HTTP response stream {id} already has a response sink"
+            )));
+        }
+        producer.producer_env.response_stream_sink = Some(TypedStreamSink {
+            sink: producer.sink.clone(),
+            item_type,
+        });
+        Ok(())
+    }
 }
 
 /// Spawns `producer` (and, recursively, its argument producers) onto the tokio
@@ -842,6 +1038,7 @@ async fn run_stream_producer_task(
         mut producer_heap,
         producer_env,
         producer_addr,
+        producer_site,
         producer_self,
         producer_type_args,
         producer_args,
@@ -868,9 +1065,13 @@ async fn run_stream_producer_task(
     }
 
     let context = owned_context.borrow();
+    let context = match producer_site {
+        Some(site) => context.with_local_call_site(site),
+        None => context,
+    };
     let result = if let Some(producer_self) = producer_self {
         interpreter
-            .call_program_executable_with_self_direct(
+            .call_program_executable_with_self_direct_carriers(
                 context,
                 &mut producer_heap,
                 &producer_env,
@@ -883,7 +1084,7 @@ async fn run_stream_producer_task(
             .await
     } else {
         interpreter
-            .call_program_executable(
+            .call_program_executable_carriers(
                 context,
                 &mut producer_heap,
                 &producer_env,
@@ -897,7 +1098,13 @@ async fn run_stream_producer_task(
     match result {
         Ok(_) => sink.end().await,
         Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-        Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+        Err(error) => match RequestHeapOwnedStreamError::try_new(error, producer_heap) {
+            Ok(error) => sink.fail(StreamRuntimeError::producer(error)).await,
+            Err(error) => {
+                debug_assert!(error.is_cancellation_terminal());
+                sink.fail(StreamRuntimeError::Cancelled).await;
+            }
+        },
     }
     for (stream_runtime, stream_value) in arg_streams {
         stream_runtime.cancel(&stream_value);
@@ -922,6 +1129,9 @@ pub fn linked_stream_item_type(return_type: Option<&LinkedTypeRef>) -> Option<&L
 fn linked_type_ref_contains_type_param(type_ref: &LinkedTypeRef) -> bool {
     match type_ref {
         LinkedTypeRef::TypeParam { .. } => true,
+        LinkedTypeRef::AppliedNominal { arguments, .. } => {
+            arguments.iter().any(linked_type_ref_contains_type_param)
+        }
         LinkedTypeRef::Native { args, .. } | LinkedTypeRef::Union { items: args } => {
             args.iter().any(linked_type_ref_contains_type_param)
         }
@@ -947,6 +1157,7 @@ fn linked_type_ref_contains_type_param(type_ref: &LinkedTypeRef) -> bool {
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::DbObjectSymbol { .. }
         | LinkedTypeRef::Address { .. } => false,
     }
@@ -982,10 +1193,7 @@ mod tests {
             build_id: "build:program".to_string(),
             service_files: Vec::new(),
             packages: Vec::new(),
-            package_files: Vec::new(),
             service_resources: Default::default(),
-            package_resources: Vec::new(),
-            service_dependencies: Vec::new(),
             timeout: Default::default(),
             operation_route_bindings: Vec::new(),
             routes: Default::default(),
@@ -1022,13 +1230,12 @@ mod tests {
     }
 
     #[test]
-    fn service_dependency_stream_call_is_not_treated_as_unlinked_producer() {
+    fn service_dependency_stream_call_fails_closed() {
         let program = Arc::new(empty_program());
         let projection = EvalProgramProjection::new(
             &program.service_id,
             &program.service_files,
             &program.packages,
-            &program.package_files,
             &program.spawn_routes,
             &program.link_overlay,
             &program.types,
@@ -1065,13 +1272,16 @@ mod tests {
                         },
                     },
                 },
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
         };
 
-        let producer = interpreter
+        let error = interpreter
             .resolve_stream_producer_call(
                 projection,
                 &ExecutableAddr::service(0, 0),
@@ -1080,9 +1290,12 @@ mod tests {
                 &executable,
                 &expr,
             )
-            .expect("service dependency call should fall back to normal stream eval");
+            .expect_err("legacy service dependency call must fail closed");
 
-        assert!(producer.is_none());
+        assert!(
+            error.to_string().contains("serviceDependencySymbol"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -1112,6 +1325,9 @@ mod tests {
             target: LinkedCallTarget::Executable {
                 addr: callee_addr.clone(),
             },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
             args: Vec::new(),
             type_args: BTreeMap::from([("T".to_string(), builtin("string"))]),
             metadata: BTreeMap::new(),
@@ -1122,7 +1338,6 @@ mod tests {
             &program.service_id,
             &program.service_files,
             &program.packages,
-            &program.package_files,
             &routes,
             &program.link_overlay,
             &program.types,
@@ -1185,6 +1400,9 @@ mod tests {
             target: LinkedCallTarget::Executable {
                 addr: callee_addr.clone(),
             },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
             args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
@@ -1195,7 +1413,6 @@ mod tests {
             &program.service_id,
             &program.service_files,
             &program.packages,
-            &program.package_files,
             &routes,
             &program.link_overlay,
             &program.types,
@@ -1226,9 +1443,18 @@ mod tests {
 #[cfg(test)]
 mod prepared_stream_drain_tests {
     use skiff_runtime_capability_context::StreamRuntimeError;
+    use skiff_runtime_model::service_error::OpaqueServiceError;
 
     use super::prepared_stream_error_after_drain;
     use crate::error::RuntimeError;
+
+    fn fixed_service_error() -> OpaqueServiceError {
+        OpaqueServiceError::decode(
+            br#"{"kind":"internalError","payload":{"message":"Internal service error","traceId":"trace-stream","errorId":"trace-stream:error"}}"#
+                .to_vec(),
+        )
+        .expect("fixed service error fixture should decode")
+    }
 
     #[test]
     fn unknown_stream_after_consumer_error_fails_closed() {
@@ -1276,5 +1502,24 @@ mod prepared_stream_drain_tests {
             error,
             RuntimeError::Decode(message) if message == "unexpected stream registry failure"
         ));
+    }
+
+    #[test]
+    fn fixed_drain_terminal_overrides_consumer_error_without_reencoding() {
+        let fixed = fixed_service_error();
+        let exact = fixed.encoded_bytes().to_vec();
+        let error = prepared_stream_error_after_drain(
+            RuntimeError::FileError {
+                message: "consumer failed".to_string(),
+            },
+            Err(StreamRuntimeError::fixed_service_failure(fixed)),
+        );
+
+        match error {
+            RuntimeError::FixedServiceFailure(error) => {
+                assert_eq!(error.encoded_bytes(), exact)
+            }
+            _ => panic!("fixed producer terminal must remain typed"),
+        }
     }
 }

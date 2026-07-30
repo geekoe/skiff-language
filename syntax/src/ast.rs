@@ -14,6 +14,8 @@ pub struct SourceFile {
     #[serde(default)]
     pub types: Vec<TypeDecl>,
     #[serde(default)]
+    pub actors: Vec<ActorDecl>,
+    #[serde(default)]
     pub aliases: Vec<AliasDecl>,
     #[serde(default)]
     pub interfaces: Vec<InterfaceDecl>,
@@ -54,7 +56,37 @@ impl SourceSpanTable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutableSourceSpans {
+    pub effects: Vec<TestEffectSourceSpans>,
     pub body: BlockSourceSpans,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestEffectSourceSpans {
+    pub expect: Option<ExprSourceSpans>,
+    pub outcome: TestEffectOutcomeSourceSpans,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestEffectOutcomeSourceSpans {
+    Respond(ExprSourceSpans),
+    Throw(ExprSourceSpans),
+    Stream(Vec<ExprSourceSpans>),
+    Sequence {
+        steps: Vec<TestEffectSequenceStepSourceSpans>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestEffectSequenceStepSourceSpans {
+    pub expect: Option<ExprSourceSpans>,
+    pub outcome: TestEffectStepOutcomeSourceSpans,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestEffectStepOutcomeSourceSpans {
+    Respond(ExprSourceSpans),
+    Throw(ExprSourceSpans),
+    Stream(Vec<ExprSourceSpans>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,10 +175,9 @@ impl PackageId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeDecl {
     pub exported: bool,
-    #[serde(default)]
-    pub is_native: bool,
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<String>,
@@ -154,6 +185,16 @@ pub struct TypeDecl {
     pub discriminator: Option<String>,
     pub alias: Option<TypeRef>,
     pub implements: Vec<TypeRef>,
+    pub fields: Vec<FieldDecl>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActorDecl {
+    pub exported: bool,
+    pub name: String,
+    pub id_type: TypeRef,
     pub fields: Vec<FieldDecl>,
     pub span: SourceSpan,
 }
@@ -340,6 +381,103 @@ pub struct Block {
     pub statements: Vec<Stmt>,
 }
 
+pub const MAX_SAFE_DURATION_MILLISECONDS: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DurationUnit {
+    #[serde(rename = "ms")]
+    Milliseconds,
+    #[serde(rename = "s")]
+    Seconds,
+    #[serde(rename = "m")]
+    Minutes,
+    #[serde(rename = "h")]
+    Hours,
+    #[serde(rename = "d")]
+    Days,
+}
+
+impl DurationUnit {
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Milliseconds => "ms",
+            Self::Seconds => "s",
+            Self::Minutes => "m",
+            Self::Hours => "h",
+            Self::Days => "d",
+        }
+    }
+
+    pub const fn milliseconds_multiplier(self) -> u64 {
+        match self {
+            Self::Milliseconds => 1,
+            Self::Seconds => 1_000,
+            Self::Minutes => 60_000,
+            Self::Hours => 3_600_000,
+            Self::Days => 86_400_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurationLiteral {
+    pub digits: String,
+    pub unit: DurationUnit,
+    pub span: SourceSpan,
+}
+
+impl DurationLiteral {
+    pub fn checked_milliseconds(&self) -> Result<u64, DurationLiteralError> {
+        if self.digits.is_empty() || !self.digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(DurationLiteralError::InvalidDigits);
+        }
+        let amount = self
+            .digits
+            .parse::<u64>()
+            .map_err(|_| DurationLiteralError::UnsafeMilliseconds)?;
+        if amount == 0 {
+            return Err(DurationLiteralError::NotPositive);
+        }
+        let milliseconds = amount
+            .checked_mul(self.unit.milliseconds_multiplier())
+            .ok_or(DurationLiteralError::UnsafeMilliseconds)?;
+        if milliseconds > MAX_SAFE_DURATION_MILLISECONDS {
+            return Err(DurationLiteralError::UnsafeMilliseconds);
+        }
+        Ok(milliseconds)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurationLiteralError {
+    InvalidDigits,
+    NotPositive,
+    UnsafeMilliseconds,
+}
+
+impl std::fmt::Display for DurationLiteralError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidDigits => {
+                formatter.write_str("duration literal has invalid positive integer digits")
+            }
+            Self::NotPositive => formatter.write_str("duration literal must be greater than zero"),
+            Self::UnsafeMilliseconds => {
+                formatter.write_str("duration literal must convert to safe integer milliseconds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DurationLiteralError {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueBlock {
+    pub body: Block,
+    pub tail: Box<Expr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ForBinding {
@@ -349,6 +487,16 @@ pub enum ForBinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
+    /// Compiler-owned test-service statement. The parser never produces this
+    /// variant from source text.
+    CompilerTestEffectRegister {
+        target: String,
+        target_probe: Expr,
+        declaration_start: bool,
+        expect: Option<Expr>,
+        step_expect: Option<Expr>,
+        outcome: TestEffectStepOutcome,
+    },
     Assert {
         condition: Expr,
         message: Option<String>,
@@ -362,6 +510,16 @@ pub enum Stmt {
     Assign {
         target: Expr,
         value: Expr,
+    },
+    Timeout {
+        duration: DurationLiteral,
+        body: Block,
+    },
+    Concurrent {
+        body: Block,
+    },
+    Serial {
+        body: Block,
     },
     If {
         condition: Expr,
@@ -554,8 +712,43 @@ pub enum DbChangeOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestDeclaration {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<TestEffectDeclaration>,
     pub body: Block,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestEffectDeclaration {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<Expr>,
+    pub outcome: TestEffectOutcome,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TestEffectOutcome {
+    Respond { value: Expr },
+    Throw { value: Expr },
+    Stream { events: Vec<Expr> },
+    Sequence { steps: Vec<TestEffectSequenceStep> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestEffectSequenceStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<Expr>,
+    pub outcome: TestEffectStepOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TestEffectStepOutcome {
+    Respond { value: Expr },
+    Throw { value: Expr },
+    Stream { events: Vec<Expr> },
 }
 
 pub fn source_text_without_test_declarations(source: &str, ast: &SourceFile) -> String {
@@ -742,6 +935,12 @@ pub enum Expr {
     Patch {
         target: TypeRef,
         operations: Vec<PatchOperation>,
+    },
+    ValueBlock(ValueBlock),
+    ConcurrentValue(ValueBlock),
+    Timeout {
+        duration: DurationLiteral,
+        value: Box<Expr>,
     },
     Throw {
         value: Box<Expr>,

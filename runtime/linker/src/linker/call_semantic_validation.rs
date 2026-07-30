@@ -5,16 +5,14 @@ use skiff_runtime_native_contract::{
 };
 
 use super::link_diagnostics::{
-    canonical_linked_interface_method_abi_id, interface_declaration_abi_id,
-    interface_instantiation_symbol, interface_method_call_symbol, linked_type_ref_abi_key,
-    package_interface_declaration_abi_id, substitute_interface_method_type,
-    unresolved_type_param_name, validate_interface_operation_explicit_self,
+    canonical_linked_interface_method_abi_id, interface_instantiation_symbol,
+    interface_method_call_symbol, substitute_interface_method_type, unresolved_type_param_name,
+    validate_interface_operation_explicit_self,
 };
 use crate::{
     program::{
-        CallIr, ConstAddr, ExecutableAddr, InterfaceDeclIr, LinkedCallTarget, LinkedFileUnit,
-        LinkedFunctionTypeParamIr, LinkedInterfaceInstantiationRef, LinkedTypeRef, PackageRefIr,
-        ReceiverCallAbi,
+        CallIr, ConstAddr, ExecutableAddr, InterfaceDeclIr, LinkedCallTarget,
+        LinkedFunctionTypeParamIr, LinkedInterfaceInstantiationRef, LinkedTypeRef, ReceiverCallAbi,
     },
     resolver::{ProgramError, ProgramResult},
 };
@@ -107,39 +105,6 @@ pub(super) fn validate_local_receiver_call_abi(
     match receiver_call_abi {
         ReceiverCallAbi::ExplicitSelfFirst => Ok(()),
     }
-}
-
-pub(crate) fn local_interface_declaration_abi_ids(
-    context: &str,
-    file: &LinkedFileUnit,
-    declaration_name: &str,
-) -> ProgramResult<Vec<String>> {
-    let mut abi_ids = vec![interface_declaration_abi_id(
-        context,
-        file,
-        declaration_name,
-    )?];
-    if let Some(declaration) = file.declarations.types.get(declaration_name) {
-        let publication_id = linked_type_ref_abi_key(
-            context,
-            &LinkedTypeRef::PublicationType {
-                module_path: file.module_path.clone(),
-                type_index: declaration.type_index,
-            },
-        )?;
-        if !abi_ids.contains(&publication_id) {
-            abi_ids.push(publication_id);
-        }
-    }
-    Ok(abi_ids)
-}
-
-pub(crate) fn package_interface_declaration_id(
-    context: &str,
-    package: PackageRefIr,
-    symbol_path: &str,
-) -> ProgramResult<String> {
-    package_interface_declaration_abi_id(context, package, symbol_path)
 }
 
 fn validate_interface_method_call_target(
@@ -399,6 +364,9 @@ mod tests {
     fn call(target: LinkedCallTarget, arg_count: usize) -> CallIr {
         CallIr {
             target,
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
             args: (0..arg_count)
                 .map(|expression| ExprRefIr {
                     expression: expression as u32,
@@ -406,6 +374,7 @@ mod tests {
                 .collect(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
+            actor_metadata: None,
         }
     }
 

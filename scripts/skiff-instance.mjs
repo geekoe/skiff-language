@@ -16,7 +16,7 @@ import {
   runAttachedCommand,
 } from './lib/command-execution.mjs';
 import {
-  devSyncCheckFlags,
+  devSyncFlags,
   instanceDevSyncOptions,
   parseDevSyncArgs,
   renderDevSyncArgs,
@@ -39,10 +39,18 @@ import {
   binaryIdentity,
   installManagedBinary,
 } from './lib/managed-binary.mjs';
+import {
+  installManagedPidMetadata,
+  managedPidMetadataOwner,
+  readManagedPidMetadataFile,
+  removeManagedPidMetadata,
+} from './lib/managed-pid-metadata.mjs';
+import { createSupervisedEntryLifecycle } from './lib/supervised-entry-lifecycle.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
 const pidMetadataSchemaVersion = 1;
+const pidMetadataOwnerSymbol = Symbol('managed-pid-metadata-owner');
 const startTimeoutMs = 20000;
 const stopTimeoutMs = 5000;
 const instanceCommands = new Set([
@@ -58,7 +66,6 @@ const instanceCommands = new Set([
   'supervise',
   'run',
   'down',
-  'reload',
   'sync',
   'watch',
 ]);
@@ -75,9 +82,8 @@ const usage = `usage:
   skiff instance supervise <config>
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
-  skiff instance reload <config>
-  skiff instance sync <config> [root] [--profile <name>] [--service-id <id>] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--check|--check-sync]
-  skiff instance watch <config> [root] [--profile <name>] [--service-id <id>] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--poll-interval-ms <ms>]`;
+  skiff instance sync <config> [root] --expected-generation <n> [--environment <name>] [--activation-id <id>] [--build-only] [--json]
+  skiff instance watch <config> [root] --expected-generation <n> [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 try {
   await main(process.argv.slice(2));
@@ -130,9 +136,6 @@ export async function main(rawArgs) {
       return;
     case 'down':
       await downInstance(args, configPath);
-      return;
-    case 'reload':
-      await reloadInstance(args, configPath);
       return;
     case 'sync':
       await syncInstance(args, configPath, false);
@@ -241,8 +244,8 @@ async function buildInstance(rawArgs, configPath) {
     runtime: {
       path: config.paths.runtimeBinary,
     },
-    identityCli: {
-      path: config.paths.identityCli,
+    ecosystemStoreCli: {
+      path: config.paths.ecosystemStoreCli,
     },
     staleProcesses,
     recovery: staleProcesses.length === 0
@@ -306,7 +309,9 @@ async function runInstance(rawArgs, configPath) {
 }
 
 async function superviseCommand(rawArgs, configPath) {
-  const args = parseFlags(rawArgs, { flags: new Set() });
+  const args = parseFlags(rawArgs, {
+    values: new Set(['--startup-gate', '--startup-ready']),
+  });
   if (args.positionals.length !== 0) {
     throw new Error(`unexpected argument ${args.positionals[0]}`);
   }
@@ -314,7 +319,10 @@ async function superviseCommand(rawArgs, configPath) {
   await ensureInstanceDirs(config.paths);
   await writeRuntimeConfigs(config, true);
   await buildComponentBinaries(config);
-  await superviseInstance(config);
+  await superviseInstance(config, {
+    startupGate: args.values.get('--startup-gate'),
+    startupReady: args.values.get('--startup-ready'),
+  });
 }
 
 async function downInstance(rawArgs, configPath) {
@@ -382,7 +390,18 @@ async function repairInstance(rawArgs, configPath) {
   }
   for (const processStatus of before.processes) {
     if (processStatus.category === 'stale-pid') {
-      await rm(processStatus.pidPath, { force: true });
+      const owner = processStatus[pidMetadataOwnerSymbol];
+      if (owner == null) {
+        throw new Error(
+          `${processStatus.name} has foreign or unowned PID metadata at ${processStatus.pidPath}; refusing repair`,
+        );
+      }
+      const removal = await removeManagedPidMetadata(owner);
+      if (!removal.removed) {
+        throw new Error(
+          `${processStatus.name} PID metadata changed during repair (${removal.reason}); preserving it`,
+        );
+      }
       repaired.push({ name: processStatus.name, action: 'removed-stale-pid' });
       continue;
     }
@@ -396,26 +415,9 @@ async function repairInstance(rawArgs, configPath) {
   console.log(JSON.stringify({ repaired, status: await instanceStatus(config) }, null, 2));
 }
 
-async function reloadInstance(rawArgs, configPath) {
-  const args = parseFlags(rawArgs, { flags: new Set() });
-  if (args.positionals.length !== 0) {
-    throw new Error(`unexpected argument ${args.positionals[0]}`);
-  }
-  const config = await loadInstance(configPath);
-  const response = await fetch(config.urls.routerReload, { method: 'POST' });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`router reload returned HTTP ${response.status}${body ? `: ${body}` : ''}`);
-  }
-  console.log(`requested router reload at ${config.urls.routerReload}`);
-  if (body.trim()) {
-    console.log(body.trim());
-  }
-}
-
 async function syncInstance(rawArgs, configPath, watch) {
   const args = parseDevSyncArgs(rawArgs, {
-    flags: devSyncCheckFlags,
+    flags: devSyncFlags,
     options: instanceDevSyncOptions,
     resolve,
     allowEmptyEquals: true,
@@ -429,9 +431,8 @@ async function syncInstance(rawArgs, configPath, watch) {
       prefix: watch ? ['--watch'] : [],
       injectOptions: {
         artifactRoot: config.paths.artifactRoot,
-        buildRoot: config.paths.serviceBuildRoot,
-        reloadUrl: config.urls.routerReload,
-        defaultPackagesDir: config.packageDirs,
+        activationUrl: `${config.urls.routerControl}/__skiff/activate-assembly`,
+        config: config.paths.watchConfig,
       },
     }),
   ], process.cwd());
@@ -477,11 +478,15 @@ function routerConfigText(config) {
   return renderRouterConfig({
     profile: 'dev',
     host: '127.0.0.1',
-    artifactRoots: [config.paths.artifactRoot],
-    identityCliPath: config.paths.identityCli,
+    environment: config.environment,
+    artifactsPath: config.paths.artifactRoot,
+    ecosystemStoreCliPath: config.paths.ecosystemStoreCli,
     devReload: true,
     requestTimeoutMs: 20000,
+    activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
     httpPort: config.ports.routerHttp,
+    httpMaxRequestBytes: config.http.maxRequestBytes,
+    httpMaxResponseBytes: config.http.maxResponseBytes,
     runtimePort: config.ports.routerControl,
     runtimePath: '/runtime',
     serviceDbMongoUrl: `mongodb://127.0.0.1:${config.ports.mongo}/?directConnection=true&replicaSet=rs0&retryWrites=false`,
@@ -493,7 +498,7 @@ function runtimeConfigText(config) {
   return renderRuntimeConfig({
     routerUrl: config.urls.routerRuntime,
     runtimeHome: config.paths.runtimeHome,
-    artifactRoots: [config.paths.artifactRoot],
+    environment: config.environment,
     serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
   });
 }
@@ -524,16 +529,17 @@ async function buildComponentBinaries(config) {
   });
 
   await buildRustBinary({
-    manifest: join(skiffRoot, 'artifact-identity', 'Cargo.toml'),
-    bin: 'skiff-artifact-identity',
+    manifest: join(skiffRoot, 'compiler', 'Cargo.toml'),
+    bin: 'skiff-compiler',
     source: join(
       config.paths.cargoTargetDir,
       'debug',
-      process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity',
+      process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
     ),
-    destination: config.paths.identityCli,
+    destination: config.paths.ecosystemStoreCli,
     config,
   });
+
 }
 
 async function buildRustBinary({ manifest, bin, source, destination, config }) {
@@ -604,11 +610,10 @@ function managedProcessSpecs(config) {
             config.paths.watchConfig,
             '--artifact-root',
             config.paths.artifactRoot,
-            '--build-root',
-            config.paths.serviceBuildRoot,
-            '--reload-url',
-            config.urls.routerReload,
-            ...config.packageDirs.flatMap((dir) => ['--default-packages-dir', dir]),
+            '--activation-url',
+            `${config.urls.routerControl}/__skiff/activate-assembly`,
+            '--expected-generation',
+            '0',
           ],
           cwd: skiffRoot,
           ports: [],
@@ -644,8 +649,9 @@ async function ensureManagedProcessRunning(config, spec, options) {
       return startManagedProcess(config, spec);
     }
     if (status.category === 'stale-pid') {
-      await rm(status.pidPath, { force: true });
-      return startManagedProcess(config, spec);
+      throw new Error(
+        `${spec.name} has pre-existing PID metadata at ${status.pidPath}; refusing to replace it`,
+      );
     }
     if (hasUnknownPortConflict(status)) {
       throw new Error(`${spec.name} has unknown port conflict; refusing to start`);
@@ -672,44 +678,109 @@ async function componentStatus(config, name) {
 
 async function startManagedProcess(config, spec, options = {}) {
   const managedBinary = await managedBinaryMetadata(spec);
-  await rm(pidPath(config, spec.name), { force: true });
-  const out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
-  const err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
-  // child-process-owner: managed-component
-  const child = spawnManagedChild(spec.command, spec.args, {
-    cwd: spec.cwd,
-    env: processEnv(),
-    detached: true,
-    stdio: ['ignore', out.fd, err.fd],
+  let out;
+  let err;
+  let child;
+  try {
+    out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
+    err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
+    // child-process-owner: managed-component
+    child = spawnManagedChild(spec.command, spec.args, {
+      cwd: spec.cwd,
+      env: processEnv(),
+      detached: true,
+      stdio: ['ignore', out.fd, err.fd],
+    });
+    if (child.pid === undefined) {
+      child.once('error', () => {});
+      throw new Error(`failed to start ${spec.name}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+    }
+  } catch (error) {
+    const handles = [
+      ['stdout', out],
+      ['stderr', err],
+    ].filter(([, handle]) => handle !== undefined);
+    const closeResults = await Promise.allSettled(
+      handles.map(([, handle]) => Promise.resolve().then(() => handle.close())),
+    );
+    const closeErrors = closeResults.flatMap((result, index) => result.status === 'fulfilled'
+      ? []
+      : [new Error(
+          `[skiff-instance] ${spec.name} acquisition cleanup failed for ${handles[index][0]}: ${result.reason?.message || String(result.reason)}`,
+          { cause: result.reason },
+        )]);
+    if (closeErrors.length > 0) {
+      const errors = [error, ...closeErrors];
+      throw new AggregateError(
+        errors,
+        `[skiff-instance] ${spec.name} process acquisition failed and log cleanup failed`,
+        { cause: errors },
+      );
+    }
+    throw error;
+  }
+
+  let pidOwner;
+  let pidMetadataInstall;
+  const lifecycle = createSupervisedEntryLifecycle({
+    component: spec.name,
+    child,
+    pgid: child.pid,
+    stdoutHandle: out,
+    stderrHandle: err,
+    stopProcessGroup,
+    isProcessGroupAlive,
+    removePidMetadata: async () => {
+      await Promise.allSettled([pidMetadataInstall]);
+      if (pidOwner === undefined) {
+        return;
+      }
+      const removal = await removeManagedPidMetadata(pidOwner);
+      if (!removal.removed) {
+        throw new Error(
+          `[skiff-instance] ${spec.name} PID metadata ownership lost (${removal.reason}); preserving ${pidOwner.path}`,
+        );
+      }
+    },
   });
-  let spawnError = null;
-  child.once('error', (error) => {
-    spawnError = error;
+  pidMetadataInstall = installManagedPidMetadata(
+    pidPath(config, spec.name),
+    pidMetadata(config, spec, child.pid, managedBinary),
+  ).then((owner) => {
+    pidOwner = owner;
+    return owner;
   });
-  if (child.pid === undefined) {
-    await out.close();
-    await err.close();
-    throw new Error(`failed to start ${spec.name}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
-  }
-  await writePidMetadata(config, spec, child.pid, managedBinary);
-  if (!options.supervised) {
-    child.unref();
-    await out.close();
-    await err.close();
-  }
-  await delay(250);
-  if (spawnError !== null) {
-    throw new Error(`failed to start ${spec.name}: ${spawnError.message}`);
-  }
-  if (!isProcessAlive(child.pid)) {
-    throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+  try {
+    await pidMetadataInstall;
+    const startupResult = await Promise.race([
+      delay(250).then(() => null),
+      lifecycle.exit.then((outcome) => outcome),
+    ]);
+    if (startupResult !== null) {
+      throw new Error(
+        `${spec.name} exited after start with ${startupResult.signal ?? startupResult.code}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`,
+      );
+    }
+    if (!isProcessAlive(child.pid)) {
+      throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+    }
+    if (!options.supervised) {
+      await waitForComponentRunning(config, spec, child.pid);
+      await lifecycle.detach();
+    }
+  } catch (error) {
+    lifecycle.recordPrimary(error);
+    try {
+      await lifecycle.stop('startup failure');
+    } catch (lifecycleError) {
+      throw lifecycleError;
+    }
+    throw error;
   }
   console.log(`[skiff-instance] started ${spec.name} pid=${child.pid} pgid=${child.pid}`);
-  if (!options.supervised) {
-    await waitForComponentRunning(config, spec, child.pid);
-    return { name: spec.name, started: true, pid: child.pid, pgid: child.pid };
-  }
-  return { name: spec.name, started: true, pid: child.pid, pgid: child.pid, child, out, err };
+  return options.supervised
+    ? lifecycle
+    : { name: spec.name, started: true, pid: child.pid, pgid: child.pid };
 }
 
 async function waitForComponentRunning(config, spec, pid) {
@@ -731,69 +802,185 @@ async function waitForComponentRunning(config, spec, pid) {
   throw new Error(`${spec.name} did not become healthy within ${startTimeoutMs}ms; status=${status.category}`);
 }
 
-async function superviseInstance(config) {
+async function superviseInstance(config, { startupGate, startupReady } = {}) {
   const specs = managedProcessSpecs(config);
+  if (startupGate !== undefined && specs[0]?.name !== 'mongo') {
+    throw new Error('supervisor startup gate requires managed MongoDB');
+  }
+  if ((startupGate === undefined) !== (startupReady === undefined)) {
+    throw new Error('supervisor startup gate and startup ready receipt must be used together');
+  }
   const running = new Map();
+  const active = new Map();
+  const pendingStarts = new Set();
+  const restartTimers = new Map();
   let stopping = false;
+  let shutdownPromise;
+  let resolveSupervisorDone;
+  const supervisorDone = new Promise((resolve) => {
+    resolveSupervisorDone = resolve;
+  });
 
-  const stopAll = async (signal) => {
-    if (stopping) {
-      return;
+  const stopAll = (reason, primaryError) => {
+    if (primaryError !== undefined) {
+      process.exitCode = 1;
+      console.error(`[skiff-instance] supervisor failure: ${primaryError?.message || String(primaryError)}`);
+    }
+    if (shutdownPromise !== undefined) {
+      return shutdownPromise;
     }
     stopping = true;
-    console.log(`[skiff-instance] stopping after ${signal}`);
-    for (const spec of [...specs].reverse()) {
-      await stopManagedProcess(config, spec.name);
+    console.log(`[skiff-instance] stopping after ${reason}`);
+    for (const timer of restartTimers.values()) {
+      clearTimeout(timer);
     }
-    process.exit(0);
+    restartTimers.clear();
+    shutdownPromise = (async () => {
+      const startResults = await Promise.allSettled([...pendingStarts]);
+      const orderedEntries = [...specs].reverse()
+        .flatMap((spec) => active.has(spec.name) ? [active.get(spec.name)] : []);
+      const stopResults = await Promise.allSettled(
+        orderedEntries.map((entry) => entry.lifecycle.stop(reason)),
+      );
+      const errors = [...startResults, ...stopResults]
+        .flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length > 0) {
+        const details = errors.map((error) => error?.message || String(error)).join('; ');
+        throw new AggregateError(
+          errors,
+          `[skiff-instance] supervisor shutdown failed: ${details}`,
+          { cause: errors },
+        );
+      }
+    })()
+      .catch((error) => {
+        process.exitCode = 1;
+        console.error(error?.message || String(error));
+      })
+      .finally(() => {
+        resolveSupervisorDone();
+      });
+    return shutdownPromise;
   };
 
-  process.on('SIGTERM', () => {
-    void stopAll('SIGTERM');
-  });
-  process.on('SIGINT', () => {
-    void stopAll('SIGINT');
-  });
+  const signalHandlers = new Map(
+    ['SIGTERM', 'SIGINT'].map((signal) => [signal, async () => {
+      await stopAll(signal);
+    }]),
+  );
+  for (const [signal, handler] of signalHandlers) {
+    process.once(signal, handler);
+  }
 
-  const start = async (spec) => {
+  const startOne = async (spec) => {
     if (stopping) {
       return;
     }
     const status = await componentStatus(config, spec.name);
     if (status.category === 'stale-pid') {
-      await rm(status.pidPath, { force: true });
+      throw new Error(
+        `${spec.name} has pre-existing PID metadata at ${status.pidPath}; refusing to supervise`,
+      );
     } else if (status.category !== 'stopped') {
       throw new Error(`${spec.name} is ${status.category}; stop or repair it before supervise`);
     }
-    const entry = await startManagedProcess(config, spec, { supervised: true });
-    running.set(spec.name, entry);
-    entry.child.on('exit', (code, signal) => {
-      const current = running.get(spec.name);
-      running.delete(spec.name);
-      void current?.out.close();
-      void current?.err.close();
-      void (async () => {
-        if (current !== undefined && isProcessGroupAlive(current.pgid)) {
-          await stopProcessGroup(current.pgid);
+    if (stopping) {
+      return;
+    }
+    const lifecycle = await startManagedProcess(config, spec, { supervised: true });
+    const entry = { spec, lifecycle, exitDescription: 'unknown' };
+    active.set(spec.name, entry);
+    lifecycle.exit.then(
+      ({ code, signal }) => {
+        entry.exitDescription = signal ?? code;
+        if (running.get(spec.name) === entry) {
+          running.delete(spec.name);
         }
-        if (current === undefined || !isProcessGroupAlive(current.pgid)) {
-          await rm(pidPath(config, spec.name), { force: true });
+      },
+      (error) => {
+        entry.exitDescription = error?.message || String(error);
+        if (running.get(spec.name) === entry) {
+          running.delete(spec.name);
         }
-        if (!stopping) {
-          console.warn(`[skiff-instance] ${spec.name} exited with ${signal ?? code}; restarting`);
-          setTimeout(() => {
-            void start(spec);
+      },
+    );
+    lifecycle.completion.then(
+      () => {
+        if (active.get(spec.name) === entry) {
+          active.delete(spec.name);
+        }
+        if (!stopping && !running.has(spec.name)) {
+          console.warn(`[skiff-instance] ${spec.name} exited with ${entry.exitDescription}; restarting`);
+          const timer = setTimeout(async () => {
+            restartTimers.delete(spec.name);
+            try {
+              await start(spec);
+            } catch (error) {
+              await stopAll(`${spec.name} restart failure`, error);
+            }
           }, 1000);
+          restartTimers.set(spec.name, timer);
         }
-      })();
-    });
+      },
+      async (error) => {
+        if (active.get(spec.name) === entry) {
+          active.delete(spec.name);
+        }
+        await stopAll(`${spec.name} lifecycle failure`, error);
+      },
+    );
+    if (stopping) {
+      await lifecycle.stop('shutdown during component start');
+      return;
+    }
+    running.set(spec.name, entry);
   };
 
-  for (const spec of specs) {
-    await start(spec);
+  const start = (spec) => {
+    const operation = startOne(spec);
+    pendingStarts.add(operation);
+    operation.then(
+      () => pendingStarts.delete(operation),
+      () => pendingStarts.delete(operation),
+    );
+    return operation;
+  };
+
+  try {
+    if (startupGate === undefined) {
+      for (const spec of specs) {
+        await start(spec);
+        if (stopping) {
+          break;
+        }
+      }
+    } else {
+      await start(specs[0]);
+      await writeFile(startupReady, 'mongo-started\n', {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+      console.log(`[skiff-instance] startup gate waiting after ${specs[0].name}: ${startupGate}`);
+      while (!stopping && !await fileExists(startupGate)) {
+        await delay(50);
+      }
+      if (!stopping) {
+        await Promise.all(specs.slice(1).map((spec) => start(spec)));
+      }
+    }
+    if (!stopping) {
+      console.log(JSON.stringify(await instanceStatus(config), null, 2));
+    }
+    await supervisorDone;
+  } catch (error) {
+    await stopAll('startup failure', error);
+    throw error;
+  } finally {
+    for (const [signal, handler] of signalHandlers) {
+      process.off(signal, handler);
+    }
   }
-  console.log(JSON.stringify(await instanceStatus(config), null, 2));
-  await new Promise(() => {});
 }
 
 async function stopManagedProcess(config, name) {
@@ -805,8 +992,7 @@ async function stopComponentStatus(config, processStatus) {
     return { name: processStatus.name, stopped: false, reason: 'stopped' };
   }
   if (processStatus.category === 'stale-pid') {
-    await rm(processStatus.pidPath, { force: true });
-    return { name: processStatus.name, stopped: false, reason: 'stale-pid-removed' };
+    return { name: processStatus.name, stopped: false, reason: 'stale-pid-preserved' };
   }
   if (hasUnknownPortConflict(processStatus)) {
     return { name: processStatus.name, stopped: false, reason: 'unknown-port-conflict' };
@@ -820,13 +1006,30 @@ async function stopComponentStatus(config, processStatus) {
     stoppedGroups.push(await stopProcessGroup(pgid));
   }
   const groupsGone = stoppedGroups.every((group) => !isProcessGroupAlive(group.pgid));
-  if (groupsGone) {
-    await rm(processStatus.pidPath, { force: true });
+  if (!groupsGone) {
+    throw new Error(
+      `[skiff-instance] ${processStatus.name} process group absence was not proven; preserving PID metadata`,
+    );
+  }
+  const owner = processStatus[pidMetadataOwnerSymbol];
+  const pidMetadataRemoval = owner == null
+    ? { removed: false, reason: 'unowned' }
+    : await removeManagedPidMetadata(owner);
+  if (stoppedGroups.some((group) => group.stopped !== true)) {
+    throw new Error(
+      `[skiff-instance] ${processStatus.name} process stop returned stopped=false; restart is blocked`,
+    );
+  }
+  if (!pidMetadataRemoval.removed) {
+    throw new Error(
+      `[skiff-instance] ${processStatus.name} PID metadata ownership lost (${pidMetadataRemoval.reason}); restart is blocked`,
+    );
   }
   return {
     name: processStatus.name,
     stopped: stoppedGroups.some((group) => group.stopped),
-    pidMetadataRemoved: groupsGone,
+    pidMetadataRemoved: pidMetadataRemoval.removed,
+    pidMetadataRemovalReason: pidMetadataRemoval.reason,
     groups: stoppedGroups,
   };
 }
@@ -1016,6 +1219,7 @@ function processStatus(config, spec, pidRecord, listenersByPort, ownedGroups, sp
   }
 
   return {
+    [pidMetadataOwnerSymbol]: sameInstance && metadataMatchesSpec ? pidRecord.owner : null,
     name: spec.name,
     category,
     running: category === 'running',
@@ -1417,14 +1621,18 @@ function pidPath(config, name) {
 async function readPidMetadata(config, name) {
   const path = pidPath(config, name);
   try {
-    const text = await readFile(path, 'utf8');
-    const trimmed = text.trim();
+    const snapshot = await readManagedPidMetadataFile(path);
+    if (snapshot === null) {
+      return { path, format: 'missing', metadata: null, owner: null, pid: null, error: null };
+    }
+    const trimmed = snapshot.text.trim();
     if (trimmed.startsWith('{')) {
       const metadata = JSON.parse(trimmed);
       return {
         path,
         format: 'json',
         metadata,
+        owner: managedPidMetadataOwner(path, metadata, snapshot.identity),
         pid: readPositiveInteger(metadata.pid),
         error: null,
       };
@@ -1434,15 +1642,13 @@ async function readPidMetadata(config, name) {
       path,
       format: Number.isInteger(pid) && pid > 0 ? 'plain' : 'invalid',
       metadata: null,
+      owner: null,
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
       error: Number.isInteger(pid) && pid > 0 ? null : 'invalid plain pid',
     };
   } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return { path, format: 'missing', metadata: null, pid: null, error: null };
-    }
     if (error instanceof SyntaxError) {
-      return { path, format: 'invalid', metadata: null, pid: null, error: error.message };
+      return { path, format: 'invalid', metadata: null, owner: null, pid: null, error: error.message };
     }
     throw error;
   }
@@ -1457,8 +1663,8 @@ async function managedBinaryMetadata(spec) {
       };
 }
 
-async function writePidMetadata(config, spec, pid, managedBinary) {
-  const metadata = {
+function pidMetadata(config, spec, pid, managedBinary) {
+  return {
     schemaVersion: pidMetadataSchemaVersion,
     component: spec.name,
     pid,
@@ -1473,7 +1679,6 @@ async function writePidMetadata(config, spec, pid, managedBinary) {
     startedAt: new Date().toISOString(),
     managedBinary,
   };
-  await writeFile(pidPath(config, spec.name), `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
 function isSameInstanceMetadata(config, metadata) {
@@ -1586,11 +1791,17 @@ function parseInstanceConfig(rawArgs) {
 
 function parseFlags(rawArgs, spec) {
   const flags = new Set();
+  const values = new Map();
   const positionals = [];
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
-    if (spec.flags.has(arg)) {
+    if (spec.flags?.has(arg)) {
       flags.add(arg);
+      continue;
+    }
+    if (spec.values?.has(arg)) {
+      values.set(arg, requireNext(rawArgs, index, arg));
+      index += 1;
       continue;
     }
     if (arg.startsWith('-')) {
@@ -1598,7 +1809,7 @@ function parseFlags(rawArgs, spec) {
     }
     positionals.push(arg);
   }
-  return { flags, positionals };
+  return { flags, values, positionals };
 }
 
 function requireNext(args, index, optionName) {

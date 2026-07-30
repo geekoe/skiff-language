@@ -1,19 +1,17 @@
+use std::collections::BTreeMap;
+
 use serde::Serialize;
+use serde_json::Value;
 use skiff_artifact_model::{
-    ConfigLiteralBinding, DeploymentArtifactIdentity, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, PackageArtifactRef,
-    PackageBinding, ResourceBinding, RuntimeCapabilityBinding, SecretRefBinding,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceSelectorBinding,
-    StateBinding,
+    ConfigLiteralBinding, DeploymentArtifactIdentity, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    GatewayEntryKey, ResourceBinding, RuntimeCapabilityBinding, SecretRefBinding,
+    ServiceDeployment, ServiceDeploymentRef, StateBinding,
 };
 
 mod normalization;
 mod validation;
 
-pub(crate) use normalization::{
-    normalize_config_literals, normalize_resource_bindings, normalize_secret_refs,
-    normalize_state_bindings,
-};
 pub(crate) use validation::{
     validate_contract_ref, validate_deployment_ref_shape, validate_package_ref,
 };
@@ -30,12 +28,13 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentArtifactIdentityProjection {
     schema: &'static str,
-    contract: ServiceContractRef,
+    contract: Value,
     deployment_revision: DeploymentRevision,
-    implementation: PackageArtifactRef,
+    implementation: Value,
     operation_bindings: Vec<DeploymentOperationBinding>,
-    package_bindings: Vec<PackageBinding>,
-    service_selectors: Vec<ServiceSelectorBinding>,
+    package_bindings: Value,
+    service_selectors: Value,
+    gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: Vec<DeploymentIngressBinding>,
     config_literals: Vec<ConfigLiteralBinding>,
     secret_refs: Vec<SecretRefBinding>,
@@ -52,12 +51,25 @@ pub fn service_deployment_identity_projection(
     validate_service_deployment_surface(deployment)?;
     let mut projection = DeploymentArtifactIdentityProjection {
         schema: DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
-        contract: deployment.contract.clone(),
+        contract: crate::identity_labels::without_human_version_labels(
+            &deployment.contract,
+            ArtifactIdentityError::SerializeDeploymentArtifactIdentity,
+        )?,
         deployment_revision: deployment.deployment_revision.clone(),
-        implementation: deployment.implementation.clone(),
+        implementation: crate::identity_labels::without_human_version_labels(
+            &deployment.implementation,
+            ArtifactIdentityError::SerializeDeploymentArtifactIdentity,
+        )?,
         operation_bindings: deployment.operation_bindings.clone(),
-        package_bindings: deployment.package_bindings.clone(),
-        service_selectors: deployment.service_selectors.clone(),
+        package_bindings: crate::identity_labels::without_human_version_labels(
+            &deployment.package_bindings,
+            ArtifactIdentityError::SerializeDeploymentArtifactIdentity,
+        )?,
+        service_selectors: crate::identity_labels::without_human_version_labels(
+            &deployment.service_selectors,
+            ArtifactIdentityError::SerializeDeploymentArtifactIdentity,
+        )?,
+        gateway_entries: deployment.gateway_entries.clone(),
         ingress: deployment.ingress.clone(),
         config_literals: deployment.config_literals.clone(),
         secret_refs: deployment.secret_refs.clone(),

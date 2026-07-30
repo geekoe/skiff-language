@@ -1,12 +1,24 @@
 use serde_json::Value;
 use skiff_runtime_capability_context::{
-    ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError, ResponseError,
+    ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError,
+    FixedServiceResponseFailure, ResponseError,
 };
 use skiff_runtime_eval::error::RuntimeError as EvalRuntimeError;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, OpaqueServiceError, PlatformBuiltinErrorIdentity},
+};
 
 pub type RequestResult<T> = std::result::Result<T, RequestError>;
 
+/// Request cancellation is an internal completion terminal, not a wire error.
+///
+/// ```compile_fail
+/// use skiff_runtime_model::error::WirePayload;
+/// use skiff_runtime_request::RequestError;
+///
+/// let _ = WirePayload::payload(&RequestError::Cancelled);
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     #[error("{0}")]
@@ -59,20 +71,47 @@ impl RequestError {
         }
     }
 
-    pub fn response_error(&self) -> ResponseError {
-        let payload = self.payload();
-        ResponseError {
+    pub fn is_cancellation_terminal(&self) -> bool {
+        match self {
+            Self::Cancelled => true,
+            Self::ExecutionBudgetExceeded { reason, .. } => reason.is_cancellation_terminal(),
+            Self::Eval(error) => error.is_cancellation_terminal(),
+            Self::Decode(_)
+            | Self::Unsupported(_)
+            | Self::Protocol { .. }
+            | Self::Boundary(_)
+            | Self::ExternalErrorPayload { .. } => false,
+        }
+    }
+
+    pub fn ordinary_response_error(&self) -> Option<ResponseError> {
+        let payload = self.ordinary_payload()?;
+        Some(ResponseError {
             code: payload.code,
             message: payload.message,
             status: payload.status,
             details: payload.details,
+        })
+    }
+
+    /// Returns only the strict fixed service carrier held by eval.
+    ///
+    /// Generic response metadata is intentionally not inspected, so a control
+    /// error with matching code/message values can never be upgraded to fixed.
+    pub fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
+        match self {
+            Self::Eval(error) => error.fixed_service_failure(),
+            _ => None,
         }
     }
-}
 
-impl WirePayload for RequestError {
-    fn payload(&self) -> RuntimeErrorPayload {
-        match self {
+    pub fn fixed_service_response_failure(&self) -> Option<FixedServiceResponseFailure> {
+        self.fixed_service_failure()
+            .cloned()
+            .map(FixedServiceResponseFailure::new)
+    }
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        Some(match self {
             Self::Decode(message) => RuntimeErrorPayload {
                 code: "InternalError".to_string(),
                 message: message.clone(),
@@ -94,37 +133,39 @@ impl WirePayload for RequestError {
                     "message": message,
                 })),
             },
-            Self::Cancelled => RuntimeErrorPayload {
-                code: "CancelError".to_string(),
-                message: "request was cancelled".to_string(),
-                status: None,
-                details: None,
-            },
+            Self::Cancelled => return None,
             Self::ExecutionBudgetExceeded {
                 reason,
                 instruction_count,
                 limit,
                 elapsed_ms,
-            } => RuntimeErrorPayload {
-                code: "TimeoutError".to_string(),
-                message: match reason {
-                    ExecutionBudgetReason::DeadlineExceeded => {
-                        "execution deadline exceeded".to_string()
-                    }
-                    ExecutionBudgetReason::InstructionLimitExceeded => {
-                        "execution instruction limit exceeded".to_string()
-                    }
-                    ExecutionBudgetReason::Cancelled => "request was cancelled".to_string(),
-                },
-                status: None,
-                details: Some(serde_json::json!({
-                    "reason": reason.as_str(),
-                    "instructionCount": instruction_count,
-                    "limit": limit,
-                    "elapsedMs": elapsed_ms,
-                })),
-            },
-            Self::Eval(error) => error.payload(),
+            } => {
+                if reason.is_cancellation_terminal() {
+                    return None;
+                }
+                RuntimeErrorPayload {
+                    code: "TimeoutError".to_string(),
+                    message: match reason {
+                        ExecutionBudgetReason::DeadlineExceeded => {
+                            "execution deadline exceeded".to_string()
+                        }
+                        ExecutionBudgetReason::InstructionLimitExceeded => {
+                            "execution instruction limit exceeded".to_string()
+                        }
+                        ExecutionBudgetReason::Cancelled => {
+                            unreachable!("cancellation terminal was split above")
+                        }
+                    },
+                    status: None,
+                    details: Some(serde_json::json!({
+                        "reason": reason.as_str(),
+                        "instructionCount": instruction_count,
+                        "limit": limit,
+                        "elapsedMs": elapsed_ms,
+                    })),
+                }
+            }
+            Self::Eval(error) => return error.ordinary_payload(),
             Self::Boundary(error) => error.payload(),
             Self::ExternalErrorPayload {
                 code,
@@ -137,42 +178,86 @@ impl WirePayload for RequestError {
                 status: *status,
                 details: details.clone(),
             },
-        }
+        })
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": target,
                     "message": message,
                 }),
             )),
-            Self::Cancelled => Some((
-                TypeIdentity::builtin("CancelError"),
-                serde_json::json!({
-                    "message": "request was cancelled",
-                }),
-            )),
+            Self::Cancelled => None,
             Self::ExecutionBudgetExceeded {
                 reason,
                 instruction_count,
                 limit,
                 elapsed_ms,
-            } => Some((
-                TypeIdentity::builtin("TimeoutError"),
-                serde_json::json!({
-                    "reason": reason.as_str(),
-                    "instructionCount": instruction_count,
-                    "limit": limit,
-                    "elapsedMs": elapsed_ms,
-                }),
-            )),
-            Self::Eval(error) => error.catch_projection(),
+            } => {
+                if reason.is_cancellation_terminal() {
+                    None
+                } else {
+                    Some((
+                        PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+                        serde_json::json!({
+                            "reason": reason.as_str(),
+                            "instructionCount": instruction_count,
+                            "limit": limit,
+                            "elapsedMs": elapsed_ms,
+                        }),
+                    ))
+                }
+            }
+            Self::Eval(error) => error.ordinary_catch_projection(),
             Self::Boundary(error) => error.catch_projection(),
             Self::Decode(_) | Self::Unsupported(_) | Self::ExternalErrorPayload { .. } => None,
         }
+    }
+}
+
+impl skiff_runtime_capability_context::OrdinaryResponseErrorSource for RequestError {
+    fn ordinary_response_error(&self) -> Option<ResponseError> {
+        RequestError::ordinary_response_error(self)
+    }
+}
+
+/// Ordinary-only request carrier for APIs that still require [`WirePayload`].
+#[derive(Debug)]
+pub struct OrdinaryRequestError(RequestError);
+
+impl OrdinaryRequestError {
+    pub fn try_new(error: RequestError) -> std::result::Result<Self, RequestError> {
+        if error.is_cancellation_terminal() {
+            return Err(error);
+        }
+        Ok(Self(error))
+    }
+
+    pub fn error(&self) -> &RequestError {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for OrdinaryRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl std::error::Error for OrdinaryRequestError {}
+
+impl WirePayload for OrdinaryRequestError {
+    fn payload(&self) -> RuntimeErrorPayload {
+        self.0
+            .ordinary_payload()
+            .expect("OrdinaryRequestError construction excludes cancellation")
+    }
+
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        self.0.ordinary_catch_projection()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -239,7 +324,8 @@ mod tests {
         let response = RequestError::Boundary(
             skiff_runtime_boundary::error::RuntimeError::Recoverable(error),
         )
-        .response_error();
+        .ordinary_response_error()
+        .expect("boundary failure is ordinary");
 
         assert_eq!(response.code, "recoverableUnsupportedDecode");
         assert_eq!(response.status, None);
@@ -247,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn response_error_is_derived_from_wire_payload() {
+    fn response_error_is_derived_from_ordinary_payload() {
         let error = RequestError::ExecutionBudgetExceeded {
             reason: ExecutionBudgetReason::DeadlineExceeded,
             instruction_count: 42,
@@ -255,8 +341,10 @@ mod tests {
             elapsed_ms: 12.5,
         };
 
-        let payload = error.payload();
-        let response = error.response_error();
+        let payload = error.ordinary_payload().expect("deadline is ordinary");
+        let response = error
+            .ordinary_response_error()
+            .expect("deadline is ordinary");
 
         assert_eq!(response.code, payload.code);
         assert_eq!(response.message, payload.message);
@@ -265,7 +353,30 @@ mod tests {
     }
 
     #[test]
-    fn request_wire_payload_preserves_external_payload_shape() {
+    fn cancellation_terminal_has_no_ordinary_payload_catch_or_response_projection() {
+        for error in [
+            RequestError::Cancelled,
+            RequestError::ExecutionBudgetExceeded {
+                reason: ExecutionBudgetReason::Cancelled,
+                instruction_count: 0,
+                limit: None,
+                elapsed_ms: 0.0,
+            },
+            RequestError::Eval(EvalRuntimeError::Cancelled),
+            RequestError::Eval(
+                EvalRuntimeError::Cancelled
+                    .with_diagnostic_frame(serde_json::json!({ "operation": "request.cancel" })),
+            ),
+        ] {
+            assert!(error.is_cancellation_terminal());
+            assert_eq!(error.ordinary_payload(), None);
+            assert_eq!(error.ordinary_catch_projection(), None);
+            assert_eq!(error.ordinary_response_error(), None);
+        }
+    }
+
+    #[test]
+    fn request_ordinary_payload_preserves_external_payload_shape() {
         let error = RequestError::external_error_payload(
             "DownstreamError".to_string(),
             "downstream failed".to_string(),
@@ -273,7 +384,9 @@ mod tests {
             Some(serde_json::json!({ "service": "account" })),
         );
 
-        let payload = error.payload();
+        let payload = error
+            .ordinary_payload()
+            .expect("external error is ordinary");
 
         assert_eq!(payload.code, "DownstreamError");
         assert_eq!(payload.message, "downstream failed");
@@ -282,11 +395,11 @@ mod tests {
             payload.details,
             Some(serde_json::json!({ "service": "account" }))
         );
-        assert_eq!(error.catch_projection(), None);
+        assert_eq!(error.ordinary_catch_projection(), None);
     }
 
     #[test]
-    fn request_wire_payload_delegates_boundary_projection() {
+    fn request_ordinary_payload_delegates_boundary_projection() {
         let boundary = skiff_runtime_boundary::error::RuntimeError::http_error(
             "std.http failed",
             Some(serde_json::json!({ "status": 500 })),
@@ -295,31 +408,23 @@ mod tests {
         let expected_catch_projection = boundary.catch_projection();
         let error = RequestError::Boundary(boundary);
 
-        assert_eq!(error.payload(), expected_payload);
-        assert_eq!(error.catch_projection(), expected_catch_projection);
+        assert_eq!(error.ordinary_payload(), Some(expected_payload));
+        assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
     }
 
     #[test]
-    fn request_catch_projection_covers_protocol_and_request_control_errors() {
+    fn request_catch_projection_covers_only_ordinary_errors() {
         assert_eq!(
-            RequestError::protocol("svc.account", "bad frame").catch_projection(),
+            RequestError::protocol("svc.account", "bad frame").ordinary_catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": "svc.account",
                     "message": "bad frame",
                 })
             ))
         );
-        assert_eq!(
-            RequestError::Cancelled.catch_projection(),
-            Some((
-                TypeIdentity::builtin("CancelError"),
-                serde_json::json!({
-                    "message": "request was cancelled",
-                })
-            ))
-        );
+        assert_eq!(RequestError::Cancelled.ordinary_catch_projection(), None);
         assert_eq!(
             RequestError::ExecutionBudgetExceeded {
                 reason: ExecutionBudgetReason::InstructionLimitExceeded,
@@ -327,9 +432,9 @@ mod tests {
                 limit: Some(100),
                 elapsed_ms: 12.5,
             }
-            .catch_projection(),
+            .ordinary_catch_projection(),
             Some((
-                TypeIdentity::builtin("TimeoutError"),
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
                 serde_json::json!({
                     "reason": "instructionLimitExceeded",
                     "instructionCount": 42,
@@ -338,5 +443,71 @@ mod tests {
                 })
             ))
         );
+    }
+
+    #[test]
+    fn fixed_service_failure_is_extracted_only_from_the_typed_eval_carrier() {
+        let encoded = br#"{
+          "kind":"internalError",
+          "payload":{
+            "message":"The service could not complete the request.",
+            "traceId":"trace-request-fixed",
+            "errorId":"error-request-fixed"
+          }
+        }"#
+        .to_vec();
+        let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
+        let error = RequestError::Eval(EvalRuntimeError::WithDiagnosticFrame {
+            frame: Box::new(serde_json::json!({
+                "message": "provider-private-secret",
+            })),
+            error: Box::new(EvalRuntimeError::FixedServiceFailure(fixed)),
+        });
+
+        let extracted = error
+            .fixed_service_failure()
+            .expect("typed fixed carrier must remain available to request");
+        assert_eq!(extracted.encoded_bytes(), encoded);
+
+        let generic = RequestError::external_error_payload(
+            "InternalError".to_string(),
+            "canonical service failure".to_string(),
+            Some(500),
+            None,
+        );
+        assert!(
+            generic.fixed_service_failure().is_none(),
+            "matching generic control values must not be upgraded"
+        );
+    }
+
+    #[test]
+    fn fixed_service_response_failure_preserves_all_envelope_bytes() {
+        let fixtures = [
+            br#"{"kind":"publicTypedError","packageId":"example.com/errors","stableSchemaKey":"not-found","packageSchemaTypeId":"type:not-found","encodedPayload":[123,125],"traceId":"trace-public","errorId":"error-public"}"#
+                .as_slice(),
+            br#"{
+              "kind":"internalError",
+              "payload":{
+                "message":"The service could not complete the request.",
+                "traceId":"trace-internal",
+                "errorId":"error-internal"
+              }
+            }"#
+            .as_slice(),
+            br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"error-platform"}"#
+                .as_slice(),
+        ];
+
+        for encoded in fixtures {
+            let encoded = encoded.to_vec();
+            let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
+            let error = RequestError::Eval(EvalRuntimeError::FixedServiceFailure(fixed));
+
+            let response = error
+                .fixed_service_response_failure()
+                .expect("typed response failure");
+            assert_eq!(response.error().encoded_bytes(), encoded);
+        }
     }
 }

@@ -20,12 +20,26 @@ pub(super) fn implementation_requirements(
         .collect::<Vec<_>>();
     config.sort_by(|left, right| left.path.cmp(&right.path));
     let mut state = runtime
-        .resources
+        .state
         .iter()
         .map(|requirement| BoundaryStateRequirement {
             key: requirement.key.clone(),
-            kind: BoundaryStateKind::ExternalResource,
+            kind: match requirement.kind {
+                skiff_artifact_model::StateBindingKind::Database => BoundaryStateKind::Database,
+                skiff_artifact_model::StateBindingKind::Redis => BoundaryStateKind::Redis,
+                skiff_artifact_model::StateBindingKind::Actor => BoundaryStateKind::Actor,
+                skiff_artifact_model::StateBindingKind::Queue => BoundaryStateKind::Queue,
+            },
         })
+        .chain(
+            runtime
+                .resources
+                .iter()
+                .map(|requirement| BoundaryStateRequirement {
+                    key: requirement.key.clone(),
+                    kind: BoundaryStateKind::ExternalResource,
+                }),
+        )
         .collect::<Vec<_>>();
     state.sort_by(|left, right| left.key.cmp(&right.key));
     let mut runtime_capabilities = runtime

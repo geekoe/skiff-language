@@ -1,16 +1,17 @@
 use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable, LinkedTypeRef};
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlanLinkedExt};
-use skiff_runtime_model::type_plan::RuntimeTypePlan;
+use skiff_runtime_model::{service_error::CatchIdentity, type_plan::RuntimeTypePlan};
 
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
-    error::{Result, RuntimeError, TypeIdentity},
+    error::{Result, RuntimeError},
 };
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    exceptions::{catch_type_leaves, throw_payload_actual_type},
+    exceptions::{annotate_runtime_type_plan, catch_type_leaves},
     invocation::{EvalProgramProjection, ResolvedEvalExecutable},
+    program_execution::ProgramExecutionContext,
     program_types::{call_type_substitutions, normalize_program_type_ref, program_type_ref_kind},
     Interpreter,
 };
@@ -22,6 +23,15 @@ pub struct EvalTypeProjection<'a> {
 impl Interpreter {
     pub fn type_projection(&self) -> Result<EvalTypeProjection<'_>> {
         Ok(EvalTypeProjection::new(self.program_projection()?))
+    }
+
+    pub(crate) fn type_projection_for_context(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+    ) -> Result<EvalTypeProjection<'_>> {
+        Ok(EvalTypeProjection::from_execution_projection(
+            RuntimeExecutionProjection::for_context(self, context)?,
+        ))
     }
 }
 
@@ -41,10 +51,30 @@ impl<'a> EvalTypeProjection<'a> {
         type_ref: &LinkedTypeRef,
         current_addr: &ExecutableAddr,
     ) -> Result<RuntimeTypePlan> {
-        Ok(RuntimeTypePlan::from_linked_nested_ref(
+        let canonical_type_ref;
+        let type_ref =
+            if let (RuntimeExecutionProjection::Assembly(_), LinkedTypeRef::Address { addr }) =
+                (&self.program, type_ref)
+            {
+                canonical_type_ref = LinkedTypeRef::Address {
+                    addr: self.program.canonical_type_addr(addr)?,
+                };
+                &canonical_type_ref
+            } else {
+                type_ref
+            };
+        let normalized = normalize_program_type_ref(
+            self.program.type_view(),
+            current_addr,
             type_ref,
+            &TypeSubstitutions::new(),
+        );
+        let mut plan = RuntimeTypePlan::from_linked_nested_ref(
+            &normalized,
             &PlanContext::from_type_view(self.program.type_view(), current_addr),
-        )?)
+        )?;
+        annotate_runtime_type_plan(&mut plan, &normalized, self.program.type_view())?;
+        Ok(plan)
     }
 
     pub fn plan_from_linked_nested_ref_with_substitutions(
@@ -53,14 +83,22 @@ impl<'a> EvalTypeProjection<'a> {
         current_addr: &ExecutableAddr,
         substitutions: &TypeSubstitutions,
     ) -> Result<RuntimeTypePlan> {
-        Ok(RuntimeTypePlan::from_linked_nested_ref(
+        let normalized = normalize_program_type_ref(
+            self.program.type_view(),
+            current_addr,
             type_ref,
+            substitutions,
+        );
+        let mut plan = RuntimeTypePlan::from_linked_nested_ref(
+            &normalized,
             &PlanContext::with_substitutions_from_type_view(
                 self.program.type_view(),
                 current_addr,
                 substitutions.as_linked_map(),
             ),
-        )?)
+        )?;
+        annotate_runtime_type_plan(&mut plan, &normalized, self.program.type_view())?;
+        Ok(plan)
     }
 
     pub fn validate_construct_type_ref(
@@ -90,12 +128,47 @@ impl<'a> EvalTypeProjection<'a> {
         }
     }
 
-    pub fn throw_payload_actual_type(&self, payload_type: &LinkedTypeRef) -> Result<TypeIdentity> {
-        throw_payload_actual_type(payload_type, self.program.type_view())
+    pub fn representation_wrap_target_plan(
+        &self,
+        current_addr: &ExecutableAddr,
+        type_ref: &LinkedTypeRef,
+        substitutions: &TypeSubstitutions,
+    ) -> Result<RuntimeTypePlan> {
+        let plan = self.plan_from_linked_nested_ref_with_substitutions(
+            type_ref,
+            current_addr,
+            substitutions,
+        )?;
+        if !matches!(
+            plan.node(),
+            skiff_runtime_model::type_plan::RuntimeTypeNode::Representation { .. }
+        ) {
+            return Err(RuntimeError::InvalidArtifact(
+                "RepresentationWrap target did not resolve to an exact representation declaration"
+                    .to_string(),
+            ));
+        }
+        if !matches!(plan.catch_identity(), Some(CatchIdentity::Nominal(_))) {
+            return Err(RuntimeError::InvalidArtifact(
+                "RepresentationWrap target is missing its exact nominal identity".to_string(),
+            ));
+        }
+        Ok(plan)
     }
 
-    pub fn catch_type_leaves(&self, catch_type: &LinkedTypeRef) -> Result<Vec<TypeIdentity>> {
-        catch_type_leaves(catch_type, self.program.type_view())
+    pub fn catch_type_leaves(
+        &self,
+        catch_type: &LinkedTypeRef,
+        current_addr: &ExecutableAddr,
+        substitutions: &TypeSubstitutions,
+    ) -> Result<Vec<CatchIdentity>> {
+        let catch_type = normalize_program_type_ref(
+            self.program.type_view(),
+            current_addr,
+            catch_type,
+            substitutions,
+        );
+        catch_type_leaves(&catch_type, self.program.type_view())
     }
 
     pub fn resolve_executable(&self, addr: &ExecutableAddr) -> Result<ResolvedEvalExecutable<'a>> {

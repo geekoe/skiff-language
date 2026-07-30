@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ConfigLiteralBinding, DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision,
-    PackageArtifactRef, PackageBinding, ResourceBinding, RuntimeCapabilityBinding,
-    SecretRefBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
-    ServiceDeploymentRef, ServiceSelectorBinding, StateBinding,
+    validate_gateway_adapter_args, ConfigLiteralBinding, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterSource,
+    GatewayEntryKey, GatewayProtocolSurface, PackageArtifactRef, PackageBinding, ResourceBinding,
+    RuntimeCapabilityBinding, SecretRefBinding, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentRef, ServiceSelectorBinding, StateBinding,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
-use crate::{ArtifactIdentityError, Result};
+use crate::{gateway_entry_identity, ArtifactIdentityError, Result};
 
-/// Validate the path-free typed input before projection resolves public paths.
+/// Validate the path-free typed input before projection resolves exact callables.
 pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Result<()> {
     if input.schema_version != SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION {
         return invalid_deployment(format!(
@@ -27,7 +28,10 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
             "operation contractOperationId",
             binding.contract_operation_id.as_str(),
         )?;
-        require_non_empty("operation packagePublicPath", &binding.package_public_path)?;
+        require_non_empty(
+            "operation packageCallableId",
+            binding.package_callable_id.as_str(),
+        )?;
         if !operations.insert(binding.contract_operation_id.clone()) {
             return invalid_deployment(format!(
                 "duplicate operation binding {}",
@@ -35,13 +39,11 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
             ));
         }
     }
-    if operations.is_empty() {
-        return invalid_deployment("operationBindings must not be empty");
-    }
     validate_shared_bindings(
         &input.implementation,
         &input.package_bindings,
         &input.service_selectors,
+        &input.gateway_entries,
         &input.ingress,
         &input.config_literals,
         &input.secret_refs,
@@ -49,7 +51,6 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
         &input.resource_bindings,
         &input.runtime_capability_bindings,
         &input.policy,
-        &operations,
     )
 }
 
@@ -81,13 +82,11 @@ pub fn validate_service_deployment_surface(deployment: &ServiceDeployment) -> Re
             ));
         }
     }
-    if operations.is_empty() {
-        return invalid_deployment("operationBindings must not be empty");
-    }
     validate_shared_bindings(
         &deployment.implementation,
         &deployment.package_bindings,
         &deployment.service_selectors,
+        &deployment.gateway_entries,
         &deployment.ingress,
         &deployment.config_literals,
         &deployment.secret_refs,
@@ -95,7 +94,6 @@ pub fn validate_service_deployment_surface(deployment: &ServiceDeployment) -> Re
         &deployment.resource_bindings,
         &deployment.runtime_capability_bindings,
         &deployment.policy,
-        &operations,
     )
 }
 
@@ -104,6 +102,7 @@ fn validate_shared_bindings(
     implementation: &PackageArtifactRef,
     package_bindings: &[PackageBinding],
     service_selectors: &[ServiceSelectorBinding],
+    gateway_entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: &[DeploymentIngressBinding],
     config_literals: &[ConfigLiteralBinding],
     secret_refs: &[SecretRefBinding],
@@ -111,11 +110,11 @@ fn validate_shared_bindings(
     resource_bindings: &[ResourceBinding],
     runtime_capability_bindings: &[RuntimeCapabilityBinding],
     policy: &DeploymentPolicy,
-    operation_ids: &BTreeSet<skiff_artifact_model::ContractOperationId>,
 ) -> Result<()> {
     let packages = validate_package_bindings(implementation, package_bindings)?;
     validate_service_selectors(service_selectors, &packages)?;
-    validate_ingress_bindings(ingress, operation_ids)?;
+    validate_gateway_entries(gateway_entries)?;
+    validate_ingress_bindings(ingress, gateway_entries)?;
     validate_activation_inputs(
         config_literals,
         secret_refs,
@@ -134,6 +133,10 @@ fn validate_package_bindings<'a>(
     insert_package_coordinate(&mut packages, implementation, "implementation")?;
     for binding in bindings {
         validate_package_ref(&binding.package, "package binding provider")?;
+        skiff_artifact_model::validate_dependency_collection_name_mapping(
+            &binding.collection_name_mapping,
+        )
+        .map_err(|message| crate::ArtifactIdentityError::InvalidServiceDeployment { message })?;
         insert_package_coordinate(&mut packages, &binding.package, "package binding provider")?;
     }
     let mut keys = BTreeSet::new();
@@ -183,22 +186,229 @@ fn validate_service_selectors(
 
 fn validate_ingress_bindings(
     ingress: &[DeploymentIngressBinding],
-    operation_ids: &BTreeSet<skiff_artifact_model::ContractOperationId>,
+    gateway_entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
 ) -> Result<()> {
     let mut selectors = BTreeSet::new();
+    let mut referenced_entries = BTreeSet::new();
+    let mut websocket_methods = BTreeSet::new();
+    let mut websocket_method_entries = BTreeSet::new();
+    let mut physical_selectors = Vec::new();
+    let mut method_selectors = Vec::new();
     for binding in ingress {
         validate_ingress(binding)?;
-        if !operation_ids.contains(&binding.contract_operation_id) {
+        let Some(entry) = gateway_entries.get(&binding.gateway_entry_key) else {
             return invalid_deployment(format!(
-                "ingress selector references unbound operation {}",
-                binding.contract_operation_id
+                "ingress selector references missing gateway entry {}",
+                binding.gateway_entry_key
             ));
+        };
+        match (
+            binding.selector.protocol,
+            &binding.selector.method,
+            &entry.protocol_surface.protocol,
+        ) {
+            (
+                skiff_artifact_model::IngressProtocol::Http,
+                Some(_),
+                GatewayProtocolSurface::Http(_),
+            ) => {}
+            (
+                skiff_artifact_model::IngressProtocol::WebSocket,
+                None,
+                GatewayProtocolSurface::WebSocketConnect(_),
+            ) => {
+                physical_selectors.push(binding.selector.path.as_str());
+            }
+            (
+                skiff_artifact_model::IngressProtocol::WebSocket,
+                Some(method),
+                GatewayProtocolSurface::WebSocketJsonRpc(_),
+            ) => {
+                if !websocket_methods.insert(method.as_str()) {
+                    return invalid_deployment(format!(
+                        "duplicate WebSocket JSON-RPC method selector {method:?}"
+                    ));
+                }
+                if !websocket_method_entries.insert(&binding.gateway_entry_key) {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {} has more than one selector",
+                        binding.gateway_entry_key
+                    ));
+                }
+                method_selectors.push((
+                    binding.gateway_entry_key.clone(),
+                    binding.selector.path.as_str(),
+                ));
+            }
+            _ => {
+                return invalid_deployment(format!(
+                    "ingress selector {:?} does not match gateway entry {} protocol surface",
+                    binding.selector, binding.gateway_entry_key
+                ))
+            }
         }
+        referenced_entries.insert(&binding.gateway_entry_key);
         if !selectors.insert(binding.selector.clone()) {
             return invalid_deployment(format!(
                 "duplicate ingress selector {:?}",
                 binding.selector
             ));
+        }
+    }
+    if let Some(orphan) = gateway_entries
+        .keys()
+        .find(|key| !referenced_entries.contains(key))
+    {
+        return invalid_deployment(format!(
+            "gateway entry {orphan} is not referenced by any ingress selector"
+        ));
+    }
+    if !method_selectors.is_empty() && physical_selectors.is_empty() {
+        return invalid_deployment(
+            "WebSocket JSON-RPC methods require the compiler-owned physical WebSocket entry",
+        );
+    }
+    for (key, path) in method_selectors {
+        if !physical_selectors.contains(&path) {
+            return invalid_deployment(format!(
+                "WebSocket JSON-RPC gateway entry {key} path must match the physical WebSocket entry"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_gateway_entries(
+    entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
+) -> Result<()> {
+    for (key, entry) in entries {
+        require_non_empty("gateway entry key", key.as_str())?;
+        if let Some(handler) = &entry.handler {
+            require_non_empty("gateway handler callable id", handler.as_str())?;
+        }
+        if let Some(pre) = &entry.pre {
+            require_non_empty("gateway pre callable id", pre.as_str())?;
+        }
+        if let Some(guard) = &entry.guard {
+            require_non_empty("gateway guard callable id", guard.as_str())?;
+        }
+
+        let computed = gateway_entry_identity(&entry.protocol_surface)?;
+        if entry.gateway_entry_identity != computed {
+            return invalid_deployment(format!(
+                "gateway entry {key} identity mismatch: declared {}, computed {computed}",
+                entry.gateway_entry_identity
+            ));
+        }
+
+        validate_gateway_adapter_args(
+            entry.adapter_plan.kind,
+            entry.pre.is_some(),
+            &entry.adapter_plan.args,
+        )
+        .map_err(|error| ArtifactIdentityError::InvalidServiceDeployment {
+            message: format!("gateway entry {key} adapter plan is invalid: {error}"),
+        })?;
+
+        match &entry.protocol_surface.protocol {
+            GatewayProtocolSurface::Http(http) => {
+                if key.as_str() == skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY {
+                    return invalid_deployment(format!(
+                        "HTTP gateway entry cannot use compiler-reserved key {key}"
+                    ));
+                }
+                if entry.handler.is_none() {
+                    return invalid_deployment(format!(
+                        "HTTP gateway entry {key} requires a handler"
+                    ));
+                }
+                if entry.adapter_plan.kind != http.adapter_kind {
+                    return invalid_deployment(format!(
+                        "gateway entry {key} adapter plan kind {:?} does not match HTTP protocol kind {:?}",
+                        entry.adapter_plan.kind, http.adapter_kind
+                    ));
+                }
+                let mut external_sources = entry
+                    .adapter_plan
+                    .args
+                    .iter()
+                    .map(|arg| arg.source)
+                    .filter(|source| source.is_external_protocol_source())
+                    .collect::<Vec<GatewayAdapterSource>>();
+                external_sources.sort_by_key(|source| source.wire_name());
+                external_sources.dedup();
+                if external_sources != http.external_sources {
+                    return invalid_deployment(format!(
+                        "gateway entry {key} external protocol sources do not match adapter plan"
+                    ));
+                }
+            }
+            GatewayProtocolSurface::WebSocketConnect(_) => {
+                if key.as_str() != skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry key must be {}, got {key}",
+                        skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY
+                    ));
+                }
+                if entry.adapter_plan.kind
+                    != skiff_artifact_model::GatewayAdapterKind::WebSocketConnect
+                {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry {key} requires a websocketConnect adapter plan"
+                    ));
+                }
+                if entry.pre.is_some() || entry.guard.is_some() {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry {key} cannot declare pre or guard callables"
+                    ));
+                }
+                if entry.handler.is_none() && !entry.adapter_plan.args.is_empty() {
+                    return invalid_deployment(format!(
+                        "WebSocket gateway entry {key} without a handler must have empty adapter args"
+                    ));
+                }
+            }
+            GatewayProtocolSurface::WebSocketJsonRpc(json_rpc) => {
+                if key.as_str() == skiff_artifact_model::WEBSOCKET_GATEWAY_ENTRY_KEY {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry cannot use compiler-reserved key {key}"
+                    ));
+                }
+                if entry.handler.is_none() {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} requires a handler"
+                    ));
+                }
+                if entry.pre.is_some() || entry.guard.is_some() {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} cannot declare pre or guard callables"
+                    ));
+                }
+                if entry.adapter_plan.kind
+                    != skiff_artifact_model::GatewayAdapterKind::WebSocketJsonRpc
+                {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} requires a websocketJsonRpc adapter plan"
+                    ));
+                }
+                let mut seen_sources = BTreeSet::new();
+                let mut external_sources = Vec::new();
+                for argument in &entry.adapter_plan.args {
+                    if !seen_sources.insert(argument.source) {
+                        return invalid_deployment(format!(
+                            "WebSocket JSON-RPC gateway entry {key} repeats source {}",
+                            argument.source.wire_name()
+                        ));
+                    }
+                    external_sources.push(argument.source);
+                }
+                external_sources.sort_by_key(|source| source.wire_name());
+                if external_sources != json_rpc.external_sources {
+                    return invalid_deployment(format!(
+                        "WebSocket JSON-RPC gateway entry {key} external protocol sources do not match adapter plan"
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -327,7 +537,6 @@ fn insert_package_coordinate<'a>(
 }
 
 fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
-    require_non_empty("ingress host", &binding.selector.host)?;
     require_non_empty("ingress path", &binding.selector.path)?;
     if !binding.selector.path.starts_with('/') {
         return invalid_deployment(format!(
@@ -343,8 +552,8 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
             require_non_empty("HTTP ingress method", method)?;
         }
         skiff_artifact_model::IngressProtocol::WebSocket => {
-            if binding.selector.method.is_some() {
-                return invalid_deployment("WebSocket ingress must not declare method");
+            if let Some(method) = &binding.selector.method {
+                require_non_empty("WebSocket JSON-RPC ingress method", method)?;
             }
         }
     }
@@ -352,7 +561,7 @@ fn validate_ingress(binding: &DeploymentIngressBinding) -> Result<()> {
 }
 
 fn validate_policy(policy: &DeploymentPolicy) -> Result<()> {
-    if policy.timeout_ms == 0 {
+    if policy.timeout_ms == Some(0) {
         return invalid_deployment("policy.timeoutMs must be greater than zero");
     }
     if policy.resources.cpu_millis == 0 || policy.resources.memory_bytes == 0 {

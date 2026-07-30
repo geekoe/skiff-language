@@ -1,28 +1,37 @@
 use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
-    AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr, LinkedBoxSourceIr, LinkedCallTarget,
-    LinkedExecutable, LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
-    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeRef,
+    ActivationRelativeServiceCall, AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr,
+    LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable, LinkedExprIr, LinkedFileUnit,
+    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTestEffectOutcomeIr, LinkedTypeRef,
     NativeTarget, ReceiverCallAbi, UnaryOpIr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
 };
 use skiff_runtime_model::{
-    request_heap::RequestHeap,
+    request_heap::{deep_clone_runtime_value_carrier_between_heaps, RequestHeap},
     runtime_value::{
         HeapNode, InterfaceCarrier, InterfaceMethodTarget, InterfaceReceiverCallAbi,
-        InterfaceValue, RemoteOperationSlot, RemoteOperationTable, RuntimeMap, RuntimeObjectFields,
-        RuntimeValue, RuntimeValueKey,
+        InterfaceValue, RuntimeValue, RuntimeValueCarrier, RuntimeValueKey,
     },
+    service_error::{ExceptionStackFrame, RequestException},
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use super::{
-    assembly_execution::RuntimeExecutionProjection,
+    assembly_execution::{
+        service_error_channel::{
+            CanonicalServiceErrorChannel, RestrictedServiceDiagnosticExportContext,
+            ServiceErrorExportContext, ServiceErrorImportContext,
+        },
+        RuntimeExecutionProjection,
+    },
     capabilities::{ExecutionControl, RuntimeNativeConfigCapabilityContext},
-    env::{check_cancelled, Env, Flow},
-    exceptions::{catch_err, catch_ok, exception_envelope_for_catch},
+    env::{Env, Flow},
+    exceptions::{
+        catch_err, catch_identity_matches, catch_ok, request_exception_for_catch,
+        request_exception_for_resource_error, user_exception_for_catch,
+    },
     flow_completion::FlowCompletionPolicy,
     native_capability::{
         project_runtime_execution_native_capability_context,
@@ -38,19 +47,38 @@ use super::{
         program_expression_ref, program_literal, program_pattern_matches, program_statement_ref,
         program_u32_to_usize,
     },
-    program_mutation::assign_program_index_target,
+    program_mutation::assign_program_index_target_carrier,
     receiver_methods::ReceiverMethodDispatch,
     recoverable_behavior::interface_method_table_from_linked,
-    runtime_ops::{runtime_from_wire, runtime_object_from_fields, runtime_to_wire_required_plan},
+    runtime_ops::{
+        runtime_array_from_carriers, runtime_array_item_carriers, runtime_carrier_for_plan,
+        runtime_from_wire, runtime_map_from_carriers, runtime_member_access_carrier,
+        runtime_object_from_carriers, runtime_representation_wrap_for_plan, runtime_to_wire,
+        runtime_to_wire_required_plan,
+    },
     spawn_ops,
+    test_effect_registry::{
+        RegisteredTestEffect, RegisteredTestEffectFailure, RegisteredTestEffectOutcome,
+        RegisteredTestEffectThrow, ServiceTestEffectDispatch, TestEffectTarget,
+    },
     type_projection::EvalTypeProjection,
     *,
 };
-use crate::error::RuntimeError;
+use crate::error::{materialize_request_heap_owned_runtime_error, RuntimeError, UserException};
 use promoted_runtime::dispatch::NativeDispatch;
+use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_boundary::stream::is_stream_value;
+use skiff_runtime_capability_context::StreamInternalItem;
 use skiff_runtime_native as promoted_runtime;
 use skiff_runtime_native_contract::{native_target_binding_key, native_target_name};
+
+mod actual_pending;
+mod checkpoint;
+mod concurrent;
+mod timeout;
+
+#[cfg(test)]
+pub(crate) use actual_pending::tests::legacy_native_call_expected_to_suspend as native_call_suspends;
 
 pub struct EvalContext<'a> {
     pub interpreter: &'a Interpreter,
@@ -93,31 +121,109 @@ impl<'a> EvalContext<'a> {
         EvalTypeProjection::from_execution_projection(self.projection.clone())
     }
 
+    fn materialize_service_test_throw(
+        &mut self,
+        call: &CallIr,
+        instruction: &ActivationRelativeServiceCall,
+        throw: RegisteredTestEffectThrow,
+    ) -> Result<RuntimeValueCarrier> {
+        let provider_source = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+        };
+        let provider_error = match throw.failure {
+            RegisteredTestEffectFailure::LocalPayload(payload) => {
+                let provider_exception = RequestException::local(
+                    payload,
+                    provider_source.clone(),
+                    vec![ExceptionStackFrame::Local {
+                        site: provider_source.clone(),
+                    }],
+                    self.context.next_exception_correlation()?,
+                )
+                .map_err(RuntimeError::InvalidArtifact)?;
+                RuntimeError::UserException(UserException::new(provider_exception))
+            }
+            RegisteredTestEffectFailure::FixedService(error) => {
+                RuntimeError::FixedServiceFailure(error)
+            }
+            RegisteredTestEffectFailure::ProviderFailure(error) => error,
+        };
+
+        let execution_image = self
+            .context
+            .runtime_assembly_target()?
+            .execution_image()
+            .clone();
+        let projection = self.projection.clone();
+        let synthetic_service_id = format!(
+            "test-effect:{}",
+            instruction.expected_protocol_identity().as_str()
+        );
+        let operation_id = instruction.operation_id().as_str();
+        let telemetry = self.context.telemetry_context();
+        let fallback_stack = vec![ExceptionStackFrame::Local {
+            site: provider_source.clone(),
+        }];
+        let provider_activation_id = format!("test-effect-activation:{synthetic_service_id}");
+        let request_generation = self
+            .context
+            .runtime_assembly_target()?
+            .request_activation()
+            .generation();
+        let fixed = CanonicalServiceErrorChannel::export_provider_failure_with_diagnostic(
+            &provider_error,
+            ServiceErrorExportContext {
+                execution_image: &execution_image,
+                type_view: projection.type_view(),
+                provider_heap: &throw.setup_heap,
+                provider_package_build_id: &throw.setup_package_build_id,
+                caller_package_build_id: Some(instruction.caller_package_build_id()),
+                provider_service_id: &synthetic_service_id,
+                operation_id,
+            },
+            RestrictedServiceDiagnosticExportContext {
+                telemetry: &telemetry,
+                provider_activation_id: &provider_activation_id,
+                request_generation,
+                fallback_source: &provider_source,
+                fallback_stack: &fallback_stack,
+            },
+            || self.context.next_exception_correlation(),
+        )?;
+
+        let caller_stack = self.context.exception_stack_for_site(call.site.clone());
+        let imported = CanonicalServiceErrorChannel::import_caller_failure(
+            fixed,
+            ServiceErrorImportContext {
+                execution_image: &execution_image,
+                type_view: projection.type_view(),
+                caller_heap: self.heap,
+                caller_package_build_id: instruction.caller_package_build_id(),
+                caller_executable_addr: self.addr,
+                call_site: &call.site,
+                caller_stack_at_site: &caller_stack,
+                remote_service_id: &synthetic_service_id,
+                remote_operation_id: operation_id,
+            },
+        )?;
+        Err(RuntimeError::UserException(imported))
+    }
+
     pub(crate) fn execution_projection(&self) -> &RuntimeExecutionProjection<'a> {
         &self.projection
     }
 
-    fn ensure_legacy_service_path_allowed(&self, path: &str) -> Result<()> {
-        if self.projection.assembly().is_some() {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "assembly execution cannot use legacy {path}"
-            )));
-        }
-        Ok(())
-    }
-
     pub async fn exec_program_executable(&mut self) -> Result<Flow> {
+        self.checkpoint_function_entry()?;
         self.exec_program_block("entry").await
     }
 
     #[async_recursion]
     pub async fn exec_program_block(&mut self, label: &str) -> Result<Flow> {
-        self.execution.add_instruction_units(1)?;
-        check_cancelled(&self.execution, self.env)?;
+        self.checkpoint_function_entry()?;
         let block = program_block(self.executable, label)?;
         self.env.push();
         for statement_ref in &block.statements {
-            self.execution.poll_execution_budget()?;
             let statement = program_statement_ref(self.executable, statement_ref)?;
             let flow = match self.exec_program_statement(statement).await {
                 Ok(flow) => flow,
@@ -139,9 +245,14 @@ impl<'a> EvalContext<'a> {
 
     #[async_recursion]
     pub async fn exec_program_statement(&mut self, statement: &LinkedStmtIr) -> Result<Flow> {
-        self.execution.add_instruction_units(1)?;
-        check_cancelled(&self.execution, self.env)?;
+        self.checkpoint_generated_chunk(1)?;
         match statement {
+            LinkedStmtIr::Timeout {
+                duration_ms,
+                body,
+                site,
+            } => self.exec_timeout_statement(*duration_ms, body, site).await,
+            LinkedStmtIr::Concurrent { plan } => self.exec_concurrent_statement(plan).await,
             LinkedStmtIr::Let { slot, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.env.declare_binding(
@@ -201,7 +312,7 @@ impl<'a> EvalContext<'a> {
             LinkedStmtIr::Return { value } => {
                 let value = match value {
                     Some(value_ref) => self.eval_program_expr_ref(*value_ref).await?,
-                    None => RuntimeValue::Null,
+                    None => RuntimeValue::Null.into(),
                 };
                 Ok(Flow::Return(value))
             }
@@ -223,7 +334,7 @@ impl<'a> EvalContext<'a> {
             LinkedStmtIr::Match { value, arms } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 for arm in arms {
-                    self.execution.poll_execution_budget()?;
+                    self.checkpoint_generated_chunk(0)?;
                     if !program_pattern_matches(&arm.pattern, &value, self.heap)? {
                         continue;
                     }
@@ -239,34 +350,127 @@ impl<'a> EvalContext<'a> {
                 }
                 Ok(Flow::Continue)
             }
-            LinkedStmtIr::Emit { value, .. } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                let sink = self.env.stream_sink.as_ref().ok_or_else(|| {
-                    RuntimeError::Decode("emit used outside a stream output context".to_string())
-                })?;
-                if let Some(item) = sink.project_runtime_item(value.clone(), self.heap)? {
-                    sink.send_internal_with_cancellation(
-                        item,
-                        &[],
-                        [self.execution.cancellation_token()],
-                    )
-                    .await?;
-                    return Ok(Flow::Continue);
+            LinkedStmtIr::Emit { value, .. } => self.exec_emit(*value).await,
+            LinkedStmtIr::TestEffectRegister {
+                target,
+                expect,
+                step_expect,
+                outcome,
+            } => {
+                if !self.interpreter.test_effects_enabled {
+                    return Err(RuntimeError::Unsupported(
+                        "test effect setup cannot run outside test execution".to_string(),
+                    ));
                 }
-                let value = runtime_to_wire_required_plan(
-                    &value,
-                    self.env.current_stream_item_type.as_ref(),
-                    "stream emit item",
-                    self.heap,
-                )?;
-                sink.send_with_cancellation(value, &[], [self.execution.cancellation_token()])
-                    .await?;
+                let (effect_target, setup_package_build_id) = match target {
+                    LinkedCallTarget::PackageDirect { call: target } => (
+                        TestEffectTarget::package_callable(
+                            target.dependency_package_build_id().clone(),
+                            target.package_callable_id().clone(),
+                        ),
+                        target.caller_package_build_id().clone(),
+                    ),
+                    LinkedCallTarget::ActivationRelativeService { instruction } => (
+                        TestEffectTarget::contract_operation(
+                            instruction.operation_id().clone(),
+                            instruction.expected_protocol_identity().clone(),
+                        ),
+                        instruction.caller_package_build_id().clone(),
+                    ),
+                    _ => {
+                        return Err(RuntimeError::InvalidArtifact(
+                            "test effect target did not link to a package callable or contract operation"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let expect = match expect {
+                    Some(expected) => {
+                        let value = self.eval_program_expr_ref(expected.value).await?;
+                        Some(runtime_to_wire(&value, self.heap)?)
+                    }
+                    None => None,
+                };
+                let step_expect = match step_expect {
+                    Some(expected) => {
+                        let value = self.eval_program_expr_ref(expected.value).await?;
+                        Some(runtime_to_wire(&value, self.heap)?)
+                    }
+                    None => None,
+                };
+                let outcome = match outcome {
+                    LinkedTestEffectOutcomeIr::Respond { value, value_type } => {
+                        let value = self.eval_program_expr_ref(*value).await?;
+                        let value_plan = self
+                            .type_projection()
+                            .plan_from_linked_nested_ref(value_type, self.addr)?;
+                        let value = runtime_to_wire_required_plan(
+                            &value,
+                            Some(&value_plan),
+                            "test effect response",
+                            self.heap,
+                        )?;
+                        RegisteredTestEffectOutcome::Respond { value, value_plan }
+                    }
+                    LinkedTestEffectOutcomeIr::Throw {
+                        value,
+                        payload_type,
+                    } => {
+                        let payload = self.eval_program_expr_ref(*value).await?;
+                        let payload_plan = self
+                            .type_projection()
+                            .plan_from_linked_nested_ref_with_substitutions(
+                                payload_type,
+                                self.addr,
+                                &self.env.type_substitutions,
+                            )?;
+                        let payload = runtime_carrier_for_plan(
+                            payload,
+                            &payload_plan,
+                            "test effect typed throw",
+                            self.heap,
+                        )?;
+                        RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                            failure: RegisteredTestEffectFailure::LocalPayload(payload),
+                            setup_heap: self.heap.clone(),
+                            setup_package_build_id: setup_package_build_id.clone(),
+                        })
+                    }
+                    LinkedTestEffectOutcomeIr::Stream { values, item_type } => {
+                        let item_plan = self
+                            .type_projection()
+                            .plan_from_linked_nested_ref(item_type, self.addr)?;
+                        let mut runtime_values = Vec::with_capacity(values.len());
+                        for value in values {
+                            let value = self.eval_program_expr_ref(*value).await?;
+                            runtime_values.push(runtime_to_wire_required_plan(
+                                &value,
+                                Some(&item_plan),
+                                "test effect stream item",
+                                self.heap,
+                            )?);
+                        }
+                        RegisteredTestEffectOutcome::Stream {
+                            values: runtime_values,
+                            item_plan,
+                        }
+                    }
+                };
+                self.interpreter.runtime_test_effects.register(
+                    effect_target,
+                    RegisteredTestEffect {
+                        expect,
+                        step_expect,
+                        outcome,
+                    },
+                );
                 Ok(Flow::Continue)
             }
             LinkedStmtIr::Throw {
                 value,
                 payload_type,
-            } => self.eval_program_throw(*value, payload_type).await,
+                site,
+            } => self.eval_program_throw(*value, payload_type, site).await,
             LinkedStmtIr::Rethrow { exception_slot } => self.interpreter.eval_program_rethrow_slot(
                 self.env,
                 program_u32_to_usize(*exception_slot, "rethrow.exceptionSlot")?,
@@ -276,26 +480,57 @@ impl<'a> EvalContext<'a> {
     }
 
     #[async_recursion]
-    pub async fn eval_program_expr_ref(&mut self, expr_ref: ExprRefIr) -> Result<RuntimeValue> {
+    pub async fn eval_program_expr_ref(
+        &mut self,
+        expr_ref: ExprRefIr,
+    ) -> Result<RuntimeValueCarrier> {
         let expr = program_expression_ref(self.executable, expr_ref)?;
         self.eval_program_expr(expr).await
     }
 
     #[async_recursion]
-    pub async fn eval_program_expr(&mut self, expr: &LinkedExprIr) -> Result<RuntimeValue> {
-        self.execution.add_instruction_units(1)?;
-        check_cancelled(&self.execution, self.env)?;
+    pub async fn eval_program_expr(&mut self, expr: &LinkedExprIr) -> Result<RuntimeValueCarrier> {
+        self.checkpoint_generated_chunk(1)?;
         match expr {
-            LinkedExprIr::Literal { value } => program_literal(value),
+            LinkedExprIr::Timeout {
+                duration_ms,
+                value,
+                site,
+            } => {
+                self.eval_timeout_expression(*duration_ms, *value, site)
+                    .await
+            }
+            LinkedExprIr::ConcurrentValue { plan } => self.eval_concurrent_value(plan).await,
+            LinkedExprIr::Literal { value } => program_literal(value).map(Into::into),
             LinkedExprIr::LoadSlot { slot } => self
                 .env
                 .get_slot(program_u32_to_usize(*slot, "loadSlot.slot")?),
             LinkedExprIr::Field { object, field } => {
                 let object = self.eval_program_expr_ref(*object).await?;
-                runtime_member_access(&object, field, self.heap)
+                runtime_member_access_carrier(&object, field, self.heap)
             }
+            LinkedExprIr::ActorSelfField { field, .. } => self
+                .context
+                .actor_execution_frame()
+                .ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "Actor self field read requires the current Actor execution token"
+                            .to_string(),
+                    )
+                })?
+                .read_field(field)
+                .map(Into::into),
             LinkedExprIr::Construct { type_ref, fields } => {
                 self.eval_program_construct(type_ref, fields).await
+            }
+            LinkedExprIr::RepresentationWrap { value, type_ref } => {
+                let value = self.eval_program_expr_ref(*value).await?;
+                let plan = self.type_projection().representation_wrap_target_plan(
+                    self.addr,
+                    type_ref,
+                    &self.env.type_substitutions,
+                )?;
+                runtime_representation_wrap_for_plan(value, &plan, "representation wrap", self.heap)
             }
             LinkedExprIr::InterfaceBox {
                 value,
@@ -309,15 +544,18 @@ impl<'a> EvalContext<'a> {
             LinkedExprIr::ArrayLiteral { items: item_refs } => {
                 let mut items = Vec::new();
                 for item_ref in item_refs {
+                    self.checkpoint_generated_chunk(0)?;
                     items.push(self.eval_program_expr_ref(*item_ref).await?);
                 }
-                runtime_array_from_items(items, self.heap)
+                runtime_array_from_carriers(items, self.heap)
             }
             LinkedExprIr::Unary { op, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 match op {
-                    UnaryOpIr::Not => Ok(RuntimeValue::Bool(!runtime_truthy(&value, self.heap)?)),
-                    UnaryOpIr::Negate => Ok(runtime_number_value(-runtime_numeric(&value)?)),
+                    UnaryOpIr::Not => {
+                        Ok(RuntimeValue::Bool(!runtime_truthy(&value, self.heap)?).into())
+                    }
+                    UnaryOpIr::Negate => Ok(runtime_number_value(-runtime_numeric(&value)?).into()),
                 }
             }
             LinkedExprIr::Binary { op, left, right } => {
@@ -325,22 +563,27 @@ impl<'a> EvalContext<'a> {
                 if op == "&&" || op == "||" {
                     let left = self.eval_program_expr_ref(*left).await?;
                     return match op {
-                        "&&" if !runtime_truthy(&left, self.heap)? => Ok(RuntimeValue::Bool(false)),
+                        "&&" if !runtime_truthy(&left, self.heap)? => {
+                            Ok(RuntimeValue::Bool(false).into())
+                        }
                         "&&" => {
                             let right = self.eval_program_expr_ref(*right).await?;
-                            Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap)?))
+                            Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap)?).into())
                         }
-                        "||" if runtime_truthy(&left, self.heap)? => Ok(RuntimeValue::Bool(true)),
+                        "||" if runtime_truthy(&left, self.heap)? => {
+                            Ok(RuntimeValue::Bool(true).into())
+                        }
                         "||" => {
                             let right = self.eval_program_expr_ref(*right).await?;
-                            Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap)?))
+                            Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap)?).into())
                         }
                         _ => unreachable!("checked logical operator"),
                     };
                 }
                 let left = self.eval_program_expr_ref(*left).await?;
                 let right = self.eval_program_expr_ref(*right).await?;
-                runtime_eval_binary(op, left, right, self.heap)
+                runtime_eval_binary(op, left.into_value(), right.into_value(), self.heap)
+                    .map(Into::into)
             }
             LinkedExprIr::Call { call } => self.eval_program_call(call).await,
             LinkedExprIr::ValueBlock { block, result } => {
@@ -352,7 +595,8 @@ impl<'a> EvalContext<'a> {
                 }
             }
             LinkedExprIr::DbOperation { operation } => {
-                self.interpreter
+                let result = self
+                    .interpreter
                     .eval_program_db_operation(
                         self.context.clone(),
                         self.heap,
@@ -362,7 +606,8 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         operation,
                     )
-                    .await
+                    .await;
+                result.map(Into::into)
             }
             LinkedExprIr::DbQuery {
                 target,
@@ -370,7 +615,8 @@ impl<'a> EvalContext<'a> {
                 projection,
                 ..
             } => {
-                self.interpreter
+                let result = self
+                    .interpreter
                     .eval_program_db_query_value(
                         self.context.clone(),
                         self.heap,
@@ -382,10 +628,12 @@ impl<'a> EvalContext<'a> {
                         query,
                         projection.as_ref(),
                     )
-                    .await
+                    .await;
+                result.map(Into::into)
             }
             LinkedExprIr::DbTransaction { transaction } => {
-                self.interpreter
+                let result = self
+                    .interpreter
                     .eval_program_explicit_db_transaction(
                         self.context.clone(),
                         self.heap,
@@ -395,10 +643,12 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         transaction,
                     )
-                    .await
+                    .await;
+                result
             }
             LinkedExprIr::DbLeaseClaim { claim } => {
-                self.interpreter
+                let result = self
+                    .interpreter
                     .eval_program_db_lease_claim(
                         self.context.clone(),
                         self.heap,
@@ -408,10 +658,12 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         claim,
                     )
-                    .await
+                    .await;
+                result.map(Into::into)
             }
             LinkedExprIr::DbLeaseRead { read } => {
-                self.interpreter
+                let result = self
+                    .interpreter
                     .eval_program_db_lease_read(
                         self.context.clone(),
                         self.heap,
@@ -421,7 +673,8 @@ impl<'a> EvalContext<'a> {
                         self.executable,
                         read,
                     )
-                    .await
+                    .await;
+                result.map(Into::into)
             }
             LinkedExprIr::LoadConst { const_index } => {
                 self.interpreter
@@ -435,11 +688,20 @@ impl<'a> EvalContext<'a> {
                     )
                     .await
             }
+            LinkedExprIr::LoadConstAddress { const_addr } => {
+                self.interpreter
+                    .eval_program_const_addr(self.context.clone(), self.heap, self.env, const_addr)
+                    .await
+            }
+            LinkedExprIr::LoadPackageConst { .. } => Err(RuntimeError::InvalidArtifact(
+                "unlinked package constant reached evaluation".to_string(),
+            )),
             LinkedExprIr::Throw {
                 value,
                 payload_type,
+                site,
             } => {
-                let flow = self.eval_program_throw(*value, payload_type).await?;
+                let flow = self.eval_program_throw(*value, payload_type, site).await?;
                 FlowCompletionPolicy::non_returning_expression_value(flow, "throw")
             }
             LinkedExprIr::Rethrow { exception_slot } => {
@@ -454,10 +716,7 @@ impl<'a> EvalContext<'a> {
                 try_expression,
                 catch_type,
                 ..
-            } => {
-                self.eval_program_catch(*try_expression, catch_type.as_ref())
-                    .await
-            }
+            } => self.eval_program_catch(*try_expression, catch_type).await,
         }
     }
 
@@ -509,7 +768,7 @@ impl<'a> EvalContext<'a> {
             ));
         }
 
-        if let Some(items) = runtime_array_items(&items, self.heap)? {
+        if let Some(items) = runtime_array_item_carriers(&items, self.heap)? {
             return self.exec_program_array_for_in(item_slot, body, items).await;
         }
 
@@ -562,16 +821,18 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item_slot: usize,
         body: &str,
-        items: Vec<RuntimeValue>,
+        items: Vec<RuntimeValueCarrier>,
     ) -> Result<Flow> {
         for item_value in items {
-            self.execution.add_instruction_units(1)?;
-            check_cancelled(&self.execution, self.env)?;
+            self.checkpoint_loop_condition(1)?;
             let flow = self
                 .exec_program_for_in_body(item_slot, body, item_value)
                 .await?;
             match flow {
-                Flow::Continue | Flow::LoopContinue => continue,
+                Flow::Continue | Flow::LoopContinue => {
+                    self.checkpoint_loop_backedge(0)?;
+                    continue;
+                }
                 Flow::Break => break,
                 Flow::Return(value) => return Ok(Flow::Return(value)),
                 Flow::Parked => return Ok(Flow::Parked),
@@ -586,16 +847,18 @@ impl<'a> EvalContext<'a> {
         item_slot: usize,
         value_slot: usize,
         body: &str,
-        entries: Vec<(RuntimeValue, RuntimeValue)>,
+        entries: Vec<(RuntimeValueCarrier, RuntimeValueCarrier)>,
     ) -> Result<Flow> {
         for (key_value, entry_value) in entries {
-            self.execution.add_instruction_units(1)?;
-            check_cancelled(&self.execution, self.env)?;
+            self.checkpoint_loop_condition(1)?;
             let flow = self
                 .exec_program_for_in_entry_body(item_slot, value_slot, body, key_value, entry_value)
                 .await?;
             match flow {
-                Flow::Continue | Flow::LoopContinue => continue,
+                Flow::Continue | Flow::LoopContinue => {
+                    self.checkpoint_loop_backedge(0)?;
+                    continue;
+                }
                 Flow::Break => break,
                 Flow::Return(value) => return Ok(Flow::Return(value)),
                 Flow::Parked => return Ok(Flow::Parked),
@@ -609,7 +872,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item_slot: usize,
         body: &str,
-        item_value: RuntimeValue,
+        item_value: RuntimeValueCarrier,
     ) -> Result<Flow> {
         self.env.push();
         if let Err(error) = self
@@ -629,8 +892,8 @@ impl<'a> EvalContext<'a> {
         item_slot: usize,
         value_slot: usize,
         body: &str,
-        key_value: RuntimeValue,
-        entry_value: RuntimeValue,
+        key_value: RuntimeValueCarrier,
+        entry_value: RuntimeValueCarrier,
     ) -> Result<Flow> {
         self.env.push();
         if let Err(error) = self.env.declare_binding("slot", Some(item_slot), key_value) {
@@ -653,14 +916,23 @@ impl<'a> EvalContext<'a> {
         &mut self,
         type_ref: &LinkedTypeRef,
         field_refs: &std::collections::BTreeMap<String, ExprRefIr>,
-    ) -> Result<RuntimeValue> {
-        let mut object_fields = RuntimeObjectFields::new();
+    ) -> Result<RuntimeValueCarrier> {
+        let mut object_fields = std::collections::BTreeMap::new();
         for (field, value_ref) in field_refs {
+            self.checkpoint_generated_chunk(0)?;
             let value = self.eval_program_expr_ref(*value_ref).await?;
             object_fields.insert(field.to_string(), value);
         }
         self.validate_construct_type_ref(type_ref)?;
-        runtime_object_from_fields(object_fields, self.heap)
+        let plan = self
+            .type_projection()
+            .plan_from_linked_nested_ref_with_substitutions(
+                type_ref,
+                self.addr,
+                &self.env.type_substitutions,
+            )?;
+        let value = runtime_object_from_carriers(object_fields, self.heap)?;
+        runtime_carrier_for_plan(value, &plan, "construct", self.heap)
     }
 
     fn validate_construct_type_ref(&self, type_ref: &LinkedTypeRef) -> Result<()> {
@@ -676,9 +948,9 @@ impl<'a> EvalContext<'a> {
         value: ExprRefIr,
         interface: &LinkedInterfaceInstantiationRef,
         source: &LinkedBoxSourceIr,
-    ) -> Result<RuntimeValue> {
+    ) -> Result<RuntimeValueCarrier> {
         let interface_id = linked_interface_instantiation_runtime_id(interface);
-        let carrier = match source {
+        let (carrier, payload_identity) = match source {
             LinkedBoxSourceIr::Local {
                 concrete_type,
                 method_table,
@@ -692,63 +964,31 @@ impl<'a> EvalContext<'a> {
                         table.interface_abi_id()
                     )));
                 }
-                InterfaceCarrier::Local {
-                    concrete_type: linked_type_ref_runtime_key(concrete_type),
-                    method_table: table,
-                    payload,
-                }
+                let (payload, payload_identity) = payload.into_parts();
+                (
+                    InterfaceCarrier::Local {
+                        concrete_type: linked_type_ref_runtime_key(concrete_type),
+                        method_table: table,
+                        payload,
+                    },
+                    payload_identity,
+                )
             }
-            LinkedBoxSourceIr::Remote {
-                dependency_ref,
-                public_instance_key,
-                operations,
-                ..
-            } => {
-                self.ensure_legacy_service_path_allowed("remote interface boxing")?;
-                let table = self.remote_operation_table_from_linked(
-                    dependency_ref,
-                    public_instance_key,
-                    operations,
-                )?;
-                if interface_id != table.interface_abi_id() {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "InterfaceBox target {} does not match remote operation table interface {}",
-                        interface_id,
-                        table.interface_abi_id()
-                    )));
-                }
-                InterfaceCarrier::Remote {
-                    dependency_ref: dependency_ref.clone(),
-                    public_instance_key: public_instance_key.clone(),
-                    operations: table,
-                }
+            LinkedBoxSourceIr::Remote { .. } => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "legacy remote interface boxing is not executable".to_string(),
+                ))
             }
         };
 
         let handle = self
             .heap
-            .alloc_interface(InterfaceValue::new(interface_id, carrier))
+            .alloc_interface_with_local_payload_identity(
+                InterfaceValue::new(interface_id, carrier),
+                payload_identity,
+            )
             .map_err(RuntimeError::from)?;
-        Ok(RuntimeValue::Heap(handle))
-    }
-
-    fn remote_operation_table_from_linked(
-        &self,
-        dependency_ref: &str,
-        public_instance_key: &str,
-        operations: &LinkedRemoteOperationTablePlanIr,
-    ) -> Result<RemoteOperationTable> {
-        let interface_id = linked_interface_instantiation_runtime_id(&operations.interface);
-        let slots = operations
-            .slots
-            .iter()
-            .map(remote_operation_slot_from_linked)
-            .collect::<Result<Vec<_>>>()?;
-        Ok(RemoteOperationTable::new(
-            remote_operation_table_id(dependency_ref, public_instance_key, &interface_id),
-            interface_id,
-            slots,
-        ))
+        Ok(RuntimeValue::Heap(handle).into())
     }
 
     async fn eval_program_interface_method_call(
@@ -757,14 +997,14 @@ impl<'a> EvalContext<'a> {
         interface: &LinkedInterfaceInstantiationRef,
         method_abi_id: &str,
         slot: u32,
-        values: Vec<RuntimeValue>,
-    ) -> Result<RuntimeValue> {
+        values: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
         let (receiver, args) = values.split_first().ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!(
                 "RuntimeProgram interface method {method_abi_id} missing receiver argument"
             ))
         })?;
-        let interface_value = self.interface_receiver_value(receiver)?;
+        let (receiver_handle, interface_value) = self.interface_receiver_value(receiver)?;
         let expected_interface = linked_interface_instantiation_runtime_id(interface);
         if interface_value.interface() != expected_interface {
             return Err(RuntimeError::InvalidArtifact(format!(
@@ -775,11 +1015,7 @@ impl<'a> EvalContext<'a> {
         }
 
         match interface_value.carrier() {
-            InterfaceCarrier::Local {
-                method_table,
-                payload,
-                ..
-            } => {
+            InterfaceCarrier::Local { method_table, .. } => {
                 let slot_index = program_u32_to_usize(slot, "interfaceMethod.slot")?;
                 let Some(method_slot) = method_table.slots().get(slot_index) else {
                     return Err(RuntimeError::InvalidArtifact(format!(
@@ -794,7 +1030,14 @@ impl<'a> EvalContext<'a> {
                     )));
                 }
                 let target = method_slot.target().clone();
-                let payload = payload.clone();
+                let payload = self
+                    .heap
+                    .interface_local_payload_carrier(receiver_handle)?
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(
+                            "local interface carrier has no local payload".to_string(),
+                        )
+                    })?;
                 match target {
                     InterfaceMethodTarget::LocalExecutable {
                         executable,
@@ -802,8 +1045,8 @@ impl<'a> EvalContext<'a> {
                     } => match receiver_call_abi {
                         InterfaceReceiverCallAbi::ExplicitSelfFirst => {
                             self.interpreter
-                                .call_program_executable_with_self(
-                                    self.context.clone(),
+                                .call_program_executable_with_self_carriers(
+                                    self.context.clone().with_local_call_site(call.site.clone()),
                                     self.heap,
                                     self.env,
                                     self.addr,
@@ -817,63 +1060,27 @@ impl<'a> EvalContext<'a> {
                     },
                 }
             }
-            InterfaceCarrier::Remote {
-                dependency_ref,
-                operations,
-                ..
-            } => {
-                self.ensure_legacy_service_path_allowed("remote interface invocation")?;
-                let slot_index = program_u32_to_usize(slot, "interfaceMethod.slot")?;
-                let Some(remote_slot) = operations.slots().get(slot_index) else {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "RuntimeProgram interface method {method_abi_id} slot {slot} is out of bounds"
-                    )));
-                };
-                if remote_slot.slot() != slot || remote_slot.method_abi_id() != method_abi_id {
-                    return Err(RuntimeError::InvalidArtifact(format!(
-                        "RuntimeProgram interface method {method_abi_id} slot {slot} does not match remote operation table slot {} ({})",
-                        remote_slot.slot(),
-                        remote_slot.method_abi_id()
-                    )));
-                }
-                let operation_abi_id = remote_slot.operation_abi_id().to_string();
-                let outbound_context = self.context.outbound_context();
-                let stream_runtime = self.context.stream_runtime();
-                super::service_dispatch::call_outbound_service_operation(
-                    self.interpreter,
-                    &outbound_context,
-                    &stream_runtime,
-                    self.heap,
-                    self.env,
-                    self.addr,
-                    dependency_ref,
-                    &operation_abi_id,
-                    args.to_vec(),
-                )
-                .await
-            }
             InterfaceCarrier::CallbackCapability(carrier) => {
-                super::assembly_execution::dispatch_callback_capability(
-                    self,
-                    call,
-                    carrier,
-                    method_abi_id,
-                    slot,
-                    args.to_vec(),
-                )
-                .await
+                self.eval_callback_interface_call(call, carrier, method_abi_id, slot, args)
+                    .await
             }
         }
     }
 
-    fn interface_receiver_value(&self, receiver: &RuntimeValue) -> Result<InterfaceValue> {
-        let RuntimeValue::Heap(handle) = receiver else {
+    fn interface_receiver_value(
+        &self,
+        receiver: &RuntimeValueCarrier,
+    ) -> Result<(
+        skiff_runtime_model::runtime_value::HeapHandle,
+        InterfaceValue,
+    )> {
+        let RuntimeValue::Heap(handle) = receiver.value() else {
             return Err(RuntimeError::Decode(
                 "interface method receiver is not an interface value".to_string(),
             ));
         };
         match self.heap.get(*handle)? {
-            HeapNode::Interface(value) => Ok(value.clone()),
+            HeapNode::Interface(value) => Ok((*handle, value.clone())),
             _ => Err(RuntimeError::Decode(
                 "interface method receiver is not an interface value".to_string(),
             )),
@@ -883,27 +1090,30 @@ impl<'a> EvalContext<'a> {
     async fn eval_program_map_literal(
         &mut self,
         entry_refs: &std::collections::BTreeMap<String, ExprRefIr>,
-    ) -> Result<RuntimeValue> {
-        let mut entries = RuntimeMap::new();
+    ) -> Result<RuntimeValueCarrier> {
+        let mut entries = std::collections::BTreeMap::new();
         for (key, value_ref) in entry_refs {
+            self.checkpoint_generated_chunk(0)?;
             let value = self.eval_program_expr_ref(*value_ref).await?;
             entries.insert(RuntimeValueKey::string(key.to_string()), value);
         }
-        runtime_map_from_entries(entries, self.heap)
+        runtime_map_from_carriers(entries, self.heap)
     }
 
-    async fn eval_program_call(&mut self, call: &CallIr) -> Result<RuntimeValue> {
+    async fn eval_program_call(&mut self, call: &CallIr) -> Result<RuntimeValueCarrier> {
         if let Some(op) = program_call_db_op(&call.target) {
             return Err(RuntimeError::Unsupported(format!(
                 "old RuntimeProgram db builtin {op} is not supported for object DB; use explicit DbOperation IR"
             )));
         }
         if let LinkedCallTarget::Native { target } = &call.target {
-            if let Some(value) = self
+            match self
                 .eval_native_call_with_stream_producer_arg(call, target)
-                .await?
+                .await
             {
-                return Ok(value);
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => {}
+                Err(error) => return self.promote_call_site_error(Err(error), &call.site),
             }
         }
         if let LinkedCallTarget::Executable { addr } = &call.target {
@@ -941,7 +1151,7 @@ impl<'a> EvalContext<'a> {
                     producer,
                 )
                 .await?;
-            return Ok(value);
+            return Ok(value.into());
         }
 
         let mut values = Vec::with_capacity(call.args.len());
@@ -949,11 +1159,11 @@ impl<'a> EvalContext<'a> {
             values.push(self.eval_program_expr_ref(*arg).await?);
         }
 
-        match &call.target {
+        let result = match &call.target {
             LinkedCallTarget::Executable { addr } => {
                 self.interpreter
-                    .call_program_executable(
-                        self.context.clone(),
+                    .call_program_executable_carriers(
+                        self.context.clone().with_local_call_site(call.site.clone()),
                         self.heap,
                         self.env,
                         self.addr,
@@ -964,43 +1174,43 @@ impl<'a> EvalContext<'a> {
                     .await
             }
             LinkedCallTarget::PackageDirect { call: target } => {
+                let bypass_test_effect =
+                    is_std_http_self_ingress_call(target, &values, self.heap, &self.context)?;
+                if self.interpreter.test_effects_enabled && !bypass_test_effect {
+                    let effect_target = TestEffectTarget::package_callable(
+                        target.dependency_package_build_id().clone(),
+                        target.package_callable_id().clone(),
+                    );
+                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch_package(
+                        &effect_target,
+                        &values,
+                        Some(&self.interpreter.stream_runtime),
+                        self.heap,
+                        &self.context,
+                        &call.site,
+                    ) {
+                        return result;
+                    }
+                }
                 super::assembly_execution::dispatch_package_direct(self, call, target, values).await
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {
-                super::assembly_execution::dispatch_service_call(self, call, instruction, values)
+                self.eval_activation_relative_service_call(call, instruction, values)
                     .await
             }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::PublicationExecutable { .. }
-            | LinkedCallTarget::PackageSymbol { .. } => {
-                Err(RuntimeError::InvalidArtifact(format!(
-                    "RuntimeProgram call target {} was not linked before execution",
-                    program_call_target_kind(&call.target)
-                )))
+            | LinkedCallTarget::PackageSymbol { .. }
+            | LinkedCallTarget::ActorMethod { .. } => Err(RuntimeError::InvalidArtifact(format!(
+                "RuntimeProgram call target {} was not linked before execution",
+                program_call_target_kind(&call.target)
+            ))),
+            LinkedCallTarget::ActorDispatch { plan } => {
+                self.eval_actor_dispatch(plan, values).await
             }
-            LinkedCallTarget::ExternalServiceSymbol { symbol } => {
-                Err(RuntimeError::InvalidArtifact(format!(
-                    "RuntimeProgram external service call {} must use service dependency symbols",
-                    symbol.symbol_path()
-                )))
-            }
-            LinkedCallTarget::ServiceDependencySymbol { symbol } => {
-                self.ensure_legacy_service_path_allowed("service dependency dispatch")?;
-                let outbound_context = self.context.outbound_context();
-                let stream_runtime = self.context.stream_runtime();
-                super::service_dispatch::call_outbound_service(
-                    self.interpreter,
-                    &outbound_context,
-                    &stream_runtime,
-                    self.heap,
-                    self.env,
-                    self.addr,
-                    call,
-                    symbol,
-                    values,
-                )
-                .await
-            }
+            LinkedCallTarget::ServiceDependencySymbol { .. } => Err(RuntimeError::InvalidArtifact(
+                "legacy service dependency symbols are not executable".to_string(),
+            )),
             LinkedCallTarget::Native { target } => {
                 if is_db_builtin_op(&native_target_name(target)) {
                     return Err(RuntimeError::Unsupported(format!(
@@ -1008,30 +1218,7 @@ impl<'a> EvalContext<'a> {
                         native_target_name(target)
                     )));
                 }
-                let native_dispatch = NativeDispatch::new();
-                let invocation = resolve_runtime_execution_native_invocation(
-                    self.interpreter,
-                    &self.projection,
-                    self.addr,
-                    self.env,
-                    call,
-                    target,
-                )?;
-                let native_capability_context = project_runtime_execution_native_capability_context(
-                    &self.context,
-                    self.projection.clone(),
-                    self.env.stream_capability_context(),
-                    invocation.required_context(),
-                );
-                native_dispatch
-                    .dispatch_resolved_native_call(
-                        native_capability_context,
-                        invocation,
-                        values,
-                        self.heap,
-                    )
-                    .await
-                    .map_err(RuntimeError::from)
+                self.eval_native_prepared_call(call, target, values).await
             }
             LinkedCallTarget::Builtin { op } => {
                 if is_db_builtin_op(op) {
@@ -1048,16 +1235,29 @@ impl<'a> EvalContext<'a> {
                         call,
                         op,
                     )?;
-                    NativeDispatch::new()
+                    let return_plan = config_type_arg_plan.clone();
+                    let value = NativeDispatch::new()
                         .dispatch_builtin(
                             &config_context,
                             self.addr,
                             op,
                             config_type_arg_plan,
-                            values,
+                            values
+                                .into_iter()
+                                .map(RuntimeValueCarrier::into_value)
+                                .collect(),
                             self.heap,
                         )
-                        .map_err(RuntimeError::from)
+                        .map_err(RuntimeError::from)?;
+                    match return_plan {
+                        Some(plan) => runtime_carrier_for_plan(
+                            value,
+                            &plan,
+                            "config builtin return",
+                            self.heap,
+                        ),
+                        None => Ok(value.into()),
+                    }
                 }
             }
             LinkedCallTarget::ReceiverBuiltin { op } => {
@@ -1068,7 +1268,7 @@ impl<'a> EvalContext<'a> {
                     ))
                 })?;
                 let args = values.into_iter().skip(1).collect::<Vec<_>>();
-                ReceiverMethodDispatch::new(self.heap).dispatch_op(op, receiver, args)
+                ReceiverMethodDispatch::new(self.heap).dispatch_op_carriers(op, receiver, args)
             }
             LinkedCallTarget::InterfaceMethod {
                 interface,
@@ -1097,8 +1297,8 @@ impl<'a> EvalContext<'a> {
                 match receiver_call_abi {
                     ReceiverCallAbi::ExplicitSelfFirst => {
                         self.interpreter
-                            .call_program_executable_with_self(
-                                self.context.clone(),
+                            .call_program_executable_with_self_carriers(
+                                self.context.clone().with_local_call_site(call.site.clone()),
                                 self.heap,
                                 self.env,
                                 self.addr,
@@ -1111,16 +1311,62 @@ impl<'a> EvalContext<'a> {
                     }
                 }
             }
+        };
+        self.promote_call_site_error(result, &call.site)
+    }
+
+    fn promote_call_site_error(
+        &mut self,
+        result: Result<RuntimeValueCarrier>,
+        site: &InstructionSourceSite,
+    ) -> Result<RuntimeValueCarrier> {
+        let Err(error) = result else {
+            return result;
+        };
+        let error = materialize_request_heap_owned_runtime_error(error, self.heap)?;
+        if error.is_cancellation_terminal() {
+            return Err(error);
         }
+        if user_exception_for_catch(&error).is_some() {
+            return Err(error);
+        }
+        if let Some(exception) = request_exception_for_resource_error(
+            &error,
+            &self.projection,
+            self.addr,
+            site.clone(),
+            self.context.exception_stack_for_site(site.clone()),
+            || self.context.next_exception_correlation(),
+            self.heap,
+        )? {
+            return Err(RuntimeError::UserException(UserException::new(exception)));
+        }
+        let Some((identity, _)) = error.ordinary_catch_projection() else {
+            return Err(error);
+        };
+        let exception = request_exception_for_catch(
+            &error,
+            std::slice::from_ref(&identity),
+            site.clone(),
+            self.context.exception_stack_for_site(site.clone()),
+            self.context.next_exception_correlation()?,
+            self.heap,
+        )?
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "platform catch projection did not match its own exact identity".to_string(),
+            )
+        })?;
+        Err(RuntimeError::UserException(UserException::new(exception)))
     }
 
     async fn eval_executable_call_with_stream_producer_arg(
         &mut self,
         call: &CallIr,
         callee_addr: &ExecutableAddr,
-    ) -> Result<Option<RuntimeValue>> {
-        let mut prepared: Option<super::program_stream::PreparedNativeStreamProducer> = None;
-        let mut values = Vec::with_capacity(call.args.len());
+    ) -> Result<Option<RuntimeValueCarrier>> {
+        let mut producers = Vec::with_capacity(call.args.len());
+        let mut producer_count = 0usize;
         for arg in &call.args {
             let expr = program_expression_ref(self.executable, *arg)?;
             let producer = self.interpreter.resolve_stream_producer_call(
@@ -1131,15 +1377,22 @@ impl<'a> EvalContext<'a> {
                 self.executable,
                 expr,
             )?;
+            producer_count += usize::from(producer.is_some());
+            producers.push(producer);
+        }
+        if producer_count == 0 {
+            return Ok(None);
+        }
+        if producer_count > 1 {
+            return Err(RuntimeError::Unsupported(
+                "multiple stream-producing executable call arguments are not supported".to_string(),
+            ));
+        }
+
+        let mut prepared: Option<super::program_stream::PreparedNativeStreamProducer> = None;
+        let mut values = Vec::with_capacity(call.args.len());
+        for (arg, producer) in call.args.iter().zip(producers) {
             if let Some(producer) = producer {
-                if let Some(existing) = prepared.as_ref() {
-                    self.interpreter
-                        .cancel_prepared_native_stream_producer_arg(existing);
-                    return Err(RuntimeError::Unsupported(
-                        "multiple stream-producing executable call arguments are not supported"
-                            .to_string(),
-                    ));
-                }
                 let next_prepared = self
                     .interpreter
                     .prepare_native_stream_producer_arg(
@@ -1162,7 +1415,7 @@ impl<'a> EvalContext<'a> {
                         return Err(error);
                     }
                 };
-                values.push(stream_value);
+                values.push(stream_value.into());
                 prepared = Some(next_prepared);
             } else {
                 match self.eval_program_expr_ref(*arg).await {
@@ -1178,19 +1431,22 @@ impl<'a> EvalContext<'a> {
             }
         }
 
-        let Some(prepared) = prepared else {
-            return Ok(None);
-        };
-        let consumer = self.interpreter.call_program_executable(
-            self.context.clone(),
+        let prepared = prepared.expect("producer count was validated before argument evaluation");
+        let mut consumer_env = self.env.clone();
+        consumer_env.supervise_stream_consumer(
+            prepared.stream_value().clone(),
+            prepared.consumption_child(),
+        );
+        let consumer = self.interpreter.call_program_executable_carriers(
+            self.context.clone().with_local_call_site(call.site.clone()),
             self.heap,
-            self.env,
+            &consumer_env,
             self.addr,
             callee_addr,
             &call.type_args,
             values,
         );
-        let result = self
+        let result = match self
             .interpreter
             .exec_prepared_native_stream_producer_arg(
                 self.context.clone(),
@@ -1198,7 +1454,15 @@ impl<'a> EvalContext<'a> {
                 prepared,
                 consumer,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return Err(materialize_request_heap_owned_runtime_error(
+                    error, self.heap,
+                )?)
+            }
+        };
         Ok(Some(result))
     }
 
@@ -1206,7 +1470,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         call: &CallIr,
         target: &NativeTarget,
-    ) -> Result<Option<RuntimeValue>> {
+    ) -> Result<Option<RuntimeValueCarrier>> {
         let target_name = native_target_name(target);
         let binding_key = native_target_binding_key(target).unwrap_or(target_name.as_str());
         if binding_key != "std.file.createFromStream" {
@@ -1238,6 +1502,7 @@ impl<'a> EvalContext<'a> {
             target,
         )?;
         let stream_arg_plan = invocation.arg_plan(0)?.clone();
+        let return_plan = invocation.return_plan()?.clone();
         if !stream_item_plans_match(&producer.item_type, &stream_arg_plan) {
             return Err(RuntimeError::Decode(format!(
                 "{target_name} stream producer item type {} is not assignable to {}",
@@ -1276,7 +1541,7 @@ impl<'a> EvalContext<'a> {
         values.push(stream_value);
         for arg in call.args.iter().skip(1) {
             match self.eval_program_expr_ref(*arg).await {
-                Ok(value) => values.push(value),
+                Ok(value) => values.push(value.into_value()),
                 Err(error) => {
                     self.interpreter
                         .cancel_prepared_native_stream_producer_arg(&prepared);
@@ -1292,62 +1557,92 @@ impl<'a> EvalContext<'a> {
                 invocation.required_context(),
                 prepared.consumption_child(),
             );
+        let prepared_native = native_dispatch
+            .prepare_resolved_native_call(native_capability_context, invocation, values, self.heap)
+            .map_err(RuntimeError::from)?;
         let interpreter = self.interpreter;
         let context = self.context.clone();
         let addr = self.addr;
+        let frame = self.context.actor_execution_frame().cloned();
+        let execution = self.execution.clone();
         let heap = &mut *self.heap;
         let consumer = async move {
-            native_dispatch
-                .dispatch_resolved_native_call(native_capability_context, invocation, values, heap)
-                .await
-                .map_err(RuntimeError::from)
+            match prepared_native {
+                promoted_runtime::dispatch::PreparedNativeCall::Ready(value) => Ok(value),
+                promoted_runtime::dispatch::PreparedNativeCall::ExternalWait(operation) => {
+                    let (wait, finalize) = operation.into_parts();
+                    let outcome =
+                        actual_pending::await_operation(&context, frame, heap, &execution, wait)
+                            .await??;
+                    finalize.finalize(outcome, heap).map_err(RuntimeError::from)
+                }
+            }
         };
         let result = interpreter
-            .exec_prepared_native_stream_producer_arg(context, addr, prepared, consumer)
+            .exec_prepared_native_stream_producer_arg(
+                self.context.clone(),
+                addr,
+                prepared,
+                consumer,
+            )
             .await?;
-        Ok(Some(result))
+        runtime_carrier_for_plan(result, &return_plan, "native stream return", self.heap).map(Some)
     }
 
     async fn eval_program_throw(
         &mut self,
         value: ExprRefIr,
         payload_type: &LinkedTypeRef,
+        site: &InstructionSourceSite,
     ) -> Result<Flow> {
         let payload = self.eval_program_expr_ref(value).await?;
-        let payload_json = runtime_to_wire(&payload, self.heap)?;
-        let actual_payload_type = self.resolve_throw_payload_actual_type(payload_type)?;
-        Err(RuntimeError::UserException(
-            UserException::from_typed_payload(
-                payload_json,
-                actual_payload_type.clone(),
-                Some(actual_payload_type),
-            )?,
-        ))
-    }
-
-    fn resolve_throw_payload_actual_type(
-        &self,
-        payload_type: &LinkedTypeRef,
-    ) -> Result<crate::error::TypeIdentity> {
-        self.type_projection()
-            .throw_payload_actual_type(payload_type)
+        let actual_identity = payload.catch_identity().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "throw payload is missing its required runtime catch identity".to_string(),
+            )
+        })?;
+        let allowed = self.type_projection().catch_type_leaves(
+            payload_type,
+            self.addr,
+            &self.env.type_substitutions,
+        )?;
+        if !catch_identity_matches(actual_identity, &allowed) {
+            return Err(RuntimeError::InvalidArtifact(
+                "throw payload runtime identity does not match its fully-instantiated linked payload type"
+                    .to_string(),
+            ));
+        }
+        let exception = RequestException::local(
+            payload,
+            site.clone(),
+            self.context.exception_stack_for_site(site.clone()),
+            self.context.next_exception_correlation()?,
+        )
+        .map_err(RuntimeError::InvalidArtifact)?;
+        Err(RuntimeError::UserException(UserException::new(exception)))
     }
 
     async fn eval_program_catch(
         &mut self,
         try_expression: ExprRefIr,
-        catch_type: Option<&LinkedTypeRef>,
-    ) -> Result<RuntimeValue> {
-        let leaves = match catch_type {
-            Some(ty) => self.type_projection().catch_type_leaves(ty)?,
-            None => Vec::new(),
-        };
+        catch_type: &LinkedTypeRef,
+    ) -> Result<RuntimeValueCarrier> {
+        let leaves = self.type_projection().catch_type_leaves(
+            catch_type,
+            self.addr,
+            &self.env.type_substitutions,
+        )?;
 
         match self.eval_program_expr_ref(try_expression).await {
             Ok(value) => catch_ok(value, self.heap),
             Err(error) => {
-                if let Some(envelope) = exception_envelope_for_catch(&error, &leaves)? {
-                    return catch_err(envelope, self.heap);
+                if let Some(exception) = user_exception_for_catch(&error) {
+                    if exception
+                        .actual_payload_type()
+                        .is_some_and(|identity| catch_identity_matches(identity, &leaves))
+                    {
+                        return catch_err(exception.request().clone(), self.heap);
+                    }
                 }
                 Err(error)
             }
@@ -1357,7 +1652,7 @@ impl<'a> EvalContext<'a> {
     async fn assign_program_target(
         &mut self,
         target: &AssignTargetIr,
-        value: RuntimeValue,
+        value: RuntimeValueCarrier,
     ) -> Result<()> {
         match target {
             AssignTargetIr::Slot { slot } => self.env.assign_binding(
@@ -1372,23 +1667,62 @@ impl<'a> EvalContext<'a> {
                         "field assignment target object must be a heap value".to_string(),
                     )
                 })?;
-                apply_collection_mutation(
-                    self.heap,
-                    handle,
-                    CollectionMutation::ObjectSetField {
-                        field: field.to_string(),
-                        value,
-                    },
-                )?;
+                self.heap
+                    .set_object_field_carrier(handle, field.to_string(), value)?;
                 Ok(())
+            }
+            AssignTargetIr::ActorSelfField { field, field_type } => {
+                let frame = self
+                    .context
+                    .actor_execution_frame()
+                    .cloned()
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(
+                            "Actor self field write requires the current Actor execution token"
+                                .to_string(),
+                        )
+                    })?;
+                let projection = self.execution_projection().clone();
+                let type_view = projection.type_view();
+                frame.write_field(
+                    field,
+                    field_type,
+                    type_view,
+                    self.addr,
+                    value.value(),
+                    self.heap,
+                )
             }
             AssignTargetIr::Index { object, index } => {
                 let object = self.eval_program_expr_ref(*object).await?;
                 let index = self.eval_program_expr_ref(*index).await?;
-                assign_program_index_target(self.heap, &object, &index, value)
+                assign_program_index_target_carrier(self.heap, &object, &index, value)
             }
         }
     }
+}
+
+fn is_std_http_self_ingress_call(
+    target: &skiff_runtime_linked_program::LinkedPackageDirectCall,
+    values: &[RuntimeValueCarrier],
+    heap: &RequestHeap,
+    context: &ProgramExecutionContext<'_>,
+) -> Result<bool> {
+    if !matches!(
+        target.package_callable_id().as_str(),
+        "pkg-callable:skiff.run/std:std.http.request"
+            | "pkg-callable:skiff.run/std:std.http.stream"
+    ) {
+        return Ok(false);
+    }
+    let [input] = values else {
+        return Ok(false);
+    };
+    let input = runtime_to_wire(input, heap)?;
+    context
+        .http_client_context()
+        .is_test_http_self_ingress(&input)
+        .map_err(RuntimeError::from)
 }
 
 fn stream_item_plans_match(
@@ -1469,49 +1803,11 @@ fn runtime_type_plans_match(actual: &RuntimeTypePlan, expected: &RuntimeTypePlan
     }
 }
 
-fn remote_operation_table_id(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    interface_id: &str,
-) -> String {
-    format!("remote-operation-table:{dependency_ref}/{public_instance_key}:{interface_id}")
-}
-
-fn remote_operation_slot_from_linked(
-    slot: &LinkedRemoteOperationSlotPlanIr,
-) -> Result<RemoteOperationSlot> {
-    Ok(RemoteOperationSlot::new(
-        slot.slot,
-        slot.method_abi_id.clone(),
-        slot.operation_abi_id.clone(),
-    ))
-}
-
 fn runtime_map_key_snapshot(
-    value: &RuntimeValue,
+    value: &RuntimeValueCarrier,
     heap: &RequestHeap,
-) -> Result<Option<Vec<RuntimeValue>>> {
-    let RuntimeValue::Heap(handle) = value else {
-        return Ok(None);
-    };
-    let node = heap.get(*handle)?;
-    let HeapNode::Map(map) = node else {
-        return match node {
-            HeapNode::Interface(value) => Err(RuntimeError::Decode(format!(
-                "{} is not iterable as a Map",
-                value.diagnostic_label()
-            ))),
-            _ => Ok(None),
-        };
-    };
-    Ok(Some(map.keys().map(runtime_value_from_map_key).collect()))
-}
-
-fn runtime_map_entry_snapshot(
-    value: &RuntimeValue,
-    heap: &RequestHeap,
-) -> Result<Option<Vec<(RuntimeValue, RuntimeValue)>>> {
-    let RuntimeValue::Heap(handle) = value else {
+) -> Result<Option<Vec<RuntimeValueCarrier>>> {
+    let RuntimeValue::Heap(handle) = value.value() else {
         return Ok(None);
     };
     let node = heap.get(*handle)?;
@@ -1525,10 +1821,41 @@ fn runtime_map_entry_snapshot(
         };
     };
     Ok(Some(
-        map.iter()
-            .map(|(key, value)| (runtime_value_from_map_key(key), value.clone()))
+        map.keys()
+            .map(runtime_value_from_map_key)
+            .map(Into::into)
             .collect(),
     ))
+}
+
+fn runtime_map_entry_snapshot(
+    value: &RuntimeValueCarrier,
+    heap: &RequestHeap,
+) -> Result<Option<Vec<(RuntimeValueCarrier, RuntimeValueCarrier)>>> {
+    let RuntimeValue::Heap(handle) = value.value() else {
+        return Ok(None);
+    };
+    let node = heap.get(*handle)?;
+    let HeapNode::Map(map) = node else {
+        return match node {
+            HeapNode::Interface(value) => Err(RuntimeError::Decode(format!(
+                "{} is not iterable as a Map",
+                value.diagnostic_label()
+            ))),
+            _ => Ok(None),
+        };
+    };
+    map.keys()
+        .map(|key| {
+            let value = heap.map_entry_carrier(*handle, key)?.ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "Map carrier sidecar is missing an existing entry".to_string(),
+                )
+            })?;
+            Ok((runtime_value_from_map_key(key).into(), value))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 fn runtime_value_from_map_key(key: &RuntimeValueKey) -> RuntimeValue {

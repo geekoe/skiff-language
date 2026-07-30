@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use skiff_artifact_identity::{abi_type_id_from_source_anchor, abi_type_id_key};
 use skiff_artifact_model::{AbiDeclarationKind, AbiSourceDeclarationAnchor};
@@ -11,14 +11,13 @@ use skiff_runtime_boundary::{
         RecoverableBehaviorHooks, RecoverableBoundaryCodec, RecoverableEncodedLocalInterfaceSelf,
         RecoverableInterfaceConformanceRequest, RecoverableInterfaceMethodTableRequest,
         RecoverableLocalInterfaceEncodeRequest, RecoverableLocalInterfaceRestoreRequest,
-        RecoverableRemoteInterfaceCarrierRequest, RecoverableRestoredLocalInterfaceSelf,
+        RecoverableRestoredLocalInterfaceSelf,
     },
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedBoxSourceIr, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr,
-    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedTypeRef,
-    ReceiverCallAbi, TypeAddr, UnitAddr,
+    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr, LinkedNominalTypeRefBase,
+    LinkedTypeRef, ReceiverCallAbi, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -36,12 +35,14 @@ use skiff_runtime_model::{
     runtime_value::{
         InterfaceMethodLiteral, InterfaceMethodSignature, InterfaceMethodSlot,
         InterfaceMethodTable, InterfaceMethodTarget, InterfaceMethodType,
-        InterfaceMethodUnresolvedType, InterfaceReceiverCallAbi, RemoteOperationSlot,
-        RemoteOperationTable,
+        InterfaceMethodUnresolvedType, InterfaceReceiverCallAbi,
     },
 };
 
-use crate::{error::RuntimeError, invocation::EvalProgramProjection};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection, error::RuntimeError,
+    invocation::EvalProgramProjection,
+};
 
 const ABI_TYPE_RESTORE_KEY_PREFIX: &str = "abi-type:";
 
@@ -61,32 +62,8 @@ struct MethodTableEntry {
     method_table: InterfaceMethodTable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct RemoteOperationSlotKey {
-    slot: u32,
-    method_abi_id: String,
-    operation_abi_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct RemoteOperationTableKey {
-    interface_identity: String,
-    method_projection_identity: String,
-    dependency_ref: String,
-    public_instance_key: String,
-    operation_table_id: String,
-    operation_table_interface_identity: String,
-    operation_slots: Vec<RemoteOperationSlotKey>,
-}
-
-#[derive(Clone)]
-struct RemoteOperationTableEntry {
-    operation_table: RemoteOperationTable,
-}
-
 pub struct EvalRecoverableBehaviorHooks {
     method_tables: HashMap<MethodTableKey, MethodTableEntry>,
-    remote_operation_tables: HashMap<RemoteOperationTableKey, RemoteOperationTableEntry>,
 }
 
 impl EvalRecoverableBehaviorHooks {
@@ -95,26 +72,33 @@ impl EvalRecoverableBehaviorHooks {
         _artifact_identity: impl Into<String>,
         _build_id: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
-        unique_package_ids(program.packages)?;
+        Self::new_for_execution(&RuntimeExecutionProjection::from(program))
+    }
+
+    pub(crate) fn new_for_execution(
+        program: &RuntimeExecutionProjection<'_>,
+    ) -> Result<Self, RuntimeError> {
         let mut hooks = Self {
             method_tables: HashMap::new(),
-            remote_operation_tables: HashMap::new(),
         };
         hooks.index_program(program)?;
         Ok(hooks)
     }
 
-    fn index_program(&mut self, program: EvalProgramProjection<'_>) -> Result<(), RuntimeError> {
-        self.index_files(program, UnitAddr::Service, program.service_files)?;
-        for (package_slot, files) in program.package_files.iter().enumerate() {
-            self.index_files(program, UnitAddr::Package(package_slot), files)?;
+    fn index_program(
+        &mut self,
+        program: &RuntimeExecutionProjection<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.index_files(program, UnitAddr::Service, program.service_files())?;
+        for (package_slot, package) in program.packages().iter().enumerate() {
+            self.index_files(program, UnitAddr::Package(package_slot), package.files())?;
         }
         Ok(())
     }
 
     fn index_files(
         &mut self,
-        program: EvalProgramProjection<'_>,
+        program: &RuntimeExecutionProjection<'_>,
         unit: UnitAddr,
         files: &[std::sync::Arc<skiff_runtime_linked_program::LinkedFileUnit>],
     ) -> Result<(), RuntimeError> {
@@ -189,51 +173,10 @@ impl EvalRecoverableBehaviorHooks {
                                 self.method_tables.insert(key, entry);
                             }
                         }
-                        LinkedBoxSourceIr::Remote {
-                            dependency_ref,
-                            public_instance_key,
-                            operations,
-                            ..
-                        } => {
-                            let interface_identity =
-                                linked_interface_instantiation_runtime_id(interface);
-                            let method_projection_identity =
-                                recoverable_interface_projection_identity(interface);
-                            let operation_table = remote_operation_table_from_linked(
-                                dependency_ref,
-                                public_instance_key,
-                                operations,
-                            )?;
-                            if operation_table.interface_abi_id() != interface_identity {
-                                return Err(RuntimeError::InvalidArtifact(format!(
-                                    "InterfaceBox target {} does not match remote operation table interface {}",
-                                    interface_identity,
-                                    operation_table.interface_abi_id()
-                                )));
-                            }
-                            let key = RemoteOperationTableKey::from_runtime_table(
-                                interface_identity,
-                                method_projection_identity,
-                                dependency_ref.clone(),
-                                public_instance_key.clone(),
-                                &operation_table,
-                            );
-                            let entry = RemoteOperationTableEntry { operation_table };
-                            if let Some(existing) = self.remote_operation_tables.get(&key) {
-                                if !remote_operation_tables_runtime_equivalent(
-                                    &existing.operation_table,
-                                    &entry.operation_table,
-                                ) {
-                                    return Err(RuntimeError::InvalidArtifact(format!(
-                                        "recoverable remote interface projection {} for {}/{} has conflicting operation table metadata",
-                                        key.method_projection_identity,
-                                        key.dependency_ref,
-                                        key.public_instance_key
-                                    )));
-                                }
-                            } else {
-                                self.remote_operation_tables.insert(key, entry);
-                            }
+                        LinkedBoxSourceIr::Remote { .. } => {
+                            return Err(RuntimeError::InvalidArtifact(
+                                "legacy remote interface boxing is not recoverable".to_string(),
+                            ));
                         }
                     }
                 }
@@ -280,18 +223,6 @@ impl EvalRecoverableBehaviorHooks {
             concrete_type_identity: request.concrete_type_identity.to_string(),
         };
         self.method_tables.get(&key)
-    }
-
-    fn remote_entry_for_carrier(
-        &self,
-        request: &RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> Option<&RemoteOperationTableEntry> {
-        let key = RemoteOperationTableKey::from_recoverable_carrier(
-            request.interface_identity.to_string(),
-            request.method_projection_identity.to_string(),
-            request.carrier,
-        );
-        self.remote_operation_tables.get(&key)
     }
 }
 
@@ -426,74 +357,6 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
             .entry_for_key(&request)
             .map(|entry| entry.method_table.clone()))
     }
-
-    fn rebuild_remote_interface_operation_table(
-        &self,
-        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
-    ) -> BoundaryResult<Option<RemoteOperationTable>> {
-        Ok(self
-            .remote_entry_for_carrier(&request)
-            .map(|entry| entry.operation_table.clone()))
-    }
-}
-
-impl RemoteOperationTableKey {
-    fn from_runtime_table(
-        interface_identity: String,
-        method_projection_identity: String,
-        dependency_ref: String,
-        public_instance_key: String,
-        table: &RemoteOperationTable,
-    ) -> Self {
-        Self {
-            interface_identity,
-            method_projection_identity,
-            dependency_ref,
-            public_instance_key,
-            operation_table_id: table.id().to_string(),
-            operation_table_interface_identity: table.interface_abi_id().to_string(),
-            operation_slots: table
-                .slots()
-                .iter()
-                .map(RemoteOperationSlotKey::from_runtime_slot)
-                .collect(),
-        }
-    }
-
-    fn from_recoverable_carrier(
-        interface_identity: String,
-        method_projection_identity: String,
-        carrier: &skiff_runtime_model::recoverable::RecoverableRemoteInterfaceCarrier,
-    ) -> Self {
-        Self {
-            interface_identity,
-            method_projection_identity,
-            dependency_ref: carrier.dependency_ref.clone(),
-            public_instance_key: carrier.public_instance_key.clone(),
-            operation_table_id: carrier.operations.id.clone(),
-            operation_table_interface_identity: carrier.operations.interface_abi_id.clone(),
-            operation_slots: carrier
-                .operations
-                .slots
-                .iter()
-                .map(|slot| RemoteOperationSlotKey {
-                    slot: slot.slot,
-                    method_abi_id: slot.method_abi_id.clone(),
-                    operation_abi_id: slot.operation_abi_id.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-impl RemoteOperationSlotKey {
-    fn from_runtime_slot(slot: &RemoteOperationSlot) -> Self {
-        Self {
-            slot: slot.slot(),
-            method_abi_id: slot.method_abi_id().to_string(),
-            operation_abi_id: slot.operation_abi_id().to_string(),
-        }
-    }
 }
 
 pub fn interface_method_table_from_linked(
@@ -516,42 +379,6 @@ pub fn interface_method_table_from_linked(
 
 pub fn runtime_interface_method_table_id(interface_id: &str, concrete_type: &str) -> String {
     format!("interface-method-table:{interface_id}:{concrete_type}")
-}
-
-fn remote_operation_table_from_linked(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    operations: &LinkedRemoteOperationTablePlanIr,
-) -> Result<RemoteOperationTable, RuntimeError> {
-    let interface_id = linked_interface_instantiation_runtime_id(&operations.interface);
-    let slots = operations
-        .slots
-        .iter()
-        .map(remote_operation_slot_from_linked)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(RemoteOperationTable::new(
-        remote_operation_table_id(dependency_ref, public_instance_key, &interface_id),
-        interface_id,
-        slots,
-    ))
-}
-
-fn remote_operation_table_id(
-    dependency_ref: &str,
-    public_instance_key: &str,
-    interface_id: &str,
-) -> String {
-    format!("remote-operation-table:{dependency_ref}/{public_instance_key}:{interface_id}")
-}
-
-fn remote_operation_slot_from_linked(
-    slot: &LinkedRemoteOperationSlotPlanIr,
-) -> Result<RemoteOperationSlot, RuntimeError> {
-    Ok(RemoteOperationSlot::new(
-        slot.slot,
-        slot.method_abi_id.clone(),
-        slot.operation_abi_id.clone(),
-    ))
 }
 
 fn interface_method_slot_from_linked(
@@ -594,6 +421,30 @@ fn interface_method_type_from_linked(ty: &LinkedTypeRef) -> InterfaceMethodType 
             arguments: args.iter().map(interface_method_type_from_linked).collect(),
         },
         LinkedTypeRef::Address { addr } => InterfaceMethodType::Nominal(addr.clone()),
+        LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::Address { addr },
+            arguments,
+        } => InterfaceMethodType::AppliedNominal {
+            base: addr.clone(),
+            arguments: arguments
+                .iter()
+                .map(interface_method_type_from_linked)
+                .collect(),
+        },
+        LinkedTypeRef::AppliedNominal { base, .. } => InterfaceMethodType::Unresolved(match base {
+            LinkedNominalTypeRefBase::LocalType { .. } => InterfaceMethodUnresolvedType::LocalType,
+            LinkedNominalTypeRefBase::PublicationType { .. } => {
+                InterfaceMethodUnresolvedType::PublicationType
+            }
+            LinkedNominalTypeRefBase::ServiceSymbol { .. } => {
+                InterfaceMethodUnresolvedType::ServiceSymbol
+            }
+            LinkedNominalTypeRefBase::PackageSymbol { .. }
+            | LinkedNominalTypeRefBase::PackageSchema { .. } => {
+                InterfaceMethodUnresolvedType::PackageSymbol
+            }
+            LinkedNominalTypeRefBase::Address { .. } => unreachable!("matched above"),
+        }),
         LinkedTypeRef::Record { fields } => InterfaceMethodType::Record(
             fields
                 .iter()
@@ -652,6 +503,9 @@ fn interface_method_type_from_linked(ty: &LinkedTypeRef) -> InterfaceMethodType 
         LinkedTypeRef::PackageSymbol { .. } => {
             InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::PackageSymbol)
         }
+        LinkedTypeRef::PackageSchema { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::PackageSymbol)
+        }
         LinkedTypeRef::DbObjectSymbol { .. } => {
             InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::DbObjectSymbol)
         }
@@ -671,32 +525,8 @@ fn method_tables_runtime_equivalent(
     left.interface_abi_id() == right.interface_abi_id() && left.slots() == right.slots()
 }
 
-fn remote_operation_tables_runtime_equivalent(
-    left: &RemoteOperationTable,
-    right: &RemoteOperationTable,
-) -> bool {
-    left.id() == right.id()
-        && left.interface_abi_id() == right.interface_abi_id()
-        && left.slots() == right.slots()
-}
-
-fn unique_package_ids(
-    packages: &[std::sync::Arc<skiff_runtime_linked_program::PackageUnit>],
-) -> Result<HashSet<String>, RuntimeError> {
-    let mut ids = HashSet::new();
-    for package in packages {
-        if !ids.insert(package.package_id.clone()) {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "recoverable local concrete owner lookup found duplicate package id {}",
-                package.package_id
-            )));
-        }
-    }
-    Ok(ids)
-}
-
 fn local_concrete_restore_key(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     concrete_type: &LinkedTypeRef,
 ) -> Result<LocalConcreteRestoreKey, RuntimeError> {
     let LinkedTypeRef::Address { addr } = concrete_type else {
@@ -714,39 +544,36 @@ fn local_concrete_restore_key(
 }
 
 fn local_concrete_owner(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     unit: &UnitAddr,
 ) -> Result<LocalConcreteOwner, RuntimeError> {
     match unit {
         UnitAddr::Service => Ok(LocalConcreteOwner::Service),
         UnitAddr::Package(slot) => {
-            let package = program.packages.get(*slot).ok_or_else(|| {
+            let package_id = program.package_id(*slot).ok_or_else(|| {
                 RuntimeError::InvalidArtifact(format!(
                     "recoverable local concrete owner package slot {slot} is not loaded"
                 ))
             })?;
-            if program
-                .packages
-                .iter()
-                .filter(|candidate| candidate.package_id == package.package_id)
+            if (0..program.packages().len())
+                .filter(|candidate| program.package_id(*candidate) == Some(package_id))
                 .take(2)
                 .count()
                 != 1
             {
                 return Err(RuntimeError::InvalidArtifact(format!(
-                    "recoverable local concrete owner package id {} is ambiguous",
-                    package.package_id
+                    "recoverable local concrete owner package id {package_id} is ambiguous"
                 )));
             }
             Ok(LocalConcreteOwner::Package {
-                package_id: package.package_id.clone(),
+                package_id: package_id.to_string(),
             })
         }
     }
 }
 
 fn concrete_type_identity_for_addr(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     addr: &TypeAddr,
     owner: &LocalConcreteOwner,
 ) -> Result<String, RuntimeError> {
@@ -770,7 +597,15 @@ fn concrete_type_identity_for_addr(
         ))
     })?;
     let publication_id = match owner {
-        LocalConcreteOwner::Service => program.service_id.to_string(),
+        LocalConcreteOwner::Service => program
+            .service_id()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "assembly execution cannot project a legacy service-owned concrete type"
+                        .to_string(),
+                )
+            })?
+            .to_string(),
         LocalConcreteOwner::Package { package_id } => package_id.clone(),
     };
     let input = AbiSourceDeclarationAnchor {
@@ -828,4 +663,85 @@ fn recoverable_hook_error(
     )
     .with_detail(serde_json::json!({ "nodePath": path }))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use skiff_runtime_linked_program::{
+        LinkOverlay, RuntimeExecutionPackage, RuntimeTypeContext, UnitAddr,
+    };
+
+    use super::{local_concrete_owner, EvalRecoverableBehaviorHooks};
+    use crate::{error::RuntimeError, invocation::EvalProgramProjection};
+
+    const PACKAGE_ID: &str = "skiff.test/shared";
+
+    struct DuplicatePackageProgram {
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
+        spawn_routes: HashMap<String, skiff_runtime_linked_program::ExecutableAddr>,
+        link_overlay: LinkOverlay,
+        types: RuntimeTypeContext,
+    }
+
+    impl DuplicatePackageProgram {
+        fn new() -> Self {
+            Self {
+                packages: vec![
+                    crate::test_support::runtime_execution_package_fixture(
+                        PACKAGE_ID,
+                        0,
+                        Vec::new(),
+                        Default::default(),
+                    ),
+                    crate::test_support::runtime_execution_package_fixture(
+                        PACKAGE_ID,
+                        1,
+                        Vec::new(),
+                        Default::default(),
+                    ),
+                ],
+                spawn_routes: HashMap::new(),
+                link_overlay: LinkOverlay::default(),
+                types: RuntimeTypeContext::default(),
+            }
+        }
+
+        fn projection(&self) -> EvalProgramProjection<'_> {
+            EvalProgramProjection::new(
+                "skiff.test/service",
+                &[],
+                &self.packages,
+                &self.spawn_routes,
+                &self.link_overlay,
+                &self.types,
+            )
+        }
+    }
+
+    #[test]
+    fn duplicate_package_id_different_build_allows_plain_data_hook_construction() {
+        let program = DuplicatePackageProgram::new();
+
+        EvalRecoverableBehaviorHooks::new(program.projection(), "artifact:test", "build:test")
+            .expect("plain-data hook construction must not eagerly validate package owner lookup");
+    }
+
+    #[test]
+    fn duplicate_package_id_fails_closed_when_package_local_concrete_owner_is_needed() {
+        let program = DuplicatePackageProgram::new();
+        let projection = super::RuntimeExecutionProjection::from(program.projection());
+
+        let result = local_concrete_owner(&projection, &UnitAddr::Package(0));
+
+        match result {
+            Err(RuntimeError::InvalidArtifact(message)) => assert!(
+                message.contains("package id skiff.test/shared is ambiguous"),
+                "unexpected invalid artifact message: {message}"
+            ),
+            Err(error) => panic!("expected invalid artifact error, got {error}"),
+            Ok(owner) => panic!("ambiguous package owner must fail closed, got {owner:?}"),
+        }
+    }
 }

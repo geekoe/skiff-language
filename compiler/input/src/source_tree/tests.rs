@@ -121,6 +121,16 @@ fn collects_test_skiff_sources_with_test_file_marking() {
         .find(|source| source.file_path.ends_with("handler.live.test.skiff"))
         .unwrap();
     assert_eq!(independent_test_source.module_path, "api.handler.live");
+    assert!(independent_test_source.is_test_file);
+    assert_eq!(
+        source_tree
+            .sources
+            .iter()
+            .find(|source| source.file_path.ends_with("handler.live.skiff"))
+            .unwrap()
+            .module_path,
+        independent_test_source.module_path
+    );
 }
 
 #[test]

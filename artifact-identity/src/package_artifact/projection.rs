@@ -5,20 +5,18 @@ use skiff_artifact_model::{
 
 use crate::{
     framing::{canonical_ir_bytes, framed_identity, sha256_hex},
-    package::projection::{
-        implementation_links::{
-            OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
-        },
-        FileIrOwnerIdentityProjection,
-    },
     ArtifactIdentityError, Result, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
 };
 
 use super::{
-    CallableLinkIdentityProjection, PackageArtifactBuildIdentityProjection,
-    PackageArtifactLocalAbiIdentityProjection, ResourceIdentityProjection,
+    implementation_links::{
+        OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
+    },
+    CallableLinkIdentityProjection, FileIrOwnerIdentityProjection,
+    PackageArtifactBuildIdentityProjection, PackageArtifactLocalAbiIdentityProjection,
+    ResourceIdentityProjection,
 };
 
 pub(super) fn local_abi_projection(
@@ -27,7 +25,6 @@ pub(super) fn local_abi_projection(
     PackageArtifactLocalAbiIdentityProjection {
         schema: PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
         package_id: artifact.package_id.clone(),
-        package_version: artifact.package_version.clone(),
         public_symbols: artifact.package_local_abi.public_symbols.clone(),
     }
 }
@@ -77,19 +74,22 @@ pub(super) fn build_projection_from_validated(
 
     let mut package_requirements = artifact.package_requirements.clone();
     package_requirements.sort_by(|left, right| {
+        (left.alias.as_str(), left.package_id.as_str())
+            .cmp(&(right.alias.as_str(), right.package_id.as_str()))
+    });
+    let mut contract_requirements = artifact.contract_requirements.clone();
+    contract_requirements.sort_by(|left, right| {
         (
             left.alias.as_str(),
-            left.package_id.as_str(),
-            left.exact_version.as_str(),
+            left.service_id.as_str(),
+            &left.expected_protocol_identity,
         )
             .cmp(&(
                 right.alias.as_str(),
-                right.package_id.as_str(),
-                right.exact_version.as_str(),
+                right.service_id.as_str(),
+                &right.expected_protocol_identity,
             ))
     });
-    let mut contract_requirements = artifact.contract_requirements.clone();
-    contract_requirements.sort();
     let mut service_requirements = artifact.service_requirements.clone();
     service_requirements.sort_by_key(|requirement| requirement.service_binding_slot);
     let mut service_call_refs = artifact.service_call_refs.clone();
@@ -103,7 +103,6 @@ pub(super) fn build_projection_from_validated(
                 right.contract_operation_id.as_str(),
             ))
     });
-
     let mut runtime_requirements = artifact.runtime_requirements.clone();
     runtime_requirements
         .config
@@ -118,8 +117,10 @@ pub(super) fn build_projection_from_validated(
     Ok(PackageArtifactBuildIdentityProjection {
         schema: PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
         package_id: artifact.package_id.clone(),
-        package_version: artifact.package_version.clone(),
         local_abi_identity,
+        implementation_symbols: artifact.package_local_abi.implementation_symbols.clone(),
+        package_schema_index: artifact.package_schema_index.clone(),
+        package_schema_type_records: artifact.package_schema_type_records.clone(),
         files,
         static_resources,
         implementation_links: PackageImplementationLinksIdentityProjection::from_links(
@@ -130,9 +131,18 @@ pub(super) fn build_projection_from_validated(
             .iter()
             .map(|(key, link)| (key.clone(), CallableLinkIdentityProjection::from_fact(link)))
             .collect(),
-        package_requirements,
-        contract_requirements,
-        service_requirements,
+        package_requirements: crate::identity_labels::without_human_version_labels(
+            &package_requirements,
+            ArtifactIdentityError::SerializePackageArtifactBuildIdentity,
+        )?,
+        contract_requirements: crate::identity_labels::without_human_version_labels(
+            &contract_requirements,
+            ArtifactIdentityError::SerializePackageArtifactBuildIdentity,
+        )?,
+        service_requirements: crate::identity_labels::without_human_version_labels(
+            &service_requirements,
+            ArtifactIdentityError::SerializePackageArtifactBuildIdentity,
+        )?,
         runtime_requirements,
         callable_semantic_facts: artifact.callable_semantic_facts.clone(),
         boundary_projections: artifact.boundary_projections.clone(),

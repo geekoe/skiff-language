@@ -1,17 +1,20 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
-    assign_runtime_assembly_identity, assign_service_deployment_identity,
+    assign_runtime_assembly_identity, assign_service_deployment_identity, gateway_entry_identity,
 };
 use skiff_artifact_model::{
     ActivationPolicy, ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan,
     ConfigLiteralBinding, ContractOperationId, DeploymentArtifactIdentity,
-    DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
-    DeploymentPolicy, DeploymentRevision, IngressProtocol, IngressSelector, MetadataValue,
-    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageCodeSlot,
-    PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput, ServiceDeploymentRef,
-    ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding,
+    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
+    IngressSelector, MetadataValue, PackageArtifactRef, PackageBuildId, PackageCallableId,
+    PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput,
+    ServiceDeploymentRef, ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
@@ -36,7 +39,7 @@ pub fn service_contract_ref_fixture() -> ServiceContractRef {
 
 pub fn deployment_policy_fixture() -> DeploymentPolicy {
     DeploymentPolicy {
-        timeout_ms: 5_000,
+        timeout_ms: Some(5_000),
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_048_576,
@@ -49,7 +52,37 @@ pub fn deployment_policy_fixture() -> DeploymentPolicy {
     }
 }
 
+pub fn gateway_entry_fixture(handler: impl Into<PackageCallableId>) -> DeploymentGatewayEntry {
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+            adapter_kind: GatewayAdapterKind::TypedJson,
+            dispatch_mode: GatewayDispatchMode::Unary,
+            external_sources: vec![GatewayAdapterSource::HttpBody],
+            request_body_schema: Some(GatewayExternalSchema::String),
+            response_schema: Some(GatewayExternalSchema::String),
+            stream_item_schema: None,
+        }),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    DeploymentGatewayEntry {
+        gateway_entry_identity: gateway_entry_identity(&protocol_surface)
+            .expect("fixture gateway surface must have a canonical identity"),
+        protocol_surface,
+        handler: Some(handler.into()),
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::TypedJson,
+            args: vec![GatewayAdapterArg {
+                param: "body".to_string(),
+                source: GatewayAdapterSource::HttpBody,
+            }],
+        },
+    }
+}
+
 pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploymentInput {
+    let gateway_entry_key = GatewayEntryKey::parse("echo").expect("fixture gateway key");
     skiff_artifact_model::ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract: service_contract_ref_fixture(),
@@ -57,18 +90,21 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
         implementation: package_artifact_ref_fixture(),
         operation_bindings: vec![ServiceDeploymentOperationInput {
             contract_operation_id: ContractOperationId::new("operation.echo"),
-            package_public_path: "echo".to_string(),
+            package_callable_id: PackageCallableId::new("callable.echo"),
         }],
         package_bindings: Vec::new(),
         service_selectors: Vec::new(),
+        gateway_entries: BTreeMap::from([(
+            gateway_entry_key.clone(),
+            gateway_entry_fixture(PackageCallableId::new("callable.echo")),
+        )]),
         ingress: vec![DeploymentIngressBinding {
             selector: IngressSelector {
                 protocol: IngressProtocol::Http,
-                host: "example.test".to_string(),
                 method: Some("POST".to_string()),
                 path: "/echo".to_string(),
             },
-            contract_operation_id: ContractOperationId::new("operation.echo"),
+            gateway_entry_key,
         }],
         config_literals: vec![ConfigLiteralBinding {
             path: "message.prefix".to_string(),
@@ -100,6 +136,7 @@ pub fn service_deployment_fixture() -> Result<ServiceDeployment> {
         }],
         package_bindings: input.package_bindings,
         service_selectors: input.service_selectors,
+        gateway_entries: input.gateway_entries,
         ingress: input.ingress,
         config_literals: input.config_literals,
         secret_refs: input.secret_refs,
@@ -127,7 +164,7 @@ pub fn empty_runtime_assembly_fixture() -> Result<RuntimeAssembly> {
         },
         service_binding_templates: Vec::new(),
         activation_templates: Vec::new(),
-        global_ingress: Vec::new(),
+        gateway_ingress: Vec::new(),
     };
     assign_runtime_assembly_identity(&mut assembly)?;
     Ok(assembly)
@@ -167,11 +204,7 @@ pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
             resource_bindings: deployment.resource_bindings.clone(),
             policy: deployment.policy.clone(),
         }],
-        global_ingress: deployment
-            .ingress
-            .iter()
-            .map(|ingress| (&deployment_ref, &deployment.contract, ingress).into())
-            .collect(),
+        gateway_ingress: Vec::new(),
     };
     assign_runtime_assembly_identity(&mut assembly)?;
     Ok(assembly)

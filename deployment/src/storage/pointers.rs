@@ -1,0 +1,347 @@
+use std::path::{Path, PathBuf};
+
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use skiff_artifact_identity::{
+    PackageArtifactPointerPath, PackageArtifactRecordPath, RuntimeAssemblyPointerPath,
+    RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
+    ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
+};
+use skiff_artifact_model::{
+    PackageArtifactRef, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+};
+
+use super::{
+    error::{EcosystemStorageError, StorageResult},
+    io::{
+        canonical_bytes, read_locked_bytes, strict_value, typed_from_value, CanonicalArtifactStore,
+    },
+};
+
+const PACKAGE_POINTER_SCHEMA: &str = "skiff-package-artifact-pointer-v1";
+const CONTRACT_POINTER_SCHEMA: &str = "skiff-service-contract-pointer-v1";
+const DEPLOYMENT_POINTER_SCHEMA: &str = "skiff-service-deployment-pointer-v1";
+const ASSEMBLY_POINTER_SCHEMA: &str = "skiff-runtime-assembly-pointer-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageArtifactPointer {
+    pub schema_version: String,
+    pub artifact: PackageArtifactRef,
+    pub record_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceContractPointer {
+    pub schema_version: String,
+    pub contract: ServiceContractRef,
+    pub record_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentPointer {
+    pub schema_version: String,
+    pub deployment: ServiceDeploymentRef,
+    pub record_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyPointer {
+    pub schema_version: String,
+    pub release: String,
+    pub assembly: RuntimeAssemblyRef,
+    pub record_path: String,
+}
+
+impl PackageArtifactPointer {
+    pub fn new(artifact: PackageArtifactRef) -> StorageResult<Self> {
+        let record_path = PackageArtifactRecordPath::new(&artifact)?.to_string();
+        Ok(Self {
+            schema_version: PACKAGE_POINTER_SCHEMA.to_string(),
+            artifact,
+            record_path,
+        })
+    }
+
+    fn validate(&self, path: &Path) -> StorageResult<()> {
+        if self.schema_version != PACKAGE_POINTER_SCHEMA
+            || self.record_path != PackageArtifactRecordPath::new(&self.artifact)?.as_str()
+        {
+            return invalid(path, "package pointer schema or recordPath mismatch");
+        }
+        Ok(())
+    }
+}
+
+impl ServiceContractPointer {
+    pub fn new(contract: ServiceContractRef) -> StorageResult<Self> {
+        let record_path = ServiceContractRecordPath::new(&contract)?.to_string();
+        Ok(Self {
+            schema_version: CONTRACT_POINTER_SCHEMA.to_string(),
+            contract,
+            record_path,
+        })
+    }
+
+    fn validate(&self, path: &Path) -> StorageResult<()> {
+        if self.schema_version != CONTRACT_POINTER_SCHEMA
+            || self.record_path != ServiceContractRecordPath::new(&self.contract)?.as_str()
+        {
+            return invalid(path, "contract pointer schema or recordPath mismatch");
+        }
+        Ok(())
+    }
+}
+
+impl ServiceDeploymentPointer {
+    pub fn new(deployment: ServiceDeploymentRef) -> StorageResult<Self> {
+        let record_path = ServiceDeploymentRecordPath::new(&deployment)?.to_string();
+        Ok(Self {
+            schema_version: DEPLOYMENT_POINTER_SCHEMA.to_string(),
+            deployment,
+            record_path,
+        })
+    }
+
+    fn validate(&self, path: &Path) -> StorageResult<()> {
+        if self.schema_version != DEPLOYMENT_POINTER_SCHEMA
+            || self.record_path != ServiceDeploymentRecordPath::new(&self.deployment)?.as_str()
+        {
+            return invalid(path, "deployment pointer schema or recordPath mismatch");
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeAssemblyPointer {
+    pub fn new(release: impl Into<String>, assembly: RuntimeAssemblyRef) -> StorageResult<Self> {
+        let release = release.into();
+        RuntimeAssemblyPointerPath::new(&release)?;
+        let record_path = RuntimeAssemblyRecordPath::new(&assembly)?.to_string();
+        Ok(Self {
+            schema_version: ASSEMBLY_POINTER_SCHEMA.to_string(),
+            release,
+            assembly,
+            record_path,
+        })
+    }
+
+    fn validate(&self, path: &Path) -> StorageResult<()> {
+        RuntimeAssemblyPointerPath::new(&self.release)?;
+        if self.schema_version != ASSEMBLY_POINTER_SCHEMA
+            || self.record_path != RuntimeAssemblyRecordPath::new(&self.assembly)?.as_str()
+        {
+            return invalid(path, "assembly pointer schema or recordPath mismatch");
+        }
+        Ok(())
+    }
+}
+
+impl CanonicalArtifactStore {
+    pub fn read_package_artifact_pointer(
+        &self,
+        package_id: &str,
+        package_version: &str,
+    ) -> StorageResult<Option<PackageArtifactPointer>> {
+        let path = PackageArtifactPointerPath::new(package_id, package_version)?;
+        let pointer = read_pointer(
+            self,
+            path.as_relative_path(),
+            PackageArtifactPointer::validate,
+        )?;
+        if let Some(pointer) = &pointer {
+            self.read_package_artifact(&pointer.artifact)?;
+        }
+        Ok(pointer)
+    }
+
+    pub fn compare_and_swap_package_artifact_pointer(
+        &self,
+        expected: Option<&PackageArtifactPointer>,
+        candidate: &PackageArtifactPointer,
+    ) -> StorageResult<()> {
+        candidate.validate(self.root())?;
+        self.read_package_artifact(&candidate.artifact)?;
+        let path = PackageArtifactPointerPath::new(
+            &candidate.artifact.package_id,
+            &candidate.artifact.package_version,
+        )?;
+        cas_pointer(
+            self,
+            path.as_relative_path(),
+            expected,
+            candidate,
+            PackageArtifactPointer::validate,
+        )
+    }
+
+    pub fn read_service_contract_pointer(
+        &self,
+        service_id: &str,
+        contract_version: &str,
+    ) -> StorageResult<Option<ServiceContractPointer>> {
+        let path = ServiceContractPointerPath::new(service_id, contract_version)?;
+        let pointer = read_pointer(
+            self,
+            path.as_relative_path(),
+            ServiceContractPointer::validate,
+        )?;
+        if let Some(pointer) = &pointer {
+            self.read_service_contract(&pointer.contract)?;
+        }
+        Ok(pointer)
+    }
+
+    pub fn compare_and_swap_service_contract_pointer(
+        &self,
+        expected: Option<&ServiceContractPointer>,
+        candidate: &ServiceContractPointer,
+    ) -> StorageResult<()> {
+        candidate.validate(self.root())?;
+        self.read_service_contract(&candidate.contract)?;
+        let path = ServiceContractPointerPath::new(
+            &candidate.contract.service_id,
+            &candidate.contract.contract_version,
+        )?;
+        cas_pointer(
+            self,
+            path.as_relative_path(),
+            expected,
+            candidate,
+            ServiceContractPointer::validate,
+        )
+    }
+
+    pub fn read_service_deployment_pointer(
+        &self,
+        service_id: &str,
+        contract_version: &str,
+    ) -> StorageResult<Option<ServiceDeploymentPointer>> {
+        let path = ServiceDeploymentPointerPath::new(service_id, contract_version)?;
+        let pointer = read_pointer(
+            self,
+            path.as_relative_path(),
+            ServiceDeploymentPointer::validate,
+        )?;
+        if let Some(pointer) = &pointer {
+            self.read_service_deployment(&pointer.deployment)?;
+        }
+        Ok(pointer)
+    }
+
+    pub fn compare_and_swap_service_deployment_pointer(
+        &self,
+        expected: Option<&ServiceDeploymentPointer>,
+        candidate: &ServiceDeploymentPointer,
+    ) -> StorageResult<()> {
+        candidate.validate(self.root())?;
+        self.read_service_deployment(&candidate.deployment)?;
+        let path = ServiceDeploymentPointerPath::new(
+            &candidate.deployment.service_id,
+            &candidate.deployment.contract_version,
+        )?;
+        cas_pointer(
+            self,
+            path.as_relative_path(),
+            expected,
+            candidate,
+            ServiceDeploymentPointer::validate,
+        )
+    }
+
+    pub fn read_runtime_assembly_pointer(
+        &self,
+        release: &str,
+    ) -> StorageResult<Option<RuntimeAssemblyPointer>> {
+        let path = RuntimeAssemblyPointerPath::new(release)?;
+        let pointer = read_pointer(
+            self,
+            path.as_relative_path(),
+            RuntimeAssemblyPointer::validate,
+        )?;
+        if let Some(pointer) = &pointer {
+            self.read_runtime_assembly(&pointer.assembly)?;
+        }
+        Ok(pointer)
+    }
+
+    pub fn compare_and_swap_runtime_assembly_pointer(
+        &self,
+        expected: Option<&RuntimeAssemblyPointer>,
+        candidate: &RuntimeAssemblyPointer,
+    ) -> StorageResult<()> {
+        candidate.validate(self.root())?;
+        self.read_runtime_assembly(&candidate.assembly)?;
+        let path = RuntimeAssemblyPointerPath::new(&candidate.release)?;
+        cas_pointer(
+            self,
+            path.as_relative_path(),
+            expected,
+            candidate,
+            RuntimeAssemblyPointer::validate,
+        )
+    }
+}
+
+fn read_pointer<T: DeserializeOwned + Serialize>(
+    store: &CanonicalArtifactStore,
+    path: &skiff_artifact_identity::ArtifactRelativePath,
+    validate: fn(&T, &Path) -> StorageResult<()>,
+) -> StorageResult<Option<T>> {
+    let Some(bytes) = store.read_optional_bytes(path)? else {
+        return Ok(None);
+    };
+    let host_path = store.root().join(path.as_path());
+    parse_pointer(&host_path, &bytes, validate).map(Some)
+}
+
+fn cas_pointer<T>(
+    store: &CanonicalArtifactStore,
+    path: &skiff_artifact_identity::ArtifactRelativePath,
+    expected: Option<&T>,
+    candidate: &T,
+    validate: fn(&T, &Path) -> StorageResult<()>,
+) -> StorageResult<()>
+where
+    T: DeserializeOwned + Serialize + PartialEq,
+{
+    store.with_exclusive_pointer_lock(path, |destination| {
+        let current = read_locked_bytes(destination)?
+            .map(|bytes| parse_pointer(destination, &bytes, validate))
+            .transpose()?;
+        if current.as_ref() != expected {
+            return Err(EcosystemStorageError::CasMismatch {
+                path: destination.to_path_buf(),
+                message: "current pointer does not equal expected pointer".to_string(),
+            });
+        }
+        validate(candidate, destination)?;
+        store.replace_locked(destination, &canonical_bytes(candidate)?)
+    })
+}
+
+fn parse_pointer<T: DeserializeOwned>(
+    path: &Path,
+    bytes: &[u8],
+    validate: fn(&T, &Path) -> StorageResult<()>,
+) -> StorageResult<T>
+where
+    T: Serialize,
+{
+    let value = strict_value(path, bytes)?;
+    let pointer = typed_from_value(path, value)?;
+    validate(&pointer, path)?;
+    if canonical_bytes(&pointer)? != bytes {
+        return invalid(path, "pointer bytes are not canonical JSON");
+    }
+    Ok(pointer)
+}
+
+fn invalid<T>(path: &Path, message: impl Into<String>) -> StorageResult<T> {
+    Err(EcosystemStorageError::InvalidRecord {
+        path: PathBuf::from(path),
+        message: message.into(),
+    })
+}

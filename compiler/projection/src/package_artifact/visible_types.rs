@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     ExecutableIr, ExecutableSignatureIr, FileIrUnit, FunctionTypeParamIr,
-    InterfaceInstantiationRef, InterfaceMethodSignature, ParamIr, ServiceSymbolRef,
-    TypeDescriptorIr, TypeRefIr,
+    InterfaceInstantiationRef, InterfaceMethodSignature, NamedUnionBranchIr, NominalTypeRefBaseIr,
+    ParamIr, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
 
 pub(crate) type PackageVisibleTypeNames = BTreeMap<(String, u32), String>;
@@ -102,17 +102,46 @@ pub(crate) fn projection_visible_type_descriptor(
         TypeDescriptorIr::Alias { target } => TypeDescriptorIr::Alias {
             target: projection_visible_type_ref(context_module, target, package_type_names),
         },
-        TypeDescriptorIr::Union { variants } => TypeDescriptorIr::Union {
-            variants: variants
+        TypeDescriptorIr::Representation { representation } => TypeDescriptorIr::Representation {
+            representation: projection_visible_type_ref(
+                context_module,
+                representation,
+                package_type_names,
+            ),
+        },
+        TypeDescriptorIr::Union { branches } => TypeDescriptorIr::Union {
+            branches: branches
                 .iter()
-                .map(|variant| {
-                    projection_visible_type_ref(context_module, variant, package_type_names)
+                .map(|branch| match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type: projection_visible_type_ref(
+                                context_module,
+                                nominal_type,
+                                package_type_names,
+                            ),
+                        }
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        discriminator_field,
+                        discriminator_value,
+                    } => NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: projection_visible_type_ref(
+                            context_module,
+                            payload_type,
+                            package_type_names,
+                        ),
+                        discriminator_field: discriminator_field.clone(),
+                        discriminator_value: discriminator_value.clone(),
+                    },
+                    NamedUnionBranchIr::Literal { value } => NamedUnionBranchIr::Literal {
+                        value: value.clone(),
+                    },
                 })
                 .collect(),
         },
-        TypeDescriptorIr::Native { symbol } => TypeDescriptorIr::Native {
-            symbol: symbol.clone(),
-        },
+        TypeDescriptorIr::Interface => TypeDescriptorIr::Interface,
     }
 }
 
@@ -155,11 +184,20 @@ pub(crate) fn projection_visible_type_ref(
                 },
             })
             .unwrap_or_else(|| ty.clone()),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| projection_visible_type_ref(context_module, arg, package_type_names))
+                .collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: projection_visible_nominal_base(context_module, base, package_type_names),
+            arguments: arguments
+                .iter()
+                .map(|argument| {
+                    projection_visible_type_ref(context_module, argument, package_type_names)
+                })
                 .collect(),
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
@@ -212,9 +250,43 @@ pub(crate) fn projection_visible_type_ref(
         },
         TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+fn projection_visible_nominal_base(
+    context_module: &str,
+    base: &NominalTypeRefBaseIr,
+    package_type_names: &PackageVisibleTypeNames,
+) -> NominalTypeRefBaseIr {
+    match base {
+        NominalTypeRefBaseIr::LocalType { type_index } => package_type_names
+            .get(&(context_module.to_string(), *type_index))
+            .map(|symbol| NominalTypeRefBaseIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: context_module.to_string(),
+                    symbol: symbol.clone(),
+                },
+            })
+            .unwrap_or_else(|| base.clone()),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => package_type_names
+            .get(&(module_path.clone(), *type_index))
+            .map(|symbol| NominalTypeRefBaseIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: module_path.clone(),
+                    symbol: symbol.clone(),
+                },
+            })
+            .unwrap_or_else(|| base.clone()),
+        NominalTypeRefBaseIr::ServiceSymbol { .. }
+        | NominalTypeRefBaseIr::PackageSymbol { .. }
+        | NominalTypeRefBaseIr::PackageSchema { .. } => base.clone(),
     }
 }
 
@@ -243,5 +315,105 @@ pub(crate) fn projection_visible_interface_instantiation_ref(
             .iter()
             .map(|arg| projection_visible_type_ref(context_module, arg, package_type_names))
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::LiteralIr;
+
+    #[test]
+    fn canonical_named_union_branches_keep_context_and_applied_arguments() {
+        let descriptor = TypeDescriptorIr::Union {
+            branches: vec![
+                NamedUnionBranchIr::ConcreteNominal {
+                    nominal_type: TypeRefIr::AppliedNominal {
+                        base: NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments: vec![TypeRefIr::TypeParam {
+                            name: "T".to_string(),
+                        }],
+                    },
+                },
+                NamedUnionBranchIr::SyntheticDiscriminator {
+                    payload_type: TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            "kind".to_string(),
+                            TypeRefIr::Literal {
+                                value: LiteralIr::String {
+                                    value: "retry".to_string(),
+                                },
+                            },
+                        )]),
+                    },
+                    discriminator_field: "kind".to_string(),
+                    discriminator_value: "retry".to_string(),
+                },
+                NamedUnionBranchIr::Literal {
+                    value: LiteralIr::String {
+                        value: "cancelled".to_string(),
+                    },
+                },
+            ],
+        };
+        let names = BTreeMap::from([(("api".to_string(), 0), "Ok".to_string())]);
+
+        let projected = projection_visible_type_descriptor("api", &descriptor, &names);
+
+        let TypeDescriptorIr::Union { branches } = projected else {
+            panic!("named union must remain a named union");
+        };
+        assert_eq!(branches.len(), 3);
+        assert_eq!(
+            branches[0],
+            NamedUnionBranchIr::ConcreteNominal {
+                nominal_type: TypeRefIr::AppliedNominal {
+                    base: NominalTypeRefBaseIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: "api".to_string(),
+                            symbol: "Ok".to_string(),
+                        },
+                    },
+                    arguments: vec![TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    }],
+                },
+            }
+        );
+        assert!(matches!(
+            branches[1],
+            NamedUnionBranchIr::SyntheticDiscriminator { .. }
+        ));
+        assert!(matches!(branches[2], NamedUnionBranchIr::Literal { .. }));
+    }
+
+    #[test]
+    fn record_representation_alias_and_interface_kinds_are_not_flattened() {
+        let names = BTreeMap::new();
+        for descriptor in [
+            TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            TypeDescriptorIr::Representation {
+                representation: TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            },
+            TypeDescriptorIr::Alias {
+                target: TypeRefIr::builtin("string"),
+            },
+            TypeDescriptorIr::Interface,
+        ] {
+            let projected = projection_visible_type_descriptor("api", &descriptor, &names);
+            assert_eq!(
+                std::mem::discriminant(&projected),
+                std::mem::discriminant(&descriptor)
+            );
+        }
     }
 }

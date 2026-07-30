@@ -1,7 +1,8 @@
 use super::*;
 use crate::ast::{
     BinaryOp, Block, Expr, Literal, MatchArm, ObjectLiteralEntry, ObjectLiteralKey, Pattern,
-    PatternField, Stmt, TypeRef,
+    PatternField, Stmt, TestEffectDeclaration, TestEffectOutcome, TestEffectSequenceStep,
+    TestEffectStepOutcome, TypeRef,
 };
 
 #[test]
@@ -240,4 +241,362 @@ fn read_only_walker_can_override_match_arm_pattern_traversal() {
 
     assert!(!visitor.saw_pattern);
     assert!(visitor.saw_body_expr);
+}
+
+#[test]
+fn test_effect_walkers_visit_every_embedded_expression() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut effects = vec![
+        TestEffectDeclaration {
+            target: "std.http.respond".to_string(),
+            expect: Some(Expr::Identifier("respond_expect".to_string())),
+            outcome: TestEffectOutcome::Respond {
+                value: Expr::Identifier("respond".to_string()),
+            },
+            span: crate::error::SourceSpan::synthetic(),
+        },
+        TestEffectDeclaration {
+            target: "std.http.throw".to_string(),
+            expect: None,
+            outcome: TestEffectOutcome::Throw {
+                value: Expr::Identifier("throw".to_string()),
+            },
+            span: crate::error::SourceSpan::synthetic(),
+        },
+        TestEffectDeclaration {
+            target: "std.http.stream".to_string(),
+            expect: None,
+            outcome: TestEffectOutcome::Stream {
+                events: vec![Expr::Identifier("event".to_string())],
+            },
+            span: crate::error::SourceSpan::synthetic(),
+        },
+        TestEffectDeclaration {
+            target: "std.http.sequence".to_string(),
+            expect: Some(Expr::Identifier("sequence_expect".to_string())),
+            outcome: TestEffectOutcome::Sequence {
+                steps: vec![
+                    TestEffectSequenceStep {
+                        expect: Some(Expr::Identifier("step_expect".to_string())),
+                        outcome: TestEffectStepOutcome::Respond {
+                            value: Expr::Identifier("step_respond".to_string()),
+                        },
+                    },
+                    TestEffectSequenceStep {
+                        expect: None,
+                        outcome: TestEffectStepOutcome::Throw {
+                            value: Expr::Identifier("step_throw".to_string()),
+                        },
+                    },
+                    TestEffectSequenceStep {
+                        expect: None,
+                        outcome: TestEffectStepOutcome::Stream {
+                            events: vec![Expr::Identifier("step_event".to_string())],
+                        },
+                    },
+                ],
+            },
+            span: crate::error::SourceSpan::synthetic(),
+        },
+    ];
+    let mut names = Names::default();
+
+    for effect in &effects {
+        walk_test_effect(&mut names, effect);
+    }
+
+    assert_eq!(
+        names.0,
+        [
+            "respond_expect",
+            "respond",
+            "throw",
+            "event",
+            "sequence_expect",
+            "step_expect",
+            "step_respond",
+            "step_throw",
+            "step_event",
+        ]
+    );
+
+    struct PrefixIdentifiers;
+
+    impl AstVisitorMut for PrefixIdentifiers {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.insert_str(0, "renamed_");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+    }
+
+    let mut prefixer = PrefixIdentifiers;
+    for effect in &mut effects {
+        walk_test_effect_mut(&mut prefixer, effect);
+    }
+    let mut renamed_names = Names::default();
+    for effect in &effects {
+        walk_test_effect(&mut renamed_names, effect);
+    }
+    assert!(
+        renamed_names
+            .0
+            .iter()
+            .all(|name| name.starts_with("renamed_")),
+        "mutable walker missed an embedded expression: {:?}",
+        renamed_names.0
+    );
+}
+
+#[test]
+fn compiler_test_effect_walkers_keep_probe_and_expectation_order() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut stmt = Stmt::CompilerTestEffectRegister {
+        target: "std.http.request".to_string(),
+        target_probe: Expr::Identifier("target_probe".to_string()),
+        declaration_start: true,
+        expect: Some(Expr::Identifier("common_expect".to_string())),
+        step_expect: Some(Expr::Identifier("step_expect".to_string())),
+        outcome: TestEffectStepOutcome::Respond {
+            value: Expr::Identifier("outcome".to_string()),
+        },
+    };
+    let mut names = Names::default();
+    names.visit_stmt(&stmt);
+    assert_eq!(
+        names.0,
+        ["target_probe", "common_expect", "step_expect", "outcome"]
+    );
+
+    let expression_names = compiler_test_effect_expressions(&stmt)
+        .unwrap()
+        .into_iter()
+        .map(|expr| match expr {
+            Expr::Identifier(name) => name.as_str(),
+            other => panic!("expected identifier, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expression_names,
+        ["common_expect", "step_expect", "outcome"]
+    );
+
+    struct PrefixIdentifiers;
+
+    impl AstVisitorMut for PrefixIdentifiers {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.insert_str(0, "renamed_");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+    }
+
+    let mut prefixer = PrefixIdentifiers;
+    prefixer.visit_stmt(&mut stmt);
+    let mut renamed_names = Names::default();
+    renamed_names.visit_stmt(&stmt);
+    assert_eq!(
+        renamed_names.0,
+        [
+            "renamed_target_probe",
+            "renamed_common_expect",
+            "renamed_step_expect",
+            "renamed_outcome",
+        ]
+    );
+}
+
+#[test]
+fn walkers_and_contains_helpers_traverse_timeout_concurrent_serial_bodies_and_value_tails() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let source = crate::parser::parse_source(
+        r#"
+function run() -> void {
+  timeout(1ms) {
+    timeoutBody()
+  }
+  concurrent {
+    concurrentBody()
+    serial {
+      serialBody()
+    }
+  }
+  const plain = value {
+    plainBody()
+    plainTail
+  }
+  const joined = concurrent value {
+    concurrentValueBody()
+    concurrentValueTail
+  }
+  const timed = timeout(2s) value {
+    timedBody()
+    timedTail
+  }
+  const timedJoined = timeout(3m) concurrent value {
+    timedConcurrentBody()
+    timedConcurrentTail
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let mut names = Names::default();
+    names.visit_block(&source.functions[0].body);
+    assert_eq!(
+        names.0,
+        [
+            "timeoutBody",
+            "concurrentBody",
+            "serialBody",
+            "plainBody",
+            "plainTail",
+            "concurrentValueBody",
+            "concurrentValueTail",
+            "timedBody",
+            "timedTail",
+            "timedConcurrentBody",
+            "timedConcurrentTail",
+        ]
+    );
+
+    for expected in [
+        "timeoutBody",
+        "serialBody",
+        "plainBody",
+        "plainTail",
+        "concurrentValueBody",
+        "concurrentValueTail",
+        "timedBody",
+        "timedTail",
+        "timedConcurrentBody",
+        "timedConcurrentTail",
+    ] {
+        assert!(
+            block_contains_expr(&source.functions[0].body, &mut |expr| {
+                matches!(expr, Expr::Identifier(name) if name == expected)
+            }),
+            "contains helper missed {expected}"
+        );
+    }
+
+    struct Rename;
+
+    impl AstVisitorMut for Rename {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.push_str("_seen");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+
+        fn visit_duration_literal(&mut self, duration: &mut crate::ast::DurationLiteral) {
+            duration.digits.insert(0, '0');
+        }
+    }
+
+    let mut renamed = source.functions[0].body.clone();
+    Rename.visit_block(&mut renamed);
+    let mut renamed_names = Names::default();
+    renamed_names.visit_block(&renamed);
+    assert!(
+        renamed_names.0.iter().all(|name| name.ends_with("_seen")),
+        "mutable walker missed a nested identifier: {:?}",
+        renamed_names.0
+    );
+
+    #[derive(Default)]
+    struct Durations(Vec<String>);
+
+    impl AstVisitor for Durations {
+        fn visit_duration_literal(&mut self, duration: &crate::ast::DurationLiteral) {
+            self.0.push(duration.digits.clone());
+        }
+    }
+
+    let mut durations = Durations::default();
+    durations.visit_block(&renamed);
+    assert_eq!(durations.0, ["01", "02", "03"]);
+}
+
+#[test]
+fn dotted_root_collection_traverses_new_statement_bodies_value_bodies_and_tails() {
+    let source = crate::parser::parse_source(
+        r#"
+function run() -> void {
+  timeout(1s) {
+    root.timeout_body.run()
+  }
+  concurrent {
+    root.concurrent_body.run()
+    serial {
+      root.serial_body.run()
+    }
+  }
+  const plain = value {
+    root.value_body.run()
+    root.value_tail.finish()
+  }
+  const joined = timeout(2s) concurrent value {
+    root.concurrent_value_body.run()
+    root.concurrent_value_tail.finish()
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        source_referenced_dotted_root_expression_imports(&source, "root"),
+        [
+            vec!["root".to_string(), "concurrent_body".to_string()],
+            vec!["root".to_string(), "concurrent_value_body".to_string()],
+            vec!["root".to_string(), "concurrent_value_tail".to_string()],
+            vec!["root".to_string(), "serial_body".to_string()],
+            vec!["root".to_string(), "timeout_body".to_string()],
+            vec!["root".to_string(), "value_body".to_string()],
+            vec!["root".to_string(), "value_tail".to_string()],
+        ]
+        .into_iter()
+        .collect()
+    );
 }

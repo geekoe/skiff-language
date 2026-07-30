@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PublicationResourceRef,
+    ContractTypeNameability, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
+    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexRef, PublicationResourceRef,
     ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
@@ -12,6 +13,10 @@ pub(super) struct TypedResolver {
     pub(super) contracts: Vec<(ServiceContractRef, Arc<ServiceContract>)>,
     pub(super) packages: Vec<(PackageArtifactRef, Arc<PackageArtifact>)>,
     pub(super) files: Vec<(PackageArtifactRef, FileIrRef, Arc<FileIrUnit>)>,
+    pub(super) package_schema_records: Vec<(
+        skiff_artifact_model::PackageSchemaTypeRecordRef,
+        Arc<skiff_artifact_model::PackageSchemaTypeRecord>,
+    )>,
 }
 
 impl RuntimeAssemblyContentResolver for TypedResolver {
@@ -35,6 +40,68 @@ impl RuntimeAssemblyContentResolver for TypedResolver {
             .find(|(candidate, _)| candidate == reference)
             .map(|(_, contract)| Arc::clone(contract))
             .ok_or_else(|| anyhow::anyhow!("typed execution fixture missing contract"))
+    }
+
+    fn resolve_package_schema_index(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
+        let package = self
+            .packages
+            .iter()
+            .find(|(_, package)| package.package_schema_index == *reference)
+            .map(|(_, package)| package)
+            .ok_or_else(|| {
+                anyhow::anyhow!("typed execution fixture missing package schema index")
+            })?;
+        let mut types = BTreeMap::new();
+        for record_ref in package.package_schema_type_records.values() {
+            let record = self
+                .package_schema_records
+                .iter()
+                .find(|(candidate, _)| candidate == record_ref)
+                .map(|(_, record)| record)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "typed execution fixture package schema index is missing record {record_ref:?}"
+                    )
+                })?;
+            let entry = PackageSchemaIndexEntry {
+                package_schema_type_id: record.package_schema_type_id.clone(),
+                public_path: Some(record.stable_schema_key.clone()),
+                nameability: ContractTypeNameability::PublicNameable,
+            };
+            if types
+                .insert(record.stable_schema_key.clone(), entry)
+                .is_some()
+            {
+                anyhow::bail!(
+                    "typed execution fixture has duplicate public schema key {}",
+                    record.stable_schema_key
+                );
+            }
+        }
+        let identity =
+            skiff_artifact_identity::package_schema_index_identity(&reference.package_id, &types)?;
+        if identity != reference.package_schema_index_identity {
+            anyhow::bail!("typed execution fixture package schema index identity mismatch");
+        }
+        Ok(Arc::new(PackageSchemaIndex {
+            package_id: reference.package_id.clone(),
+            package_schema_index_identity: identity,
+            types,
+        }))
+    }
+
+    fn resolve_package_schema_type(
+        &self,
+        reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
+        self.package_schema_records
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, record)| Arc::clone(record))
+            .ok_or_else(|| anyhow::anyhow!("typed execution fixture missing package schema record"))
     }
 
     fn resolve_package(

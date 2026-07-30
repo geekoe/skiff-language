@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use skiff_artifact_model::{
     ConstDeclarationIr, DbDeclarationIr, ExecutableIr, ExecutableKind, FileIrUnit,
-    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, PackageRefIr, PackageSymbolRef,
-    ServiceSymbolRef, SourceSpanRef, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, NamedUnionBranchIr,
+    NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, SourceSpanRef,
+    TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
     ProjectionSourceSymbolKey, ProjectionView, PublicSymbolKindProjection,
@@ -54,6 +55,7 @@ pub struct PackageExportPublicInstance {
 pub struct PackageExportPublicInstanceInterface {
     pub module: String,
     pub symbol: String,
+    pub arguments: Vec<skiff_artifact_model::PackageTypeRef>,
     pub methods: Vec<PackageExportPublicInstanceMethod>,
 }
 
@@ -72,21 +74,23 @@ struct PackageArtifactProjectionContext<'a> {
 #[derive(Clone, Copy, Debug)]
 enum PackageBoundaryKind {
     PackageLinkEntry,
-    PackageSchema,
     PersistentSchema,
 }
 
 impl PackageBoundaryKind {
     fn allows_any_interface(self) -> bool {
-        matches!(self, Self::PackageLinkEntry | Self::PackageSchema)
+        matches!(self, Self::PackageLinkEntry)
     }
 
     fn description(self) -> &'static str {
         match self {
             Self::PackageLinkEntry => "package link entry boundary",
-            Self::PackageSchema => "package public schema boundary",
             Self::PersistentSchema => "persistent payload schema",
         }
+    }
+
+    fn allows_applied_nominal(self) -> bool {
+        matches!(self, Self::PackageLinkEntry)
     }
 }
 
@@ -121,7 +125,7 @@ pub(super) fn project_package_exports(
                 unit,
                 &symbol.source_symbol,
                 &symbol.public_path,
-                PackageBoundaryKind::PackageSchema,
+                PackageBoundaryKind::PackageLinkEntry,
                 &mut abi_violations,
             );
         }
@@ -190,6 +194,7 @@ pub(super) fn project_package_exports(
                 .map(|interface| PackageExportPublicInstanceInterface {
                     module: interface.interface.module_path().to_string(),
                     symbol: interface.interface.symbol().to_string(),
+                    arguments: interface.interface_arguments.clone(),
                     methods: interface
                         .methods
                         .iter()
@@ -722,7 +727,7 @@ fn collect_package_type_ref_abi_violations(
     violations: &mut BTreeSet<String>,
 ) {
     match ty {
-        TypeRefIr::Native { args, .. } => {
+        TypeRefIr::Builtin { args, .. } => {
             for arg in args {
                 collect_package_type_ref_abi_violations(
                     manifest,
@@ -731,6 +736,40 @@ fn collect_package_type_ref_abi_violations(
                     arg,
                     public_symbol,
                     context,
+                    boundary_kind,
+                    visited,
+                    violations,
+                );
+            }
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            if !boundary_kind.allows_applied_nominal() {
+                violations.insert(format!(
+                    "package {} api {public_symbol} exposes generic nominal type via {context}; generic nominals cannot be part of {}",
+                    manifest.package_id,
+                    boundary_kind.description()
+                ));
+                return;
+            }
+            collect_package_nominal_base_abi_violations(
+                manifest,
+                type_index,
+                unit,
+                base,
+                public_symbol,
+                context,
+                boundary_kind,
+                visited,
+                violations,
+            );
+            for (index, argument) in arguments.iter().enumerate() {
+                collect_package_type_ref_abi_violations(
+                    manifest,
+                    type_index,
+                    unit,
+                    argument,
+                    public_symbol,
+                    &format!("{context} applied nominal argument {index}"),
                     boundary_kind,
                     visited,
                     violations,
@@ -895,7 +934,55 @@ fn collect_package_type_ref_abi_violations(
                 violations,
             );
         }
-        TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
+        TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. }
+        | TypeRefIr::PackageSchema { .. } => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_package_nominal_base_abi_violations(
+    manifest: &PackageArtifactProjectionContext<'_>,
+    type_index: &PackageApiTypeIndex<'_>,
+    unit: &FileIrUnit,
+    base: &NominalTypeRefBaseIr,
+    public_symbol: &str,
+    context: &str,
+    boundary_kind: PackageBoundaryKind,
+    visited: &mut BTreeSet<ProjectionSourceSymbolKey>,
+    violations: &mut BTreeSet<String>,
+) {
+    let binding = match base {
+        NominalTypeRefBaseIr::LocalType {
+            type_index: local_type_index,
+        } => type_index.resolve_local_type(unit, *local_type_index),
+        NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index: publication_type_index,
+        } => type_index.resolve_publication_type(module_path, *publication_type_index),
+        NominalTypeRefBaseIr::ServiceSymbol { symbol } => type_index.resolve_service_symbol(symbol),
+        NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+            type_index.resolve_package_symbol(manifest, symbol)
+        }
+        NominalTypeRefBaseIr::PackageSchema { .. } => {
+            violations.insert(format!(
+                "package {} api {public_symbol} exposes an applied PackageSchema via {context}; current PackageSchema generation does not admit applied nominals",
+                manifest.package_id
+            ));
+            return;
+        }
+    };
+    if let Some(binding) = binding {
+        collect_package_type_binding_reference_abi_violations(
+            manifest,
+            type_index,
+            binding,
+            public_symbol,
+            context,
+            boundary_kind,
+            visited,
+            violations,
+        );
     }
 }
 
@@ -978,6 +1065,14 @@ fn collect_package_exported_type_binding_abi_violations(
     let qualified_name = projection_source_symbol_text(&source_key);
     match binding.decl {
         PackageApiTypeDecl::Type(ty) => {
+            if !ty.type_params.is_empty() && !boundary_kind.allows_applied_nominal() {
+                violations.insert(format!(
+                    "package {} api {public_symbol} exposes generic declaration {qualified_name}; generic declarations cannot be part of {}",
+                    manifest.package_id,
+                    boundary_kind.description()
+                ));
+                return;
+            }
             collect_package_type_descriptor_abi_violations(
                 manifest,
                 type_index,
@@ -1004,6 +1099,14 @@ fn collect_package_exported_type_binding_abi_violations(
             );
         }
         PackageApiTypeDecl::Interface(interface) => {
+            if !interface.type_params.is_empty() && !boundary_kind.allows_applied_nominal() {
+                violations.insert(format!(
+                    "package {} api {public_symbol} exposes generic interface {qualified_name}; generic declarations cannot be part of {}",
+                    manifest.package_id,
+                    boundary_kind.description()
+                ));
+                return;
+            }
             for operation in &interface.operations {
                 collect_package_operation_abi_violations(
                     manifest,
@@ -1100,22 +1203,46 @@ fn collect_package_type_descriptor_abi_violations(
                 violations,
             );
         }
-        TypeDescriptorIr::Union { variants } => {
-            for variant in variants {
-                collect_package_type_ref_abi_violations(
-                    manifest,
-                    type_index,
-                    unit,
-                    variant,
-                    public_symbol,
-                    &format!("{context} alias"),
-                    boundary_kind,
-                    visited,
-                    violations,
-                );
+        TypeDescriptorIr::Representation { representation } => {
+            collect_package_type_ref_abi_violations(
+                manifest,
+                type_index,
+                unit,
+                representation,
+                public_symbol,
+                &format!("{context} representation"),
+                boundary_kind,
+                visited,
+                violations,
+            );
+        }
+        TypeDescriptorIr::Union { branches } => {
+            for (index, branch) in branches.iter().enumerate() {
+                let (ty, branch_kind) = match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        (Some(nominal_type), "concrete nominal")
+                    }
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        (Some(payload_type), "synthetic discriminator")
+                    }
+                    NamedUnionBranchIr::Literal { .. } => (None, "literal"),
+                };
+                if let Some(ty) = ty {
+                    collect_package_type_ref_abi_violations(
+                        manifest,
+                        type_index,
+                        unit,
+                        ty,
+                        public_symbol,
+                        &format!("{context} {branch_kind} branch {index}"),
+                        boundary_kind,
+                        visited,
+                        violations,
+                    );
+                }
             }
         }
-        TypeDescriptorIr::Native { .. } => {}
+        TypeDescriptorIr::Interface => {}
     }
 }
 
@@ -1247,17 +1374,6 @@ mod tests {
     }
 
     #[test]
-    fn package_schema_boundary_allows_any_interface_values() {
-        let violations =
-            collect_any_interface_errors(PackageBoundaryKind::PackageSchema, &any_interface_type());
-
-        assert!(
-            violations.is_empty(),
-            "unexpected violations: {violations:?}"
-        );
-    }
-
-    #[test]
     fn persistent_schema_boundary_rejects_any_interface_values() {
         let violations = collect_any_interface_errors(
             PackageBoundaryKind::PersistentSchema,
@@ -1266,5 +1382,51 @@ mod tests {
 
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("persistent payload schema"));
+    }
+
+    #[test]
+    fn fully_instantiated_applied_nominal_is_valid_for_package_link_entry() {
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: "example.com/models".to_string(),
+                    },
+                    symbol_path: "Box".to_string(),
+                    abi_expectation: Some("abi:models".to_string()),
+                },
+            },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+
+        let violations =
+            collect_any_interface_errors(PackageBoundaryKind::PackageLinkEntry, &applied);
+
+        assert!(
+            violations.is_empty(),
+            "unexpected package-local violations: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn applied_nominal_fails_closed_for_persistent_schema() {
+        let applied = TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: "example.com/models".to_string(),
+                    },
+                    symbol_path: "Box".to_string(),
+                    abi_expectation: Some("abi:models".to_string()),
+                },
+            },
+            arguments: vec![TypeRefIr::builtin("string")],
+        };
+
+        let boundary_kind = PackageBoundaryKind::PersistentSchema;
+        let violations = collect_any_interface_errors(boundary_kind, &applied);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("generic nominal"));
+        assert!(violations[0].contains(boundary_kind.description()));
     }
 }

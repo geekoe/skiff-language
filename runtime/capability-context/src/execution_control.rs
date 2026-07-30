@@ -2,14 +2,20 @@ use std::{
     fmt,
     marker::PhantomData,
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 
 use serde_json::json;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+use skiff_artifact_model::InstructionSourceSite;
+use skiff_runtime_model::{
+    error::RuntimeErrorPayload,
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
-use crate::{CancellationToken, FileSourceStreamContext, StreamRuntime};
-
-const REQUEST_CANCELLED_MESSAGE: &str = "request was cancelled";
+use crate::{
+    CancellationToken, ExecutionScope, ExecutionScopeAccessError, FileSourceStreamContext,
+    StreamRuntime,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionBudgetReason {
@@ -25,6 +31,10 @@ impl ExecutionBudgetReason {
             ExecutionBudgetReason::DeadlineExceeded => "deadlineExceeded",
             ExecutionBudgetReason::InstructionLimitExceeded => "instructionLimitExceeded",
         }
+    }
+
+    pub fn is_cancellation_terminal(self) -> bool {
+        self == Self::Cancelled
     }
 }
 
@@ -51,9 +61,64 @@ impl fmt::Display for ExecutionBudgetFailure {
 impl std::error::Error for ExecutionBudgetFailure {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+/// Execution control failures keep cancellation as an internal terminal.
+///
+/// Cancellation must not satisfy the ordinary wire-error contract:
+///
+/// ```compile_fail
+/// use skiff_runtime_capability_context::ExecutionControlError;
+/// use skiff_runtime_model::error::WirePayload;
+///
+/// let _ = WirePayload::payload(&ExecutionControlError::Cancelled);
+/// ```
 pub enum ExecutionControlError {
     Cancelled,
     BudgetExceeded(ExecutionBudgetFailure),
+}
+
+impl ExecutionControlError {
+    pub fn is_cancellation_terminal(&self) -> bool {
+        match self {
+            Self::Cancelled => true,
+            Self::BudgetExceeded(failure) => failure.reason.is_cancellation_terminal(),
+        }
+    }
+
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        let Self::BudgetExceeded(failure) = self else {
+            return None;
+        };
+        let message = budget_timeout_message(failure.reason)?;
+        Some(RuntimeErrorPayload {
+            code: "TimeoutError".to_string(),
+            message: message.to_string(),
+            status: None,
+            details: Some(json!({
+                "reason": failure.reason.as_str(),
+                "instructionCount": failure.instruction_count,
+                "limit": failure.limit,
+                "elapsedMs": failure.elapsed_ms,
+            })),
+        })
+    }
+
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, serde_json::Value)> {
+        let Self::BudgetExceeded(failure) = self else {
+            return None;
+        };
+        if failure.reason.is_cancellation_terminal() {
+            return None;
+        }
+        Some((
+            PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+            json!({
+                "reason": failure.reason.as_str(),
+                "instructionCount": failure.instruction_count,
+                "limit": failure.limit,
+                "elapsedMs": failure.elapsed_ms,
+            }),
+        ))
+    }
 }
 
 impl fmt::Display for ExecutionControlError {
@@ -74,79 +139,13 @@ impl std::error::Error for ExecutionControlError {
     }
 }
 
-impl WirePayload for ExecutionControlError {
-    fn payload(&self) -> RuntimeErrorPayload {
-        match self {
-            ExecutionControlError::Cancelled => cancel_payload(),
-            ExecutionControlError::BudgetExceeded(failure) => {
-                if failure.reason == ExecutionBudgetReason::Cancelled {
-                    cancel_payload()
-                } else {
-                    RuntimeErrorPayload {
-                        code: "TimeoutError".to_string(),
-                        message: budget_timeout_message(failure.reason).to_string(),
-                        status: None,
-                        details: Some(json!({
-                            "reason": failure.reason.as_str(),
-                            "instructionCount": failure.instruction_count,
-                            "limit": failure.limit,
-                            "elapsedMs": failure.elapsed_ms,
-                        })),
-                    }
-                }
-            }
-        }
-    }
-
-    fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
-        match self {
-            ExecutionControlError::Cancelled => Some(cancel_catch_projection()),
-            ExecutionControlError::BudgetExceeded(failure) => {
-                if failure.reason == ExecutionBudgetReason::Cancelled {
-                    Some(cancel_catch_projection())
-                } else {
-                    Some((
-                        TypeIdentity::builtin("TimeoutError"),
-                        json!({
-                            "reason": failure.reason.as_str(),
-                            "instructionCount": failure.instruction_count,
-                            "limit": failure.limit,
-                            "elapsedMs": failure.elapsed_ms,
-                        }),
-                    ))
-                }
-            }
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-fn cancel_payload() -> RuntimeErrorPayload {
-    RuntimeErrorPayload {
-        code: "CancelError".to_string(),
-        message: REQUEST_CANCELLED_MESSAGE.to_string(),
-        status: None,
-        details: None,
-    }
-}
-
-fn cancel_catch_projection() -> (TypeIdentity, serde_json::Value) {
-    (
-        TypeIdentity::builtin("CancelError"),
-        json!({
-            "message": REQUEST_CANCELLED_MESSAGE,
-        }),
-    )
-}
-
-fn budget_timeout_message(reason: ExecutionBudgetReason) -> &'static str {
+fn budget_timeout_message(reason: ExecutionBudgetReason) -> Option<&'static str> {
     match reason {
-        ExecutionBudgetReason::DeadlineExceeded => "execution deadline exceeded",
-        ExecutionBudgetReason::InstructionLimitExceeded => "execution instruction limit exceeded",
-        ExecutionBudgetReason::Cancelled => REQUEST_CANCELLED_MESSAGE,
+        ExecutionBudgetReason::DeadlineExceeded => Some("execution deadline exceeded"),
+        ExecutionBudgetReason::InstructionLimitExceeded => {
+            Some("execution instruction limit exceeded")
+        }
+        ExecutionBudgetReason::Cancelled => None,
     }
 }
 
@@ -156,6 +155,25 @@ pub trait ExecutionControlApi: Send + Sync {
     fn owned(&self) -> OwnedExecutionControl;
     fn cancel_flag(&self) -> Arc<AtomicBool>;
     fn cancellation_token(&self) -> CancellationToken;
+    fn deadline(&self) -> Option<Instant>;
+    /// Returns the full current scope when the adapter has preserved it.
+    ///
+    /// The default is deliberately unavailable rather than reconstructing a
+    /// lossy request-only scope from `deadline` and `cancellation_token`.
+    fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        Err(ExecutionScopeAccessError::Unavailable)
+    }
+    /// Derives an owned control suitable for installing as the current scope.
+    ///
+    /// Scope-aware adapters must override this together with
+    /// `execution_scope`; the default fails closed.
+    fn derive_scope(
+        &self,
+        _local_deadline: Instant,
+        _site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        Err(ExecutionScopeAccessError::Unavailable)
+    }
     fn check_cancelled(&self) -> ExecutionControlResult<()>;
     fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()>;
     fn poll_execution_budget(&self) -> ExecutionControlResult<()>;
@@ -194,6 +212,22 @@ impl<'a> ExecutionControl<'a> {
         self.inner.cancellation_token()
     }
 
+    pub fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline()
+    }
+
+    pub fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        self.inner.execution_scope()
+    }
+
+    pub fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        self.inner.derive_scope(local_deadline, site)
+    }
+
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
         self.inner.check_cancelled()
     }
@@ -218,6 +252,17 @@ pub trait OwnedExecutionControlApi: Send + Sync {
     fn borrow(&self) -> ExecutionControl<'_>;
     fn cancelled(&self) -> &AtomicBool;
     fn cancellation_token(&self) -> CancellationToken;
+    fn deadline(&self) -> Option<Instant>;
+    fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        self.borrow().execution_scope()
+    }
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        self.borrow().derive_scope(local_deadline, site)
+    }
 }
 
 #[derive(Clone)]
@@ -245,5 +290,21 @@ impl OwnedExecutionControl {
 
     pub fn cancellation_token(&self) -> CancellationToken {
         self.inner.cancellation_token()
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline()
+    }
+
+    pub fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        self.inner.execution_scope()
+    }
+
+    pub fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<Self, ExecutionScopeAccessError> {
+        self.inner.derive_scope(local_deadline, site)
     }
 }

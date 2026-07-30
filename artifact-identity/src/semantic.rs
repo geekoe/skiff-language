@@ -88,8 +88,8 @@ pub fn interface_instantiation_ref(
 /// Splits native generic interface refs into declaration identity plus ordered type args.
 pub fn interface_instantiation_ref_for_type_ref(ty: &TypeRefIr) -> InterfaceInstantiationRef {
     match ty {
-        TypeRefIr::Native { name, args } if !args.is_empty() => interface_instantiation_ref(
-            TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } if !args.is_empty() => interface_instantiation_ref(
+            TypeRefIr::Builtin {
                 name: name.clone(),
                 args: Vec::new(),
             },

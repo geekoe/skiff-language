@@ -81,6 +81,13 @@ pub(super) fn collect_db_index_where_field_paths(expr: &Expr, visit: &mut impl F
                 }
             }
         }
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            for statement in &value.body.statements {
+                collect_db_index_where_field_paths_in_stmt(statement, visit);
+            }
+            collect_db_index_where_field_paths(&value.tail, visit);
+        }
+        Expr::Timeout { value, .. } => collect_db_index_where_field_paths(value, visit),
         Expr::Throw { value } => collect_db_index_where_field_paths(value, visit),
         Expr::Rethrow { exception } => collect_db_index_where_field_paths(exception, visit),
         Expr::Catch { try_expr, .. } => collect_db_index_where_field_paths(try_expr, visit),
@@ -94,6 +101,22 @@ pub(super) fn collect_db_index_where_field_paths(expr: &Expr, visit: &mut impl F
         | Expr::DependencySourceAddress(_)
         | Expr::Field { .. } => {}
     }
+}
+
+fn collect_db_index_where_field_paths_in_stmt(
+    statement: &crate::shared::ast::Stmt,
+    visit: &mut impl FnMut(Vec<String>),
+) {
+    struct Collector<'a, F> {
+        visit: &'a mut F,
+    }
+    impl<F: FnMut(Vec<String>)> crate::shared::ast_utils::AstVisitor for Collector<'_, F> {
+        fn visit_expr(&mut self, expression: &Expr) {
+            collect_db_index_where_field_paths(expression, self.visit);
+        }
+    }
+    let mut collector = Collector { visit };
+    crate::shared::ast_utils::AstVisitor::visit_stmt(&mut collector, statement);
 }
 
 fn expr_field_path(expr: &Expr) -> Option<Vec<String>> {

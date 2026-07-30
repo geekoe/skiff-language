@@ -77,6 +77,13 @@ fn collect_block_function_type_violations(path: &str, block: &Block, violations:
 
 fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &mut Vec<String>) {
     match stmt {
+        Stmt::CompilerTestEffectRegister { .. } => {
+            for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                .expect("matched compiler test effect")
+            {
+                collect_expr_function_type_violations(path, expression, violations);
+            }
+        }
         Stmt::Let { ty, value, .. } => {
             if let Some(ty) = ty {
                 collect_function_type_name_violations(path, &ty.name, violations);
@@ -86,6 +93,9 @@ fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &m
         Stmt::Assign { target, value } => {
             collect_expr_function_type_violations(path, target, violations);
             collect_expr_function_type_violations(path, value, violations);
+        }
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            collect_block_function_type_violations(path, body, violations);
         }
         Stmt::If {
             condition,
@@ -181,6 +191,13 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
                     }
                 }
             }
+        }
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            collect_block_function_type_violations(path, &value.body, violations);
+            collect_expr_function_type_violations(path, &value.tail, violations);
+        }
+        Expr::Timeout { value, .. } => {
+            collect_expr_function_type_violations(path, value, violations);
         }
         Expr::Throw { value } => collect_expr_function_type_violations(path, value, violations),
         Expr::Rethrow { exception } => {

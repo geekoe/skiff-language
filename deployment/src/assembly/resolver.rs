@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GlobalIngressBinding,
-    IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCodeSlot, PackageRequirement, PackageRequirementKey, ResolvedServiceBinding,
-    RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceRequirementKey, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GatewayIngressBinding,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCodeSlot,
+    PackageRequirement, PackageRequirementKey, ResolvedServiceBinding, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceIngressKey, ServiceRequirementKey, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 
 use super::{AssemblyResolutionError, AssemblyResult, CandidateIndex};
@@ -16,10 +16,10 @@ pub(super) struct Resolver<'a, 'c> {
     resolved_deployments: BTreeMap<ServiceDeploymentRef, &'a ServiceDeployment>,
     resolved_contracts: BTreeSet<ServiceContractRef>,
     resolved_packages: BTreeMap<PackageBuildId, PackageArtifactRef>,
-    package_links: BTreeMap<PackageRequirementKey, PackageArtifactRef>,
+    package_links: BTreeMap<PackageRequirementKey, PackageBinding>,
     service_templates: BTreeMap<ServiceDeploymentRef, ServiceBindingTemplate>,
     activation_templates: BTreeMap<ServiceDeploymentRef, ActivationTemplate>,
-    global_ingress: BTreeMap<IngressSelector, GlobalIngressBinding>,
+    gateway_ingress: BTreeMap<ServiceIngressKey, GatewayIngressBinding>,
 }
 
 impl<'a, 'c> Resolver<'a, 'c> {
@@ -36,7 +36,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             package_links: BTreeMap::new(),
             service_templates: BTreeMap::new(),
             activation_templates: BTreeMap::new(),
-            global_ingress: BTreeMap::new(),
+            gateway_ingress: BTreeMap::new(),
         }
     }
 
@@ -58,7 +58,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         self.resolved_deployments
             .insert(reference.clone(), deployment);
 
-        let contract = self.candidates.contract(&deployment.contract)?;
+        self.candidates.contract(&deployment.contract)?;
         self.resolved_contracts.insert(deployment.contract.clone());
 
         let packages = self.resolve_activation_packages(&reference, deployment)?;
@@ -116,8 +116,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
             }
         }
         self.reject_unused_service_selectors(&reference, deployment, &used_selector_keys)?;
+        self.insert_gateway_ingress(&reference, deployment)?;
         self.insert_templates(&reference, deployment, bindings);
-        self.insert_ingress(&reference, deployment, contract)
+        Ok(())
     }
 
     fn reject_unused_service_selectors(
@@ -175,31 +176,30 @@ impl<'a, 'c> Resolver<'a, 'c> {
             .insert(reference.clone(), activation);
     }
 
-    fn insert_ingress(
+    fn insert_gateway_ingress(
         &mut self,
         reference: &ServiceDeploymentRef,
         deployment: &ServiceDeployment,
-        contract: &skiff_artifact_model::ServiceContract,
     ) -> AssemblyResult<()> {
-        for ingress in &deployment.ingress {
-            if !contract
-                .operations
-                .contains_key(&ingress.contract_operation_id)
-            {
-                return Err(AssemblyResolutionError::MissingIngressOperation {
+        for source in &deployment.ingress {
+            let entry = deployment
+                .gateway_entries
+                .get(&source.gateway_entry_key)
+                .ok_or_else(|| AssemblyResolutionError::MissingGatewayEntry {
                     activation: reference.clone(),
-                    contract: deployment.contract.clone(),
-                    operation: ingress.contract_operation_id.clone(),
-                });
-            }
-            let binding = GlobalIngressBinding::from((reference, &deployment.contract, ingress));
-            if let Some(existing) = self
-                .global_ingress
-                .insert(ingress.selector.clone(), binding)
-            {
-                return Err(AssemblyResolutionError::IngressCollision {
-                    selector: ingress.selector.clone(),
-                    first: existing.deployment,
+                    gateway_entry_key: source.gateway_entry_key.clone(),
+                })?;
+            let binding = GatewayIngressBinding {
+                selector: source.selector.clone(),
+                deployment: reference.clone(),
+                gateway_entry_key: source.gateway_entry_key.clone(),
+                gateway_entry_identity: entry.gateway_entry_identity.clone(),
+            };
+            let key = binding.service_ingress_key();
+            if let Some(first) = self.gateway_ingress.insert(key.clone(), binding) {
+                return Err(AssemblyResolutionError::GatewayIngressCollision {
+                    key,
+                    first: first.deployment,
                     second: reference.clone(),
                 });
             }
@@ -238,7 +238,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         activation: activation.clone(),
                         key: key.clone(),
                     })?;
-                if !package_requirement_matches(requirement, &binding.package) {
+                if !package_requirement_matches(requirement, binding) {
                     return Err(AssemblyResolutionError::PackageRequirementMismatch {
                         activation: activation.clone(),
                         key,
@@ -246,7 +246,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
                         selected: binding.package.clone(),
                     });
                 }
-                self.insert_package_link(&key, &binding.package)?;
+                self.insert_package_link(binding)?;
                 used_binding_keys.insert(key);
                 pending.push_back(binding.package.clone());
             }
@@ -278,17 +278,16 @@ impl<'a, 'c> Resolver<'a, 'c> {
         Ok(())
     }
 
-    fn insert_package_link(
-        &mut self,
-        key: &PackageRequirementKey,
-        package: &PackageArtifactRef,
-    ) -> AssemblyResult<()> {
-        if let Some(existing) = self.package_links.insert(key.clone(), package.clone()) {
-            if existing != *package {
+    fn insert_package_link(&mut self, binding: &PackageBinding) -> AssemblyResult<()> {
+        if let Some(existing) = self
+            .package_links
+            .insert(binding.key.clone(), binding.clone())
+        {
+            if existing != *binding {
                 return Err(AssemblyResolutionError::ConflictingPackageLink {
-                    key: key.clone(),
-                    first: existing,
-                    second: package.clone(),
+                    key: binding.key.clone(),
+                    first: existing.package,
+                    second: binding.package.clone(),
                 });
             }
         }
@@ -310,16 +309,12 @@ impl<'a, 'c> Resolver<'a, 'c> {
                     .cloned()
                     .map(|package| PackageCodeSlot { package })
                     .collect(),
-                package_links: self
-                    .package_links
-                    .into_iter()
-                    .map(|(key, package)| PackageBinding { key, package })
-                    .collect(),
+                package_links: self.package_links.into_values().collect(),
             },
             resolved_packages,
             service_binding_templates: self.service_templates.into_values().collect(),
             activation_templates: self.activation_templates.into_values().collect(),
-            global_ingress: self.global_ingress.into_values().collect(),
+            gateway_ingress: self.gateway_ingress.into_values().collect(),
         }
     }
 }
@@ -339,9 +334,14 @@ fn service_requirement_contract(
 
 fn package_requirement_matches(
     requirement: &PackageRequirement,
-    selected: &PackageArtifactRef,
+    selected: &PackageBinding,
 ) -> bool {
-    selected.package_id == requirement.package_id
-        && selected.package_version == requirement.exact_version
-        && selected.package_local_abi_identity == requirement.expected_local_abi
+    selected.collection_name_mapping == requirement.collection_name_mapping
+        && selected.package.package_id == requirement.package_id
+        && selected.package.package_version == requirement.exact_version
+        && selected.package.package_local_abi_identity == requirement.expected_local_abi
+        && requirement
+            .expected_package_build
+            .as_ref()
+            .is_none_or(|expected| expected == &selected.package.package_build_id)
 }

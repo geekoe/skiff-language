@@ -169,7 +169,7 @@ Skiff service 会被编译成服务产物并加载到运行环境。更新服务
 - runtime：`doc/reference/runtime.md`
 - 标准库 surface：`doc/reference/std-surface.md`
 - DB / spawn / queue：`doc/reference/db.md`、`doc/reference/spawn.md`、`doc/reference/queue.md`
-- 发布和 ABI：`doc/reference/publication-api-yml.md`、`doc/reference/publication.md`
+- Package API 与 service contract：`doc/reference/api-yml.md`、`doc/architecture/package-service-contract-deployment.md`
 - 测试：`doc/reference/testing.md`
 
 ## 仓库入口

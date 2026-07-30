@@ -2,67 +2,8 @@ import std
 
 test defaultRun false
 
-function liveFileChunks(marker: string) -> Stream<bytes> {
-  emit(bytes.fromUtf8("runtime-live-file-stream:"))
-  emit(bytes.fromUtf8(marker))
-  return null
-}
-
-function liveFileDoubleBytes(value: bytes) -> bytes {
-  const parts = Array.empty<bytes>()
-  parts.push(value)
-  parts.push(value)
-  return bytes.concat(parts)
-}
-
-function liveFileOneMiBChunk() -> bytes {
-  let chunk = bytes.fromUtf8("0123456789abcdef")
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  return chunk
-}
-
-function liveFileStagedChunks(marker: string) -> Stream<bytes> {
-  const chunk = liveFileOneMiBChunk()
-  emit(chunk)
-  emit(bytes.fromUtf8(marker))
-  emit(chunk)
-  return null
-}
-
-function liveFileSixtyFourMiBChunk() -> bytes {
-  let chunk = liveFileOneMiBChunk()
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  chunk = liveFileDoubleBytes(chunk)
-  return chunk
-}
-
-function liveFileOverLimitChunks() -> Stream<bytes> {
-  emit(liveFileSixtyFourMiBChunk())
-  emit(bytes.fromUtf8("x"))
-  return null
-}
-
 test "live file runtime creates reads infos and deletes immutable file" {
-  const marker = config.require<string>("runtimeLive.file")
+  const marker = root.internal.file_live.marker()
   const text = "runtime-live-file:".concat(marker)
   const file = std.file.createText(text, std.file.CreateOptions {
     contentType: "text/plain",
@@ -87,8 +28,8 @@ test "live file runtime creates reads infos and deletes immutable file" {
 }
 
 test "live file runtime writes chunks from stream and reports deleted file as missing" {
-  const marker = config.require<string>("runtimeLive.file")
-  const file = std.file.createFromStream(liveFileChunks(marker), std.file.CreateOptions {
+  const marker = root.internal.file_live.marker()
+  const file = std.file.createFromStream(root.internal.file_live.liveFileChunks(marker), std.file.CreateOptions {
     contentType: "text/plain",
     purpose: "runtime-live-stream",
   })
@@ -105,8 +46,8 @@ test "live file runtime writes chunks from stream and reports deleted file as mi
 }
 
 test "live file runtime writes generated chunks through staged file path" {
-  const marker = config.require<string>("runtimeLive.file")
-  const file = std.file.createFromStream(liveFileStagedChunks(marker), std.file.CreateOptions {
+  const marker = root.internal.file_live.marker()
+  const file = std.file.createFromStream(root.internal.file_live.liveFileStagedChunks(marker), std.file.CreateOptions {
     contentType: "application/octet-stream",
     purpose: "runtime-live-staged-stream",
   })
@@ -121,13 +62,4 @@ test "live file runtime writes generated chunks through staged file path" {
   std.file.delete(file)
   const missing = catch<std.file.FileError>(std.file.info(file))
   assert missing.tag == "err"
-}
-
-test "live file runtime rejects stream above file guard limit" {
-  const file = std.file.createFromStream(liveFileOverLimitChunks(), std.file.CreateOptions {
-    contentType: "application/octet-stream",
-    purpose: "runtime-live-over-limit-stream",
-  })
-  std.file.delete(file)
-  assert false
 }

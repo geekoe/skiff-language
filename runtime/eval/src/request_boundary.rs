@@ -1,11 +1,5 @@
 pub use super::{
-    invocation::{
-        EvalInvocation as EvalRequestInvocation,
-        EvalWebSocketAdapterResult as EvalRequestWebSocketAdapterResult,
-        EvalWebSocketConnectResponse as EvalRequestWebSocketConnectResponse,
-        EvalWebSocketConnectResult as EvalRequestWebSocketConnectResult,
-        EvalWebSocketContextCodec as EvalRequestWebSocketContextCodec,
-    },
+    invocation::EvalInvocation as EvalRequestInvocation,
     invocation_builder::{
         EvalInvocationBuildArg as EvalRequestInvocationArg,
         EvalInvocationBuildArgFrom as EvalRequestInvocationArgFrom,
@@ -14,17 +8,5 @@ pub use super::{
         EvalInvocationBuildHttpKind as EvalRequestInvocationHttpKind,
         EvalInvocationBuildInput as EvalRequestInvocationInput,
         EvalInvocationBuildMode as EvalRequestInvocationMode,
-        EvalInvocationBuildWebSocketAdapter as EvalRequestInvocationWebSocketAdapter,
-        EvalInvocationBuildWebSocketConnectRequest as EvalRequestInvocationWebSocketConnectRequest,
-        EvalInvocationBuildWebSocketContextCodec as EvalRequestInvocationWebSocketContextCodec,
-        EvalInvocationBuildWebSocketContextExpectation as EvalRequestInvocationWebSocketContextExpectation,
-        EvalInvocationBuildWebSocketKind as EvalRequestInvocationWebSocketKind,
-        EvalInvocationBuildWebSocketMessage as EvalRequestInvocationWebSocketMessage,
-        EvalInvocationBuildWebSocketMessageEncoding as EvalRequestInvocationWebSocketMessageEncoding,
-        EvalInvocationBuildWebSocketMessageTag as EvalRequestInvocationWebSocketMessageTag,
-        EvalInvocationBuildWebSocketNameValue as EvalRequestInvocationWebSocketNameValue,
-        EvalInvocationBuildWebSocketPayloadSegment as EvalRequestInvocationWebSocketPayloadSegment,
-        EvalInvocationBuildWebSocketPayloadSegmentKind as EvalRequestInvocationWebSocketPayloadSegmentKind,
-        EvalInvocationBuildWebSocketReceiveRequest as EvalRequestInvocationWebSocketReceiveRequest,
     },
 };

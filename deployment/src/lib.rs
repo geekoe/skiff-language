@@ -8,6 +8,7 @@ pub mod assembly;
 pub mod error;
 pub mod fixtures;
 pub mod projection;
+pub mod storage;
 pub mod validation;
 
 pub use error::{DeploymentError, Result};

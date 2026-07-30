@@ -105,6 +105,15 @@ async function main() {
     "  active: bool,",
     "  legacyFlag: boolean,",
     "}",
+    "actor UserActor id string {",
+    "  name: string,",
+    "}",
+    "type RequestFailure {",
+    "  code: string,",
+    "}",
+    "function propagate(exception: Exception<RequestFailure>) -> void { rethrow exception }",
+    "const actor: UserActor = std.actor.find<UserActor, string>(\"user-1\")",
+    "const legacyActor: ActorRef = actor",
     "export impl Service {",
     "  native static function empty() -> Service",
     "  provider function save<T>(doc: T) -> bool",
@@ -124,9 +133,9 @@ async function main() {
     "        continue",
     "      }",
     "    }",
-    '    const result = catch<Exception<ErrorPayload>>(throw ErrorPayload { code: "x" })',
-    '    const decoded = catch<Exception<std.json.DecodeError>>(timeout(200ms) value { throw std.json.DecodeError { target: "x", message: "bad" } })',
-    "    rethrow result",
+    '    const result = catch<RequestFailure>(throw RequestFailure { code: "x" })',
+    '    const decoded = catch<std.json.DecodeError>(timeout(200ms) value { throw std.json.DecodeError { target: "x", message: "bad" } })',
+    "    rethrow result.exception",
     '    return HttpResponse { status: number.assertSafeInteger(200), headers: headers, body: bytes.fromUtf8("ok") }',
     "  }",
     "}",
@@ -163,6 +172,8 @@ async function main() {
   expectScope(findToken(collected, "integer"), "support.type.primitive.skiff");
   expectScope(findToken(collected, "bool"), "support.type.primitive.skiff");
   expectScope(findToken(collected, "boolean"), "support.type.primitive.legacy.skiff");
+  expectScope(findToken(collected, "UserActor"), "entity.name.type.skiff");
+  expectNoScope(findToken(collected, "ActorRef"), "support.type.core.skiff");
   expectScope(findToken(collected, "impl"), "storage.type.impl.skiff");
   expectScope(findToken(collected, "native"), "keyword.other.modifier.skiff");
   expectScope(findToken(collected, "static"), "keyword.other.modifier.skiff");

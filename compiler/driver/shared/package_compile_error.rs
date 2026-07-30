@@ -22,6 +22,8 @@ pub enum PackageCompileError {
     ProjectionInput {
         source: skiff_compiler_compiled::ProjectionInputBuildError,
     },
+    #[error("resolved package schema input is invalid:\n{message}")]
+    PackageSchemaInput { message: String },
 }
 
 impl From<skiff_compiler_source::SourceCompileError> for PackageCompileError {

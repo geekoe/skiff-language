@@ -1,16 +1,16 @@
 use serde_json::Value;
 use skiff_artifact_model::MetadataValue;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
-use skiff_runtime_capability_context::SpawnSubmitControlRequest;
+use skiff_runtime_capability_context::{ActivationIdentityControl, SpawnSubmitControlRequest};
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ExprRefIr, LinkedCallTarget, LinkedExprIr,
 };
 use skiff_runtime_model::{
-    recoverable::RuntimeRecoverableExpectedTypePlan,
-    runtime_value::{RuntimeObject, RuntimeObjectFields, RuntimeValue},
+    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue,
 };
 
 use crate::{
+    assembly_execution::RuntimeExecutionProjection,
     capabilities::ActorClient,
     error::{Result, RuntimeError},
     invocation::EvalProgramProjection,
@@ -23,8 +23,6 @@ use super::{eval_context::EvalContext, program_ir::program_expression_ref};
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1:sha256:";
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
-const RUNTIME_ACTIVATION_IDENTITY_PREFIX: &str = "skiff-runtime-activation-v1:opaque:";
-const PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX: &str = "skiff-package-test-run-v1:";
 
 pub async fn submit_spawn_statement(
     context: &mut EvalContext<'_>,
@@ -37,9 +35,10 @@ pub async fn submit_spawn_statement(
         ));
     };
 
-    let program = context.interpreter.program_projection()?;
+    let projection = context.execution_projection().clone();
     let spawn_context = context.context.spawn_context();
-    let invocation = encode_spawn_request_payload(context, call, program).await?;
+    let execution_control = context.execution.owned();
+    let invocation = encode_spawn_request_payload(context, call, projection).await?;
 
     ActorClient::new(spawn_context.clone())
         .submit_spawn(
@@ -55,8 +54,7 @@ pub async fn submit_spawn_statement(
                 target: invocation.target,
                 spawn_id: None,
                 build_id: spawn_submit_build_id(spawn_context.request_build_id()),
-                activation_identity: spawn_submit_activation_identity(
-                    spawn_context.request_build_id(),
+                activation_identity: current_activation_identity(
                     spawn_context.activation_identity(),
                 )?,
                 caller_request_id: Some(spawn_context.request_id().to_string()),
@@ -65,6 +63,7 @@ pub async fn submit_spawn_statement(
                 max_queue_wait_ms: None,
             },
             invocation.args_payload,
+            execution_control,
         )
         .await?;
     Ok(())
@@ -76,80 +75,27 @@ fn spawn_submit_build_id(request_build_id: &str) -> Option<String> {
     .then(|| request_build_id.to_string())
 }
 
-fn spawn_submit_activation_identity(
-    request_build_id: &str,
-    activation_identity: Option<&str>,
-) -> Result<Option<String>> {
-    if request_build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX) {
-        let activation_identity = activation_identity.ok_or_else(|| RuntimeError::Protocol {
+fn current_activation_identity(
+    activation_identity: Option<&ActivationIdentityControl>,
+) -> Result<ActivationIdentityControl> {
+    activation_identity
+        .cloned()
+        .ok_or_else(|| RuntimeError::Protocol {
             target: "spawn.submit.request".to_string(),
-            message: format!(
-                "package-test build {request_build_id} requires a package-test activation identity"
-            ),
-        })?;
-        if !activation_identity.starts_with(PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX) {
-            return Err(RuntimeError::Protocol {
-                target: "spawn.submit.request".to_string(),
-                message: format!(
-                    "package-test build {request_build_id} requires activation identity prefix {PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX}"
-                ),
-            });
-        }
-        return Ok(Some(activation_identity.to_string()));
-    }
-
-    Ok(activation_identity
-        .filter(|value| value.starts_with(RUNTIME_ACTIVATION_IDENTITY_PREFIX))
-        .map(str::to_string))
+            message: "spawn.submit requires a current pinned ActivationContext".to_string(),
+        })
 }
 
 #[cfg(test)]
 mod spawn_activation_identity_tests {
-    use super::{spawn_submit_activation_identity, RuntimeError};
-
-    const PACKAGE_TEST_BUILD: &str =
-        "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const SERVICE_BUILD: &str =
-        "skiff-service-build-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    use super::{current_activation_identity, RuntimeError};
 
     #[test]
-    fn package_test_submit_keeps_package_test_activation() {
-        let activation = "skiff-package-test-run-v1:example.com~agent:test:run:1";
-        assert_eq!(
-            spawn_submit_activation_identity(PACKAGE_TEST_BUILD, Some(activation))
-                .expect("package-test activation should be accepted")
-                .as_deref(),
-            Some(activation)
-        );
-    }
-
-    #[test]
-    fn package_test_submit_rejects_missing_or_wrong_activation() {
-        for activation in [None, Some("skiff-runtime-activation-v1:opaque:runtime-a")] {
-            assert!(matches!(
-                spawn_submit_activation_identity(PACKAGE_TEST_BUILD, activation),
-                Err(RuntimeError::Protocol { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn service_submit_preserves_existing_activation_behavior() {
-        let runtime_activation = "skiff-runtime-activation-v1:opaque:runtime-a";
-        assert_eq!(
-            spawn_submit_activation_identity(SERVICE_BUILD, Some(runtime_activation))
-                .expect("service activation should be accepted")
-                .as_deref(),
-            Some(runtime_activation)
-        );
-        assert_eq!(
-            spawn_submit_activation_identity(
-                SERVICE_BUILD,
-                Some("skiff-package-test-run-v1:example:test:run")
-            )
-            .expect("non-runtime service activation should keep being omitted"),
-            None
-        );
+    fn spawn_submit_rejects_missing_current_activation_before_control_send() {
+        assert!(matches!(
+            current_activation_identity(None),
+            Err(RuntimeError::Protocol { .. })
+        ));
     }
 }
 
@@ -162,11 +108,11 @@ struct SpawnEncodedCall {
 async fn encode_spawn_request_payload(
     context: &mut EvalContext<'_>,
     call: &CallIr,
-    program: EvalProgramProjection<'_>,
+    projection: RuntimeExecutionProjection<'_>,
 ) -> Result<SpawnEncodedCall> {
     let target = spawn_submit_target(call)?;
     match target.kind.as_str() {
-        "function" => encode_spawn_function_payload(context, call, program, target).await,
+        "function" => encode_spawn_function_payload(context, call, projection, target).await,
         _ => Err(RuntimeError::InvalidArtifact(format!(
             "spawnSubmit metadata targetKind {} is unsupported",
             target.kind
@@ -177,15 +123,21 @@ async fn encode_spawn_request_payload(
 async fn encode_spawn_function_payload(
     context: &mut EvalContext<'_>,
     call: &CallIr,
-    program: EvalProgramProjection<'_>,
+    projection: RuntimeExecutionProjection<'_>,
     target: SpawnSubmitTarget,
 ) -> Result<SpawnEncodedCall> {
-    let LinkedCallTarget::Executable { addr } = &call.target else {
-        return Err(RuntimeError::InvalidArtifact(
-            "spawn function target was not linked to an executable".to_string(),
-        ));
+    let addr = match &projection {
+        RuntimeExecutionProjection::Legacy(_) => {
+            let LinkedCallTarget::Executable { addr } = &call.target else {
+                return Err(RuntimeError::InvalidArtifact(
+                    "spawn function target was not linked to an executable".to_string(),
+                ));
+            };
+            addr
+        }
+        RuntimeExecutionProjection::Assembly(_) => canonical_spawn_executable_addr(call)?,
     };
-    let resolved = program.executable_at(addr)?;
+    let resolved = projection.resolve_executable(addr)?;
     if resolved.executable.params.len() != call.args.len() {
         return Err(RuntimeError::InvalidArtifact(format!(
             "spawn target {} expects {} argument(s), got {}",
@@ -194,15 +146,26 @@ async fn encode_spawn_function_payload(
             call.args.len()
         )));
     }
-    let mut fields = RuntimeObjectFields::new();
+    let route_target = match &projection {
+        RuntimeExecutionProjection::Legacy(program) => {
+            spawn_function_route_target(*program, addr, &target.name)?
+        }
+        RuntimeExecutionProjection::Assembly(_) => canonical_spawn_function_target(
+            call,
+            &target,
+            &resolved.executable.kind,
+            &resolved.executable.symbol,
+        )?,
+    };
+    let mut fields = std::collections::BTreeMap::new();
     for (param, arg_ref) in resolved.executable.params.iter().zip(&call.args) {
         let value = context.eval_program_expr_ref(*arg_ref).await?;
         fields.insert(param.name.clone(), value);
     }
-    let args_handle = context.heap.alloc_object(RuntimeObject::unshaped(fields))?;
+    let args_handle = context.heap.alloc_object_carriers(fields)?;
     let recoverable_expected = executable_request_recoverable_expected_plan(
-        program.type_view(),
-        addr,
+        projection.type_view(),
+        &resolved.addr,
         resolved.executable,
     )?;
     let spawn_context = context.context.spawn_context();
@@ -217,18 +180,55 @@ async fn encode_spawn_function_payload(
         &recoverable_expected,
         &boundary,
         context.heap,
-        &EvalRecoverableBehaviorHooks::new(
-            program,
-            spawn_context.spawn_service_protocol_identity(),
-            spawn_context.request_build_id(),
-        )?,
+        &EvalRecoverableBehaviorHooks::new_for_execution(&projection)?,
     )?;
-    let route_target = spawn_function_route_target(program, addr, &target.name)?;
     Ok(SpawnEncodedCall {
         target_kind: "function".to_string(),
         target: route_target,
         args_payload,
     })
+}
+
+fn canonical_spawn_executable_addr(call: &CallIr) -> Result<&ExecutableAddr> {
+    match &call.target {
+        LinkedCallTarget::Executable { addr } => Ok(addr),
+        LinkedCallTarget::PackageDirect { call } => Ok(call.executable_addr()),
+        _ => Err(RuntimeError::InvalidArtifact(
+            "canonical spawn function target is not an exact linked executable".to_string(),
+        )),
+    }
+}
+
+fn canonical_spawn_function_target(
+    call: &CallIr,
+    metadata: &SpawnSubmitTarget,
+    executable_kind: &skiff_runtime_linked_program::ExecutableKind,
+    executable_symbol: &str,
+) -> Result<String> {
+    if executable_kind != &skiff_runtime_linked_program::ExecutableKind::Function {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "canonical spawn target {} is not a function",
+            executable_symbol
+        )));
+    }
+    let expected_metadata_target = match &call.target {
+        LinkedCallTarget::Executable { .. } => format!("function:{executable_symbol}"),
+        LinkedCallTarget::PackageDirect { call } => {
+            format!("package:{}", call.package_callable_id())
+        }
+        _ => {
+            return Err(RuntimeError::InvalidArtifact(
+                "canonical spawn function target is not an exact linked executable".to_string(),
+            ))
+        }
+    };
+    if metadata.name != expected_metadata_target {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "canonical spawnSubmit metadata target {} does not match linked executable {}",
+            metadata.name, expected_metadata_target
+        )));
+    }
+    Ok(format!("function:{executable_symbol}"))
 }
 
 fn spawn_function_route_target(
@@ -358,9 +358,9 @@ mod recoverable_spawn_payload_tests {
         LinkedBoxSourceIr, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
         LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
         LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
-        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, PackageUnit,
-        ParamIr, ReceiverCallAbi, RuntimeTypeContext, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr,
-        UnitAddr,
+        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, ParamIr,
+        ReceiverCallAbi, RuntimeExecutionPackage, RuntimeTypeContext, SlotIr, SlotLayoutIr,
+        TypeAddr, TypeDeclIr, UnitAddr,
     };
     use skiff_runtime_linked_type_plan::{
         linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -383,7 +383,8 @@ mod recoverable_spawn_payload_tests {
         },
     };
 
-    const ARTIFACT_IDENTITY: &str = "skiff-protocol-v1:sha256:test";
+    const ARTIFACT_IDENTITY: &str =
+        "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const BUILD_ID: &str = "skiff-service-build-v1:sha256:test";
     const SERVICE_ID: &str = "skiff.test/provider";
     const INTERFACE_ABI: &str = "pkg.ToolProvider";
@@ -391,8 +392,7 @@ mod recoverable_spawn_payload_tests {
 
     struct TestProgram {
         service_files: Vec<Arc<LinkedFileUnit>>,
-        packages: Vec<Arc<PackageUnit>>,
-        package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        packages: Vec<Arc<RuntimeExecutionPackage>>,
         spawn_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
@@ -405,7 +405,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: vec![file.clone()],
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext {
@@ -421,7 +420,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: vec![first.clone(), second.clone()],
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext {
@@ -442,7 +440,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: vec![file.clone()],
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext {
@@ -456,7 +453,6 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: Vec::new(),
                 packages: Vec::new(),
-                package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext::default(),
@@ -468,7 +464,6 @@ mod recoverable_spawn_payload_tests {
                 SERVICE_ID,
                 &self.service_files,
                 &self.packages,
-                &self.package_files,
                 &self.spawn_routes,
                 &self.link_overlay,
                 &self.types,
@@ -500,13 +495,13 @@ mod recoverable_spawn_payload_tests {
             source_map: Default::default(),
             declarations,
             link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
             types: vec![TypeDeclIr {
                 name: "ProviderImpl".to_string(),
                 descriptor: LinkedTypeDescriptor::Alias {
                     target: string_type(),
                 },
                 type_params: Vec::new(),
-                discriminator: None,
                 implements: vec![LinkedTypeRef::AnyInterface {
                     interface: tool_provider_interface(),
                 }],
@@ -1075,7 +1070,9 @@ mod recoverable_spawn_payload_tests {
         let error = encode_spawn_args_payload(&value, &expected, &boundary, &heap, &hooks)
             .expect_err("unsupported local interface must fail before submit bytes are returned");
 
-        let payload = error.payload();
+        let payload = error
+            .ordinary_payload()
+            .expect("recoverable error remains ordinary");
         assert_eq!(payload.code, "recoverable_code_identity_missing");
         let RuntimeError::Recoverable(error) = error else {
             panic!("expected carried boundary recoverable diagnostic, got {error}");
@@ -1087,46 +1084,21 @@ mod recoverable_spawn_payload_tests {
     }
 }
 
-#[cfg(all(test, any()))]
-mod tests {
+#[cfg(test)]
+#[path = "spawn_ops/canonical_tests.rs"]
+mod canonical_tests;
+
+#[cfg(test)]
+mod legacy_spawn_tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use crate::{
-        eval::invocation::EvalProgramProjection,
-        eval::program::{
-            ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
-        },
+    use skiff_runtime_linked_program::{
+        ExecutableAddr, LinkOverlay, LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext,
     };
 
-    use super::{
-        spawn_function_route_target, spawn_submit_activation_identity, spawn_submit_build_id,
-    };
+    use crate::invocation::EvalProgramProjection;
 
-    #[test]
-    fn spawn_submit_activation_identity_keeps_package_test_runs() {
-        let build_id = "skiff-package-test-build-v1:sha256:aaaaaaaa";
-        let activation = "skiff-package-test-run-v1:example:test:run";
-        assert_eq!(
-            spawn_submit_activation_identity(build_id, Some(activation))
-                .expect("package-test activation should be accepted")
-                .as_deref(),
-            Some(activation)
-        );
-    }
-
-    #[test]
-    fn spawn_submit_activation_identity_keeps_runtime_activations() {
-        let activation = "skiff-runtime-activation-v1:opaque:local";
-        assert_eq!(
-            spawn_submit_activation_identity(
-                "skiff-service-build-v1:sha256:aaaaaaaa",
-                Some(activation),
-            )
-            .expect("runtime activation should be accepted")
-            .as_deref(),
-            Some(activation)
-        );
-    }
+    use super::{spawn_function_route_target, spawn_submit_build_id};
 
     #[test]
     fn spawn_submit_build_id_keeps_package_test_builds() {
@@ -1149,15 +1121,13 @@ mod tests {
             addr.clone(),
         );
         let service_files = Vec::<Arc<LinkedFileUnit>>::new();
-        let packages = Vec::<Arc<PackageUnit>>::new();
-        let package_files = Vec::<Vec<Arc<LinkedFileUnit>>>::new();
+        let packages = Vec::<Arc<RuntimeExecutionPackage>>::new();
         let link_overlay = LinkOverlay::default();
         let types = RuntimeTypeContext::default();
         let program = EvalProgramProjection::new(
             "skiff.test/spawn",
             &service_files,
             &packages,
-            &package_files,
             &routes,
             &link_overlay,
             &types,

@@ -76,9 +76,9 @@ describe('router artifact reload', () => {
 
   it('reloads active artifacts without restarting HTTP dispatch and broadcasts runtime control', async () => {
     const protocolV1 =
-      'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555';
+      'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555';
     const protocolV2 =
-      'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666';
+      'skiff-service-protocol-v5:sha256:6666666666666666666666666666666666666666666666666666666666666666';
     // A protocol-identity change is a build change: V1 and V2 are distinct
     // builds with distinct buildIds. The HTTP gateway addresses each request by
     // the active manifest's build, and the boundary check passes because each
@@ -138,6 +138,7 @@ describe('router artifact reload', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -334,6 +335,7 @@ describe('router artifact reload', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -396,9 +398,9 @@ describe('router artifact reload', () => {
 
   it('shares one in-flight artifact reload across concurrent reload requests', async () => {
     const protocolV1 =
-      'skiff-protocol-v1:sha256:7777777777777777777777777777777777777777777777777777777777777777';
+      'skiff-service-protocol-v5:sha256:7777777777777777777777777777777777777777777777777777777777777777';
     const protocolV2 =
-      'skiff-protocol-v1:sha256:8888888888888888888888888888888888888888888888888888888888888888';
+      'skiff-service-protocol-v5:sha256:8888888888888888888888888888888888888888888888888888888888888888';
     const snapshotV1: RouterActiveSnapshot = {
       activationByServiceOperation: buildActivationLookup([]),
       control: {
@@ -449,6 +451,7 @@ describe('router artifact reload', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -505,7 +508,7 @@ describe('router artifact reload', () => {
       },
       manifest: loadRawHttpManifest({
         protocolIdentity:
-          'skiff-protocol-v1:sha256:9999999999999999999999999999999999999999999999999999999999999999'
+          'skiff-service-protocol-v5:sha256:9999999999999999999999999999999999999999999999999999999999999999'
       })
     };
     const snapshotStore = new RouterActiveSnapshotStore(snapshotV1);

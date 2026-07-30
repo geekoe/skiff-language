@@ -1,6 +1,14 @@
 import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import {
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 
 import { discoverRuntimeLiveTests, repoRelative } from './verify-discovery.mjs';
 import {
@@ -17,16 +25,18 @@ import {
   assertOwnershipTier,
   liveInvocationRecords,
 } from './verify-live-registry.mjs';
-import { parseRuntimeReloadUrl } from './runtime-reload-url.mjs';
+import { maxExpectedAssemblyGeneration } from './package-service-authoring.mjs';
 
 const DISCOVERY_HANDLERS = Object.freeze({
   [LIVE_DISCOVERIES.RUNTIME_LIVE_TESTS]: discoverRuntimeLiveTests,
 });
 
 export async function liveSelectorPhases(root, selector, {
-  runtimeLiveConfig,
-  runtimeLiveReloadUrl,
+  runtimeLiveActivationUrl,
+  runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
+  runtimeLiveEnvironment,
+  runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env = process.env,
   registry = LIVE_REGISTRY,
@@ -43,9 +53,11 @@ export async function liveSelectorPhases(root, selector, {
   assertSelectedSourceExists(root, entry);
 
   const inputState = resolveRequiredInputs(invocation, {
-    runtimeLiveConfig,
-    runtimeLiveReloadUrl,
+    runtimeLiveActivationUrl,
+    runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
+    runtimeLiveEnvironment,
+    runtimeLiveExpectedGeneration,
     loopRiskConfig,
   }, env);
   const loopRiskState = invocation.configProfile !== undefined
@@ -115,6 +127,7 @@ export function assertRegistryPhaseMetadata(phase) {
 
 async function inspectRuntimeFixtureState(root, entry, values) {
   const failures = [];
+  const sourceRoot = resolve(root, 'runtime', 'live-tests');
   const discover = DISCOVERY_HANDLERS[entry.source.discovery];
   if (discover === undefined) {
     throw new Error(`unsupported live discovery handler: ${entry.source.discovery}`);
@@ -125,13 +138,36 @@ async function inspectRuntimeFixtureState(root, entry, values) {
       'runtime-live found no *.live.test.skiff fixtures under runtime/live-tests',
     );
   }
-
-  let configPath;
-  if (values.runtimeConfig !== undefined) {
-    configPath = resolveInputPath(root, values.runtimeConfig);
-    if (!isFile(configPath)) {
-      failures.push(`runtime-live config path must be an existing file: ${configPath}`);
-    }
+  const fixtures = files.map((file) => ({
+    file,
+    packageRoot: canonicalPackageRoot(root, file),
+  }));
+  if (!isFile(join(sourceRoot, 'package.yml'))) {
+    failures.push(
+      `runtime-live canonical source root must own package.yml: ${sourceRoot}`,
+    );
+  }
+  if (!isFile(join(sourceRoot, 'config.skiff-test.yml'))) {
+    failures.push(
+      `runtime-live canonical source root must own fixed config.skiff-test.yml: ${sourceRoot}`,
+    );
+  }
+  const legacyFiles = fixtures
+    .filter((fixture) => fixture.packageRoot === undefined)
+    .map((fixture) => repoRelative(root, fixture.file));
+  if (legacyFiles.length > 0) {
+    failures.push(
+      `runtime-live fixture(s) have no canonical package.yml owner and require terminal canonical-harness migration: ${legacyFiles.join(', ')}`,
+    );
+  }
+  const nonCanonicalFiles = fixtures
+    .filter((fixture) =>
+      fixture.packageRoot !== undefined && fixture.packageRoot !== sourceRoot)
+    .map((fixture) => repoRelative(root, fixture.file));
+  if (nonCanonicalFiles.length > 0) {
+    failures.push(
+      `runtime-live fixture(s) must be owned by the canonical runtime/live-tests package root: ${nonCanonicalFiles.join(', ')}`,
+    );
   }
 
   let artifactRoot;
@@ -144,10 +180,35 @@ async function inspectRuntimeFixtureState(root, entry, values) {
     }
   }
 
-  let reloadTarget;
-  if (values.runtimeReloadUrl !== undefined) {
+  let activationUrl;
+  if (values.runtimeActivationUrl !== undefined) {
     try {
-      reloadTarget = parseRuntimeReloadUrl(values.runtimeReloadUrl);
+      activationUrl = canonicalRuntimeUrl(
+        values.runtimeActivationUrl,
+        '/__skiff/activate-assembly',
+      );
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  let ingressUrl;
+  if (values.runtimeIngressUrl !== undefined) {
+    try {
+      ingressUrl = canonicalRuntimeUrl(values.runtimeIngressUrl, '/');
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (values.runtimeEnvironment !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(values.runtimeEnvironment)) {
+    failures.push('runtime-live environment must be a canonical ASCII token');
+  }
+  let expectedGenerations;
+  if (values.runtimeExpectedGeneration !== undefined) {
+    try {
+      expectedGenerations = runtimeExpectedGenerations(
+        values.runtimeExpectedGeneration,
+        fixtures.length,
+      );
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error));
     }
@@ -158,30 +219,39 @@ async function inspectRuntimeFixtureState(root, entry, values) {
   }
   return {
     artifactRoot,
-    configPath,
-    files,
-    reloadTarget,
+    activationUrl,
+    ingressUrl,
+    environment: values.runtimeEnvironment,
+    expectedGenerations,
+    fixtures,
+    sourceRoot,
   };
 }
 
 function runtimeFixturePhases(root, invocation, runtimeState, env) {
   const {
     artifactRoot,
-    configPath,
-    files,
-    reloadTarget,
+    activationUrl,
+    ingressUrl,
+    environment,
+    expectedGenerations,
+    fixtures,
+    sourceRoot,
   } = runtimeState;
-  const packageStore = join(root, 'runtime', 'live-tests', 'package-store');
-  const packageArgs = existsSync(packageStore) ? ['--packages-dir', packageStore] : [];
   const executionPreflight = () => {
     const failures = [];
-    for (const file of files) {
+    for (const { file } of fixtures) {
       if (!isFile(file)) {
         failures.push(`runtime-live fixture is no longer an existing file: ${file}`);
       }
     }
-    if (!isFile(configPath)) {
-      failures.push(`runtime-live config path is no longer an existing file: ${configPath}`);
+    if (!isFile(join(sourceRoot, 'package.yml'))) {
+      failures.push(`runtime-live package root is no longer canonical: ${sourceRoot}`);
+    }
+    if (!isFile(join(sourceRoot, 'config.skiff-test.yml'))) {
+      failures.push(
+        `runtime-live package root no longer owns fixed config.skiff-test.yml: ${sourceRoot}`,
+      );
     }
     if (!isDirectory(artifactRoot)) {
       failures.push(
@@ -189,19 +259,20 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       );
     }
     try {
-      parseRuntimeReloadUrl(reloadTarget.normalized);
+      canonicalRuntimeUrl(activationUrl, '/__skiff/activate-assembly');
+      canonicalRuntimeUrl(ingressUrl, '/');
     } catch (error) {
       failures.push(
         error instanceof Error
           ? error.message
-          : 'runtime-live reload URL failed execution preflight validation',
+          : 'runtime-live URL failed execution preflight validation',
       );
     }
     failures.push(...executionExecutableFailures(invocation, env, root));
     return failures.length === 0 ? undefined : failures;
   };
 
-  return files.map((file) => {
+  return fixtures.map(({ file }, index) => {
     const args = [
       'run',
       '--manifest-path',
@@ -209,27 +280,92 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       '--',
       file,
       '--live',
-      '--allow-network',
-      '--config',
-      configPath,
-      '--router-reload-url',
-      reloadTarget.normalized,
       '--artifact-root',
       artifactRoot,
+      ...runtimeLivePlatformSourceArgs(root),
+      '--activation-url',
+      activationUrl,
+      '--ingress-url',
+      ingressUrl,
+      '--environment',
+      environment,
+      '--expected-generation',
+      expectedGenerations[index],
       ...(invocation.canonicalPolicy.forbidSkips ? ['--deny-skips'] : []),
       ...(invocation.canonicalPolicy.forbidUnchecked ? ['--require-tests'] : []),
-      ...packageArgs,
     ];
-    const displayArgs = [...args];
-    displayArgs[displayArgs.indexOf('--router-reload-url') + 1] = reloadTarget.display;
     return executableInvocationPhase(root, invocation, {
       id: `${invocation.idPrefix}${repoRelative(root, file)}`,
       command: 'cargo',
       args,
-      displayArgs,
       executionPreflight,
     });
   });
+}
+
+function runtimeExpectedGenerations(initialValue, fixtureCount) {
+  if (!/^(?:0|[1-9][0-9]*)$/.test(initialValue)) {
+    throw new Error('runtime-live expected generation must be a non-negative integer');
+  }
+  const initial = BigInt(initialValue);
+  const maximum = BigInt(maxExpectedAssemblyGeneration);
+  const last = initial + BigInt(Math.max(0, fixtureCount - 1));
+  if (initial > maximum || last > maximum) {
+    throw new Error(
+      `runtime-live expected generation sequence ending at ${last} must not exceed ${maximum}`,
+    );
+  }
+  return Array.from(
+    { length: fixtureCount },
+    (_, index) => (initial + BigInt(index)).toString(),
+  );
+}
+
+export function runtimeLivePlatformSourceArgs(skiffRoot) {
+  return ['--platform-source-root', resolve(skiffRoot)];
+}
+
+function canonicalPackageRoot(repositoryRoot, file) {
+  const boundary = resolve(repositoryRoot);
+  let current = dirname(resolve(file));
+  while (true) {
+    const fromBoundary = relative(boundary, current);
+    if (
+      fromBoundary === '..'
+      || fromBoundary.startsWith(`..${sep}`)
+      || isAbsolute(fromBoundary)
+    ) {
+      break;
+    }
+    if (isFile(join(current, 'package.yml'))) {
+      return current;
+    }
+    if (current === boundary) {
+      break;
+    }
+    current = dirname(current);
+  }
+  return undefined;
+}
+
+function canonicalRuntimeUrl(value, expectedPath) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('runtime-live URL must be an absolute http:// URL');
+  }
+  if (
+    url.protocol !== 'http:'
+    || url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== ''
+    || url.pathname !== expectedPath
+  ) {
+    throw new Error(`runtime-live URL must point exactly to ${expectedPath}`);
+  }
+  return url.toString().replace(/\/$/, expectedPath === '/' ? '' : '');
 }
 
 function fixedCommandPhase(root, entry, invocation, inputValues, loopRiskState, env) {

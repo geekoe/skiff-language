@@ -1,12 +1,14 @@
 use std::{cmp::Ordering, collections::BTreeMap, fmt};
 
-use crate::addr::{ExecutableAddr, TypeAddr};
+use crate::{
+    addr::{ExecutableAddr, TypeAddr},
+    service_error::{CatchIdentity, RequestException},
+};
 
 pub type RuntimeString = String;
 pub type RuntimeObjectFields = BTreeMap<RuntimeString, RuntimeValue>;
 pub type RuntimeMap = BTreeMap<RuntimeValueKey, RuntimeValue>;
 pub type InterfaceMethodTableId = RuntimeString;
-pub type RemoteOperationTableId = RuntimeString;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeBytes {
@@ -88,6 +90,85 @@ pub enum RuntimeValue {
     Heap(HeapHandle),
 }
 
+/// Canonical runtime value carrier for nominal catch identity.
+///
+/// Slots, container elements and call arguments can carry this value by move
+/// or clone without reconstructing identity from a static type plan or runtime
+/// shape. Structural values deliberately use `unidentified`; nominal records,
+/// representations and selected union branches use `identified`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeValueCarrier {
+    value: RuntimeValue,
+    catch_identity: Option<CatchIdentity>,
+}
+
+impl RuntimeValueCarrier {
+    pub fn unidentified(value: RuntimeValue) -> Self {
+        Self {
+            value,
+            catch_identity: None,
+        }
+    }
+
+    pub fn identified(value: RuntimeValue, catch_identity: CatchIdentity) -> Self {
+        Self {
+            value,
+            catch_identity: Some(catch_identity),
+        }
+    }
+
+    pub fn from_parts(value: RuntimeValue, catch_identity: Option<CatchIdentity>) -> Self {
+        Self {
+            value,
+            catch_identity,
+        }
+    }
+
+    pub fn value(&self) -> &RuntimeValue {
+        &self.value
+    }
+
+    pub fn into_value(self) -> RuntimeValue {
+        self.value
+    }
+
+    pub fn into_parts(self) -> (RuntimeValue, Option<CatchIdentity>) {
+        (self.value, self.catch_identity)
+    }
+
+    pub fn map_value(self, map: impl FnOnce(RuntimeValue) -> RuntimeValue) -> Self {
+        let (value, catch_identity) = self.into_parts();
+        Self {
+            value: map(value),
+            catch_identity,
+        }
+    }
+
+    pub fn catch_identity(&self) -> Option<&CatchIdentity> {
+        self.catch_identity.as_ref()
+    }
+}
+
+impl From<RuntimeValue> for RuntimeValueCarrier {
+    fn from(value: RuntimeValue) -> Self {
+        Self::unidentified(value)
+    }
+}
+
+impl std::ops::Deref for RuntimeValueCarrier {
+    type Target = RuntimeValue;
+
+    fn deref(&self) -> &Self::Target {
+        self.value()
+    }
+}
+
+impl AsRef<RuntimeValue> for RuntimeValueCarrier {
+    fn as_ref(&self) -> &RuntimeValue {
+        self.value()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct InterfaceValue {
     interface: RuntimeString,
@@ -123,11 +204,6 @@ pub enum InterfaceCarrier {
         method_table: InterfaceMethodTable,
         payload: RuntimeValue,
     },
-    Remote {
-        dependency_ref: RuntimeString,
-        public_instance_key: RuntimeString,
-        operations: RemoteOperationTable,
-    },
     /// Opaque request-scoped route back to the activation that owns a
     /// boundary-capable interface or native adapter.
     ///
@@ -141,7 +217,6 @@ impl InterfaceCarrier {
     pub const fn kind_label(&self) -> &'static str {
         match self {
             Self::Local { .. } => "local",
-            Self::Remote { .. } => "remote",
             Self::CallbackCapability(_) => "callback capability",
         }
     }
@@ -191,68 +266,6 @@ impl CallbackCapabilityCarrier {
 
     pub fn opaque_capability_id(&self) -> &str {
         &self.opaque_capability_id
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteOperationTable {
-    id: RemoteOperationTableId,
-    interface_abi_id: RuntimeString,
-    slots: Vec<RemoteOperationSlot>,
-}
-
-impl RemoteOperationTable {
-    pub fn new(
-        id: RemoteOperationTableId,
-        interface_abi_id: RuntimeString,
-        slots: Vec<RemoteOperationSlot>,
-    ) -> Self {
-        Self {
-            id,
-            interface_abi_id,
-            slots,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn interface_abi_id(&self) -> &str {
-        &self.interface_abi_id
-    }
-
-    pub fn slots(&self) -> &[RemoteOperationSlot] {
-        &self.slots
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteOperationSlot {
-    slot: u32,
-    method_abi_id: RuntimeString,
-    operation_abi_id: RuntimeString,
-}
-
-impl RemoteOperationSlot {
-    pub fn new(slot: u32, method_abi_id: RuntimeString, operation_abi_id: RuntimeString) -> Self {
-        Self {
-            slot,
-            method_abi_id,
-            operation_abi_id,
-        }
-    }
-
-    pub fn slot(&self) -> u32 {
-        self.slot
-    }
-
-    pub fn method_abi_id(&self) -> &str {
-        &self.method_abi_id
-    }
-
-    pub fn operation_abi_id(&self) -> &str {
-        &self.operation_abi_id
     }
 }
 
@@ -378,7 +391,8 @@ impl InterfaceMethodSignature {
 }
 
 /// Linked execution-type facts used only for typed callback projection. These
-/// variants intentionally do not carry `ContractTypeId`: contract nominal
+/// Variants intentionally carry no service-owned schema identity: Package schema
+/// nominal identity is resolved before values enter the runtime model.
 /// identity and local execution identity remain separate domains.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterfaceMethodType {
@@ -387,6 +401,10 @@ pub enum InterfaceMethodType {
         arguments: Vec<InterfaceMethodType>,
     },
     Nominal(TypeAddr),
+    AppliedNominal {
+        base: TypeAddr,
+        arguments: Vec<InterfaceMethodType>,
+    },
     Record(BTreeMap<RuntimeString, InterfaceMethodType>),
     Union(Vec<InterfaceMethodType>),
     Nullable(Box<InterfaceMethodType>),
@@ -549,6 +567,7 @@ pub enum HeapNode {
     Object(RuntimeObject),
     Map(RuntimeMap),
     Interface(InterfaceValue),
+    Exception(RequestException),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -612,6 +631,91 @@ impl PartialOrd for RuntimeValueKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        addr::{FileAddr, UnitAddr},
+        service_error::{
+            CatchIdentity, LocalExecutionTypeIdentity, NamedUnionBranchIdentity,
+            NamedUnionOwnerIdentity, NominalTypeIdentity,
+        },
+    };
+
+    fn local_nominal(type_index: usize) -> LocalExecutionTypeIdentity {
+        LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::loaded_file(0),
+                type_index,
+            },
+            type_arguments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_value_carrier_distinguishes_equal_shapes_by_nominal_identity() {
+        let payload = RuntimeValue::from("same");
+        let first = RuntimeValueCarrier::identified(
+            payload.clone(),
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(1))),
+        );
+        let second = RuntimeValueCarrier::identified(
+            payload,
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(2))),
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn runtime_value_carrier_keeps_representation_outer_identity() {
+        let identity =
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(3)));
+        let representation = RuntimeValueCarrier::identified(
+            RuntimeValue::from("primitive payload"),
+            identity.clone(),
+        );
+
+        assert_eq!(representation.catch_identity(), Some(&identity));
+        assert_eq!(
+            representation.value(),
+            &RuntimeValue::from("primitive payload")
+        );
+    }
+
+    #[test]
+    fn named_union_branch_identity_includes_enclosing_union_context() {
+        let branch = NamedUnionBranchIdentity::SyntheticDiscriminator {
+            discriminator_field: "kind".to_string(),
+            discriminator_value: "retryable".to_string(),
+        };
+        let first = RuntimeValueCarrier::identified(
+            RuntimeValue::Null,
+            CatchIdentity::NamedUnionBranch {
+                union: NamedUnionOwnerIdentity::LocalExecution(local_nominal(10)),
+                branch: branch.clone(),
+            },
+        );
+        let second = RuntimeValueCarrier::identified(
+            RuntimeValue::Null,
+            CatchIdentity::NamedUnionBranch {
+                union: NamedUnionOwnerIdentity::LocalExecution(local_nominal(11)),
+                branch,
+            },
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn carrier_clone_preserves_identity_for_slot_container_and_call_handoffs() {
+        let identity =
+            CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(local_nominal(12)));
+        let assigned =
+            RuntimeValueCarrier::identified(RuntimeValue::from("payload"), identity.clone());
+        let container = [assigned.clone()];
+        let call_argument = container[0].clone();
+
+        assert_eq!(call_argument.catch_identity(), Some(&identity));
+    }
 
     #[test]
     fn interface_value_local_carrier_keeps_method_table_and_payload() {
@@ -652,45 +756,6 @@ mod tests {
         );
         assert_eq!(method_table.slots()[0].slot(), 0);
         assert_eq!(payload, &RuntimeValue::Null);
-
-        let remote_value = InterfaceValue::new(
-            interface.clone(),
-            InterfaceCarrier::Remote {
-                dependency_ref: "svc.reader".to_string(),
-                public_instance_key: "reader#42".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    "reader-interface".to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        "method:reader:read".to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
-            },
-        );
-
-        let InterfaceCarrier::Remote {
-            dependency_ref,
-            public_instance_key,
-            operations,
-        } = remote_value.carrier()
-        else {
-            panic!("expected remote interface carrier");
-        };
-        assert_eq!(remote_value.interface(), interface);
-        assert_eq!(
-            remote_value.diagnostic_label(),
-            "any interface reader-interface<string> (remote)"
-        );
-        assert_eq!(dependency_ref, "svc.reader");
-        assert_eq!(public_instance_key, "reader#42");
-        assert_eq!(operations.slots()[0].slot(), 0);
-        assert_eq!(operations.slots()[0].method_abi_id(), "method:reader:read");
-        assert_eq!(
-            operations.slots()[0].operation_abi_id(),
-            "operation:reader:read"
-        );
     }
 
     #[test]

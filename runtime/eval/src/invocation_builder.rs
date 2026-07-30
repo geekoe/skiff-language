@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use skiff_runtime_capability_context::RequestPayloadContext;
 use skiff_runtime_linked_program::{
     ExecutableAddr, LinkedExecutable, LinkedTypeRef, ParamIr, ResolvedSymbol,
@@ -12,13 +10,9 @@ use crate::{
     error::{Result, RuntimeError},
     invocation::{
         AdapterArgPlan, AdapterArgSource, BinaryHttpRequestPlan, EvalBoundaryProjection,
-        EvalInvocation, EvalProgramProjection, EvalWebSocketConnectRequest,
-        EvalWebSocketContextCodec, EvalWebSocketContextExpectation, EvalWebSocketMessage,
-        EvalWebSocketMessageEncoding, EvalWebSocketMessageTag, EvalWebSocketNameValue,
-        EvalWebSocketPayloadSegment, EvalWebSocketPayloadSegmentKind, EvalWebSocketReceiveRequest,
-        HttpAdapterGuardProjection, HttpAdapterPreProjection, HttpAdapterProjection,
-        HttpAdapterProjectionKind, HttpAdapterResponseProjection, WebSocketAdapterProjection,
-        WebSocketAdapterProjectionKind,
+        EvalInvocation, EvalProgramProjection, HttpAdapterGuardProjection,
+        HttpAdapterPreProjection, HttpAdapterProjection, HttpAdapterProjectionKind,
+        HttpAdapterResponseProjection,
     },
     program_invocation::executable_request_payload_plan,
     program_ir::executable_has_explicit_self_binding,
@@ -32,7 +26,6 @@ pub struct EvalInvocationBuildInput<'a> {
     pub has_binary_http: bool,
     pub has_retired_actor_call_metadata: bool,
     pub http_adapter: Option<EvalInvocationBuildHttpAdapter>,
-    pub websocket_adapter: Option<EvalInvocationBuildWebSocketAdapter>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,100 +72,6 @@ pub enum EvalInvocationBuildArgFrom {
     HttpRequest,
     HttpBody,
     HttpContext,
-    WebSocketConnectRequest,
-    WebSocketReceiveEvent,
-    WebSocketConnection,
-    WebSocketConnectionContext,
-    WebSocketMessage,
-    WebSocketMessageBody,
-    WebSocketConnectionId,
-    WebSocketBusinessIdentity,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketAdapter {
-    pub kind: EvalInvocationBuildWebSocketKind,
-    pub args: Vec<EvalInvocationBuildArg>,
-    pub context_expectation: Option<EvalInvocationBuildWebSocketContextExpectation>,
-    pub connect_request: Option<EvalInvocationBuildWebSocketConnectRequest>,
-    pub receive_request: Option<EvalInvocationBuildWebSocketReceiveRequest>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalInvocationBuildWebSocketKind {
-    Connect,
-    Receive,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EvalInvocationBuildWebSocketContextExpectation {
-    Null,
-    Typed {
-        connect_operation_abi_id: String,
-        context_type_identity: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketContextCodec {
-    pub operation_abi_id: String,
-    pub context_type_identity: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketNameValue {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketConnectRequest {
-    pub connection_id: String,
-    pub url: String,
-    pub query: Vec<EvalInvocationBuildWebSocketNameValue>,
-    pub headers: Vec<EvalInvocationBuildWebSocketNameValue>,
-    pub cookies: Vec<EvalInvocationBuildWebSocketNameValue>,
-    pub version: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketReceiveRequest {
-    pub connection_id: String,
-    pub business_identity: Option<String>,
-    pub message: EvalInvocationBuildWebSocketMessage,
-    pub context_codec: Option<EvalInvocationBuildWebSocketContextCodec>,
-    pub payload_segments: Vec<EvalInvocationBuildWebSocketPayloadSegment>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketMessage {
-    pub tag: EvalInvocationBuildWebSocketMessageTag,
-    pub encoding: EvalInvocationBuildWebSocketMessageEncoding,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalInvocationBuildWebSocketMessageTag {
-    Text,
-    Binary,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalInvocationBuildWebSocketMessageEncoding {
-    Utf8,
-    Raw,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalInvocationBuildWebSocketPayloadSegment {
-    pub kind: EvalInvocationBuildWebSocketPayloadSegmentKind,
-    pub offset: usize,
-    pub length: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalInvocationBuildWebSocketPayloadSegmentKind {
-    Context,
-    Message,
 }
 
 impl EvalRuntimeProgram {
@@ -215,9 +114,6 @@ fn build_boundary_projection<'a>(
 ) -> Result<EvalBoundaryProjection<'a>> {
     if let Some(adapter) = input.http_adapter.as_ref() {
         return build_http_adapter_projection(input, operation, program, addr, adapter);
-    }
-    if let Some(adapter) = input.websocket_adapter.as_ref() {
-        return build_websocket_adapter_projection(input, operation, program, addr, adapter);
     }
     if input.has_retired_actor_call_metadata {
         return Err(RuntimeError::Unsupported(
@@ -384,148 +280,6 @@ fn build_http_adapter_projection<'a>(
             raw_handler_response,
         },
     })
-}
-
-fn build_websocket_adapter_projection<'a>(
-    input: &EvalInvocationBuildInput<'a>,
-    operation: &'a str,
-    program: EvalProgramProjection<'a>,
-    handler_addr: &'a ExecutableAddr,
-    adapter: &EvalInvocationBuildWebSocketAdapter,
-) -> Result<EvalBoundaryProjection<'a>> {
-    let kind = match adapter.kind {
-        EvalInvocationBuildWebSocketKind::Connect => WebSocketAdapterProjectionKind::Connect,
-        EvalInvocationBuildWebSocketKind::Receive => WebSocketAdapterProjectionKind::Receive,
-    };
-    Ok(EvalBoundaryProjection::WebSocketAdapter {
-        adapter: WebSocketAdapterProjection {
-            kind,
-            handler: Box::new(build_adapter_callable_invocation(
-                input,
-                operation,
-                program,
-                handler_addr,
-            )?),
-            handler_args: websocket_adapter_handler_arg_plans(
-                input,
-                program,
-                handler_addr,
-                adapter,
-            )?,
-            context_expectation: adapter
-                .context_expectation
-                .as_ref()
-                .map(eval_websocket_context_expectation),
-            connect_request: adapter
-                .connect_request
-                .as_ref()
-                .map(eval_websocket_connect_request),
-            receive_request: adapter
-                .receive_request
-                .as_ref()
-                .map(eval_websocket_receive_request),
-        },
-    })
-}
-
-fn eval_websocket_context_expectation(
-    expectation: &EvalInvocationBuildWebSocketContextExpectation,
-) -> EvalWebSocketContextExpectation {
-    match expectation {
-        EvalInvocationBuildWebSocketContextExpectation::Null => {
-            EvalWebSocketContextExpectation::Null
-        }
-        EvalInvocationBuildWebSocketContextExpectation::Typed {
-            connect_operation_abi_id,
-            context_type_identity,
-        } => EvalWebSocketContextExpectation::Typed {
-            connect_operation_abi_id: connect_operation_abi_id.clone(),
-            context_type_identity: context_type_identity.clone(),
-        },
-    }
-}
-
-fn eval_websocket_context_codec(
-    codec: &EvalInvocationBuildWebSocketContextCodec,
-) -> EvalWebSocketContextCodec {
-    EvalWebSocketContextCodec {
-        operation_abi_id: codec.operation_abi_id.clone(),
-        context_type_identity: codec.context_type_identity.clone(),
-    }
-}
-
-fn eval_websocket_connect_request(
-    request: &EvalInvocationBuildWebSocketConnectRequest,
-) -> EvalWebSocketConnectRequest {
-    EvalWebSocketConnectRequest {
-        connection_id: request.connection_id.clone(),
-        url: request.url.clone(),
-        query: eval_websocket_name_values(&request.query),
-        headers: eval_websocket_name_values(&request.headers),
-        cookies: eval_websocket_name_values(&request.cookies),
-        version: request.version.clone(),
-    }
-}
-
-fn eval_websocket_receive_request(
-    request: &EvalInvocationBuildWebSocketReceiveRequest,
-) -> EvalWebSocketReceiveRequest {
-    EvalWebSocketReceiveRequest {
-        connection_id: request.connection_id.clone(),
-        business_identity: request.business_identity.clone(),
-        message: eval_websocket_message(&request.message),
-        context_codec: request
-            .context_codec
-            .as_ref()
-            .map(eval_websocket_context_codec),
-        payload_segments: request
-            .payload_segments
-            .iter()
-            .map(eval_websocket_payload_segment)
-            .collect(),
-    }
-}
-
-fn eval_websocket_name_values(
-    items: &[EvalInvocationBuildWebSocketNameValue],
-) -> Vec<EvalWebSocketNameValue> {
-    items
-        .iter()
-        .map(|item| EvalWebSocketNameValue {
-            name: item.name.clone(),
-            value: item.value.clone(),
-        })
-        .collect()
-}
-
-fn eval_websocket_message(message: &EvalInvocationBuildWebSocketMessage) -> EvalWebSocketMessage {
-    EvalWebSocketMessage {
-        tag: match message.tag {
-            EvalInvocationBuildWebSocketMessageTag::Text => EvalWebSocketMessageTag::Text,
-            EvalInvocationBuildWebSocketMessageTag::Binary => EvalWebSocketMessageTag::Binary,
-        },
-        encoding: match message.encoding {
-            EvalInvocationBuildWebSocketMessageEncoding::Utf8 => EvalWebSocketMessageEncoding::Utf8,
-            EvalInvocationBuildWebSocketMessageEncoding::Raw => EvalWebSocketMessageEncoding::Raw,
-        },
-    }
-}
-
-fn eval_websocket_payload_segment(
-    segment: &EvalInvocationBuildWebSocketPayloadSegment,
-) -> EvalWebSocketPayloadSegment {
-    EvalWebSocketPayloadSegment {
-        kind: match segment.kind {
-            EvalInvocationBuildWebSocketPayloadSegmentKind::Context => {
-                EvalWebSocketPayloadSegmentKind::Context
-            }
-            EvalInvocationBuildWebSocketPayloadSegmentKind::Message => {
-                EvalWebSocketPayloadSegmentKind::Message
-            }
-        },
-        offset: segment.offset,
-        length: segment.length,
-    }
 }
 
 fn build_adapter_callable_invocation<'a>(
@@ -732,27 +486,6 @@ fn http_adapter_handler_arg_plans(
                     "HTTP raw adapter does not support body handler arg",
                 ));
             }
-            (
-                _,
-                AdapterArgSource::WebSocketConnectRequest
-                | AdapterArgSource::WebSocketReceiveEvent
-                | AdapterArgSource::WebSocketConnection
-                | AdapterArgSource::WebSocketConnectionContext
-                | AdapterArgSource::WebSocketMessage
-                | AdapterArgSource::WebSocketMessageBody
-                | AdapterArgSource::WebSocketConnectionId
-                | AdapterArgSource::WebSocketBusinessIdentity,
-            ) => {
-                let message = match kind {
-                    HttpAdapterProjectionKind::TypedJson => {
-                        "WebSocket adapter source is not valid for HTTP adapter"
-                    }
-                    HttpAdapterProjectionKind::RawHttp => {
-                        "WebSocket adapter source is not valid for HTTP raw adapter"
-                    }
-                };
-                return Err(protocol_error(input, message));
-            }
         }
 
         let parameter_plan = match source {
@@ -764,16 +497,7 @@ fn http_adapter_handler_arg_plans(
                 program.type_view(),
                 handler_addr,
             )?,
-            AdapterArgSource::HttpBody
-            | AdapterArgSource::HttpContext
-            | AdapterArgSource::WebSocketConnectRequest
-            | AdapterArgSource::WebSocketReceiveEvent
-            | AdapterArgSource::WebSocketConnection
-            | AdapterArgSource::WebSocketConnectionContext
-            | AdapterArgSource::WebSocketMessage
-            | AdapterArgSource::WebSocketMessageBody
-            | AdapterArgSource::WebSocketConnectionId
-            | AdapterArgSource::WebSocketBusinessIdentity => {
+            AdapterArgSource::HttpBody | AdapterArgSource::HttpContext => {
                 runtime_type_plan_from_linked(&param.ty, program.type_view(), handler_addr)?
             }
         };
@@ -854,96 +578,6 @@ fn http_adapter_arg_for_param<'a>(
         })
 }
 
-fn websocket_adapter_handler_arg_plans(
-    input: &EvalInvocationBuildInput<'_>,
-    program: EvalProgramProjection<'_>,
-    handler_addr: &ExecutableAddr,
-    adapter: &EvalInvocationBuildWebSocketAdapter,
-) -> Result<Vec<AdapterArgPlan>> {
-    let executable = program
-        .executable(handler_addr)
-        .map_err(|error| RuntimeError::InvalidArtifact(error.to_string()))?;
-    let linked_executable = executable.executable;
-    let params = linked_executable
-        .params
-        .iter()
-        .skip(usize::from(executable_has_explicit_self_binding(
-            linked_executable,
-        )))
-        .collect::<Vec<_>>();
-    if params.len() != adapter.args.len() {
-        return Err(protocol_error(
-            input,
-            format!(
-                "websocket adapter handler {} expected {} args, plan declares {}",
-                linked_executable.symbol,
-                params.len(),
-                adapter.args.len()
-            ),
-        ));
-    }
-
-    let param_by_name = params
-        .iter()
-        .enumerate()
-        .map(|(index, param)| (param.name.as_str(), index))
-        .collect::<BTreeMap<_, _>>();
-    let mut args_by_index: Vec<Option<AdapterArgPlan>> = vec![None; params.len()];
-    for arg in &adapter.args {
-        let Some(index) = param_by_name.get(arg.param.as_str()).copied() else {
-            return Err(protocol_error(
-                input,
-                format!(
-                    "websocket adapter arg references unknown parameter {}",
-                    arg.param
-                ),
-            ));
-        };
-        if args_by_index[index].is_some() {
-            return Err(protocol_error(
-                input,
-                format!("websocket adapter arg duplicates parameter {}", arg.param),
-            ));
-        }
-        let source = adapter_arg_source(arg.from);
-        if matches!(
-            source,
-            AdapterArgSource::HttpRequest
-                | AdapterArgSource::HttpBody
-                | AdapterArgSource::HttpContext
-        ) {
-            return Err(protocol_error(
-                input,
-                "HTTP adapter source is not valid for websocket adapter",
-            ));
-        }
-        let param = params[index];
-        let parameter_plan =
-            runtime_type_plan_from_linked(&param.ty, program.type_view(), handler_addr)?;
-        args_by_index[index] = Some(AdapterArgPlan {
-            parameter_name: param.name.clone(),
-            source,
-            parameter_plan,
-        });
-    }
-
-    args_by_index
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value.ok_or_else(|| {
-                protocol_error(
-                    input,
-                    format!(
-                        "websocket adapter args missing parameter {}",
-                        params[index].name
-                    ),
-                )
-            })
-        })
-        .collect::<Result<Vec<_>>>()
-}
-
 fn runtime_type_plan_from_linked<'p>(
     linked: &LinkedTypeRef,
     program: impl Into<ProgramTypeView<'p>>,
@@ -960,24 +594,6 @@ fn adapter_arg_source(source: EvalInvocationBuildArgFrom) -> AdapterArgSource {
         EvalInvocationBuildArgFrom::HttpRequest => AdapterArgSource::HttpRequest,
         EvalInvocationBuildArgFrom::HttpBody => AdapterArgSource::HttpBody,
         EvalInvocationBuildArgFrom::HttpContext => AdapterArgSource::HttpContext,
-        EvalInvocationBuildArgFrom::WebSocketConnectRequest => {
-            AdapterArgSource::WebSocketConnectRequest
-        }
-        EvalInvocationBuildArgFrom::WebSocketReceiveEvent => {
-            AdapterArgSource::WebSocketReceiveEvent
-        }
-        EvalInvocationBuildArgFrom::WebSocketConnection => AdapterArgSource::WebSocketConnection,
-        EvalInvocationBuildArgFrom::WebSocketConnectionContext => {
-            AdapterArgSource::WebSocketConnectionContext
-        }
-        EvalInvocationBuildArgFrom::WebSocketMessage => AdapterArgSource::WebSocketMessage,
-        EvalInvocationBuildArgFrom::WebSocketMessageBody => AdapterArgSource::WebSocketMessageBody,
-        EvalInvocationBuildArgFrom::WebSocketConnectionId => {
-            AdapterArgSource::WebSocketConnectionId
-        }
-        EvalInvocationBuildArgFrom::WebSocketBusinessIdentity => {
-            AdapterArgSource::WebSocketBusinessIdentity
-        }
     }
 }
 

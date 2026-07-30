@@ -1,11 +1,13 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use skiff_artifact_model::{ContractTypeId, FileIrUnit, TypeRefIr};
+use skiff_artifact_model::{FileIrUnit, PackageSchemaTypeId, TypeRefIr};
+use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
     build_package_from_parsed_sources_with_dependency_analysis,
-    parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
-    CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageSourceModel,
-    PublicationTypeSymbolIndex, SourceDependencyAnalysisInput, SourceSymbolKey,
+    parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+    source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput, PackageCompilePolicy,
+    PackageDependencyAnalysisFacts, PackageSourceModel, PublicationTypeSymbolIndex,
+    SourceDependencyAnalysisInput, SourceSymbolKey,
 };
 
 use super::{
@@ -23,7 +25,7 @@ const MODULE: &str = "internal.interface_execution";
 
 #[test]
 fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
-    let (model, contract_type_id) = contract_interface_model();
+    let (model, package_schema_type_id) = contract_interface_model();
     let empty_external_types = PublicationTypeSymbolIndex::default();
     let empty = lower_model_with_external_types(&model, &empty_external_types);
     let mut unrelated_external_types = PublicationTypeSymbolIndex::default();
@@ -40,12 +42,7 @@ fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
     let expected = nested_contract_execution_type();
     let operation = &empty.declarations.interfaces["Gateway"].operations[0];
     assert_eq!(operation.name, "echo");
-    assert_eq!(
-        operation.params[0].ty,
-        TypeRefIr::TypeParam {
-            name: "Self".to_string()
-        }
-    );
+    assert_eq!(operation.params[0].ty, TypeRefIr::builtin("Self"));
     assert_eq!(operation.params[1].name, "input");
     assert_eq!(operation.params[1].ty, expected);
     assert_eq!(operation.return_type, expected);
@@ -63,7 +60,10 @@ fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
     let wire = serde_json::to_string(&empty).unwrap();
     for forbidden in [
         "payments",
-        contract_type_id.as_str(),
+        "types.User",
+        "payments.User",
+        package_schema_type_id.as_str(),
+        "packageSchemaTypeId",
         "contractTypeId",
         "serviceSymbol",
     ] {
@@ -90,9 +90,27 @@ fn standalone_interface_lowering_without_exact_facts_fails_closed() {
     );
 }
 
-fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
-    let (dependency, contract_type_id) = contract_dependency();
-    let dependency_analysis = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
+fn contract_interface_model() -> (PackageSourceModel, PackageSchemaTypeId) {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    initialize_prelude_registry(
+        &CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load"),
+    )
+    .expect("prelude registry initializes");
+    let (dependency, package_type_record, package_local_abi) = contract_dependency();
+    let package_schema_type_id = package_type_record.package_schema_type_id.clone();
+    let dependency_analysis = SourceDependencyAnalysisInput::new(
+        [(
+            "types".to_string(),
+            PackageDependencyAnalysisFacts::new(
+                skiff_artifact_model::PackageBuildId::new("build:types"),
+                package_local_abi,
+                BTreeMap::new(),
+            )
+            .with_schema_records([package_type_record]),
+        )],
+        [dependency],
+    )
+    .unwrap();
     let root = PathBuf::from("/contract-interface");
     let source = CompilerSourceFile::parse(
         PathBuf::from("internal/interface_execution.skiff"),
@@ -104,7 +122,7 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
             function echo(
               self: Self,
               input: Array<payments.User?>?
-            ) -> Array<payments.User?>?
+            ) -> Array<types.User?>?
           }
 
           type Handler implements Gateway {}
@@ -112,7 +130,7 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
             function echo(
               self: Handler,
               input: Array<payments.User?>?
-            ) -> Array<payments.User?>? {
+            ) -> Array<types.User?>? {
               return input
             }
           }
@@ -134,12 +152,13 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
             package_aliases: &package_aliases,
             package_dependencies: &[],
             package_facts: None,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/contract-interface"),
         },
         &dependency_analysis,
     )
     .expect("contract interface source model should build");
-    (model, contract_type_id)
+    (model, package_schema_type_id)
 }
 
 fn lower_model_with_external_types(
@@ -177,6 +196,7 @@ fn lower_model_with_external_types(
                     .alias_targets_for_module(parsed.module_path()),
                 type_resolution: model.type_resolution(),
                 expression_types: Some(model.expression_types()),
+                execution_semantics: Some(model.execution_semantics()),
                 callable_return_types: &callable_return_types,
                 executable_signatures: model.executable_signatures(),
                 interface_signatures: Some(model.interface_signatures()),
@@ -195,10 +215,18 @@ fn source_error(error: impl std::fmt::Display) -> skiff_compiler_source::SourceC
 
 fn nested_contract_execution_type() -> TypeRefIr {
     TypeRefIr::Nullable {
-        inner: Box::new(TypeRefIr::Native {
+        inner: Box::new(TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::Nullable {
-                inner: Box::new(TypeRefIr::native("unknown")),
+                inner: Box::new(TypeRefIr::PackageSymbol {
+                    symbol: skiff_artifact_model::PackageSymbolRef {
+                        package: skiff_artifact_model::PackageRefIr::PackageId {
+                            package_id: "example.types".to_string(),
+                        },
+                        symbol_path: "User".to_string(),
+                        abi_expectation: None,
+                    },
+                }),
             }],
         }),
     }

@@ -1,46 +1,23 @@
-export const devSyncCheckFlags = Object.freeze(['--check', '--check-sync']);
-
-export const serviceDevSyncOptions = Object.freeze([
-  '--root',
-  '--profile',
-  '--artifact-root',
-  '--reload-url',
-  '--config',
-  '--service-id',
-  '--packages-dir',
-  '--service-artifact-root',
-]);
-
-export const serviceDevWatchOptions = Object.freeze([
-  '--root',
-  '--profile',
-  '--artifact-root',
-  '--reload-url',
-  '--config',
-  '--service-id',
-  '--poll-interval-ms',
-  '--packages-dir',
-  '--service-artifact-root',
-]);
+export const devSyncFlags = Object.freeze(['--build-only', '--json']);
 
 export const instanceDevSyncOptions = Object.freeze([
   '--root',
-  '--profile',
-  '--service-id',
+  '--artifact-root',
+  '--activation-url',
+  '--activation-id',
+  '--expected-generation',
+  '--environment',
   '--poll-interval-ms',
-  '--packages-dir',
-  '--default-packages-dir',
-  '--service-artifact-root',
 ]);
 
-const repeatableDevSyncOptions = new Set(['--packages-dir', '--default-packages-dir', '--service-artifact-root']);
+const repeatableDevSyncOptions = new Set();
 const forwardOptionOrder = Object.freeze([
-  ['profile', '--profile'],
   ['artifactRoot', '--artifact-root'],
-  ['buildRoot', '--build-root'],
-  ['reloadUrl', '--reload-url'],
+  ['activationUrl', '--activation-url'],
+  ['activationId', '--activation-id'],
+  ['expectedGeneration', '--expected-generation'],
+  ['environment', '--environment'],
   ['config', '--config'],
-  ['serviceId', '--service-id'],
   ['pollIntervalMs', '--poll-interval-ms'],
 ]);
 
@@ -114,7 +91,7 @@ export function renderDevSyncArgs(parsed, options = {}) {
 
 export function renderDevSyncFlags(flags) {
   const selected = flags instanceof Set ? flags : new Set(flags ?? []);
-  return devSyncCheckFlags.filter((flag) => selected.has(flag));
+  return devSyncFlags.filter((flag) => selected.has(flag));
 }
 
 export function renderDevSyncRoot(root) {
@@ -127,15 +104,6 @@ export function renderDevSyncOptions(options) {
     if (options[key] !== undefined) {
       result.push(option, options[key]);
     }
-  }
-  for (const packageDir of options.packagesDir ?? []) {
-    result.push('--packages-dir', packageDir);
-  }
-  for (const packageDir of options.defaultPackagesDir ?? []) {
-    result.push('--default-packages-dir', packageDir);
-  }
-  for (const serviceArtifactRoot of options.serviceArtifactRoot ?? []) {
-    result.push('--service-artifact-root', serviceArtifactRoot);
   }
   return result;
 }

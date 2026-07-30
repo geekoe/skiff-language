@@ -1,6 +1,7 @@
 import type { ActorKey } from './identity.js';
 
 export type ActorRegistryStatus = 'present' | 'removing' | 'removed';
+export type ActorLifecycleState = 'inactive' | 'activating' | 'live' | 'upgrading';
 export type ActorExecutionKind = 'sync' | 'spawn';
 export type ActorExecutionState = 'accepted' | 'dispatching' | 'running' | 'finishing';
 export type ActorExecutionTerminalState =
@@ -15,12 +16,18 @@ export interface ActorRegistryEntry {
   epoch: number;
   actorTypeIdentity: string;
   actorIdTypeIdentity: string;
-  objectSchemaIdentity: string;
-  objectEncodingVersion: string;
-  encodedObjectBytes: Uint8Array;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  retiredImplementationIdentities: string[];
+  lifecycleState: ActorLifecycleState;
+  targetImplementationIdentity?: string | undefined;
+  bootstrapEncodingVersion: string;
+  encodedBootstrapBytes: Uint8Array;
   ownerRuntimeId?: string | undefined;
   ownerLeaseId?: string | undefined;
   ownerLeaseExpiresAt?: Date | undefined;
+  idleEvictionRequestId?: string | undefined;
+  idleEvictionRequestedAt?: Date | undefined;
   lastBusyAt?: Date | undefined;
   lastIdleAt?: Date | undefined;
   createdAt: Date;
@@ -28,11 +35,12 @@ export interface ActorRegistryEntry {
   diagnostics?: Record<string, unknown> | undefined;
 }
 
-export interface PutActorInput {
+export interface ActorBootstrapInput {
   actorKey: ActorKey;
-  objectSchemaIdentity: string;
-  objectEncodingVersion: string;
-  encodedObjectBytes: Uint8Array;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
+  encodedBootstrapBytes: Uint8Array;
   now?: Date | undefined;
   diagnostics?: Record<string, unknown> | undefined;
 }
@@ -88,8 +96,130 @@ export interface FinishSpawnActorExecutionInput extends FinishActorExecutionInpu
   leaseId: string;
 }
 
+export interface ActorOwnerFence {
+  actorKey: ActorKey;
+  epoch: number;
+  implementationIdentity: string;
+  ownerRuntimeId: string;
+  ownerLeaseId: string;
+  ownerLeaseExpiresAt: Date;
+}
+
+export interface ActorUpgradeFence {
+  actorKey: ActorKey;
+  oldEpoch: number;
+  oldImplementationIdentity: string;
+  oldOwnerRuntimeId: string;
+  oldOwnerLeaseId: string;
+  targetImplementationIdentity: string;
+}
+
+export interface ActorUpgradeTransition {
+  actorKey: ActorKey;
+  oldEpoch: number;
+  newEpoch: number;
+  actorAbiIdentity: string;
+  targetImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
+  encodedBootstrapBytes: Uint8Array;
+}
+
+export type CompleteActorUpgradeResult =
+  | { ok: true; transition: ActorUpgradeTransition; entry: ActorRegistryEntry }
+  | {
+      ok: false;
+      reason: 'NotPresent' | 'FenceMismatch' | 'StillActive';
+    };
+
+export interface ActorIdleEvictionFence extends ActorOwnerFence {
+  evictionRequestId: string;
+}
+
+export interface ExpiredActorOwner {
+  fence: ActorOwnerFence;
+  failedInvocations: ActorInvocationLedger[];
+}
+
+export interface DisconnectActorOwnerResult {
+  released: boolean;
+  failedInvocations: ActorInvocationLedger[];
+}
+
+export type AcquireActorOwnerResult =
+  | { ok: true; fence: ActorOwnerFence; entry: ActorRegistryEntry }
+  | {
+      ok: false;
+      reason: 'NotPresent' | 'EpochMismatch' | 'ImplementationMismatch' | 'OwnerLeaseHeld';
+      entry?: ActorRegistryEntry | undefined;
+    };
+
+export type RenewActorOwnerResult =
+  | { ok: true; fence: ActorOwnerFence; entry: ActorRegistryEntry }
+  | { ok: false; reason: 'NotPresent' | 'FenceMismatch' | 'LeaseExpired' };
+
+export interface ActorMethodAdmissionInput {
+  invocationId: string;
+  actorKey: ActorKey;
+  expectedEpoch: number;
+  actorAbiIdentity: string;
+  requestedImplementationIdentity: string;
+  methodIdentity: string;
+  methodKnown: boolean;
+  now?: Date | undefined;
+}
+
+export type ActorMethodAdmissionRejection =
+  | { reason: 'NotPresent' }
+  | { reason: 'IncarnationReplaced'; currentEpoch: number }
+  | { reason: 'AbiMismatch'; acceptedActorAbiIdentity: string }
+  | { reason: 'UnknownMethod' }
+  | {
+      reason: 'VersionRejected';
+      acceptedImplementationIdentity: string;
+    }
+  | { reason: 'Upgrading'; retryAfterMs: number }
+  | { reason: 'OwnerUnavailable' }
+  | { reason: 'InvocationAlreadyExists' };
+
+export interface ActorInvocationLedger {
+  invocationId: string;
+  actorKey: ActorKey;
+  epoch: number;
+  actorAbiIdentity: string;
+  implementationIdentity: string;
+  methodIdentity: string;
+  ownerRuntimeId: string;
+  ownerLeaseId: string;
+  state: 'admitted' | 'dispatched' | 'completed' | 'cancelled' | 'failed';
+  admittedAt: Date;
+  updatedAt: Date;
+  terminalReason?: string | undefined;
+}
+
+export type AdmitActorMethodResult =
+  | {
+      ok: true;
+      ownerFence: ActorOwnerFence;
+      invocation: ActorInvocationLedger;
+    }
+  | { ok: false; rejection: ActorMethodAdmissionRejection };
+
+export type ActorInvocationTransitionState =
+  | 'dispatched'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
+
+export type TransitionActorInvocationResult =
+  | { ok: true; invocation: ActorInvocationLedger }
+  | {
+      ok: false;
+      reason: 'Missing' | 'FenceMismatch' | 'InvalidTransition';
+    };
+
 export interface ActorRegistryStore {
-  put(input: PutActorInput): Promise<ActorRegistryEntry>;
+  getOrCreate(input: ActorBootstrapInput): Promise<ActorRegistryEntry>;
+  replace(input: ActorBootstrapInput): Promise<ActorRegistryEntry>;
   find(actorKey: ActorKey): Promise<ActorRegistryEntry | undefined>;
   remove(actorKey: ActorKey, now?: Date): Promise<boolean>;
   acquireOwnerLease(input: {
@@ -99,12 +229,82 @@ export interface ActorRegistryStore {
     ownerLeaseId: string;
     ownerLeaseExpiresAt: Date;
     now?: Date | undefined;
-  }): Promise<ActorRegistryEntry | undefined>;
+    actorImplementationIdentity?: string | undefined;
+  }): Promise<AcquireActorOwnerResult>;
+  markOwnerLive(input: {
+    actorKey: ActorKey;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    now?: Date | undefined;
+  }): Promise<boolean>;
+  renewOwnerLease(input: {
+    actorKey: ActorKey;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    ownerLeaseExpiresAt: Date;
+    now?: Date | undefined;
+  }): Promise<RenewActorOwnerResult>;
   releaseOwnerLease(input: {
     actorKey: ActorKey;
     expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
     ownerLeaseId: string;
     now?: Date | undefined;
+  }): Promise<boolean>;
+  admitActorMethod(input: ActorMethodAdmissionInput): Promise<AdmitActorMethodResult>;
+  actorUpgradeFence(actorKey: ActorKey): Promise<ActorUpgradeFence | undefined>;
+  completeActorUpgrade(input: {
+    fence: ActorUpgradeFence;
+    now?: Date | undefined;
+  }): Promise<CompleteActorUpgradeResult>;
+  waitForActorUpgradeDrain(input: {
+    fence: ActorUpgradeFence;
+    deadlineAt?: Date | undefined;
+  }): Promise<'Drained' | 'DeadlineExceeded' | 'FenceMismatch'>;
+  transitionActorInvocation(input: {
+    invocationId: string;
+    actorKey: ActorKey;
+    expectedEpoch: number;
+    actorImplementationIdentity: string;
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    nextState: ActorInvocationTransitionState;
+    terminalReason?: string | undefined;
+    now?: Date | undefined;
+  }): Promise<TransitionActorInvocationResult>;
+  actorInvocation(invocationId: string): Promise<ActorInvocationLedger | undefined>;
+  failInvocationsForOwner(input: {
+    ownerRuntimeId: string;
+    ownerLeaseId: string;
+    now?: Date | undefined;
+    terminalReason: string;
+  }): Promise<ActorInvocationLedger[]>;
+  disconnectOwner(input: {
+    fence: ActorOwnerFence;
+    now?: Date | undefined;
+    terminalReason: string;
+  }): Promise<DisconnectActorOwnerResult>;
+  expireOwnerLeases(input: {
+    now: Date;
+    terminalReason: string;
+  }): Promise<ExpiredActorOwner[]>;
+  idleOwnerCandidates(input: {
+    now: Date;
+    idleTtlMs: number;
+  }): Promise<ActorOwnerFence[]>;
+  requestIdleOwnerEviction(input: {
+    fence: ActorOwnerFence;
+    evictionRequestId: string;
+    now: Date;
+  }): Promise<ActorIdleEvictionFence | undefined>;
+  acknowledgeIdleOwnerEviction(input: {
+    fence: ActorIdleEvictionFence;
+    now: Date;
   }): Promise<boolean>;
   acceptActorExecution(
     actorKey: ActorKey,

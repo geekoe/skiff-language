@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::file_ir::{
     BlockIr, CallIr, CallTargetIr, ConstDeclarationIr, ConstIr, ExecutableBody,
     ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExprIr, FileIrUnit, FunctionTypeParamIr,
-    ParamIr, SlotKind, SlotLayout, StmtIr,
+    InstructionSourceSite, ParamIr, SlotKind, SlotLayout, StmtIr, SyntheticInstructionSiteReason,
+    TypeRefIr,
 };
 use skiff_compiler_source::{
     semantic::{
@@ -12,7 +13,7 @@ use skiff_compiler_source::{
     ExpressionOwnerKey, ExpressionTypeModel, LocalDbObjectIndex, PackageInterfaceMethodIndex,
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, ResolvedCallTargetFacts,
     SourceExecutableReceiver, SourceExecutableSignature, SourceExecutableSignatureFacts,
-    SourceSymbolKey, TypeResolutionModel,
+    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, FunctionDecl, ImplDecl, Stmt, TypeRef},
@@ -29,7 +30,7 @@ use super::{
         LoweredExecutableSignature,
     },
     service_call_lowering::LoweredServiceCalls,
-    source_unit_lowering::{push_source_span, source_span_ref, symbol, type_param_scope},
+    source_unit_lowering::{push_source_span, source_span_ref, symbol},
     type_lowering::{
         bare_type_name, is_file_ir_builtin_generic_type, is_file_ir_builtin_type, lower_type_ref,
         type_root, TypeLoweringContext,
@@ -77,6 +78,7 @@ pub(super) fn lower_const_declarations(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
@@ -113,6 +115,7 @@ pub(super) fn lower_const_declarations(
         let source_span = source_span_ref(constant.span);
         let body = lower_const_initializer_body(
             constant,
+            &ty,
             const_indices,
             executable_indices,
             db_metadata,
@@ -129,6 +132,7 @@ pub(super) fn lower_const_declarations(
             source_alias_targets,
             type_resolution,
             expression_types,
+            execution_semantics,
             callable_return_types,
             local_type_fields,
             executable_signatures,
@@ -164,6 +168,7 @@ pub(super) fn lower_const_declarations(
 #[allow(clippy::too_many_arguments)]
 fn lower_const_initializer_body(
     constant: &ConstDecl,
+    expected_type: &TypeRefIr,
     const_indices: &BTreeMap<String, u32>,
     executable_indices: &BTreeMap<String, u32>,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
@@ -180,6 +185,7 @@ fn lower_const_initializer_body(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
@@ -204,12 +210,14 @@ fn lower_const_initializer_body(
         interface_semantics,
         type_resolution,
         expression_types,
+        execution_semantics,
         callable_return_types,
         local_type_fields,
+        None,
         executable_signatures,
         service_calls,
     );
-    let value = lowerer.lower_expr(&constant.value)?;
+    let value = lowerer.lower_expr_with_expected(&constant.value, Some(expected_type))?;
     let mut entry = BlockIr {
         label: "entry".to_string(),
         statements: Vec::new(),
@@ -218,6 +226,7 @@ fn lower_const_initializer_body(
         .statements
         .push(lowerer.push_stmt(StmtIr::Return { value: Some(value) }));
     lowerer.body.blocks.push(entry);
+    lowerer.validate_execution_plans_consumed()?;
     Ok(lowerer.body)
 }
 
@@ -311,6 +320,7 @@ fn project_executable_signature(exact: &SourceExecutableSignature) -> LoweredExe
         SourceExecutableReceiver::Implicit { ty } => Some(execution_type_ref(ty)),
     };
     LoweredExecutableSignature {
+        type_params: exact.type_params.clone(),
         params,
         return_type: execution_type_ref(&exact.return_type),
         self_type,
@@ -338,6 +348,7 @@ pub(super) fn lower_executables(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
@@ -346,6 +357,21 @@ pub(super) fn lower_executables(
     next_span_id: &mut u64,
 ) -> Result<()> {
     let executable_indices = executable_index.indices();
+    let actor_fields = unit
+        .actor_declarations
+        .iter()
+        .map(|declaration| {
+            (
+                declaration.abi.actor_name.clone(),
+                declaration
+                    .abi
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for function in functions {
         let name = function.name.clone();
         let symbol = executable_symbol(module_path, &name);
@@ -375,8 +401,10 @@ pub(super) fn lower_executables(
             source_alias_targets,
             type_resolution,
             expression_types,
+            execution_semantics,
             callable_return_types,
             local_type_fields,
+            None,
             executable_signatures,
             service_calls,
             unit,
@@ -438,8 +466,10 @@ pub(super) fn lower_executables(
                 source_alias_targets,
                 type_resolution,
                 expression_types,
+                execution_semantics,
                 callable_return_types,
                 local_type_fields,
+                actor_fields.get(&implementation.target),
                 executable_signatures,
                 service_calls,
                 unit,
@@ -516,8 +546,10 @@ fn push_executable(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
+    actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
@@ -547,8 +579,10 @@ fn push_executable(
         source_alias_targets,
         type_resolution,
         expression_types,
+        execution_semantics,
         callable_return_types,
         local_type_fields,
+        actor_self_fields,
         executable_signatures,
         service_calls,
     )?;
@@ -599,13 +633,34 @@ fn lower_function_with_params(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
+    actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableIr> {
     validate_bare_return_statements(function, &executable_symbol)?;
-    let type_params = type_param_scope(inherited_type_params.iter(), function.type_params.iter());
+    let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
+        CompileError::Semantic(format!(
+            "missing projected exact signature for File IR executable `{executable_symbol}` at index {current_index}"
+        ))
+    })?;
+    let declared_type_params = inherited_type_params
+        .iter()
+        .chain(&function.type_params)
+        .cloned()
+        .collect::<Vec<_>>();
+    if exact_signature.type_params != declared_type_params {
+        return Err(CompileError::Semantic(format!(
+            "exact signature type parameters for `{executable_symbol}` do not match its executable declaration"
+        )));
+    }
+    let type_params = exact_signature
+        .type_params
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let type_context = TypeLoweringContext::value_with_type_params(&type_params);
     let mut lowerer = FunctionLowerer::new(
         type_indices,
@@ -626,16 +681,14 @@ fn lower_function_with_params(
         interface_semantics,
         type_resolution,
         expression_types,
+        execution_semantics,
         callable_return_types,
         local_type_fields,
+        actor_self_fields,
         executable_signatures,
         service_calls,
     );
-    let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
-        CompileError::Semantic(format!(
-            "missing projected exact signature for File IR executable `{executable_symbol}` at index {current_index}"
-        ))
-    })?;
+    lowerer.expected_return_type = Some(exact_signature.return_type.clone());
     if exact_signature.params.len() != params_source.len() {
         return Err(CompileError::Semantic(format!(
             "exact signature for `{executable_symbol}` has {} parameters, but its executable body declares {}",
@@ -714,6 +767,9 @@ fn lower_function_with_params(
                 target: CallTargetIr::Native {
                     target: native_target_from_symbol(&executable_symbol),
                 },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+                },
                 args,
                 type_args,
                 metadata: BTreeMap::new(),
@@ -728,6 +784,7 @@ fn lower_function_with_params(
         }
     }
     lowerer.body.blocks.push(entry);
+    lowerer.validate_execution_plans_consumed()?;
     let slots = SlotLayout {
         frame_size: lowerer.slots.len() as u32,
         slots: lowerer.slots,
@@ -736,7 +793,7 @@ fn lower_function_with_params(
     Ok(ExecutableIr {
         kind,
         symbol: executable_symbol,
-        type_params: function.type_params.clone(),
+        type_params: exact_signature.type_params.clone(),
         params,
         return_type: exact_signature.return_type.clone(),
         self_type,
@@ -783,9 +840,14 @@ fn stmt_contains_bare_return(stmt: &Stmt) -> bool {
             block_contains_bare_return(then_block)
                 || else_block.as_ref().is_some_and(block_contains_bare_return)
         }
-        Stmt::For { body, .. } | Stmt::DbTransaction { body } => block_contains_bare_return(body),
+        Stmt::For { body, .. }
+        | Stmt::DbTransaction { body }
+        | Stmt::Timeout { body, .. }
+        | Stmt::Concurrent { body }
+        | Stmt::Serial { body } => block_contains_bare_return(body),
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_bare_return(&arm.body)),
         Stmt::Assert { .. }
+        | Stmt::CompilerTestEffectRegister { .. }
         | Stmt::Let { .. }
         | Stmt::Assign { .. }
         | Stmt::Throw { .. }

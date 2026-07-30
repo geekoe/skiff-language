@@ -20,7 +20,7 @@ pub fn any_type_ref(ty: &TypeRefIr, predicate: &mut impl FnMut(&TypeRefIr) -> bo
 
 pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr) -> TypeRefIr {
     let ty = match ty {
-        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
             name,
             args: args.into_iter().map(|arg| map_type_ref(arg, map)).collect(),
         },
@@ -34,6 +34,22 @@ pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr)
         },
         TypeRefIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol { symbol },
         TypeRefIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol { symbol },
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base,
+            arguments: arguments
+                .into_iter()
+                .map(|argument| map_type_ref(argument, map))
+                .collect(),
+        },
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
             fields: fields
@@ -88,7 +104,7 @@ pub fn substitute_type_params_in_type_ref(
             .get(&name)
             .cloned()
             .unwrap_or(TypeRefIr::TypeParam { name }),
-        TypeRefIr::Native { name, args } => TypeRefIr::Native { name, args },
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin { name, args },
         TypeRefIr::LocalType { type_index } => TypeRefIr::LocalType { type_index },
         TypeRefIr::PublicationType {
             module_path,
@@ -99,6 +115,18 @@ pub fn substitute_type_params_in_type_ref(
         },
         TypeRefIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol { symbol },
         TypeRefIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol { symbol },
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            TypeRefIr::AppliedNominal { base, arguments }
+        }
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
         TypeRefIr::Record { fields } => TypeRefIr::Record { fields },
         TypeRefIr::Union { items } => TypeRefIr::Union { items },
@@ -133,6 +161,7 @@ pub fn contains_boundary_unsafe_type(ty: &TypeRefIr) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeRefVisitPathSegment {
     NativeArg { name: String, index: usize },
+    AppliedNominalArgument { index: usize },
     RecordField { name: String },
     UnionItem { index: usize },
     NullableInner,
@@ -149,7 +178,7 @@ pub struct TypeRefChild<'a> {
 
 pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
     match ty {
-        TypeRefIr::Native { name, args } => args
+        TypeRefIr::Builtin { name, args } => args
             .iter()
             .enumerate()
             .map(|(index, ty)| TypeRefChild {
@@ -158,6 +187,14 @@ pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
                     name: name.clone(),
                     index,
                 },
+            })
+            .collect(),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| TypeRefChild {
+                ty,
+                segment: TypeRefVisitPathSegment::AppliedNominalArgument { index },
             })
             .collect(),
         TypeRefIr::Record { fields } => fields
@@ -210,6 +247,7 @@ pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => Vec::new(),
@@ -279,7 +317,7 @@ mod tests {
     }
 
     fn native(name: &str) -> TypeRefIr {
-        TypeRefIr::native(name)
+        TypeRefIr::builtin(name)
     }
 
     fn any_interface(args: Vec<TypeRefIr>) -> TypeRefIr {
@@ -288,6 +326,13 @@ mod tests {
                 interface_abi_id: "iface".to_string(),
                 canonical_type_args: args,
             },
+        }
+    }
+
+    fn applied_local(type_index: u32, arguments: Vec<TypeRefIr>) -> TypeRefIr {
+        TypeRefIr::AppliedNominal {
+            base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index },
+            arguments,
         }
     }
 
@@ -303,7 +348,7 @@ mod tests {
 
     #[test]
     fn substitutes_nested_type_params_in_all_structural_variants() {
-        let ty = TypeRefIr::Native {
+        let ty = TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::Record {
                 fields: BTreeMap::from([
@@ -338,7 +383,7 @@ mod tests {
 
         assert_eq!(
             actual,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Array".to_string(),
                 args: vec![TypeRefIr::Record {
                     fields: BTreeMap::from([
@@ -380,6 +425,66 @@ mod tests {
     }
 
     #[test]
+    fn applied_nominal_arguments_are_walked_in_order_and_substituted() {
+        let ty = applied_local(
+            4,
+            vec![
+                type_param("T"),
+                TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![applied_local(2, vec![type_param("U")])],
+                },
+            ],
+        );
+        let substitutions = BTreeMap::from([
+            ("T".to_string(), native("string")),
+            ("U".to_string(), native("number")),
+        ]);
+
+        let substituted = substitute_type_params_in_type_ref_ref(&ty, &substitutions);
+        assert_eq!(
+            substituted,
+            applied_local(
+                4,
+                vec![
+                    native("string"),
+                    TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![applied_local(2, vec![native("number")])],
+                    },
+                ],
+            )
+        );
+
+        let children = type_ref_children(&ty);
+        assert_eq!(children.len(), 2);
+        assert_eq!(
+            children[0].segment,
+            TypeRefVisitPathSegment::AppliedNominalArgument { index: 0 }
+        );
+        assert_eq!(
+            children[1].segment,
+            TypeRefVisitPathSegment::AppliedNominalArgument { index: 1 }
+        );
+        let mut visited = Vec::new();
+        walk_type_ref_with_path(&ty, &mut |visit| {
+            if let TypeRefIr::TypeParam { name } = visit.ty {
+                visited.push((name.clone(), visit.path.segments().to_vec()));
+            }
+        });
+        assert_eq!(visited[0].0, "T");
+        assert_eq!(
+            visited[0].1,
+            vec![TypeRefVisitPathSegment::AppliedNominalArgument { index: 0 }]
+        );
+        assert_eq!(visited[1].0, "U");
+        assert_eq!(
+            visited[1].1.last(),
+            Some(&TypeRefVisitPathSegment::AppliedNominalArgument { index: 0 })
+        );
+    }
+
+    #[test]
     fn walk_and_any_visit_function_params_and_return_type() {
         let ty = TypeRefIr::Function {
             params: vec![param("input", type_param("P"))],
@@ -402,7 +507,7 @@ mod tests {
 
     #[test]
     fn map_type_ref_is_bottom_up_and_does_not_recurse_into_returned_value() {
-        let ty = TypeRefIr::Native {
+        let ty = TypeRefIr::Builtin {
             name: "Box".to_string(),
             args: vec![type_param("T")],
         };
@@ -411,11 +516,13 @@ mod tests {
         let actual = map_type_ref(ty, &mut |ty| {
             match &ty {
                 TypeRefIr::TypeParam { name } => visited.push(format!("param:{name}")),
-                TypeRefIr::Native { name, .. } => visited.push(format!("native:{name}")),
+                TypeRefIr::Builtin { name, .. } => visited.push(format!("native:{name}")),
                 TypeRefIr::LocalType { .. } => visited.push("local".to_string()),
                 TypeRefIr::PublicationType { .. } => visited.push("publication".to_string()),
                 TypeRefIr::ServiceSymbol { .. } => visited.push("service".to_string()),
                 TypeRefIr::PackageSymbol { .. } => visited.push("package".to_string()),
+                TypeRefIr::PackageSchema { .. } => visited.push("packageSchema".to_string()),
+                TypeRefIr::AppliedNominal { .. } => visited.push("appliedNominal".to_string()),
                 TypeRefIr::DbObjectSymbol { .. } => visited.push("db".to_string()),
                 TypeRefIr::Record { .. } => visited.push("record".to_string()),
                 TypeRefIr::Union { .. } => visited.push("union".to_string()),
@@ -425,7 +532,7 @@ mod tests {
                 TypeRefIr::Function { .. } => visited.push("function".to_string()),
             }
             match ty {
-                TypeRefIr::TypeParam { name } if name == "T" => TypeRefIr::Native {
+                TypeRefIr::TypeParam { name } if name == "T" => TypeRefIr::Builtin {
                     name: "Wrapper".to_string(),
                     args: vec![type_param("SHOULD_NOT_VISIT")],
                 },
@@ -436,9 +543,9 @@ mod tests {
         assert_eq!(visited, vec!["param:T", "native:Box"]);
         assert_eq!(
             actual,
-            TypeRefIr::Native {
+            TypeRefIr::Builtin {
                 name: "Box".to_string(),
-                args: vec![TypeRefIr::Native {
+                args: vec![TypeRefIr::Builtin {
                     name: "Wrapper".to_string(),
                     args: vec![type_param("SHOULD_NOT_VISIT")],
                 }],

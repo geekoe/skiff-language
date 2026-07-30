@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     validate_file_ir_service_calls, CallIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr,
-    ExecutableKind, ExprIr, ExternalRefTable, PackageCallableId, PackageCallableRef, PackageRefIr,
-    SlotLayout, TypeRefIr,
+    ExecutableKind, ExprIr, ExternalRefTable, InstructionSourceSite, PackageCallableId,
+    PackageCallableRef, PackageRefIr, SlotLayout, SyntheticInstructionSiteReason, TypeRefIr,
 };
 
 use super::*;
@@ -172,7 +172,7 @@ fn push_package_call_to_constant(
     if unit.constants.is_empty() {
         unit.constants.push(ConstIr {
             name: "calls".to_string(),
-            ty: TypeRefIr::native("void"),
+            ty: TypeRefIr::builtin("void"),
             body: ExecutableBody::default(),
             source_span: None,
         });
@@ -193,7 +193,7 @@ fn push_package_call_to_executable(
         symbol: "run".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("void"),
+        return_type: TypeRefIr::builtin("void"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
@@ -211,6 +211,9 @@ fn package_call(package_ref: PackageRefIr, package_callable_id: PackageCallableI
             target: CallTargetIr::PackageCallable {
                 package_ref,
                 package_callable_id,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
             type_args: BTreeMap::new(),

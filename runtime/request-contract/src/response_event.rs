@@ -1,7 +1,5 @@
-use crate::envelope::WebSocketContextCodec;
-
 pub use skiff_runtime_capability_context::{
-    HttpResponseMetadata, ResponseError, WebSocketConnectionPolicyControl,
+    FixedServiceResponseFailure, HttpResponseMetadata, ResponseError,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -11,27 +9,29 @@ pub enum BoundaryResponse {
 }
 
 impl BoundaryResponse {
-    pub fn end(
-        payload: Vec<u8>,
-        http_response: Option<HttpResponseMetadata>,
-        websocket_connect: Option<WebSocketConnectResponse>,
-    ) -> Self {
-        Self::Event(ResponseEvent::End {
-            payload,
-            http_response,
-            websocket_connect,
-        })
+    pub fn payload(payload: Vec<u8>) -> Self {
+        Self::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))
+    }
+
+    pub fn http(payload: Vec<u8>, metadata: HttpResponseMetadata) -> Self {
+        Self::Event(ResponseEvent::End(ResponseEnd::Http { payload, metadata }))
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResponseEvent {
-    End {
-        payload: Vec<u8>,
-        http_response: Option<HttpResponseMetadata>,
-        websocket_connect: Option<WebSocketConnectResponse>,
-    },
+    End(ResponseEnd),
+    FixedServiceFailure(FixedServiceResponseFailure),
     Error(ResponseError),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseEnd {
+    Payload(Vec<u8>),
+    Http {
+        payload: Vec<u8>,
+        metadata: HttpResponseMetadata,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,15 +39,4 @@ pub enum ResponseStreamEvent {
     Start { http_response: HttpResponseMetadata },
     Chunk { seq: u64, payload: Vec<u8> },
     End,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WebSocketConnectResponse {
-    pub result: String,
-    pub business_identity: Option<String>,
-    pub connection_policy: Option<WebSocketConnectionPolicyControl>,
-    pub context_codec: Option<WebSocketContextCodec>,
-    pub context_payload_present: bool,
-    pub code: Option<u16>,
-    pub reason: Option<String>,
 }

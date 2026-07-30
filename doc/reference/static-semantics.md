@@ -1,6 +1,8 @@
 # Skiff Static Semantics Reference
 
-本文负责：稳定描述 Skiff 类型身份、名字解析、import 解析、target typing、错误捕获、match narrowing、服务 API 类型边界、schema closure 和 stream 静态边界。interface 专门语义见 `interface.md`。
+本文负责：稳定描述 Skiff 类型身份、名字解析、import 解析、target typing、错误捕获、match narrowing、
+函数 effect / suspension 推断、服务 API 类型边界、schema closure 和 stream 静态边界。interface
+专门语义见 `interface.md`。
 
 本文不负责：源码 token / AST 细节、运行时调度和取消算法、具体 wire 编码、manifest 字段表、标准库完整 API surface、测试 runner 发现规则。
 
@@ -70,21 +72,33 @@ record literal target typing 要求未知字段报错，缺失的非 nullable �
 
 ## 5. Throw, Catch And Rethrow
 
-`CatchLeaves(T)` 是类型 `T` 可作为 runtime catch payload 的 concrete error leaves 集合。
+`CatchLeaves(T)` 是类型 `T` 可作为 runtime catch payload 的 concrete nominal leaves 集合。
 
-显式 `implements ErrorPayload` 的名义 record 是 catchable leaf。union 的 leaves 是各 branch leaves 的并集，且所有 branch 都必须有非空 leaves。命名 union 先展开 RHS 再计算 leaves。
+任意用户 `type` 声明都创建可抛出、可捕获的名义 runtime identity，包括名义 record、名义
+representation 以及命名 union 中的 concrete / synthetic branch identity。透明 `alias` 不创建新 identity，
+按 RHS 展开。union 的 leaves 是各 branch leaves 的并集，且所有 branch 都必须有可确定的 runtime identity；
+命名 union 按其保留 enclosing union context 的 runtime branches 计算 leaves。
 
-interface、primitive、literal、anonymous record、container、`unknown`、`FnType`、类型参数和 representation wrapper 本身不能成为 catch leaves。
+未被用户 `type` 包装的 interface、primitive、literal、anonymous record、container、`unknown`、`FnType`
+和无约束类型参数本身不能成为 catch leaves。它们可以作为名义 representation 或名义 record 的内部
+representation；这不取消外层 `type` 的名义 catch identity。
 
-`throw expr` 合法当且仅当 `expr` 的静态类型所有可能运行时值都是 catchable leaves。运行时 envelope 的 payload 是实际 concrete error leaf，不是“union 本身”。
+`throw expr` 合法当且仅当 `expr` 的静态类型所有可能运行时值都有可确定的名义 catch identity。运行时
+envelope 记录实际 concrete leaf identity；对命名 union，它同时保留 enclosing union context。
 
 `catch<E>` 合法当且仅当 `CatchLeaves(E)` 非空。捕获时按 envelope 的 actual payload type id 与 leaves 集合匹配，否则继续向外传播。
 
-`catch<ErrorPayload>`、`catch<MyErrorInterface>`、`catch<unknown>` 和无约束类型参数捕获都应报错。
+`catch<MyErrorInterface>`、`catch<unknown>`、`catch<string>` 和无约束类型参数捕获都应报错。不存在要求
+错误类型实现的 `ErrorPayload` marker。
 
 `rethrow exception` 要求操作数静态类型是 `Exception<E>` 且 `CatchLeaves(E)` 非空。它重新抛出同一 envelope，不创建新 throw site。
 
 `Exception<E>` 和 `CatchResult<T,E>` 是 request-local 控制流结构，不是 boundary payload；不能出现在 service API、contract public type、跨服务 payload 或持久化 schema 中。
+
+可抛出不等于可序列化。package内部throw不要求`SchemaClosed`。未捕获错误越过service boundary时，只有
+在其owner Package中显式公开且`SchemaClosed`的名义类型才能保留原始类型；私有、非closed或编码失败的错误
+由runtime替换为`std.service.InternalError`。具体错误envelope与逐跳异常栈语义见`runtime.md`和
+`../architecture/package-service-contract-deployment.md`。
 
 ## 6. Match Typing And Narrowing
 
@@ -188,13 +202,51 @@ resolver 不接受 `import std.http`、`import ext.openai`、`import skiff.run/l
 `skiff.run/std` 不能作为普通 package dependency 声明；用户 package、import alias、顶层声明和局部 binding 都不能 shadow `std`。
 
 当前 package / service source set 的跨文件访问统一使用 `root.*` all-symbol index。普通 source file
-没有 public visibility marker；内部 `root.*` 可见性不受 publication public API 影响。
+没有public visibility marker；内部`root.*`可见性不受Package public API影响。
 
 `root.<module>.<Symbol>` 解析到当前 source set 中对应模块的顶层 type / alias / interface / function / const 等声明。这里的 all-symbol 明确包含未进入 public API graph 的顶层声明；source file 不是包内 privacy 边界。`root.*` 不能解析局部变量、参数、pattern binding，也不能把 impl method 当作顶层符号访问；method 仍属于 receiver 的 method namespace。
 
 Production build 的当前 source set 只包含 production source files。`*.test.skiff` 中的 helper、fixture type 和测试用 import 只在 test-runner 构造的测试编译模型中参与解析，不进入 production `root.*` index，也不影响 production root reference validation、artifact identity 或 public API graph。
 
 外部 package 仍必须通过 import alias 访问其 published public API。`root.*` 不穿透 dependency 的 private 符号；如果某段共享代码需要被别的 package 使用，应进入该 package 的 public API，而不是依赖当前 package 的内部 root path。
+
+唯一例外是`kind: test` service中dependency entry声明的`topLevelAlias`。普通`alias`始终按该dependency
+的`api.yml` public path解析；`topLevelAlias`则按
+`<top-level-alias>/<source-module-path>.<top-level-name>`解析同一直接dependency的精确implementation
+symbol。两者没有fallback或precedence。该模式覆盖同一文件顶层type及附着到它的`db object`，因此
+`db require subjectImpl/model.User(id)`中的target与`subjectImpl/model.User`类型引用选择同一个精确
+provider type。
+
+`topLevelAlias`只允许出现在`kind: test` service，必须是合法唯一identifier，并与所有package/service
+alias和其它top-level alias不冲突。旧`access: topLevel`必须fail closed。top-level权限不传递：
+dependency public ABI可以闭合其dependency公开类型，但consumer不能因此直接访问transitive dependency
+top-level；需要时必须另行声明direct dependency及其`topLevelAlias`。
+
+public alias与top-level alias仍表示同一个direct dependency edge。Source resolution保留顶层路径及
+exact implementation expectation；lowering时package reference canonicalize回该entry的primary
+`alias`，绑定同一个`expectedPackageBuild`，不得生成第二个`PackageRequirement`、code slot或collection
+projection。
+
+当表达式的静态receiver type来自该direct `topLevelAlias`视图时，精确implementation type还开放同一
+artifact中该type现有的impl method namespace。解析必须同时满足：
+
+- receiver为带完整`abiExpectation`的精确`PackageSymbol`，或以它为base并保留完整substitution的
+  `AppliedNominal`；
+- dependency是当前test service的direct edge，且调用点来自该entry的top-level view；
+- method唯一解析为该精确PackageArtifact中的`PackageCallable`，其Local ABI/build expectation与
+  receiver一致。
+
+源码调用的显式参数arity与类型检查不计receiver；lowering沿用普通receiver-call形状，把receiver作为
+执行参数的第一项，再追加源码中的显式参数。此规则不新增路径语法、调用关键字或动态method lookup。
+普通public alias只开放API公开的public instance method，不能因为返回值保留名义类型就访问任意impl
+method；service boundary对象不能获得provider package-local method；interface receiver仍只按interface
+slot dispatch，不回退到concrete package method。任何view、ABI/build、generic substitution或method
+identity不精确的情况都fail closed。
+
+跨package DB target的符号约束与其它topLevel symbol相同：consumer保留dependency alias、完整
+symbol path和ABI expectation；dependency requirement另行约束精确provider build。Linker必须把两者
+解析到同一PackageArtifact及同一File IR type，且该File IR存在附着到该type的DB declaration。任何
+缺失、ABI/build不匹配或用另一个artifact的同名type替换都fail closed。
 
 当前禁止 import cycle。顶层 `const` 初始化按源码顺序检查，只能引用已声明的本模块顶层 `const` 或 import 进来的顶层符号。
 
@@ -216,15 +268,71 @@ callback 捕获外层变量时，其读写集合并入承载 API 调用的 lane�
 
 ## 12. Function Effect Metadata
 
-函数 effect metadata 至少描述 Skiff 可见 read / write path、external effect target 和 conflict-key、返回值 provenance、可能抛出的 ErrorPayload leaves、callback profile 和 stream 生产 / 消费行为。
+函数 effect metadata 至少描述 Skiff 可见 read / write path、external effect target 和 conflict-key、返回值
+provenance、boundary分析需要的throw payload provenance、callback profile、stream 生产 / 消费行为和
+推断的 suspension summary。
+它不包含对调用方公开的“可能抛出类型集合”；函数签名、Package ABI和ServiceContract都不声明或推导
+operation-specific throw set。
 
 跨模块调用使用被 import 模块发布的 metadata；resolver 不重新解析依赖模块实现来猜 effect。
 
 递归和 mutual recursion 使用固定点推导。无法证明返回 root provenance 时，返回值视为 `opaque`。
 
+返回 provenance 同时记录两层事实：`returnOrigins` 是从返回值可达的全部 origin（包含
+返回值自身），`directReturnOrigins` 只表示返回值自身可能是哪一个 root。fresh 容器的
+直接 root 与其 payload 中可达的 caller root 因而不会混为一谈。payload 包含 caller
+值不等于容器本身是 caller alias；但控制流合并后若 direct root 可能同时为 fresh 和
+caller-owned，write / identity 分析必须保留 caller 候选并保守拒绝不安全边界。
+
+caller 参数的字段或容器元素投影必须保留为“参数序号 + 结构化 selector path”。path
+只允许稳定字段名和 `containerElement`，不得使用源码位置、表达式遍历序号或 callable
+名称。当前 heap 分析对字段内容是 field-insensitive 的：读取字段时只把接收者 root 的
+一层直接 payload 作为该字段的保守 direct 候选，不得把任意深度可达 root 都提升为字段
+自身，否则会制造不存在的 cycle。未知、非法或超过实现上限的 path 必须 fail closed。
+
+`returnOrigins`、`directReturnOrigins` 和结构化 path 都必须跨 Package artifact
+序列化，并参与 package build identity。它们是实现语义事实，不进入 Local ABI 或
+service protocol identity。`maySuspend` 是下节规定的例外：它会被提升为 concrete public Package
+callable 的 Local ABI summary，但仍不进入 interface requirement 或 service protocol。
+
 `opaque` mutable root 不能在 `concurrent` sibling lane 中参与 mutation；若编译器无法证明 lane-local，必须报错。
 
-metadata 改变不改变 service protocol identity，但会改变 code revision、编译缓存和并发诊断结果。
+metadata 改变不改变 service protocol identity，但会改变 code revision、编译缓存和并发诊断结果；
+concrete public Package callable 的 `maySuspend` 改变还会改变其 Package Local ABI。
+
+### 12.1 Inferred Suspension Summary
+
+语言不提供 `async`、`suspending`、effect declaration 或显式 `yield` 关键字。每个有函数体的 concrete
+executable 都由 compiler 对函数体、调用图和内建等待点执行 sound may-analysis，得到
+`maySuspend`。递归与 mutual recursion 按固定点收敛；无法证明不会挂起的调用必须保守为
+`maySuspend=true`。
+
+调用传播规则是：
+
+- 同一 Package 内静态解析到 concrete function / method 时使用该 executable 的固定点 summary。
+- package dependency 的 concrete public callable 使用依赖 PackageArtifact 发布的精确 summary；
+  compiler 不读取依赖源码重新推断。
+- 已知 concrete 或 package-direct public-instance binding 使用其 concrete public callable summary。
+- `any I`、未知 interface dispatch 或其它无法确定 concrete target 的调用保守视为可能挂起。
+- service dependency call 无条件视为可能挂起，因为 service call 自身就是调用方的等待点；不得从
+  ServiceContract 读取或推测 callee implementation 的内部 summary。
+- compiler-known native / builtin 等 target 使用其 canonical callable summary；未知 target仍
+  fail closed 为可能挂起。
+
+interface method requirement不包含`maySuspend`，interface conformance也不比较该位。同一 requirement
+可以同时有 suspending 和 non-suspending implementation；这不会制造一个共享的 requirement summary。
+若 Host/runtime 需要 concrete callee summary选择内部执行、取消或调度机制，只能从
+PackageArtifact / deployment implementation metadata取得，不能写入interface或ServiceContract identity。
+
+concrete public Package callable 的 summary 是 Package Local ABI fact。从 non-suspending 变为
+suspending（或反向）保持 stable `PackageCallableId`，但改变 Local ABI与Package build，并要求直接
+package依赖方重编译。interface requirement / conformance不因此改变；service operation的请求、响应、
+stream/callback形状和开放错误通道不变时，callee内部summary改变也不改变stable
+`ContractOperationId`或`ServiceProtocolIdentity`。
+
+`maySuspend=true` 只表示执行可能到达真实等待，不表示 runtime 在函数入口、任意指令之间或 interface
+dispatch处主动切换。stream next、service call、timer等操作只有在执行到该点且实际需要等待时才释放
+actor执行权；保守分析本身不产生调度点。
 
 ## 13. Recursive Types
 
@@ -238,40 +346,66 @@ metadata 改变不改变 service protocol identity，但会改变 code revision�
 
 ## 14. Service API Static Boundary
 
-service API root 来自 Publication API graph 的 remote projection。
+Service API roots只来自`service.yml.serviceCalls`按public path显式选择的Package API callable roots。
 
-remote projection 从 public API graph 中选择 public callable 派生 operations。普通 const 不直接成为
-service operation；满足 public instance 规则的 public const 可以作为 receiver root，由其 interface
-methods 派生 operations。public interface 仍只是 conformance contract，不直接成为 service operation。
+ServiceContract projection先要求每个被选择root对应的`BoundaryCallableProjection`为`Available`，再派生
+operations；被选择但Unavailable必须报出完整结构化原因，不能静默排除。未选择callable只是Package
+API，即使技术上boundary-available也不会成为service operation。普通const不直接成为service operation；
+被选择的public instance可作为receiver root，由其显式listed interface methods派生operations。public
+interface仍只是conformance contract，不直接成为service operation。`serviceCalls`只引用`api.yml`
+public path，不重复source selector或signature；重复、unknown或non-callable path均fail closed。
 
-source module path 是组织方式，不是协议身份。service protocol identity 由 public path、
-operation name、canonical signature、public instance / binding target receiver root metadata、schema
-closure 和 cross-service dependency identity 计算。
+HTTP、WebSocket等external ingress不属于service-call projection。它们分别由`http.yml`和
+`websocket.yml`选择当前Package中的handler/pre/guard；这些callable不要求public，也不生成service
+operation。Compiler按其linked signature与gateway adapter source检查参数/返回，生成独立gateway entry
+identity。Ingress不得使用或伪造`ContractOperationId`。
+
+source module path是组织方式，不是协议身份。service protocol identity由显式service-call public path、
+operation name、canonical signature、public instance receiver root metadata、schema closure和
+cross-service dependency identity计算。
 
 API operation signature 中的用户自定义类型必须来自当前 source set 的 public API graph 或 schema closure、
 其他服务 / package 发布的 public schema，或 lang / platform `std` / package schema 中标记为
 schema-stable 的类型。HTTP schema-stable platform types 写作 `std.http.HttpRequest`、
 `std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpResponseStreamEvent` 等模块路径名。
 
-未进入 public API graph 的 declarations 可在内部通过 `root.*` 使用；它们不能作为外部源码可写
-public name，但可以在 explicit public root 的边界形状需要时进入 ABI / schema closure。Public root
-引用到的 named type 会自动进入 schema closure；这些 closure-only named type 不会自动成为外部源码
-可写 public name。
+上述类型都由声明它们的Package拥有。service operation签名保留owner Package的`PackageSchemaTypeId`；
+service id、service version label和provider implementation build不能重新定义类型identity。跨service导入只把
+ServiceContract operation与其精确Package schema requirements materialize为同一Package类型视图，不生成
+service-owned nominal type。
 
-remote callable 必须按 source identity 解析，不能按短名或字符串后缀匹配。同一 public path 下 derived operation name 重复是 compile / publish error。
+未进入 public API graph 的 declarations 可在内部通过 `root.*` 使用，但第一版不能进入ABI/schema
+boundary closure。Public operation或public type字段引用到的named type必须也在owner Package的
+`api.yml`中显式公开；否则projection fail closed。compiler不得从内部模块路径、文件路径、遍历序号或
+发现路径为它生成隐藏的boundary identity。
 
-第一版不允许 generic remote method 或 static remote method。runtime-owned receiver / handler fields 是构造依赖，不是 request payload。
+service-call callable必须按source identity解析，不能按短名或字符串后缀匹配。同一public path下
+derived operation name重复是compile error。
+
+第一版不允许generic service-call method或static service-call method。runtime-owned receiver /
+handler fields是构造依赖，不是request payload。
+
+`api.yml`中的public generic declaration可以供package linkage使用，但其声明本身没有第一版
+PackageSchema投影。未被选择的generic public symbol不能让整个Package失败；若其public path被
+`service.yml.serviceCalls`选择，其不可投影原因必须作为结构化compile error报告，不能静默排除。External ingress的
+handler第一版不能是generic function declaration；其concrete signature仍可包含fully instantiated的
+generic platform types，由linked signature和专用adapter处理，这些类型不因此获得ordinary service-call
+schema。
 
 跨 service 调用必须静态解析到已声明 callee API，并绑定发布时记录的 exact protocol identity。业务代码不通过字符串 service id 或 service locator 发起远程调用。
 
 ## 15. Static Stream Boundary
 
-`Stream<T>` 可以作为 service operation 或 ingress entry operation 的返回类型；此时 chunk 类型 `T` 必须通过 schema closure。
+`Stream<T>` 可以作为service operation，或adapter kind明确允许stream的external gateway entry返回类型。
+Service operation的chunk类型`T`必须通过Package schema closure。当前HTTP ingress中，`typedJson`
+handler必须是unary并拒绝任意`Stream<T>`返回；只有`rawHttp`允许精确返回
+`Stream<std.http.HttpResponseStreamEvent>`，其event按linked handler signature与raw HTTP adapter验证，
+不要求仅为ingress进入PackageSchema。
 
 显式 stream-producing native std / package API 也可返回 `Stream<T>`，作为 request-local external source handle。平台 std 也可以把 `Stream<T>` 放在 runtime-owned handle record 字段里，例如 `std.http.HttpClientStreamHandle.body`；这类 handle 仍是 request-local 值，不是可持久化 schema。除非调用方把 chunk `emit` 到服务边界，或写入其他边界 payload，否则该 `T` 不因 handle 本身进入 boundary closure。
 
 普通 Skiff package / local 函数不能通过源码 body 创建本地 `Stream<T>`。它们可以在同一 request 内返回或
-转发从 service operation、ingress entry operation 或特权 source API 获得的 `Stream<T>` handle；这是
+转发从service operation、external gateway entry或特权source API获得的`Stream<T>` handle；这是
 request-local pass-through，不创建新的 stream sink，也不能跨请求持有。当前只有 server / source stream，
 不支持 bidirectional stream、stream 参数、半关闭、resume 或 cursor。
 
@@ -291,6 +425,15 @@ helper 若使用 `emit`，其 effect metadata 必须标记 `emits T`，并且只
 
 必须通过 schema closure 的位置包括 service API operation 参数和返回、public API closure 中 public
 type 字段图、跨服务 payload、跨请求 / 入库 / 落盘 payload，以及平台 schema 标记的边界 payload。
+
+schema closure由逐类型`PackageSchemaTypeRecord`闭合。每个命名root以`PackageSchemaTypeId`引用owner
+Package中的canonical descriptor；descriptor引用的每个named child也必须是其owner Package的显式public type。
+ServiceContract只记录实际可达的package/type ids，不记录整包schema index identity，也不复制字段定义。
+缺type record、owner/key/identity不匹配或依赖闭包不完整都不是“结构相同即可”的兼容情形，必须fail closed。
+
+第一版schema named-type依赖图必须无环；自递归和相互递归类型都不closed。projection先拒绝SCC，再按拓扑序
+计算逐类型identity。descriptor中的named child引用使用child的package id、stable schema key和已计算
+`PackageSchemaTypeId`，不能引用待计算的自身identity。
 
 模块内部可以使用 interface conformance test、本地 `any I` 能力值和 public instance receiver
 root；第一版不把裸 interface 当作普通 runtime value。package 抽象能力通过显式 `any I` 参数传递，

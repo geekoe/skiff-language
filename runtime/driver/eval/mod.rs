@@ -85,9 +85,6 @@ pub(crate) mod runtime_ops {
 pub(crate) mod runtime_value_view {
     pub(crate) use skiff_runtime_eval::runtime_value_view::*;
 }
-pub(crate) mod service_dispatch {
-    pub(crate) use skiff_runtime_eval::service_dispatch::*;
-}
 pub(crate) mod source_context {
     pub(crate) use skiff_runtime_eval::source_context::*;
 }
@@ -107,9 +104,6 @@ pub(crate) mod type_descriptor {
 pub(crate) mod type_projection {
     pub(crate) use skiff_runtime_eval::type_projection::*;
 }
-pub(crate) mod websocket_adapter {
-    pub(crate) use skiff_runtime_eval::websocket_adapter::*;
-}
 
 #[cfg(test)]
 mod tests;
@@ -119,15 +113,7 @@ pub(crate) use skiff_runtime_eval::{
     EvalRequestExecutorInput, EvalRequestInvocation, EvalRequestInvocationArg,
     EvalRequestInvocationArgFrom, EvalRequestInvocationCallable, EvalRequestInvocationHttpAdapter,
     EvalRequestInvocationHttpKind, EvalRequestInvocationInput, EvalRequestInvocationMode,
-    EvalRequestInvocationWebSocketAdapter, EvalRequestInvocationWebSocketConnectRequest,
-    EvalRequestInvocationWebSocketContextCodec, EvalRequestInvocationWebSocketContextExpectation,
-    EvalRequestInvocationWebSocketKind, EvalRequestInvocationWebSocketMessage,
-    EvalRequestInvocationWebSocketMessageEncoding, EvalRequestInvocationWebSocketMessageTag,
-    EvalRequestInvocationWebSocketNameValue, EvalRequestInvocationWebSocketPayloadSegment,
-    EvalRequestInvocationWebSocketPayloadSegmentKind, EvalRequestInvocationWebSocketReceiveRequest,
-    EvalRequestWebSocketAdapterResult, EvalRequestWebSocketConnectResponse,
-    EvalRequestWebSocketConnectResult, EvalRequestWebSocketContextCodec, EvalRuntimeProgram,
-    EvalRuntimeProgramSource, Interpreter, InterpreterHttpOptions,
+    EvalRuntimeProgram, EvalRuntimeProgramSource, Interpreter, InterpreterHttpOptions,
 };
 
 #[cfg(test)]

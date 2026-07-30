@@ -1,15 +1,15 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(test)]
+use std::path::PathBuf;
 
 use skiff_artifact_model::STD_NATIVE_SIGNATURES;
 pub use skiff_compiler_core::prelude_registry::PRELUDE_REGISTRY_ID;
 use skiff_compiler_core::prelude_registry::{
-    compiler_owned_type_symbol, config_prelude_type, is_language_builtin_type_name,
-    is_prelude_canonical_type, module_symbol_root, primitive_type_symbols, qualified_prelude_type,
-    schema_primitive_type, NativeBindingShape, LANGUAGE_PRIMITIVES, RESERVED_ROOT_NAMES,
+    compiler_builtin_type, compiler_owned_type_symbol, config_prelude_type,
+    is_language_builtin_type_name, is_prelude_canonical_type, module_symbol_root,
+    primitive_type_symbols, qualified_prelude_type, schema_primitive_type, NativeBindingShape,
+    COMPILER_BUILTIN_TYPES, LANGUAGE_PRIMITIVE_TYPES, RESERVED_ROOT_NAMES,
 };
 
 use crate::{
@@ -18,10 +18,12 @@ use crate::{
 };
 
 mod identity;
+mod initialization;
 mod loading;
 mod validation;
 
 pub use self::identity::{prelude_identity, prelude_schema_identity};
+pub use self::initialization::{initialize_prelude_registry, PreludeRegistryInitializationError};
 
 #[derive(Debug, Clone)]
 pub struct PreludeRegistry {
@@ -46,8 +48,10 @@ pub struct PreludeRegistry {
     type_aliases: BTreeMap<String, AliasDecl>,
     type_aliases_by_symbol: BTreeMap<String, AliasDecl>,
     type_symbols: BTreeMap<String, String>,
+    package_public_paths: BTreeSet<(String, String)>,
     source_modules: Vec<String>,
-    native_type_names: BTreeSet<String>,
+    builtin_type_names: BTreeSet<String>,
+    prelude_identity_parts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,15 +84,22 @@ impl PreludeRegistry {
             type_aliases: BTreeMap::new(),
             type_aliases_by_symbol: BTreeMap::new(),
             type_symbols: BTreeMap::new(),
+            package_public_paths: BTreeSet::new(),
             source_modules: Vec::new(),
-            native_type_names: BTreeSet::new(),
+            builtin_type_names: BTreeSet::new(),
+            prelude_identity_parts: Vec::new(),
         }
     }
 
-    pub fn try_from_split_dirs(prelude_dir: &Path, std_dir: &Path) -> Result<Self, String> {
+    fn try_from_platform_sources(
+        platform_sources: &skiff_compiler_input::CompilerPlatformSources,
+        source_snapshot: &skiff_compiler_input::platform_sources::CompilerPlatformSourceSnapshot,
+    ) -> Result<Self, String> {
         let mut registry = Self::empty();
-        registry.load_std_registry(std_dir)?;
-        registry.load_split_sources(prelude_dir, std_dir)?;
+        registry.load_std_registry(platform_sources)?;
+        registry.install_compiler_builtin_types();
+        registry.load_split_sources(source_snapshot)?;
+        registry.validate_shared_native_signature_types()?;
         registry.derive_prelude_types();
         registry.canonicalize_prelude_type_symbols();
         registry.native_bindings = registry.declared_native_bindings.clone();
@@ -117,6 +128,9 @@ impl PreludeRegistry {
     }
 
     pub fn type_decl_module(&self, name: &str) -> Option<&str> {
+        if let Some(builtin) = compiler_builtin_type(name) {
+            return builtin.symbol.rsplit_once('.').map(|(module, _)| module);
+        }
         let symbol = self.known_type_symbol(name)?;
         let symbol = self.type_symbols.get(&symbol)?;
         symbol.rsplit_once('.').map(|(module, _)| module)
@@ -137,6 +151,9 @@ impl PreludeRegistry {
 
     pub fn known_type_symbol(&self, name: &str) -> Option<String> {
         let name = name.trim();
+        if let Some(builtin) = compiler_builtin_type(name) {
+            return Some(builtin.symbol.to_string());
+        }
         if self
             .type_symbols
             .get(name)
@@ -177,13 +194,12 @@ impl PreludeRegistry {
                 && !self.package_schema_type_requires_import(name))
     }
 
-    pub fn is_native_type_name(&self, name: &str) -> bool {
-        let name = name.trim();
-        self.native_type_names.contains(name)
+    pub fn is_builtin_type_name(&self, name: &str) -> bool {
+        compiler_builtin_type(name).is_some()
     }
 
-    pub fn native_type_names(&self) -> &BTreeSet<String> {
-        &self.native_type_names
+    pub fn builtin_type_names(&self) -> &BTreeSet<String> {
+        &self.builtin_type_names
     }
 
     pub fn prelude_types(&self) -> &[String] {
@@ -207,17 +223,92 @@ impl PreludeRegistry {
     }
 
     fn derive_prelude_types(&mut self) {
-        self.prelude_types = LANGUAGE_PRIMITIVES
+        self.prelude_types = LANGUAGE_PRIMITIVE_TYPES
             .iter()
-            .map(|s| s.to_string())
-            .chain(self.native_type_names.iter().cloned())
+            .map(|primitive| primitive.source_spelling.to_string())
+            .chain(self.builtin_type_names.iter().cloned())
             .chain(["Duration"].into_iter().map(str::to_string))
             .collect();
         self.prelude_types.sort();
         self.prelude_types.dedup();
     }
 
+    fn install_compiler_builtin_types(&mut self) {
+        for builtin in COMPILER_BUILTIN_TYPES {
+            self.builtin_type_names.insert(builtin.name.to_string());
+            self.type_symbols
+                .insert(builtin.name.to_string(), builtin.symbol.to_string());
+            self.type_symbols
+                .insert(builtin.symbol.to_string(), builtin.symbol.to_string());
+        }
+    }
+
+    fn validate_shared_native_signature_types(&self) -> Result<(), String> {
+        for signature in STD_NATIVE_SIGNATURES {
+            for expr in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.return_type))
+            {
+                self.validate_native_signature_type_expr(signature.target, expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_native_signature_type_expr(
+        &self,
+        target: &str,
+        expr: &skiff_artifact_model::NativeSignatureTypeExpr,
+    ) -> Result<(), String> {
+        use skiff_artifact_model::NativeSignatureTypeExpr;
+
+        match expr {
+            NativeSignatureTypeExpr::TypeParam(_) => Ok(()),
+            NativeSignatureTypeExpr::Builtin(name) => {
+                if compiler_builtin_type(name).is_some() || is_language_builtin_type_name(name) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "native signature {target} references unknown compiler builtin type {name}"
+                    ))
+                }
+            }
+            NativeSignatureTypeExpr::Package {
+                package_id,
+                public_path,
+            } => {
+                if !self
+                    .package_public_paths
+                    .contains(&(package_id.to_string(), public_path.to_string()))
+                {
+                    return Err(format!(
+                        "native signature {target} references unknown public type {package_id}::{public_path}"
+                    ));
+                }
+                if self.type_decl(public_path).is_none() && self.type_alias(public_path).is_none() {
+                    return Err(format!(
+                        "native signature {target} public path {package_id}::{public_path} is not a type"
+                    ));
+                }
+                Ok(())
+            }
+            NativeSignatureTypeExpr::Array(item)
+            | NativeSignatureTypeExpr::Nullable(item)
+            | NativeSignatureTypeExpr::Stream(item) => {
+                self.validate_native_signature_type_expr(target, item)
+            }
+            NativeSignatureTypeExpr::Map(key, value) => {
+                self.validate_native_signature_type_expr(target, key)?;
+                self.validate_native_signature_type_expr(target, value)
+            }
+        }
+    }
+
     pub fn is_schema_stable_type(&self, name: &str) -> bool {
+        if compiler_owned_schema_stable_type(name) {
+            return true;
+        }
         let name = if let Some(symbol) = self.known_type_symbol(name) {
             symbol
         } else {
@@ -285,7 +376,7 @@ impl PreludeRegistry {
             .map(|binding| binding.shape.return_type.clone())
     }
 
-    pub fn native_type_params(&self, symbol: &str) -> Option<&[String]> {
+    pub fn builtin_type_params(&self, symbol: &str) -> Option<&[String]> {
         self.native_bindings
             .get(symbol)
             .map(|binding| binding.shape.type_params.as_slice())
@@ -364,27 +455,14 @@ pub fn shared_native_binding_key(symbol: &str) -> Option<&'static str> {
     })
 }
 
-pub fn prelude_registry() -> &'static PreludeRegistry {
-    static REGISTRY: OnceLock<PreludeRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let prelude_dir = default_prelude_dir();
-        let std_dir = default_std_dir();
-        assert!(
-            std_dir.join("registry.yml").is_file(),
-            "builtin std package registry is missing registry.yml at {}",
-            std_dir.display()
-        );
-        PreludeRegistry::try_from_split_dirs(&prelude_dir, &std_dir).unwrap_or_else(|message| {
-            panic!("failed to load builtin prelude/std registry: {message}")
-        })
-    })
-}
+pub use self::initialization::prelude_registry;
 
 pub fn is_builtin_type_name(name: &str) -> bool {
     let name = name.trim();
     prelude_registry().is_prelude_type_name(name) || is_language_builtin_type_name(name)
 }
 
+#[cfg(test)]
 pub fn default_prelude_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -392,16 +470,8 @@ pub fn default_prelude_dir() -> PathBuf {
         .join("prelude")
 }
 
-pub fn default_std_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("std")
-}
-
 fn compiler_owned_schema_stable_type(name: &str) -> bool {
-    let _ = name;
-    false
+    compiler_builtin_type(name).is_some()
 }
 
 fn shared_native_aliases() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -428,28 +498,34 @@ fn is_legacy_http_root_alias(alias: &str) -> bool {
 }
 
 #[cfg(test)]
-fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeTypeExprDef) -> String {
-    use skiff_artifact_model::NativeTypeExprDef;
+fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeSignatureTypeExpr) -> String {
+    use skiff_artifact_model::NativeSignatureTypeExpr;
 
     match expr {
-        NativeTypeExprDef::TypeParam(index) => format!("T{index}"),
-        NativeTypeExprDef::Builtin(name) => name.to_string(),
-        NativeTypeExprDef::Array(item) => format!("Array<{}>", native_type_expr_def_name(item)),
-        NativeTypeExprDef::Map(key, value) => format!(
+        NativeSignatureTypeExpr::TypeParam(index) => format!("T{index}"),
+        NativeSignatureTypeExpr::Builtin(name) => name.to_string(),
+        NativeSignatureTypeExpr::Package { public_path, .. } => public_path.to_string(),
+        NativeSignatureTypeExpr::Array(item) => {
+            format!("Array<{}>", native_type_expr_def_name(item))
+        }
+        NativeSignatureTypeExpr::Map(key, value) => format!(
             "Map<{}, {}>",
             native_type_expr_def_name(key),
             native_type_expr_def_name(value)
         ),
-        NativeTypeExprDef::Nullable(inner) => format!("{}?", native_type_expr_def_name(inner)),
-        NativeTypeExprDef::Stream(item) => format!("Stream<{}>", native_type_expr_def_name(item)),
-        NativeTypeExprDef::ActorRef(item) => {
-            format!("ActorRef<{}>", native_type_expr_def_name(item))
+        NativeSignatureTypeExpr::Nullable(inner) => {
+            format!("{}?", native_type_expr_def_name(inner))
+        }
+        NativeSignatureTypeExpr::Stream(item) => {
+            format!("Stream<{}>", native_type_expr_def_name(item))
         }
     }
 }
 
 #[cfg(test)]
-fn native_type_expr_def_normalized_name(expr: &skiff_artifact_model::NativeTypeExprDef) -> String {
+fn native_type_expr_def_normalized_name(
+    expr: &skiff_artifact_model::NativeSignatureTypeExpr,
+) -> String {
     normalize_native_type_name(&native_type_expr_def_name(expr))
 }
 

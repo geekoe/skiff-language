@@ -7,7 +7,6 @@ use skiff_syntax::{
     ast::{DbBlockMode, Expr, Literal, TypeRef},
     ast_utils::expr_path,
     type_expr::TypeExpr,
-    type_syntax::generic_parts,
 };
 
 use super::callable_return_types::CallableReturnType;
@@ -21,25 +20,8 @@ use super::type_lowering::{
     runtime_receiver_root_from_type_ref, type_ref_ir_type_text,
 };
 
-fn array_item_type_text(type_text: &str) -> Option<&str> {
-    let parts = generic_parts(type_text)?;
-    if !matches!(parts.root.trim(), "Array" | "Stream") || parts.args.len() != 1 {
-        return None;
-    }
-    Some(parts.args[0].trim())
-}
-
-fn single_for_item_type_text(type_text: &str) -> Option<&str> {
-    let parts = generic_parts(type_text)?;
-    match parts.root.trim() {
-        "Array" | "Stream" if parts.args.len() == 1 => Some(parts.args[0].trim()),
-        "Map" if parts.args.len() == 2 => Some(parts.args[0].trim()),
-        _ => None,
-    }
-}
-
 fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     if !matches!(name.as_str(), "Array" | "Stream") || args.len() != 1 {
@@ -49,7 +31,7 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn single_for_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     match name.as_str() {
@@ -59,36 +41,8 @@ fn single_for_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
     }
 }
 
-fn type_root_text(type_text: &str) -> &str {
-    let type_text = type_text.trim();
-    let type_text = type_text.strip_suffix('?').unwrap_or(type_text).trim();
-    generic_parts(type_text)
-        .map(|parts| parts.root.trim())
-        .unwrap_or(type_text)
-}
-
-fn map_value_type_text(type_text: &str) -> Option<String> {
-    let parts = generic_parts(type_text.trim())?;
-    (parts.root.trim() == "Map" && parts.args.len() == 2).then(|| parts.args[1].trim().to_string())
-}
-
-fn map_key_type_text(type_text: &str) -> Option<String> {
-    let parts = generic_parts(type_text.trim())?;
-    (parts.root.trim() == "Map" && parts.args.len() == 2).then(|| parts.args[0].trim().to_string())
-}
-
-fn map_entry_type_text(type_text: &str) -> Option<(String, String)> {
-    let parts = generic_parts(type_text.trim())?;
-    (parts.root.trim() == "Map" && parts.args.len() == 2).then(|| {
-        (
-            parts.args[0].trim().to_string(),
-            parts.args[1].trim().to_string(),
-        )
-    })
-}
-
 fn map_entry_type_ir(ty: &TypeRefIr) -> Option<(TypeRefIr, TypeRefIr)> {
-    let TypeRefIr::Native { name, args } = ty else {
+    let TypeRefIr::Builtin { name, args } = ty else {
         return None;
     };
     (name == "Map" && args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
@@ -96,20 +50,23 @@ fn map_entry_type_ir(ty: &TypeRefIr) -> Option<(TypeRefIr, TypeRefIr)> {
 
 fn builtin_receiver_call_return_type_for_root(
     root: &str,
-    receiver_type: &str,
+    receiver_type: &TypeRefIr,
     method_name: &str,
-) -> Option<String> {
+) -> Option<TypeRefIr> {
     let root = canonical_runtime_receiver_root(root);
     let spec = builtin_receiver_op_spec_by_name(root, method_name)?;
     match spec.public_return_type {
-        BuiltinReceiverPublicReturnType::Fixed(name) => Some(name.to_string()),
-        BuiltinReceiverPublicReturnType::Receiver => Some(receiver_type.trim().to_string()),
-        BuiltinReceiverPublicReturnType::ArrayItem => {
-            array_item_type_text(receiver_type).map(str::to_string)
+        BuiltinReceiverPublicReturnType::Fixed(name) => Some(TypeRefIr::builtin(name)),
+        BuiltinReceiverPublicReturnType::Receiver => Some(receiver_type.clone()),
+        BuiltinReceiverPublicReturnType::ArrayItem => array_item_type_ir(receiver_type),
+        BuiltinReceiverPublicReturnType::MapValue => {
+            map_entry_type_ir(receiver_type).map(|(_, value)| value)
         }
-        BuiltinReceiverPublicReturnType::MapValue => map_value_type_text(receiver_type),
         BuiltinReceiverPublicReturnType::MapKeyArray => {
-            map_key_type_text(receiver_type).map(|key| format!("Array<{key}>"))
+            map_entry_type_ir(receiver_type).map(|(key, _)| TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![key],
+            })
         }
     }
 }
@@ -162,29 +119,16 @@ impl<'a> FunctionLowerer<'a> {
 
     fn builtin_receiver_call_return_type(
         &self,
-        receiver_type: &str,
+        receiver_type: &TypeRefIr,
         method_name: &str,
-    ) -> Option<String> {
-        let root = lower_type_text(
-            receiver_type,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
-            self.value_type_context(),
-        )
-        .ok()
-        .and_then(|ty| runtime_receiver_root_from_type_ref(&ty))
-        .unwrap_or_else(|| type_root_text(receiver_type).to_string());
+    ) -> Option<TypeRefIr> {
+        let root = runtime_receiver_root_from_type_ref(receiver_type)?;
         builtin_receiver_call_return_type_for_root(&root, receiver_type, method_name)
     }
 
-    fn current_call_receiver_type_text(&self, callee: &Expr) -> Option<String> {
+    fn current_call_receiver_type_ir(&self, callee: &Expr) -> Option<TypeRefIr> {
         let offset = 1 + receiver_object_offset_in_callee(callee)?;
-        self.expression_type_at_offset(offset)
-            .map(|(source_text, _)| source_text)
+        self.expression_type_at_offset(offset).map(|(_, ty)| ty)
     }
 
     pub(super) fn expression_type_at_offset(&self, offset: u32) -> Option<(String, TypeRefIr)> {
@@ -202,7 +146,7 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn next_expression_type_text(&self) -> Option<String> {
         self.next_expression_type()
-            .map(|(source_text, _)| source_text)
+            .map(|(_, ty)| type_ref_ir_type_text(&ty))
     }
 
     pub(super) fn next_expression_type_ir(&self) -> Option<TypeRefIr> {
@@ -210,41 +154,42 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn next_expression_array_item_type(&self) -> Option<(String, TypeRefIr)> {
-        let (source_text, ty) = self.next_expression_type()?;
-        let item_text = array_item_type_text(&source_text)?.to_string();
+        let (_, ty) = self.next_expression_type()?;
         let item_ty = array_item_type_ir(&ty)?;
+        let item_text = type_ref_ir_type_text(&item_ty);
         Some((item_text, item_ty))
     }
 
     pub(super) fn next_expression_single_for_item_type(&self) -> Option<(String, TypeRefIr)> {
-        let (source_text, ty) = self.next_expression_type()?;
-        let item_text = single_for_item_type_text(&source_text)?.to_string();
+        let (_, ty) = self.next_expression_type()?;
         let item_ty = single_for_item_type_ir(&ty)?;
+        let item_text = type_ref_ir_type_text(&item_ty);
         Some((item_text, item_ty))
     }
 
     pub(super) fn next_expression_map_entry_type_text(&self) -> Option<(String, String)> {
-        let (source_text, ty) = self.next_expression_type()?;
-        let (key_text, value_text) = map_entry_type_text(&source_text)?;
-        let (_key_ty, _value_ty) = map_entry_type_ir(&ty)?;
-        Some((key_text, value_text))
+        let (_, ty) = self.next_expression_type()?;
+        let (key_ty, value_ty) = map_entry_type_ir(&ty)?;
+        Some((
+            type_ref_ir_type_text(&key_ty),
+            type_ref_ir_type_text(&value_ty),
+        ))
     }
 
     pub(super) fn infer_array_item_type_text(&self, expr: &Expr) -> Option<String> {
-        self.infer_expr_type_text(expr)
-            .and_then(|type_text| array_item_type_text(&type_text).map(str::to_string))
+        let item = array_item_type_ir(&self.infer_expr_type_ir(expr)?)?;
+        Some(type_ref_ir_type_text(&item))
     }
 
     pub(super) fn infer_single_for_item_type(&self, expr: &Expr) -> Option<(String, TypeRefIr)> {
-        let type_text = self.infer_expr_type_text(expr)?;
-        let item_text = single_for_item_type_text(&type_text)?.to_string();
         let item_ty = single_for_item_type_ir(&self.infer_expr_type_ir(expr)?)?;
+        let item_text = type_ref_ir_type_text(&item_ty);
         Some((item_text, item_ty))
     }
 
     pub(super) fn infer_map_entry_type_text(&self, expr: &Expr) -> Option<(String, String)> {
-        self.infer_expr_type_text(expr)
-            .and_then(|type_text| map_entry_type_text(&type_text))
+        let (key, value) = map_entry_type_ir(&self.infer_expr_type_ir(expr)?)?;
+        Some((type_ref_ir_type_text(&key), type_ref_ir_type_text(&value)))
     }
 
     pub(super) fn infer_expr_type_text(&self, expr: &Expr) -> Option<String> {
@@ -272,13 +217,13 @@ impl<'a> FunctionLowerer<'a> {
                 };
                 if let Expr::Field { object, field } = callee {
                     if let Some(receiver_type) = self
-                        .current_call_receiver_type_text(raw_callee)
-                        .or_else(|| self.infer_expr_type_text(object))
+                        .current_call_receiver_type_ir(raw_callee)
+                        .or_else(|| self.infer_expr_type_ir(object))
                     {
                         if let Some(return_type) =
                             self.builtin_receiver_call_return_type(&receiver_type, field)
                         {
-                            return Some(return_type);
+                            return Some(type_ref_ir_type_text(&return_type));
                         }
                     }
                 }
@@ -304,6 +249,10 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             Expr::Generic { callee, .. } => self.infer_expr_type_text(callee),
+            Expr::Timeout { value, .. } => self.infer_expr_type_text(value),
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.infer_expr_type_text(&value.tail)
+            }
             Expr::InterfaceBox { interface, .. } => Some(format!("any {}", interface.name)),
             Expr::Literal(Literal::String(_)) => Some("string".to_string()),
             Expr::Literal(Literal::Number(_)) => Some("number".to_string()),
@@ -374,7 +323,7 @@ impl<'a> FunctionLowerer<'a> {
                 .ok()?;
                 Some(db_query_type_ref(target))
             }
-            Expr::DbLeaseClaim(_) => Some(TypeRefIr::native("bool")),
+            Expr::DbLeaseClaim(_) => Some(TypeRefIr::builtin("bool")),
             Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_ir()),
             _ => self.infer_expr_type_text(expr).and_then(|type_text| {
                 lower_type_text(
@@ -413,18 +362,22 @@ mod tests {
     fn builtin_receiver_return_types_come_from_artifact_table_for_date_integer_ops() {
         for method in ["toEpochMilliseconds", "diffMilliseconds", "compare"] {
             assert_eq!(
-                builtin_receiver_call_return_type_for_root("Date", "Date", method),
-                Some("integer".to_string()),
+                builtin_receiver_call_return_type_for_root(
+                    "Date",
+                    &TypeRefIr::builtin("Date"),
+                    method,
+                ),
+                Some(TypeRefIr::builtin("integer")),
                 "Date.{method} should infer integer from artifact-model table"
             );
         }
         assert_eq!(
             builtin_receiver_call_return_type_for_root(
                 "Duration",
-                "std.time.Duration",
+                &TypeRefIr::builtin("std.time.Duration"),
                 "toMilliseconds"
             ),
-            Some("integer".to_string())
+            Some(TypeRefIr::builtin("integer"))
         );
     }
 

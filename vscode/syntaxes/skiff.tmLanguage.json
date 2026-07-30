@@ -519,7 +519,7 @@
         },
         {
           "name": "support.type.core.skiff",
-          "match": "\\b(Array|Map|Stream|Config|Json|JsonObject|CatchResult|ErrorPayload|Exception|SourceLocation|StackTrace|StackFrame|TimeoutError|CancelError|InternalError|WebSocketConnectResult|ConnectionMessage|TextConnectionMessage|BinaryConnectionMessage|ActorRef|ActorBinding|ClientSessionRef|ClientCapability|HttpHeader|HttpQueryParam|HttpRequest|HttpResponse|HttpClientRequest|HttpClientResponse|HttpClientStreamHandle|HttpSseEvent|ImmutableFile|CreateOptions|FileInfo)\\b"
+          "match": "\\b(Array|Map|Stream|Config|Json|JsonObject|CatchResult|Exception|SourceLocation|StackTrace|StackFrame|TimeoutError|CancelError|WebSocketConnectResult|ConnectionMessage|TextConnectionMessage|BinaryConnectionMessage|ActorBinding|ClientSessionRef|ClientCapability|HttpHeader|HttpQueryParam|HttpRequest|HttpResponse|HttpClientRequest|HttpClientResponse|HttpClientStreamHandle|HttpSseEvent|ImmutableFile|CreateOptions|FileInfo)\\b"
         },
         {
           "name": "support.type.self.skiff",

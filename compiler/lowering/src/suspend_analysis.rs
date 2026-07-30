@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_model::{builtin_receiver_callable_semantics, native_callable_semantics};
 use skiff_compiler_core::package_export_resolver::PackageExportResolver;
 use skiff_compiler_source::{
-    type_text_with_args, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel, SourceSymbolKey,
+    type_text_with_args, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
+    ResolvedCallTarget, ResolvedCallTargetFacts, SourceSymbolKey,
 };
 use skiff_syntax::{
     ast::{
@@ -16,7 +18,7 @@ use skiff_syntax::{
 use super::db_lowering::{
     db_lease_read_result_type_text, db_operation_result_type_text_without_metadata,
 };
-use super::function_lowering::is_builtin_call_root;
+use super::function_lowering::{expr_preorder_node_count, is_builtin_call_root};
 use super::type_lowering::{bare_type_name, type_root};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,6 +80,7 @@ struct SuspendAnalyzer<'a> {
     package_aliases: &'a BTreeMap<String, Vec<String>>,
     service_dependency_aliases: &'a BTreeSet<String>,
     expression_types: Option<&'a ExpressionTypeModel>,
+    resolved_call_targets: &'a ResolvedCallTargetFacts,
     executables: Vec<SuspendExecutable<'a>>,
     functions_by_name: BTreeMap<String, ExecutableSuspendKey>,
     functions_by_source_key: BTreeMap<SourceSymbolKey, ExecutableSuspendKey>,
@@ -90,6 +93,7 @@ pub(super) fn suspend_index_for_source(
     package_aliases: &BTreeMap<String, Vec<String>>,
     service_dependency_aliases: &BTreeSet<String>,
     expression_types: Option<&ExpressionTypeModel>,
+    resolved_call_targets: &ResolvedCallTargetFacts,
 ) -> SuspendIndex {
     SuspendAnalyzer::new(
         ast,
@@ -97,6 +101,7 @@ pub(super) fn suspend_index_for_source(
         package_aliases,
         service_dependency_aliases,
         expression_types,
+        resolved_call_targets,
     )
     .analyze()
 }
@@ -108,12 +113,14 @@ impl<'a> SuspendAnalyzer<'a> {
         package_aliases: &'a BTreeMap<String, Vec<String>>,
         service_dependency_aliases: &'a BTreeSet<String>,
         expression_types: Option<&'a ExpressionTypeModel>,
+        resolved_call_targets: &'a ResolvedCallTargetFacts,
     ) -> Self {
         let mut analyzer = Self {
             module_path,
             package_aliases,
             service_dependency_aliases,
             expression_types,
+            resolved_call_targets,
             executables: Vec::new(),
             functions_by_name: BTreeMap::new(),
             functions_by_source_key: BTreeMap::new(),
@@ -375,6 +382,33 @@ impl SuspendContext<'_, '_> {
 
     fn stmt_may_suspend(&mut self, stmt: &Stmt) -> bool {
         match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target_probe,
+                expect,
+                step_expect,
+                outcome,
+                ..
+            } => {
+                for _ in 0..expr_preorder_node_count(target_probe) {
+                    self.next_expression_key();
+                }
+                let expect_suspend = expect
+                    .as_ref()
+                    .is_some_and(|value| self.expr_may_suspend(value));
+                let step_expect_suspend = step_expect
+                    .as_ref()
+                    .is_some_and(|value| self.expr_may_suspend(value));
+                let outcome_suspend = match outcome {
+                    skiff_syntax::ast::TestEffectStepOutcome::Respond { value }
+                    | skiff_syntax::ast::TestEffectStepOutcome::Throw { value } => {
+                        self.expr_may_suspend(value)
+                    }
+                    skiff_syntax::ast::TestEffectStepOutcome::Stream { events } => {
+                        events.iter().any(|value| self.expr_may_suspend(value))
+                    }
+                };
+                expect_suspend || step_expect_suspend || outcome_suspend
+            }
             Stmt::Assert { condition, .. } => self.expr_may_suspend(condition),
             Stmt::Let {
                 name, ty, value, ..
@@ -393,6 +427,9 @@ impl SuspendContext<'_, '_> {
             }
             Stmt::Assign { target, value } => {
                 self.expr_may_suspend(target) || self.expr_may_suspend(value)
+            }
+            Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+                self.block_may_suspend(body)
             }
             Stmt::If {
                 condition,
@@ -462,7 +499,7 @@ impl SuspendContext<'_, '_> {
     }
 
     fn expr_may_suspend(&mut self, expr: &Expr) -> bool {
-        self.next_expression_key();
+        let expression_key = self.next_expression_key();
         match expr {
             Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => false,
             Expr::Binary { left, right, .. } => {
@@ -479,7 +516,12 @@ impl SuspendContext<'_, '_> {
                 let (callee, type_args) = unpack_generic_callee(callee);
                 callee_may_suspend
                     || args_may_suspend
-                    || self.call_may_suspend(callee, type_args, receiver_type.as_deref())
+                    || self.call_may_suspend(
+                        &expression_key,
+                        callee,
+                        type_args,
+                        receiver_type.as_deref(),
+                    )
             }
             Expr::Field { object, .. } => self.expr_may_suspend(object),
             Expr::Record { fields, .. } => {
@@ -496,6 +538,12 @@ impl SuspendContext<'_, '_> {
             Expr::Throw { value } => self.expr_may_suspend(value),
             Expr::Rethrow { exception } => self.expr_may_suspend(exception),
             Expr::Catch { try_expr, .. } => self.expr_may_suspend(try_expr),
+            Expr::Timeout { value, .. } => self.expr_may_suspend(value),
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                let body_may_suspend = self.block_may_suspend(&value.body);
+                let tail_may_suspend = self.expr_may_suspend(&value.tail);
+                body_may_suspend || tail_may_suspend
+            }
             Expr::DbOperation(operation) => self.db_operation_may_suspend(operation),
             Expr::DbQuery(query) => {
                 self.db_query_may_suspend(&query.query);
@@ -588,10 +636,43 @@ impl SuspendContext<'_, '_> {
 
     fn call_may_suspend(
         &mut self,
+        call_key: &ExpressionKey,
         callee: &Expr,
-        type_args: &[TypeRef],
+        _type_args: &[TypeRef],
         receiver_type: Option<&str>,
     ) -> bool {
+        match self.analyzer.resolved_call_targets.target(call_key) {
+            Some(ResolvedCallTarget::NativeFunction { binding_key }) => {
+                return native_callable_semantics(binding_key)
+                    .map(|semantics| semantics.effects.may_suspend)
+                    .unwrap_or(true);
+            }
+            Some(ResolvedCallTarget::ReceiverBuiltin { op }) => {
+                return builtin_receiver_callable_semantics(*op)
+                    .map(|semantics| semantics.effects.may_suspend)
+                    .unwrap_or(true);
+            }
+            Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => return false,
+            Some(ResolvedCallTarget::DependencyPackageFunction {
+                exact_signature, ..
+            }) => {
+                return exact_signature
+                    .as_ref()
+                    .map(|signature| signature.may_suspend)
+                    .unwrap_or(true);
+            }
+            Some(
+                ResolvedCallTarget::InterfaceMethod { .. }
+                | ResolvedCallTarget::ContractOperation { .. }
+                | ResolvedCallTarget::Unknown { .. },
+            ) => return true,
+            Some(
+                ResolvedCallTarget::LocalFunction { .. }
+                | ResolvedCallTarget::LocalImplMethod { .. }
+                | ResolvedCallTarget::ActorMethod { .. },
+            )
+            | None => {}
+        }
         let Some(path) = expr_path(callee) else {
             return true;
         };
@@ -619,11 +700,6 @@ impl SuspendContext<'_, '_> {
                     .local_receiver_method_key(&receiver_type, field)
                 {
                     return self.values.get(key).copied().unwrap_or(true);
-                }
-                if builtin_receiver_call_may_suspend(&receiver_type, field, type_args)
-                    == Some(false)
-                {
-                    return false;
                 }
             }
         }
@@ -671,6 +747,10 @@ impl SuspendContext<'_, '_> {
             | Expr::Rethrow { .. }
             | Expr::Catch { .. }
             | Expr::DbQuery(_) => None,
+            Expr::Timeout { value, .. } => self.legacy_expr_type(value),
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.legacy_expr_type(&value.tail)
+            }
             Expr::DbOperation(operation) => {
                 db_operation_result_type_text_without_metadata(operation)
             }
@@ -823,23 +903,6 @@ fn builtin_static_call_return_type(path: &str, type_args: &[TypeRef]) -> Option<
     }
 }
 
-fn builtin_receiver_call_may_suspend(
-    receiver_type: &str,
-    method: &str,
-    _type_args: &[TypeRef],
-) -> Option<bool> {
-    let root = type_root(receiver_type);
-    match (root, method) {
-        ("Array", "concat" | "push" | "length")
-        | ("Map", "length" | "get" | "has" | "set" | "delete" | "keys" | "clone")
-        | ("JsonObject", "length" | "get" | "has" | "set" | "delete" | "clone")
-        | ("string", "length" | "split" | "contains" | "startsWith" | "endsWith")
-        | ("number", "toString")
-        | ("bytes", "toUtf8") => Some(false),
-        _ => None,
-    }
-}
-
 fn package_or_service_call_may_suspend(
     path: &str,
     package_aliases: &BTreeMap<String, Vec<String>>,
@@ -893,12 +956,14 @@ mod tests {
         .expect("test source should parse");
         let package_aliases = BTreeMap::new();
         let service_dependency_aliases = BTreeSet::new();
+        let resolved_call_targets = ResolvedCallTargetFacts::empty();
         let analyzer = SuspendAnalyzer::new(
             &ast,
             "test.db_projection",
             &package_aliases,
             &service_dependency_aliases,
             None,
+            &resolved_call_targets,
         );
         let values = BTreeMap::new();
         let context = SuspendContext {

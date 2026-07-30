@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt};
 
 use crate::{
     compile_identity::PackageCallableId,
-    executable::{CallTargetIr, ExprIr},
+    executable::{CallTargetIr, ExprIr, StmtIr, TestEffectRegisterTargetIr},
     symbols::{PackageCallableRef, PackageRefIr},
 };
 
@@ -153,6 +153,25 @@ pub fn validate_file_ir_package_calls(
             });
         }
         return Err(FileIrPackageCallValidationError::MissingRef { site });
+    }
+    for executable in &unit.executables {
+        for statement in &executable.body.statements {
+            let StmtIr::TestEffectRegister {
+                target:
+                    TestEffectRegisterTargetIr::PackageCallable {
+                        package_ref,
+                        callable_id,
+                    },
+                ..
+            } = statement
+            else {
+                continue;
+            };
+            let key = PackageCallKey::new(package_ref, callable_id);
+            if let Some(index) = index_by_key.get(&key).copied() {
+                used[index] = true;
+            }
+        }
     }
 
     if let Some(index) = used.iter().position(|referenced| !referenced) {

@@ -1,0 +1,2 @@
+id: example.com/payments
+serviceCalls: [echo, left, right]

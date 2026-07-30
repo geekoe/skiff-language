@@ -1,0 +1,16 @@
+slow:
+  method: GET
+  path: /slow
+  kind: rawHttp
+  handler: active.__test.slow
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+plain:
+  method: GET
+  path: /plain
+  kind: rawHttp
+  handler: active.__test.plain
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

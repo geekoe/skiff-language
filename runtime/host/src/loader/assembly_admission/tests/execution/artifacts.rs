@@ -12,8 +12,57 @@ use super::resolver::TypedResolver;
 
 const CALLBACK_INTERFACE_SYMBOL: &str = "CallbackProbe";
 const CALLBACK_INTERFACE_METHOD: &str = "invoke";
+const CALLBACK_RECEIVER_SYMBOL: &str = "CallbackProbeReceiver";
+const IMPLEMENTATION_MODULE_PATH: &str = "phase_four.implementation";
 const CALLBACK_OWNER_EXECUTABLE_INDEX: u32 = 3;
 const CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX: u32 = 2;
+const PROVIDER_PACKAGE_ID: &str = "example.phase-four-provider";
+
+fn fixture_instruction_site() -> InstructionSourceSite {
+    InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    }
+}
+
+fn package_schema_type(
+    stable_schema_key: &str,
+    descriptor: ContractTypeDescriptor,
+) -> (PackageSchemaTypeRef, PackageSchemaTypeRecord) {
+    let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor,
+    };
+    let package_schema_type_id = skiff_artifact_identity::package_schema_type_id(
+        PROVIDER_PACKAGE_ID,
+        stable_schema_key,
+        &canonical_descriptor,
+    )
+    .expect("fixture Package schema identity should be canonical");
+    (
+        PackageSchemaTypeRef {
+            package_id: PROVIDER_PACKAGE_ID.to_string(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        PackageSchemaTypeRecord {
+            package_id: PROVIDER_PACKAGE_ID.to_string(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id,
+            canonical_descriptor,
+        },
+    )
+}
+
+fn callback_contract_type(interface: &PackageSchemaTypeRef) -> ContractTypeRef {
+    ContractTypeRef::AnyInterface {
+        interface: Box::new(ContractTypeRef::package_schema(
+            interface.package_id.clone(),
+            interface.stable_schema_key.clone(),
+            interface.package_schema_type_id.clone(),
+        )),
+        arguments: Vec::new(),
+    }
+}
 
 #[derive(Clone, Copy)]
 enum ProviderBehavior {
@@ -22,13 +71,17 @@ enum ProviderBehavior {
     ThrowTypedError,
     InvokeCallback,
     EmitCallbackStream,
+    EmitBooleanSequence,
+    EmitBooleanThenError,
 }
 
 #[derive(Clone, Copy)]
 enum ConsumerBehavior {
     ReturnCall,
+    ReturnGenericBooleanStream,
     InvokeCallback,
     ConsumeCallbackStream { break_after_item: bool },
+    ConsumeBooleanSequence,
 }
 
 enum ImplementationRole {
@@ -43,26 +96,35 @@ enum ImplementationRole {
 #[derive(Clone)]
 pub(super) struct TypedExecutionContract {
     consumer_operation: BoundaryOperationContract,
-    consumer_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    consumer_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     provider_operation: BoundaryOperationContract,
-    provider_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    provider_contract_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    provider_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     consumer_behavior: ConsumerBehavior,
     provider_behavior: ProviderBehavior,
+    consumer_may_suspend: bool,
+    provider_may_suspend: bool,
+    callback_owner_may_suspend: bool,
 }
 
 impl TypedExecutionContract {
     fn with_provider_behavior(
         operation: BoundaryOperationContract,
-        boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+        schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        may_suspend: bool,
         provider_behavior: ProviderBehavior,
     ) -> Self {
         Self {
             consumer_operation: operation.clone(),
-            consumer_boundary_schema: boundary_schema.clone(),
+            consumer_schema_records: schema_records.clone(),
             provider_operation: operation,
-            provider_boundary_schema: boundary_schema,
+            provider_contract_schema_records: schema_records.clone(),
+            provider_schema_records: schema_records,
             consumer_behavior: ConsumerBehavior::ReturnCall,
             provider_behavior,
+            consumer_may_suspend: may_suspend,
+            provider_may_suspend: may_suspend,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -70,24 +132,26 @@ impl TypedExecutionContract {
         Self::with_provider_behavior(
             unary_contract(),
             BTreeMap::new(),
+            false,
             ProviderBehavior::ReturnTrue,
         )
     }
 
     pub(super) fn returning_null(
         operation: BoundaryOperationContract,
-        boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+        schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        may_suspend: bool,
     ) -> Self {
-        Self::with_provider_behavior(operation, boundary_schema, ProviderBehavior::ReturnNull)
+        Self::with_provider_behavior(
+            operation,
+            schema_records,
+            may_suspend,
+            ProviderBehavior::ReturnNull,
+        )
     }
 
     pub(super) fn async_typed_error() -> Self {
-        let service_id = "example.phase-four.provider";
-        let contract_version = "1.0.0";
         let stable_key = "asyncError";
-        let payload_type_id =
-            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
-                .expect("async error fixture ContractTypeId should be canonical");
         let payload_fields = BTreeMap::from([(
             "messages".to_string(),
             ContractTypeRef::Builtin {
@@ -95,38 +159,27 @@ impl TypedExecutionContract {
                 arguments: vec![ContractTypeRef::builtin("string")],
             },
         )]);
-        let mut operation = unary_contract();
-        operation.errors = BoundaryErrorContract::Typed {
-            payload_type: ContractTypeRef::contract(payload_type_id.clone()),
-            value_plan: BoundaryValuePlan::Linkable {
-                carrier: BoundaryValueCarrier::DetachedValueGraph,
-                encoding: BoundaryValueEncoding::CanonicalValue,
-                owner: BoundaryValueOwner::Provider,
-                lifetime: BoundaryValueLifetime::Call,
+        let (_, payload_record) = package_schema_type(
+            stable_key,
+            ContractTypeDescriptor::Record {
+                fields: payload_fields,
             },
-        };
-        operation.cancellation = BoundaryCancellationContract::Cooperative;
-        operation.may_suspend = true;
-        let provider_boundary_schema = BTreeMap::from([(
-            payload_type_id.clone(),
-            ContractSchemaType {
-                contract_type_id: payload_type_id,
-                stable_key: stable_key.to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    descriptor: ContractTypeDescriptor::Record {
-                        fields: payload_fields,
-                    },
-                },
-            },
+        );
+        let provider_schema_records = BTreeMap::from([(
+            payload_record.package_schema_type_id.clone(),
+            payload_record,
         )]);
         Self {
             consumer_operation: unary_contract(),
-            consumer_boundary_schema: BTreeMap::new(),
-            provider_operation: operation,
-            provider_boundary_schema,
+            consumer_schema_records: BTreeMap::new(),
+            provider_operation: unary_contract(),
+            provider_contract_schema_records: BTreeMap::new(),
+            provider_schema_records,
             consumer_behavior: ConsumerBehavior::ReturnCall,
             provider_behavior: ProviderBehavior::ThrowTypedError,
+            consumer_may_suspend: false,
+            provider_may_suspend: true,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -135,13 +188,19 @@ impl TypedExecutionContract {
     }
 
     pub(super) fn callback_with_operation_key(contract_operation: &str) -> Self {
-        let service_id = "example.phase-four.provider";
-        let contract_version = "1.0.0";
         let stable_key = "callbackProbe";
-        let callback_type_id =
-            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
-                .expect("callback fixture ContractTypeId should be canonical");
-        let callback_type = ContractTypeRef::contract(callback_type_id.clone());
+        let (callback_type, callback_record) = package_schema_type(
+            stable_key,
+            ContractTypeDescriptor::CallbackInterface {
+                operations: BTreeMap::from([(
+                    contract_operation.to_string(),
+                    BoundaryCallbackOperation {
+                        parameters: Vec::new(),
+                        return_type: ContractTypeRef::builtin("bool"),
+                    },
+                )]),
+            },
+        );
         let callback_plan = BoundaryValuePlan::Linkable {
             carrier: BoundaryValueCarrier::CallbackCapability,
             encoding: BoundaryValueEncoding::OpaqueCapability,
@@ -151,41 +210,29 @@ impl TypedExecutionContract {
         let mut provider_operation = unary_contract();
         provider_operation.parameters = vec![BoundaryParameter {
             name: "callback".to_string(),
-            ty: callback_type,
+            ty: callback_contract_type(&callback_type),
             value_plan: callback_plan,
         }];
         provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
-            interface_type_ids: vec![callback_type_id.clone()],
+            interface_types: vec![callback_type],
             lifetime: BoundaryCallbackLifetime::TopLevelRequest,
-            expiration_error: BoundaryCallbackExpirationError::CapabilityUnavailable,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
         };
-        let provider_boundary_schema = BTreeMap::from([(
-            callback_type_id.clone(),
-            ContractSchemaType {
-                contract_type_id: callback_type_id,
-                stable_key: stable_key.to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    descriptor: ContractTypeDescriptor::CallbackInterface {
-                        operations: BTreeMap::from([(
-                            contract_operation.to_string(),
-                            BoundaryCallbackOperation {
-                                parameters: Vec::new(),
-                                return_type: ContractTypeRef::builtin("bool"),
-                                may_suspend: false,
-                            },
-                        )]),
-                    },
-                },
-            },
+        let provider_schema_records = BTreeMap::from([(
+            callback_record.package_schema_type_id.clone(),
+            callback_record,
         )]);
         Self {
             consumer_operation: unary_contract(),
-            consumer_boundary_schema: BTreeMap::new(),
+            consumer_schema_records: BTreeMap::new(),
             provider_operation,
-            provider_boundary_schema,
+            provider_contract_schema_records: provider_schema_records.clone(),
+            provider_schema_records,
             consumer_behavior: ConsumerBehavior::InvokeCallback,
             provider_behavior: ProviderBehavior::InvokeCallback,
+            consumer_may_suspend: false,
+            provider_may_suspend: false,
+            callback_owner_may_suspend: false,
         }
     }
 
@@ -201,33 +248,110 @@ impl TypedExecutionContract {
         fixture
     }
 
+    pub(super) fn boolean_stream() -> Self {
+        let mut fixture = Self::with_provider_behavior(
+            boolean_stream_contract(),
+            BTreeMap::new(),
+            true,
+            ProviderBehavior::EmitBooleanSequence,
+        );
+        fixture.consumer_behavior = ConsumerBehavior::ConsumeBooleanSequence;
+        fixture
+    }
+
+    pub(super) fn unconsumed_boolean_stream() -> Self {
+        let mut fixture = Self::with_provider_behavior(
+            boolean_stream_contract(),
+            BTreeMap::new(),
+            true,
+            ProviderBehavior::EmitBooleanSequence,
+        );
+        fixture.consumer_behavior = ConsumerBehavior::ReturnGenericBooleanStream;
+        fixture
+    }
+
+    pub(super) fn boolean_stream_error() -> Self {
+        let (_, error_record) = package_schema_type(
+            "streamError",
+            ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "message".to_string(),
+                    ContractTypeRef::builtin("string"),
+                )]),
+            },
+        );
+        let operation = boolean_stream_contract();
+        Self {
+            consumer_operation: operation.clone(),
+            consumer_schema_records: BTreeMap::new(),
+            provider_operation: operation,
+            provider_contract_schema_records: BTreeMap::new(),
+            provider_schema_records: BTreeMap::from([(
+                error_record.package_schema_type_id.clone(),
+                error_record,
+            )]),
+            consumer_behavior: ConsumerBehavior::ConsumeBooleanSequence,
+            provider_behavior: ProviderBehavior::EmitBooleanThenError,
+            consumer_may_suspend: true,
+            provider_may_suspend: true,
+            callback_owner_may_suspend: false,
+        }
+    }
+
     pub(super) fn callback_stream_wrong_tuple() -> Self {
         let mut fixture = Self::callback_stream();
-        let ContractTypeDescriptor::CallbackInterface { operations } = &mut fixture
-            .provider_boundary_schema
-            .values_mut()
+        let mut descriptor = fixture
+            .provider_schema_records
+            .values()
             .next()
             .expect("callback stream schema should contain its interface")
-            .shape
+            .canonical_descriptor
             .descriptor
-        else {
+            .clone();
+        let ContractTypeDescriptor::CallbackInterface { operations } = &mut descriptor else {
             panic!("callback stream schema should retain its callback descriptor")
         };
         operations
             .get_mut(CALLBACK_INTERFACE_METHOD)
             .expect("callback stream descriptor should contain invoke")
             .return_type = ContractTypeRef::builtin("string");
+        let (callback_type, callback_record) = package_schema_type("callbackProbe", descriptor);
+        let provider_schema_records = BTreeMap::from([(
+            callback_record.package_schema_type_id.clone(),
+            callback_record,
+        )]);
+        fixture.provider_contract_schema_records = provider_schema_records.clone();
+        fixture.provider_schema_records = provider_schema_records;
+        let BoundaryStreamContract::ServerStream { item_type, .. } =
+            &mut fixture.provider_operation.stream
+        else {
+            panic!("callback stream fixture must remain a server stream")
+        };
+        *item_type = callback_contract_type(&callback_type);
+        let BoundaryCallbackContract::RequestScoped {
+            interface_types, ..
+        } = &mut fixture.provider_operation.callbacks
+        else {
+            panic!("callback stream fixture must retain callback declarations")
+        };
+        *interface_types = vec![callback_type];
         fixture
     }
 
     pub(super) fn callback_stream_with_operation_key(contract_operation: &str) -> Self {
-        let service_id = "example.phase-four.provider";
-        let contract_version = "1.0.0";
         let stable_key = "callbackProbe";
-        let callback_type_id =
-            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
-                .expect("callback stream fixture ContractTypeId should be canonical");
-        let callback_type = ContractTypeRef::contract(callback_type_id.clone());
+        let (callback_type, callback_record) = package_schema_type(
+            stable_key,
+            ContractTypeDescriptor::CallbackInterface {
+                operations: BTreeMap::from([(
+                    contract_operation.to_string(),
+                    BoundaryCallbackOperation {
+                        parameters: Vec::new(),
+                        return_type: ContractTypeRef::builtin("bool"),
+                    },
+                )]),
+            },
+        );
         let callback_plan = BoundaryValuePlan::Linkable {
             carrier: BoundaryValueCarrier::CallbackCapability,
             encoding: BoundaryValueEncoding::OpaqueCapability,
@@ -235,47 +359,44 @@ impl TypedExecutionContract {
             lifetime: BoundaryValueLifetime::Stream,
         };
         let mut provider_operation = unary_contract();
+        provider_operation.return_value.ty = ContractTypeRef::builtin("void");
         provider_operation.stream = BoundaryStreamContract::ServerStream {
-            item_type: callback_type,
+            item_type: callback_contract_type(&callback_type),
             item_value_plan: callback_plan,
         };
         provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
-            interface_type_ids: vec![callback_type_id.clone()],
+            interface_types: vec![callback_type],
             lifetime: BoundaryCallbackLifetime::Stream,
             expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
         };
-        provider_operation.cancellation = BoundaryCancellationContract::Cooperative;
-        provider_operation.may_suspend = true;
-        let provider_boundary_schema = BTreeMap::from([(
-            callback_type_id.clone(),
-            ContractSchemaType {
-                contract_type_id: callback_type_id,
-                stable_key: stable_key.to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    descriptor: ContractTypeDescriptor::CallbackInterface {
-                        operations: BTreeMap::from([(
-                            contract_operation.to_string(),
-                            BoundaryCallbackOperation {
-                                parameters: Vec::new(),
-                                return_type: ContractTypeRef::builtin("bool"),
-                                may_suspend: false,
-                            },
-                        )]),
-                    },
-                },
-            },
+        let provider_schema_records = BTreeMap::from([(
+            callback_record.package_schema_type_id.clone(),
+            callback_record,
         )]);
         Self {
             consumer_operation: unary_contract(),
-            consumer_boundary_schema: BTreeMap::new(),
+            consumer_schema_records: BTreeMap::new(),
             provider_operation,
-            provider_boundary_schema,
+            provider_contract_schema_records: provider_schema_records.clone(),
+            provider_schema_records,
             consumer_behavior: ConsumerBehavior::ConsumeCallbackStream {
                 break_after_item: false,
             },
             provider_behavior: ProviderBehavior::EmitCallbackStream,
+            consumer_may_suspend: false,
+            provider_may_suspend: true,
+            callback_owner_may_suspend: false,
         }
+    }
+
+    pub(super) fn with_provider_may_suspend(mut self, may_suspend: bool) -> Self {
+        self.provider_may_suspend = may_suspend;
+        self
+    }
+
+    pub(super) fn with_callback_owner_may_suspend(mut self, may_suspend: bool) -> Self {
+        self.callback_owner_may_suspend = may_suspend;
+        self
     }
 }
 
@@ -292,32 +413,46 @@ pub(super) struct ProjectedFixture {
 
 impl ProjectedFixture {
     pub(super) fn new(contract_fixture: TypedExecutionContract) -> Self {
+        Self::new_with_consumer_service_id(contract_fixture, "example.phase-four.consumer")
+    }
+
+    pub(super) fn new_with_consumer_service_id(
+        contract_fixture: TypedExecutionContract,
+        consumer_service_id: &str,
+    ) -> Self {
         let consumer_operation_contract = contract_fixture.consumer_operation;
-        let consumer_boundary_schema = contract_fixture.consumer_boundary_schema;
+        let consumer_schema_records = contract_fixture.consumer_schema_records;
         let provider_operation_contract = contract_fixture.provider_operation;
-        let provider_boundary_schema = contract_fixture.provider_boundary_schema;
+        let provider_contract_schema_records = contract_fixture.provider_contract_schema_records;
+        let provider_schema_records = contract_fixture.provider_schema_records;
         let consumer_behavior = contract_fixture.consumer_behavior;
         let provider_behavior = contract_fixture.provider_behavior;
+        let consumer_may_suspend = contract_fixture.consumer_may_suspend;
+        let provider_may_suspend = contract_fixture.provider_may_suspend;
+        let callback_owner_may_suspend = contract_fixture.callback_owner_may_suspend;
         let (provider_contract, provider_operation) = service_contract(
             "example.phase-four.provider",
             "provide",
             provider_operation_contract.clone(),
-            provider_boundary_schema,
+            &provider_contract_schema_records,
         );
         let provider_contract_ref = contract_ref(&provider_contract);
         let (consumer_contract, consumer_operation) = service_contract(
-            "example.phase-four.consumer",
+            consumer_service_id,
             "consume",
             consumer_operation_contract.clone(),
-            consumer_boundary_schema,
+            &consumer_schema_records,
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
-        let provider_callable = PackageCallableId::new("callable:phase-four-provider");
+        let provider_callable =
+            PackageCallableId::new("pkg-callable:example.phase-four-provider:provide");
         let provider_file = implementation_file(
-            "phase_four.provider",
+            IMPLEMENTATION_MODULE_PATH,
             "provide",
-            provider_operation_contract.may_suspend,
+            &provider_operation_contract,
+            provider_may_suspend,
+            callback_owner_may_suspend,
             ImplementationRole::Provider(provider_behavior),
         );
         let provider_file_ref = file_ref(&provider_file);
@@ -327,6 +462,7 @@ impl ProjectedFixture {
             provider_callable.clone(),
             &provider_file,
             provider_operation_contract,
+            &provider_schema_records,
             None,
             None,
         );
@@ -345,9 +481,11 @@ impl ProjectedFixture {
             expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         };
         let consumer_file = implementation_file(
-            "phase_four.consumer",
+            IMPLEMENTATION_MODULE_PATH,
             "consume",
-            consumer_operation_contract.may_suspend,
+            &consumer_operation_contract,
+            consumer_may_suspend,
+            callback_owner_may_suspend,
             ImplementationRole::Consumer {
                 service_call: service_call.clone(),
                 package_call: ("providerPackage".to_string(), provider_callable.clone()),
@@ -356,12 +494,15 @@ impl ProjectedFixture {
         );
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
+        let consumer_callable =
+            PackageCallableId::new("pkg-callable:example.phase-four-consumer:consume");
         let consumer_package = implementation_package(
             "example.phase-four-consumer",
             "consume",
-            PackageCallableId::new("callable:phase-four-consumer"),
+            consumer_callable.clone(),
             &consumer_file,
             consumer_operation_contract,
+            &consumer_schema_records,
             Some((provider_requirement, service_call)),
             Some(("providerPackage".to_string(), provider_package_ref.clone())),
         );
@@ -373,39 +514,33 @@ impl ProjectedFixture {
                 DeploymentRevision::new("phase-four-provider-r1"),
                 provider_package_ref.clone(),
                 provider_operation.clone(),
-                "provide",
+                provider_callable.clone(),
                 Vec::new(),
                 Vec::new(),
+                BTreeMap::new(),
                 Vec::new(),
             ),
             &provider_contract,
             std::slice::from_ref(&provider_package),
+            &provider_contract_schema_records,
         )
         .expect("provider deployment should project from typed contract/package artifacts");
         let provider_deployment =
             skiff_artifact_identity::service_deployment_ref(&provider_deployment_artifact);
-        let ingress = DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                host: "phase-four.test".to_string(),
-                method: Some("POST".to_string()),
-                path: "/consume".to_string(),
-            },
-            contract_operation_id: consumer_operation.clone(),
-        };
         let consumer_deployment_artifact = project_service_deployment(
             deployment_input(
                 consumer_contract_ref.clone(),
                 DeploymentRevision::new("phase-four-consumer-r1"),
                 consumer_package_ref.clone(),
                 consumer_operation,
-                "consume",
+                consumer_callable,
                 vec![PackageBinding {
                     key: PackageRequirementKey {
                         caller_package_build_id: consumer_package_ref.package_build_id.clone(),
                         package_requirement_alias: "providerPackage".to_string(),
                     },
                     package: provider_package_ref.clone(),
+                    collection_name_mapping: BTreeMap::new(),
                 }],
                 vec![ServiceSelectorBinding {
                     key: ServiceRequirementKey {
@@ -414,10 +549,12 @@ impl ProjectedFixture {
                     },
                     contract: provider_contract_ref.clone(),
                 }],
-                vec![ingress],
+                BTreeMap::new(),
+                Vec::new(),
             ),
             &consumer_contract,
             &[consumer_package.clone(), provider_package.clone()],
+            &consumer_schema_records,
         )
         .expect("consumer deployment should project from typed contract/package artifacts");
         let consumer_deployment =
@@ -463,6 +600,19 @@ impl ProjectedFixture {
                     Arc::new(provider_file),
                 ),
             ],
+            package_schema_records: consumer_schema_records
+                .values()
+                .chain(provider_schema_records.values())
+                .map(|record| {
+                    (
+                        PackageSchemaTypeRecordRef {
+                            package_id: record.package_id.clone(),
+                            package_schema_type_id: record.package_schema_type_id.clone(),
+                        },
+                        Arc::new(record.clone()),
+                    )
+                })
+                .collect(),
         };
         Self {
             assembly,
@@ -482,9 +632,10 @@ fn deployment_input(
     deployment_revision: DeploymentRevision,
     implementation: PackageArtifactRef,
     operation: ContractOperationId,
-    public_path: &str,
+    package_callable_id: PackageCallableId,
     package_bindings: Vec<PackageBinding>,
     service_selectors: Vec<ServiceSelectorBinding>,
+    gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: Vec<DeploymentIngressBinding>,
 ) -> ServiceDeploymentInput {
     ServiceDeploymentInput {
@@ -494,10 +645,11 @@ fn deployment_input(
         implementation,
         operation_bindings: vec![ServiceDeploymentOperationInput {
             contract_operation_id: operation,
-            package_public_path: public_path.to_string(),
+            package_callable_id,
         }],
         package_bindings,
         service_selectors,
+        gateway_entries,
         ingress,
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
@@ -516,7 +668,7 @@ fn service_contract(
     service_id: &str,
     stable_key: &str,
     operation_contract: BoundaryOperationContract,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> (ServiceContract, ContractOperationId) {
     let contract_version = "1.0.0";
     let operation_id =
@@ -535,11 +687,21 @@ fn service_contract(
                 contract: operation_contract,
             },
         )]),
-        boundary_schema,
+        package_type_requirements: if schema_records.is_empty() {
+            Vec::new()
+        } else {
+            vec![PackageTypeRequirement {
+                package_id: PROVIDER_PACKAGE_ID.to_string(),
+                required_type_ids: schema_records.keys().cloned().collect(),
+            }]
+        },
         diagnostic_text: ContractDiagnosticText {
             service: "Phase four typed execution fixture".to_string(),
             operations: BTreeMap::new(),
-            types: BTreeMap::new(),
+            types: schema_records
+                .iter()
+                .map(|(id, record)| (id.clone(), record.stable_schema_key.clone()))
+                .collect(),
         },
     };
     skiff_artifact_identity::assign_service_contract_identities(&mut contract)
@@ -550,18 +712,21 @@ fn service_contract(
 fn implementation_file(
     module_path: &str,
     symbol: &str,
+    operation_contract: &BoundaryOperationContract,
     may_suspend: bool,
+    callback_owner_may_suspend: bool,
     role: ImplementationRole,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
+    let signature = executable_signature_from_operation(operation_contract, may_suspend);
     let mut entry = ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: symbol.to_string(),
         type_params: Vec::new(),
-        params: Vec::new(),
-        return_type: TypeRefIr::native("bool"),
+        params: signature.params,
+        return_type: signature.return_type,
         self_type: None,
-        slots: SlotLayout::default(),
+        slots: parameter_slots(operation_contract),
         may_suspend,
         body: ExecutableBody {
             blocks: Vec::new(),
@@ -574,21 +739,136 @@ fn implementation_file(
         ImplementationRole::Provider(behavior) => {
             configure_provider_entry(&mut file, &mut entry, module_path, behavior);
             file.executables.push(entry);
-            install_provider_support(&mut file, module_path, symbol, behavior);
+            install_provider_support(
+                &mut file,
+                module_path,
+                symbol,
+                behavior,
+                callback_owner_may_suspend,
+            );
         }
         ImplementationRole::Consumer {
             service_call,
             package_call,
             behavior,
         } => {
-            configure_consumer_entry(&mut file, &mut entry, module_path, service_call, behavior);
+            configure_consumer_entry(&mut file, &mut entry, service_call, behavior);
             file.executables.push(entry);
-            install_consumer_support(&mut file, module_path, symbol, package_call, behavior);
+            install_consumer_support(
+                &mut file,
+                module_path,
+                symbol,
+                package_call,
+                behavior,
+                callback_owner_may_suspend,
+            );
         }
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
         .expect("fixture File IR should receive a canonical identity");
     file
+}
+
+fn executable_signature_from_operation(
+    operation: &BoundaryOperationContract,
+    may_suspend: bool,
+) -> ExecutableSignatureIr {
+    ExecutableSignatureIr {
+        params: operation
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| ParamIr {
+                name: parameter.name.clone(),
+                slot: u32::try_from(index).expect("fixture parameter count must fit u32"),
+                ty: file_type_from_contract(&parameter.ty),
+            })
+            .collect(),
+        return_type: operation_return_file_type(operation),
+        self_type: None,
+        may_suspend,
+    }
+}
+
+fn parameter_slots(operation: &BoundaryOperationContract) -> SlotLayout {
+    SlotLayout {
+        slots: operation
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| SlotIr {
+                index: u32::try_from(index).expect("fixture parameter count must fit u32"),
+                name: parameter.name.clone(),
+                kind: SlotKind::Param,
+            })
+            .collect(),
+        frame_size: u32::try_from(operation.parameters.len())
+            .expect("fixture parameter count must fit u32"),
+    }
+}
+
+fn operation_return_file_type(operation: &BoundaryOperationContract) -> TypeRefIr {
+    match &operation.stream {
+        BoundaryStreamContract::Unary => file_type_from_contract(&operation.return_value.ty),
+        BoundaryStreamContract::ServerStream { item_type, .. } => TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![file_type_from_contract(item_type)],
+        },
+        BoundaryStreamContract::Unsupported { .. } => {
+            panic!("available fixture operation cannot contain an unsupported stream")
+        }
+    }
+}
+
+fn file_type_from_contract(ty: &ContractTypeRef) -> TypeRefIr {
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments.iter().map(file_type_from_contract).collect(),
+        },
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            assert!(
+                arguments.is_empty()
+                    && matches!(interface.as_ref(), ContractTypeRef::PackageSchema { .. }),
+                "callback fixture requires an exact non-generic any-interface contract"
+            );
+            TypeRefIr::AnyInterface {
+                interface: callback_interface_ref(),
+            }
+        }
+        ContractTypeRef::TypeParam { name } => TypeRefIr::TypeParam { name: name.clone() },
+        ContractTypeRef::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), file_type_from_contract(ty)))
+                .collect(),
+        },
+        ContractTypeRef::StructuralUnion { variants } => TypeRefIr::Union {
+            items: variants.iter().map(file_type_from_contract).collect(),
+        },
+        ContractTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(file_type_from_contract(inner)),
+        },
+        ContractTypeRef::Literal { value } => TypeRefIr::Literal {
+            value: match value {
+                ContractLiteral::String { value } => LiteralIr::String {
+                    value: value.clone(),
+                },
+            },
+        },
+    }
 }
 
 fn configure_provider_entry(
@@ -604,25 +884,31 @@ fn configure_provider_entry(
             configure_async_typed_error_provider_entry(file, entry, module_path);
         }
         ProviderBehavior::InvokeCallback => configure_callback_provider_entry(entry),
-        ProviderBehavior::EmitCallbackStream => configure_callback_stream_provider_entry(
-            entry,
-            module_path,
-            CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
-        ),
+        ProviderBehavior::EmitCallbackStream => {
+            configure_callback_stream_provider_entry(entry, CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX)
+        }
+        ProviderBehavior::EmitBooleanSequence => {
+            configure_boolean_stream_provider_entry(file, entry, module_path, false);
+        }
+        ProviderBehavior::EmitBooleanThenError => {
+            configure_boolean_stream_provider_entry(file, entry, module_path, true);
+        }
     }
 }
 
 fn configure_consumer_entry(
     file: &mut FileIrUnit,
     entry: &mut ExecutableIr,
-    module_path: &str,
     service_call: ServiceCallRef,
     behavior: ConsumerBehavior,
 ) {
     file.external_refs.service_call_refs.push(service_call);
     let call_args = match behavior {
-        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry, module_path),
-        ConsumerBehavior::ReturnCall | ConsumerBehavior::ConsumeCallbackStream { .. } => Vec::new(),
+        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry),
+        ConsumerBehavior::ReturnCall
+        | ConsumerBehavior::ReturnGenericBooleanStream
+        | ConsumerBehavior::ConsumeCallbackStream { .. }
+        | ConsumerBehavior::ConsumeBooleanSequence => Vec::new(),
     };
     let call_expression = u32::try_from(entry.body.expressions.len())
         .expect("fixture expression count should fit u32");
@@ -631,13 +917,24 @@ fn configure_consumer_entry(
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: ServiceCallRefIndex::new(0),
             },
+            site: fixture_instruction_site(),
             args: call_args,
-            type_args: BTreeMap::new(),
+            type_args: if matches!(
+                behavior,
+                ConsumerBehavior::ReturnGenericBooleanStream
+                    | ConsumerBehavior::ConsumeBooleanSequence
+            ) {
+                BTreeMap::from([("T".to_string(), TypeRefIr::builtin("bool"))])
+            } else {
+                BTreeMap::new()
+            },
             metadata: BTreeMap::new(),
         },
     });
     match behavior {
-        ConsumerBehavior::ReturnCall | ConsumerBehavior::InvokeCallback => {
+        ConsumerBehavior::ReturnCall
+        | ConsumerBehavior::ReturnGenericBooleanStream
+        | ConsumerBehavior::InvokeCallback => {
             entry.body.statements.push(StmtIr::Return {
                 value: Some(ExprRefIr {
                     expression: call_expression,
@@ -651,6 +948,9 @@ fn configure_consumer_entry(
         ConsumerBehavior::ConsumeCallbackStream { break_after_item } => {
             configure_callback_stream_consumer_entry(entry, call_expression, break_after_item);
         }
+        ConsumerBehavior::ConsumeBooleanSequence => {
+            configure_boolean_stream_consumer_entry(entry, call_expression);
+        }
     }
 }
 
@@ -659,20 +959,35 @@ fn install_provider_support(
     module_path: &str,
     symbol: &str,
     behavior: ProviderBehavior,
+    callback_owner_may_suspend: bool,
 ) {
-    if matches!(behavior, ProviderBehavior::EmitCallbackStream) {
-        install_callback_interface_fixture(
-            file,
-            module_path,
-            symbol,
-            true,
-            CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
-        );
-        configure_return_true_entry(
-            file.executables
-                .last_mut()
-                .expect("callback stream owner executable should be installed"),
-        );
+    match behavior {
+        ProviderBehavior::InvokeCallback => {
+            install_callback_interface_fixture(
+                file,
+                module_path,
+                symbol,
+                false,
+                CALLBACK_OWNER_EXECUTABLE_INDEX,
+                callback_owner_may_suspend,
+            );
+        }
+        ProviderBehavior::EmitCallbackStream => {
+            install_callback_interface_fixture(
+                file,
+                module_path,
+                symbol,
+                true,
+                CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
+                callback_owner_may_suspend,
+            );
+            configure_return_true_entry(
+                file.executables
+                    .last_mut()
+                    .expect("callback stream owner executable should be installed"),
+            );
+        }
+        _ => {}
     }
 }
 
@@ -682,6 +997,7 @@ fn install_consumer_support(
     symbol: &str,
     package_call: (String, PackageCallableId),
     behavior: ConsumerBehavior,
+    callback_owner_may_suspend: bool,
 ) {
     let (dependency_ref, package_callable_id) = package_call;
     let package_ref = PackageRefIr::Dependency { dependency_ref };
@@ -691,21 +1007,189 @@ fn install_consumer_support(
             package_ref: package_ref.clone(),
             package_callable_id: package_callable_id.clone(),
         });
-    file.executables.push(checkpoint_call_executable(
-        format!("{symbol}_package_direct"),
-        CallTargetIr::PackageCallable {
-            package_ref,
-            package_callable_id,
-        },
-        Vec::new(),
-    ));
+    let package_target = CallTargetIr::PackageCallable {
+        package_ref,
+        package_callable_id,
+    };
+    if matches!(behavior, ConsumerBehavior::ConsumeBooleanSequence) {
+        file.executables.push(package_stream_consumer_executable(
+            format!("{symbol}_package_direct"),
+            package_target,
+        ));
+    } else {
+        let type_args = if matches!(behavior, ConsumerBehavior::ReturnGenericBooleanStream) {
+            BTreeMap::from([("T".to_string(), TypeRefIr::builtin("bool"))])
+        } else {
+            BTreeMap::new()
+        };
+        file.executables.push(checkpoint_call_executable(
+            format!("{symbol}_package_direct"),
+            package_target,
+            Vec::new(),
+            type_args,
+        ));
+    }
     install_callback_interface_fixture(
         file,
         module_path,
         symbol,
         matches!(behavior, ConsumerBehavior::InvokeCallback),
         CALLBACK_OWNER_EXECUTABLE_INDEX,
+        callback_owner_may_suspend,
     );
+}
+
+fn configure_boolean_stream_provider_entry(
+    file: &mut FileIrUnit,
+    entry: &mut ExecutableIr,
+    module_path: &str,
+    fail_after_first: bool,
+) {
+    entry.type_params = vec!["T".to_string()];
+    entry.return_type = TypeRefIr::Builtin {
+        name: "Stream".to_string(),
+        args: vec![TypeRefIr::TypeParam {
+            name: "T".to_string(),
+        }],
+    };
+    entry.body.expressions = vec![
+        ExprIr::Literal {
+            value: LiteralIr::Bool { value: true },
+        },
+        ExprIr::Literal {
+            value: LiteralIr::Bool { value: false },
+        },
+    ];
+    entry.body.statements.push(StmtIr::Emit {
+        operation: "provide".to_string(),
+        value: ExprRefIr { expression: 0 },
+    });
+    if fail_after_first {
+        file.declarations.types.insert(
+            "StreamError".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: format!("{module_path}.StreamError"),
+                source_span: None,
+            },
+        );
+        file.type_table.push(TypeDeclIr {
+            name: "StreamError".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("message".to_string(), TypeRefIr::builtin("string"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        entry.body.expressions.extend([
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "provider stream typed error".to_string(),
+                },
+            },
+            ExprIr::Construct {
+                type_ref: TypeRefIr::LocalType { type_index: 0 },
+                fields: BTreeMap::from([("message".to_string(), ExprRefIr { expression: 2 })]),
+            },
+        ]);
+        entry.body.statements.push(StmtIr::Throw {
+            value: ExprRefIr { expression: 3 },
+            payload_type: TypeRefIr::LocalType { type_index: 0 },
+            site: fixture_instruction_site(),
+        });
+    } else {
+        entry.body.statements.push(StmtIr::Emit {
+            operation: "provide".to_string(),
+            value: ExprRefIr { expression: 1 },
+        });
+    }
+    entry.body.blocks.push(BlockIr {
+        label: "entry".to_string(),
+        statements: (0..entry.body.statements.len())
+            .map(|statement| StmtRefIr {
+                statement: u32::try_from(statement)
+                    .expect("fixture statement index should fit u32"),
+            })
+            .collect(),
+    });
+}
+
+fn configure_boolean_stream_consumer_entry(entry: &mut ExecutableIr, stream_expression: u32) {
+    let item = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::LoadSlot { slot: 0 });
+    let seen = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::LoadSlot { slot: 1 });
+    let first = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::Literal {
+        value: LiteralIr::Bool { value: true },
+    });
+    let second = u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::Literal {
+        value: LiteralIr::Bool { value: false },
+    });
+    let ordered =
+        u32::try_from(entry.body.expressions.len()).expect("fixture index should fit u32");
+    entry.body.expressions.push(ExprIr::Binary {
+        op: BinaryOpIr::Equal,
+        left: ExprRefIr { expression: item },
+        right: ExprRefIr { expression: seen },
+    });
+    entry.slots = SlotLayout {
+        slots: vec![
+            SlotIr {
+                index: 0,
+                name: "item".to_string(),
+                kind: SlotKind::Pattern,
+            },
+            SlotIr {
+                index: 1,
+                name: "seenFirst".to_string(),
+                kind: SlotKind::Local,
+            },
+        ],
+        frame_size: 2,
+    };
+    entry.body.statements.extend([
+        StmtIr::Let {
+            slot: 1,
+            value: ExprRefIr { expression: first },
+        },
+        StmtIr::ForIn {
+            item_slot: 0,
+            item_type: Some(TypeRefIr::builtin("bool")),
+            value_slot: None,
+            iterable: ExprRefIr {
+                expression: stream_expression,
+            },
+            body: "consume_boolean".to_string(),
+        },
+        StmtIr::Assert {
+            condition: ExprRefIr {
+                expression: ordered,
+            },
+            message: None,
+        },
+        StmtIr::Assign {
+            target: AssignTargetIr::Slot { slot: 1 },
+            value: ExprRefIr { expression: second },
+        },
+        StmtIr::Return { value: None },
+    ]);
+    entry.body.blocks.extend([
+        BlockIr {
+            label: "entry".to_string(),
+            statements: vec![
+                StmtRefIr { statement: 0 },
+                StmtRefIr { statement: 1 },
+                StmtRefIr { statement: 4 },
+            ],
+        },
+        BlockIr {
+            label: "consume_boolean".to_string(),
+            statements: vec![StmtRefIr { statement: 2 }, StmtRefIr { statement: 3 }],
+        },
+    ]);
 }
 
 fn configure_return_true_entry(entry: &mut ExecutableIr) {
@@ -741,9 +1225,9 @@ fn configure_async_typed_error_provider_entry(
 ) {
     let fields = BTreeMap::from([(
         "messages".to_string(),
-        TypeRefIr::Native {
+        TypeRefIr::Builtin {
             name: "Array".to_string(),
-            args: vec![TypeRefIr::native("string")],
+            args: vec![TypeRefIr::builtin("string")],
         },
     )]);
     file.declarations.types.insert(
@@ -760,7 +1244,6 @@ fn configure_async_typed_error_provider_entry(
             fields: fields.clone(),
         },
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     });
@@ -773,6 +1256,7 @@ fn configure_async_typed_error_provider_entry(
         statements: vec![StmtIr::Throw {
             value: ExprRefIr { expression: 2 },
             payload_type: payload_type.clone(),
+            site: fixture_instruction_site(),
         }],
         expressions: vec![
             ExprIr::Literal {
@@ -791,19 +1275,15 @@ fn configure_async_typed_error_provider_entry(
     };
 }
 
-fn configure_callback_stream_provider_entry(
-    entry: &mut ExecutableIr,
-    module_path: &str,
-    owner_executable_index: u32,
-) {
-    let callback_interface = callback_interface_ref(module_path);
-    entry.return_type = TypeRefIr::Native {
+fn configure_callback_stream_provider_entry(entry: &mut ExecutableIr, owner_executable_index: u32) {
+    let callback_interface = callback_interface_ref();
+    entry.return_type = TypeRefIr::Builtin {
         name: "Stream".to_string(),
         args: vec![TypeRefIr::AnyInterface {
             interface: callback_interface,
         }],
     };
-    let callback = append_callback_preimage_at(entry, module_path, owner_executable_index);
+    let callback = append_callback_preimage_at(entry, owner_executable_index);
     entry.body.statements.push(StmtIr::Emit {
         operation: "provide".to_string(),
         value: callback[0],
@@ -819,7 +1299,7 @@ fn configure_callback_stream_consumer_entry(
     stream_expression: u32,
     break_after_item: bool,
 ) {
-    let callback_interface = callback_interface_ref("phase_four.provider");
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -836,6 +1316,7 @@ fn configure_callback_stream_consumer_entry(
                 method_abi_id: callback_method_abi_id,
                 slot: 0,
             },
+            site: fixture_instruction_site(),
             args: vec![ExprRefIr {
                 expression: callback_expression,
             }],
@@ -892,26 +1373,22 @@ fn configure_callback_stream_consumer_entry(
 }
 
 fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
-    let callback_interface = callback_interface_ref("phase_four.consumer");
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
     );
-    entry.params.push(ParamIr {
-        name: "callback".to_string(),
-        slot: 0,
-        ty: TypeRefIr::AnyInterface {
-            interface: callback_interface.clone(),
-        },
-    });
-    entry.slots = SlotLayout {
-        slots: vec![SlotIr {
-            index: 0,
+    assert_eq!(
+        entry.params,
+        vec![ParamIr {
             name: "callback".to_string(),
-            kind: SlotKind::Param,
+            slot: 0,
+            ty: TypeRefIr::AnyInterface {
+                interface: callback_interface.clone(),
+            },
         }],
-        frame_size: 1,
-    };
+        "callback provider File IR signature must be derived from its operation"
+    );
     entry.body = ExecutableBody {
         blocks: vec![BlockIr {
             label: "entry".to_string(),
@@ -929,6 +1406,7 @@ fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
                         method_abi_id: callback_method_abi_id,
                         slot: 0,
                     },
+                    site: fixture_instruction_site(),
                     args: vec![ExprRefIr { expression: 0 }],
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
@@ -938,24 +1416,24 @@ fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
     };
 }
 
-fn append_callback_preimage(entry: &mut ExecutableIr, module_path: &str) -> Vec<ExprRefIr> {
-    append_callback_preimage_at(entry, module_path, CALLBACK_OWNER_EXECUTABLE_INDEX)
+fn append_callback_preimage(entry: &mut ExecutableIr) -> Vec<ExprRefIr> {
+    append_callback_preimage_at(entry, CALLBACK_OWNER_EXECUTABLE_INDEX)
 }
 
 fn append_callback_preimage_at(
     entry: &mut ExecutableIr,
-    module_path: &str,
     owner_executable_index: u32,
 ) -> Vec<ExprRefIr> {
-    let callback_interface = callback_interface_ref(module_path);
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
     );
     let concrete_type = TypeRefIr::LocalType { type_index: 0 };
     entry.body.expressions.extend([
-        ExprIr::Literal {
-            value: LiteralIr::Bool { value: true },
+        ExprIr::Construct {
+            type_ref: concrete_type.clone(),
+            fields: BTreeMap::new(),
         },
         ExprIr::InterfaceBox {
             value: ExprRefIr { expression: 0 },
@@ -974,7 +1452,7 @@ fn append_callback_preimage_at(
                                 name: "self".to_string(),
                                 ty: concrete_type,
                             }],
-                            return_type: TypeRefIr::native("bool"),
+                            return_type: TypeRefIr::builtin("bool"),
                         },
                         target: InterfaceMethodSlotTargetIr {
                             executable_index: owner_executable_index,
@@ -994,16 +1472,25 @@ fn install_callback_interface_fixture(
     symbol: &str,
     include_owner_method: bool,
     owner_executable_index: u32,
+    owner_may_suspend: bool,
 ) {
-    let callback_interface = callback_interface_ref(module_path);
+    let callback_interface = callback_interface_ref();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
     );
     file.declarations.types.insert(
-        CALLBACK_INTERFACE_SYMBOL.to_string(),
+        CALLBACK_RECEIVER_SYMBOL.to_string(),
         TypeDeclarationIr {
             type_index: 0,
+            symbol: format!("{module_path}.{CALLBACK_RECEIVER_SYMBOL}"),
+            source_span: None,
+        },
+    );
+    file.declarations.types.insert(
+        CALLBACK_INTERFACE_SYMBOL.to_string(),
+        TypeDeclarationIr {
+            type_index: 1,
             symbol: format!("{module_path}.{CALLBACK_INTERFACE_SYMBOL}"),
             source_span: None,
         },
@@ -1018,9 +1505,9 @@ fn install_callback_interface_fixture(
                 type_params: Vec::new(),
                 params: vec![FunctionTypeParamIr {
                     name: "self".to_string(),
-                    ty: TypeRefIr::native("Self"),
+                    ty: TypeRefIr::builtin("Self"),
                 }],
-                return_type: TypeRefIr::native("bool"),
+                return_type: TypeRefIr::builtin("bool"),
                 is_native: false,
                 is_provider: false,
                 is_static: false,
@@ -1030,12 +1517,18 @@ fn install_callback_interface_fixture(
         },
     );
     file.type_table.push(TypeDeclIr {
-        name: CALLBACK_INTERFACE_SYMBOL.to_string(),
+        name: CALLBACK_RECEIVER_SYMBOL.to_string(),
         descriptor: TypeDescriptorIr::Record {
             fields: BTreeMap::new(),
         },
         type_params: Vec::new(),
-        discriminator: None,
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.type_table.push(TypeDeclIr {
+        name: CALLBACK_INTERFACE_SYMBOL.to_string(),
+        descriptor: TypeDescriptorIr::Interface,
+        type_params: Vec::new(),
         implements: Vec::new(),
         source_span: None,
     });
@@ -1055,10 +1548,10 @@ fn install_callback_interface_fixture(
             symbol: format!("{CALLBACK_INTERFACE_SYMBOL}.{CALLBACK_INTERFACE_METHOD}"),
             type_params: Vec::new(),
             params: Vec::new(),
-            return_type: TypeRefIr::native("bool"),
+            return_type: TypeRefIr::builtin("bool"),
             self_type: Some(TypeRefIr::LocalType { type_index: 0 }),
             slots: SlotLayout::default(),
-            may_suspend: false,
+            may_suspend: owner_may_suspend,
             // Intentional callback-owner missing-entry probe; validation/execution must fail
             // closed instead of inventing an owner-method body.
             body: ExecutableBody::default(),
@@ -1071,13 +1564,14 @@ fn checkpoint_call_executable(
     symbol: String,
     target: CallTargetIr,
     args: Vec<ExprRefIr>,
+    type_args: BTreeMap<String, TypeRefIr>,
 ) -> ExecutableIr {
     ExecutableIr {
         kind: ExecutableKind::Function,
         symbol,
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: TypeRefIr::native("bool"),
+        return_type: TypeRefIr::builtin("bool"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
@@ -1092,14 +1586,44 @@ fn checkpoint_call_executable(
             expressions: vec![ExprIr::Call {
                 call: CallIr {
                     target,
+                    site: fixture_instruction_site(),
                     args,
-                    type_args: BTreeMap::new(),
+                    type_args,
                     metadata: BTreeMap::new(),
                 },
             }],
         },
         source_span: None,
     }
+}
+
+fn package_stream_consumer_executable(symbol: String, target: CallTargetIr) -> ExecutableIr {
+    let mut executable = ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol,
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: Vec::new(),
+            statements: Vec::new(),
+            expressions: vec![ExprIr::Call {
+                call: CallIr {
+                    target,
+                    site: fixture_instruction_site(),
+                    args: Vec::new(),
+                    type_args: BTreeMap::from([("T".to_string(), TypeRefIr::builtin("bool"))]),
+                    metadata: BTreeMap::new(),
+                },
+            }],
+        },
+        source_span: None,
+    };
+    configure_boolean_stream_consumer_entry(&mut executable, 0);
+    executable
 }
 
 fn callback_checkpoint_executable(
@@ -1115,6 +1639,7 @@ fn callback_checkpoint_executable(
             slot: 0,
         },
         vec![ExprRefIr { expression: 0 }],
+        BTreeMap::new(),
     );
     executable.params.push(ParamIr {
         name: "callback".to_string(),
@@ -1139,11 +1664,11 @@ fn callback_checkpoint_executable(
     executable
 }
 
-pub(super) fn callback_interface_ref(module_path: &str) -> InterfaceInstantiationRef {
+pub(super) fn callback_interface_ref() -> InterfaceInstantiationRef {
     skiff_artifact_identity::interface_instantiation_ref(
         TypeRefIr::ServiceSymbol {
             symbol: ServiceSymbolRef {
-                module_path: module_path.to_string(),
+                module_path: IMPLEMENTATION_MODULE_PATH.to_string(),
                 symbol: CALLBACK_INTERFACE_SYMBOL.to_string(),
             },
         },
@@ -1157,14 +1682,22 @@ fn implementation_package(
     callable_id: PackageCallableId,
     file: &FileIrUnit,
     operation_contract: BoundaryOperationContract,
+    schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
     package_dependency: Option<(String, PackageArtifactRef)>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
-    let may_suspend = operation_contract.may_suspend;
+    let entry = file
+        .executables
+        .first()
+        .expect("fixture implementation must expose its entry executable");
+    let may_suspend = entry.may_suspend;
+    let package_signature =
+        package_signature_from_operation(&operation_contract, &entry.type_params, may_suspend);
     let effects = no_effects(may_suspend);
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
+        direct_return_origins: Vec::new(),
         throw_origins: Vec::new(),
         escape_lanes: Vec::new(),
     };
@@ -1187,6 +1720,64 @@ fn implementation_package(
             package_id: package.package_id,
             exact_version: package.package_version,
             expected_local_abi: package.package_local_abi_identity,
+            collection_name_mapping: BTreeMap::new(),
+            expected_package_build: None,
+        })
+        .collect();
+    let schema_types = schema_records
+        .values()
+        .map(|record| {
+            (
+                record.stable_schema_key.clone(),
+                PackageSchemaIndexEntry {
+                    package_schema_type_id: record.package_schema_type_id.clone(),
+                    public_path: Some(record.stable_schema_key.clone()),
+                    nameability: ContractTypeNameability::PublicNameable,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let schema_type_links = schema_records
+        .values()
+        .map(|record| {
+            let (type_index, declaration) = file
+                .type_table
+                .iter()
+                .enumerate()
+                .find(|(_, declaration)| {
+                    matches!(
+                        (
+                            &declaration.descriptor,
+                            &record.canonical_descriptor.descriptor
+                        ),
+                        (
+                            TypeDescriptorIr::Record { .. },
+                            ContractTypeDescriptor::Record { .. }
+                        ) | (
+                            TypeDescriptorIr::Interface,
+                            ContractTypeDescriptor::CallbackInterface { .. }
+                        )
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fixture public schema {} must have an exact implementation type",
+                        record.stable_schema_key
+                    )
+                });
+            (
+                record.stable_schema_key.clone(),
+                TypeExport {
+                    file: file_ref.clone(),
+                    type_index: u32::try_from(type_index)
+                        .expect("fixture type index should fit u32"),
+                    symbol: declaration.name.clone(),
+                    is_interface: matches!(declaration.descriptor, TypeDescriptorIr::Interface),
+                    descriptor: Some(declaration.descriptor.clone()),
+                    type_params: declaration.type_params.clone(),
+                    interface_methods: Vec::new(),
+                },
+            )
         })
         .collect();
     let mut package = PackageArtifact {
@@ -1202,18 +1793,49 @@ fn implementation_package(
                 public_path.to_string(),
                 PackageLocalAbiSymbol::Callable {
                     callable_id: callable_id.clone(),
-                    signature: PackageCallableSignature {
-                        parameters: Vec::new(),
-                        return_type: PackageTypeRef::Local {
-                            local_type: TypeRefIr::native("bool"),
-                        },
-                        throw_types: Vec::new(),
-                        may_suspend,
+                    signature: package_signature,
+                },
+            )]),
+            implementation_symbols: BTreeMap::new(),
+        },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &schema_types,
+            )
+            .expect("fixture Package schema index should be canonical"),
+        },
+        package_schema_type_records: schema_records
+            .values()
+            .map(|record| {
+                (
+                    record.package_schema_type_id.clone(),
+                    PackageSchemaTypeRecordRef {
+                        package_id: record.package_id.clone(),
+                        package_schema_type_id: record.package_schema_type_id.clone(),
+                    },
+                )
+            })
+            .collect(),
+        implementation_links: PackageImplementationLinks {
+            types: schema_type_links,
+            functions: BTreeMap::from([(
+                public_path.to_string(),
+                ExecutableExport {
+                    file: file_ref.clone(),
+                    executable_index: 0,
+                    symbol: entry.symbol.clone(),
+                    signature: ExecutableSignatureIr {
+                        params: entry.params.clone(),
+                        return_type: entry.return_type.clone(),
+                        self_type: entry.self_type.clone(),
+                        may_suspend: entry.may_suspend,
                     },
                 },
             )]),
+            ..PackageImplementationLinks::default()
         },
-        implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::from([(
             callable_id.clone(),
             PackageCallableLinkFact {
@@ -1231,6 +1853,7 @@ fn implementation_package(
         service_requirements,
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
+            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -1265,6 +1888,69 @@ fn implementation_package(
     package
 }
 
+fn package_signature_from_operation(
+    operation: &BoundaryOperationContract,
+    type_params: &[String],
+    may_suspend: bool,
+) -> PackageCallableSignature {
+    PackageCallableSignature {
+        type_params: type_params.to_vec(),
+        parameters: operation
+            .parameters
+            .iter()
+            .map(|parameter| PackageCallableParameter {
+                name: parameter.name.clone(),
+                ty: package_type_from_contract(&parameter.ty),
+            })
+            .collect(),
+        return_type: match &operation.stream {
+            BoundaryStreamContract::Unary => package_type_from_contract(&operation.return_value.ty),
+            BoundaryStreamContract::ServerStream { item_type, .. } => PackageTypeRef::Container {
+                name: "Stream".to_string(),
+                arguments: vec![package_type_from_contract(item_type)],
+            },
+            BoundaryStreamContract::Unsupported { .. } => {
+                panic!("available fixture operation cannot contain an unsupported stream")
+            }
+        },
+        may_suspend,
+    }
+}
+
+fn package_type_from_contract(ty: &ContractTypeRef) -> PackageTypeRef {
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => PackageTypeRef::Container {
+            name: name.clone(),
+            arguments: arguments.iter().map(package_type_from_contract).collect(),
+        },
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => PackageTypeRef::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => PackageTypeRef::AnyInterface {
+            interface: Box::new(package_type_from_contract(interface)),
+            arguments: arguments.iter().map(package_type_from_contract).collect(),
+        },
+        ContractTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+            inner: Box::new(package_type_from_contract(inner)),
+        },
+        ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Record { .. }
+        | ContractTypeRef::StructuralUnion { .. }
+        | ContractTypeRef::Literal { .. } => PackageTypeRef::Local {
+            local_type: file_type_from_contract(ty),
+        },
+    }
+}
+
 fn unary_contract() -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: Vec::new(),
@@ -1277,11 +1963,8 @@ fn unary_contract() -> BoundaryOperationContract {
                 lifetime: BoundaryValueLifetime::Call,
             },
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
         effect_guarantee: BoundaryEffectGuarantee {
             detached_parameters: true,
             detached_return: true,
@@ -1291,6 +1974,27 @@ fn unary_contract() -> BoundaryOperationContract {
             no_same_heap_identity: true,
         },
     }
+}
+
+fn boolean_stream_contract() -> BoundaryOperationContract {
+    let mut contract = unary_contract();
+    contract.return_value.ty = ContractTypeRef::builtin("void");
+    contract.return_value.value_plan = BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner: BoundaryValueOwner::Provider,
+        lifetime: BoundaryValueLifetime::Call,
+    };
+    contract.stream = BoundaryStreamContract::ServerStream {
+        item_type: ContractTypeRef::builtin("bool"),
+        item_value_plan: BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner: BoundaryValueOwner::Provider,
+            lifetime: BoundaryValueLifetime::Stream,
+        },
+    };
+    contract
 }
 
 fn no_effects(may_suspend: bool) -> CallableMayEffects {
@@ -1307,7 +2011,7 @@ fn no_effects(may_suspend: bool) -> CallableMayEffects {
 
 fn policy() -> DeploymentPolicy {
     DeploymentPolicy {
-        timeout_ms: 1_000,
+        timeout_ms: Some(1_000),
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_048_576,

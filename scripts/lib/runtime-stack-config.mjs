@@ -1,24 +1,52 @@
+import { isAbsolute } from 'node:path';
+
 export function renderRouterConfig({
   profile,
   host,
-  artifactRoots,
-  identityCliPath,
+  environment,
+  artifactsPath,
+  ecosystemStoreCliPath,
   devReload,
   releaseMode,
   requestTimeoutMs = 20000,
+  activationPrepareTimeoutMs,
   httpPort,
+  httpMaxRequestBytes,
+  httpMaxResponseBytes,
   runtimePort,
   runtimePath = '/runtime',
   serviceDbMongoUrl,
   telemetryEndpoint,
   rewrite = [],
 }) {
+  if (typeof environment !== 'string' || environment.length === 0) {
+    throw new Error('router environment is required');
+  }
+  if (typeof ecosystemStoreCliPath !== 'string' || ecosystemStoreCliPath.trim().length === 0) {
+    throw new Error('router ecosystemStoreCliPath is required');
+  }
+  if (
+    typeof artifactsPath !== 'string'
+    || artifactsPath.trim().length === 0
+    || !isAbsolute(artifactsPath)
+  ) {
+    throw new Error('router artifactsPath must be an absolute path');
+  }
+  if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
+    throw new Error('router serviceDb.mongoUrl is required');
+  }
+  requirePositiveSafeInteger(httpMaxRequestBytes, 'router http.maxRequestBytes');
+  requirePositiveSafeInteger(httpMaxResponseBytes, 'router http.maxResponseBytes');
+  requirePositiveSafeInteger(
+    activationPrepareTimeoutMs,
+    'router activation.prepareTimeoutMs',
+  );
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
-    'artifactRoots:',
-    ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
-    `identityCliPath: ${quoteYamlString(identityCliPath)}`,
+    `environment: ${quoteYamlString(environment)}`,
+    `artifactsPath: ${quoteYamlString(artifactsPath)}`,
+    `ecosystemStoreCliPath: ${quoteYamlString(ecosystemStoreCliPath)}`,
   ];
   if (releaseMode !== undefined) {
     lines.push(`releaseMode: ${releaseMode ? 'true' : 'false'}`);
@@ -26,21 +54,23 @@ export function renderRouterConfig({
   lines.push(
     `devReload: ${devReload ? 'true' : 'false'}`,
     `requestTimeoutMs: ${requestTimeoutMs}`,
+    'activation:',
+    `  prepareTimeoutMs: ${activationPrepareTimeoutMs}`,
     '',
     'http:',
     `  port: ${httpPort}`,
+    `  maxRequestBytes: ${httpMaxRequestBytes}`,
+    `  maxResponseBytes: ${httpMaxResponseBytes}`,
     '',
     'runtime:',
     `  port: ${runtimePort}`,
     `  path: ${runtimePath}`,
   );
-  if (serviceDbMongoUrl !== undefined) {
-    lines.push(
-      '',
-      'serviceDb:',
-      `  mongoUrl: ${quoteYamlString(serviceDbMongoUrl)}`,
-    );
-  }
+  lines.push(
+    '',
+    'serviceDb:',
+    `  mongoUrl: ${quoteYamlString(serviceDbMongoUrl)}`,
+  );
   if (telemetryEndpoint !== undefined) {
     lines.push(
       '',
@@ -65,20 +95,17 @@ export function renderRouterConfig({
 export function renderRuntimeConfig({
   routerUrl,
   runtimeHome,
-  artifactRoots,
+  environment,
   serviceDbEncryptionKeyringFile,
-  httpResponseMaxBytes,
 }) {
+  if (typeof environment !== 'string' || environment.trim().length === 0) {
+    throw new Error('runtime environment is required');
+  }
   const lines = [
     `router: ${quoteYamlString(routerUrl)}`,
     `runtime-home: ${quoteYamlString(runtimeHome)}`,
+    `environment: ${quoteYamlString(environment)}`,
   ];
-  if ((artifactRoots?.length ?? 0) > 0) {
-    lines.push(
-      'artifactRoots:',
-      ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
-    );
-  }
   if (serviceDbEncryptionKeyringFile !== undefined) {
     lines.push(
       'serviceDb:',
@@ -86,15 +113,14 @@ export function renderRuntimeConfig({
       `    keyringFile: ${quoteYamlString(serviceDbEncryptionKeyringFile)}`,
     );
   }
-  if (httpResponseMaxBytes !== undefined) {
-    lines.push(
-      'http:',
-      '  response:',
-      `    maxBytes: ${httpResponseMaxBytes}`,
-    );
-  }
   lines.push('');
   return lines.join('\n');
+}
+
+function requirePositiveSafeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
 }
 
 export function renderTelemetryConfig({

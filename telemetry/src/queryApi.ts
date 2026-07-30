@@ -95,7 +95,16 @@ export async function handleQueryRequest(
       writeJson(response, 400, { error: 'traceId must be non-empty' });
       return true;
     }
-    writeJson(response, 200, buildTraceView(traceId, await options.store.queryTrace(traceId)));
+    const errorId = readErrorId(url.searchParams);
+    if (!errorId.ok) {
+      writeJson(response, 400, { error: errorId.error });
+      return true;
+    }
+    writeJson(
+      response,
+      200,
+      buildTraceView(traceId, await options.store.queryTrace(traceId, errorId.value))
+    );
     return true;
   }
 
@@ -178,6 +187,13 @@ function readCommonQuery(
   if (traceId !== undefined) {
     query.traceId = traceId;
   }
+  const errorId = readErrorId(searchParams);
+  if (!errorId.ok) {
+    return errorId;
+  }
+  if (errorId.value !== undefined) {
+    query.errorId = errorId.value;
+  }
   const requestId = searchParams.get('requestId') ?? searchParams.get('request') ?? undefined;
   if (requestId !== undefined) {
     query.requestId = requestId;
@@ -203,6 +219,24 @@ function readCommonQuery(
     query.limit = parsed;
   }
   return { ok: true, value: query };
+}
+
+function readErrorId(
+  searchParams: URLSearchParams
+):
+  | {
+      ok: true;
+      value: string | undefined;
+    }
+  | {
+      ok: false;
+      error: string;
+    } {
+  const errorId = searchParams.get('errorId') ?? undefined;
+  if (errorId !== undefined && errorId.trim().length === 0) {
+    return { ok: false, error: 'errorId must be a non-empty string' };
+  }
+  return { ok: true, value: errorId };
 }
 
 export function parseSince(value: string, now = Date.now()): string | null {

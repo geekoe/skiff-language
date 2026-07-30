@@ -1,114 +1,81 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
 
 import {
-  runTestRunnerRuntimeIsolation,
-  TEST_RUNNER_INNER_MARKER,
-  TEST_RUNNER_WORKER_FEATURE,
-  testRunnerWorkerCargoArgs,
-} from '../lib/test-runner-runtime-isolation.mjs';
+  isolatedTestInstanceConfigText,
+  isolatedTestRunnerEnvironment,
+} from '../lib/isolated-test-runtime-instance.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const root = resolve(import.meta.dirname, '..', '..');
 
-test('inner Cargo selects feature-gated test targets and forwards outer harness arguments', () => {
-  assert.deepEqual(testRunnerWorkerCargoArgs(['name-filter', '--nocapture']), [
-    'test',
-    '--manifest-path',
-    'test-runner/Cargo.toml',
-    '--features',
-    'runtime-integration-worker',
-    '--test',
-    '*',
-    '--no-fail-fast',
-    '--',
-    'name-filter',
-    '--nocapture',
-  ]);
-});
-
-test('isolated runtime is started once and owns one inner Cargo process', async () => {
-  const signal = new AbortController().signal;
-  const signals = new EventEmitter();
-  const calls = [];
-  await runTestRunnerRuntimeIsolation({
+test('non-live runner receives canonical activation and Host-ingress targets', () => {
+  const environment = isolatedTestRunnerEnvironment({
+    baseEnv: {
+      PATH: '/bin',
+      CARGO_TARGET_DIR: 'hostile-relative-target',
+      SKIFF_TEST_PLATFORM_SOURCE_ROOT: '/tmp/hostile-platform-root',
+    },
     skiffRoot: '/checkout/skiff',
-    baseEnv: { CARGO: '/toolchain/cargo', PATH: '/bin' },
-    signalTarget: signals,
-    outerHarnessArgs: ['--list'],
-    log: (message) => calls.push(['log', message]),
-    runIsolatedRuntime: async (options) => {
-      calls.push(['runtime', options.skiffRoot, options.baseEnv, options.signalTarget]);
-      await options.runTest({
-        PATH: '/bin',
-        SKIFF_DEV_HOME: '/tmp/isolated/dev-home',
-        SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:46001/__skiff/reload-artifacts',
-        SKIFF_TEST_ARTIFACT_ROOT: '/tmp/isolated/dev-home/artifacts',
-      }, signal);
-    },
-    runCommand: async (command, args, options) => {
-      calls.push(['command', command, args, options]);
-    },
+    cargoTarget: '/checkout/cargo-target',
+    devHome: '/tmp/skiff-owned/dev-home',
+    controlPort: 46101,
+    routerHttpPort: 46100,
+    environment: 'test-environment',
   });
 
-  assert.equal(calls.filter(([kind]) => kind === 'runtime').length, 1);
-  assert.equal(calls.filter(([kind]) => kind === 'command').length, 1);
-  const [, command, args, options] = calls.find(([kind]) => kind === 'command');
-  assert.equal(command, '/toolchain/cargo');
-  assert.deepEqual(args, testRunnerWorkerCargoArgs(['--list']));
-  assert.equal(options.cwd, '/checkout/skiff');
-  assert.equal(options.env.SKIFF_DEV_HOME, '/tmp/isolated/dev-home');
+  assert.equal(environment.SKIFF_DEV_HOME, '/tmp/skiff-owned/dev-home');
   assert.equal(
-    options.env.SKIFF_DEV_RELOAD_URL,
-    'http://127.0.0.1:46001/__skiff/reload-artifacts',
+    environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT,
+    '/tmp/skiff-owned/dev-home/artifacts',
   );
-  assert.equal(options.env.SKIFF_TEST_ARTIFACT_ROOT, '/tmp/isolated/dev-home/artifacts');
-  assert.equal(options.env[TEST_RUNNER_INNER_MARKER], '1');
-  assert.equal(options.signal, signal);
-  assert.match(calls.at(-1)[1], /cleaned up/);
+  assert.equal(
+    environment.SKIFF_TEST_ACTIVATION_URL,
+    'http://127.0.0.1:46101/__skiff/activate-assembly',
+  );
+  assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46100');
+  assert.equal(environment.SKIFF_TEST_ENVIRONMENT, 'test-environment');
+  assert.equal(environment.SKIFF_TEST_EXPECTED_GENERATION, '0');
+  assert.equal(environment.CARGO_TARGET_DIR, '/checkout/cargo-target');
+  assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout/skiff');
+  assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
 });
 
-test('inner marker cannot bypass the outer isolated runtime owner', async () => {
-  await assert.rejects(
-    runTestRunnerRuntimeIsolation({
-      baseEnv: { [TEST_RUNNER_INNER_MARKER]: '1' },
-      runIsolatedRuntime: async () => assert.fail('runtime must not start'),
-    }),
-    /reserved for the isolated Cargo harness/,
-  );
+test('isolated config is rooted in its temporary dev home and dynamic ports', () => {
+  const config = isolatedTestInstanceConfigText({
+    devHome: '/tmp/skiff-owned/dev-home',
+    cargoTarget: '/tmp/skiff-owned/cargo-target',
+    basePort: 46100,
+    mongoPort: 46103,
+  });
+
+  assert.match(config, /devHome: "\/tmp\/skiff-owned\/dev-home"/);
+  assert.match(config, /cargoTargetDir: "\/tmp\/skiff-owned\/cargo-target"/);
+  assert.match(config, /base: 46100/);
+  assert.match(config, /mongo: 46103/);
+  assert.match(config, /mongo: managed/);
+  assert.doesNotMatch(config, /27017/);
+  assert.match(config, /environment: "skiff-test"/);
+  assert.doesNotMatch(config, /\.skiff-instance/);
+  assert.doesNotMatch(config, /__skiff\/reload-artifacts/);
 });
 
-test('Cargo manifest gates every non-wrapper test target behind the inner feature', async () => {
+test('Cargo owns the current ungated integration targets and no recursive wrapper', async () => {
   const manifest = await readFile(join(root, 'test-runner', 'Cargo.toml'), 'utf8');
   const targets = manifest.split('[[test]]').slice(1).map(parseTestTarget);
-  const wrappers = targets.filter((target) => target.name === 'test_runner_runtime_isolation');
-  assert.equal(wrappers.length, 1);
-  assert.equal(wrappers[0].harness, 'false');
-  assert.equal(wrappers[0].requiredFeatures, undefined);
 
-  const workers = targets.filter((target) => target !== wrappers[0]);
-  assert.ok(workers.length > 0, 'at least one runtime integration worker is required');
-  for (const worker of workers) {
-    assert.deepEqual(
-      worker.requiredFeatures,
-      [TEST_RUNNER_WORKER_FEATURE],
-      `${worker.name} must be inner-only`,
-    );
-  }
+  assert.deepEqual(targets, [
+    { name: 'test_service_flow' },
+    { name: 'canonical_std_seed_bootstrap' },
+    { name: 'http_entry_test_service' },
+  ]);
+  assert.doesNotMatch(manifest, /runtime-integration-worker/);
+  assert.doesNotMatch(manifest, /test_runner_runtime_isolation/);
 });
 
 function parseTestTarget(block) {
   const name = block.match(/^name = "([^"]+)"$/m)?.[1];
   assert.ok(name, `test target is missing a name:${block}`);
-  const requiredFeatures = block.match(/^required-features = \[([^\]]*)\]$/m)?.[1]
-    .split(',')
-    .map((value) => value.trim().match(/^"([^"]+)"$/)?.[1]);
-  return {
-    name,
-    harness: block.match(/^harness = (true|false)$/m)?.[1],
-    requiredFeatures,
-  };
+  return { name };
 }

@@ -20,6 +20,13 @@ pub(super) fn validate_emit_usage_in_stmt(
     violations: &mut Vec<String>,
 ) {
     match stmt {
+        Stmt::CompilerTestEffectRegister { .. } => {
+            for expression in crate::shared::ast_utils::compiler_test_effect_expressions(stmt)
+                .expect("matched compiler test effect")
+            {
+                collect_emit_expression_call_violations(path, expression, violations);
+            }
+        }
         Stmt::Let {
             name, ty, value, ..
         } => {
@@ -45,6 +52,18 @@ pub(super) fn validate_emit_usage_in_stmt(
                     env.insert(name.clone(), ty);
                 }
             }
+        }
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            let mut body_env = env.clone();
+            validate_emit_usage_in_block(
+                path,
+                function_name,
+                stream_chunk,
+                body,
+                function_return_types,
+                &mut body_env,
+                violations,
+            );
         }
         Stmt::If {
             condition,

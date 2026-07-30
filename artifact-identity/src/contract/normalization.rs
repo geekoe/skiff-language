@@ -1,7 +1,6 @@
 use skiff_artifact_model::{
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryStreamContract,
-    ContractDiscriminatedUnionBranch, ContractLiteral, ContractTypeDescriptor, ContractTypeRef,
-    ContractTypeShape,
+    BoundaryOperationContract, BoundaryStreamContract, ContractDiscriminatedUnionBranch,
+    ContractTypeDescriptor, ContractTypeRef, ContractTypeShape,
 };
 
 use crate::{ArtifactIdentityError, Result};
@@ -22,12 +21,6 @@ pub fn normalize_contract_operation_contract(
     }
     operation.return_value.ty =
         normalize_contract_type_ref(operation.return_value.ty, &format!("{path}.returnValue.ty"))?;
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &mut operation.errors {
-        *payload_type = normalize_contract_type_ref(
-            payload_type.clone(),
-            &format!("{path}.errors.payloadType"),
-        )?;
-    }
     if let BoundaryStreamContract::ServerStream { item_type, .. } = &mut operation.stream {
         *item_type =
             normalize_contract_type_ref(item_type.clone(), &format!("{path}.stream.itemType"))?;
@@ -53,7 +46,34 @@ pub(super) fn normalize_contract_type_ref(
 ) -> Result<ContractTypeRef> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => normalize_builtin(name, arguments, path),
-        ContractTypeRef::Contract { .. } | ContractTypeRef::Literal { .. } => Ok(ty),
+        ContractTypeRef::PackageSchema { .. }
+        | ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Literal { .. } => Ok(ty),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            if !matches!(interface.as_ref(), ContractTypeRef::PackageSchema { .. }) {
+                return Err(ArtifactIdentityError::InvalidServiceContract {
+                    message: format!(
+                        "{path}.interface must be an exact PackageSchema interface nominal"
+                    ),
+                });
+            }
+            Ok(ContractTypeRef::AnyInterface {
+                interface: Box::new(normalize_contract_type_ref(
+                    *interface,
+                    &format!("{path}.interface"),
+                )?),
+                arguments: arguments
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        normalize_contract_type_ref(argument, &format!("{path}.arguments[{index}]"))
+                    })
+                    .collect::<Result<_>>()?,
+            })
+        }
         ContractTypeRef::Record { fields } => Ok(ContractTypeRef::Record {
             fields: fields
                 .into_iter()
@@ -295,15 +315,6 @@ fn sort_and_deduplicate(values: &mut Vec<ContractTypeRef>, path: &str) -> Result
     keyed.dedup_by(|left, right| left.0 == right.0);
     values.extend(keyed.into_iter().map(|(_, value)| value));
     Ok(())
-}
-
-pub(super) fn string_literal_value(ty: &ContractTypeRef) -> Option<&str> {
-    match ty {
-        ContractTypeRef::Literal {
-            value: ContractLiteral::String { value },
-        } => Some(value),
-        _ => None,
-    }
 }
 
 fn invalid_contract<T>(message: impl Into<String>) -> Result<T> {

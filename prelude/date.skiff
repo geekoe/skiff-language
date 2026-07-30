@@ -1,4 +1,3 @@
-native type Date
 
 impl Date {
   native static function now() -> Date

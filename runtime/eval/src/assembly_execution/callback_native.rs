@@ -8,10 +8,11 @@ use std::{
 
 use skiff_artifact_model::{
     BoundaryCallbackOperation, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractSchemaType, ContractTypeDescriptor,
-    ContractTypeId, ContractTypeRef,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef,
+    PackageSchemaTypeId, PackageSchemaTypeRef,
 };
 use skiff_runtime_activation::{CallbackCapabilityError, CallbackLifetime};
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::service_linkable::{
     FailClosedServiceLinkableCapabilityHooks, ServiceLinkableCapabilityHooks,
     ServiceLinkableCapabilityProjection, ServiceLinkableCapabilityRequest,
@@ -21,9 +22,7 @@ use skiff_runtime_boundary::service_linkable::{
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
     request_heap::RequestHeap,
-    runtime_value::{
-        CallbackCapabilityCarrier, HeapNode, InterfaceReceiverCallAbi, InterfaceValue, RuntimeValue,
-    },
+    runtime_value::{CallbackCapabilityCarrier, HeapNode, InterfaceValue, RuntimeValue},
 };
 use skiff_runtime_native::callback_adapter::InProcessCallbackAdapter;
 
@@ -63,10 +62,9 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
         Self { context }
     }
 
-    fn project(
+    fn project_callback(
         &self,
         request: ServiceLinkableCapabilityRequest<'_>,
-        native: bool,
     ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
     {
         let target = self
@@ -74,26 +72,19 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
             .runtime_assembly_target()
             .map_err(callback_materialization_error)?;
         let interface = interface_value(request.value, request.source_heap)?;
-        let adapter = if native {
-            InProcessCallbackAdapter::from_registered_explicit_native_interface(
-                request.ty,
-                &interface,
-                request.boundary_schema,
-                request.source_heap,
-            )
-        } else {
-            let (contract, operations) = callback_contract(request.ty, request.boundary_schema)?;
-            InProcessCallbackAdapter::from_local_interface(
-                contract.clone(),
-                &interface,
-                operations,
-                request.boundary_schema,
-                request.source_heap,
-            )
-        }
+        let (callback_type, operations) =
+            callback_contract(request.ty, request.package_schema_records)?;
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            callback_type,
+            &interface,
+            operations,
+            request.package_schema_records,
+            request.source_heap,
+        )
         .map_err(callback_materialization_error)?;
         validate_adapter_preimage(target, &adapter)?;
-        let contract = adapter.canonical_contract_type_id().as_str().to_string();
+        let contract = serde_json::to_string(adapter.canonical_package_schema_type())
+            .map_err(callback_materialization_error)?;
         let receiver_interface_abi_id = adapter.source_interface().to_string();
         let lifetime = match request.lifetime {
             BoundaryValueLifetime::Request => CallbackLifetime::Request,
@@ -140,7 +131,7 @@ impl ServiceLinkableCapabilityHooks for CallbackNativeCapabilityHooks<'_, '_> {
         request: ServiceLinkableCapabilityRequest<'_>,
     ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
     {
-        self.project(request, false)
+        self.project_callback(request)
     }
 
     fn project_native_adapter_capability(
@@ -148,9 +139,18 @@ impl ServiceLinkableCapabilityHooks for CallbackNativeCapabilityHooks<'_, '_> {
         request: ServiceLinkableCapabilityRequest<'_>,
     ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
     {
-        self.project(request, true)
+        let _ = request;
+        Err(ServiceLinkableMaterializationError::InvalidPlan {
+            message: "native callback adapters require an explicit non-service capability path",
+        })
     }
 }
+
+mod prepared;
+#[allow(unused_imports)]
+pub(crate) use prepared::{
+    prepare_interface_call, CompletedCallbackInvocation, PreparedCallbackInvocation,
+};
 
 pub(crate) async fn execute_interface_call(
     context: &mut EvalContext<'_>,
@@ -160,101 +160,11 @@ pub(crate) async fn execute_interface_call(
     slot: u32,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    let receiver_target = context.context.runtime_assembly_target()?;
-    if receiver_target.request_activation().generation() != carrier.request_generation() {
-        return Err(callback_capability_error(
-            CallbackCapabilityError::CapabilityUnavailable,
-        ));
-    }
-    let owner = receiver_target
-        .activation_by_opaque_id(carrier.owner_activation_id())
-        .ok_or_else(|| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let payload = owner
-        .callback_capabilities()
-        .lookup(carrier)
-        .map_err(callback_capability_error)?;
-    let adapter = Arc::downcast::<InProcessCallbackAdapter>(payload)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    if adapter.canonical_contract_type_id().as_str() != carrier.interface_or_adapter_contract()
-        || !call.type_args.is_empty()
-    {
-        return Err(callback_capability_error(
-            CallbackCapabilityError::CapabilityUnavailable,
-        ));
-    }
-    let operation = adapter
-        .operation(slot, method_abi_id)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    if args.len() != operation.parameters().len() {
-        return Err(callback_capability_error(
-            CallbackCapabilityError::CapabilityUnavailable,
-        ));
-    }
-
-    let owner_request = receiver_target
-        .request_activation()
-        .switch_to(owner)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_target = receiver_target
-        .with_request_activation(owner_request)
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_context = context
-        .context
-        .clone()
-        .with_runtime_assembly_target(owner_target);
-
-    let mut owner_heap = adapter
-        .owner_heap()
-        .try_lock()
-        .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_checkpoint = owner_heap.checkpoint();
-    let owner_args = operation
-        .parameters()
-        .iter()
-        .zip(args.iter())
-        .map(|(ty, value)| {
-            materialize_callback_value(
-                ty,
-                adapter.boundary_schema(),
-                value,
-                context.heap,
-                &mut owner_heap,
-                BoundaryValueOwner::Caller,
-            )
-        })
-        .collect::<Result<Vec<_>>>();
-    let owner_args = match owner_args {
-        Ok(args) => args,
-        Err(error) => {
-            owner_heap.rollback_to_checkpoint(owner_checkpoint);
-            return Err(error);
-        }
-    };
-    let owner_result = match operation.receiver_call_abi() {
-        InterfaceReceiverCallAbi::ExplicitSelfFirst => {
-            context
-                .interpreter
-                .call_program_executable_with_self(
-                    owner_context,
-                    &mut owner_heap,
-                    context.env,
-                    context.addr,
-                    operation.executable(),
-                    &call.type_args,
-                    adapter.receiver().clone(),
-                    owner_args,
-                )
-                .await?
-        }
-    };
-    materialize_callback_value(
-        operation.return_type(),
-        adapter.boundary_schema(),
-        &owner_result,
-        &owner_heap,
-        context.heap,
-        BoundaryValueOwner::Provider,
-    )
+    let prepared = prepare_interface_call(context, call, carrier, method_abi_id, slot, args)?;
+    prepared
+        .wait(context.interpreter)
+        .await
+        .finalize(context.heap)
 }
 
 fn interface_value(
@@ -272,52 +182,95 @@ fn interface_value(
 
 fn callback_contract<'a>(
     ty: &ContractTypeRef,
-    schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema: &'a PackageSchemaRecords,
 ) -> std::result::Result<
     (
-        &'a ContractTypeId,
+        PackageSchemaTypeRef,
         &'a BTreeMap<String, BoundaryCallbackOperation>,
     ),
     ServiceLinkableMaterializationError,
 > {
-    callback_contract_inner(ty, schema, &mut HashSet::new())
+    let ContractTypeRef::AnyInterface {
+        interface,
+        arguments,
+    } = ty
+    else {
+        return Err(ServiceLinkableMaterializationError::TypeMismatch);
+    };
+    if !arguments.is_empty() {
+        return Err(ServiceLinkableMaterializationError::TypeMismatch);
+    }
+    let ContractTypeRef::PackageSchema { .. } = interface.as_ref() else {
+        return Err(ServiceLinkableMaterializationError::TypeMismatch);
+    };
+    callback_contract_inner(interface, schema, &mut HashSet::new())
 }
 
 fn callback_contract_inner<'a>(
     ty: &ContractTypeRef,
-    schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
-    active: &mut HashSet<ContractTypeId>,
+    schema: &'a PackageSchemaRecords,
+    active: &mut HashSet<PackageSchemaTypeId>,
 ) -> std::result::Result<
     (
-        &'a ContractTypeId,
+        PackageSchemaTypeRef,
         &'a BTreeMap<String, BoundaryCallbackOperation>,
     ),
     ServiceLinkableMaterializationError,
 > {
-    let ContractTypeRef::Contract { contract_type_id } = ty else {
+    let ContractTypeRef::PackageSchema {
+        package_id,
+        stable_schema_key,
+        package_schema_type_id,
+    } = ty
+    else {
         return Err(ServiceLinkableMaterializationError::TypeMismatch);
     };
-    if !active.insert(contract_type_id.clone()) {
+    if !active.insert(package_schema_type_id.clone()) {
         return Err(ServiceLinkableMaterializationError::CyclicSchema {
-            contract_type_id: contract_type_id.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
         });
     }
-    let schema_type = schema.get(contract_type_id).ok_or_else(|| {
+    let schema_type = schema.get(package_schema_type_id).ok_or_else(|| {
         ServiceLinkableMaterializationError::MissingSchema {
-            contract_type_id: contract_type_id.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
         }
     })?;
-    let result = match &schema_type.shape.descriptor {
-        ContractTypeDescriptor::CallbackInterface { operations } => {
-            Ok((&schema_type.contract_type_id, operations))
-        }
+    if schema_type.package_schema_type_id != *package_schema_type_id {
+        return Err(
+            ServiceLinkableMaterializationError::SchemaIdentityMismatch {
+                requested: package_schema_type_id.clone(),
+                actual: schema_type.package_schema_type_id.clone(),
+            },
+        );
+    }
+    if schema_type.package_id != *package_id || schema_type.stable_schema_key != *stable_schema_key
+    {
+        return Err(
+            ServiceLinkableMaterializationError::SchemaOwnerOrKeyMismatch {
+                package_schema_type_id: package_schema_type_id.clone(),
+                expected_package_id: package_id.clone(),
+                expected_stable_schema_key: stable_schema_key.clone(),
+                actual_package_id: schema_type.package_id.clone(),
+                actual_stable_schema_key: schema_type.stable_schema_key.clone(),
+            },
+        );
+    }
+    let result = match &schema_type.canonical_descriptor.descriptor {
+        ContractTypeDescriptor::CallbackInterface { operations } => Ok((
+            PackageSchemaTypeRef {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            },
+            operations,
+        )),
         ContractTypeDescriptor::Alias { target }
         | ContractTypeDescriptor::Representation { target } => {
             callback_contract_inner(target, schema, active)
         }
         _ => Err(ServiceLinkableMaterializationError::TypeMismatch),
     };
-    active.remove(contract_type_id);
+    active.remove(package_schema_type_id);
     result
 }
 
@@ -337,7 +290,7 @@ fn validate_adapter_preimage(
             .iter()
             .chain(std::iter::once(operation.return_type()))
         {
-            ServiceLinkableContractPlan::new(ty, adapter.boundary_schema(), &detached_plan)?;
+            ServiceLinkableContractPlan::new(ty, adapter.package_schema_records(), &detached_plan)?;
         }
         let executable = target
             .execution_image()
@@ -347,7 +300,6 @@ fn validate_adapter_preimage(
         let explicit_self = usize::from(executable_has_explicit_self_binding(executable));
         if !executable.type_params.is_empty()
             || executable.params.len().saturating_sub(explicit_self) != operation.parameters().len()
-            || executable.may_suspend != operation.may_suspend()
         {
             return Err(ServiceLinkableMaterializationError::InvalidPlan {
                 message: "callback adapter executable does not match its contract operation",
@@ -359,7 +311,7 @@ fn validate_adapter_preimage(
 
 fn materialize_callback_value(
     ty: &ContractTypeRef,
-    schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema: &PackageSchemaRecords,
     value: &RuntimeValue,
     source_heap: &RequestHeap,
     destination_heap: &mut RequestHeap,
@@ -396,38 +348,75 @@ fn materialize_callback_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::{ContractTypeNameability, ContractTypeShape};
+    use skiff_artifact_model::{PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord};
 
     #[test]
     fn in_process_callback_resolves_only_declared_callback_contract_operations() {
-        let callback_id = ContractTypeId::new("contract:callback");
-        let callback_ty = ContractTypeRef::contract(callback_id.clone());
+        let callback_id = PackageSchemaTypeId::new("package-schema:callback");
+        let callback_interface = ContractTypeRef::package_schema(
+            "example.callback",
+            "api.Callback",
+            callback_id.clone(),
+        );
+        let callback_ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(callback_interface.clone()),
+            arguments: Vec::new(),
+        };
         let operations = BTreeMap::from([(
             "invoke".to_string(),
             BoundaryCallbackOperation {
                 parameters: Vec::new(),
                 return_type: ContractTypeRef::builtin("bool"),
-                may_suspend: false,
             },
         )]);
-        let schema = BTreeMap::from([(
-            callback_id.clone(),
-            ContractSchemaType {
-                contract_type_id: callback_id,
-                stable_key: "Callback".to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    descriptor: ContractTypeDescriptor::CallbackInterface {
-                        operations: operations.clone(),
-                    },
+        let callback_record = Arc::new(PackageSchemaTypeRecord {
+            package_id: "example.callback".to_string(),
+            stable_schema_key: "api.Callback".to_string(),
+            package_schema_type_id: callback_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::CallbackInterface {
+                    operations: operations.clone(),
                 },
             },
-        )]);
+        });
+        let schema = BTreeMap::from([(callback_id, Arc::clone(&callback_record))]);
+        let strong_count_before = Arc::strong_count(&callback_record);
         let (resolved_id, resolved_operations) = callback_contract(&callback_ty, &schema).unwrap();
-        assert_eq!(resolved_id.as_str(), "contract:callback");
+        assert_eq!(resolved_id.package_id, "example.callback");
+        assert_eq!(resolved_id.stable_schema_key, "api.Callback");
+        assert_eq!(
+            resolved_id.package_schema_type_id.as_str(),
+            "package-schema:callback"
+        );
         assert_eq!(resolved_operations, &operations);
+        assert_eq!(Arc::strong_count(&callback_record), strong_count_before);
         assert!(matches!(
             callback_contract(&ContractTypeRef::builtin("string"), &schema),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
+        assert!(matches!(
+            callback_contract(&callback_interface, &schema),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
+        assert!(matches!(
+            callback_contract(
+                &ContractTypeRef::AnyInterface {
+                    interface: Box::new(callback_interface.clone()),
+                    arguments: vec![ContractTypeRef::builtin("string")],
+                },
+                &schema
+            ),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
+        assert!(matches!(
+            callback_contract(
+                &ContractTypeRef::Builtin {
+                    name: "Array".to_string(),
+                    arguments: vec![callback_ty],
+                },
+                &schema
+            ),
             Err(ServiceLinkableMaterializationError::TypeMismatch)
         ));
     }
@@ -440,5 +429,140 @@ mod tests {
             RuntimeError::ProviderUnavailable { ref reason, .. }
                 if reason == "CapabilityUnavailable"
         ));
+    }
+
+    #[test]
+    fn callback_contract_rejects_owner_key_id_descriptor_and_missing_alias_record() {
+        let type_id = PackageSchemaTypeId::new("schema:callback-validation");
+        let interface =
+            ContractTypeRef::package_schema("example.callback", "api.Callback", type_id.clone());
+        let ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(interface),
+            arguments: Vec::new(),
+        };
+        let callback_record = || PackageSchemaTypeRecord {
+            package_id: "example.callback".to_string(),
+            stable_schema_key: "api.Callback".to_string(),
+            package_schema_type_id: type_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::CallbackInterface {
+                    operations: BTreeMap::new(),
+                },
+            },
+        };
+        for mutate in [
+            |record: &mut PackageSchemaTypeRecord| record.package_id.push_str(".wrong"),
+            |record: &mut PackageSchemaTypeRecord| record.stable_schema_key.push_str(".wrong"),
+            |record: &mut PackageSchemaTypeRecord| {
+                record.package_schema_type_id = PackageSchemaTypeId::new("wrong")
+            },
+        ] as [fn(&mut PackageSchemaTypeRecord); 3]
+        {
+            let mut record = callback_record();
+            mutate(&mut record);
+            assert!(
+                callback_contract(&ty, &BTreeMap::from([(type_id.clone(), Arc::new(record))]))
+                    .is_err()
+            );
+        }
+
+        let mut non_callback = callback_record();
+        non_callback.canonical_descriptor.descriptor = ContractTypeDescriptor::Enumeration {
+            variants: vec!["value".to_string()],
+        };
+        assert!(matches!(
+            callback_contract(
+                &ty,
+                &BTreeMap::from([(type_id.clone(), Arc::new(non_callback))])
+            ),
+            Err(ServiceLinkableMaterializationError::TypeMismatch)
+        ));
+
+        let child_id = PackageSchemaTypeId::new("schema:missing-callback");
+        let alias = PackageSchemaTypeRecord {
+            package_id: "example.callback".to_string(),
+            stable_schema_key: "api.Callback".to_string(),
+            package_schema_type_id: type_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::Alias {
+                    target: ContractTypeRef::package_schema(
+                        "example.callback",
+                        "api.MissingCallback",
+                        child_id,
+                    ),
+                },
+            },
+        };
+        assert!(matches!(
+            callback_contract(&ty, &BTreeMap::from([(type_id, Arc::new(alias))])),
+            Err(ServiceLinkableMaterializationError::MissingSchema { .. })
+        ));
+    }
+
+    #[test]
+    fn callback_contract_unwraps_exact_existential_alias_representation_closure() {
+        let callback_id = PackageSchemaTypeId::new("schema:callback-terminal");
+        let representation_id = PackageSchemaTypeId::new("schema:callback-representation");
+        let alias_id = PackageSchemaTypeId::new("schema:callback-alias");
+        let package_ref = |key: &str, id: PackageSchemaTypeId| {
+            ContractTypeRef::package_schema("example.callback", key, id)
+        };
+        let operations = BTreeMap::from([(
+            "invoke".to_string(),
+            BoundaryCallbackOperation {
+                parameters: vec![ContractTypeRef::builtin("string")],
+                return_type: ContractTypeRef::builtin("bool"),
+            },
+        )]);
+        let record = |key: &str, id: PackageSchemaTypeId, descriptor: ContractTypeDescriptor| {
+            (
+                id.clone(),
+                Arc::new(PackageSchemaTypeRecord {
+                    package_id: "example.callback".to_string(),
+                    stable_schema_key: key.to_string(),
+                    package_schema_type_id: id,
+                    canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                        type_params: Vec::new(),
+                        descriptor,
+                    },
+                }),
+            )
+        };
+        let schema = BTreeMap::from([
+            record(
+                "api.Callback",
+                callback_id.clone(),
+                ContractTypeDescriptor::CallbackInterface {
+                    operations: operations.clone(),
+                },
+            ),
+            record(
+                "api.CallbackRepresentation",
+                representation_id.clone(),
+                ContractTypeDescriptor::Representation {
+                    target: package_ref("api.Callback", callback_id.clone()),
+                },
+            ),
+            record(
+                "api.CallbackAlias",
+                alias_id.clone(),
+                ContractTypeDescriptor::Alias {
+                    target: package_ref("api.CallbackRepresentation", representation_id),
+                },
+            ),
+        ]);
+        let ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(package_ref("api.CallbackAlias", alias_id)),
+            arguments: Vec::new(),
+        };
+
+        let (resolved, resolved_operations) =
+            callback_contract(&ty, &schema).expect("closed alias chain should resolve");
+        assert_eq!(resolved.package_id, "example.callback");
+        assert_eq!(resolved.stable_schema_key, "api.Callback");
+        assert_eq!(resolved.package_schema_type_id, callback_id);
+        assert_eq!(resolved_operations, &operations);
     }
 }

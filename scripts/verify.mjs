@@ -17,9 +17,11 @@ try {
     const plan = await buildVerifyPlan({
       root,
       selectors: options.selectors,
-      runtimeLiveConfig: options.runtimeLiveConfig,
-      runtimeLiveReloadUrl: options.runtimeLiveReloadUrl,
+      runtimeLiveActivationUrl: options.runtimeLiveActivationUrl,
+      runtimeLiveIngressUrl: options.runtimeLiveIngressUrl,
       runtimeLiveArtifactRoot: options.runtimeLiveArtifactRoot,
+      runtimeLiveEnvironment: options.runtimeLiveEnvironment,
+      runtimeLiveExpectedGeneration: options.runtimeLiveExpectedGeneration,
       loopRiskConfig: options.loopRiskConfig,
     });
     if (options.list) {

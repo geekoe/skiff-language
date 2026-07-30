@@ -212,6 +212,13 @@ impl OwnerCollector<'_> {
                     }
                 }
             }
+            Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+                self.visit_block(&value.body, next_block_child(&mut blocks, "value body")?)?;
+                self.visit_expr(&value.tail, next_expr_child(&mut children, "value tail")?)?;
+            }
+            Expr::Timeout { value, .. } => {
+                self.visit_expr(value, next_expr_child(&mut children, "timeout value")?)?;
+            }
             Expr::Throw { value } => {
                 self.visit_expr(value, next_expr_child(&mut children, "throw value")?)?
             }
@@ -294,6 +301,46 @@ impl OwnerCollector<'_> {
         let mut expressions = spans.expressions.iter();
         let mut blocks = spans.blocks.iter();
         match stmt {
+            Stmt::CompilerTestEffectRegister {
+                target_probe,
+                expect,
+                step_expect,
+                outcome,
+                ..
+            } => {
+                self.visit_expr(
+                    target_probe,
+                    next_stmt_expr(&mut expressions, "test effect target")?,
+                )?;
+                if let Some(expect) = expect {
+                    self.visit_expr(
+                        expect,
+                        next_stmt_expr(&mut expressions, "test effect expectation")?,
+                    )?;
+                }
+                if let Some(step_expect) = step_expect {
+                    self.visit_expr(
+                        step_expect,
+                        next_stmt_expr(&mut expressions, "test effect sequence step expectation")?,
+                    )?;
+                }
+                match outcome {
+                    crate::shared::ast::TestEffectStepOutcome::Respond { value }
+                    | crate::shared::ast::TestEffectStepOutcome::Throw { value } => self
+                        .visit_expr(
+                            value,
+                            next_stmt_expr(&mut expressions, "test effect outcome")?,
+                        )?,
+                    crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
+                        for value in events {
+                            self.visit_expr(
+                                value,
+                                next_stmt_expr(&mut expressions, "test effect stream event")?,
+                            )?;
+                        }
+                    }
+                }
+            }
             Stmt::Assert { condition, .. } => self.visit_expr(
                 condition,
                 next_stmt_expr(&mut expressions, "assert condition")?,
@@ -304,6 +351,15 @@ impl OwnerCollector<'_> {
             Stmt::Assign { target, value } => {
                 self.visit_expr(target, next_stmt_expr(&mut expressions, "assign target")?)?;
                 self.visit_expr(value, next_stmt_expr(&mut expressions, "assign value")?)?;
+            }
+            Stmt::Timeout { body, .. } => {
+                self.visit_block(body, next_stmt_block(&mut blocks, "timeout body")?)?;
+            }
+            Stmt::Concurrent { body } => {
+                self.visit_block(body, next_stmt_block(&mut blocks, "concurrent body")?)?;
+            }
+            Stmt::Serial { body } => {
+                self.visit_block(body, next_stmt_block(&mut blocks, "serial body")?)?;
             }
             Stmt::If {
                 condition,
@@ -654,6 +710,9 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Record { .. } => "record",
         Expr::ObjectLiteral { .. } => "object literal",
         Expr::Patch { .. } => "patch",
+        Expr::ValueBlock(_) => "value block",
+        Expr::ConcurrentValue(_) => "concurrent value",
+        Expr::Timeout { .. } => "timeout",
         Expr::Throw { .. } => "throw",
         Expr::Rethrow { .. } => "rethrow",
         Expr::Catch { .. } => "catch",

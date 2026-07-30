@@ -20,10 +20,7 @@ use crate::{
     capability_context::{HttpRuntimeOptions, TARGET_STD_HTTP_REQUEST},
     config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
     error::RuntimeError,
-    host::http_runtime::{
-        request::{request_inner, request_with_cancellation_and_options},
-        HTTP_REQUEST_TIMEOUT_REASON,
-    },
+    host::http_runtime::request::{request_inner, request_with_cancellation_and_options},
 };
 
 use super::helpers::{
@@ -149,7 +146,7 @@ async fn request_returns_non_2xx_status_without_error() {
 }
 
 #[tokio::test]
-async fn request_timeout_maps_to_provider_unavailable() {
+async fn request_timeout_maps_to_timeout_error() {
     let response = TestResponse {
         status: 200,
         headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
@@ -164,13 +161,7 @@ async fn request_timeout_maps_to_provider_unavailable() {
         .await
         .expect_err("timeout should fail");
 
-    match error {
-        RuntimeError::ProviderUnavailable { target, reason } => {
-            assert_eq!(target, TARGET_STD_HTTP_REQUEST);
-            assert_eq!(reason, HTTP_REQUEST_TIMEOUT_REASON);
-        }
-        other => panic!("expected ProviderUnavailable, got {other:?}"),
-    }
+    assert_http_timeout_error(error);
 
     handle.await.expect("server should complete");
 }
@@ -249,13 +240,7 @@ async fn request_timeout_is_per_request_without_fragmenting_client_cache() {
     let error = request_allowing_unsafe_targets(&second_input, None, None)
         .await
         .expect_err("second request should use its shorter per-request timeout");
-    match error {
-        RuntimeError::ProviderUnavailable { target, reason } => {
-            assert_eq!(target, TARGET_STD_HTTP_REQUEST);
-            assert_eq!(reason, HTTP_REQUEST_TIMEOUT_REASON);
-        }
-        other => panic!("expected ProviderUnavailable, got {other:?}"),
-    }
+    assert_http_timeout_error(error);
 
     let second_seen = timeout(Duration::from_secs(1), seen_rx.recv())
         .await
@@ -281,7 +266,7 @@ async fn request_canceled_before_call_returns_cancelled() {
     )
     .await
     .expect_err("cancelled request should fail");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 }
 
 #[tokio::test]
@@ -299,7 +284,7 @@ async fn request_cancellation_token_before_call_returns_cancelled() {
     )
     .await
     .expect_err("cancelled request should fail");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 }
 
 #[tokio::test]
@@ -326,7 +311,7 @@ async fn request_canceled_while_waiting_for_send_returns_cancelled() {
         .await
         .expect_err("send-cancelled request should fail");
     cancel_task.await.expect("cancel timer should finish");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 
     handle.await.expect("server should complete");
 }
@@ -355,7 +340,7 @@ async fn request_canceled_while_waiting_for_body_returns_cancelled() {
         .await
         .expect("request task should resolve")
         .expect_err("body-cancelled request should fail");
-    assert!(error.is_request_cancelled());
+    assert!(error.is_cancellation_terminal());
 
     handle.await.expect("server should complete");
 }
@@ -421,6 +406,22 @@ async fn request_ignores_legacy_max_response_bytes_field() {
     assert_eq!(output.get("status").and_then(Value::as_u64), Some(200));
 
     handle.await.expect("server should complete");
+}
+
+fn assert_http_timeout_error(error: RuntimeError) {
+    match error {
+        RuntimeError::ExternalErrorPayload { code, details, .. } => {
+            assert_eq!(code, "TimeoutError");
+            assert_eq!(
+                details
+                    .as_ref()
+                    .and_then(|value| value.get("target"))
+                    .and_then(Value::as_str),
+                Some(TARGET_STD_HTTP_REQUEST)
+            );
+        }
+        other => panic!("expected TimeoutError, got {other:?}"),
+    }
 }
 
 async fn write_keep_alive_response(

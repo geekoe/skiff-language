@@ -12,10 +12,9 @@ use skiff_runtime_linked_program::ExecutableAddr;
 
 use crate::{
     http_ingress::BinaryHttpIngressHandler, runner::RequestExecutionHandles,
-    runtime_ingress::RuntimeIngressHandler, websocket_ingress::WebSocketIngressHandler,
-    BoundaryResponse, ExecutionBudget, RequestEffectDouble, RequestEnvelope, RequestError,
-    RequestEvalExecutionInputParts, RequestPayloadContext, RequestResult, RequestServiceMetadata,
-    RuntimeOperation,
+    runtime_ingress::RuntimeIngressHandler, BoundaryResponse, ExecutionBudget, RequestEffectDouble,
+    RequestEnvelope, RequestError, RequestEvalExecutionInputParts, RequestPayloadContext,
+    RequestResult, RequestServiceMetadata, RuntimeOperation,
 };
 
 pub(crate) struct IngressDispatchInput<'a> {
@@ -53,12 +52,6 @@ impl<'a> IngressDispatcher<'a> {
                 request.mode
             )));
         }
-        if request.binary_http.is_some() && request.websocket_adapter.is_some() {
-            return Err(RequestError::protocol(
-                request.target.clone(),
-                "request.start cannot include both binary HTTP and websocket adapter metadata",
-            ));
-        }
         Ok(())
     }
 
@@ -66,11 +59,6 @@ impl<'a> IngressDispatcher<'a> {
         let context = RequestIngressContext::new(&self.input);
         if self.input.request.binary_http.is_some() {
             return BinaryHttpIngressHandler::new(&context, &self.executor)
-                .dispatch()
-                .await;
-        }
-        if self.input.request.websocket_adapter.is_some() {
-            return WebSocketIngressHandler::new(&context, &self.executor)
                 .dispatch()
                 .await;
         }

@@ -38,13 +38,15 @@ impl NativeSignatureRegistry {
     }
 
     pub fn signature(&self, binding_key: &str) -> Option<&'static NativeSignatureDef> {
-        self.signatures
-            .iter()
-            .find(|signature| signature.binding_key == binding_key)
+        self.binding_spec(binding_key).map(|spec| spec.signature)
     }
 
     pub fn binding_spec(&self, binding_key: &str) -> Option<NativeBindingSpec> {
-        NativeBindingSpec::from_signature(self.signature(binding_key)?)
+        NativeBindingSpec::from_signature(
+            self.signatures
+                .iter()
+                .find(|signature| signature.binding_key == binding_key)?,
+        )
     }
 
     pub fn validate_native_call_artifact<'a>(
@@ -181,8 +183,10 @@ mod tests {
     fn native_required_context_is_explicit_for_contextful_std_bindings() {
         let registry = NativeSignatureRegistry::builtins();
         let cases = [
-            ("actor.put", NativeRequiredContext::Actor),
+            ("std.actor.getOrCreate", NativeRequiredContext::Actor),
+            ("std.actor.replace", NativeRequiredContext::Actor),
             ("std.file.create", NativeRequiredContext::File),
+            ("std.file.createFromStream", NativeRequiredContext::File),
             ("core.date.now", NativeRequiredContext::Time),
             ("std.time.sleep", NativeRequiredContext::Time),
             ("std.http.client.request", NativeRequiredContext::HttpClient),
@@ -192,6 +196,10 @@ mod tests {
             ),
             (
                 "std.websocket.sendTextToConnection",
+                NativeRequiredContext::Websocket,
+            ),
+            (
+                "std.websocket.requestJsonToConnection",
                 NativeRequiredContext::Websocket,
             ),
             ("std.telemetry.emit", NativeRequiredContext::Telemetry),

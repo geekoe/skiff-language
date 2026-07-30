@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use serde_json::Value;
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
 
-use crate::{CapabilityResult, StreamRuntime};
+use crate::{CapabilityResult, OwnedExecutionControl, StreamRuntime};
 
 pub const HTTP_REQUEST_ADMIN_OVERRIDE_ENV: &str = "SKIFF_HTTP_ADMIN_ALLOW_UNSAFE";
 
@@ -59,18 +59,28 @@ pub type HttpCapabilityFuture<'a, T> =
 pub trait HttpClientCapabilityApi: Send + Sync {
     fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> HttpClientCapabilityContext;
 
-    fn dispatch_http_request<'a>(&'a self, input: &'a Value) -> HttpCapabilityFuture<'a, Value>;
+    fn is_test_http_self_ingress(&self, _input: &Value) -> CapabilityResult<bool> {
+        Ok(false)
+    }
+
+    fn dispatch_http_request<'a>(
+        &'a self,
+        input: &'a Value,
+        execution_control: OwnedExecutionControl,
+    ) -> HttpCapabilityFuture<'a, Value>;
 
     fn dispatch_http_stream<'a>(
         &'a self,
         input: &'a Value,
         expected_body_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: OwnedExecutionControl,
     ) -> HttpCapabilityFuture<'a, Value>;
 
     fn dispatch_http_sse<'a>(
         &'a self,
         input: &'a Value,
         expected_item_type: Option<&'a RuntimeTypePlan>,
+        execution_control: OwnedExecutionControl,
     ) -> HttpCapabilityFuture<'a, Value>;
 }
 
@@ -89,8 +99,18 @@ impl HttpClientCapabilityContext {
         }
     }
 
-    pub async fn dispatch_http_request(&self, input: &Value) -> CapabilityResult<Value> {
-        self.inner.dispatch_http_request(input).await
+    pub async fn dispatch_http_request(
+        &self,
+        input: &Value,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<Value> {
+        self.inner
+            .dispatch_http_request(input, execution_control)
+            .await
+    }
+
+    pub fn is_test_http_self_ingress(&self, input: &Value) -> CapabilityResult<bool> {
+        self.inner.is_test_http_self_ingress(input)
     }
 
     pub fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> Self {
@@ -101,9 +121,10 @@ impl HttpClientCapabilityContext {
         &self,
         input: &Value,
         expected_body_item_type: Option<&RuntimeTypePlan>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<Value> {
         self.inner
-            .dispatch_http_stream(input, expected_body_item_type)
+            .dispatch_http_stream(input, expected_body_item_type, execution_control)
             .await
     }
 
@@ -111,9 +132,10 @@ impl HttpClientCapabilityContext {
         &self,
         input: &Value,
         expected_item_type: Option<&RuntimeTypePlan>,
+        execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<Value> {
         self.inner
-            .dispatch_http_sse(input, expected_item_type)
+            .dispatch_http_sse(input, expected_item_type, execution_control)
             .await
     }
 }

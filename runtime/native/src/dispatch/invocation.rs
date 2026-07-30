@@ -1,6 +1,7 @@
 use crate::error::{Result, RuntimeError};
 use crate::{boundary::NativeBoundaryAdapter, runtime_value_facade::RuntimeTypePlan};
 use skiff_runtime_model::addr::UnitAddr;
+use skiff_runtime_model::service_error::NamedUnionOwnerIdentity;
 use skiff_runtime_native_contract::{NativeCallPlan, NativeRequiredContext};
 
 pub struct RuntimeNativeInvocation {
@@ -15,13 +16,22 @@ pub struct RuntimeNativeInvocation {
 pub struct RuntimeActorNativeMetadata {
     actor_type_identity: String,
     actor_id_type_identity: String,
+    actor_abi_identity: String,
+    actor_implementation_identity: String,
 }
 
 impl RuntimeActorNativeMetadata {
-    pub fn new(actor_type_identity: String, actor_id_type_identity: String) -> Self {
+    pub fn new(
+        actor_type_identity: String,
+        actor_id_type_identity: String,
+        actor_abi_identity: String,
+        actor_implementation_identity: String,
+    ) -> Self {
         Self {
             actor_type_identity,
             actor_id_type_identity,
+            actor_abi_identity,
+            actor_implementation_identity,
         }
     }
 
@@ -31,6 +41,14 @@ impl RuntimeActorNativeMetadata {
 
     pub fn actor_id_type_identity(&self) -> &str {
         &self.actor_id_type_identity
+    }
+
+    pub fn actor_abi_identity(&self) -> &str {
+        &self.actor_abi_identity
+    }
+
+    pub fn actor_implementation_identity(&self) -> &str {
+        &self.actor_implementation_identity
     }
 }
 
@@ -98,6 +116,17 @@ impl RuntimeNativeInvocation {
 
     pub fn return_plan(&self) -> Result<&RuntimeTypePlan> {
         Ok(&self.require_plan()?.return_plan)
+    }
+
+    pub fn named_union_error_owner(&self) -> Result<&NamedUnionOwnerIdentity> {
+        self.require_plan()?
+            .named_union_error_owner()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "{} resolved native call is missing its linked named-union error owner",
+                    self.target_name
+                ))
+            })
     }
 
     pub(crate) fn native_boundary(&self) -> Result<NativeBoundaryAdapter<'_>> {

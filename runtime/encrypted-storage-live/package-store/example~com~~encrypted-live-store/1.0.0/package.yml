@@ -1,2 +1,5 @@
 id: example.com/encrypted-live-store
 version: 1.0.0
+state:
+  encrypted-live-store:
+    kind: database

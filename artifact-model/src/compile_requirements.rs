@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::compile_identity::{
-    ContractOperationId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+use crate::{
+    compile_identity::{
+        ContractOperationId, PackageBuildId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    },
+    StateBindingKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +16,14 @@ pub struct PackageRequirement {
     pub package_id: String,
     pub exact_version: String,
     pub expected_local_abi: PackageLocalAbiIdentity,
+    /// Exact collection-name projection owned by this dependency edge.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collection_name_mapping: BTreeMap<String, String>,
+    /// Test-service dependencies with `topLevelAlias` bind the exact
+    /// implementation build because private symbols are outside the public
+    /// Local ABI. Ordinary public dependencies leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_package_build: Option<PackageBuildId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -55,6 +66,13 @@ pub struct PackageResourceRequirement {
     pub capability: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageStateRequirement {
+    pub key: String,
+    pub kind: StateBindingKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageRuntimeCapabilityRequirement {
@@ -66,6 +84,7 @@ pub struct PackageRuntimeCapabilityRequirement {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageRuntimeRequirements {
     pub config: Vec<PackageConfigRequirement>,
+    pub state: Vec<PackageStateRequirement>,
     pub resources: Vec<PackageResourceRequirement>,
     pub runtime_capabilities: Vec<PackageRuntimeCapabilityRequirement>,
 }

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{CallableProvenanceUnknownReason, TypeRefIr};
+use skiff_artifact_model::{
+    native_callable_semantics, CallableProvenanceUnknownReason, TypeRefIr, ValueProjectionPath,
+};
 
 use crate::{
     shared::ast::TypeRef, ExpressionKey, ExpressionTypeModel, ResolvedCallTargetFacts,
@@ -8,7 +10,8 @@ use crate::{
 };
 
 use super::{
-    provenance::{AbstractValue, CallableState, EscapeLane},
+    analysis::ModuleConstantFact,
+    provenance::{AbstractValue, CallableState, CallerReference, EscapeLane, FreshRoot, Origin},
     CallableDefinition,
 };
 
@@ -21,6 +24,7 @@ type Environment = BTreeMap<String, AbstractValue>;
 pub(super) fn transfer_callable(
     definition: &CallableDefinition<'_>,
     definitions: &BTreeMap<SourceSymbolKey, CallableDefinition<'_>>,
+    module_constants: &BTreeMap<SourceSymbolKey, ModuleConstantFact>,
     summaries: &BTreeMap<SourceSymbolKey, CallableState>,
     resolved_call_targets: &ResolvedCallTargetFacts,
     dependency_analysis: &SourceDependencyAnalysisInput,
@@ -28,6 +32,18 @@ pub(super) fn transfer_callable(
     type_resolution: &TypeResolutionModel,
 ) -> CallableState {
     if definition.function.is_native {
+        if let Some(binding_key) = crate::prelude_registry::prelude_registry()
+            .native_binding_key(&definition.key.to_source_symbol())
+        {
+            if let Some(semantics) = native_callable_semantics(binding_key) {
+                let mut state = CallableState::bottom();
+                state.effects = semantics.effects;
+                let origin = Origin::from(semantics.return_provenance.clone());
+                state.return_origins.insert(origin.clone());
+                state.return_direct_origins.insert(origin);
+                return state;
+            }
+        }
         let mut state =
             CallableState::fail_closed(CallableProvenanceUnknownReason::UnknownCallTarget);
         state.escape_lanes = BTreeSet::from([EscapeLane::Native]);
@@ -40,6 +56,7 @@ pub(super) fn transfer_callable(
     let mut evaluator = Evaluator {
         definition,
         definitions,
+        module_constants,
         summaries,
         resolved_call_targets,
         dependency_analysis,
@@ -47,6 +64,8 @@ pub(super) fn transfer_callable(
         type_resolution,
         next_index: 0,
         values: BTreeMap::new(),
+        heap: BTreeMap::new(),
+        mutated_fresh_roots: BTreeSet::new(),
         state: CallableState::bottom(),
     };
     let mut env = evaluator.parameter_environment();
@@ -57,6 +76,7 @@ pub(super) fn transfer_callable(
 struct Evaluator<'a, 'source> {
     definition: &'a CallableDefinition<'source>,
     definitions: &'a BTreeMap<SourceSymbolKey, CallableDefinition<'source>>,
+    module_constants: &'a BTreeMap<SourceSymbolKey, ModuleConstantFact>,
     summaries: &'a BTreeMap<SourceSymbolKey, CallableState>,
     resolved_call_targets: &'a ResolvedCallTargetFacts,
     dependency_analysis: &'a SourceDependencyAnalysisInput,
@@ -64,10 +84,270 @@ struct Evaluator<'a, 'source> {
     type_resolution: &'a TypeResolutionModel,
     next_index: u32,
     values: BTreeMap<u32, AbstractValue>,
+    heap: BTreeMap<FreshRoot, AbstractValue>,
+    mutated_fresh_roots: BTreeSet<FreshRoot>,
     state: CallableState,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ReferenceNode {
+    Fresh(FreshRoot),
+    Caller(CallerReference),
+}
+
 impl Evaluator<'_, '_> {
+    fn materialize_heap_value(&self, value: &AbstractValue) -> AbstractValue {
+        let mut materialized = value.clone();
+        let direct_origins = value.direct_origins.clone();
+        let direct_caller_references = value.direct_caller_references.clone();
+        let fresh_roots = value.fresh_roots.clone();
+        let needs_fresh_root = value.needs_fresh_root;
+        let mut pending = value.fresh_references.iter().cloned().collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(root) = pending.pop() {
+            if !visited.insert(root.clone()) {
+                continue;
+            }
+            if let Some(payload) = self.heap.get(&root) {
+                materialized.join(payload);
+                pending.extend(payload.fresh_references.iter().cloned());
+            }
+        }
+        materialized.direct_origins = direct_origins;
+        materialized.direct_caller_references = direct_caller_references;
+        materialized.fresh_roots = fresh_roots;
+        materialized.needs_fresh_root = needs_fresh_root;
+        materialized
+    }
+
+    fn store_into_fresh_roots(&mut self, roots: &BTreeSet<FreshRoot>, value: &AbstractValue) {
+        for root in roots {
+            self.mutated_fresh_roots.insert(root.clone());
+            self.heap
+                .entry(root.clone())
+                .and_modify(|payload| payload.join(value))
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    fn reference_graph_reaches_any(&self, value: &AbstractValue, targets: &AbstractValue) -> bool {
+        let mut pending = value
+            .fresh_references
+            .iter()
+            .cloned()
+            .map(ReferenceNode::Fresh)
+            .chain(
+                value
+                    .caller_references
+                    .iter()
+                    .cloned()
+                    .map(ReferenceNode::Caller),
+            )
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(node) = pending.pop() {
+            let reaches_target = match &node {
+                ReferenceNode::Fresh(root) => targets
+                    .fresh_roots
+                    .iter()
+                    .any(|target| root.is_ancestor_of(target)),
+                ReferenceNode::Caller(reference) => targets
+                    .direct_caller_references
+                    .iter()
+                    .any(|target| reference.is_ancestor_of(target)),
+            };
+            if reaches_target {
+                return true;
+            }
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            let payload = match &node {
+                ReferenceNode::Fresh(root) => self.heap.get(root),
+                ReferenceNode::Caller(reference) => self.state.parameter_stores.get(reference),
+            };
+            if let Some(payload) = payload {
+                pending.extend(
+                    payload
+                        .fresh_references
+                        .iter()
+                        .cloned()
+                        .map(ReferenceNode::Fresh),
+                );
+                pending.extend(
+                    payload
+                        .caller_references
+                        .iter()
+                        .cloned()
+                        .map(ReferenceNode::Caller),
+                );
+            }
+        }
+        false
+    }
+
+    fn store_would_create_cycle(&self, target: &AbstractValue, value: &AbstractValue) -> bool {
+        self.reference_graph_reaches_any(value, target)
+    }
+
+    fn contains_mutated_fresh_root(&self, value: &AbstractValue) -> bool {
+        value
+            .fresh_references
+            .iter()
+            .any(|root| self.mutated_fresh_roots.contains(root))
+    }
+
+    fn allocate_fresh_container(&mut self, root: u32, payload: AbstractValue) -> AbstractValue {
+        let root = FreshRoot::allocation(root);
+        let mut payload = payload;
+        payload.needs_fresh_root = false;
+        self.heap.insert(root.clone(), payload.clone());
+        let mut container = payload.with_fresh_container(true);
+        container.fresh_roots.clear();
+        container.fresh_roots.insert(root.clone());
+        container.fresh_references.insert(root);
+        container.needs_fresh_root = false;
+        container
+    }
+
+    fn project_fresh_root(root: &FreshRoot, path: &ValueProjectionPath) -> Result<FreshRoot, ()> {
+        let mut parent = root.clone();
+        for step in path.steps() {
+            parent = parent.project_step(step.clone())?;
+        }
+        Ok(parent)
+    }
+
+    fn projected_reference_sets(
+        &mut self,
+        value: &AbstractValue,
+        path: &ValueProjectionPath,
+    ) -> Result<(BTreeSet<FreshRoot>, BTreeSet<CallerReference>), ()> {
+        let mut fresh_roots = BTreeSet::new();
+        for root in &value.fresh_roots {
+            fresh_roots.insert(Self::project_fresh_root(root, path)?);
+        }
+        let caller_references = value
+            .direct_caller_references
+            .iter()
+            .map(|reference| reference.project(path))
+            .collect::<Result<_, _>>()?;
+        Ok((fresh_roots, caller_references))
+    }
+
+    fn project_value(
+        &mut self,
+        value: &AbstractValue,
+        path: &ValueProjectionPath,
+        reference: bool,
+        preserve_caller_references: bool,
+    ) -> AbstractValue {
+        let mut projected = self.materialize_heap_value(value);
+        for root in &value.fresh_roots {
+            projected.fresh_roots.remove(root);
+            projected.fresh_references.remove(root);
+        }
+        for caller_reference in &value.direct_caller_references {
+            projected.caller_references.remove(caller_reference);
+            projected.direct_caller_references.remove(caller_reference);
+        }
+        let roots = self.projected_reference_sets(value, path);
+        let origins = projected
+            .project_direct_caller_parameter_origins(path, &value.direct_caller_references);
+        let (fresh_roots, caller_references) = match (roots, origins) {
+            (Ok(roots), Ok(())) => roots,
+            _ => {
+                self.state.join(&CallableState::fail_closed(
+                    CallableProvenanceUnknownReason::UnsupportedHeapStore,
+                ));
+                return AbstractValue::unknown(reference);
+            }
+        };
+        // The heap is field-insensitive today, so the immediate payload of
+        // each possible receiver root remains a conservative direct candidate
+        // for the selected field. Do not promote every transitively reachable
+        // root: doing so loses the distinction between the selected object and
+        // values nested inside it, and manufactures false heap cycles.
+        let mut direct_origins = projected.direct_origins.clone();
+        let mut direct_fresh_roots = fresh_roots;
+        let mut direct_caller_references = caller_references;
+        let mut needs_fresh_root = projected.needs_fresh_root;
+        for payload in value
+            .fresh_roots
+            .iter()
+            .filter_map(|root| self.heap.get(root))
+            .chain(
+                value
+                    .direct_caller_references
+                    .iter()
+                    .filter_map(|reference| self.state.parameter_stores.get(reference)),
+            )
+        {
+            direct_origins.extend(payload.direct_origins.iter().cloned());
+            direct_fresh_roots.extend(payload.fresh_roots.iter().cloned());
+            direct_caller_references.extend(payload.direct_caller_references.iter().cloned());
+            needs_fresh_root |= payload.needs_fresh_root;
+        }
+        projected.direct_origins = direct_origins;
+        projected.fresh_roots = direct_fresh_roots;
+        projected
+            .fresh_references
+            .extend(projected.fresh_roots.iter().cloned());
+        if preserve_caller_references {
+            projected
+                .caller_references
+                .extend(direct_caller_references.iter().cloned());
+            projected.direct_caller_references = direct_caller_references;
+        } else {
+            projected.caller_references.clear();
+            projected.direct_caller_references.clear();
+        }
+        projected.needs_fresh_root = needs_fresh_root;
+        projected.catch_result = None;
+        projected.reference = reference;
+        if !reference {
+            projected.fresh_roots.clear();
+            projected.fresh_references.clear();
+            projected.caller_references.clear();
+            projected.direct_caller_references.clear();
+            projected.needs_fresh_root = false;
+        }
+        projected
+    }
+
+    fn project_store_target(
+        &mut self,
+        actual: &AbstractValue,
+        formal: &CallerReference,
+    ) -> AbstractValue {
+        if formal.path.is_empty() {
+            return actual.clone();
+        }
+        let Ok(path) = ValueProjectionPath::new(formal.path.clone()) else {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+            return AbstractValue::unknown(true);
+        };
+        let Ok((fresh_roots, caller_references)) = self.projected_reference_sets(actual, &path)
+        else {
+            self.state.join(&CallableState::fail_closed(
+                CallableProvenanceUnknownReason::UnsupportedHeapStore,
+            ));
+            return AbstractValue::unknown(true);
+        };
+        let fresh_references = fresh_roots.clone();
+        AbstractValue {
+            fresh_roots,
+            fresh_references,
+            caller_references: caller_references.clone(),
+            direct_caller_references: caller_references,
+            reference: true,
+            unknown: actual.unknown,
+            ..AbstractValue::default()
+        }
+    }
+
     fn parameter_environment(&self) -> Environment {
         let mut env = Environment::new();
         let mut next_parameter = 0u32;
@@ -166,7 +446,7 @@ fn type_ir_may_be_reference(ty: &TypeRefIr) -> bool {
 
 fn type_ir_is_definitely_scalar(ty: &TypeRefIr) -> bool {
     match ty {
-        TypeRefIr::Native { name, args } => {
+        TypeRefIr::Builtin { name, args } => {
             args.is_empty()
                 && matches!(
                     name.as_str(),
@@ -176,10 +456,15 @@ fn type_ir_is_definitely_scalar(ty: &TypeRefIr) -> bool {
         TypeRefIr::Literal { .. } => true,
         TypeRefIr::Union { items } => items.iter().all(type_ir_is_definitely_scalar),
         TypeRefIr::Nullable { inner } => type_ir_is_definitely_scalar(inner),
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            let _arguments_are_scalar = arguments.iter().all(type_ir_is_definitely_scalar);
+            false
+        }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Record { .. }
         | TypeRefIr::TypeParam { .. }

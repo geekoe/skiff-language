@@ -1,5 +1,5 @@
 mod common;
-use common::{artifacts::resource_blob, package_project::compile_package_project, TestDir};
+use common::{package_project::compile_package_project, TestDir};
 use skiff_artifact_model::PackageArtifact;
 
 #[test]
@@ -8,8 +8,11 @@ fn package_compile_has_one_terminal_package_artifact_path() {
     let project = compile_package_project(temp.path()).expect("package graph should compile");
     let published = &project.package;
 
-    let round_trip: PackageArtifact = serde_json::from_value(published.published.value.clone())
-        .expect("published PackageArtifact should deserialize");
+    let round_trip: PackageArtifact = serde_json::from_value(
+        serde_json::to_value(&published.artifact)
+            .expect("canonical PackageArtifact should serialize"),
+    )
+    .expect("published PackageArtifact should deserialize");
     assert_eq!(round_trip, published.artifact);
     assert_eq!(round_trip.package_id, "example.com/agent");
     assert_eq!(round_trip.package_version, "1.0.0");
@@ -35,10 +38,13 @@ fn package_compile_has_one_terminal_package_artifact_path() {
         .artifact_path
         .as_deref()
         .expect("materialized package resource path");
-    assert_eq!(
-        resource_blob(published, resource_path).bytes,
-        b"agent prompt\n"
-    );
+    assert!(resource_path.starts_with("records/package-artifacts/"));
+    let resource_blob = published
+        .resource_blobs
+        .iter()
+        .find(|blob| blob.sha256 == resource.sha256 && blob.byte_len == resource.byte_len)
+        .expect("package resource blob by canonical content identity");
+    assert_eq!(resource_blob.bytes, b"agent prompt\n");
     assert!(project.dependency("example.com/base", "1.0.0").is_some());
 }
 

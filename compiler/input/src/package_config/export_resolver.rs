@@ -326,11 +326,11 @@ mod tests {
         let resolver = PackageExportResolver::new(&aliases);
 
         let symbol = resolver
-            .resolve_package_symbol_path("std.websocket.TextConnectionMessage")
+            .resolve_package_symbol_path("std.websocket.WebSocketConnectRequest")
             .expect("std symbol should resolve through default root");
 
         assert_eq!(symbol.dependency_ref, "std");
-        assert_eq!(symbol.symbol_path, "std.websocket.TextConnectionMessage");
+        assert_eq!(symbol.symbol_path, "std.websocket.WebSocketConnectRequest");
     }
 
     #[test]
@@ -339,23 +339,27 @@ mod tests {
             id: "example.com/llm".to_string(),
             version: "0.1.0".to_string(),
             alias: Some("llm".to_string()),
+            top_level_alias: None,
             config: serde_json::json!({}),
             collection_name_mapping: BTreeMap::new(),
         };
-        let manifest = PackageManifest::new(PublicationManifest::new(
-            PublicationId::parse("example.com/llm").unwrap(),
-            "0.1.0".to_string(),
-            PublicationApiSpec::from_public_instances(vec![
-                PublicationApiPublicInstanceEntry::for_source(
-                    "managedLlm",
-                    "root.llm.managedLlm",
-                    ["root.llm.ManagedLlm"],
-                )
-                .unwrap(),
-            ]),
+        let manifest = PackageManifest::new(
+            PublicationManifest::new(
+                PublicationId::parse("example.com/llm").unwrap(),
+                "0.1.0".to_string(),
+                PublicationApiSpec::from_public_instances(vec![
+                    PublicationApiPublicInstanceEntry::for_source(
+                        "managedLlm",
+                        "root.llm.managedLlm",
+                        ["root.llm.ManagedLlm"],
+                    )
+                    .unwrap(),
+                ]),
+                Vec::new(),
+                ManifestProvenance::synthetic("package.yml", ManifestOwner::UserOrBuiltinPackage),
+            ),
             Vec::new(),
-            ManifestProvenance::synthetic("package.yml", ManifestOwner::UserOrBuiltinPackage),
-        ));
+        );
         let available = BTreeMap::from([(
             package_manifest_key(&dependency.id, &dependency.version),
             manifest,

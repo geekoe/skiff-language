@@ -58,14 +58,13 @@ fn request_with_deadline(deadline: Value) -> RequestEnvelope {
         build_id: "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
         service_protocol_identity:
-            "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            "skiff-service-protocol-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
         contract_identity: None,
         activation_identity: None,
         ingress_selector: None,
         binary_http: None,
         http_adapter: None,
-        websocket_adapter: None,
         test_effects_enabled: false,
         test_effect_doubles: HashMap::new(),
         payload_bytes: Vec::new(),

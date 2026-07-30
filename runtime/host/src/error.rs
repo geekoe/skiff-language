@@ -2,7 +2,10 @@ use std::fmt;
 
 use serde_json::{json, Map, Value};
 
-pub use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
+pub use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, WirePayload},
+    service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticSource {
@@ -11,6 +14,13 @@ pub struct DiagnosticSource {
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Host cancellation is an internal completion terminal, not a wire error.
+///
+/// ```compile_fail
+/// use skiff_runtime_host::error::{RuntimeError, WirePayload};
+///
+/// let _ = WirePayload::payload(&RuntimeError::Cancelled);
+/// ```
 pub enum RuntimeError {
     #[error("{0}")]
     Decode(String),
@@ -21,6 +31,15 @@ pub enum RuntimeError {
     #[error("protocol error for {target}: {message}")]
     #[allow(dead_code)]
     Protocol { target: String, message: String },
+    #[error("request was cancelled")]
+    Cancelled,
+    #[error("execution budget exceeded: {reason:?}")]
+    ExecutionBudgetExceeded {
+        reason: skiff_runtime_capability_context::ExecutionBudgetReason,
+        instruction_count: u64,
+        limit: Option<u64>,
+        elapsed_ms: f64,
+    },
     #[error("{0}")]
     Diagnosed(Diagnosed),
     #[error("{message}")]
@@ -48,6 +67,16 @@ pub(crate) enum HostRuntimeLeafError {
     HttpError {
         message: String,
         detail: Option<Value>,
+    },
+    #[error("{0}")]
+    FileError(String),
+    #[error("resource limit exceeded for {resource}: {reason}")]
+    ResourceLimitExceeded {
+        resource: String,
+        reason: String,
+        limit: usize,
+        current: usize,
+        requested_delta: usize,
     },
 }
 
@@ -77,30 +106,61 @@ impl WirePayload for HostRuntimeLeafError {
                 status: None,
                 details: detail.clone(),
             },
+            Self::FileError(message) => RuntimeErrorPayload {
+                code: "std.file.FileError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: None,
+            },
+            Self::ResourceLimitExceeded {
+                resource,
+                reason,
+                limit,
+                current,
+                requested_delta,
+            } => RuntimeErrorPayload {
+                code: "ResourceLimitExceeded".to_string(),
+                message: format!("resource limit exceeded for {resource}: {reason}"),
+                status: None,
+                details: Some(serde_json::json!({
+                    "resource": resource,
+                    "reason": reason,
+                    "limit": limit,
+                    "current": current,
+                    "requestedDelta": requested_delta,
+                })),
+            },
         }
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             Self::DecodeTarget { target, message } => {
-                decode_target_error_code(target).map(|code| {
-                    (
-                        TypeIdentity::builtin(code),
+                decode_target_error_code(target).and_then(|code| {
+                    let identity = PlatformBuiltinErrorIdentity::from_symbol(code)?;
+                    Some((
+                        identity.catch_identity(),
                         serde_json::json!({
                             "target": target,
                             "message": message,
                         }),
-                    )
+                    ))
                 })
             }
             Self::HttpError { message, detail } => Some((
-                TypeIdentity::builtin("std.http.HttpError"),
+                PlatformBuiltinErrorIdentity::Http.catch_identity(),
                 serde_json::json!({
                     "message": message,
                     "detail": detail,
                 }),
             )),
-            Self::InvalidArtifact(_) => None,
+            Self::FileError(message) => Some((
+                PlatformBuiltinErrorIdentity::File.catch_identity(),
+                serde_json::json!({
+                    "message": message,
+                }),
+            )),
+            Self::InvalidArtifact(_) | Self::ResourceLimitExceeded { .. } => None,
         }
     }
 
@@ -122,10 +182,10 @@ enum DiagnosedInner {
 }
 
 impl DiagnosedInner {
-    fn as_wire(&self) -> &dyn WirePayload {
+    fn as_wire(&self) -> Option<&dyn WirePayload> {
         match self {
-            Self::Runtime(error) => error.as_ref(),
-            Self::Wire(error) => error.as_ref(),
+            Self::Runtime(_) => None,
+            Self::Wire(error) => Some(error.as_ref()),
         }
     }
 
@@ -134,6 +194,25 @@ impl DiagnosedInner {
             Self::Runtime(error) => Some(error),
             Self::Wire(_) => None,
         }
+    }
+
+    fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        match self {
+            Self::Runtime(error) => error.ordinary_payload(),
+            Self::Wire(error) => Some(error.payload()),
+        }
+    }
+
+    fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        match self {
+            Self::Runtime(error) => error.ordinary_catch_projection(),
+            Self::Wire(error) => error.catch_projection(),
+        }
+    }
+
+    fn is_cancellation_terminal(&self) -> bool {
+        self.as_runtime_error()
+            .is_some_and(RuntimeError::is_cancellation_terminal)
     }
 }
 
@@ -250,16 +329,16 @@ impl Diagnosed {
         self
     }
 
-    pub fn payload(&self) -> RuntimeErrorPayload {
-        let mut payload = self.inner.as_wire().payload();
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        let mut payload = self.inner.ordinary_payload()?;
         for frame in self.frames.iter().rev() {
             frame.merge_into(&mut payload);
         }
-        payload
+        Some(payload)
     }
 
-    fn is_request_cancelled(&self) -> bool {
-        wire_payload_is_request_cancelled(self.inner.as_wire())
+    fn is_cancellation_terminal(&self) -> bool {
+        self.inner.is_cancellation_terminal()
     }
 
     pub fn diagnostic_source_id(&self) -> Option<u64> {
@@ -272,10 +351,10 @@ impl Diagnosed {
             .and_then(RuntimeError::diagnostic_source)
             .or_else(|| {
                 self.inner
-                    .as_wire()
+                    .as_wire()?
                     .as_any()
-                    .downcast_ref::<Diagnosed>()
-                    .and_then(Diagnosed::diagnostic_source)
+                    .downcast_ref::<OrdinaryRuntimeError>()
+                    .and_then(|error| error.error().diagnostic_source())
             })
             .or_else(|| {
                 self.frames
@@ -298,7 +377,10 @@ impl Diagnosed {
     }
 
     fn inner_diagnosed(&self) -> Option<&Diagnosed> {
-        self.inner.as_wire().as_any().downcast_ref::<Diagnosed>()
+        self.inner.as_runtime_error().and_then(|error| match error {
+            RuntimeError::Diagnosed(diagnosed) => Some(diagnosed),
+            _ => None,
+        })
     }
 
     fn has_source_context(&self, source_id: u64, frame: &Value) -> bool {
@@ -317,28 +399,20 @@ impl Diagnosed {
 
 impl fmt::Display for Diagnosed {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.inner.as_wire())
+        match &self.inner {
+            DiagnosedInner::Runtime(error) => write!(formatter, "{error}"),
+            DiagnosedInner::Wire(error) => write!(formatter, "{error}"),
+        }
     }
 }
 
 impl std::error::Error for Diagnosed {}
 
-impl WirePayload for Diagnosed {
-    fn payload(&self) -> RuntimeErrorPayload {
-        Diagnosed::payload(self)
-    }
-
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
-        self.inner.as_wire().catch_projection()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 impl From<skiff_runtime_eval::error::RuntimeError> for RuntimeError {
     fn from(error: skiff_runtime_eval::error::RuntimeError) -> Self {
+        if error.is_cancellation_terminal() {
+            return RuntimeError::Cancelled;
+        }
         match error {
             skiff_runtime_eval::error::RuntimeError::WithSource {
                 source_id,
@@ -357,7 +431,10 @@ impl From<skiff_runtime_eval::error::RuntimeError> for RuntimeError {
                 }
             }
             skiff_runtime_eval::error::RuntimeError::Opaque(error) => RuntimeError::Opaque(error),
-            error => RuntimeError::Opaque(Box::new(error)),
+            error => RuntimeError::Opaque(Box::new(
+                skiff_runtime_eval::error::OrdinaryRuntimeError::try_new(error)
+                    .expect("eval cancellation was split before ordinary trait erasure"),
+            )),
         }
     }
 }
@@ -382,25 +459,94 @@ impl From<skiff_runtime_linked_type_plan::Error> for RuntimeError {
 
 impl From<skiff_runtime_native::error::RuntimeError> for RuntimeError {
     fn from(error: skiff_runtime_native::error::RuntimeError) -> Self {
-        RuntimeError::Opaque(Box::new(error))
+        if error.is_cancellation_terminal() {
+            RuntimeError::Cancelled
+        } else {
+            RuntimeError::Opaque(Box::new(
+                skiff_runtime_native::error::OrdinaryRuntimeError::try_new(error)
+                    .expect("native cancellation was split before ordinary trait erasure"),
+            ))
+        }
     }
 }
 
 impl From<skiff_runtime_capability_context::ExecutionControlError> for RuntimeError {
     fn from(error: skiff_runtime_capability_context::ExecutionControlError) -> Self {
-        RuntimeError::Opaque(Box::new(error))
+        match error {
+            skiff_runtime_capability_context::ExecutionControlError::Cancelled => {
+                RuntimeError::Cancelled
+            }
+            skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(failure) => {
+                RuntimeError::execution_budget_exceeded(failure)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct OrdinaryStreamRuntimeError(skiff_runtime_capability_context::StreamRuntimeError);
+
+impl fmt::Display for OrdinaryStreamRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl std::error::Error for OrdinaryStreamRuntimeError {}
+
+impl WirePayload for OrdinaryStreamRuntimeError {
+    fn payload(&self) -> RuntimeErrorPayload {
+        self.0
+            .ordinary_payload()
+            .expect("ordinary stream wrapper construction excludes cancellation")
+    }
+
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        self.0.ordinary_catch_projection()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
 impl From<skiff_runtime_capability_context::StreamRuntimeError> for RuntimeError {
     fn from(error: skiff_runtime_capability_context::StreamRuntimeError) -> Self {
-        RuntimeError::Opaque(Box::new(error))
+        if error.is_cancellation_terminal() {
+            RuntimeError::Cancelled
+        } else {
+            RuntimeError::Opaque(Box::new(OrdinaryStreamRuntimeError(error)))
+        }
     }
 }
 
 impl From<skiff_runtime_capability_context::FileCapabilityError> for RuntimeError {
     fn from(error: skiff_runtime_capability_context::FileCapabilityError) -> Self {
-        RuntimeError::Opaque(Box::new(error))
+        use skiff_runtime_capability_context::FileCapabilityError;
+
+        match error {
+            FileCapabilityError::Decode(message) => RuntimeError::Decode(message),
+            FileCapabilityError::File(message) => RuntimeError::file_error(message),
+            FileCapabilityError::Opaque(error) => RuntimeError::Opaque(error),
+            FileCapabilityError::ProviderUnavailable { target, reason } => {
+                RuntimeError::ProviderUnavailable { target, reason }
+            }
+            FileCapabilityError::ResourceLimitExceeded {
+                resource,
+                reason,
+                limit,
+                current,
+                requested_delta,
+            } => RuntimeError::resource_limit_exceeded(
+                resource,
+                reason,
+                limit,
+                current,
+                requested_delta,
+            ),
+            FileCapabilityError::Stream(error) => RuntimeError::from(error),
+            FileCapabilityError::Execution(error) => RuntimeError::from(error),
+        }
     }
 }
 
@@ -443,9 +589,7 @@ impl RuntimeError {
     }
 
     pub(crate) fn file_error(message: impl Into<String>) -> Self {
-        RuntimeError::Opaque(Box::new(
-            skiff_runtime_capability_context::FileCapabilityError::file(message),
-        ))
+        RuntimeError::Opaque(Box::new(HostRuntimeLeafError::FileError(message.into())))
     }
 
     pub(crate) fn http_error(message: impl Into<String>, detail: Option<Value>) -> Self {
@@ -456,17 +600,22 @@ impl RuntimeError {
     }
 
     pub(crate) fn cancelled() -> Self {
-        RuntimeError::Opaque(Box::new(
-            skiff_runtime_capability_context::ExecutionControlError::Cancelled,
-        ))
+        RuntimeError::Cancelled
     }
 
     pub(crate) fn execution_budget_exceeded(
         failure: skiff_runtime_capability_context::ExecutionBudgetFailure,
     ) -> Self {
-        RuntimeError::Opaque(Box::new(
-            skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(failure),
-        ))
+        if failure.reason.is_cancellation_terminal() {
+            RuntimeError::Cancelled
+        } else {
+            RuntimeError::ExecutionBudgetExceeded {
+                reason: failure.reason,
+                instruction_count: failure.instruction_count,
+                limit: failure.limit,
+                elapsed_ms: failure.elapsed_ms,
+            }
+        }
     }
 
     pub(crate) fn resource_limit_exceeded(
@@ -476,15 +625,13 @@ impl RuntimeError {
         current: usize,
         requested_delta: usize,
     ) -> Self {
-        RuntimeError::Opaque(Box::new(
-            skiff_runtime_capability_context::FileCapabilityError::resource_limit_exceeded(
-                resource,
-                reason,
-                limit,
-                current,
-                requested_delta,
-            ),
-        ))
+        RuntimeError::Opaque(Box::new(HostRuntimeLeafError::ResourceLimitExceeded {
+            resource: resource.into(),
+            reason: reason.into(),
+            limit,
+            current,
+            requested_delta,
+        }))
     }
 
     pub fn with_source(self, source_id: u64, source_frame: Value) -> Self {
@@ -510,9 +657,26 @@ impl RuntimeError {
         }
     }
 
-    pub fn payload(&self) -> RuntimeErrorPayload {
+    pub fn is_cancellation_terminal(&self) -> bool {
         match self {
-            RuntimeError::Diagnosed(diagnosed) => diagnosed.payload(),
+            RuntimeError::Cancelled => true,
+            RuntimeError::ExecutionBudgetExceeded { reason, .. } => {
+                reason.is_cancellation_terminal()
+            }
+            RuntimeError::Diagnosed(diagnosed) => diagnosed.is_cancellation_terminal(),
+            RuntimeError::Decode(_)
+            | RuntimeError::Unsupported(_)
+            | RuntimeError::ProviderUnavailable { .. }
+            | RuntimeError::Protocol { .. }
+            | RuntimeError::ExternalErrorPayload { .. }
+            | RuntimeError::Opaque(_)
+            | RuntimeError::Json(_) => false,
+        }
+    }
+
+    pub fn ordinary_payload(&self) -> Option<RuntimeErrorPayload> {
+        Some(match self {
+            RuntimeError::Diagnosed(diagnosed) => return diagnosed.ordinary_payload(),
             RuntimeError::Decode(message) => RuntimeErrorPayload {
                 code: "InternalError".to_string(),
                 message: message.clone(),
@@ -543,6 +707,38 @@ impl RuntimeError {
                     "message": message,
                 })),
             },
+            RuntimeError::Cancelled => return None,
+            RuntimeError::ExecutionBudgetExceeded {
+                reason,
+                instruction_count,
+                limit,
+                elapsed_ms,
+            } => {
+                if reason.is_cancellation_terminal() {
+                    return None;
+                }
+                RuntimeErrorPayload {
+                    code: "TimeoutError".to_string(),
+                    message: match reason {
+                        skiff_runtime_capability_context::ExecutionBudgetReason::DeadlineExceeded => {
+                            "execution deadline exceeded".to_string()
+                        }
+                        skiff_runtime_capability_context::ExecutionBudgetReason::InstructionLimitExceeded => {
+                            "execution instruction limit exceeded".to_string()
+                        }
+                        skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled => {
+                            unreachable!("cancellation terminal was split above")
+                        }
+                    },
+                    status: None,
+                    details: Some(serde_json::json!({
+                        "reason": reason.as_str(),
+                        "instructionCount": instruction_count,
+                        "limit": limit,
+                        "elapsedMs": elapsed_ms,
+                    })),
+                }
+            }
             RuntimeError::ExternalErrorPayload {
                 code,
                 message,
@@ -561,6 +757,47 @@ impl RuntimeError {
                 status: None,
                 details: None,
             },
+        })
+    }
+
+    pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        match self {
+            RuntimeError::Diagnosed(error) => error.inner.ordinary_catch_projection(),
+            RuntimeError::Opaque(error) => error.catch_projection(),
+            RuntimeError::ProviderUnavailable { target, reason } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                serde_json::json!({
+                    "target": target,
+                    "reason": reason,
+                }),
+            )),
+            RuntimeError::Protocol { target, message } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
+                serde_json::json!({
+                    "target": target,
+                    "message": message,
+                }),
+            )),
+            RuntimeError::ExecutionBudgetExceeded {
+                reason,
+                instruction_count,
+                limit,
+                elapsed_ms,
+            } if !reason.is_cancellation_terminal() => Some((
+                PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+                serde_json::json!({
+                    "reason": reason.as_str(),
+                    "instructionCount": instruction_count,
+                    "limit": limit,
+                    "elapsedMs": elapsed_ms,
+                }),
+            )),
+            RuntimeError::Decode(_)
+            | RuntimeError::Unsupported(_)
+            | RuntimeError::Cancelled
+            | RuntimeError::ExecutionBudgetExceeded { .. }
+            | RuntimeError::ExternalErrorPayload { .. }
+            | RuntimeError::Json(_) => None,
         }
     }
 
@@ -574,146 +811,46 @@ impl RuntimeError {
             _ => None,
         }
     }
+}
 
-    pub(crate) fn is_request_cancelled(&self) -> bool {
-        match self {
-            RuntimeError::Diagnosed(diagnosed) => diagnosed.is_request_cancelled(),
-            RuntimeError::Opaque(error) => wire_payload_is_request_cancelled(error.as_ref()),
-            _ => false,
+/// Ordinary-only Host carrier used at dynamic wire boundaries.
+#[derive(Debug)]
+pub(crate) struct OrdinaryRuntimeError(RuntimeError);
+
+impl OrdinaryRuntimeError {
+    pub(crate) fn try_new(error: RuntimeError) -> std::result::Result<Self, RuntimeError> {
+        if error.is_cancellation_terminal() {
+            return Err(error);
         }
+        Ok(Self(error))
+    }
+
+    pub(crate) fn error(&self) -> &RuntimeError {
+        &self.0
     }
 }
 
-impl WirePayload for RuntimeError {
+impl fmt::Display for OrdinaryRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl std::error::Error for OrdinaryRuntimeError {}
+
+impl WirePayload for OrdinaryRuntimeError {
     fn payload(&self) -> RuntimeErrorPayload {
-        RuntimeError::payload(self)
+        self.0
+            .ordinary_payload()
+            .expect("OrdinaryRuntimeError construction excludes cancellation")
     }
 
-    fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
-        match self {
-            RuntimeError::Diagnosed(error) => error.catch_projection(),
-            RuntimeError::Opaque(error) => error.catch_projection(),
-            RuntimeError::ProviderUnavailable { target, reason } => Some((
-                TypeIdentity::builtin("std.service.ProviderUnavailableError"),
-                serde_json::json!({
-                    "target": target,
-                    "reason": reason,
-                }),
-            )),
-            RuntimeError::Protocol { target, message } => Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
-                serde_json::json!({
-                    "target": target,
-                    "message": message,
-                }),
-            )),
-            _ => None,
-        }
+    fn catch_projection(&self) -> Option<(CatchIdentity, Value)> {
+        self.0.ordinary_catch_projection()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-}
-
-fn wire_payload_is_request_cancelled(error: &dyn WirePayload) -> bool {
-    if let Some(error) = error.as_any().downcast_ref::<RuntimeError>() {
-        return error.is_request_cancelled();
-    }
-    if let Some(error) = error.as_any().downcast_ref::<Diagnosed>() {
-        return error.is_request_cancelled();
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_eval::error::RuntimeError>()
-    {
-        return eval_error_is_request_cancelled(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_capability_context::ExecutionControlError>()
-    {
-        return execution_control_error_is_request_cancelled(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_capability_context::StreamRuntimeError>()
-    {
-        return stream_runtime_error_is_request_cancelled(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_request::RequestError>()
-    {
-        return request_error_is_request_cancelled(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_native::error::RuntimeError>()
-    {
-        return native_error_is_request_cancelled(error);
-    }
-    false
-}
-
-fn eval_error_is_request_cancelled(error: &skiff_runtime_eval::error::RuntimeError) -> bool {
-    match error {
-        skiff_runtime_eval::error::RuntimeError::Cancelled => true,
-        skiff_runtime_eval::error::RuntimeError::WithSource { error, .. }
-        | skiff_runtime_eval::error::RuntimeError::WithDiagnosticFrame { error, .. } => {
-            eval_error_is_request_cancelled(error)
-        }
-        skiff_runtime_eval::error::RuntimeError::Opaque(error) => {
-            wire_payload_is_request_cancelled(error.as_ref())
-        }
-        _ => false,
-    }
-}
-
-fn execution_control_error_is_request_cancelled(
-    error: &skiff_runtime_capability_context::ExecutionControlError,
-) -> bool {
-    match error {
-        skiff_runtime_capability_context::ExecutionControlError::Cancelled => true,
-        skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(failure) => {
-            failure.reason == skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled
-        }
-    }
-}
-
-fn stream_runtime_error_is_request_cancelled(
-    error: &skiff_runtime_capability_context::StreamRuntimeError,
-) -> bool {
-    match error {
-        skiff_runtime_capability_context::StreamRuntimeError::Cancelled => true,
-        skiff_runtime_capability_context::StreamRuntimeError::Producer(error) => {
-            wire_payload_is_request_cancelled(error.as_ref())
-        }
-        skiff_runtime_capability_context::StreamRuntimeError::Decode(_) => false,
-    }
-}
-
-fn request_error_is_request_cancelled(error: &skiff_runtime_request::RequestError) -> bool {
-    match error {
-        skiff_runtime_request::RequestError::Cancelled => true,
-        skiff_runtime_request::RequestError::ExecutionBudgetExceeded { reason, .. } => {
-            *reason == skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled
-        }
-        skiff_runtime_request::RequestError::Eval(error) => eval_error_is_request_cancelled(error),
-        _ => false,
-    }
-}
-
-fn native_error_is_request_cancelled(error: &skiff_runtime_native::error::RuntimeError) -> bool {
-    match error {
-        skiff_runtime_native::error::RuntimeError::Cancelled => true,
-        skiff_runtime_native::error::RuntimeError::ExecutionBudgetExceeded { reason, .. } => {
-            *reason == skiff_runtime_native::error::BudgetReason::Cancelled
-        }
-        skiff_runtime_native::error::RuntimeError::Opaque(error) => {
-            wire_payload_is_request_cancelled(error.as_ref())
-        }
-        _ => false,
     }
 }
 

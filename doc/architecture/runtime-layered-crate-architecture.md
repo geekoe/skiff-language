@@ -534,8 +534,13 @@ IngressDispatcher
   transport writer internals。
 - package-test request wrapper 不进入通用 request runner 中央分支；它通过 package-test runtime
   adapter 产出普通 invocation。
-- binary HTTP、typed JSON adapter、server stream、WebSocket receive、普通 runtime payload
-  都必须被建模为 `IngressMode`，而不是在一个大函数中互相读取局部变量。
+- binary HTTP、typed JSON adapter、server stream、WebSocket connect和普通runtime payload都必须被
+  建模为`IngressMode`，而不是在一个大函数中互相读取局部变量。平台
+  `std.websocket.requestJsonToConnection`的peer response只恢复已有execution中的host operation，
+  不是新的ingress mode；peer向`websocket.yml.jsonRpc`已声明method发起的request则是独立typed
+  `IngressMode`。Raw WebSocket receive必须删除，不能让任意frame成为用户handler。双向pending/active
+  生命周期owner必须与编码配置adapter分离：第一版JSON-RPC 2.0 text adapter只能解释framing和控制字段，
+  不能让request broker核心依赖JSON业务payload。
 - request crate 不拥有 route registry、lazy artifact loading、`ServiceRuntimeContext` 或
   `ServiceOperationContext`；它接收 host 已投影的 `RequestOperationContext`。
 - request crate 不直接消费 transport protocol frame；host/transport adapter 将 frame 投影成

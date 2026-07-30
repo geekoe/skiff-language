@@ -1,160 +1,386 @@
-use skiff_runtime_activation::{ActivationContext, RuntimeActivation};
-use skiff_runtime_eval::program_execution::{ProgramExecutionContext, ProgramExecutionInput};
-use skiff_runtime_linked_program::{GatewayConfig, ServiceMeta};
+use skiff_runtime_eval::program_execution::ProgramExecutionContext;
 use skiff_runtime_request::{
-    AssemblyRequestEvalAdapter, RequestEvalExecutionInputParts, RuntimeAssemblyRequestTarget,
+    RuntimeHttpGatewayEvalAdapter, RuntimeHttpGatewayEvalExecutionInputParts,
+    RuntimeWebSocketConnectEvalAdapter, RuntimeWebSocketConnectEvalExecutionInputParts,
+    RuntimeWebSocketJsonRpcEvalAdapter, RuntimeWebSocketJsonRpcEvalExecutionInputParts,
+};
+use skiff_runtime_transport::runtime_assembly_request::{
+    RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestClientSessionFrameHeader,
+    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
+    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
 
+use super::assembly_execution_context::{
+    RuntimeAssemblyEvalAdapterContextInput, RuntimeAssemblyExecutionContext,
+    RuntimeAssemblyRequestMetadata,
+};
 use super::*;
 
-pub(crate) struct RuntimeAssemblyRequestEvalAdapterInput {
-    pub(crate) runtime_id: String,
-    pub(crate) activation: Arc<ActivationContext>,
-    pub(crate) file_source: concrete::FileCapabilitySource,
-    pub(crate) http_options: concrete::HttpRuntimeOptions,
-    pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
-    pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
-    pub(crate) telemetry_context: Option<RequestTelemetryContext>,
-    pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
-    pub(crate) http_response_max_bytes: usize,
+pub(crate) struct RuntimeHttpGatewayEvalAdapterInput {
+    pub(crate) context: RuntimeAssemblyEvalAdapterContextInput,
+    pub(crate) header: RuntimeAssemblyRequestStartFrameHeader,
 }
 
-pub(crate) fn assembly_request_eval_adapter(
-    input: RuntimeAssemblyRequestEvalAdapterInput,
-) -> anyhow::Result<Arc<dyn AssemblyRequestEvalAdapter>> {
-    let config = crate::config_view::RuntimeConfigView::from_activation_literals(
-        &input.activation.owned_bindings().config_literals,
+pub(crate) fn http_gateway_eval_adapter(
+    input: RuntimeHttpGatewayEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeHttpGatewayEvalAdapter>> {
+    let metadata = request_metadata(
+        input.header.request_id,
+        input.header.mode,
+        &input.header.caller,
+        input.header.client_session.as_ref(),
+        input.header.deadline.as_ref(),
+        &input.header.trace,
+        input.header.test_effects_enabled,
+        input
+            .header
+            .test_effects_enabled
+            .then_some(input.header.http_request.url),
     )?;
-    let deployment = &input.activation.identity().deployment;
-    let runtime_activation = Arc::new(RuntimeActivation {
-        service: ServiceMeta {
-            id: deployment.service_id.clone(),
-            display_name: None,
-            metadata: Default::default(),
-        },
-        version: deployment.contract_version.clone(),
-        package_configs: Vec::new(),
-        service_dependencies: Vec::new(),
-        timeout: Default::default(),
-        operation_route_bindings: Vec::new(),
-        db: Vec::new(),
-        actors: Vec::new(),
-        gateway: GatewayConfig::default(),
-    });
-    Ok(Arc::new(RuntimeAssemblyRequestEvalAdapter {
-        runtime_id: input.runtime_id,
-        activation: input.activation,
-        config,
-        runtime_activation,
-        file_source: input.file_source,
-        http_options: input.http_options,
-        outbound_requests: input.outbound_requests,
-        spawn_workers: input.spawn_workers,
-        telemetry_context: input.telemetry_context,
-        router_sender: input.router_sender,
-        http_response_max_bytes: input.http_response_max_bytes,
-    }))
+    Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
+        input.context,
+        metadata,
+    )?))
 }
 
-struct RuntimeAssemblyRequestEvalAdapter {
-    runtime_id: String,
-    activation: Arc<ActivationContext>,
-    config: crate::config_view::RuntimeConfigView,
-    runtime_activation: Arc<RuntimeActivation>,
-    file_source: concrete::FileCapabilitySource,
-    http_options: concrete::HttpRuntimeOptions,
-    outbound_requests: Arc<OutboundRequestRegistry>,
-    spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
-    telemetry_context: Option<RequestTelemetryContext>,
-    router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
-    http_response_max_bytes: usize,
+pub(crate) struct RuntimeWebSocketConnectEvalAdapterInput {
+    pub(crate) context: RuntimeAssemblyEvalAdapterContextInput,
+    pub(crate) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
 }
 
-impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
+pub(crate) fn websocket_connect_eval_adapter(
+    input: RuntimeWebSocketConnectEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeWebSocketConnectEvalAdapter>> {
+    let metadata = request_metadata(
+        input.header.request_id,
+        input.header.mode,
+        &input.header.caller,
+        input.header.client_session.as_ref(),
+        input.header.deadline.as_ref(),
+        &input.header.trace,
+        input.header.test_effects_enabled,
+        None,
+    )?;
+    Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
+        input.context,
+        metadata,
+    )?))
+}
+
+pub(crate) struct RuntimeWebSocketJsonRpcEvalAdapterInput {
+    pub(crate) context: RuntimeAssemblyEvalAdapterContextInput,
+    pub(crate) header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+}
+
+pub(crate) fn websocket_jsonrpc_eval_adapter(
+    input: RuntimeWebSocketJsonRpcEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeWebSocketJsonRpcEvalAdapter>> {
+    let metadata = request_metadata(
+        input.header.request_id,
+        input.header.mode,
+        &input.header.caller,
+        input.header.client_session.as_ref(),
+        input.header.deadline.as_ref(),
+        &input.header.trace,
+        input.header.test_effects_enabled,
+        None,
+    )?;
+    Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
+        input.context,
+        metadata,
+    )?))
+}
+
+fn request_metadata(
+    request_id: String,
+    mode: String,
+    caller: &RuntimeAssemblyRequestCallerFrameHeader,
+    client_session: Option<&RuntimeAssemblyRequestClientSessionFrameHeader>,
+    deadline: Option<&RuntimeAssemblyRequestDeadlineFrameHeader>,
+    trace: &RuntimeAssemblyRequestTraceFrameHeader,
+    test_effects_enabled: bool,
+    test_ingress_url: Option<String>,
+) -> anyhow::Result<RuntimeAssemblyRequestMetadata> {
+    Ok(RuntimeAssemblyRequestMetadata {
+        request_id,
+        mode,
+        caller: serde_json::to_value(caller)?,
+        client_session: client_session.map(serde_json::to_value).transpose()?,
+        deadline: deadline.map(serde_json::to_value).transpose()?,
+        trace: serde_json::to_value(trace)?,
+        test_effects_enabled,
+        test_ingress_url,
+    })
+}
+
+impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
     fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
         runtime_factory()
     }
 
+    fn begin_test_effect_execution(
+        &self,
+    ) -> skiff_runtime_request::RequestResult<
+        Option<skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution>,
+    > {
+        let activation_id = self.activation.activation_id().as_str();
+        let execution = if self.request.test_effects_enabled {
+            let ingress_url = self.test_ingress_url.as_deref().ok_or_else(|| {
+                skiff_runtime_request::RequestError::Unsupported(
+                    "test HTTP ingress is missing its trusted ingress URL".to_string(),
+                )
+            })?;
+            Some(
+                self.test_http_entries
+                    .begin_parent(
+                        activation_id.to_string(),
+                        ingress_url,
+                        self.activation.identity().deployment.clone(),
+                    )
+                    .map_err(|error| {
+                        skiff_runtime_request::RequestError::Unsupported(error.to_string())
+                    })?,
+            )
+        } else {
+            self.test_http_entries.borrow_child(activation_id)
+        };
+        Ok(execution.map(|execution| {
+            skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::new(
+                execution.effects(),
+                execution.finalize(),
+                execution,
+            )
+        }))
+    }
+
     fn execution_context<'a>(
         &'a self,
-        parts: RequestEvalExecutionInputParts<'a>,
+        parts: RuntimeHttpGatewayEvalExecutionInputParts<'a>,
         _request_context: skiff_runtime_request::RequestPayloadContext<'a>,
-        interpreter: &skiff_runtime_eval::Interpreter,
-        target: &RuntimeAssemblyRequestTarget,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
-        let RequestEvalExecutionInputParts {
-            operation,
-            request,
+        let RuntimeHttpGatewayEvalExecutionInputParts {
             execution,
             cancellation,
             cancelled: _,
             execution_budget: _,
             request_heap_limits,
         } = parts;
-        debug_assert!(Arc::ptr_eq(
-            &self.activation,
-            target.eval().activation_context()
-        ));
-        let execution = execution_control(execution);
-        let db = concrete::DbCapabilityContext::unavailable();
-        let file = file_source(self.file_source.clone()).context_for_request(db.clone());
-        let effects = effects(effect_dispatch_context_from_request(
-            request,
-            self.http_response_max_bytes,
-            execution.cancellation_token(),
-            self.telemetry_context.clone(),
-            self.http_options.clone(),
-        ));
-        let service_id = self.activation.identity().deployment.service_id.as_str();
-        let websocket = websocket_from_request(
-            service_id,
-            request
-                .extra
-                .get("websocketEntryId")
-                .and_then(Value::as_str),
-            self.router_sender.as_ref(),
-        );
-        let actor = actor_from_request(
-            self.runtime_id.as_str(),
-            service_id,
-            self.activation
-                .identity()
-                .deployment
-                .contract_version
-                .as_str(),
-            request,
-            operation,
-            self.router_sender.as_ref(),
-            &self.outbound_requests,
-            &self.spawn_workers,
-            cancellation.clone(),
-        );
-        let stream_runtime = interpreter.stream_runtime.clone();
-        let test_effect_doubles = interpreter.test_effect_double_context();
-        ProgramExecutionContext::new(ProgramExecutionInput {
-            execution: execution.clone(),
-            config: config_context(concrete::ConfigCapabilityContext::new(&self.config, &[])),
-            db,
-            file,
-            file_source_stream: eval_capabilities::FileSourceStreamContext::new(
-                stream_runtime.clone(),
-                execution.clone(),
-            ),
-            time: eval_capabilities::TimeCapabilityContext::new(execution.clone()),
-            websocket,
-            effects: effects.clone(),
-            http_client: effects.http_client_context(
-                interpreter.http_options.clone(),
-                stream_runtime,
-                test_effect_doubles.clone(),
-            ),
-            test_effect_doubles,
-            runtime_activation: Arc::clone(&self.runtime_activation),
-            actor: actor.clone(),
-            spawn: actor,
-            outbound: retired_assembly_outbound(cancellation, request_heap_limits.clone()),
+        self.program_execution_context(
+            execution,
+            cancellation,
             request_heap_limits,
-        })
-        .with_runtime_assembly_target(target.eval().clone())
+            interpreter,
+            eval_target,
+        )
+    }
+}
+
+impl RuntimeWebSocketConnectEvalAdapter for RuntimeAssemblyExecutionContext {
+    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
+        runtime_factory()
+    }
+
+    fn execution_context<'a>(
+        &'a self,
+        parts: RuntimeWebSocketConnectEvalExecutionInputParts<'a>,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
+    ) -> ProgramExecutionContext<'a> {
+        let RuntimeWebSocketConnectEvalExecutionInputParts {
+            execution,
+            cancellation,
+            cancelled: _,
+            execution_budget: _,
+            request_heap_limits,
+        } = parts;
+        self.program_execution_context(
+            execution,
+            cancellation,
+            request_heap_limits,
+            interpreter,
+            eval_target,
+        )
+    }
+}
+
+impl RuntimeWebSocketJsonRpcEvalAdapter for RuntimeAssemblyExecutionContext {
+    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
+        runtime_factory()
+    }
+
+    fn execution_context<'a>(
+        &'a self,
+        parts: RuntimeWebSocketJsonRpcEvalExecutionInputParts<'a>,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
+    ) -> skiff_runtime_eval::program_execution::ProgramExecutionContext<'a> {
+        let RuntimeWebSocketJsonRpcEvalExecutionInputParts {
+            execution,
+            cancellation,
+            execution_budget: _,
+            request_heap_limits,
+        } = parts;
+        self.program_execution_context(
+            execution,
+            cancellation,
+            request_heap_limits,
+            interpreter,
+            eval_target,
+        )
+    }
+}
+
+pub(super) fn package_config_views(
+    image: &skiff_runtime_linked_program::AssemblyExecutionImage,
+    literals: &[skiff_artifact_model::ConfigLiteralBinding],
+) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
+    let mut requirements_by_slot = Vec::with_capacity(image.execution_packages().len());
+    for (slot, package) in image.execution_packages().iter().enumerate() {
+        if package.code_slot().index() != slot {
+            anyhow::bail!(
+                "active execution image package slot mismatch: expected {slot}, got {}",
+                package.code_slot().index()
+            );
+        }
+        requirements_by_slot.push(package.artifact().runtime_requirements.config.as_slice());
+    }
+    package_config_views_from_requirements(&requirements_by_slot, literals)
+}
+
+fn package_config_views_from_requirements(
+    requirements_by_slot: &[&[skiff_artifact_model::PackageConfigRequirement]],
+    literals: &[skiff_artifact_model::ConfigLiteralBinding],
+) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
+    use std::collections::BTreeSet;
+
+    let mut known_paths = BTreeSet::new();
+    let mut views = Vec::with_capacity(requirements_by_slot.len());
+    for requirements in requirements_by_slot {
+        let required_paths = requirements
+            .iter()
+            .map(|requirement| requirement.path.as_str())
+            .collect::<BTreeSet<_>>();
+        known_paths.extend(required_paths.iter().map(|path| (*path).to_string()));
+        let scoped = literals
+            .iter()
+            .filter(|literal| required_paths.contains(literal.path.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let shape = skiff_artifact_model::config_shape_from_package_requirements(requirements)?;
+        views.push(
+            crate::config_view::RuntimeConfigView::from_activation_literals_with_shape(
+                &scoped, shape,
+            )?,
+        );
+    }
+    if let Some(unknown) = literals
+        .iter()
+        .find(|literal| !known_paths.contains(&literal.path))
+    {
+        anyhow::bail!(
+            "activation config literal {} is not required by an exact active package slot",
+            unknown.path
+        );
+    }
+    Ok(views)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use skiff_artifact_model::{ConfigLiteralBinding, MetadataValue, PackageConfigRequirement};
+
+    use super::package_config_views_from_requirements;
+
+    fn requirement(path: &str, value_type: &str, required: bool) -> PackageConfigRequirement {
+        PackageConfigRequirement {
+            path: path.to_string(),
+            value_type: value_type.to_string(),
+            required,
+        }
+    }
+
+    fn literal(path: &str, value: MetadataValue) -> ConfigLiteralBinding {
+        ConfigLiteralBinding {
+            path: path.to_string(),
+            value,
+        }
+    }
+
+    #[test]
+    fn activation_literals_are_projected_to_exact_package_slots() {
+        let own = [
+            requirement("cookieName", "string", true),
+            requirement("maxAgeSeconds", "number", true),
+        ];
+        let dependency = [requirement("dependency.token", "string", true)];
+        let views = package_config_views_from_requirements(
+            &[&own, &dependency],
+            &[
+                literal("cookieName", MetadataValue::String("sid".into())),
+                literal("maxAgeSeconds", MetadataValue::Number(3600.into())),
+                literal(
+                    "dependency.token",
+                    MetadataValue::String("dependency-value".into()),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(views.len(), 2);
+        assert_eq!(
+            views[0].resolved_config_value(),
+            &json!({"cookieName": "sid", "maxAgeSeconds": 3600})
+        );
+        assert_eq!(
+            views[1].resolved_config_value(),
+            &json!({"dependency": {"token": "dependency-value"}})
+        );
+        assert!(views[0].resolved_config_value().get("dependency").is_none());
+        assert!(views[1].resolved_config_value().get("cookieName").is_none());
+    }
+
+    #[test]
+    fn package_config_projection_fails_closed() {
+        let own = [requirement("cookieName", "string", true)];
+
+        let missing = package_config_views_from_requirements(&[&own], &[]).unwrap_err();
+        assert!(missing
+            .to_string()
+            .contains("cookieName required value is missing"));
+
+        let wrong_type = package_config_views_from_requirements(
+            &[&own],
+            &[literal("cookieName", MetadataValue::Number(1.into()))],
+        )
+        .unwrap_err();
+        assert!(wrong_type
+            .to_string()
+            .contains("cookieName must be a string"));
+
+        let unknown = package_config_views_from_requirements(
+            &[&own],
+            &[
+                literal("cookieName", MetadataValue::String("sid".into())),
+                literal("retired.key", MetadataValue::String("stale".into())),
+            ],
+        )
+        .unwrap_err();
+        assert!(unknown
+            .to_string()
+            .contains("retired.key is not required by an exact active package slot"));
+
+        let duplicate = package_config_views_from_requirements(
+            &[&own],
+            &[
+                literal("cookieName", MetadataValue::String("sid".into())),
+                literal("cookieName", MetadataValue::String("other".into())),
+            ],
+        )
+        .unwrap_err();
+        assert!(duplicate.to_string().contains("cookieName is duplicated"));
     }
 }

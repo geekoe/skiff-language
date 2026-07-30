@@ -5,9 +5,9 @@ pub(super) struct RuntimeEffectDispatchContext(pub(super) concrete::EffectDispat
 
 impl eval_capabilities::EffectDispatchApi for RuntimeEffectDispatchContext {
     fn telemetry_context(&self) -> eval_capabilities::TelemetryCapabilityContext {
-        eval_capabilities::TelemetryCapabilityContext::new(RuntimeTelemetryCapabilityContext(
-            self.0.telemetry_context(),
-        ))
+        let context = RuntimeTelemetryCapabilityContext(self.0.telemetry_context());
+        eval_capabilities::TelemetryCapabilityContext::new(context.clone())
+            .with_restricted_service_diagnostic_sink(context)
     }
 
     fn http_client_context(
@@ -33,6 +33,17 @@ impl eval_capabilities::EffectDispatchApi for RuntimeEffectDispatchContext {
 pub(super) struct RuntimeTestEffectDoubleContext(pub(super) concrete::TestEffectDoubleContext);
 
 impl eval_capabilities::TestEffectDoubleContextApi for RuntimeTestEffectDoubleContext {
+    fn finalize(&self) -> Result<()> {
+        self.0.finalize().map_err(root_error_into_eval)
+    }
+
+    fn ensure_fully_consumed(&self) -> Result<()> {
+        match self.0.unused_effects_error() {
+            Some(error) => Err(root_error_into_eval(error)),
+            None => Ok(()),
+        }
+    }
+
     fn next_test_effect_double(&self, target: &str) -> Option<eval_capabilities::TestEffectDouble> {
         self.0.next_test_effect_double(target).map(eval_test_double)
     }

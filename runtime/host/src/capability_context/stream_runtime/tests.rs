@@ -15,7 +15,6 @@ use skiff_runtime_capability_context::{
     StreamRuntimeResult,
 };
 use skiff_runtime_model::{
-    error::WirePayload,
     request_heap::RequestHeap,
     runtime_value::{HeapNode, RuntimeValue},
 };
@@ -690,42 +689,26 @@ async fn unconsumed_outbound_server_stream_cleans_up_on_request_owner_drop_with_
 }
 
 #[test]
-fn stream_runtime_error_root_fold_boxes_eval_producer_error_and_preserves_payload() {
-    let stream_error =
-        StreamRuntimeError::producer(skiff_runtime_eval::error::RuntimeError::Cancelled);
-    let expected_payload = stream_error.payload();
-    let error = crate::error::RuntimeError::from(stream_error);
+fn stream_runtime_error_root_fold_preserves_cancellation_as_terminal() {
+    let error = crate::error::RuntimeError::from(StreamRuntimeError::Cancelled);
 
-    assert!(matches!(error, crate::error::RuntimeError::Opaque(_)));
-    assert_eq!(expected_payload.code, "CancelError");
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        Some((
-            skiff_runtime_model::error::TypeIdentity::builtin("CancelError"),
-            json!({
-                "message": "request was cancelled",
-            }),
-        ))
-    );
+    assert!(matches!(error, crate::error::RuntimeError::Cancelled));
+    assert!(error.is_cancellation_terminal());
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 #[test]
-fn stream_runtime_error_eval_fold_preserves_root_producer_wire_payload() {
-    let error = StreamRuntimeError::producer(crate::error::RuntimeError::cancelled());
-    let expected_payload = error.payload();
-    let expected_catch_projection = error.catch_projection();
-    let error = skiff_runtime_eval::error::RuntimeError::from(error);
+fn stream_runtime_error_eval_fold_preserves_cancellation_as_terminal() {
+    let error = skiff_runtime_eval::error::RuntimeError::from(StreamRuntimeError::Cancelled);
 
     assert!(matches!(
         error,
-        skiff_runtime_eval::error::RuntimeError::Opaque(_)
+        skiff_runtime_eval::error::RuntimeError::Cancelled
     ));
-    assert_eq!(error.payload(), expected_payload);
-    assert_eq!(
-        WirePayload::catch_projection(&error),
-        expected_catch_projection
-    );
+    assert!(error.is_cancellation_terminal());
+    assert_eq!(error.ordinary_payload(), None);
+    assert_eq!(error.ordinary_catch_projection(), None);
 }
 
 struct PendingPullSource;

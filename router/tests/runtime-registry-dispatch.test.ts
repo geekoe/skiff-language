@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 
 import { ActivationLookup } from '../src/artifacts/activationLookup.js';
-import { loadManifestFile } from '../src/manifest/loadManifest.js';
+import { loadManifestFile as loadManifestFileSource } from '../src/manifest/loadManifest.js';
 import {
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   type DispatchMode,
+  RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RequestCancelFrameHeader,
   type RequestStartFrameHeader,
@@ -15,7 +16,10 @@ import {
 import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import { closeSocket, delay, onceWithTimeout } from './helpers/events.js';
 import { findRuntime, hasRuntime, readHealth, waitForRuntimeAbsent } from './helpers/health.js';
-import { DEFAULT_TEST_BUILD_ID, loadWebSocketManifest } from './helpers/manifests.js';
+import {
+  DEFAULT_TEST_BUILD_ID,
+  loadRawHttpManifest
+} from './helpers/manifests.js';
 import { RouterHarness } from './helpers/routerHarness.js';
 import {
   closeTrackedResources,
@@ -29,6 +33,9 @@ import {
   type RuntimeRequestFrame,
   waitForRuntimeRequestFrame
 } from './helpers/runtime.js';
+
+const CANONICAL_SERVICE_PROTOCOL_IDENTITY =
+  `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
 
 afterEach(closeTrackedResources);
 
@@ -340,7 +347,6 @@ describe('router runtime registry dispatch', () => {
       runtimeId: 'runtime-revision-1',
       revisionId: 'revision-1',
       targets: [target],
-      protocolVersion: 'skiff-protocol-v1',
       runtimeVersion: '1.0.0',
       codeRevisionId: 'code-1',
       artifactIdentity: 'artifact-1',
@@ -365,7 +371,6 @@ describe('router runtime registry dispatch', () => {
       runtimeId: 'runtime-revision-2',
       revisionId: 'revision-2',
       targets: [target],
-      protocolVersion: 'skiff-protocol-v1',
       runtimeVersion: '2.0.0',
       codeRevisionId: 'code-2',
       artifactIdentity: 'artifact-2'
@@ -380,7 +385,6 @@ describe('router runtime registry dispatch', () => {
       draining: true,
       inFlightCount: 1,
       registeredAt: expect.any(String),
-      protocolVersion: 'skiff-protocol-v1',
       runtimeVersion: '1.0.0',
       codeRevisionId: 'code-1',
       artifactIdentity: 'artifact-1',
@@ -614,79 +618,6 @@ describe('router runtime registry dispatch', () => {
   });
 
 
-  it('keeps gateway entry dispatch strict for runtimes with registered gateway identities', async () => {
-    const manifest = loadWebSocketManifest();
-    const harness = await RouterHarness.create({ manifest });
-    const { dispatcher, registry } = harness;
-    const target = manifest.websocketEntry!.connect!.operationManifest.target;
-
-    const runtime = await harness.registerRuntime({
-      runtimeId: 'runtime-ws-wrong-gateway-identity',
-      targets: [target],
-      gatewayEntryIdentities: [manifest.websocketEntry!.receive.gatewayEntryIdentity]
-    });
-    runtime.respondWithBinaryRuntimeId('runtime-ws-wrong-gateway-identity');
-
-    await expect(
-      dispatchBinaryJson(dispatcher,
-        createRequestStart({
-          requestId: 'request-ws-wrong-gateway-identity',
-          target,
-          serviceProtocolIdentity: manifest.service.protocolIdentity,
-          gatewayEntryIdentity: manifest.websocketEntry!.connect!.gatewayEntryIdentity
-        }),
-        2000
-      )
-    ).rejects.toMatchObject({
-      statusCode: 503,
-      code: 'std.service.ProviderUnavailableError'
-    });
-  });
-
-  it('lazy-loads a different gateway entry on a connection with the same target build registered', async () => {
-    const manifest = loadWebSocketManifest();
-    const harness = await RouterHarness.create({ manifest });
-    const { dispatcher, registry } = harness;
-    const target = manifest.websocketEntry!.connect!.operationManifest.target;
-    const connectIdentity = manifest.websocketEntry!.connect!.gatewayEntryIdentity;
-
-    const runtime = await harness.registerRuntime({
-      runtimeId: 'runtime-lazy-gateway-entry',
-      targets: [target],
-      gatewayEntryIdentities: [manifest.websocketEntry!.receive.gatewayEntryIdentity]
-    });
-
-    const requestFrame = runtime.waitForRequestFrame('request-lazy-gateway-entry');
-    const dispatch = dispatchBinaryJson(dispatcher,
-      createRequestStart({
-        requestId: 'request-lazy-gateway-entry',
-        target,
-        serviceId: manifest.service.id,
-        serviceProtocolIdentity: manifest.service.protocolIdentity,
-        gatewayEntryIdentity: connectIdentity
-      }),
-      2000
-    );
-
-    const frame = await requestFrame;
-    expect(frame.header).toMatchObject({
-      requestId: 'request-lazy-gateway-entry',
-      target,
-      serviceId: manifest.service.id,
-      gatewayEntryIdentity: connectIdentity
-    });
-    runtime.sendBinaryJsonResponse(frame.header.requestId, {
-      runtimeId: 'runtime-lazy-gateway-entry',
-      gatewayEntryIdentity: frame.header.gatewayEntryIdentity
-    });
-
-    await expect(dispatch).resolves.toEqual({
-      runtimeId: 'runtime-lazy-gateway-entry',
-      gatewayEntryIdentity: connectIdentity
-    });
-  });
-
-
   it('accepts binary runtime.register, returns binary runtime.registered, and dispatches binary requests', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const runtimeRouter = trackResource(createRuntimeRouter());
@@ -725,11 +656,11 @@ describe('router runtime registry dispatch', () => {
   });
 
   it('runs a binary-only runtime session through control, dispatch, timeout cancel, and connection.send', async () => {
-    const manifest = loadWebSocketManifest();
+    const manifest = loadRuntimeTestManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
+    const { dispatcher, endpoint } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
-    const target = manifest.websocketEntry!.receive.operationManifest.target;
+    const target = manifest.operations[0]!.target;
 
     const runtime = await openBinaryRegisteredRuntime(registryListen.url, {
       type: 'runtime.register',
@@ -738,8 +669,7 @@ describe('router runtime registry dispatch', () => {
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [target],
-      gatewayEntryIdentities: [manifest.websocketEntry!.receive.gatewayEntryIdentity]
+      targets: [target]
     });
 
     const controlMessage = onceWithTimeout(
@@ -770,8 +700,7 @@ describe('router runtime registry dispatch', () => {
       createRequestStart({
         requestId: 'request-binary-session-ok',
         target,
-        serviceProtocolIdentity: manifest.service.protocolIdentity,
-        gatewayEntryIdentity: manifest.websocketEntry!.receive.gatewayEntryIdentity
+        serviceProtocolIdentity: manifest.service.protocolIdentity
       }),
       2000
     );
@@ -780,8 +709,7 @@ describe('router runtime registry dispatch', () => {
       schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
       type: 'request.start',
       requestId: 'request-binary-session-ok',
-      target,
-      gatewayEntryIdentity: manifest.websocketEntry!.receive.gatewayEntryIdentity
+      target
     });
     sendRuntimeBinaryResponse(
       runtime,
@@ -803,8 +731,7 @@ describe('router runtime registry dispatch', () => {
       createRequestStart({
         requestId: 'request-binary-session-timeout',
         target,
-        serviceProtocolIdentity: manifest.service.protocolIdentity,
-        gatewayEntryIdentity: manifest.websocketEntry!.receive.gatewayEntryIdentity
+        serviceProtocolIdentity: manifest.service.protocolIdentity
       }),
       10
     );
@@ -928,9 +855,10 @@ describe('router runtime registry dispatch', () => {
         )
       );
       await expect(response).resolves.toEqual({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
         type: 'response.error',
         requestId,
+        errorKind: 'control',
         error: expectedError
       });
     }
@@ -1041,7 +969,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'binary register payload close'
     );
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'runtime.register binary frame payload must be empty'
     );
@@ -1074,7 +1002,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'raw register target close'
     );
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'invalid runtime.register envelope: targets items must use service.skiff~run~~hello.<target suffix>'
     );
@@ -1124,9 +1052,10 @@ describe('router runtime registry dispatch', () => {
     );
     runtimeB.send(
       encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
         type: 'response.error',
         requestId: ownerRequest.header.requestId,
+        errorKind: 'control',
         error: {
           code: 'SpoofedError',
           message: 'runtime B tried to reject runtime A request'
@@ -1501,7 +1430,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'invalid runtime envelope close'
     )) as [number, Buffer];
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(reason.toString()).toBe(
       'text JSON runtime protocol messages are not supported; use typed binary runtime frames'
     );
@@ -1551,7 +1480,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'text response.error runtime close'
     )) as [number, Buffer];
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(reason.toString()).toBe(
       'text JSON runtime protocol messages are not supported; use typed binary runtime frames'
     );
@@ -1696,7 +1625,7 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
     const protocolA = manifest.service.protocolIdentity;
     const protocolB =
-      'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000004';
+      'skiff-service-protocol-v5:sha256:0000000000000000000000000000000000000000000000000000000000000004';
     const buildA =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000000aa';
     const buildB =
@@ -1821,7 +1750,7 @@ describe('router runtime registry dispatch', () => {
     const serviceId = manifest.service.id;
     const callerExpectation = manifest.service.protocolIdentity;
     const incompatibleProtocol =
-      'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000009';
+      'skiff-service-protocol-v5:sha256:0000000000000000000000000000000000000000000000000000000000000009';
     const currentBuild =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000000ee';
 
@@ -1960,7 +1889,7 @@ describe('router runtime registry dispatch', () => {
     );
 
     const [code, reason] = await onceWithTimeout(ws, 'close', 'text connection.send close');
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'text JSON runtime protocol messages are not supported; use typed binary runtime frames'
     );
@@ -1968,7 +1897,7 @@ describe('router runtime registry dispatch', () => {
   });
 
   it('forwards identity connection.send from runtimes registered for that service', async () => {
-    const manifest = loadWebSocketManifest();
+    const manifest = loadRuntimeTestManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
@@ -2016,7 +1945,7 @@ describe('router runtime registry dispatch', () => {
   });
 
   it('forwards typed binary identity connection.send payloads as text or binary', async () => {
-    const manifest = loadWebSocketManifest();
+    const manifest = loadRuntimeTestManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
@@ -2093,7 +2022,7 @@ describe('router runtime registry dispatch', () => {
   });
 
   it('closes typed text connection.send frames with invalid UTF-8 payloads', async () => {
-    const manifest = loadWebSocketManifest();
+    const manifest = loadRuntimeTestManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
@@ -2127,12 +2056,34 @@ describe('router runtime registry dispatch', () => {
       'close',
       'invalid text connection.send close'
     );
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'connection.send text payload must be valid UTF-8'
     );
   });
 });
+
+async function loadManifestFile(path: string) {
+  const manifest = await loadManifestFileSource(path);
+  return {
+    ...manifest,
+    service: {
+      ...manifest.service,
+      protocolIdentity: CANONICAL_SERVICE_PROTOCOL_IDENTITY
+    }
+  };
+}
+
+function loadRuntimeTestManifest() {
+  const manifest = loadRawHttpManifest();
+  return {
+    ...manifest,
+    service: {
+      ...manifest.service,
+      protocolIdentity: CANONICAL_SERVICE_PROTOCOL_IDENTITY
+    }
+  };
+}
 
 async function dispatchBinaryJson(
   dispatcher: RuntimeDispatcher,
@@ -2220,6 +2171,11 @@ function waitForRuntimeResponseError(
         return;
       }
       if (frame.header.type === 'response.error') {
+        if (frame.payloadBytes.byteLength !== 0) {
+          cleanup();
+          reject(new Error(`received non-empty response.error payload for ${label}`));
+          return;
+        }
         cleanup();
         resolve(frame.header);
         return;

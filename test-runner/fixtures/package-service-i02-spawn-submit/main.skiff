@@ -1,0 +1,23 @@
+import std
+
+function acceptSubmittedReceipt(receipt: string) -> void {}
+
+function submitSpawnReceipt() -> string {
+  spawn acceptSubmittedReceipt("P5-F45E-SPAWN-SUBMIT")
+  return "P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted"
+}
+
+function __skiffHttpProbe(body: null) -> string {
+  return submitSpawnReceipt()
+}
+
+function websocketConnect(
+  request: std.websocket.WebSocketConnectRequest,
+  connectionId: string
+) -> std.websocket.WebSocketConnectResult {
+  return {
+    tag: "accept",
+    businessIdentity: connectionId,
+    connectionPolicy: null
+  }
+}

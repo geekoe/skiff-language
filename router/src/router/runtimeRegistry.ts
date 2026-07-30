@@ -2,7 +2,6 @@ import WebSocket from 'ws';
 
 import {
   RUNTIME_FRAME_SCHEMA_VERSION,
-  type ActorSpawnRuntimeRequestFrameHeader,
   type PackageTestStartFrameHeader,
   type RequestStartFrameHeader,
   type RouterToRuntimeFrameHeader,
@@ -12,6 +11,7 @@ import {
   type RuntimeHealthEnvelope,
   type RuntimeRegisterEnvelope
 } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import {
   ActorSpawnRuntimeControl,
   type ActorSpawnRuntimeControlOptions,
@@ -26,6 +26,7 @@ import {
   ProviderUnavailableError,
   ServiceProtocolBoundaryError
 } from './errors.js';
+import type { ActorManager } from '../actor/index.js';
 
 export interface RuntimeRegistryDependencies extends ActorSpawnRuntimeControlOptions {
   actorSpawnControl?: ActorSpawnRuntimeControl;
@@ -53,7 +54,6 @@ export interface RuntimeSnapshot {
   draining: boolean;
   inFlightCount: number;
   registeredAt: string;
-  protocolVersion?: string;
   runtimeVersion?: string;
   codeRevisionId?: string;
   artifactIdentity?: string;
@@ -83,7 +83,13 @@ export interface RuntimeLoopRiskHealthSnapshot {
   counters: RuntimeHealthCounters;
 }
 
-export type RuntimeDispatchFrameHeader = RequestStartFrameHeader | PackageTestStartFrameHeader;
+export type RuntimeUnaryDispatchFrameHeader =
+  | RequestStartFrameHeader
+  | RuntimeAssemblyRequestStartFrameHeader;
+
+export type RuntimeDispatchFrameHeader =
+  | RuntimeUnaryDispatchFrameHeader
+  | PackageTestStartFrameHeader;
 
 export interface RuntimeDispatchConnection {
   runtimeId?: string;
@@ -109,7 +115,6 @@ export interface RuntimeRegistryRuntime {
   targets: ReadonlySet<string>;
   revisionState: RuntimeRevisionState;
   registeredAt: Date;
-  protocolVersion?: string;
   runtimeVersion?: string;
   codeRevisionId?: string;
   artifactIdentity?: string;
@@ -118,8 +123,18 @@ export interface RuntimeRegistryRuntime {
   ws: WebSocket;
 }
 
+export interface RuntimeDispatchRuntimeIdentity {
+  runtimeId: string;
+  ws: WebSocket;
+}
+
+export interface RuntimeConnectionFence {
+  runtimeId: string;
+  sessionId: string;
+}
+
 export interface RuntimeInFlightCounter {
-  countInFlight(runtime: RuntimeRegistryRuntime): number;
+  countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number;
 }
 
 export interface RuntimeConnectionProvider {
@@ -141,6 +156,13 @@ interface RuntimeCapabilityRegistration {
   capabilities: RuntimeCapabilitiesMetadata;
   registeredAt: Date;
   ws: WebSocket;
+}
+
+export interface RuntimeCapabilityConnectionSnapshot {
+  runtimeId: string;
+  connected: boolean;
+  registeredAt: string;
+  capabilities: RuntimeCapabilitiesMetadata;
 }
 
 interface RuntimeHealthRecord {
@@ -191,6 +213,41 @@ export class RuntimeRegistry {
     this.refreshAllRuntimeStates();
   }
 
+  actorManager(): ActorManager {
+    return this.actorSpawnControl.actorDispatchManager();
+  }
+
+  runtimeConnection(runtimeId: string): RuntimeDispatchRuntimeIdentity | undefined {
+    const registered = this.runtimes.get(runtimeId);
+    if (registered !== undefined && registered.ws.readyState === WebSocket.OPEN) {
+      return { runtimeId, ws: registered.ws };
+    }
+    const capability = Array.from(this.runtimeCapabilitiesByConnection.values())
+      .find((candidate) =>
+        candidate.runtimeId === runtimeId &&
+        candidate.ws.readyState === WebSocket.OPEN
+      );
+    return capability === undefined ? undefined : { runtimeId, ws: capability.ws };
+  }
+
+  actorRuntimeCandidates(serviceId: string): RuntimeDispatchRuntimeIdentity[] {
+    const candidates = new Map<string, RuntimeDispatchRuntimeIdentity>();
+    for (const runtime of this.runtimes.values()) {
+      if (
+        runtime.serviceId === serviceId &&
+        runtime.ws.readyState === WebSocket.OPEN
+      ) {
+        candidates.set(runtime.runtimeId, {
+          runtimeId: runtime.runtimeId,
+          ws: runtime.ws,
+        });
+      }
+    }
+    return Array.from(candidates.values()).sort((left, right) =>
+      Buffer.compare(Buffer.from(left.runtimeId), Buffer.from(right.runtimeId))
+    );
+  }
+
   setRuntimeConnectionProvider(provider: RuntimeConnectionProvider | undefined): void {
     this.connectionProvider = provider;
   }
@@ -239,6 +296,10 @@ export class RuntimeRegistry {
     if (!Array.isArray(envelope.targets) || envelope.targets.length === 0) {
       throw new Error('runtime.register.targets must be a non-empty array');
     }
+    const capability = this.runtimeCapabilitiesByConnection.get(ws);
+    if (capability !== undefined && capability.runtimeId !== envelope.runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
 
     const existing = this.runtimes.get(envelope.runtimeId);
     if (existing) {
@@ -259,9 +320,6 @@ export class RuntimeRegistry {
       targets: new Set(envelope.targets),
       revisionState: 'registered',
       registeredAt: new Date(),
-      ...(envelope.protocolVersion !== undefined
-        ? { protocolVersion: envelope.protocolVersion }
-        : {}),
       ...(envelope.runtimeVersion !== undefined ? { runtimeVersion: envelope.runtimeVersion } : {}),
       ...(envelope.codeRevisionId !== undefined
         ? { codeRevisionId: envelope.codeRevisionId }
@@ -294,12 +352,102 @@ export class RuntimeRegistry {
     ws: WebSocket,
     envelope: RuntimeCapabilitiesEnvelope
   ): void {
+    const existing = this.runtimeCapabilitiesByConnection.get(ws);
+    if (existing !== undefined && existing.runtimeId !== envelope.runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
+    const registered = Array.from(this.runtimes.values()).find((runtime) => runtime.ws === ws);
+    if (registered !== undefined && registered.runtimeId !== envelope.runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
+    for (const connection of this.runtimeCapabilitiesByConnection.values()) {
+      if (
+        connection.ws !== ws &&
+        connection.runtimeId === envelope.runtimeId &&
+        connection.ws.readyState === WebSocket.OPEN
+      ) {
+        throw new Error(
+          `runtime capability participant ${envelope.runtimeId} already has a live connection`
+        );
+      }
+    }
     this.runtimeCapabilitiesByConnection.set(ws, {
       runtimeId: envelope.runtimeId,
       capabilities: envelope.capabilities,
-      registeredAt: new Date(),
+      registeredAt: existing?.registeredAt ?? new Date(),
       ws
     });
+  }
+
+  assertRuntimeCapabilityConnection(ws: WebSocket, runtimeId?: string): string {
+    const connection = this.runtimeCapabilitiesByConnection.get(ws);
+    if (connection === undefined || connection.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('runtime connection must send runtime.capabilities first');
+    }
+    if (runtimeId !== undefined && connection.runtimeId !== runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
+    return connection.runtimeId;
+  }
+
+  runtimeCapabilityIdentityForConnection(ws: WebSocket): string | undefined {
+    return this.runtimeCapabilitiesByConnection.get(ws)?.runtimeId;
+  }
+
+  runtimeConnectionFenceForConnection(
+    ws: WebSocket
+  ): RuntimeConnectionFence | undefined {
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.ws === ws) {
+        return {
+          runtimeId: runtime.runtimeId,
+          sessionId: runtime.sessionId,
+        };
+      }
+    }
+    return undefined;
+  }
+
+  capabilityConnectionsSnapshot(): RuntimeCapabilityConnectionSnapshot[] {
+    return Array.from(this.runtimeCapabilitiesByConnection.values())
+      .map((connection) => ({
+        runtimeId: connection.runtimeId,
+        connected: connection.ws.readyState === WebSocket.OPEN,
+        registeredAt: connection.registeredAt.toISOString(),
+        capabilities: structuredClone(connection.capabilities)
+      }))
+      .sort((left, right) =>
+        Buffer.compare(
+          Buffer.from(`${left.runtimeId}\u0000${left.registeredAt}`),
+          Buffer.from(`${right.runtimeId}\u0000${right.registeredAt}`)
+        )
+      );
+  }
+
+  healthyParticipantReplicaIds(): readonly string[] {
+    return [...this.capabilityParticipants().keys()].sort((left, right) =>
+      Buffer.compare(Buffer.from(left), Buffer.from(right))
+    );
+  }
+
+  connectedParticipantReplicaIds(replicaIds: readonly string[]): readonly string[] {
+    const participants = this.capabilityParticipants();
+    return replicaIds.filter((replicaId) => participants.has(replicaId));
+  }
+
+  isReplicaConnected(replicaId: string): boolean {
+    return this.capabilityParticipants().has(replicaId);
+  }
+
+  connectionForReplica(replicaId: string): WebSocket | undefined {
+    return this.capabilityParticipants().get(replicaId)?.ws;
+  }
+
+  assertReplicaConnection(ws: WebSocket, replicaId: string): void {
+    const participant = this.capabilityParticipants().get(replicaId);
+    if (participant === undefined || participant.ws !== ws) {
+      throw new Error(`runtime capability connection is not participant ${replicaId}`);
+    }
   }
 
   recordRuntimeHealth(ws: WebSocket, envelope: RuntimeHealthEnvelope): void {
@@ -425,6 +573,11 @@ export class RuntimeRegistry {
     if (request.type === 'package-test.start') {
       return this.pickPackageTestDispatchConnection(request);
     }
+    if (isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return new ServiceProtocolBoundaryError(
+        'runtimeAssembly request.start requires the committed assembly registry'
+      );
+    }
 
     const effectiveBuildId = this.resolveEffectiveBuildId(request);
     if (effectiveBuildId instanceof GatewayError) {
@@ -461,20 +614,19 @@ export class RuntimeRegistry {
   async handleActorSpawnRuntimeControlFrame(
     ws: WebSocket,
     header: Parameters<ActorSpawnRuntimeControl['handle']>[0],
-    payloadBytes: Uint8Array
+    payloadBytes: Uint8Array,
+    assemblySource?: RuntimeControlSource
   ): Promise<RuntimeControlFrameResponse> {
-    const source =
-      this.runtimeControlSource(ws, header.runtimeId) ??
-      this.packageTestRuntimeControlSource(ws, header);
-    if (source === undefined) {
+    if (assemblySource === undefined) {
       return {
         header: {
           schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
           type: actorSpawnRuntimeControlErrorType(header.type),
           rpcId: header.rpcId,
           error: {
-            code: 'RuntimeNotRegistered',
-            message: `runtime control frame requires a registered runtime connection for ${header.runtimeId}`,
+            code: 'RuntimeActivationMismatch',
+            message:
+              'runtime control frame requires an exact active or pinned-draining assembly registration',
             status: 403
           }
         },
@@ -482,7 +634,11 @@ export class RuntimeRegistry {
       };
     }
 
-    const response = await this.actorSpawnControl.handle(header, payloadBytes, source);
+    const response = await this.actorSpawnControl.handle(
+      header,
+      payloadBytes,
+      assemblySource
+    );
     return {
       header: response.header,
       payloadBytes: response.payloadBytes ?? new Uint8Array()
@@ -511,6 +667,22 @@ export class RuntimeRegistry {
     version: string
   ): string | undefined {
     return this.serviceVersionBuildIds.get(serviceId)?.get(version);
+  }
+
+  private capabilityParticipants(): ReadonlyMap<string, RuntimeCapabilityRegistration> {
+    const participants = new Map<string, RuntimeCapabilityRegistration>();
+    for (const connection of this.runtimeCapabilitiesByConnection.values()) {
+      if (connection.ws.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      if (participants.has(connection.runtimeId)) {
+        throw new Error(
+          `runtime capability participant ${connection.runtimeId} has multiple live connections`
+        );
+      }
+      participants.set(connection.runtimeId, connection);
+    }
+    return participants;
   }
 
   private resolveEffectiveBuildId(
@@ -548,87 +720,6 @@ export class RuntimeRegistry {
     return request.buildId;
   }
 
-  private runtimeControlSource(
-    ws: WebSocket,
-    runtimeId: string
-  ): RuntimeControlSource | undefined {
-    const runtime = this.runtimes.get(runtimeId);
-    if (
-      runtime === undefined ||
-      runtime.ws !== ws ||
-      runtime.ws.readyState !== WebSocket.OPEN ||
-      runtime.revisionState === 'retired'
-    ) {
-      return undefined;
-    }
-    return {
-      runtimeId: runtime.runtimeId,
-      serviceId: runtime.serviceId,
-      buildId: runtime.buildId,
-      serviceProtocolIdentity: runtime.serviceProtocolIdentity,
-      targets: runtime.targets,
-      inFlightCount: this.countInFlight(runtime),
-      ...(runtime.activationIdentity === undefined
-        ? {}
-        : { activationIdentity: runtime.activationIdentity })
-    };
-  }
-
-  private packageTestRuntimeControlSource(
-    ws: WebSocket,
-    header: ActorSpawnRuntimeRequestFrameHeader
-  ): RuntimeControlSource | undefined {
-    const capability = this.runtimeCapabilitiesByConnection.get(ws);
-    if (
-      capability === undefined ||
-      capability.runtimeId !== header.runtimeId ||
-      capability.ws !== ws ||
-      capability.ws.readyState !== WebSocket.OPEN ||
-      !runtimeSupportsPackageTestDispatch(capability)
-    ) {
-      return undefined;
-    }
-
-    switch (header.type) {
-      case 'spawn.submit.request':
-        return {
-          runtimeId: header.runtimeId,
-          serviceId: header.serviceId,
-          buildId: header.buildId ?? packageTestRuntimeControlBuildId(header.runtimeId),
-          serviceProtocolIdentity: header.serviceProtocolIdentity,
-          targets: new Set([header.target]),
-          inFlightCount: 0,
-          ...(header.activationIdentity === undefined
-            ? {}
-            : { activationIdentity: header.activationIdentity })
-        };
-      case 'spawn.claim.request':
-        return {
-          runtimeId: header.runtimeId,
-          serviceId: header.serviceId,
-          buildId: header.buildId ?? packageTestRuntimeControlBuildId(header.runtimeId),
-          serviceProtocolIdentity: header.serviceProtocolIdentity,
-          targets: new Set(header.supportedTargets),
-          inFlightCount: 0,
-          ...(header.activationIdentity === undefined
-            ? {}
-            : { activationIdentity: header.activationIdentity })
-        };
-      case 'spawn.renew.request':
-      case 'spawn.complete.request':
-      case 'spawn.fail.request':
-        return {
-          runtimeId: header.runtimeId,
-          serviceId: '__skiff.package-test',
-          buildId: packageTestRuntimeControlBuildId(header.runtimeId),
-          serviceProtocolIdentity: '__skiff.package-test',
-          targets: new Set(),
-          inFlightCount: 0
-        };
-      default:
-        return undefined;
-    }
-  }
 
   private pickPackageTestDispatchConnection(
     request: PackageTestStartFrameHeader
@@ -995,6 +1086,9 @@ export class RuntimeRegistry {
     if (request.type === 'package-test.start') {
       return false;
     }
+    if (isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return false;
+    }
     if (request.serviceId !== undefined && request.serviceId !== runtime.serviceId) {
       return false;
     }
@@ -1039,9 +1133,6 @@ export class RuntimeRegistry {
     if (runtime.version !== undefined) {
       snapshot.version = runtime.version;
     }
-    if (runtime.protocolVersion !== undefined) {
-      snapshot.protocolVersion = runtime.protocolVersion;
-    }
     if (runtime.runtimeVersion !== undefined) {
       snapshot.runtimeVersion = runtime.runtimeVersion;
     }
@@ -1076,6 +1167,12 @@ export class RuntimeRegistry {
     record.connected = false;
     record.disconnectedAtMs = Date.now();
   }
+}
+
+export function isRuntimeAssemblyRequestDispatchHeader(
+  header: RuntimeDispatchFrameHeader
+): header is RuntimeAssemblyRequestStartFrameHeader {
+  return header.type === 'request.start' && 'routing' in header;
 }
 
 function runtimeBuildKey(serviceId: string, buildId: string): string {
@@ -1158,10 +1255,6 @@ function runtimeSupportsPackageTestDispatch(runtime: {
   return runtime.capabilities?.packageTestDispatch === true;
 }
 
-function packageTestRuntimeControlBuildId(runtimeId: string): string {
-  return `skiff-package-test-runtime-control:${runtimeId}`;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -1169,7 +1262,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function actorSpawnRuntimeControlErrorType(
   requestType: Parameters<ActorSpawnRuntimeControl['handle']>[0]['type']
 ):
-  | 'actor.put.error'
+  | 'actor.getOrCreate.error'
+  | 'actor.replace.error'
   | 'actor.find.error'
   | 'actor.remove.error'
   | 'spawn.submit.error'
@@ -1178,8 +1272,10 @@ function actorSpawnRuntimeControlErrorType(
   | 'spawn.complete.error'
   | 'spawn.fail.error' {
   switch (requestType) {
-    case 'actor.put.request':
-      return 'actor.put.error';
+    case 'actor.getOrCreate.request':
+      return 'actor.getOrCreate.error';
+    case 'actor.replace.request':
+      return 'actor.replace.error';
     case 'actor.find.request':
       return 'actor.find.error';
     case 'actor.remove.request':

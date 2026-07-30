@@ -3,7 +3,7 @@ use runtime::config::{
     prepare_runtime_home, RuntimeFileConfig, RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES,
 };
 use skiff_runtime_capability_context::DbProviderSource;
-use skiff_runtime_host::{RuntimeConfig, RuntimeHost};
+use skiff_runtime_host::{RuntimeHost, RuntimeProductionConfig};
 use skiff_runtime_service_db::{DbEncryptionKeyring, MongoServiceDbProviderFactory};
 use std::{path::PathBuf, sync::Arc};
 
@@ -49,13 +49,12 @@ async fn run() -> anyhow::Result<()> {
         );
     }
     let base_runtime_id = prepare_runtime_home(&file_config.runtime_home)?;
-    let host = RuntimeHost::new(RuntimeConfig {
+    let host = RuntimeHost::new_production(RuntimeProductionConfig {
         db_provider: DbProviderSource::new(MongoServiceDbProviderFactory::new(keyring)),
-        services: Vec::new(),
         router_url: file_config.router,
         base_runtime_id,
         runtime_home: file_config.runtime_home,
-        artifact_roots: file_config.artifact_roots,
+        environment: file_config.environment,
         http_response_max_bytes: file_config.http_response_max_bytes,
         http_egress_proxy: file_config.http_egress_proxy,
     })?;
@@ -70,6 +69,7 @@ async fn run() -> anyhow::Result<()> {
             tracing::info!(event = "runtime.shutdown_requested");
         }
     }
+    host.shutdown_actor_instances();
     host.shutdown_telemetry().await;
 
     Ok(())

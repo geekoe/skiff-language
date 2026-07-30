@@ -2,7 +2,7 @@ use crate::{
     parsed_sources::ParsedCompilerSource,
     shared::{
         ast::{Expr, FunctionDecl, InterfaceOperation, Pattern, TypeRef},
-        ast_utils::{walk_expr, walk_pattern, AstVisitor},
+        ast_utils::{walk_expr, walk_pattern, walk_test_effect, AstVisitor},
         type_expr::TypeExpr,
     },
     SourceDependencyAnalysisInput,
@@ -66,6 +66,9 @@ pub(crate) fn validate_contract_type_uses(
             }
         }
         for test in &ast.tests {
+            for effect in &test.effects {
+                walk_test_effect(&mut validator, effect);
+            }
             validator.visit_block(&test.body);
         }
     }
@@ -119,13 +122,9 @@ impl ContractTypeUseValidator<'_> {
                             self.violations.insert(format!(
                                 "contract dependency type `{name}` has no stable type key"
                             ));
-                        } else if !args.is_empty() {
-                            self.violations.insert(format!(
-                                "contract dependency type `{name}` cannot take source type arguments"
-                            ));
                         } else if let Err(error) = self
                             .dependency_analysis
-                            .public_contract_type_id_by_stable_key(alias, stable_key)
+                            .public_package_type_by_stable_key(alias, stable_key)
                         {
                             self.violations.insert(error.to_string());
                         }

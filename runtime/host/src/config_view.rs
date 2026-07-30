@@ -26,17 +26,20 @@ impl RuntimeConfigView {
     pub(crate) fn from_activation_literals(
         literals: &[skiff_artifact_model::ConfigLiteralBinding],
     ) -> Result<Self> {
+        Self::from_activation_literals_with_shape(literals, ConfigShape::empty())
+    }
+
+    pub(crate) fn from_activation_literals_with_shape(
+        literals: &[skiff_artifact_model::ConfigLiteralBinding],
+        config_shape: ConfigShape,
+    ) -> Result<Self> {
         let mut root = Map::new();
         for literal in literals {
             let value = serde_json::to_value(&literal.value)
                 .map_err(|error| anyhow!("activation config literal is invalid: {error}"))?;
             insert_activation_config_literal(&mut root, &literal.path, value)?;
         }
-        Ok(Self {
-            resolved_config: Value::Object(root),
-            _redacted_resolved_config: None,
-            config_shape: ConfigShape::empty(),
-        })
+        Self::from_resolved_config(Value::Object(root), config_shape)
     }
 
     #[cfg(any(test, feature = "test-support"))]

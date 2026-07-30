@@ -1,0 +1,25 @@
+import std
+
+actor Counter id string {
+  count: number,
+}
+
+impl Counter {
+  function increment() -> string {
+    if self.count == 0 {
+      self.count = 1
+      return "actor-count-1"
+    }
+    self.count = self.count + 1
+    return "actor-count-next"
+  }
+}
+
+function marker() -> string {
+  const counter = std.actor.getOrCreate<Counter>("shared", { count: 0 })
+  return counter.increment()
+}
+
+function __skiffHttpProbe(body: null) -> string {
+  return marker()
+}

@@ -4,10 +4,10 @@
 //! `skiff_runtime_capability_context`; import them from that crate directly.
 
 mod actor;
+pub(crate) mod actor_method_outbound;
 mod effect_context;
 mod http;
 mod native_projection;
-mod outbound_service;
 mod request_payload;
 mod response;
 mod store;
@@ -15,6 +15,7 @@ mod stream;
 mod stream_runtime;
 mod telemetry;
 mod test_effect_double;
+mod test_http_entry;
 mod time;
 mod websocket;
 
@@ -39,11 +40,6 @@ pub use native_projection::{
     RuntimeNativeHttpResponseStreamCapabilityContext, RuntimeNativeTelemetryCapabilityContext,
     RuntimeNativeTimeCapabilityContext,
 };
-#[allow(unused_imports)]
-pub use outbound_service::{
-    OutboundCallerDeadline, OutboundServiceContext, OutboundServiceContextInput,
-    OutboundServiceRequestStart, OutboundTraceMetadata, ServiceDispatchContext,
-};
 pub use request_payload::ConfigCapabilityContext;
 pub use response::response_error_from_runtime_error;
 pub use skiff_runtime_capability_context::HttpRuntimeOptions;
@@ -59,5 +55,9 @@ pub use stream_runtime::{StreamCancelSignal, StreamRuntime, StreamSink};
 pub use telemetry::TelemetryCapabilityContext;
 pub use test_effect_double::TestEffectDouble;
 pub use test_effect_double::TestEffectDoubleContext;
+pub(crate) use test_http_entry::{
+    PreparedTestHttpSelfIngress, TestHttpEntryRegistry, TestHttpSelfIngressContext,
+    TestHttpSelfIngressLease,
+};
 pub use time::TimeCapabilityContext;
 pub use websocket::WebsocketCapabilityContext;

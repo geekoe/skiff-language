@@ -1,20 +1,24 @@
 use serde::Serialize;
 use skiff_runtime_request_contract::{
-    ActorFindControlRequest, ActorKeyControlMetadata, ActorPutControlRequest,
-    ActorRemoveControlRequest, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl, RuntimeDeadlineControl,
-    RuntimeTraceContextControl, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, RequestCancelControl, RuntimeDeadlineControl,
+    SpawnSubmitControlRequest,
 };
 
 use crate::{
-    cancel_reason::request_cancel_wire_reason_for_internal,
+    cancel_reason::{request_cancel_wire_reason_for_internal, RequestCancelReason},
+    connection_protocol::{
+        encode_connection_request_cancel_frame, encode_connection_request_frame,
+        ConnectionRequestCancelFrameHeader, ConnectionRequestFrameHeader, WebSocketRpcProfile,
+    },
     error::TransportResult,
     protocol::{
-        encode_binary_frame, ActorFindRequestFrameHeader, ActorKeyFrameMetadata,
-        ActorPutRequestFrameHeader, ActorRemoveRequestFrameHeader, ConnectionSendFrameHeader,
-        RequestCancelFrameHeader, RequestStartFrameHeader, RequestTestEffectDouble,
-        RuntimeCallerFrameHeader, RuntimeDeadlineFrameHeader, RuntimeTraceContextFrameHeader,
-        SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+        ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
+        ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
+        RuntimeDeadlineFrameHeader, SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -22,8 +26,14 @@ pub fn encode_outbound_control_message(
     command: OutboundControlMessage,
 ) -> TransportResult<Vec<u8>> {
     match command {
-        OutboundControlMessage::ActorPut { request, payload } => {
-            actor_put_request_frame(actor_put_request_frame_header(request), &payload)
+        OutboundControlMessage::ActorGetOrCreate { request, payload } => {
+            actor_get_or_create_request_frame(
+                actor_get_or_create_request_frame_header(request),
+                &payload,
+            )
+        }
+        OutboundControlMessage::ActorReplace { request, payload } => {
+            actor_replace_request_frame(actor_replace_request_frame_header(request), &payload)
         }
         OutboundControlMessage::ActorFind { request } => {
             actor_find_request_frame(actor_find_request_frame_header(request), &[])
@@ -32,16 +42,21 @@ pub fn encode_outbound_control_message(
             actor_remove_request_frame(actor_remove_request_frame_header(request), &[])
         }
         OutboundControlMessage::SpawnSubmit { request, payload } => {
-            spawn_submit_request_frame(spawn_submit_request_frame_header(request), &payload)
-        }
-        OutboundControlMessage::RequestStart { request, payload } => {
-            request_start_frame(request_start_frame_header(request), &payload)
+            spawn_submit_request_frame(spawn_submit_request_frame_header(request)?, &payload)
         }
         OutboundControlMessage::RequestCancel { request } => {
             request_cancel_frame(request_cancel_frame_header(request), &[])
         }
         OutboundControlMessage::ConnectionSend { request, payload } => {
             connection_send_frame(connection_send_frame_header(request), &payload)
+        }
+        OutboundControlMessage::ConnectionRequest { request, payload } => {
+            encode_connection_request_frame(&connection_request_frame_header(request)?, &payload)
+        }
+        OutboundControlMessage::ConnectionRequestCancel { request } => {
+            encode_connection_request_cancel_frame(&connection_request_cancel_frame_header(
+                request,
+            )?)
         }
     }
 }
@@ -53,8 +68,15 @@ pub fn connection_send_frame(
     encode_control_frame(&header, payload)
 }
 
-pub fn actor_put_request_frame(
-    header: ActorPutRequestFrameHeader,
+pub fn actor_get_or_create_request_frame(
+    header: ActorGetOrCreateRequestFrameHeader,
+    payload: &[u8],
+) -> TransportResult<Vec<u8>> {
+    encode_control_frame(&header, payload)
+}
+
+pub fn actor_replace_request_frame(
+    header: ActorReplaceRequestFrameHeader,
     payload: &[u8],
 ) -> TransportResult<Vec<u8>> {
     encode_control_frame(&header, payload)
@@ -81,13 +103,6 @@ pub fn spawn_submit_request_frame(
     encode_control_frame(&header, payload)
 }
 
-pub fn request_start_frame(
-    header: RequestStartFrameHeader,
-    payload: &[u8],
-) -> TransportResult<Vec<u8>> {
-    encode_control_frame(&header, payload)
-}
-
 pub fn request_cancel_frame(
     header: RequestCancelFrameHeader,
     payload: &[u8],
@@ -95,15 +110,35 @@ pub fn request_cancel_frame(
     encode_control_frame(&header, payload)
 }
 
-fn actor_put_request_frame_header(request: ActorPutControlRequest) -> ActorPutRequestFrameHeader {
-    ActorPutRequestFrameHeader {
+fn actor_get_or_create_request_frame_header(
+    request: ActorGetOrCreateControlRequest,
+) -> ActorGetOrCreateRequestFrameHeader {
+    ActorGetOrCreateRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "actor.put.request".to_string(),
+        envelope_type: "actor.getOrCreate.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         actor_key: actor_key_frame_metadata(request.actor_key),
-        object_schema_identity: request.object_schema_identity,
-        object_encoding_version: request.object_encoding_version,
+        actor_abi_identity: request.actor_abi_identity,
+        actor_implementation_identity: request.actor_implementation_identity,
+        bootstrap_encoding_version: request.bootstrap_encoding_version,
+    }
+}
+
+fn actor_replace_request_frame_header(
+    request: ActorReplaceControlRequest,
+) -> ActorReplaceRequestFrameHeader {
+    ActorReplaceRequestFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "actor.replace.request".to_string(),
+        rpc_id: request.rpc_id,
+        runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
+        actor_key: actor_key_frame_metadata(request.actor_key),
+        actor_abi_identity: request.actor_abi_identity,
+        actor_implementation_identity: request.actor_implementation_identity,
+        bootstrap_encoding_version: request.bootstrap_encoding_version,
     }
 }
 
@@ -115,6 +150,7 @@ fn actor_find_request_frame_header(
         envelope_type: "actor.find.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         actor_key: actor_key_frame_metadata(request.actor_key),
     }
 }
@@ -127,6 +163,7 @@ fn actor_remove_request_frame_header(
         envelope_type: "actor.remove.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         actor_key: actor_key_frame_metadata(request.actor_key),
     }
 }
@@ -142,10 +179,27 @@ fn actor_key_frame_metadata(metadata: ActorKeyControlMetadata) -> ActorKeyFrameM
     }
 }
 
+fn activation_identity_frame_metadata(
+    identity: ActivationIdentityControl,
+) -> ActivationIdentityFrameMetadata {
+    ActivationIdentityFrameMetadata {
+        assembly_identity: identity.assembly_identity.into_string(),
+        generation: identity.generation,
+        runtime_replica_id: identity.runtime_replica_id,
+        deployment_revision: identity.deployment_revision.into_string(),
+    }
+}
+
 fn spawn_submit_request_frame_header(
     request: SpawnSubmitControlRequest,
-) -> SpawnSubmitRequestFrameHeader {
-    SpawnSubmitRequestFrameHeader {
+) -> TransportResult<SpawnSubmitRequestFrameHeader> {
+    // The shared strict parser is still exposed through the historical publication storage
+    // projection. Reuse that grammar without retaining its projected component; this boundary
+    // owns a service ID, not a storage path or package ID.
+    skiff_artifact_identity::publication_storage_segment(&request.service_id, "service ID")
+        .map_err(|_| crate::TransportError::invalid_outbound_service_id("spawn.submit.request"))?;
+
+    Ok(SpawnSubmitRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "spawn.submit.request".to_string(),
         rpc_id: request.rpc_id,
@@ -157,86 +211,18 @@ fn spawn_submit_request_frame_header(
         target: request.target,
         spawn_id: request.spawn_id,
         build_id: request.build_id,
-        activation_identity: request.activation_identity,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         caller_request_id: request.caller_request_id,
         trace_id: request.trace_id,
         caller_target: request.caller_target,
         max_queue_wait_ms: request.max_queue_wait_ms,
-    }
-}
-
-fn request_start_frame_header(request: RequestStartControl) -> RequestStartFrameHeader {
-    RequestStartFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "request.start".to_string(),
-        request_id: request.request_id,
-        mode: request.mode,
-        caller: runtime_caller_frame_header(request.caller),
-        target: request.target,
-        operation_abi_id: request.operation_abi_id,
-        selector: request.selector,
-        service_id: request.service_id,
-        version: request.version,
-        build_id: request.build_id,
-        service_protocol_identity: request.service_protocol_identity,
-        activation_identity: request.activation_identity,
-        gateway_entry_identity: request.gateway_entry_identity,
-        business_identity: request.business_identity,
-        websocket_entry_id: request.websocket_entry_id,
-        client_session: request.client_session,
-        deadline: request.deadline.map(runtime_deadline_frame_header),
-        trace: runtime_trace_context_frame_header(request.trace),
-        http_request: None,
-        http_adapter: None,
-        websocket_adapter: None,
-        test_effects_enabled: request.test_effects_enabled,
-        test_effect_doubles: request
-            .test_effect_doubles
-            .into_iter()
-            .map(|(target, sequence)| {
-                (
-                    target,
-                    sequence
-                        .into_iter()
-                        .map(request_test_effect_double_frame_header)
-                        .collect(),
-                )
-            })
-            .collect(),
-    }
-}
-
-fn runtime_caller_frame_header(caller: RuntimeCallerControl) -> RuntimeCallerFrameHeader {
-    RuntimeCallerFrameHeader {
-        kind: caller.kind,
-        target: caller.target,
-    }
+    })
 }
 
 fn runtime_deadline_frame_header(deadline: RuntimeDeadlineControl) -> RuntimeDeadlineFrameHeader {
     RuntimeDeadlineFrameHeader {
         timeout_ms: deadline.timeout_ms,
         expires_at: deadline.expires_at,
-    }
-}
-
-fn runtime_trace_context_frame_header(
-    trace: RuntimeTraceContextControl,
-) -> RuntimeTraceContextFrameHeader {
-    RuntimeTraceContextFrameHeader {
-        trace_id: trace.trace_id,
-        span_id: trace.span_id,
-        parent_span_id: trace.parent_span_id,
-        sampled: trace.sampled,
-    }
-}
-
-fn request_test_effect_double_frame_header(
-    double: RequestEffectDoubleControl,
-) -> RequestTestEffectDouble {
-    RequestTestEffectDouble {
-        expect_request: double.expect_request,
-        response: double.response,
     }
 }
 
@@ -261,6 +247,42 @@ fn connection_send_frame_header(request: ConnectionSendControl) -> ConnectionSen
     }
 }
 
+fn connection_request_frame_header(
+    request: ConnectionRequestControl,
+) -> TransportResult<ConnectionRequestFrameHeader> {
+    let websocket_entry_id =
+        skiff_artifact_model::WebSocketEntryId::parse(request.websocket_entry_id)
+            .map_err(|error| crate::TransportError::decode(error.to_string()))?;
+    Ok(ConnectionRequestFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "connection.request".to_string(),
+        request_id: request.request_id,
+        service_id: request.service_id,
+        websocket_entry_id,
+        connection_id: request.connection_id,
+        profile: WebSocketRpcProfile::JsonRpc2_0Text,
+        method: request.method,
+        deadline: request.deadline.map(runtime_deadline_frame_header),
+    })
+}
+
+fn connection_request_cancel_frame_header(
+    request: ConnectionRequestCancelControl,
+) -> TransportResult<ConnectionRequestCancelFrameHeader> {
+    let reason = RequestCancelReason::from_wire(&request.reason).ok_or_else(|| {
+        crate::TransportError::decode(format!(
+            "invalid connection request cancel reason {}",
+            request.reason
+        ))
+    })?;
+    Ok(ConnectionRequestCancelFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "connection.request.cancel".to_string(),
+        request_id: request.request_id,
+        reason,
+    })
+}
+
 fn encode_control_frame<THeader: Serialize>(
     header: &THeader,
     payload: &[u8],
@@ -271,25 +293,22 @@ fn encode_control_frame<THeader: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        actor_find_request_frame, actor_put_request_frame, actor_remove_request_frame,
-        connection_send_frame, encode_outbound_control_message, request_cancel_frame,
-        request_start_frame, spawn_submit_request_frame,
+        actor_find_request_frame, actor_get_or_create_request_frame, actor_remove_request_frame,
+        actor_replace_request_frame, connection_send_frame, encode_outbound_control_message,
+        request_cancel_frame, spawn_submit_request_frame,
     };
     use crate::protocol::{
-        decode_typed_binary_frame, ActorFindRequestFrameHeader, ActorKeyFrameMetadata,
-        ActorPutRequestFrameHeader, ActorRemoveRequestFrameHeader, ConnectionSendFrameHeader,
-        RequestCancelFrameHeader, RequestStartFrameHeader, RuntimeCallerFrameHeader,
-        RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        decode_typed_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+        ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
+        ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
+        SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     };
-    use serde_json::json;
+    use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
     use skiff_runtime_request_contract::{
-        ActorKeyControlMetadata, ActorPutControlRequest, OutboundControlMessage,
-        RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
-        RuntimeCallerControl, RuntimeClientSessionControl, RuntimeDeadlineControl,
-        RuntimeTraceContextControl,
+        ActivationIdentityControl, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
+        ActorReplaceControlRequest, OutboundControlMessage, RequestCancelControl,
+        SpawnSubmitControlRequest,
     };
-    use std::collections::HashMap;
 
     #[test]
     fn connection_send_frame_maps_header_and_opaque_payload() {
@@ -316,30 +335,56 @@ mod tests {
     #[test]
     fn actor_control_request_frames_map_headers_and_opaque_payloads() {
         let actor_key = actor_key();
-        let put_header = ActorPutRequestFrameHeader {
+        let get_or_create_header = ActorGetOrCreateRequestFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "actor.put.request".to_string(),
-            rpc_id: "rpc-put".to_string(),
+            envelope_type: "actor.getOrCreate.request".to_string(),
+            rpc_id: "rpc-get-or-create".to_string(),
             runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
             actor_key: actor_key.clone(),
-            object_schema_identity: "schema:object".to_string(),
-            object_encoding_version: "v1".to_string(),
+            actor_abi_identity: "actor-abi:1".to_string(),
+            actor_implementation_identity: "build:1".to_string(),
+            bootstrap_encoding_version: "canonical-value-v1".to_string(),
         };
-        let put_payload = b"opaque actor object".to_vec();
+        let bootstrap_payload = b"canonical actor bootstrap".to_vec();
 
-        let put_frame =
-            actor_put_request_frame(put_header.clone(), &put_payload).expect("put frame encodes");
-        let (decoded_put, decoded_put_payload): (ActorPutRequestFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&put_frame).expect("put frame decodes");
+        let get_or_create_frame =
+            actor_get_or_create_request_frame(get_or_create_header.clone(), &bootstrap_payload)
+                .expect("getOrCreate frame encodes");
+        let (decoded_get_or_create, decoded_bootstrap): (
+            ActorGetOrCreateRequestFrameHeader,
+            Vec<u8>,
+        ) = decode_typed_binary_frame(&get_or_create_frame).expect("getOrCreate frame decodes");
 
-        assert_eq!(decoded_put, put_header);
-        assert_eq!(decoded_put_payload, put_payload);
+        assert_eq!(decoded_get_or_create, get_or_create_header);
+        assert_eq!(decoded_bootstrap, bootstrap_payload);
+
+        let replace_header = ActorReplaceRequestFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.replace.request".to_string(),
+            rpc_id: "rpc-replace".to_string(),
+            runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
+            actor_key: actor_key.clone(),
+            actor_abi_identity: "actor-abi:1".to_string(),
+            actor_implementation_identity: "build:2".to_string(),
+            bootstrap_encoding_version: "canonical-value-v1".to_string(),
+        };
+        let replace_frame = actor_replace_request_frame(replace_header.clone(), &bootstrap_payload)
+            .expect("replace frame encodes");
+        let (decoded_replace, decoded_replace_bootstrap): (
+            ActorReplaceRequestFrameHeader,
+            Vec<u8>,
+        ) = decode_typed_binary_frame(&replace_frame).expect("replace frame decodes");
+        assert_eq!(decoded_replace, replace_header);
+        assert_eq!(decoded_replace_bootstrap, bootstrap_payload);
 
         let find_header = ActorFindRequestFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "actor.find.request".to_string(),
             rpc_id: "rpc-find".to_string(),
             runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
             actor_key: actor_key.clone(),
         };
 
@@ -356,6 +401,7 @@ mod tests {
             envelope_type: "actor.remove.request".to_string(),
             rpc_id: "rpc-remove".to_string(),
             runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
             actor_key,
         };
 
@@ -382,7 +428,7 @@ mod tests {
             target: "Worker.run".to_string(),
             spawn_id: Some("spawn-1".to_string()),
             build_id: Some("build-1".to_string()),
-            activation_identity: Some("activation-1".to_string()),
+            activation_identity: activation_identity_frame(),
             caller_request_id: Some("request-1".to_string()),
             trace_id: Some("trace-1".to_string()),
             caller_target: Some("Caller.start".to_string()),
@@ -400,49 +446,68 @@ mod tests {
     }
 
     #[test]
-    fn request_start_frame_maps_header_and_opaque_payload() {
-        let header = RequestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "request.start".to_string(),
-            request_id: "request-1".to_string(),
-            mode: "unary".to_string(),
-            caller: RuntimeCallerFrameHeader {
-                kind: "service".to_string(),
-                target: "Caller.run".to_string(),
-            },
-            target: "Worker.run".to_string(),
-            operation_abi_id: Some("operation-worker-run".to_string()),
-            selector: Some("operation:operation-worker-run".to_string()),
-            service_id: Some("example.com/worker".to_string()),
-            version: Some("1.0.0".to_string()),
-            build_id: "build-1".to_string(),
-            service_protocol_identity: "service-protocol-1".to_string(),
-            activation_identity: Some("activation-1".to_string()),
-            gateway_entry_identity: None,
-            business_identity: Some("business-1".to_string()),
-            websocket_entry_id: None,
-            client_session: None,
-            deadline: None,
-            trace: RuntimeTraceContextFrameHeader {
-                trace_id: "trace-1".to_string(),
-                span_id: "span-1".to_string(),
-                parent_span_id: Some("parent-span-1".to_string()),
-                sampled: Some(true),
-            },
-            http_request: None,
-            http_adapter: None,
-            websocket_adapter: None,
-            test_effects_enabled: false,
-            test_effect_doubles: HashMap::new(),
-        };
-        let payload = b"opaque service request bytes".to_vec();
+    fn outbound_spawn_submit_rejects_package_id_embedded_in_service_id() {
+        let error = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+            request: spawn_submit_control_request("test.skiff/agine.ai/api-tests/case-23"),
+            payload: b"opaque spawn args".to_vec(),
+        })
+        .expect_err("non-canonical service ID must fail before frame encoding");
 
-        let frame = request_start_frame(header.clone(), &payload).expect("start frame encodes");
-        let (decoded, decoded_payload): (RequestStartFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("start frame decodes");
+        assert!(matches!(
+            &error,
+            crate::TransportError::InvalidOutboundServiceId {
+                envelope_type: "spawn.submit.request",
+                ..
+            }
+        ));
+        assert!(
+            error.to_string().contains("service ID"),
+            "mapping error must identify the service ID boundary: {error}"
+        );
+    }
 
-        assert_eq!(decoded, header);
-        assert_eq!(decoded_payload, payload);
+    #[test]
+    fn outbound_spawn_submit_accepts_existing_and_generated_service_ids() {
+        for service_id in [
+            "example.com/worker",
+            "test.skiff/p-0123456789abcdef0123456789abcdef/case-23",
+        ] {
+            let frame = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+                request: spawn_submit_control_request(service_id),
+                payload: b"opaque spawn args".to_vec(),
+            })
+            .expect("canonical service ID should encode");
+            let (header, payload): (SpawnSubmitRequestFrameHeader, Vec<u8>) =
+                decode_typed_binary_frame(&frame).expect("spawn.submit.request should decode");
+
+            assert_eq!(header.service_id, service_id);
+            assert_eq!(payload, b"opaque spawn args");
+        }
+    }
+
+    #[test]
+    fn outbound_spawn_submit_rejects_invalid_service_id_forms() {
+        let overlong = format!("example.com/{}", "a".repeat(64));
+        for service_id in [
+            "",
+            overlong.as_str(),
+            "Example.com/worker",
+            "example.com/bad!",
+        ] {
+            let error = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+                request: spawn_submit_control_request(service_id),
+                payload: b"opaque spawn args".to_vec(),
+            })
+            .expect_err("invalid service ID must fail before frame encoding");
+
+            assert!(matches!(
+                &error,
+                crate::TransportError::InvalidOutboundServiceId {
+                    envelope_type: "spawn.submit.request",
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]
@@ -497,107 +562,50 @@ mod tests {
     }
 
     #[test]
-    fn outbound_request_start_control_encodes_binary_frame() {
-        let mut test_effect_doubles = HashMap::new();
-        test_effect_doubles.insert(
-            "Worker.run".to_string(),
-            vec![RequestEffectDoubleControl {
-                expect_request: Some(json!({ "name": "Ada" })),
-                response: json!({ "ok": true }),
-            }],
-        );
-        let payload = br#"{"name":"Ada"}"#.to_vec();
-
-        let frame = encode_outbound_control_message(OutboundControlMessage::RequestStart {
-            request: RequestStartControl {
-                request_id: "request-start-1".to_string(),
-                mode: "unary".to_string(),
-                caller: RuntimeCallerControl {
-                    kind: "service".to_string(),
-                    target: "Caller.run".to_string(),
-                },
-                target: "Worker.run".to_string(),
-                operation_abi_id: Some("operation-worker-run".to_string()),
-                selector: Some("operation:operation-worker-run".to_string()),
-                service_id: Some("example.com/worker".to_string()),
-                version: Some("1.0.0".to_string()),
-                build_id: "build-1".to_string(),
-                service_protocol_identity: "service-protocol-1".to_string(),
-                activation_identity: Some("activation-1".to_string()),
-                gateway_entry_identity: Some("gateway-1".to_string()),
-                business_identity: Some("business-1".to_string()),
-                websocket_entry_id: Some("websocket-1".to_string()),
-                client_session: Some(RuntimeClientSessionControl {
-                    id: "client-1".to_string(),
-                }),
-                deadline: Some(RuntimeDeadlineControl {
-                    timeout_ms: 5000,
-                    expires_at: "2026-07-01T00:00:05Z".to_string(),
-                }),
-                trace: RuntimeTraceContextControl {
-                    trace_id: "trace-1".to_string(),
-                    span_id: "span-1".to_string(),
-                    parent_span_id: Some("parent-span-1".to_string()),
-                    sampled: Some(true),
-                },
-                test_effects_enabled: true,
-                test_effect_doubles,
-            },
-            payload: payload.clone(),
-        })
-        .expect("outbound start encodes");
-        let (decoded, decoded_payload): (RequestStartFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("start frame decodes");
-
-        assert_eq!(decoded.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(decoded.envelope_type, "request.start");
-        assert_eq!(decoded.request_id, "request-start-1");
-        assert_eq!(decoded.caller.kind, "service");
-        assert_eq!(decoded.caller.target, "Caller.run");
-        assert_eq!(decoded.target, "Worker.run");
-        assert_eq!(decoded.deadline.expect("deadline maps").timeout_ms, 5000);
-        assert_eq!(decoded.trace.trace_id, "trace-1");
-        assert_eq!(decoded.trace.sampled, Some(true));
-        assert!(decoded.http_request.is_none());
-        assert!(decoded.http_adapter.is_none());
-        assert!(decoded.websocket_adapter.is_none());
-        assert!(decoded.test_effects_enabled);
-        assert_eq!(
-            decoded.test_effect_doubles["Worker.run"][0].expect_request,
-            Some(json!({ "name": "Ada" }))
-        );
-        assert_eq!(
-            decoded.test_effect_doubles["Worker.run"][0].response,
-            json!({ "ok": true })
-        );
-        assert_eq!(decoded_payload, payload);
-    }
-
-    #[test]
-    fn outbound_actor_put_control_encodes_binary_frame() {
-        let payload = b"opaque actor object".to_vec();
-        let frame = encode_outbound_control_message(OutboundControlMessage::ActorPut {
-            request: ActorPutControlRequest {
-                rpc_id: "rpc-put-1".to_string(),
+    fn outbound_actor_get_or_create_and_replace_controls_have_distinct_wire_types() {
+        let payload = b"canonical actor bootstrap".to_vec();
+        let frame = encode_outbound_control_message(OutboundControlMessage::ActorGetOrCreate {
+            request: ActorGetOrCreateControlRequest {
+                rpc_id: "rpc-get-or-create-1".to_string(),
                 runtime_id: "runtime-1".to_string(),
+                activation_identity: activation_identity_control(),
                 actor_key: actor_key_control(),
-                object_schema_identity: "schema:object".to_string(),
-                object_encoding_version: "v1".to_string(),
+                actor_abi_identity: "actor-abi:1".to_string(),
+                actor_implementation_identity: "build:1".to_string(),
+                bootstrap_encoding_version: "canonical-value-v1".to_string(),
             },
             payload: payload.clone(),
         })
-        .expect("outbound actor put encodes");
-        let (decoded, decoded_payload): (ActorPutRequestFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("actor.put.request decodes");
+        .expect("outbound actor getOrCreate encodes");
+        let (decoded, decoded_payload): (ActorGetOrCreateRequestFrameHeader, Vec<u8>) =
+            decode_typed_binary_frame(&frame).expect("actor.getOrCreate.request decodes");
 
         assert_eq!(decoded.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(decoded.envelope_type, "actor.put.request");
-        assert_eq!(decoded.rpc_id, "rpc-put-1");
+        assert_eq!(decoded.envelope_type, "actor.getOrCreate.request");
+        assert_eq!(decoded.rpc_id, "rpc-get-or-create-1");
         assert_eq!(decoded.runtime_id, "runtime-1");
         assert_eq!(decoded.actor_key, actor_key());
-        assert_eq!(decoded.object_schema_identity, "schema:object");
-        assert_eq!(decoded.object_encoding_version, "v1");
+        assert_eq!(decoded.actor_abi_identity, "actor-abi:1");
+        assert_eq!(decoded.bootstrap_encoding_version, "canonical-value-v1");
         assert_eq!(decoded_payload, payload);
+
+        let replace_frame = encode_outbound_control_message(OutboundControlMessage::ActorReplace {
+            request: ActorReplaceControlRequest {
+                rpc_id: "rpc-replace-1".to_string(),
+                runtime_id: "runtime-1".to_string(),
+                activation_identity: activation_identity_control(),
+                actor_key: actor_key_control(),
+                actor_abi_identity: "actor-abi:1".to_string(),
+                actor_implementation_identity: "build:2".to_string(),
+                bootstrap_encoding_version: "canonical-value-v1".to_string(),
+            },
+            payload: payload.clone(),
+        })
+        .expect("outbound actor replace encodes");
+        let (decoded_replace, decoded_replace_payload): (ActorReplaceRequestFrameHeader, Vec<u8>) =
+            decode_typed_binary_frame(&replace_frame).expect("actor.replace.request decodes");
+        assert_eq!(decoded_replace.envelope_type, "actor.replace.request");
+        assert_eq!(decoded_replace_payload, payload);
     }
 
     fn actor_key() -> ActorKeyFrameMetadata {
@@ -611,6 +619,28 @@ mod tests {
         }
     }
 
+    fn activation_identity_frame() -> ActivationIdentityFrameMetadata {
+        ActivationIdentityFrameMetadata {
+            assembly_identity:
+                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            generation: 7,
+            runtime_replica_id: "runtime-replica-7".to_string(),
+            deployment_revision: "deployment-revision-7".to_string(),
+        }
+    }
+
+    fn activation_identity_control() -> ActivationIdentityControl {
+        ActivationIdentityControl {
+            assembly_identity: AssemblyIdentity::new(
+                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            generation: 7,
+            runtime_replica_id: "runtime-replica-7".to_string(),
+            deployment_revision: DeploymentRevision::new("deployment-revision-7"),
+        }
+    }
+
     fn actor_key_control() -> ActorKeyControlMetadata {
         ActorKeyControlMetadata {
             service_id: "example.com/actor".to_string(),
@@ -619,6 +649,25 @@ mod tests {
             actor_id_encoding_version: "v1".to_string(),
             canonical_actor_id_key_bytes_base64: "YWN0b3Ita2V5".to_string(),
             actor_id_hash: Some("actor-hash-1".to_string()),
+        }
+    }
+
+    fn spawn_submit_control_request(service_id: &str) -> SpawnSubmitControlRequest {
+        SpawnSubmitControlRequest {
+            rpc_id: "rpc-spawn".to_string(),
+            runtime_id: "runtime-1".to_string(),
+            target_kind: "operation".to_string(),
+            service_id: service_id.to_string(),
+            service_version: "1.0.0".to_string(),
+            service_protocol_identity: "service-protocol-1".to_string(),
+            target: "Worker.run".to_string(),
+            spawn_id: Some("spawn-1".to_string()),
+            build_id: Some("build-1".to_string()),
+            activation_identity: activation_identity_control(),
+            caller_request_id: Some("request-1".to_string()),
+            trace_id: Some("trace-1".to_string()),
+            caller_target: Some("Caller.start".to_string()),
+            max_queue_wait_ms: Some(250.0),
         }
     }
 }

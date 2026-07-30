@@ -59,9 +59,11 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.equal(runtime.value.ownership, LIVE_OWNERSHIP.EXTERNAL);
   assert.equal(runtime.value.tier, LIVE_TIERS.LIVE_MANUAL);
   assert.deepEqual(runtime.value.requiredInputs, [
-    'runtimeConfig',
-    'runtimeReloadUrl',
+    'runtimeActivationUrl',
+    'runtimeIngressUrl',
     'runtimeArtifactRoot',
+    'runtimeEnvironment',
+    'runtimeExpectedGeneration',
   ]);
   assert.deepEqual(runtime.value.requiredExecutables, ['cargo', 'node']);
   assert.deepEqual(runtime.value.canonicalPolicy, {
@@ -413,21 +415,27 @@ test('runtime structural and provided-input errors are never hidden by missing i
     const cases = [
       {
         input: {
-          runtimeLiveConfig: join(fixture.root, 'missing-runtime-config.json'),
-        },
-        expected: /runtime-live config path must be an existing file/,
-      },
-      {
-        input: {
           runtimeLiveArtifactRoot: join(fixture.root, 'missing-artifact-root'),
         },
         expected: /runtime-live artifact root must be an existing directory/,
       },
       {
         input: {
-          runtimeLiveReloadUrl: 'https://router.test:4101/secret?token=hidden',
+          runtimeLiveActivationUrl: 'https://router.test:4101/secret?token=hidden',
         },
-        expected: /reload_url_scheme/,
+        expected: /must point exactly to \/__skiff\/activate-assembly/,
+      },
+      {
+        input: {
+          runtimeLiveEnvironment: 'not canonical/environment',
+        },
+        expected: /environment must be a canonical ASCII token/,
+      },
+      {
+        input: {
+          runtimeLiveExpectedGeneration: '-1',
+        },
+        expected: /expected generation must be a non-negative integer/,
       },
     ];
     for (const { input, expected } of cases) {
@@ -546,12 +554,10 @@ test('DB list is blocked and execute starts no command when a declared tool is a
   }
 });
 
-test('actual runtime discovery and combined live plans produce unique registry phases', async () => {
+test('actual canonical runtime discovery composes with the managed live phase', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-actual-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactRoot = join(fixture, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
     const executables = new Set([
       ...invocation('runtime-live').value.requiredExecutables,
@@ -561,30 +567,33 @@ test('actual runtime discovery and combined live plans produce unique registry p
     const options = {
       root,
       selectors: ['runtime-live', 'db-encrypted-storage-live'],
-      runtimeLiveConfig: configPath,
-      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveActivationUrl:
+        'http://router.test:4101/__skiff/activate-assembly',
+      runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
+      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveExpectedGeneration: '0',
       env: { PATH: bin },
     };
     const plan = await buildVerifyPlan(options);
     assert.equal(plan.phases.length, 5);
-    assert.equal(new Set(plan.phases.map((phase) => phase.id)).size, 5);
-    assert.equal(
-      plan.phases.filter((phase) => phase.ownership === LIVE_OWNERSHIP.EXTERNAL).length,
-      4,
+    assert.deepEqual(
+      plan.phases.filter((phase) => phase.id.startsWith('live:runtime:'))
+        .map((phase) => phase.args[phase.args.indexOf('--expected-generation') + 1]),
+      ['0', '1', '2', '3'],
     );
     assert.equal(
-      plan.phases.filter((phase) => phase.ownership === LIVE_OWNERSHIP.MANAGED).length,
+      plan.phases.filter((phase) => phase.id === 'live:db-encrypted-storage').length,
       1,
     );
-    assert.ok(plan.phases.every((phase) => phase.tier === LIVE_TIERS.LIVE_MANUAL));
-
-    const repeated = await buildVerifyPlan({
+    const deduplicated = await buildVerifyPlan({
       ...options,
       selectors: ['runtime-live', 'runtime-live'],
     });
-    assert.equal(repeated.phases.length, 4);
-    assert.equal(new Set(repeated.phases.map((phase) => phase.id)).size, 4);
+    assert.deepEqual(
+      deduplicated.phases.map((phase) => phase.id),
+      plan.phases.slice(0, 4).map((phase) => phase.id),
+    );
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -823,19 +832,29 @@ function cloneRegistry() {
 
 async function runtimeFixture(prefix) {
   const fixtureRoot = await mkdtemp(join(tmpdir(), prefix));
-  const configPath = join(fixtureRoot, 'runtime-live.json');
   const artifactRoot = join(fixtureRoot, 'artifacts');
-  const testFile = join(fixtureRoot, 'runtime', 'live-tests', 'example.live.test.skiff');
+  const packageRoot = join(fixtureRoot, 'runtime', 'live-tests');
+  const testFile = join(packageRoot, 'example.live.test.skiff');
   await mkdir(dirname(testFile), { recursive: true });
   await mkdir(artifactRoot);
-  await writeFile(configPath, '{}\n');
+  await writeFile(
+    join(packageRoot, 'package.yml'),
+    'id: example.com/runtime-live-fixture\nversion: 1.0.0\n',
+  );
+  await writeFile(
+    join(packageRoot, 'config.skiff-test.yml'),
+    'timeout: 120000\n',
+  );
   await writeFile(testFile, 'test defaultRun false\n');
   return {
     root: fixtureRoot,
     inputs: {
-      runtimeLiveConfig: configPath,
-      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveActivationUrl:
+        'http://router.test:4101/__skiff/activate-assembly',
+      runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
+      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveExpectedGeneration: '0',
     },
   };
 }

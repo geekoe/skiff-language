@@ -1,0 +1,9 @@
+echo: main.handle
+left:
+  const: root.main.left
+  interfaces:
+    - root.main.LabelReader
+right:
+  const: root.main.right
+  interfaces:
+    - root.main.LabelReader

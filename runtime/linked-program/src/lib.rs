@@ -9,6 +9,7 @@ pub mod linked;
 mod overlay;
 pub mod package_unit;
 pub mod resolver;
+mod service_error_index;
 pub mod service_unit;
 mod shared_image;
 mod type_params;
@@ -20,49 +21,57 @@ pub use addr::{
 };
 pub use assembly_execution::{
     AssemblyExecutable, AssemblyExecutionImage, AssemblyExecutionImageError,
-    AssemblyExecutionResult, AssemblyPackageExecutionCode,
+    AssemblyExecutionResult, RuntimeExecutionPackage,
 };
-pub use boundary::{LinkedProgramImage, RuntimeProgramIdentity};
+pub use boundary::{LinkedProgramImage, RuntimeExecutionResourceView, RuntimeProgramIdentity};
 pub use file_unit::{FileIrRef, FileIrUnit as ArtifactFileIrUnit};
 pub use linked::{
     AssignTargetIr, BinaryOpIr, BlockIr, BuiltinReceiverOp, CallIr, ConstIr, DbBodyIr, DbChangeIr,
-    DbChangeOpIr, DbIndexDirectionIr, DbLeaseClaimIr, DbLeaseReadIr, DbOpKindIr, DbOperationIr,
-    DbOrderIr, DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr, DbSelectorIr,
-    DbTargetIr, DbTransactionIr, DbTransactionModeIr, DeclarationIr, ExecutableKind, ExprRefIr,
-    ExternalRefIr, ExternalRefTable, FieldPathIr, FileDeclarations, FileIrIdentity,
-    FileLinkTargets, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LinkedBoxSourceIr,
-    LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+    DbChangeOpIr, DbIndexDirectionIr, DbLeaseClaimIr, DbLeaseReadIr, DbObjectTargetId, DbOpKindIr,
+    DbOperationIr, DbOrderIr, DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr,
+    DbSelectorIr, DbTargetIr, DbTransactionIr, DbTransactionModeIr, DeclarationIr, ExecutableKind,
+    ExprRefIr, ExternalRefIr, ExternalRefTable, FieldPathIr, FileDeclarations, FileIrIdentity,
+    FileLinkTargets, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
+    LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
+    LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedActorNativeMetadata,
+    LinkedActorPublicMethod, LinkedBoxSourceIr, LinkedCallTarget, LinkedConcurrentLaneIr,
+    LinkedConcurrentPlanIr, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
     LinkedFunctionTypeParamIr, LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
     LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
-    LinkedInterfaceMethodTablePlanIr, LinkedRemoteOperationSlotPlanIr,
-    LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-    MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef, PackageRefIr, PackageSymbolRef,
-    ParamIr, PatternIr, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
-    SlotBindingIr, SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, StmtRefIr, TypeDeclIr,
-    UnaryOpIr,
+    LinkedInterfaceMethodTablePlanIr, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
+    LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedStmtIr,
+    LinkedTestEffectExpectedIr, LinkedTestEffectOutcomeIr, LinkedTypeDescriptor, LinkedTypeRef,
+    LiteralIr, MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef, PackageRefIr,
+    PackageSymbolRef, ParamIr, PatternIr, ReceiverCallAbi, ServiceDependencySymbolRef,
+    ServiceSymbolRef, SlotBindingIr, SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, StmtRefIr,
+    TypeDeclIr, UnaryOpIr,
 };
 pub use overlay::{LinkOverlay, ResolvedSymbol, SymbolOverlay};
 pub use package_unit::{
-    config_and_effect_metadata_shape, package_config_shape, ConfigAndEffectMetadata, ConstExport,
-    ExecutableExport, LinkedConstExport, LinkedExecutableExport, LinkedPackageExportIndex,
-    LinkedTypeExport, PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint,
-    PackageExportIndex, PackageUnit, TypeExport,
+    config_and_effect_metadata_shape, ConfigAndEffectMetadata, ConstExport, ExecutableExport,
+    LinkedConstExport, LinkedExecutableExport, LinkedPackageExportIndex, LinkedTypeExport,
+    PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint, PackageExportIndex,
+    TypeExport,
 };
 pub use resolver::{
     resolve_executable_from_units, resolve_file_from_units, LinkedProgramImageResolverExt,
     LinkedProgramResolveError, LinkedProgramResolveResult, ResolvedLinkedExecutable,
 };
+pub use service_error_index::{
+    ServiceErrorDeclarationKind, ServiceErrorExecutionContext, ServiceErrorExecutionKey,
+    ServiceErrorPublicIdentity, ServiceErrorTypeIndex, ServiceErrorTypeIndexError,
+    ServiceErrorTypeLink,
+};
 pub use service_unit::{
     GatewayConfig, OperationConstReceiverRef, OperationIngressKind, OperationMode,
     OperationRouteBinding, OperationTargetRef, OperationTargetRefRuntimeExt, PackageAbiExpectation,
-    PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceDependencyConstraint,
-    ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
-    ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
+    PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceMeta, ServiceOperation,
+    ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
 };
 pub use shared_image::{
-    ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageDirectCall,
-    PackageCodeSlotIndex, SharedPackageCode, SharedPackageImageError, SharedPackageImageResult,
-    SharedPackageLinkedImage,
+    ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageCallableTarget,
+    LinkedPackageDirectCall, PackageCodeSlotIndex, SharedPackageCode, SharedPackageImageError,
+    SharedPackageImageResult, SharedPackageLinkedImage,
 };
 pub use skiff_runtime_model::resource::{
     LoadedPublicationResource, PublicationResourcePath, PublicationResourcePathError,

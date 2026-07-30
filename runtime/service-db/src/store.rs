@@ -19,6 +19,9 @@ use super::{
 pub struct ServiceDbStore {
     runtime: Arc<ServiceDbRuntime>,
     request_state: Arc<Mutex<DbRequestState>>,
+    #[cfg(test)]
+    prepared_runtime_test_driver:
+        Option<Arc<dyn crate::prepared_runtime::PreparedRuntimeTestDriver>>,
 }
 
 impl ServiceDbStore {
@@ -26,7 +29,33 @@ impl ServiceDbStore {
         Self {
             runtime,
             request_state,
+            #[cfg(test)]
+            prepared_runtime_test_driver: None,
         }
+    }
+
+    pub(crate) fn runtime_owner(&self) -> Arc<ServiceDbRuntime> {
+        self.runtime.clone()
+    }
+
+    pub(crate) fn request_state_owner(&self) -> Arc<Mutex<DbRequestState>> {
+        self.request_state.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_prepared_runtime_test_driver(
+        mut self,
+        driver: Arc<dyn crate::prepared_runtime::PreparedRuntimeTestDriver>,
+    ) -> Self {
+        self.prepared_runtime_test_driver = Some(driver);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepared_runtime_test_driver(
+        &self,
+    ) -> Option<Arc<dyn crate::prepared_runtime::PreparedRuntimeTestDriver>> {
+        self.prepared_runtime_test_driver.clone()
     }
 
     pub async fn begin_transaction(&self) -> Result<()> {
@@ -128,25 +157,12 @@ impl ServiceDbStore {
         heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<Option<RuntimeValue>> {
-        let mut state = self.request_state.lock().await;
-        state.ensure_lease_live()?;
-        if let Some(transaction) = state.transaction.as_mut() {
-            return self
-                .runtime
-                .find_one_by_key_runtime(
-                    type_name,
-                    key,
-                    projection,
-                    heap,
-                    context,
-                    Some(&mut transaction.session),
-                )
-                .await;
-        }
-        drop(state);
-        self.runtime
-            .find_one_by_key_runtime(type_name, key, projection, heap, context, None)
-            .await
+        let runtime = self.runtime_owner();
+        let command =
+            runtime.prepare_find_one_by_key_runtime_command(type_name, key, projection, context)?;
+        self.wait_find_one_runtime(command)
+            .await?
+            .finalize(&runtime, heap)
     }
 
     pub async fn find_one_by_query(
@@ -185,26 +201,13 @@ impl ServiceDbStore {
         heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<Option<RuntimeValue>> {
-        let mut state = self.request_state.lock().await;
-        state.ensure_lease_live()?;
-        if let Some(transaction) = state.transaction.as_mut() {
-            return self
-                .runtime
-                .find_one_by_query_runtime(
-                    type_name,
-                    query,
-                    order,
-                    projection,
-                    heap,
-                    context,
-                    Some(&mut transaction.session),
-                )
-                .await;
-        }
-        drop(state);
-        self.runtime
-            .find_one_by_query_runtime(type_name, query, order, projection, heap, context, None)
-            .await
+        let runtime = self.runtime_owner();
+        let command = runtime.prepare_find_one_by_query_runtime_command(
+            type_name, query, order, projection, context,
+        )?;
+        self.wait_find_one_runtime(command)
+            .await?
+            .finalize(&runtime, heap)
     }
 
     pub async fn find_many_page(
@@ -243,26 +246,13 @@ impl ServiceDbStore {
         heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<Vec<RuntimeValue>> {
-        let mut state = self.request_state.lock().await;
-        state.ensure_lease_live()?;
-        if let Some(transaction) = state.transaction.as_mut() {
-            return self
-                .runtime
-                .find_many_page_runtime(
-                    type_name,
-                    query,
-                    options,
-                    projection,
-                    heap,
-                    context,
-                    Some(&mut transaction.session),
-                )
-                .await;
-        }
-        drop(state);
-        self.runtime
-            .find_many_page_runtime(type_name, query, options, projection, heap, context, None)
-            .await
+        let runtime = self.runtime_owner();
+        let command = runtime.prepare_find_many_page_runtime_command(
+            type_name, query, options, projection, context,
+        )?;
+        self.wait_find_many_runtime(command)
+            .await?
+            .finalize(&runtime, heap)
     }
 
     pub async fn exists_by_key(&self, type_name: &str, key: DbKey) -> Result<bool> {
@@ -352,34 +342,12 @@ impl ServiceDbStore {
         heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<Option<RuntimeValue>> {
-        let mut state = self.request_state.lock().await;
-        state.ensure_lease_live()?;
-        let leases = state.leases.clone();
-        if let Some(transaction) = state.transaction.as_mut() {
-            let result = self
-                .runtime
-                .update_one_runtime(
-                    type_name,
-                    selector,
-                    change,
-                    heap,
-                    context,
-                    &leases,
-                    Some(&mut transaction.session),
-                )
-                .await;
-            if matches!(result, Err(ServiceDbError::LeaseLost(_))) {
-                state.lease_lost = true;
-            }
-            return result;
-        }
-        drop(state);
-        self.record_lease_result(
-            self.runtime
-                .update_one_runtime(type_name, selector, change, heap, context, &leases, None)
-                .await,
-        )
-        .await
+        let runtime = self.runtime_owner();
+        let command = runtime
+            .prepare_update_one_runtime_command(type_name, selector, change, heap, context)?;
+        self.wait_update_runtime(command)
+            .await?
+            .finalize(&runtime, heap)
     }
 
     pub async fn update_many(
@@ -494,34 +462,12 @@ impl ServiceDbStore {
         heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<Option<RuntimeValue>> {
-        let mut state = self.request_state.lock().await;
-        state.ensure_lease_live()?;
-        let leases = state.leases.clone();
-        if let Some(transaction) = state.transaction.as_mut() {
-            let result = self
-                .runtime
-                .replace_one_runtime(
-                    type_name,
-                    selector,
-                    value,
-                    heap,
-                    context,
-                    &leases,
-                    Some(&mut transaction.session),
-                )
-                .await;
-            if matches!(result, Err(ServiceDbError::LeaseLost(_))) {
-                state.lease_lost = true;
-            }
-            return result;
-        }
-        drop(state);
-        self.record_lease_result(
-            self.runtime
-                .replace_one_runtime(type_name, selector, value, heap, context, &leases, None)
-                .await,
-        )
-        .await
+        let runtime = self.runtime_owner();
+        let command = runtime
+            .prepare_replace_one_runtime_command(type_name, selector, value, heap, context)?;
+        self.wait_replace_runtime(command)
+            .await?
+            .finalize(&runtime, heap)
     }
 
     pub async fn delete_one(&self, type_name: &str, selector: DbOneSelector) -> Result<bool> {
@@ -587,27 +533,14 @@ impl ServiceDbStore {
         &self,
         type_name: &str,
         value: &RuntimeValue,
-        heap: &RequestHeap,
+        heap: &mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> Result<RuntimeValue> {
-        let mut state = self.request_state.lock().await;
-        state.ensure_lease_live()?;
-        if let Some(transaction) = state.transaction.as_mut() {
-            return self
-                .runtime
-                .create_runtime(
-                    type_name,
-                    value,
-                    heap,
-                    context,
-                    Some(&mut transaction.session),
-                )
-                .await;
-        }
-        drop(state);
-        self.runtime
-            .create_runtime(type_name, value, heap, context, None)
-            .await
+        let runtime = self.runtime_owner();
+        let command = runtime.prepare_create_runtime_command(type_name, value, heap, context)?;
+        self.wait_create_runtime(command)
+            .await?
+            .finalize(&runtime, heap)
     }
 
     pub async fn insert_skiff_file_record(&self, record: FileCapabilityRecord) -> Result<()> {
@@ -668,25 +601,24 @@ impl ServiceDbStore {
         key: DbKey,
         slot: &str,
     ) -> Result<Option<DbLeaseHandle>> {
-        let (owner, request_id) = {
-            let state = self.request_state.lock().await;
-            state.ensure_lease_live()?;
-            if state.transaction.is_some() {
-                return Err(ServiceDbError::Decode(
-                    "db claim is not allowed inside active db transaction".to_string(),
-                ));
-            }
-            if state
-                .leases
-                .iter()
-                .any(|hold| hold.type_name == type_name && hold.key == key && hold.slot == slot)
+        let (owner, request_id) =
             {
-                return Err(ServiceDbError::Decode(
-                    "db claim cannot re-enter a lease already held by this request".to_string(),
-                ));
-            }
-            (state.owner.clone(), state.request_id.clone())
-        };
+                let state = self.request_state.lock().await;
+                state.ensure_lease_live()?;
+                if state.transaction.is_some() {
+                    return Err(ServiceDbError::Decode(
+                        "db claim is not allowed inside active db transaction".to_string(),
+                    ));
+                }
+                if state.leases.iter().any(|hold| {
+                    hold.target_key == type_name && hold.key == key && hold.slot == slot
+                }) {
+                    return Err(ServiceDbError::Decode(
+                        "db claim cannot re-enter a lease already held by this request".to_string(),
+                    ));
+                }
+                (state.owner.clone(), state.request_id.clone())
+            };
         let handle = self
             .runtime
             .claim_lease(

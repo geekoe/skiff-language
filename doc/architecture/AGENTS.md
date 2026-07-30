@@ -5,7 +5,7 @@
 
 文档分工：
 
-- `../reference/`：用户可见、稳定的语言和 publication 语义。
+- `../reference/`：用户可见、稳定的语言、Package API、service 与 runtime 语义。
 - `../architecture/`：内部阶段、输入输出、跨系统 contract 和长期边界。
 - `../implementation/`：迁移计划、审计记录、阶段性实现方案和问题记录。
 

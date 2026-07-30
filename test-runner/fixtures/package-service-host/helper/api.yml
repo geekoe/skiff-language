@@ -1,0 +1,7 @@
+Box: main.Box
+EffectRequest: main.EffectRequest
+EffectResponse: main.EffectResponse
+tools:
+  mutate: main.mutate
+  lookup: main.lookup
+  events: main.events

@@ -44,13 +44,13 @@ fn build_index_with_module(module: &str, ast: &SourceFile) -> RootRefIndex {
 
 fn module_with_exported_type(name: &str) -> SourceFile {
     SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
         imports: vec![],
         types: vec![TypeDecl {
             exported: true,
-            is_native: false,
             name: name.to_string(),
             type_params: vec![],
             discriminator: None,
@@ -76,6 +76,7 @@ fn resolves_root_path_in_type_ref_to_canonical_path() {
     let module_ast = module_with_exported_type("UserDoc");
     let index = build_index_with_module("api.user", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -191,6 +192,7 @@ fn resolves_root_path_in_expression_to_canonical_path() {
     let module_ast = module_with_exported_type("Foo");
     let index = build_index_with_module("a.b", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -249,6 +251,7 @@ fn read_only_resolution_matches_mutable_resolution_without_changing_ast() {
     let module_ast = module_with_exported_type("Foo");
     let index = build_index_with_module("a.b", &module_ast);
     let consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -310,13 +313,13 @@ fn read_only_resolution_matches_mutable_resolution_without_changing_ast() {
 fn unknown_module_produces_error() {
     let index = RootRefIndex::new();
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
         imports: vec![],
         types: vec![TypeDecl {
             exported: false,
-            is_native: false,
             name: "Holder".to_string(),
             type_params: vec![],
             discriminator: None,
@@ -350,13 +353,13 @@ fn unknown_symbol_produces_error() {
     let module_ast = module_with_exported_type("Real");
     let index = build_index_with_module("m", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
         imports: vec![],
         types: vec![TypeDecl {
             exported: false,
-            is_native: false,
             name: "Holder".to_string(),
             type_params: vec![],
             discriminator: None,
@@ -394,6 +397,7 @@ fn does_not_duplicate_existing_import() {
     let module_ast = module_with_exported_type("Foo");
     let index = build_index_with_module("a.b", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
@@ -406,7 +410,6 @@ fn does_not_duplicate_existing_import() {
         }],
         types: vec![TypeDecl {
             exported: false,
-            is_native: false,
             name: "Holder".to_string(),
             type_params: vec![],
             discriminator: None,
@@ -481,6 +484,7 @@ fn resolves_root_path_in_alias_target_type() {
     let module_ast = module_with_exported_type("UserDoc");
     let index = build_index_with_module("api.user", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         provider_capability: None,
         functions: vec![],
         function_signatures: vec![],
@@ -516,6 +520,7 @@ fn package_spelling_is_rejected() {
     let module_ast = module_with_exported_type("UserDoc");
     let index = build_index_with_module("api.user", &module_ast);
     let mut consumer = SourceFile {
+        actors: Vec::new(),
         functions: vec![FunctionDecl {
             exported: false,
             name: "f".to_string(),
@@ -553,6 +558,110 @@ fn package_spelling_is_rejected() {
         RootRefErrorReason::RemovedPackageSyntax
     );
     assert_eq!(outcome.errors[0].path, "package.api.user.UserDoc");
+}
+
+#[test]
+fn lexical_package_local_is_not_treated_as_legacy_root() {
+    let index = RootRefIndex::new();
+    let mut consumer = parse_source(
+        r#"
+            type Parcel {
+              id: string
+            }
+
+            function accept(value: Parcel) -> string {
+              return value.id
+            }
+
+            function run() -> string {
+              const package = Parcel { id: "p1" }
+              accept(package)
+              return package.id
+            }
+        "#,
+    )
+    .expect("lexical package source should parse");
+
+    let outcome = resolve_root_refs_in_ast(&mut consumer, &index);
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+}
+
+#[test]
+fn lexical_package_parameter_can_be_used_as_a_member_receiver() {
+    let index = RootRefIndex::new();
+    let consumer = parse_source(
+        r#"
+            type Parcel {
+              id: string
+            }
+
+            function read(package: Parcel) -> string {
+              return package.id
+            }
+        "#,
+    )
+    .expect("package parameter source should parse");
+
+    let outcome = collect_root_refs_in_ast(&consumer, &index);
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+}
+
+#[test]
+fn package_shadowing_is_limited_to_its_nested_lexical_scope() {
+    let index = RootRefIndex::new();
+    let consumer = parse_source(
+        r#"
+            type Parcel {
+              id: string
+            }
+
+            function run() -> string {
+              if true {
+                const package = Parcel { id: "p1" }
+                package.id
+              }
+              return package.api.user.UserDoc
+            }
+        "#,
+    )
+    .expect("nested package binding source should parse");
+
+    let outcome = collect_root_refs_in_ast(&consumer, &index);
+
+    assert_eq!(outcome.errors.len(), 1);
+    assert_eq!(outcome.errors[0].path, "package.api.user.UserDoc");
+    assert_eq!(
+        outcome.errors[0].reason,
+        RootRefErrorReason::RemovedPackageSyntax
+    );
+}
+
+#[test]
+fn unbound_package_root_is_rejected_inside_nested_call_arguments() {
+    let index = RootRefIndex::new();
+    let consumer = parse_source(
+        r#"
+            function accept(value: string) -> string {
+              return value
+            }
+
+            function run() -> string {
+              return accept(package.api.user.name)
+            }
+        "#,
+    )
+    .expect("nested legacy package root source should parse");
+
+    let outcome = collect_root_refs_in_ast(&consumer, &index);
+
+    assert_eq!(outcome.errors.len(), 1);
+    assert_eq!(outcome.errors[0].path, "package.api.user.name");
+    assert_eq!(
+        outcome.errors[0].reason,
+        RootRefErrorReason::RemovedPackageSyntax
+    );
 }
 
 // Suppress unused-import warnings under cfg(test) for items only referenced from doc comments.

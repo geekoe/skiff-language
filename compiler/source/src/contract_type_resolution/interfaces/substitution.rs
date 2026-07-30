@@ -55,7 +55,7 @@ pub(crate) fn substitute_package_type(
                 local_type: substituted,
             })
         }
-        PackageTypeRef::Contract { .. } => Ok(ty.clone()),
+        PackageTypeRef::PackageSchema { .. } => Ok(ty.clone()),
         PackageTypeRef::Container { name, arguments } => Ok(PackageTypeRef::Container {
             name: name.clone(),
             arguments: arguments
@@ -65,6 +65,16 @@ pub(crate) fn substitute_package_type(
         }),
         PackageTypeRef::Nullable { inner } => Ok(PackageTypeRef::Nullable {
             inner: Box::new(substitute_package_type(inner, substitutions)?),
+        }),
+        PackageTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => Ok(PackageTypeRef::AnyInterface {
+            interface: Box::new(substitute_package_type(interface, substitutions)?),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_package_type(argument, substitutions))
+                .collect::<Result<_, _>>()?,
         }),
     }
 }
@@ -81,11 +91,18 @@ fn substitute_local_type(
             )),
             None => Ok(ty.clone()),
         },
-        TypeRefIr::Native { name, args } => Ok(TypeRefIr::Native {
+        TypeRefIr::Builtin { name, args } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: args
                 .iter()
                 .map(|arg| substitute_local_type(arg, substitutions))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        TypeRefIr::AppliedNominal { base, arguments } => Ok(TypeRefIr::AppliedNominal {
+            base: base.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_local_type(argument, substitutions))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         TypeRefIr::Record { fields } => Ok(TypeRefIr::Record {
@@ -136,6 +153,7 @@ fn substitute_local_type(
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. } => Ok(ty.clone()),
     }

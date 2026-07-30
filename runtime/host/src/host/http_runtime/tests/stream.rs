@@ -65,15 +65,9 @@ async fn stream_rejects_oversized_body_from_call_context_limit() {
     .await;
 
     let input = request_input("GET", &url, empty_body(), None);
-    let mut stream = open_stream_inner(
-        &input,
-        None,
-        None,
-        4,
-        HttpRuntimeOptions::explicit(true),
-    )
-    .await
-    .expect("stream should open");
+    let mut stream = open_stream_inner(&input, None, None, 4, HttpRuntimeOptions::explicit(true))
+        .await
+        .expect("stream should open");
 
     let response_event = stream
         .next_event()

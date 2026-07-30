@@ -4,8 +4,8 @@ use serde_json::Value;
 use skiff_runtime_linked_program::{type_descriptor_to_value, type_ref_to_value};
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, FunctionTypeParamIr, LinkedExecutable,
-    LinkedInterfaceInstantiationRef, LinkedTypeRef, PackageRefIr, PackageSymbolRef, ResolvedSymbol,
-    ServiceSymbolRef, TypeAddr, UnitAddr,
+    LinkedInterfaceInstantiationRef, LinkedNominalTypeRefBase, LinkedTypeRef, PackageRefIr,
+    PackageSymbolRef, ResolvedSymbol, ServiceSymbolRef, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::ProgramTypeView;
 
@@ -24,6 +24,8 @@ pub fn program_type_ref_kind(type_ref: &LinkedTypeRef) -> &'static str {
         LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
+        LinkedTypeRef::PackageSchema { .. } => "packageSchema",
+        LinkedTypeRef::AppliedNominal { .. } => "appliedNominal",
         LinkedTypeRef::Address { .. } => "address",
         LinkedTypeRef::Native { .. } => "builtin",
         LinkedTypeRef::Record { .. } => "record",
@@ -58,6 +60,7 @@ impl Interpreter {
                 })?,
             ))),
             LinkedTypeRef::Native { .. }
+            | LinkedTypeRef::AppliedNominal { .. }
             | LinkedTypeRef::Record { .. }
             | LinkedTypeRef::Union { .. }
             | LinkedTypeRef::Nullable { .. }
@@ -65,6 +68,7 @@ impl Interpreter {
             | LinkedTypeRef::Literal { .. }
             | LinkedTypeRef::TypeParam { .. }
             | LinkedTypeRef::Function { .. }
+            | LinkedTypeRef::PackageSchema { .. }
             | LinkedTypeRef::AnyInterface { .. } => Ok(Some(type_ref_to_value(type_ref))),
             LinkedTypeRef::LocalType { .. }
             | LinkedTypeRef::PublicationType { .. }
@@ -196,6 +200,22 @@ fn normalize_call_type_arg_binding_inner(
         LinkedTypeRef::PackageSymbol { symbol } => program_package_type_addr(program, symbol)
             .map(|addr| LinkedTypeRef::Address { addr })
             .unwrap_or_else(|| type_ref.clone()),
+        LinkedTypeRef::PackageSchema { .. } => type_ref.clone(),
+        LinkedTypeRef::AppliedNominal { base, arguments } => LinkedTypeRef::AppliedNominal {
+            base: normalize_nominal_base(program, caller_addr, base),
+            arguments: arguments
+                .iter()
+                .map(|argument| {
+                    normalize_call_type_arg_binding_inner(
+                        program,
+                        caller_addr,
+                        argument,
+                        caller_substitutions,
+                        TypeParamSubstitution::Apply,
+                    )
+                })
+                .collect(),
+        },
         LinkedTypeRef::Native { name, args } => LinkedTypeRef::Native {
             name: name.clone(),
             args: args
@@ -300,6 +320,40 @@ fn normalize_call_type_arg_binding_inner(
     }
 }
 
+fn normalize_nominal_base(
+    program: ProgramTypeView<'_>,
+    caller_addr: &ExecutableAddr,
+    base: &LinkedNominalTypeRefBase,
+) -> LinkedNominalTypeRefBase {
+    match base {
+        LinkedNominalTypeRefBase::LocalType { type_index } => LinkedNominalTypeRefBase::Address {
+            addr: TypeAddr {
+                unit: caller_addr.unit.clone(),
+                file: caller_addr.file.clone(),
+                type_index: *type_index,
+            },
+        },
+        LinkedNominalTypeRefBase::PublicationType {
+            module_path,
+            type_index,
+        } => program_publication_type_addr(program, caller_addr, module_path, *type_index)
+            .map(|addr| LinkedNominalTypeRefBase::Address { addr })
+            .unwrap_or_else(|| base.clone()),
+        LinkedNominalTypeRefBase::ServiceSymbol { symbol } => {
+            program_service_type_addr(program, symbol)
+                .map(|addr| LinkedNominalTypeRefBase::Address { addr })
+                .unwrap_or_else(|| base.clone())
+        }
+        LinkedNominalTypeRefBase::PackageSymbol { symbol } => {
+            program_package_type_addr(program, symbol)
+                .map(|addr| LinkedNominalTypeRefBase::Address { addr })
+                .unwrap_or_else(|| base.clone())
+        }
+        LinkedNominalTypeRefBase::PackageSchema { .. }
+        | LinkedNominalTypeRefBase::Address { .. } => base.clone(),
+    }
+}
+
 fn ordered_type_args(
     type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
 ) -> Vec<(&String, &LinkedTypeRef)> {
@@ -377,6 +431,13 @@ pub fn program_type_name(type_ref: &LinkedTypeRef) -> Option<String> {
         } => Some(format!("publicationType[{module_path}:{type_index}]")),
         LinkedTypeRef::ServiceSymbol { symbol } => Some(symbol.symbol_path()),
         LinkedTypeRef::PackageSymbol { symbol } => Some(symbol.symbol_path.clone()),
+        LinkedTypeRef::PackageSchema {
+            stable_schema_key, ..
+        } => Some(stable_schema_key.clone()),
+        LinkedTypeRef::AppliedNominal { base, .. } => match base {
+            LinkedNominalTypeRefBase::Address { addr } => Some(addr.to_string()),
+            _ => None,
+        },
         LinkedTypeRef::Nullable { inner } => program_type_name(inner),
         LinkedTypeRef::AnyInterface { interface } => {
             Some(format!("any {}", interface.interface_abi_id))
@@ -572,7 +633,7 @@ pub(crate) fn program_publication_type_addr(
 ) -> Option<TypeAddr> {
     let files = match &current_addr.unit {
         UnitAddr::Service => program.service_files,
-        UnitAddr::Package(slot) => program.package_files.get(*slot)?.as_slice(),
+        UnitAddr::Package(slot) => program.packages.get(*slot)?.files(),
     };
     let file_index = files
         .iter()
@@ -693,10 +754,7 @@ mod from_linked_oracle {
                 external_refs: Default::default(),
             })],
             packages: Vec::new(),
-            package_files: Vec::new(),
             service_resources: Default::default(),
-            package_resources: Vec::new(),
-            service_dependencies: Vec::new(),
             timeout: Default::default(),
             operation_route_bindings: Vec::new(),
             routes: Default::default(),

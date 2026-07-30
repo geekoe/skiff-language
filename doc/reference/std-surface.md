@@ -28,21 +28,27 @@ prelude 类型和基础 receiver API 默认加载，不需要 `import`。它们�
 
 `integer` 可赋给 `number`；`number` 不能隐式赋给 `integer`，除非是可静态证明的整数 literal 或经过显式 safe integer 校验 API。
 
-runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、`Json`、`JsonObject`、`ErrorPayload`、`Exception<E>`、`CatchResult<T,E>`、`SourceLocation`、`StackTrace` 和 `StackFrame`。
+runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、`Json`、`JsonObject`、
+`Exception<E>`、`CatchResult<T,E>`、`SourceLocation`、`StackTrace` 和 `StackFrame`。
 
 `Date` 表示 UTC instant。运行时内部表示为 epoch milliseconds；HTTP/API、service boundary、JSON schema 和 DB business JSON 统一以 RFC3339 UTC string 表达，例如 `2026-06-04T15:12:03.456Z`。可表示范围限定为 RFC3339 stable year `0000..9999`；超过范围的构造和 arithmetic 抛 `std.time.DecodeError`。leap second 输入不支持。
 
 `Date` static surface 包括 `Date.now()`、`Date.fromEpochMilliseconds(ms)`、`Date.parse(value)` 和 `Date.requireParse(value)`。`parse` 对非法或越界文本返回 `null`；`requireParse` 抛 `std.time.DecodeError`。receiver surface 包括 `toEpochMilliseconds()`、`toISOString()`、`addMilliseconds(ms)`、`diffMilliseconds(other)`、`compare(other)`、`isBefore(other)` 和 `isAfter(other)`。
 
-HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。WebSocket message 类型在 `std.websocket.*` 下，包括 `ConnectionMessage`、`TextConnectionMessage` 和 `BinaryConnectionMessage`。Gateway/actor prelude 类型包括 `ActorRef`、`ActorBinding`、`std.actor.Actor<Id>`、`ClientSessionRef` 和 `ClientCapability`。
+HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。`std.websocket`不公开raw receive message类型；connect、send、平台拥有的outbound request/response及manifest声明的inbound JSON-RPC surface见§13。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。actor registry入口为`getOrCreate`、`replace`、`find`和`remove`。`ActorBinding`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义；旧`std.actor.Actor<Id>`接口由显式actor声明及其id类型取代。
 
 这些 prelude 名字不能被用户声明、import alias 或局部绑定 shadow。
 
 ## 3. Standard Platform Errors
 
-标准平台错误都是名义 record，并显式 `implements ErrorPayload`。它们可被 `catch<E>` 捕获，前提是错误发生在用户代码已经进入当前 Skiff request 后，或由用户代码发起的 std API / service call 产生。
+标准平台错误都是带稳定名义identity的具体类型，不需要共同的marker interface。它们可被 `catch<E>` 捕获，
+前提是错误发生在用户代码已经进入当前 Skiff request 后，或由用户代码发起的 std API / service call 产生。
 
-当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、`std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、`config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、`std.http.HttpError`、`CancelError` 和 `TimeoutError`。
+当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、
+`std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、
+`config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、
+`std.service.InternalError`、`std.http.HttpError`、`std.websocket.WebSocketRequestError`、
+`TimeoutError`。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
 
@@ -52,19 +58,34 @@ provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 
 
 protocol 类错误表示跨服务、HTTP/SSE 或 gateway/runtime 协议不匹配、无法恢复 identity 或 payload 与 lock / schema 不一致。
 
-unhandled service error 是服务边界 wire code，表示 callee operation 中未捕获业务 error leaf 越过服务边界，被 runtime 转换为平台错误并记录 trace；它不是用户可 catch 的 platform error type。
+`std.websocket.WebSocketRequestError`表示Skiff主动发起的WebSocket request因connection、transport、
+RPC配置协议、平台容量或peer显式error而失败。Deadline仍使用`TimeoutError`；runtime内部停止不生成用户可
+捕获错误。JSON编码、非法JSON-RPC params shape和typed response decode失败仍使用
+`std.json.DecodeError`。
+
+`std.service.InternalError`用于隐藏不能安全保留原始类型的跨服务错误。用户错误为私有类型、不可name、
+不满足`SchemaClosed`或实际编码失败时，runtime在该错误第一次越过service boundary时生成
+`InternalError`，不发送原始type identity、字段或显示字符串。它是公开、schema-closed、可捕获且可继续跨
+服务序列化的名义类型，包含固定脱敏`message`、`traceId`和唯一`errorId`。中间service未捕获时继续传播同一
+错误值与关联identity，不重复包装。
 
 gateway 在进入 service operation 之前发生的 HTTP / WebSocket decode error 不会被业务 service 捕获；它由 gateway 按外部协议返回。
 
 ## 4. Request-Local Control Flow Types
 
-`Exception<E>` 是 request-local throw envelope，包含业务 error payload、source location 和 stack trace。
+`Exception<E>` 是 request-local throw envelope，包含被抛出的值、source location 和 stack trace。每个错误
+值都通过该envelope传播，所以`std.service.InternalError`与任意用户错误一样必定有栈；栈不是错误值的业务
+字段。
 
 `CatchResult<T,E>` 表达 `catch<E>` 的结果，逻辑上是 ok / err discriminator union：ok branch 携带值，err branch 携带 `Exception<E>`。
 
 `Exception<E>` 和 `CatchResult<T,E>` 不是业务数据结构，不通过 boundary schema closure。它们不能出现在 service API、public contract type、跨服务 payload 或持久化 schema 中。
 
 预期内业务失败应使用应用自定义命名 union 或 discriminator record union 表达，而不是返回 `Exception<E>`。
+
+普通`throw`捕获当前request的source location与stack；同一request中的`rethrow`保留原envelope。跨service
+传输只编码错误值和固定错误元数据，caller在调用点创建新的`Exception<E>`和当前这一跳的新栈，并加入脱敏的
+remote-boundary frame。完整callee栈留在服务端telemetry/log，通过`traceId/errorId`关联。
 
 ## 5. Collections
 
@@ -178,7 +199,7 @@ URL percent-encoding helper 区分 query component 和 path；path encoding 保�
 
 `std.time` 只承载 request-local time control API；wall-clock value 读取属于 `Date` surface。
 
-`sleep(ms)` 只挂起当前 request，不创建 durable timer。`ms <= 0` 立即返回；单次等待最多 60 秒，超过上限按 60 秒处理。sleep 受当前 request timeout 和 cancel 约束。
+`sleep(ms)` 只挂起当前 request，不创建 durable timer。`ms <= 0` 立即返回；单次等待最多 60 秒，超过上限按 60 秒处理。Sleep受当前request timeout和内部停止状态约束。
 
 含 `Date.now()` 的测试不应断言具体 instant；需要稳定值时使用 `Date.fromEpochMilliseconds(...)` 或运行时测试设施注入固定时间。
 
@@ -189,6 +210,10 @@ HTTP std surface 都在 `std.http.*` 模块下，属于内建 platform std，不
 更高层 SDK / wrapper package 应组合 std HTTP helpers，而不是各自定义 runtime native driver。
 
 `std.http.HttpRequest` / `std.http.HttpResponse` 是 raw HTTP entry envelope。`std.http.HttpClientRequest` / `std.http.HttpClientResponse` / `std.http.HttpClientStreamHandle` / `std.http.HttpSseEvent` 是 outbound HTTP effect 的 request / response / stream handle / SSE event schema。
+
+这些类型由`skiff.run/std` Package schema拥有。进入package/service boundary的schema-stable HTTP类型保留
+其PackageSchemaTypeId；compiler不得把它们在operation位置展开为anonymous record，也不得在每个
+ServiceContract中复制或重新生成service-owned类型。request-local handle仍不属于可远程传输schema。
 
 HTTP headers 和 query params 使用数组保留重复项和顺序。
 
@@ -202,23 +227,31 @@ DNS、连接失败、TLS、payload decode 或协议错误抛标准平台错误�
 
 `std.http.request` 返回完整 response body bytes。`std.http.stream` 返回一次性 HTTP stream handle，`status` / `headers` 同步可读，`body` 是 `Stream<bytes>`。`std.http.sse` 返回一次性 SSE event stream。
 
+HTTP entry测试继续复用这些普通client API及其既有类型；标准库不提供测试专用HTTP入口、request/response
+类型或特殊URL。隔离runner如何提供动态ingress并选择当前case属于testing与runner契约，不改变本节签名、
+File IR target或effect identity。
+
 `std.http.json<T>` / `std.http.jsonWithHeaders<T>` 构造 JSON `std.http.HttpResponse`；`std.http.decodeJson<T>` 从 `std.http.HttpRequest.body` 做 schema-directed JSON decode。typed HTTP route wrapper 使用这些 helper，把 handler 正常返回统一编码为 HTTP 200 JSON。
 
 `std.http.header` / `std.http.headers` 按大小写不敏感 header name 读取入口 request headers；`std.http.query` 按精确 query name 读取第一个 query value；`std.http.cookie` 从 `Cookie` header 中按精确 cookie name 读取值。
 
 `std.http.errorResponse`、`std.http.noContent`、`std.http.methodNotAllowed` 和 `std.http.requireMethod` 是 raw route 的显式 response helper，不是 platform error channel。`std.http.forwardableHeaders` 过滤 hop-by-hop / connection response headers，`std.http.sseHeaders` 返回常用 SSE response headers。
 
-`std.http.HttpError implements ErrorPayload` 用于 HTTP handler 或 `http.pre` 主动抛出业务 HTTP failure，只携带 `message` 和可选 `detail`。越过 HTTP boundary 的 thrown failure 由平台选择 HTTP status，并写回固定 JSON body `{ "message": string, "detail": Json? }`；业务代码不能通过 thrown error 指定 HTTP status 或 code。
+`std.http.HttpError` 用于 HTTP handler 或 `http.pre` 主动抛出业务 HTTP failure，只携带 `message` 和可选
+`detail`。越过 HTTP boundary 的 thrown failure 由平台选择 HTTP status，并写回固定 JSON body
+`{ "message": string, "detail": Json? }`；业务代码不能通过 thrown error 指定 HTTP status 或 code。
 
 `std.http.HttpResponseStreamEvent` 表达 raw HTTP streaming response：`start` 必须先于 `chunk`，`end` 后不能再 emit。`std.http.streamStart` / `std.http.streamChunk` / `std.http.streamEnd` 是构造该 stream event 的平台 helper。
 
-调用方提前退出、外层 timeout 或 ancestor cancel 时，stream / sse 必须 abort in-flight HTTP request。
+调用方提前退出、外层timeout或ancestor内部停止时，stream / sse尽力abort in-flight HTTP request；
+底层不支持时丢弃late response，并由HTTP client operation deadline收束。
 
 SSE helper 在 2xx 状态后输出完整 event；非 2xx 时按 body chunk 输出，供上层 package 读取有限错误体并脱敏。
 
 effect metadata 默认按 method 推导：GET / HEAD 为 external read 且 idempotent，其他 method 为 external write 且 non-idempotent。
 
-HTTP conflict-key 以 method 和 origin 为基础；origin 无法静态确定时为 opaque。stream / sse 的 cancel-safety 是 response-discardable。
+HTTP conflict-key以method和origin为基础；origin无法静态确定时为opaque。stream / sse的late
+response可以丢弃；这不表示已经发出的HTTP副作用可撤销。
 
 ## 12. std.log
 
@@ -228,29 +261,113 @@ HTTP conflict-key 以 method 和 origin 为基础；origin 无法静态确定时
 
 attrs 是结构化 JSON object；runtime / exporter 可按 telemetry 配置丢弃、采样或脱敏。
 
-effect metadata 是 telemetry write，target 对应具体 log level，cancel safety 是 fire-and-forget，business semantics 是 non-observable。
+effect metadata是telemetry write，target对应具体log level，business semantics是non-observable；
+runtime内部停止后允许丢弃尚未提交的日志，已提交日志不回滚。
 
 需要可靠业务事件时，应使用后续单独 event / queue API，而不是 `std.log.*`。
 
 ## 13. std.websocket
 
-`std.websocket` 是 client-facing WebSocket ingress 的标准库 surface。新业务入口由 service config 顶层 websocket 声明；path、domain 和 service selection 属于 ingress / router 配置。
+`std.websocket` 是 client-facing WebSocket connection 的标准库 surface。新连接入口由可选
+`websocket.yml`声明；path、domain和service selection属于ingress/router配置。第一版每个service最多一个
+entry，文件拥有path、可选connect handler与可选JSON-RPC method mapping。
 
-connection message 只表达 transport frame：UTF-8 text 或 binary bytes 的 base64 表示。应用 JSON tag 由 service 代码解释，router 不理解业务 tag。
+`WebSocketConnectRequest`、`WebSocketConnectResult`与connection policy是connect adapter使用的固定
+platform types。它们可以通过std Package API被源码引用，但声明本身不生成ordinary PackageSchema，也
+不能作为service-to-service payload。`websocket.yml`选择的connect handler从linked signature取得精确类型；
+handler不要求出现在`api.yml`。
 
-connect request 包含 connection id、url、query、headers、cookies 和可选 version。headers、query 和 cookies 保留重复值。
+connect request包含connection id、url、query、headers、cookies、可选version、websocket entry id和
+gateway entry identity。headers、query和cookies保留重复值。connect result是accept/reject
+discriminator union；accept branch携带可选`businessIdentity`和`connectionPolicy`，reject branch携带
+code与reason。
 
-connect result 是 accept / reject discriminator union。accept branch 携带 typed connection context 和可选 actor binding；reject branch 携带可选 code 与 reason。
-
-receive 和 route handler 使用固定 event shape；event connection 包含当前 actor 和 typed connection context。业务 handler 不单独接收裸 connection id。
-
-receive 和 route handler 返回 `null` / `void`，并显式调用 send helper 向 client 发消息。返回 `ConnectionMessage` 不是 request-response path。
+`std.websocket`不提供raw receive、任意event-name dispatcher或transport id。Peer只能调用
+`websocket.yml.jsonRpc`显式声明的typed unary method；该handler由gateway adapter调用，不是std函数。
+Unknown method返回`-32601`；所有notification即使与已声明request method同名也不进入用户代码，第一版
+没有peer request cancellation。Binary data frame以`1003`关闭；ping/pong/close由协议栈处理。
 
 send target 分两套：`...ToConnection` 按单个 connection id 发送，`...ToBusinessIdentity` 按 business identity 发送（投递到该 business identity 当前的所有连接）。`std.websocket.sendTextToConnection` / `sendTextToBusinessIdentity` 发送 text frame，`std.websocket.sendBinaryToConnection` / `sendBinaryToBusinessIdentity` 发送 binary frame（不做 base64 编码）；这四个是 runtime host operation。
 
 `std.websocket.sendJsonToConnection<T>` / `sendJsonToBusinessIdentity<T>` 是普通 std helper，使用 `std.json.encode<T>` 后分别委托对应的 text host operation，不是 host operation 本身。
 
-WebSocket send effect 是 external write，conflict-key 以 connection id 为基础，cancel safety 是 response-discardable。
+WebSocket还提供一个通用的、由Skiff发起的request/response操作：
+
+```skiff
+type WebSocketRequestError discriminator "kind" =
+  { kind: "connectionUnavailable", message: string }
+  | { kind: "transportUnavailable", message: string }
+  | { kind: "protocolError", message: string }
+  | { kind: "resourceLimit", message: string }
+  | { kind: "remote", code: integer, message: string, data: Json? }
+
+native function requestJsonToConnection<TRequest, TResponse>(
+  connectionId: string,
+  method: string,
+  value: TRequest
+) -> TResponse
+```
+
+WebSocket是通用双向transport；平台request broker与编码配置分离。Broker拥有request identity、pending、
+deadline/内部停止、connection/generation归属和容量限制，不把JSON字段写死在核心状态机中。第一版
+`requestJsonToConnection`选择内置`jsonrpc-2.0-text`配置；未来binary RPC必须用新的显式API/配置定义
+版本、framing、codec与协商，不能把普通binary frame自动解释成RPC。现有raw text/binary send不受影响。
+
+平台把`value`编码为JSON-RPC 2.0 `params`并生成opaque string `id`。外部peer可以异步、乱序返回
+JSON-RPC response，但必须在原connection上原样回显该ID。配置adapter只解析`jsonrpc`、`id`、
+`method`、`params`、`result`与`error`控制外形；业务payload保持opaque。匹配成功后直接恢复等待中的
+调用，不创建service ingress request，也不调用用户handler。业务源码不接触transport `id`。`method`
+必须是非空string；平台对method、encoded payload和pending数量实施固定上限。
+
+Request payload按`std.json.encode<TRequest>`语义编码，success payload按
+`std.json.decode<TResponse>`语义解码。编码结果顶层必须是JSON object或array，以符合JSON-RPC
+`params`约束；无参数方法传空object。请求值不可编码、params shape非法或success `result`与
+`TResponse`不匹配时抛`std.json.DecodeError`；这是调用点类型/peer application protocol错误，不会被
+伪装成transport `WebSocketRequestError`，也不使Router按业务schema解释payload。
+
+Skiff主动发起request时的wire精确为：
+
+```json
+{"jsonrpc":"2.0","id":"<opaque>","method":"<method>","params":{}}
+{"jsonrpc":"2.0","id":"<opaque>","result":null}
+{"jsonrpc":"2.0","id":"<opaque>",
+ "error":{"code":-32603,"message":"<message>","data":null}}
+```
+
+`result`与error `data`可以是任意受大小限制的JSON值。第一版每个text frame只接受一个JSON-RPC对象，
+不执行batch；request `params`必须是object或array，outbound response `id`必须是string，error `code`必须是
+integer且`message`必须是string。Wrong-connection、wrong-generation或未知id的response不能命中pending
+调用，并以协议错误`1002`关闭。平台保留有界短期settled tombstone；与完成/内部停止竞态的晚到或重复response
+只命中tombstone并被丢弃，不能恢复调用。Declared peer request走独立inbound mapping，不能误命中同值
+outbound id。第一版不支持binary request/response。
+
+Peer发起request时，id可以是非空string或safe integer，业务handler看不到该id。Params由
+`websocket.jsonRpcParams`解码，return编码为result；handler还可显式接收平台提供的
+`websocket.connectionId`和`websocket.businessIdentity`。Platform parse/invalid/method/params/internal
+错误固定为`-32700/-32600/-32601/-32602/-32603`，容量与timeout固定为
+`-32000/-32001`。无法识别合法request id的错误使用`id: null`，其余错误原样回显typed id；
+同方向重复active或仍在bounded settled tombstone中的id以`1002`关闭；tombstone到期/驱逐后才可复用。
+未捕获业务throw只返回脱敏Internal error；预期失败应由result union表达。
+
+`requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
+共同拥有一个unary response。调用受当前execution deadline与内部停止状态约束；等待response时是真实
+suspension point。有效deadline抛`TimeoutError`；ancestor内部停止终止当前request/lane且不可被用户
+`catch`。二者都先原子删除pending state并丢弃晚到response；第一版不向peer发送request cancellation
+notification。
+
+目标解析失败或发送前已关闭映射为`connectionUnavailable`；request已接纳后socket或runtime/router
+transport丢失映射为`transportUnavailable`，但不承诺peer未执行；畸形或伪造response映射为
+`protocolError`；pending或payload上限拒绝映射为`resourceLimit`；合法JSON-RPC error映射为`remote`。
+本地分支的message固定且脱敏；remote `code/message/data`被视为peer提供的不可信值，必须通过shape与
+大小校验，只返回发起调用的代码，不得自动写入公开日志。
+
+Transport pairing不提供业务幂等、自动重试或exactly-once。Pending数量和payload大小达到上限时新request
+fail closed；tombstone数量与生命周期也有界，但饱和时驱逐最旧项，不因settled记录拒绝新request。
+有持久副作用的协议仍保留自己的`toolCallId`、`attemptId`、`idempotencyKey`等业务identity。
+
+WebSocket send effect是external write，conflict-key以connection id为基础；晚到response可以丢弃，
+但已发送request的副作用不承诺撤销。`requestJsonToConnection`也是external write，但拥有response wait并被静态标记为
+`maySuspend`；普通send保持non-suspending。
 
 version 优先来自 `X-Skiff-Version`，WebSocket query 只作为兼容 fallback，表示选中的 service version，应与 service root version 对齐。
 
@@ -258,7 +375,9 @@ version 优先来自 `X-Skiff-Version`，WebSocket query 只作为兼容 fallbac
 
 `Stream<T>` 是 request-local 一次性顺序消费值，或服务 operation / ingress entry 的 server stream 返回类型。
 
-作为 service / ingress operation 返回类型时，`T` 是跨 runtime / gateway 边界的 chunk schema，必须 schema-closed。
+作为 service operation 返回类型时，`T`必须通过Package schema closure。作为external ingress返回类型时，
+`T`按该gateway entry的linked handler signature与external codec校验，不要求仅为ingress进入
+PackageSchema；两种边界不能互相推导。
 
 作为 std / package stream-producing API 返回值时，stream 是 external source handle；平台 std 也可以返回包含 stream 字段的 runtime-owned handle record，例如 `std.http.HttpClientStreamHandle.body`。这类 handle 只能在当前 request 内消费，不能持久化或作为业务协议 schema。
 
@@ -266,7 +385,8 @@ native host operation 可以声明特权 stream 参数，用来在当前 request
 
 stream 消费通过 `for event in stream` 顺序读取。end 正常退出；source error 映射为当前 lane 的 ordinary throw。
 
-break、return、外层 timeout 或 ancestor cancel 必须向 source 传播 cancel。stream 完成、出错或取消后不能再次消费。
+break、return、外层timeout或ancestor内部停止必须结束当前consumption，并向source发送best-effort
+stop hint。Stream完成、出错或停止后不能再次消费。
 
 `emit` 是 server-stream producer 的 ordered external write，也是 backpressure point。它不能在 concurrent sibling lanes 中直接使用。
 
@@ -278,7 +398,9 @@ break、return、外层 timeout 或 ancestor cancel 必须向 source 传播 canc
 
 测试替身按 target 和可选 conflict-key 匹配。典型 target 包括 `std.http.request`、`std.http.sse`、LLM stream、provider package operation 和 service operation target。
 
-替身必须返回 schema-closed payload，或抛标准 `ErrorPayload` leaf。它不能返回无法通过边界 schema 的临时对象。
+替身必须返回目标要求的schema-closed payload。替身可以抛任意语言允许的名义错误值；当它模拟service或
+host boundary时，公开且schema-closed的错误保留原类型，私有、非closed或编码失败的错误对调用方表现为
+`std.service.InternalError`，与真实boundary一致。
 
 替身执行仍参与 effect summary；不能因为是 mock 就绕过 `concurrent` effect conflict 检查。
 
@@ -296,6 +418,7 @@ prelude surface 是语言默认可见集合；`std` surface 是官方 package AP
 
 platform errors 描述运行平台或协议层失败。业务可预期失败应进入 API 返回类型，不应依赖未捕获 throw 越过服务边界。
 
-host-backed `std` API 必须发布 effect metadata，包括 target、conflict-key、cancel safety 和 stream / callback 行为。
+host-backed `std` API 必须发布 effect metadata，包括target、conflict-key以及stream / callback行为；
+第一版不要求通用cancel-safety、commit point或cleanup action字段。
 
 新增 prelude 或 `std` surface 时，需要同时明确 namespace 归属、schema closure 能力、effect metadata、测试替身 target 和与 service boundary 的关系。

@@ -43,31 +43,3 @@ pub(super) fn alias(name: &str, target: Value) -> Value {
 pub(super) fn representation(name: &str, payload: Value) -> Value {
     json!({ "kind": "representation", "name": name, "representation": payload })
 }
-
-pub(super) fn websocket_connection_message_descriptor() -> Value {
-    representation(
-        "std.websocket.ConnectionMessage",
-        union(vec![
-            record(
-                "std.websocket.TextConnectionMessage",
-                vec![
-                    (
-                        "tag",
-                        json!({ "kind": "literal", "value": { "kind": "string", "value": "text" } }),
-                    ),
-                    ("text", named("string")),
-                ],
-            ),
-            record(
-                "std.websocket.BinaryConnectionMessage",
-                vec![
-                    (
-                        "tag",
-                        json!({ "kind": "literal", "value": { "kind": "string", "value": "binary" } }),
-                    ),
-                    ("base64", named("string")),
-                ],
-            ),
-        ]),
-    )
-}

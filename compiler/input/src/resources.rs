@@ -238,6 +238,8 @@ fn contains_glob_metacharacter(path: &str) -> bool {
 fn is_skiff_control_file(file_name: &str) -> bool {
     file_name == "package.yml"
         || file_name == "service.yml"
+        || file_name == "http.yml"
+        || file_name == "websocket.yml"
         || file_name == "api.yml"
         || file_name == "config.yml"
         || (file_name.starts_with("service.") && file_name.ends_with(".yml"))
@@ -284,6 +286,8 @@ mod tests {
             ("dir/.env", "hidden"),
             ("main.skiff", ".skiff"),
             ("package.yml", "control"),
+            ("http.yml", "control"),
+            ("websocket.yml", "control"),
             ("service.prod.yml", "control"),
             ("config.prod.yml", "control"),
             ("prod.secret.yml", "control"),

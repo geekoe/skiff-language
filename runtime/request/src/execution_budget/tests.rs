@@ -1,9 +1,13 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use serde_json::Map;
-use skiff_runtime_capability_context::ExecutionBudgetReason;
+use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 
 use super::{deadline_from_request_extra, ExecutionBudget, ExecutionBudgetConfig};
+use crate::ExecutionControl;
 
 #[test]
 fn disabled_budget_does_not_count_or_poll_limits() {
@@ -41,15 +45,17 @@ fn instruction_limit_fails_on_poll() {
 
 #[test]
 fn expired_deadline_fails_on_poll() {
+    let deadline = Instant::now() - Duration::from_millis(1);
     let budget = ExecutionBudget::new(
         ExecutionBudgetConfig {
             enabled: true,
             instruction_limit: Some(1_000),
             poll_interval: 1024,
         },
-        Some(Instant::now() - Duration::from_millis(1)),
+        Some(deadline),
     );
 
+    assert_eq!(budget.deadline(), Some(deadline));
     assert_eq!(
         budget.poll(false, Instant::now()),
         Err(ExecutionBudgetReason::DeadlineExceeded)
@@ -75,6 +81,20 @@ fn cancel_takes_priority_over_deadline() {
         budget.stats_snapshot().budget_reason,
         Some(ExecutionBudgetReason::Cancelled)
     );
+}
+
+#[test]
+fn request_execution_control_forwards_deadline_to_borrowed_and_owned_views() {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let budget = Arc::new(ExecutionBudget::new(
+        ExecutionBudgetConfig::runtime_default(),
+        Some(deadline),
+    ));
+    let control = ExecutionControl::new(CancellationToken::new(), &budget);
+
+    assert_eq!(control.deadline(), Some(deadline));
+    assert_eq!(control.owned().deadline(), Some(deadline));
+    assert_eq!(control.owned().borrow().deadline(), Some(deadline));
 }
 
 #[test]

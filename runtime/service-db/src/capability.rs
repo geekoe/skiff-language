@@ -7,7 +7,8 @@ use skiff_runtime_capability_context::{
     DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilityStore, DbCapabilityStoreApi,
     DbDocument, DbKey, DbOneSelector, DbOrderEntry, DbPageResult, DbQuery,
     DbRecoverableRuntimeContext, DbRuntimeChange, DbWriteResult, FieldPath, FileCapabilityRecord,
-    ServiceDbChange, ServiceDbFindOptions,
+    PreparedDbManyRuntimeOperation, PreparedDbOptionalRuntimeOperation,
+    PreparedDbValueRuntimeOperation, ServiceDbChange, ServiceDbFindOptions,
 };
 use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
 use tokio::sync::Mutex;
@@ -180,12 +181,21 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>> {
-        Box::pin(async move {
-            self.store
-                .find_one_by_key_runtime(type_name, key, projection, heap, context)
-                .await
-                .map_err(db_capability_error)
-        })
+        let prepared =
+            self.prepare_find_one_by_key_runtime(type_name, key, projection, heap, context);
+        Box::pin(async move { prepared?.into_wait().await?.finalize(heap) })
+    }
+
+    fn prepare_find_one_by_key_runtime(
+        &self,
+        type_name: &str,
+        key: DbKey,
+        projection: Option<Vec<FieldPath>>,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.store
+            .prepare_find_one_by_key_runtime_operation(type_name, key, projection, heap, context)
     }
 
     fn find_one_by_query<'a>(
@@ -212,12 +222,23 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>> {
-        Box::pin(async move {
-            self.store
-                .find_one_by_query_runtime(type_name, query, order, projection, heap, context)
-                .await
-                .map_err(db_capability_error)
-        })
+        let prepared = self
+            .prepare_find_one_by_query_runtime(type_name, query, order, projection, heap, context);
+        Box::pin(async move { prepared?.into_wait().await?.finalize(heap) })
+    }
+
+    fn prepare_find_one_by_query_runtime(
+        &self,
+        type_name: &str,
+        query: DbQuery,
+        order: Vec<DbOrderEntry>,
+        projection: Option<Vec<FieldPath>>,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.store.prepare_find_one_by_query_runtime_operation(
+            type_name, query, order, projection, heap, context,
+        )
     }
 
     fn find_many_page<'a>(
@@ -244,12 +265,23 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Vec<RuntimeValue>> {
-        Box::pin(async move {
-            self.store
-                .find_many_page_runtime(type_name, query, options, projection, heap, context)
-                .await
-                .map_err(db_capability_error)
-        })
+        let prepared = self
+            .prepare_find_many_page_runtime(type_name, query, options, projection, heap, context);
+        Box::pin(async move { prepared?.into_wait().await?.finalize(heap) })
+    }
+
+    fn prepare_find_many_page_runtime(
+        &self,
+        type_name: &str,
+        query: DbQuery,
+        options: ServiceDbFindOptions,
+        projection: Option<Vec<FieldPath>>,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbManyRuntimeOperation> {
+        self.store.prepare_find_many_page_runtime_operation(
+            type_name, query, options, projection, heap, context,
+        )
     }
 
     fn create<'a>(
@@ -269,15 +301,22 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         &'a self,
         type_name: &'a str,
         value: &'a RuntimeValue,
-        heap: &'a RequestHeap,
+        heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, RuntimeValue> {
-        Box::pin(async move {
-            self.store
-                .create_runtime(type_name, value, heap, context)
-                .await
-                .map_err(db_capability_error)
-        })
+        let prepared = self.prepare_create_runtime(type_name, value, heap, context);
+        Box::pin(async move { prepared?.into_wait().await?.finalize(heap) })
+    }
+
+    fn prepare_create_runtime(
+        &self,
+        type_name: &str,
+        value: &RuntimeValue,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbValueRuntimeOperation> {
+        self.store
+            .prepare_create_runtime_operation(type_name, value, heap, context)
     }
 
     fn insert_many_result<'a>(
@@ -315,12 +354,20 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>> {
-        Box::pin(async move {
-            self.store
-                .update_one_runtime(type_name, selector, change, heap, context)
-                .await
-                .map_err(db_capability_error)
-        })
+        let prepared = self.prepare_update_one_runtime(type_name, selector, change, heap, context);
+        Box::pin(async move { prepared?.into_wait().await?.finalize(heap) })
+    }
+
+    fn prepare_update_one_runtime(
+        &self,
+        type_name: &str,
+        selector: DbOneSelector,
+        change: DbRuntimeChange,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.store
+            .prepare_update_one_runtime_operation(type_name, selector, change, heap, context)
     }
 
     fn update_many<'a>(
@@ -374,12 +421,20 @@ impl DbCapabilityStoreApi for ServiceDbCapabilityStore {
         heap: &'a mut RequestHeap,
         context: DbRecoverableRuntimeContext,
     ) -> DbCapabilityFuture<'a, Option<RuntimeValue>> {
-        Box::pin(async move {
-            self.store
-                .replace_one_runtime(type_name, selector, value, heap, context)
-                .await
-                .map_err(db_capability_error)
-        })
+        let prepared = self.prepare_replace_one_runtime(type_name, selector, value, heap, context);
+        Box::pin(async move { prepared?.into_wait().await?.finalize(heap) })
+    }
+
+    fn prepare_replace_one_runtime(
+        &self,
+        type_name: &str,
+        selector: DbOneSelector,
+        value: &RuntimeValue,
+        heap: &mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.store
+            .prepare_replace_one_runtime_operation(type_name, selector, value, heap, context)
     }
 
     fn delete_one<'a>(

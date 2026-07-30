@@ -1,383 +1,37 @@
-use std::sync::{atomic::AtomicBool, Arc};
-
-use skiff_artifact_model::IngressSelector;
-use skiff_runtime_linked_program::ExecutableAddr;
-use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, ExecutionBudget, RequestCancel, RequestEnvelope,
-    RequestError, RequestOperationContext, RequestResult, ResponseError, ResponseEvent,
-    ResponseEventSink, ResponseStreamEvent, RouterWriterMessage, RuntimeOperation,
-};
+use skiff_artifact_model::ServiceIngressKey;
+use skiff_runtime_request::{BoundaryResponse, RequestCancel, RequestError, RouterWriterMessage};
+use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::{response_mapper, TransportError};
-use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
-    capability_context::response_error_from_runtime_error,
     error::{Result, RuntimeError},
     loader::assembly_admission::ActiveAssemblyRoute,
-    telemetry::RequestTelemetryContext,
 };
 
-use super::{
-    package_test_entry, request_supervisor::CompletionTrace, route_registry, spawn_worker,
-    RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
-};
+use super::RuntimeHost;
 
 mod assembly;
-
-struct RouterResponseEventSink {
-    sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
-}
-
-impl RouterResponseEventSink {
-    fn new(sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>) -> Self {
-        Self { sender }
-    }
-}
-
-impl ResponseEventSink for RouterResponseEventSink {
-    fn send_stream_event(&self, request_id: &str, event: ResponseStreamEvent) -> RequestResult<()> {
-        let frame = response_mapper::response_stream_event_into_frame(request_id, event)
-            .map_err(request_error_from_transport_error)?;
-        let sender = self.sender.as_ref().ok_or_else(|| {
-            RequestError::protocol(
-                request_id.to_string(),
-                "serverStream request is missing router sender",
-            )
-        })?;
-        sender
-            .send(RouterWriterMessage::Binary(frame))
-            .map_err(|_| RequestError::Cancelled)
-    }
-}
+mod assembly_wire;
+mod websocket_jsonrpc;
 
 impl RuntimeHost {
-    pub(crate) async fn spawn_request(
-        &self,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        self.spawn_request_inner(request, sender, None).await;
-    }
-
-    pub(crate) async fn spawn_session_request(
-        &self,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        registration: &spawn_worker::SpawnWorkerRegistration,
-    ) {
-        self.spawn_request_inner(request, sender, Some(registration))
-            .await;
-    }
-
-    pub(super) async fn spawn_resolved_request(
-        &self,
-        operation_context: ServiceOperationContext,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        error_log_event: &'static str,
-    ) {
-        self.spawn_resolved_request_inner(
-            operation_context,
-            request,
-            sender,
-            error_log_event,
-            None,
-        )
-        .await;
-    }
-
-    pub(super) async fn spawn_resolved_package_test_request(
-        &self,
-        operation_context: ServiceOperationContext,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        error_log_event: &'static str,
-        pending_start: package_test_entry::PackageTestPendingStart,
-    ) {
-        self.spawn_resolved_request_inner(
-            operation_context,
-            request,
-            sender,
-            error_log_event,
-            Some(pending_start),
-        )
-        .await;
-    }
-
-    async fn spawn_resolved_request_inner(
-        &self,
-        operation_context: ServiceOperationContext,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        error_log_event: &'static str,
-        pending_start: Option<package_test_entry::PackageTestPendingStart>,
-    ) {
-        let service = operation_context.service.clone();
-        let build_guard = match self.begin_build_execution(&service.build_id) {
-            Ok(guard) => guard,
-            Err(error) => {
-                self.emit_request_route_error(&request, &error);
-                self.send_request_error_response(&request, &error, &sender);
-                return;
-            }
-        };
-
-        let telemetry_context = self.request_telemetry_context(&request, &service);
-        let supervised_request = self
-            .request_supervisor
-            .begin(&request, telemetry_context.clone(), "request.start")
-            .await;
-        if let Some(pending_start) = pending_start {
-            if pending_start.finish() {
-                let response_error = response_error_from_runtime_error(&RuntimeError::cancelled());
-                self.request_supervisor
-                    .complete_error(
-                        &supervised_request,
-                        "request.cancel",
-                        &response_error,
-                        CompletionTrace::RUNTIME,
-                    )
-                    .await;
-                match response_event_into_transport_message(
-                    request.request_id.clone(),
-                    ResponseEvent::Error(response_error),
-                ) {
-                    Ok(message) => {
-                        let _ = sender.send(message);
-                    }
-                    Err(error) => {
-                        error!(event = "runtime.response_encode_error", error = %error);
-                    }
-                }
-                return;
-            }
-        }
-        let cancelled = supervised_request.cancelled();
-        let cancellation = supervised_request.cancellation_token();
-        let execution_budget = supervised_request.execution_budget();
-        let request_operation_context = operation_context.request_operation_context();
-
-        let host = self.clone();
-        tokio::spawn(async move {
-            let _build_guard = build_guard;
-            let request_id = request.request_id.clone();
-            let request_target = request.target.clone();
-            let diagnostic_context = request_operation_context.clone();
-            let result =
-                request_runner::execute_runtime_request(request_runner::RequestExecutionInput {
-                    operation_context: request_operation_context,
-                    request,
-                    cancelled,
-                    cancellation,
-                    execution_budget: execution_budget.clone(),
-                    handles: host.request_execution_handles(
-                        service.clone(),
-                        Some(telemetry_context),
-                        Some(sender.clone()),
-                    ),
-                })
-                .await;
-            let writer_message = match result {
-                Ok(response) => {
-                    host.request_supervisor
-                        .complete_success(
-                            &supervised_request,
-                            "request.end",
-                            CompletionTrace::RUNTIME,
-                        )
-                        .await;
-                    response_into_transport_message(request_id, response)
-                }
-                Err(error) => {
-                    let (error, response_error) =
-                        request_execution_error_into_runtime_error_and_response(
-                            &diagnostic_context,
-                            request_target.as_str(),
-                            error,
-                        );
-                    error!(
-                        event = error_log_event,
-                        request_id = %request_id,
-                        runtime_id = %service.runtime_id,
-                        service_id = %service.service_id,
-                        error = %error
-                    );
-                    let event_name = if error.is_request_cancelled() {
-                        "request.cancel"
-                    } else {
-                        "request.error"
-                    };
-                    host.request_supervisor
-                        .complete_error(
-                            &supervised_request,
-                            event_name,
-                            &response_error,
-                            CompletionTrace::RUNTIME,
-                        )
-                        .await;
-                    response_event_into_transport_message(
-                        request_id,
-                        ResponseEvent::Error(response_error),
-                    )
-                    .map(Some)
-                }
-            };
-            match writer_message {
-                Ok(Some(message)) => {
-                    let _ = sender.send(message);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    error!(event = "runtime.response_encode_error", error = %error);
-                }
-            }
-        });
-    }
-
-    fn request_execution_handles(
-        &self,
-        service: Arc<ServiceRuntimeContext>,
-        telemetry_context: Option<RequestTelemetryContext>,
-        router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
-    ) -> request_runner::RequestExecutionHandles {
-        let streaming_available = router_sender.is_some();
-        let response_events = Arc::new(RouterResponseEventSink::new(router_sender.clone()));
-        let eval_adapter = crate::eval_capability_adapter::request_eval_adapter(
-            crate::eval_capability_adapter::RuntimeRequestEvalAdapterInput {
-                service,
-                file_source: crate::capability_context::FileCapabilitySource::new(
-                    self.file_runtime(),
-                ),
-                http_options: self.http_runtime_options.clone(),
-                outbound_requests: self.outbound_requests.clone(),
-                spawn_workers: self.spawn_workers.clone(),
-                telemetry_context,
-                router_sender,
-            },
-        );
-        request_runner::RequestExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-            streaming_available,
-            response_events,
-            eval_adapter,
-        }
-    }
-
-    pub(super) fn send_request_error_response(
-        &self,
-        request: &RequestEnvelope,
-        error: &RuntimeError,
-        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        match response_event_into_transport_message(
-            request.request_id.clone(),
-            ResponseEvent::Error(response_error_from_runtime_error(error)),
-        ) {
-            Ok(message) => {
-                let _ = sender.send(message);
-            }
-            Err(error) => {
-                error!(event = "runtime.response_encode_error", error = %error);
-            }
-        }
-    }
-
-    pub(crate) fn submit_package_test_start(
-        &self,
-        header: skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-        payload: Vec<u8>,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        package_test_entry::spawn_package_test_start(self, header, payload, sender, None);
-    }
-
-    pub(crate) fn submit_session_package_test_start(
-        &self,
-        header: skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-        payload: Vec<u8>,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        registration: spawn_worker::SpawnWorkerRegistration,
-    ) {
-        package_test_entry::spawn_package_test_start(
-            self,
-            header,
-            payload,
-            sender,
-            Some(registration),
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn load_package_test_runtime_program(
-        &self,
-        header: &skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-    ) -> Result<skiff_runtime_package_test::LoadedPackageTestRuntimeProgram> {
-        package_test_entry::load_package_test_runtime_program(self, header).await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn package_test_service_context(
-        &self,
-        loaded: &skiff_runtime_package_test::LoadedPackageTestRuntimeProgram,
-        header: &skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-    ) -> Result<Arc<ServiceRuntimeContext>> {
-        package_test_entry::package_test_service_context(self, loaded, header)
-    }
-
-    fn lookup_operation_in_state(
-        &self,
-        request: &RequestEnvelope,
-    ) -> Result<ServiceOperationContext> {
-        let state = self.state.read().map_err(|_| {
-            RuntimeError::Decode("runtime service route state lock is poisoned".to_string())
-        })?;
-        let build_id = request.build_id();
-        if build_id.is_empty() {
-            return Err(RuntimeError::Unsupported(
-                "request.start buildId is required".to_string(),
-            ));
-        }
-        let operation = route_registry::lookup_operation_by_build_id(&state, request, build_id)?;
-        self.loaded_builds.touch(build_id);
-        Ok(operation)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn lookup_operation(
-        &self,
-        request: &RequestEnvelope,
-    ) -> Result<ServiceOperationContext> {
-        self.lookup_operation_in_state(request)
-    }
-
     /// Resolves a canonical ingress only from one immutable active assembly generation.
     ///
-    /// Router wire mapping into `IngressSelector` remains outside Phase 03. Once supplied, this
-    /// entry performs no artifact access or candidate mutation and returns the activation template
-    /// plus descriptor pinned by `ActiveAssemblyRoute`.
-    #[allow(dead_code)]
+    /// The canonical wire bridge supplies the selector. This entry performs no artifact access or
+    /// candidate mutation and returns the activation plus exact linked gateway entry pinned by
+    /// `ActiveAssemblyRoute`.
     pub(crate) fn lookup_active_assembly_request_route(
         &self,
-        selector: &IngressSelector,
+        key: &ServiceIngressKey,
     ) -> Result<ActiveAssemblyRoute> {
         let route = self
-            .active_runtime_assembly_route(selector)
+            .active_runtime_assembly_route(key)
             .map_err(|error| RuntimeError::Decode(error.to_string()))?
             .ok_or_else(|| {
-                RuntimeError::Unsupported(format!(
-                    "no active assembly ingress matches {selector:?}"
-                ))
+                RuntimeError::Unsupported(format!("no active assembly ingress matches {key:?}"))
             })?;
         Ok(route)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn lookup_request_operation(
-        &self,
-        request: &RequestEnvelope,
-    ) -> Result<ServiceOperationContext> {
-        self.lookup_operation_in_state(request)
     }
 
     pub(crate) async fn cancel_request(&self, cancel: RequestCancel) {
@@ -387,102 +41,19 @@ impl RuntimeHost {
                 request_id = %cancel.request_id,
                 reason = cancel.reason.as_deref().unwrap_or("unknown")
             );
-        } else if self
-            .package_test_start_executor
-            .cancel_pending(&cancel.request_id)
-        {
-            info!(
-                event = "runtime.package_test_start_cancelled",
-                request_id = %cancel.request_id,
-                reason = cancel.reason.as_deref().unwrap_or("unknown")
-            );
         }
     }
-
-    pub(crate) async fn execute_runtime_request(
-        &self,
-        service: Arc<ServiceRuntimeContext>,
-        operation: RuntimeOperation,
-        addr: ExecutableAddr,
-        request: RequestEnvelope,
-        cancelled: Arc<AtomicBool>,
-        cancellation: skiff_runtime_request::cancellation::CancellationToken,
-        execution_budget: Arc<ExecutionBudget>,
-        router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
-    ) -> Result<request_runner::RuntimeResponse> {
-        let telemetry_context = self.request_telemetry_context(&request, service.as_ref());
-        let operation_context = ServiceOperationContext::new(service, operation, addr);
-        let request_operation_context = operation_context.request_operation_context();
-        let request_target = request.target.clone();
-        request_runner::execute_runtime_request(request_runner::RequestExecutionInput {
-            operation_context: request_operation_context.clone(),
-            request,
-            cancelled,
-            cancellation,
-            execution_budget,
-            handles: self.request_execution_handles(
-                operation_context.service.clone(),
-                Some(telemetry_context),
-                router_sender,
-            ),
-        })
-        .await
-        .map_err(|error| {
-            request_execution_error_into_runtime_error(
-                &request_operation_context,
-                request_target.as_str(),
-                error,
-            )
-        })
-    }
-}
-
-fn request_execution_error_into_runtime_error(
-    operation_context: &RequestOperationContext,
-    request_target: &str,
-    error: request_runner::RequestExecutionError,
-) -> RuntimeError {
-    request_execution_error_into_runtime_error_and_response(
-        operation_context,
-        request_target,
-        error,
-    )
-    .0
-}
-
-fn request_execution_error_into_runtime_error_and_response(
-    operation_context: &RequestOperationContext,
-    request_target: &str,
-    error: request_runner::RequestExecutionError,
-) -> (RuntimeError, ResponseError) {
-    let attach_request_diagnostic = error.attach_request_diagnostic();
-    let request_error = error.into_error();
-    if !attach_request_diagnostic {
-        let response_error = request_error.response_error();
-        return (
-            request_error_into_runtime_error(request_error),
-            response_error,
-        );
-    }
-    let error = request_error_into_runtime_error(request_error);
-    let error = crate::eval_capability_adapter::attach_request_error_diagnostic_frame(
-        error,
-        operation_context.eval_program.as_ref(),
-        operation_context.operation.operation.as_str(),
-        request_target,
-        operation_context.metadata.build_id.as_str(),
-        &operation_context.addr,
-    );
-    let response_error = response_error_from_runtime_error(&error);
-    (error, response_error)
 }
 
 fn request_error_into_runtime_error(error: RequestError) -> RuntimeError {
-    RuntimeError::Opaque(Box::new(error))
-}
-
-fn request_error_from_transport_error(error: TransportError) -> RequestError {
-    RequestError::Decode(error.to_string())
+    if error.is_cancellation_terminal() {
+        RuntimeError::Cancelled
+    } else {
+        RuntimeError::Opaque(Box::new(
+            skiff_runtime_request::OrdinaryRequestError::try_new(error)
+                .expect("request cancellation was split before Host trait erasure"),
+        ))
+    }
 }
 
 pub(crate) fn transport_error_into_runtime_error(error: TransportError) -> RuntimeError {
@@ -494,16 +65,19 @@ fn response_into_transport_message(
     response: BoundaryResponse,
 ) -> Result<Option<RouterWriterMessage>> {
     match response {
-        BoundaryResponse::Event(event) => {
-            response_event_into_transport_message(request_id, event).map(Some)
-        }
+        BoundaryResponse::Event(event) => response_event_into_transport_message(
+            request_id,
+            OrdinaryResponseEvent::try_from_non_error(event)
+                .map_err(transport_error_into_runtime_error)?,
+        )
+        .map(Some),
         BoundaryResponse::StreamSent => Ok(None),
     }
 }
 
 fn response_event_into_transport_message(
     request_id: String,
-    event: ResponseEvent,
+    event: OrdinaryResponseEvent,
 ) -> Result<RouterWriterMessage> {
     response_mapper::response_event_into_frame(request_id, event)
         .map(RouterWriterMessage::Binary)
@@ -513,29 +87,32 @@ fn response_event_into_transport_message(
 #[cfg(test)]
 mod tests {
     use skiff_runtime_capability_context::ExecutionBudgetReason;
+    use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
-    use crate::error::{RuntimeError, TypeIdentity, WirePayload};
+    use crate::error::RuntimeError;
 
     use super::*;
 
     #[test]
     fn request_error_bridge_boxes_and_delegates_payload_and_catch_projection() {
         let request_error = RequestError::protocol("svc.account", "bad frame");
-        let expected_payload = request_error.payload();
-        let expected_catch_projection = request_error.catch_projection();
+        let expected_payload = request_error
+            .ordinary_payload()
+            .expect("protocol failure is ordinary");
+        let expected_catch_projection = request_error.ordinary_catch_projection();
 
         let error = request_error_into_runtime_error(request_error);
 
         assert!(matches!(error, RuntimeError::Opaque(_)));
-        assert_eq!(error.payload(), expected_payload);
         assert_eq!(
-            WirePayload::catch_projection(&error),
-            expected_catch_projection
+            error.ordinary_payload().expect("bridged error is ordinary"),
+            expected_payload
         );
+        assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
         assert_eq!(
-            WirePayload::catch_projection(&error),
+            error.ordinary_catch_projection(),
             Some((
-                TypeIdentity::builtin("std.service.ProtocolError"),
+                PlatformBuiltinErrorIdentity::ServiceProtocol.catch_identity(),
                 serde_json::json!({
                     "target": "svc.account",
                     "message": "bad frame",
@@ -547,8 +124,10 @@ mod tests {
     #[test]
     fn request_error_bridge_preserves_carried_cancellation_detection() {
         let error = request_error_into_runtime_error(RequestError::Cancelled);
-        assert!(matches!(error, RuntimeError::Opaque(_)));
-        assert!(error.is_request_cancelled());
+        assert!(matches!(error, RuntimeError::Cancelled));
+        assert!(error.is_cancellation_terminal());
+        assert_eq!(error.ordinary_payload(), None);
+        assert_eq!(error.ordinary_catch_projection(), None);
 
         let error = request_error_into_runtime_error(RequestError::ExecutionBudgetExceeded {
             reason: ExecutionBudgetReason::Cancelled,
@@ -556,7 +135,9 @@ mod tests {
             limit: None,
             elapsed_ms: 0.0,
         });
-        assert!(matches!(error, RuntimeError::Opaque(_)));
-        assert!(error.is_request_cancelled());
+        assert!(matches!(error, RuntimeError::Cancelled));
+        assert!(error.is_cancellation_terminal());
+        assert_eq!(error.ordinary_payload(), None);
+        assert_eq!(error.ordinary_catch_projection(), None);
     }
 }

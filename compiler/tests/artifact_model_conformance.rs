@@ -8,7 +8,8 @@ use skiff_artifact_model::PackageArtifact;
 fn compiler_output_deserializes_as_the_canonical_package_artifact() {
     let temp = package_project("artifact-model-conformance");
     let project = compile_package_project(temp.path()).expect("package project should compile");
-    let value = project.package.published.value.clone();
+    let value = serde_json::to_value(&project.package.artifact)
+        .expect("canonical PackageArtifact should serialize");
     let artifact: PackageArtifact =
         serde_json::from_value(value.clone()).expect("canonical DTO should deserialize");
 
@@ -34,6 +35,8 @@ fn compiler_output_deserializes_as_the_canonical_package_artifact() {
             "packageId",
             "packageLocalAbi",
             "packageRequirements",
+            "packageSchemaIndex",
+            "packageSchemaTypeRecords",
             "packageVersion",
             "runtimeRequirements",
             "schemaVersion",

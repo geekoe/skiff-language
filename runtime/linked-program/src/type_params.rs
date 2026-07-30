@@ -25,6 +25,11 @@ fn collect_type_ref_type_params(type_ref: &LinkedTypeRef, names: &mut Vec<String
                 collect_type_ref_type_params(arg, names);
             }
         }
+        LinkedTypeRef::AppliedNominal { arguments, .. } => {
+            for argument in arguments {
+                collect_type_ref_type_params(argument, names);
+            }
+        }
         LinkedTypeRef::Record { fields } => {
             for field in fields.values() {
                 collect_type_ref_type_params(field, names);
@@ -54,6 +59,7 @@ fn collect_type_ref_type_params(type_ref: &LinkedTypeRef, names: &mut Vec<String
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
+        | LinkedTypeRef::PackageSchema { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => {}
@@ -72,7 +78,7 @@ mod tests {
 
     use crate::{
         ExecutableKind, FunctionTypeParamIr, LinkedExecutableBody, LinkedInterfaceInstantiationRef,
-        LinkedTypeRef, ParamIr, SlotLayoutIr,
+        LinkedNominalTypeRefBase, LinkedTypeRef, ParamIr, SlotLayoutIr,
     };
 
     use super::*;
@@ -116,7 +122,14 @@ mod tests {
                     },
                 ),
                 (
-                    "c_function".to_string(),
+                    "c_applied".to_string(),
+                    LinkedTypeRef::AppliedNominal {
+                        base: LinkedNominalTypeRefBase::LocalType { type_index: 0 },
+                        arguments: vec![type_param("TApplied")],
+                    },
+                ),
+                (
+                    "d_function".to_string(),
                     LinkedTypeRef::Function {
                         params: vec![FunctionTypeParamIr {
                             name: "value".to_string(),
@@ -134,6 +147,7 @@ mod tests {
                 "TNative".to_string(),
                 "TNullable".to_string(),
                 "TInterface".to_string(),
+                "TApplied".to_string(),
                 "TFunctionParam".to_string(),
                 "TFunctionReturn".to_string(),
             ]

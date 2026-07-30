@@ -648,6 +648,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2143,6 +2153,8 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "serde_yaml",
+ "skiff-syntax",
 ]
 
 [[package]]
@@ -2164,6 +2176,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-compiler-compiled",
  "skiff-compiler-contract",
  "skiff-compiler-core",
@@ -2174,6 +2187,7 @@ dependencies = [
  "skiff-compiler-projection",
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
+ "skiff-deployment",
  "skiff-syntax",
  "thiserror",
 ]
@@ -2245,6 +2259,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input-model",
+ "skiff-compiler-projection-input",
  "thiserror",
 ]
 
@@ -2269,6 +2284,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input",
+ "skiff-compiler-projection-input",
  "skiff-compiler-source",
  "skiff-syntax",
  "thiserror",
@@ -2292,8 +2308,10 @@ name = "skiff-compiler-projection-input"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "skiff-artifact-model",
  "skiff-compiler-core",
+ "thiserror",
 ]
 
 [[package]]
@@ -2310,6 +2328,7 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-input",
  "skiff-compiler-input-model",
+ "skiff-compiler-projection-input",
  "skiff-syntax",
  "thiserror",
 ]
@@ -2318,9 +2337,14 @@ dependencies = [
 name = "skiff-deployment"
 version = "0.1.0"
 dependencies = [
+ "fs2",
+ "hex",
+ "serde",
  "serde_json",
+ "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "thiserror",
 ]
 
@@ -2328,8 +2352,6 @@ dependencies = [
 name = "skiff-runtime-activation"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "skiff-artifact-model",
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",
@@ -2373,8 +2395,12 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
+ "skiff-compiler",
+ "skiff-deployment",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
@@ -2384,8 +2410,10 @@ dependencies = [
  "skiff-runtime-model",
  "skiff-runtime-native",
  "skiff-runtime-native-contract",
+ "skiff-test-runner",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2393,6 +2421,7 @@ name = "skiff-runtime-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "futures-util",
  "hex",
@@ -2404,6 +2433,8 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
+ "skiff-compiler",
  "skiff-deployment",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
@@ -2420,6 +2451,7 @@ dependencies = [
  "skiff-runtime-request",
  "skiff-runtime-service-db",
  "skiff-runtime-transport",
+ "skiff-test-runner",
  "thiserror",
  "time",
  "tokio",
@@ -2436,6 +2468,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-model",
 ]
@@ -2464,9 +2497,12 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
+ "skiff-compiler",
+ "skiff-deployment",
  "skiff-runtime-linked-program",
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",
+ "skiff-test-runner",
  "thiserror",
 ]
 
@@ -2481,6 +2517,8 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
+ "skiff-deployment",
  "skiff-runtime-model",
 ]
 
@@ -2506,6 +2544,7 @@ dependencies = [
  "sha1",
  "sha2",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
  "skiff-runtime-model",
@@ -2528,17 +2567,11 @@ name = "skiff-runtime-package-test"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hex",
- "serde",
- "serde_json",
- "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-runtime-activation",
- "skiff-runtime-linked-program",
+ "skiff-deployment",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
- "skiff-runtime-model",
 ]
 
 [[package]]
@@ -2547,11 +2580,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
  "skiff-runtime-eval",
  "skiff-runtime-linked-program",
+ "skiff-runtime-linker",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
  "thiserror",
@@ -2598,9 +2633,13 @@ dependencies = [
 name = "skiff-runtime-transport"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
+ "skiff-runtime-model",
  "skiff-runtime-request-contract",
  "url",
 ]
@@ -2618,16 +2657,19 @@ dependencies = [
 name = "skiff-test-runner"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64",
- "libc",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler",
  "skiff-compiler-core",
+ "skiff-compiler-input",
+ "skiff-compiler-source",
+ "skiff-deployment",
+ "skiff-runtime-model",
  "skiff-syntax",
  "thiserror",
 ]
@@ -3350,6 +3392,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3357,6 +3415,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-link"

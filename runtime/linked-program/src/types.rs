@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 pub use skiff_runtime_model::type_exports::{
     PackageSymbolKey, RuntimeTypeExports, ServiceSymbolKey,
@@ -6,9 +9,11 @@ pub use skiff_runtime_model::type_exports::{
 
 use super::{
     addr::{PackageSlot, TypeAddr, UnitAddr},
-    linked::{LinkedTypeDescriptor, LinkedTypeRef, LiteralIr, TypeDeclIr},
-    package_unit::PackageUnit,
-    ServiceSymbolRef,
+    linked::{
+        LinkedNamedUnionBranch, LinkedNominalTypeRefBase, LinkedTypeDescriptor, LinkedTypeRef,
+        LiteralIr, TypeDeclIr,
+    },
+    RuntimeExecutionPackage, ServiceSymbolRef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -60,7 +65,6 @@ pub fn anonymous_type_decl(
         name: name.into(),
         descriptor,
         type_params: Vec::new(),
-        discriminator: None,
         implements: Vec::new(),
         source_span: None,
     }
@@ -70,9 +74,19 @@ impl LinkedTypeDescriptor {
     pub fn type_refs(&self) -> Vec<&LinkedTypeRef> {
         match self {
             Self::Record { fields } => fields.values().collect(),
+            Self::Representation { representation } => vec![representation],
             Self::Alias { target } => vec![target],
-            Self::Union { variants } => variants.iter().collect(),
-            Self::Native { .. } => Vec::new(),
+            Self::Union { branches } => branches
+                .iter()
+                .filter_map(|branch| match branch {
+                    LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => Some(nominal_type),
+                    LinkedNamedUnionBranch::SyntheticDiscriminator { payload_type, .. } => {
+                        Some(payload_type)
+                    }
+                    LinkedNamedUnionBranch::Literal { .. } => None,
+                })
+                .collect(),
+            Self::Interface => Vec::new(),
         }
     }
 }
@@ -86,18 +100,22 @@ pub fn type_descriptor_to_value(descriptor: &LinkedTypeDescriptor) -> Value {
                 .map(|(name, ty)| (name.clone(), type_ref_to_value(ty)))
                 .collect::<BTreeMap<_, _>>(),
         }),
+        LinkedTypeDescriptor::Representation { representation } => json!({
+            "kind": "representation",
+            "representation": type_ref_to_value(representation),
+        }),
         LinkedTypeDescriptor::Alias { target } => json!({
             "kind": "alias",
             "target": type_ref_to_value(target),
         }),
-        LinkedTypeDescriptor::Union { variants } => json!({
+        LinkedTypeDescriptor::Union { branches } => json!({
             "kind": "union",
-            "variants": variants.iter().map(type_ref_to_value).collect::<Vec<_>>(),
+            "branches": branches
+                .iter()
+                .map(named_union_branch_to_value)
+                .collect::<Vec<_>>(),
         }),
-        LinkedTypeDescriptor::Native { symbol } => json!({
-            "kind": "external",
-            "symbol": symbol,
-        }),
+        LinkedTypeDescriptor::Interface => json!({ "kind": "interface" }),
     }
 }
 
@@ -127,6 +145,21 @@ pub fn type_ref_to_value(type_ref: &LinkedTypeRef) -> Value {
         LinkedTypeRef::PackageSymbol { symbol } => json!({
             "kind": "packageSymbol",
             "symbol": symbol,
+        }),
+        LinkedTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => json!({
+            "kind": "packageSchema",
+            "packageId": package_id,
+            "stableSchemaKey": stable_schema_key,
+            "packageSchemaTypeId": package_schema_type_id,
+        }),
+        LinkedTypeRef::AppliedNominal { base, arguments } => json!({
+            "kind": "appliedNominal",
+            "base": nominal_base_to_value(base),
+            "arguments": arguments.iter().map(type_ref_to_value).collect::<Vec<_>>(),
         }),
         LinkedTypeRef::Record { fields } => json!({
             "kind": "record",
@@ -184,6 +217,68 @@ pub fn type_ref_to_value(type_ref: &LinkedTypeRef) -> Value {
     }
 }
 
+fn nominal_base_to_value(base: &LinkedNominalTypeRefBase) -> Value {
+    match base {
+        LinkedNominalTypeRefBase::LocalType { type_index } => json!({
+            "kind": "localType",
+            "typeIndex": type_index,
+        }),
+        LinkedNominalTypeRefBase::PublicationType {
+            module_path,
+            type_index,
+        } => json!({
+            "kind": "publicationType",
+            "modulePath": module_path,
+            "typeIndex": type_index,
+        }),
+        LinkedNominalTypeRefBase::ServiceSymbol { symbol } => json!({
+            "kind": "serviceSymbol",
+            "symbol": symbol,
+        }),
+        LinkedNominalTypeRefBase::PackageSymbol { symbol } => json!({
+            "kind": "packageSymbol",
+            "symbol": symbol,
+        }),
+        LinkedNominalTypeRefBase::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => json!({
+            "kind": "packageSchema",
+            "packageId": package_id,
+            "stableSchemaKey": stable_schema_key,
+            "packageSchemaTypeId": package_schema_type_id,
+        }),
+        LinkedNominalTypeRefBase::Address { addr } => json!({
+            "kind": "address",
+            "addr": addr,
+        }),
+    }
+}
+
+fn named_union_branch_to_value(branch: &LinkedNamedUnionBranch) -> Value {
+    match branch {
+        LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => json!({
+            "kind": "concreteNominal",
+            "nominalType": type_ref_to_value(nominal_type),
+        }),
+        LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } => json!({
+            "kind": "syntheticDiscriminator",
+            "payloadType": type_ref_to_value(payload_type),
+            "discriminatorField": discriminator_field,
+            "discriminatorValue": discriminator_value,
+        }),
+        LinkedNamedUnionBranch::Literal { value } => json!({
+            "kind": "literal",
+            "value": value,
+        }),
+    }
+}
+
 fn literal_to_value(value: &LiteralIr) -> Value {
     match value {
         LiteralIr::Null => json!({
@@ -224,10 +319,10 @@ fn literal_to_value(value: &LiteralIr) -> Value {
 pub fn publication_id_for_type_addr<'a>(
     addr: &TypeAddr,
     service_id: &'a str,
-    packages: &'a [PackageUnit],
+    packages: &'a [Arc<RuntimeExecutionPackage>],
 ) -> Option<&'a str> {
     match &addr.unit {
         UnitAddr::Service => Some(service_id),
-        UnitAddr::Package(slot) => packages.get(*slot).map(|p| p.package_id.as_str()),
+        UnitAddr::Package(slot) => packages.get(*slot).map(|package| package.package_id()),
     }
 }

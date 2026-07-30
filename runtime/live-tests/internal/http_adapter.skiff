@@ -21,8 +21,12 @@ function textResponse(status: integer, body: string) -> std.http.HttpResponse {
   }
 }
 
+function marker() -> string {
+  return config.require<string>("runtimeLive.httpAdapter")
+}
+
 function rawEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const marker = config.require<string>("runtimeLive.httpAdapter")
+  const marker = marker()
   const header = std.http.header(request, "x-runtime-live-marker")
   if header == null {
     return textResponse(400, "missing x-runtime-live-marker")
@@ -73,4 +77,8 @@ function streamEcho(request: std.http.HttpRequest) -> Stream<std.http.HttpRespon
   emit(std.http.streamChunk(request.body))
   emit(std.http.streamEnd())
   return null
+}
+
+function packageEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return runtimeKit/packageEcho(request)
 }

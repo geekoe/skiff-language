@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryFeatureUnavailableReason, BoundaryOperationContract,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
 use skiff_runtime_activation::CallbackCapabilityError;
 use skiff_runtime_eval::error::RuntimeError;
@@ -16,8 +15,7 @@ use skiff_runtime_model::{
 };
 
 use super::{
-    artifacts::{ProjectedFixture, TypedExecutionContract},
-    runtime::TypedExecutionRuntime,
+    artifacts::TypedExecutionContract, runtime::TypedExecutionRuntime,
     scenario::TypedExecutionFixture,
 };
 
@@ -26,6 +24,7 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
     let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::returning_null(
         async_unary_contract(),
         BTreeMap::new(),
+        true,
     ))
     .await;
     let provider = fixture.resolve_provider();
@@ -81,7 +80,19 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
 }
 
 #[tokio::test]
-async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_shared_planner() {
+async fn typed_execution_provider_suspension_summary_does_not_select_boundary_lane() {
+    for may_suspend in [false, true] {
+        let fixture = TypedExecutionFixture::admit_contract(
+            TypedExecutionContract::unary().with_provider_may_suspend(may_suspend),
+        )
+        .await;
+
+        fixture.assert_dynamic_execution_results().await;
+    }
+}
+
+#[tokio::test]
+async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fixed_carrier() {
     let fixture =
         TypedExecutionFixture::admit_contract(TypedExecutionContract::async_typed_error()).await;
     let runtime = TypedExecutionRuntime::new(
@@ -104,14 +115,49 @@ async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_
             Vec::new(),
         )
         .await
-        .expect_err("declared provider throw should cross the async service boundary");
+        .expect_err("provider throw should cross the async service boundary");
     let RuntimeError::UserException(exception) = error else {
-        panic!("declared async typed error should retain its user-exception class: {error}")
+        panic!("linked public error should materialize as a caller user exception: {error}")
+    };
+    let request = exception.request();
+    assert!(
+        request.fixed_service_error().is_some(),
+        "cross-service materialization must retain the fixed carrier"
+    );
+    assert!(
+        request.local_catch_identity().is_some(),
+        "the linked public package type must restore a nominal caller catch identity"
+    );
+    assert!(!request.correlation().trace_id.is_empty());
+    assert!(!request.correlation().error_id.is_empty());
+    let RuntimeValue::Heap(payload_handle) = request
+        .local_value()
+        .expect("linked public error must restore a local payload")
+        .value()
+    else {
+        panic!("restored public error payload must remain a record")
+    };
+    let HeapNode::Object(payload) = heap
+        .get(*payload_handle)
+        .expect("restored public error record must remain in the caller heap")
+    else {
+        panic!("restored public error payload must remain an object")
+    };
+    let Some(RuntimeValue::Heap(messages_handle)) = payload.fields().get("messages") else {
+        panic!("restored public error payload must retain its messages array")
+    };
+    let HeapNode::Array(messages) = heap
+        .get(*messages_handle)
+        .expect("restored public error messages must remain in the caller heap")
+    else {
+        panic!("restored public error messages must remain an array")
     };
     assert_eq!(
-        exception.error_payload().unwrap().get("messages"),
-        Some(&serde_json::json!(["provider async typed error"])),
-        "shared planner must materialize the declared payload shape into the caller error"
+        messages,
+        &[RuntimeValue::String(
+            "provider async typed error".to_string()
+        )],
+        "typed API must expose the exact restored public payload"
     );
 }
 
@@ -119,7 +165,7 @@ async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_
 async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_target() {
     {
         let fixture = TypedExecutionFixture::admit_contract(
-            TypedExecutionContract::returning_null(server_stream_contract(), BTreeMap::new()),
+            TypedExecutionContract::returning_null(server_stream_contract(), BTreeMap::new(), true),
         )
         .await;
         let runtime = TypedExecutionRuntime::new(
@@ -183,6 +229,248 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
             "the completed request generation must have no live stream entries"
         );
     }
+}
+
+#[tokio::test]
+async fn typed_execution_service_stream_preserves_two_items_and_generic_substitution_full_chain() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("admitted generic Stream<T> call should consume true then false");
+
+    assert_eq!(result, RuntimeValue::Null);
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
+async fn typed_execution_package_direct_stream_installs_exact_producer_context_full_chain() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(1),
+            Vec::new(),
+        )
+        .await
+        .expect("exact package-direct Stream<T> producer should consume true then false");
+
+    assert_eq!(result, RuntimeValue::Null);
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
+async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream_error()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect_err("provider failure after its first item must terminate the consumer");
+
+    let RuntimeError::UserException(exception) = error else {
+        panic!("public provider stream failure must restore a caller user exception: {error}")
+    };
+    let request = exception.request();
+    assert!(
+        request.fixed_service_error().is_some(),
+        "provider stream failure must retain its fixed cross-service carrier"
+    );
+    assert!(!request.correlation().trace_id.is_empty());
+    assert!(!request.correlation().error_id.is_empty());
+    let RuntimeValue::Heap(payload_handle) = request
+        .local_value()
+        .expect("linked stream error type must restore its payload")
+        .value()
+    else {
+        panic!("restored stream error payload must be a record")
+    };
+    let HeapNode::Object(payload) = heap
+        .get(*payload_handle)
+        .expect("restored stream error record must remain in the caller heap")
+    else {
+        panic!("restored stream error payload must remain an object")
+    };
+    assert_eq!(
+        payload.fields().get("message"),
+        Some(&RuntimeValue::String(
+            "provider stream typed error".to_string()
+        ))
+    );
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
+async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isolates_peer() {
+    let baseline = skiff_runtime_eval::provider_stream_tasks_active_for_test();
+    let cancelled_fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::unconsumed_boolean_stream())
+            .await;
+    let peer_fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::boolean_stream()).await;
+    let cancelled_runtime = TypedExecutionRuntime::new(
+        &cancelled_fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let cancelled_interpreter = cancelled_runtime.interpreter();
+    let cancelled_context =
+        cancelled_runtime.context(&cancelled_interpreter, &cancelled_fixture.eval_target);
+    let mut cancelled_heap = cancelled_context.request_heap();
+    let stream = cancelled_interpreter
+        .execute_runtime_assembly_addr(
+            cancelled_context,
+            &mut cancelled_heap,
+            &cancelled_fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("first admitted call should return its stream before request cancellation");
+    assert!(matches!(stream, RuntimeValue::Heap(_)));
+
+    cancelled_runtime.cancel_request();
+
+    let peer_runtime = TypedExecutionRuntime::new(
+        &peer_fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let peer_context = peer_runtime.context(&cancelled_interpreter, &peer_fixture.eval_target);
+    let mut peer_heap = peer_context.request_heap();
+    let peer_result = cancelled_interpreter
+        .execute_runtime_assembly_addr(
+            peer_context,
+            &mut peer_heap,
+            &peer_fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("cancelling one admitted request must not affect the peer stream");
+    assert_eq!(peer_result, RuntimeValue::Null);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while skiff_runtime_eval::provider_stream_tasks_active_for_test() != baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("request cancellation and peer completion must clean both provider tasks");
+    wait_for_stream_runtime_empty(&cancelled_interpreter.stream_runtime).await;
+}
+
+#[tokio::test]
+async fn typed_execution_service_stream_deadline_releases_provider_task_and_lease() {
+    let baseline = skiff_runtime_eval::provider_stream_tasks_active_for_test();
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::unconsumed_boolean_stream())
+            .await;
+    let provider = fixture.resolve_provider();
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    )
+    .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(250));
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let stream = interpreter
+        .execute_runtime_assembly_addr(
+            context.clone(),
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("service call should return its stream before the request deadline");
+    assert!(matches!(stream, RuntimeValue::Heap(_)));
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while skiff_runtime_eval::provider_stream_tasks_active_for_test() == baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached provider task must start before deadline cleanup is observed");
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while skiff_runtime_eval::provider_stream_tasks_active_for_test() != baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("deadline must terminate the detached provider task");
+
+    assert!(
+        provider.provider_request().open_stream().is_none(),
+        "deadline must cancel the provider request and release its stream lease"
+    );
+    assert_eq!(
+        crate::eval_capability_adapter::concrete_stream_runtime(&interpreter.stream_runtime)
+            .active_stream_count(),
+        1,
+        "typed deadline terminal must remain registered until request-scope teardown"
+    );
+    drop(context);
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
 }
 
 #[tokio::test]
@@ -410,24 +698,6 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_tuple_b
     );
 }
 
-#[test]
-fn typed_execution_async_stream_cancel_rejects_unsupported_descriptor_before_provider() {
-    let mut contract = async_unary_contract();
-    contract.cancellation = BoundaryCancellationContract::Unsupported {
-        reason: BoundaryFeatureUnavailableReason::UnknownSemantics,
-    };
-    let rejected = std::panic::catch_unwind(|| {
-        ProjectedFixture::new(TypedExecutionContract::returning_null(
-            contract,
-            BTreeMap::new(),
-        ))
-    });
-    assert!(
-        rejected.is_err(),
-        "unsupported cancellation descriptor must fail during typed projection"
-    );
-}
-
 fn async_unary_contract() -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: Vec::new(),
@@ -435,11 +705,8 @@ fn async_unary_contract() -> BoundaryOperationContract {
             ty: ContractTypeRef::builtin("void"),
             value_plan: detached_plan(BoundaryValueLifetime::Call),
         },
-        errors: BoundaryErrorContract::None,
         stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::Cooperative,
         callbacks: BoundaryCallbackContract::None,
-        may_suspend: true,
         effect_guarantee: detached_effect_guarantee(),
     }
 }

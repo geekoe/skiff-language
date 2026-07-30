@@ -139,6 +139,28 @@ fn collect_config_uses_in_block(
     for (statement_index, statement) in block.statements.iter().enumerate() {
         let statement_spans = block_spans.and_then(|spans| spans.statements.get(statement_index));
         match statement {
+            Stmt::CompilerTestEffectRegister { .. } => {
+                for (index, expression) in
+                    crate::shared::ast_utils::compiler_test_effect_expressions(statement)
+                        .expect("matched compiler test effect")
+                        .into_iter()
+                        .enumerate()
+                {
+                    collect_config_uses_in_expr(
+                        diagnostic_path,
+                        source_path,
+                        expression,
+                        // The compiler-owned target probe is source-span entry
+                        // zero, but it is link metadata rather than an
+                        // executed effect expression.
+                        statement_spans.and_then(|spans| spans.expressions.get(index + 1)),
+                        &const_strings,
+                        uses,
+                        presence_uses,
+                        violations,
+                    );
+                }
+            }
             Stmt::Let {
                 mutable,
                 name,
@@ -231,6 +253,18 @@ fn collect_config_uses_in_block(
                     source_path,
                     value,
                     statement_spans.and_then(|spans| spans.expressions.get(1)),
+                    &const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
+            Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+                collect_config_uses_in_block(
+                    diagnostic_path,
+                    source_path,
+                    body,
+                    statement_spans.and_then(|spans| spans.blocks.first()),
                     &const_strings,
                     uses,
                     presence_uses,
@@ -555,6 +589,54 @@ fn collect_config_uses_in_expr(
                 }
             }
         }
+        Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
+            collect_config_uses_in_block(
+                diagnostic_path,
+                source_path,
+                &value.body,
+                expr_spans.and_then(|spans| spans.blocks.first()),
+                const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+            let mut tail_const_strings = const_strings.clone();
+            for statement in &value.body.statements {
+                if let Stmt::Let {
+                    mutable: false,
+                    name,
+                    value,
+                    ..
+                } = statement
+                {
+                    if let Some(const_value) = const_string_expr(value, &tail_const_strings) {
+                        tail_const_strings.insert(name.clone(), const_value);
+                    } else {
+                        tail_const_strings.remove(name);
+                    }
+                }
+            }
+            collect_config_uses_in_expr(
+                diagnostic_path,
+                source_path,
+                &value.tail,
+                child_span(expr_spans, 0),
+                &tail_const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+        }
+        Expr::Timeout { value, .. } => collect_config_uses_in_expr(
+            diagnostic_path,
+            source_path,
+            value,
+            child_span(expr_spans, 0),
+            const_strings,
+            uses,
+            presence_uses,
+            violations,
+        ),
         Expr::Throw { value } => collect_config_uses_in_expr(
             diagnostic_path,
             source_path,
@@ -1028,5 +1110,109 @@ fn expression_has_values_root(expr: &Expr) -> bool {
         Expr::Field { object, .. } => expression_has_values_root(object),
         Expr::Generic { callee, .. } => expression_has_values_root(callee),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::shared::{
+        ast::{ExprSourceSpans, StmtSourceSpans, TestEffectStepOutcome},
+        error::SourceSpan,
+        parser::parse_source,
+    };
+
+    use super::*;
+
+    #[test]
+    fn compiler_test_effect_config_spans_skip_the_target_probe() {
+        let parsed = parse_source(
+            r#"
+function values() -> void {
+  const common = config.require<string>("effect.common")
+  const step = config.require<string>("effect.step")
+  const outcome = config.require<string>("effect.outcome")
+}
+"#,
+        )
+        .expect("fixture parses");
+        let values = parsed.functions[0]
+            .body
+            .statements
+            .iter()
+            .map(|statement| match statement {
+                Stmt::Let { value, .. } => value.clone(),
+                other => panic!("expected let fixture, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        let value_spans = parsed.source_spans.functions[0]
+            .body
+            .statements
+            .iter()
+            .map(|statement| statement.expressions[0].clone())
+            .collect::<Vec<_>>();
+        let statement_span = parsed.source_spans.functions[0].body.statements[0].span;
+        let target_probe_span = ExprSourceSpans {
+            span: SourceSpan::synthetic(),
+            children: Vec::new(),
+            blocks: Vec::new(),
+            record_fields: Vec::new(),
+        };
+        let block = Block {
+            statements: vec![Stmt::CompilerTestEffectRegister {
+                target: "dependency/run".to_string(),
+                target_probe: Expr::Identifier("targetProbe".to_string()),
+                declaration_start: true,
+                expect: Some(values[0].clone()),
+                step_expect: Some(values[1].clone()),
+                outcome: TestEffectStepOutcome::Respond {
+                    value: values[2].clone(),
+                },
+            }],
+        };
+        let spans = BlockSourceSpans {
+            span: parsed.source_spans.functions[0].body.span,
+            statements: vec![StmtSourceSpans {
+                span: statement_span,
+                expressions: vec![
+                    target_probe_span,
+                    value_spans[0].clone(),
+                    value_spans[1].clone(),
+                    value_spans[2].clone(),
+                ],
+                blocks: Vec::new(),
+            }],
+        };
+        let mut uses = Vec::new();
+        let mut presence_uses = Vec::new();
+        let mut violations = Vec::new();
+
+        collect_config_uses_in_block(
+            "fixture.test.skiff",
+            "fixture.test.skiff",
+            &block,
+            Some(&spans),
+            &BTreeMap::new(),
+            &mut uses,
+            &mut presence_uses,
+            &mut violations,
+        );
+
+        assert!(violations.is_empty(), "{violations:?}");
+        assert!(presence_uses.is_empty());
+        assert_eq!(
+            uses.iter()
+                .map(|usage| usage.path.as_str())
+                .collect::<Vec<_>>(),
+            ["effect.common", "effect.step", "effect.outcome"]
+        );
+        assert_eq!(
+            uses.iter()
+                .map(|usage| usage.source_span)
+                .collect::<Vec<_>>(),
+            value_spans
+                .iter()
+                .map(|spans| Some(ConfigSourceSpan::from(spans.span)))
+                .collect::<Vec<_>>()
+        );
     }
 }

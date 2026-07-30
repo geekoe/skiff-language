@@ -7,39 +7,13 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { isolatedInstanceOperations } from '../lib/isolated-test-runtime-instance.mjs';
+import {
+  captureIsolatedTestConfig,
+  claimIsolatedTestWorkspace,
+} from '../lib/isolated-test-runtime-workspace.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const skiffCli = join(root, 'scripts', 'skiff.mjs');
 const instanceCli = join(root, 'scripts', 'skiff-instance.mjs');
-
-test('missing tar is reported through the safe outcome failure before remote I/O', async () => {
-  const fixture = await mkdtemp(join(tmpdir(), 'skiff-missing-tar-'));
-  const packageRoot = join(fixture, 'package');
-  const emptyBin = join(fixture, 'empty-bin');
-  try {
-    await mkdir(packageRoot, { recursive: true });
-    await mkdir(emptyBin);
-    await writeFile(join(packageRoot, 'package.yml'), [
-      'id: example.com/missing-tar',
-      'version: 0.1.0',
-      '',
-    ].join('\n'));
-    await writeFile(join(packageRoot, 'main.skiff'), 'export function value() -> string { return "ok" }\n');
-    const result = await runProcess(process.execPath, [
-      skiffCli,
-      'package',
-      'publish',
-      packageRoot,
-    ], {
-      env: { ...process.env, HOME: fixture, PATH: emptyBin },
-    });
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /failed to spawn tar: ENOENT/);
-    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /spawnargs|cause/);
-  } finally {
-    await rm(fixture, { recursive: true, force: true });
-  }
-});
 
 test('instance status treats missing lsof as unavailable and missing ps as process fallback', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-instance-command-outcome-'));
@@ -101,19 +75,24 @@ test('isolated status checked adapter rejects nonzero and invalid JSON before cl
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-isolated-status-command-'));
   const scriptsRoot = join(fixture, 'scripts');
   const instancePath = join(scriptsRoot, 'skiff-instance.mjs');
+  const configPath = join(fixture, 'instance', 'config.yml');
   const operations = isolatedInstanceOperations({
     skiffRoot: fixture,
     baseEnv: process.env,
   });
   try {
+    let ownershipReceipt = await claimIsolatedTestWorkspace(fixture);
     await mkdir(scriptsRoot, { recursive: true });
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, 'environment: isolated-test\n');
+    ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
     await writeFile(instancePath, [
       "process.stdout.write('status stdout');",
       "process.stderr.write('status stderr');",
       'process.exit(9);',
     ].join('\n'));
     await assert.rejects(
-      operations.verifyInstanceStopped('/tmp/fake-config.yml'),
+      operations.verifyInstanceStopped(ownershipReceipt),
       (error) => {
         assert.match(error.message, /node exited with 9/);
         assert.match(error.message, /stderr:\nstatus stderr/);
@@ -125,7 +104,7 @@ test('isolated status checked adapter rejects nonzero and invalid JSON before cl
 
     await writeFile(instancePath, "process.stdout.write('not-json');\n");
     await assert.rejects(
-      operations.verifyInstanceStopped('/tmp/fake-config.yml'),
+      operations.verifyInstanceStopped(ownershipReceipt),
       SyntaxError,
     );
   } finally {

@@ -8,35 +8,6 @@ use std::{
 use super::*;
 
 #[test]
-fn std_registry_rejects_non_std_package_entries() {
-    let temp = temp_dir("std-registry-mismatch");
-    let std_dir = temp.join("std");
-    let other_dir = temp.join("other");
-    fs::create_dir_all(&std_dir).unwrap();
-    fs::create_dir_all(&other_dir).unwrap();
-    fs::write(
-        std_dir.join("registry.yml"),
-        r#"
-schemaVersion: skiff-std-registry-v1
-packages:
-  - id: other
-    path: ../other
-"#,
-    )
-    .unwrap();
-    fs::write(other_dir.join("package.yml"), "id: other\nversion: 1.0.0\n").unwrap();
-
-    let error = discover_builtin_std_registry_manifests(&std_dir, &std_dir.join("registry.yml"))
-        .unwrap_err()
-        .to_string();
-
-    assert!(error.contains("std registry package other is invalid"));
-    assert!(error.contains("std registry can only declare skiff.run/std"));
-
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
 fn rejects_package_dependency_missing_version() {
     let error = read_temp_manifest(
         "missing-version",
@@ -130,6 +101,7 @@ version: 1.0.0
 "#,
     )
     .unwrap();
+    fs::write(temp.join("api.yml"), "{}\n").unwrap();
 
     let manifest = manifest_io::read_package_manifest(
         &manifest_path,
@@ -618,6 +590,7 @@ fn discovers_multiple_versions_for_same_package_id() {
     write_package_store_manifest(&store, "skiff.run/llm", "2.0.0");
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &temp,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -640,7 +613,7 @@ fn discovers_package_manifest_from_concrete_package_root() {
     let temp = temp_dir("current-package");
     write_package_manifest(&temp, "skiff.run/llm", "1.0.0");
 
-    let manifests = discover_package_manifests(&temp).unwrap();
+    let manifests = discover_package_manifests(&test_platform_sources(), &temp).unwrap();
 
     assert!(manifests.contains_key(&("skiff.run/llm".to_string(), "1.0.0".to_string())));
 
@@ -657,6 +630,7 @@ fn discovers_package_store_version_path() {
     fs::create_dir_all(&service).unwrap();
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -683,6 +657,7 @@ fn does_not_scan_unrequested_package_store_entries() {
     fs::create_dir_all(&service).unwrap();
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -705,6 +680,7 @@ fn package_dir_is_not_treated_as_a_single_dependency_package() {
     fs::create_dir_all(&service).unwrap();
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: vec![package_root],
@@ -727,6 +703,7 @@ fn does_not_implicitly_discover_ancestor_package_stores() {
     write_package_store_manifest(&store, "skiff.run/llm", "1.0.0");
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: Vec::new(),
@@ -749,6 +726,7 @@ fn ordered_package_dirs_shadow_lower_priority_duplicates() {
     write_package_store_manifest(&second, "skiff.run/llm", "1.0.0");
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &temp,
         &PackageResolutionDirs {
             package_dirs: vec![first.clone(), second],
@@ -773,6 +751,7 @@ fn resolves_direct_dependency_by_exact_package_id_and_version() {
     write_package_store_manifest(&store, "skiff.run/llm", "2.0.0");
     let dependency = package_dependency("skiff.run/llm", "2.0.0");
     let available = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &temp,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -836,6 +815,199 @@ resources:
 }
 
 #[test]
+fn package_manifest_accepts_exact_package_and_service_dependencies() {
+    let manifest = read_temp_manifest(
+        "package-and-service-dependencies",
+        r#"
+id: example.com/app
+version: release-2026-07-24
+packages:
+  - id: example.com/library
+    version: 1.2.3
+    alias: library
+services:
+  - id: example.com/payment
+    version: 3.0.0
+    alias: payment
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(manifest.dependencies[0].effective_alias(), "library");
+    assert_eq!(manifest.services[0].effective_alias(), "payment");
+}
+
+#[test]
+fn package_and_service_dependency_aliases_share_one_namespace() {
+    let error = read_temp_manifest(
+        "shared-dependency-alias",
+        r#"
+id: example.com/app
+version: 1.0.0
+packages:
+  - id: example.com/library
+    version: 1.0.0
+    alias: shared
+services:
+  - id: example.com/payment
+    version: 1.0.0
+    alias: shared
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("services alias shared"), "{error}");
+}
+
+#[test]
+fn package_dependency_parses_distinct_top_level_alias() {
+    let manifest = read_temp_manifest(
+        "top-level-alias",
+        r#"
+id: example.com/app-tests
+version: 1.0.0
+packages:
+  - id: example.com/library
+    version: 1.0.0
+    alias: library
+    topLevelAlias: libraryImpl
+"#,
+    )
+    .unwrap();
+
+    let dependency = &manifest.dependencies[0];
+    assert_eq!(dependency.effective_alias(), "library");
+    assert_eq!(dependency.top_level_alias.as_deref(), Some("libraryImpl"));
+}
+
+#[test]
+fn package_dependency_rejects_legacy_access_field() {
+    let error = read_temp_manifest(
+        "legacy-package-access",
+        r#"
+id: example.com/app-tests
+version: 1.0.0
+packages:
+  - id: example.com/library
+    version: 1.0.0
+    alias: library
+    access: topLevel
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("unknown field `access`"), "{error}");
+}
+
+#[test]
+fn top_level_alias_shares_the_dependency_alias_namespace() {
+    for (name, dependencies, expected) in [
+        (
+            "same-entry-alias",
+            "packages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: library",
+            "topLevelAlias library is assigned to more than one dependency name",
+        ),
+        (
+            "duplicate-top-level-alias",
+            "packages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: sharedImpl\n  - id: example.com/other\n    version: 1.0.0\n    alias: other\n    topLevelAlias: sharedImpl",
+            "topLevelAlias sharedImpl is assigned to more than one dependency name",
+        ),
+        (
+            "primary-top-level-collision",
+            "packages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: payment\nservices:\n  - id: example.com/payment\n    version: 1.0.0\n    alias: payment",
+            "services alias payment is assigned to more than one dependency name",
+        ),
+    ] {
+        let error = read_temp_manifest(
+            name,
+            &format!("id: example.com/app-tests\nversion: 1.0.0\n{dependencies}\n"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{name}: {error}");
+    }
+}
+
+#[test]
+fn top_level_alias_must_be_a_non_reserved_identifier() {
+    for (name, alias, expected) in [
+        (
+            "invalid-top-level-alias",
+            "Library",
+            "must match [a-z][A-Za-z0-9_]*",
+        ),
+        (
+            "reserved-top-level-alias",
+            "root",
+            "uses a reserved package name",
+        ),
+    ] {
+        let error = read_temp_manifest(
+            name,
+            &format!(
+                "id: example.com/app-tests\nversion: 1.0.0\npackages:\n  - id: example.com/library\n    version: 1.0.0\n    alias: library\n    topLevelAlias: {alias}\n"
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{name}: {error}");
+    }
+}
+
+#[test]
+fn service_dependencies_cannot_declare_top_level_alias() {
+    let error = read_temp_manifest(
+        "service-top-level-alias",
+        r#"
+id: example.com/app-tests
+version: 1.0.0
+services:
+  - id: example.com/payment
+    version: 1.0.0
+    alias: payment
+    topLevelAlias: paymentImpl
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("available only for package dependencies of test services"),
+        "{error}"
+    );
+}
+
+#[test]
+fn package_manifest_rejects_contracts_and_non_exact_dependency_versions() {
+    for (name, field) in [
+        (
+            "contracts",
+            "contracts:\n  - alias: payment\n    serviceId: example.com/payment\n    contractVersion: 1.0.0",
+        ),
+        (
+            "package-range",
+            "packages:\n  - id: example.com/library\n    version: ^1.0.0\n    alias: library",
+        ),
+        (
+            "service-range",
+            "services:\n  - id: example.com/payment\n    version: '>=3.0.0'\n    alias: payment",
+        ),
+    ] {
+        let error = read_temp_manifest(
+            name,
+            &format!("id: example.com/app\nversion: 1.0.0\n{field}\n"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown field") || error.contains("must be an exact version"),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
 fn rejects_package_manifest_invalid_resources() {
     let error = read_temp_manifest(
         "invalid-resources",
@@ -861,10 +1033,47 @@ resources:
     );
 }
 
+#[test]
+fn parses_typed_package_state_requirements_without_deployment_namespace() {
+    let manifest = read_temp_manifest(
+        "state-requirement",
+        r#"
+id: example.com/app
+version: 1.0.0
+state:
+  registry-store:
+    kind: database
+"#,
+    )
+    .unwrap();
+    let requirement = &manifest.state["registry-store"];
+    assert_eq!(requirement.key, "registry-store");
+    assert_eq!(
+        requirement.kind,
+        skiff_artifact_model::StateBindingKind::Database
+    );
+
+    let error = read_temp_manifest(
+        "state-requirement-namespace",
+        r#"
+id: example.com/app
+version: 1.0.0
+state:
+  registry-store:
+    kind: database
+    namespace: deployment-owned
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field `namespace`"), "{error}");
+}
+
 fn read_temp_manifest(name: &str, text: &str) -> Result<PackageManifest, PackageConfigError> {
     let temp = temp_dir(name);
     let manifest_path = temp.join("package.yml");
     fs::write(&manifest_path, text).unwrap();
+    fs::write(temp.join("api.yml"), "{}\n").unwrap();
     let result = read_user_package_manifest(&manifest_path);
     let _ = fs::remove_dir_all(temp);
     result
@@ -891,6 +1100,7 @@ fn write_package_manifest(dir: &Path, id: &str, version: &str) {
         format!("id: {id}\nversion: {version}\n"),
     )
     .unwrap();
+    fs::write(dir.join("api.yml"), "{}\n").unwrap();
 }
 
 fn write_package_store_manifest(store: &Path, id: &str, version: &str) {
@@ -905,9 +1115,18 @@ fn package_dependency(id: &str, version: &str) -> PackageDependency {
         id: id.to_string(),
         version: version.to_string(),
         alias: Some("pkg".to_string()),
+        top_level_alias: None,
         config: empty_dependency_config(),
         collection_name_mapping: BTreeMap::new(),
     }
+}
+
+fn test_platform_sources() -> crate::CompilerPlatformSources {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    crate::CompilerPlatformSources::new(&root).unwrap()
 }
 
 fn temp_dir(name: &str) -> PathBuf {

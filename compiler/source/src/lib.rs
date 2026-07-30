@@ -1,7 +1,6 @@
 pub mod alias_resolution;
 pub mod api;
 pub(crate) mod api_seed;
-mod api_yml;
 pub mod callable_effects;
 mod compile_model;
 mod config_metadata;
@@ -12,8 +11,10 @@ mod contract_dependency_test_fixture;
 mod contract_type_resolution;
 mod dependency_analysis;
 pub mod entity;
+mod execution_semantics;
 pub(crate) mod expression_model;
 pub(crate) mod expression_type_model;
+mod foreign_db_targets;
 mod linked_facts;
 pub(crate) mod linked_publication;
 mod name_resolution_model;
@@ -38,6 +39,8 @@ pub mod source_identity;
 pub mod source_name_resolution;
 pub(crate) mod source_rules;
 mod test_rules;
+#[cfg(test)]
+mod timeout_source_semantics_tests;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
 
@@ -78,38 +81,53 @@ pub use contract_type_resolution::{
 };
 pub use dependency_analysis::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
-    SourceDependencyAnalysisError, SourceDependencyAnalysisInput,
+    PackageDependencyConstantAnalysis, SourceDependencyAnalysisError,
+    SourceDependencyAnalysisInput,
+};
+pub use execution_semantics::{
+    ConcurrentLaneKind, ConcurrentLanePlan, ConcurrentSourcePlan, ExecutionSourceSite,
+    SourceExecutionSemantics, TimeoutSourcePlan,
 };
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
 };
 pub use expression_type_model::{
+    package_type_ref_from_contract_type, runtime_receiver_root_from_type_ref,
     ConstructorFieldTypeMismatch, ConstructorFieldValueSource, ConstructorProvidedField,
     ConstructorValidation, DuplicateConstructorField, ExpressionTypeFact, ExpressionTypeModel,
-    ExpressionTypeModelBuildError, MaterializedConstructorField, MissingConstructorField,
-    RepresentationConstructorValidation, UnknownConstructorField,
+    ExpressionTypeModelBuildError, MaterializedConstructorField, MaterializedObjectField,
+    MissingConstructorField, ObjectFieldValueSource, ObjectMaterializationKind,
+    RepresentationConstructorValidation, TargetTypedObjectMaterialization, UnknownConstructorField,
 };
+pub use foreign_db_targets::{foreign_package_db_metadata_index, ForeignPackageDbDependency};
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
 pub use linked_publication::CompileParsedPackageSourcesInput;
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
 pub use resolved_call_targets::{
-    ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
+    ConfigIntrinsic, ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };
 pub use semantics::PackageCompilePlan;
 pub use shared::publication_error::PublicationError as SourceCompileError;
 pub use source_file_facts::{
     publication_db_metadata_index, type_indices, type_text_with_args, LocalDbObjectIndex,
-    PackageInterfaceMethodIndex, PublicationDbMetadata, PublicationDbMetadataIndex,
+    PackageInterfaceMethodIndex, PublicationDbLease, PublicationDbMetadata,
+    PublicationDbMetadataIndex, PublicationDbObjectKey, PublicationDbRetention,
 };
 pub use type_resolution_model::{
-    AnyInterfaceMethodResolution, ConstructorTargetResolution,
+    AnyInterfaceMethodResolution, CatchLeafIdentity, CatchLeaves, ConstructorTargetResolution,
     LocalAnyInterfaceConformanceResolution, PackageCallableResolution,
     RepresentationConstructorResolution, ResolvedTypeRef, TypeResolutionContext,
     TypeResolutionModel, TypeResolutionPackageCallableFact, TypeResolutionPackageDependencyFact,
     TypeResolutionPackageFacts, TypeResolutionPackageSchemaTypeFact,
 };
 pub use type_symbol_index::{publication_type_symbols, PublicationTypeSymbolIndex};
+
+pub fn validate_source_execution_semantics(
+    model: &PackageSourceModel,
+) -> Result<(), SourceCompileError> {
+    model.execution_semantics().validate_complete()
+}
 
 pub fn build_package_from_parsed_sources(
     input: CompileParsedPackageSourcesInput<'_, '_>,
@@ -148,8 +166,10 @@ fn build_from_linked(
     package_db_schema::validate_package_db_schema(&parsed_sources)?;
     let dependency_package_config_facts = linked.package_facts.map(dependency_package_config_facts);
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
-    let package_db_metadata_index =
-        package_db_metadata_index(linked.package_facts, linked.package_dependencies);
+    let mut package_db_metadata_index =
+        package_db_metadata_index(linked.package_facts, linked.package_dependencies)
+            .unwrap_or_default();
+    package_db_metadata_index.extend(dependency_analysis.foreign_db_metadata().clone());
     let source_identity = source_identity::source_identity(&parsed_sources);
     let declaration_anchors = source_identity::PublicationDeclarationAnchors::build(
         &parsed_sources,
@@ -201,8 +221,9 @@ fn build_from_linked(
         diagnostic_root: linked.diagnostic_root,
         package_aliases: &package_aliases,
         package_dependencies: linked.package_dependencies,
-        package_db_metadata_index,
+        package_db_metadata_index: Some(package_db_metadata_index),
         type_resolution_package_facts: type_resolution_package_facts.as_deref(),
+        type_resolution_package_artifacts: linked.package_artifacts,
         entity_model,
         name_resolution,
         policy: linked.policy,
@@ -265,11 +286,15 @@ fn type_resolution_package_fact<'facts>(
             .values()
             .filter_map(|binding| {
                 let source_ast = parsed_source_ast(parsed_sources, &binding.source_module)?;
+                let exact_signature = compiled
+                    .callable_signatures()
+                    .signature(&binding.public_path);
                 Some(TypeResolutionPackageCallableFact {
                     public_path: binding.public_path.as_str(),
                     source_module: binding.source_module.as_str(),
                     source_symbol: binding.source_symbol.as_str(),
                     source_ast,
+                    exact_signature,
                 })
             })
             .collect(),

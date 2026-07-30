@@ -38,9 +38,11 @@ const SELECTOR_EXPANSIONS = VERIFY_SELECTOR_GRAPH.expansions;
 export async function buildVerifyPlan({
   root,
   selectors = ['verify'],
-  runtimeLiveConfig,
-  runtimeLiveReloadUrl,
+  runtimeLiveActivationUrl,
+  runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
+  runtimeLiveEnvironment,
+  runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env = process.env,
   catalogRoot = root,
@@ -54,9 +56,11 @@ export async function buildVerifyPlan({
   const leaves = expandSelectors(selectors);
   const builders = phaseBuilders({
     root,
-    runtimeLiveConfig,
-    runtimeLiveReloadUrl,
+    runtimeLiveActivationUrl,
+    runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
+    runtimeLiveEnvironment,
+    runtimeLiveExpectedGeneration,
     loopRiskConfig,
     env,
     liveRegistry,
@@ -176,18 +180,22 @@ function expandSelector(selector, leaves, seenLeaves, active) {
 
 function phaseBuilders({
   root,
-  runtimeLiveConfig,
-  runtimeLiveReloadUrl,
+  runtimeLiveActivationUrl,
+  runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
+  runtimeLiveEnvironment,
+  runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env,
   liveRegistry,
   liveSelectors,
 }) {
   const registryOptions = {
-    runtimeLiveConfig,
-    runtimeLiveReloadUrl,
+    runtimeLiveActivationUrl,
+    runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
+    runtimeLiveEnvironment,
+    runtimeLiveExpectedGeneration,
     loopRiskConfig,
     env,
     registry: liveRegistry,
@@ -240,14 +248,9 @@ function phaseBuilders({
     ],
     'scripts-syntax': async () => javascriptSyntaxPhases(root),
     'scripts-tests': async () => scriptTestPhases(root),
-    'scripts-dev-sync': async () => [
-      phase(root, 'implementation:tooling:dev-sync-fixture', 'implementation:tooling', 'node', [
-        'scripts/skiff-dev-sync.mjs',
-        '--check-sync',
-        '--root',
-        'compiler/tests/fixtures/router-websocket-fixture',
-      ]),
-    ],
+    'scripts-dev-sync': async () => checkerPhases(root, 'scripts-dev-sync', {
+      kind: 'implementation:tooling',
+    }),
     'vscode-type-check': async () => [
       packagePhase(root, 'vscode:type-check', 'vscode', 'vscode', ['run', 'type-check']),
     ],
@@ -262,6 +265,14 @@ function phaseBuilders({
     ],
     'checks-default': async () => checkerPhases(root, 'checks'),
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
+    'runtime-execution-boundaries': async () =>
+      checkerPhases(root, 'runtime-execution-boundaries', {
+        kind: 'implementation:runtime',
+      }),
+    'runtime-eval-error-boundary': async () =>
+      checkerPhases(root, 'runtime-eval-error-boundary', {
+        kind: 'implementation:runtime',
+      }),
   };
   assertOrdinaryPhaseBuilderCoverage(builders);
   const ordinaryLeaves = new Set(ORDINARY_LEAF_SELECTORS);

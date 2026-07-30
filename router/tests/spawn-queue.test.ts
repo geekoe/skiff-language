@@ -12,7 +12,7 @@ import {
 } from '../src/spawn/index.js';
 import type { QueuePolicy } from '../src/queue/index.js';
 
-const baseTime = new Date('2026-05-12T00:00:00.000Z');
+const baseTime = new Date();
 const serviceId = 'skiff.run/chat';
 const serviceVersion = '0.1.0';
 const serviceProtocolIdentity = 'svc-protocol-v1';
@@ -28,6 +28,8 @@ const packageTestActivationA = 'skiff-package-test-run-v1:package~test:test-a:ru
 const packageTestActivationB = 'skiff-package-test-run-v1:package~test:test-b:run:1';
 const serviceBuildId =
   'skiff-service-build-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const serviceActivation =
+  'skiff-runtime-activation-v1:opaque:spawn-queue-fixture';
 
 describe('InMemorySpawnQueueStore', () => {
   it('claims compatible spawn work with policy and execution leases', async () => {
@@ -234,6 +236,8 @@ function enqueueSpawnInput(
 ): EnqueueSpawnInput {
   const spawnId = overrides.spawnId ?? 'spawn-1';
   const createdAt = overrides.createdAt ?? baseTime;
+  const buildId = overrides.buildId ?? serviceBuildId;
+  const activationIdentity = overrides.activationIdentity ?? serviceActivation;
   return {
     serviceId,
     serviceVersion,
@@ -243,13 +247,11 @@ function enqueueSpawnInput(
     payload: spawnPayload(
       spawnId,
       createdAt,
-      overrides.buildId,
-      overrides.activationIdentity
+      buildId,
+      activationIdentity
     ),
-    ...(overrides.buildId === undefined ? {} : { buildId: overrides.buildId }),
-    ...(overrides.activationIdentity === undefined
-      ? {}
-      : { activationIdentity: overrides.activationIdentity }),
+    buildId,
+    activationIdentity,
     createdAt,
   };
 }
@@ -279,16 +281,16 @@ function spawnPayload(
 function claimRequest(
   overrides: { now?: Date; buildId?: string; activationIdentity?: string } = {}
 ): SpawnClaimRequest {
+  const buildId = overrides.buildId ?? serviceBuildId;
+  const activationIdentity = overrides.activationIdentity ?? serviceActivation;
   return {
     runtimeId: 'runtime-1',
     workerId: 'worker-1',
     serviceId,
     serviceVersion,
     serviceProtocolIdentity,
-    ...(overrides.buildId === undefined ? {} : { buildId: overrides.buildId }),
-    ...(overrides.activationIdentity === undefined
-      ? {}
-      : { activationIdentity: overrides.activationIdentity }),
+    buildId,
+    activationIdentity,
     supportedTargets: [target],
     supportedSpawnCompatibilityKeys: [compatibilityKey],
     now: overrides.now ?? baseTime,

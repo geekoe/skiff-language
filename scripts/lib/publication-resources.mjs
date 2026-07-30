@@ -5,6 +5,8 @@ import { parseYamlStringScalar, stripYamlComment } from './simple-yaml.mjs';
 const controlFilePatterns = [
   /^package\.yml$/,
   /^service\.yml$/,
+  /^http\.yml$/,
+  /^websocket\.yml$/,
   /^service\.[^.]+\.yml$/,
   /^api\.yml$/,
   /^config\.yml$/,

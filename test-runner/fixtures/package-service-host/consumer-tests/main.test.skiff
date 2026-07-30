@@ -1,0 +1,97 @@
+import subjectImpl
+import paymentsPackage
+
+test "provider observes helper mutation" {
+  assert subjectImpl/main.run() == "provider-observed-helper-mutated"
+}
+
+test "package-direct unary public instances preserve their exact receiver const" {
+  assert paymentsPackage/left.label() == "left"
+  assert paymentsPackage/right.label() == "right"
+}
+
+test "package-direct server-stream public instances preserve their exact receiver const" {
+  let leftOutput = ""
+  for event in paymentsPackage/left.events() {
+    leftOutput = leftOutput.concat(event)
+  }
+  assert leftOutput == "leftleft-done"
+
+  let rightOutput = ""
+  for event in paymentsPackage/right.events() {
+    rightOutput = rightOutput.concat(event)
+  }
+  assert rightOutput == "rightright-done"
+}
+
+test "service unary public instances preserve their exact receiver const" {
+  assert subjectImpl/main.leftLabel() == "left"
+  assert subjectImpl/main.rightLabel() == "right"
+}
+
+test "service server-stream public instances preserve their exact receiver const" {
+  assert subjectImpl/main.leftEvents() == "leftleft-done"
+  assert subjectImpl/main.rightEvents() == "rightright-done"
+}
+
+test "ordinary callables receive only their declared arguments" {
+  assert paymentsPackage/echo("plain") == "provider-rejected-unmutated"
+  assert subjectImpl/main.serviceEffect("plain") == "provider-rejected-unmutated"
+}
+
+test "inline package effect sequence uses typed setup and request subset" effects {
+  helper/tools.lookup {
+    expect: { method: "POST" },
+    sequence: [
+      {
+        expect: { url: "https://example.test/usercode" },
+        respond: helper.EffectResponse { value: "first" },
+      },
+      {
+        expect: { url: "https://example.test/deviceauth/token" },
+        respond: helper.EffectResponse { value: "second" },
+      },
+      {
+        expect: { url: "https://example.test/oauth/token" },
+        respond: helper.EffectResponse { value: "third" },
+      },
+    ],
+  }
+} {
+  assert subjectImpl/main.effectLookup("https://example.test/usercode", "first-extra-detail") == "first"
+  assert subjectImpl/main.effectLookup("https://example.test/deviceauth/token", "second-extra-detail") == "second"
+  assert subjectImpl/main.effectLookup("https://example.test/oauth/token", "third-extra-detail") == "third"
+}
+
+test "inline package effect sequence materializes stream outcomes" effects {
+  helper/tools.events {
+    expect: { method: "GET" },
+    sequence: [
+      {
+        expect: { url: "https://example.test/events/first" },
+        stream: [
+          helper.EffectResponse { value: "first" },
+          helper.EffectResponse { value: ":second" },
+        ],
+      },
+      {
+        expect: { url: "https://example.test/events/third" },
+        stream: [
+          helper.EffectResponse { value: "third" },
+        ],
+      },
+    ],
+  }
+} {
+  assert subjectImpl/main.effectEvents("https://example.test/events/first") == "first:second", "first stream sequence outcome mismatch"
+  assert subjectImpl/main.effectEvents("https://example.test/events/third") == "third", "second stream sequence outcome mismatch"
+}
+
+test "inline service effect bypasses the bound provider by exact contract operation" effects {
+  payments/echo {
+    expect: "service-request",
+    respond: "service-effect-response",
+  }
+} {
+  assert subjectImpl/main.serviceEffect("service-request") == "service-effect-response"
+}

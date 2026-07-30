@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { parse } from 'yaml';
 
@@ -7,28 +7,27 @@ import {
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS,
   type FileBackendControlConfig,
+  type RouterBootstrapEnvelope,
   type RuntimeServiceDbConfigInput,
   type TelemetryControlConfig,
   type TelemetryTopic
 } from '../protocol/envelope.js';
+import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activationTimeout.js';
 import { readRewriteRules, type RouterRewriteRule } from './rewrite.js';
 
 const DEFAULT_TELEMETRY_QUEUE_MAX_EVENTS = 10000;
 const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS = 200;
 const DEFAULT_TELEMETRY_BATCH_MAX_BYTES = 262144;
 const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 1000;
-const IDENTITY_CLI_ENV = 'SKIFF_ARTIFACT_IDENTITY_CLI';
-const IDENTITY_CLI_BINARY = process.platform === 'win32'
-  ? 'skiff-artifact-identity.exe'
-  : 'skiff-artifact-identity';
-
 export interface RouterConfig {
-  artifactRoots?: string[];
+  activationPrepareTimeoutMs: number;
+  artifactsPath: string;
   devReload?: boolean;
+  environment?: string;
   host: string;
-  httpBodyLimitBytes?: number;
+  httpMaxRequestBytes: number;
+  httpMaxResponseBytes: number;
   httpPort: number;
-  identityCliPath?: string;
   manifests: string[];
   profile: string;
   releaseMode?: boolean;
@@ -37,18 +36,20 @@ export interface RouterConfig {
   runtimePath: string;
   runtimePort: number;
   fileBackend?: FileBackendControlConfig;
-  serviceDb?: RuntimeServiceDbConfigInput;
+  serviceDb: RuntimeServiceDbConfigInput;
   telemetry?: TelemetryControlConfig;
   websocketPath: string;
 }
 
 export interface RouterConfigOverrides {
-  artifactRoots?: string[];
+  activationPrepareTimeoutMs?: string;
+  artifactsPath?: string;
   devReload?: boolean;
+  environment?: string;
   host?: string;
-  httpBodyLimitBytes?: string;
+  httpMaxRequestBytes?: string;
+  httpMaxResponseBytes?: string;
   httpPort?: string;
-  identityCliPath?: string;
   manifest?: string;
   profile?: string;
   releaseMode?: boolean;
@@ -58,17 +59,31 @@ export interface RouterConfigOverrides {
   websocketPath?: string;
 }
 
+export function runtimeBootstrapForRouterConfig(
+  config: RouterConfig
+): Omit<RouterBootstrapEnvelope, 'type'> {
+  return {
+    artifactsPath: config.artifactsPath,
+    serviceDb: config.serviceDb,
+    http: { maxResponseBytes: config.httpMaxResponseBytes }
+  };
+}
+
 interface RawRouterConfig {
+  activation?: unknown;
+  artifactsPath?: unknown;
   artifactRoots?: unknown;
   devReload?: unknown;
+  environment?: unknown;
   host?: unknown;
   hosts?: unknown;
   http?: {
     bodyLimitBytes?: unknown;
+    maxRequestBytes?: unknown;
+    maxResponseBytes?: unknown;
     port?: unknown;
   };
   httpPort?: unknown;
-  identityCliPath?: unknown;
   fileBackend?: unknown;
   manifest?: unknown;
   manifests?: unknown;
@@ -111,33 +126,44 @@ export async function loadRouterConfig(
   }
 
   const raw = parsed as RawRouterConfig;
+  if (
+    raw.http !== undefined &&
+    Object.prototype.hasOwnProperty.call(raw.http, 'bodyLimitBytes')
+  ) {
+    throw new Error('router config http.bodyLimitBytes is no longer supported');
+  }
   const configDir = dirname(absoluteConfigPath);
   const manifests = readManifests(overrides.manifest ?? raw.manifests ?? raw.manifest);
-  const artifactRoots = readOptionalArtifactRoots(
-    overrides.artifactRoots ?? raw.artifactRoots,
-    configDir
+  rejectRemovedArtifactRootConfig(raw);
+  const artifactsPath = resolve(
+    configDir,
+    readRequiredString(overrides.artifactsPath ?? raw.artifactsPath, 'artifactsPath')
   );
   const devReload = readOptionalBoolean(overrides.devReload ?? raw.devReload, 'devReload');
   const releaseMode = readOptionalBoolean(
     overrides.releaseMode ?? raw.releaseMode,
     'releaseMode'
   );
-  const identityCliPath = readIdentityCliPath({
-    raw: raw.identityCliPath,
-    configDir,
-    ...(overrides.identityCliPath !== undefined
-      ? { override: overrides.identityCliPath }
-      : {}),
-    ...(releaseMode !== undefined ? { releaseMode } : {}),
-  });
   rejectRemovedValuesConfig(raw.values);
-  rejectRemovedArtifactRootConfig(raw);
   const rawProfile = readRequiredProfile(raw.profile, 'profile');
   const profile = readRequiredProfile(overrides.profile ?? rawProfile, 'profile');
   rejectRemovedHosts(raw.hosts);
 
   const config: RouterConfig = {
+    activationPrepareTimeoutMs: readActivationPrepareTimeout(
+      raw.activation,
+      overrides.activationPrepareTimeoutMs
+    ),
+    artifactsPath,
     host: readString(overrides.host ?? raw.host, 'host', '127.0.0.1'),
+    httpMaxRequestBytes: readRequiredPositiveInteger(
+      overrides.httpMaxRequestBytes ?? raw.http?.maxRequestBytes,
+      'http.maxRequestBytes'
+    ),
+    httpMaxResponseBytes: readRequiredPositiveInteger(
+      overrides.httpMaxResponseBytes ?? raw.http?.maxResponseBytes,
+      'http.maxResponseBytes'
+    ),
     httpPort: readPort(overrides.httpPort ?? raw.httpPort ?? raw.http?.port, 'http.port', 4000),
     manifests: manifests.map((manifest) => resolveConfigPath(configDir, manifest)),
     profile,
@@ -157,30 +183,28 @@ export async function loadRouterConfig(
       'runtime.port',
       4001
     ),
+    serviceDb: readServiceDbConfig(raw.serviceDb),
     websocketPath: readPath(
       overrides.websocketPath ?? raw.websocket?.path,
       'websocket.path',
       '/ws'
     )
   };
-  if (artifactRoots !== undefined) {
-    config.artifactRoots = artifactRoots;
+  const environment = readOptionalNonEmptyString(
+    overrides.environment ?? raw.environment,
+    'environment'
+  );
+  if (environment !== undefined) {
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(environment) || environment === '.' || environment === '..') {
+      throw new Error('router config environment is invalid');
+    }
+    config.environment = environment;
   }
   if (devReload !== undefined) {
     config.devReload = devReload;
   }
   if (releaseMode !== undefined) {
     config.releaseMode = releaseMode;
-  }
-  const httpBodyLimitBytes = readOptionalPositiveInteger(
-    overrides.httpBodyLimitBytes ?? raw.http?.bodyLimitBytes,
-    'http.bodyLimitBytes'
-  );
-  if (httpBodyLimitBytes !== undefined) {
-    config.httpBodyLimitBytes = httpBodyLimitBytes;
-  }
-  if (identityCliPath !== undefined) {
-    config.identityCliPath = identityCliPath;
   }
   const fileBackend = readFileBackendConfig(raw.fileBackend, configDir);
   if (fileBackend !== undefined) {
@@ -190,17 +214,10 @@ export async function loadRouterConfig(
   if (telemetry !== undefined) {
     config.telemetry = telemetry;
   }
-  const serviceDb = readServiceDbConfig(raw.serviceDb);
-  if (serviceDb !== undefined) {
-    config.serviceDb = serviceDb;
-  }
   return config;
 }
 
-function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
+function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput {
   if (!isRecord(value)) {
     throw new Error('router config serviceDb must be an object');
   }
@@ -303,10 +320,13 @@ function readFileBackendOssConfig(
 
 function rejectRemovedArtifactRootConfig(raw: RawRouterConfig): void {
   if (Object.prototype.hasOwnProperty.call(raw, 'artifactRoot')) {
-    throw new Error('router config artifactRoot is no longer supported; use artifactRoots');
+    throw new Error('router config artifactRoot is no longer supported; use artifactsPath');
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'artifactRoots')) {
+    throw new Error('router config artifactRoots is no longer supported; use artifactsPath');
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'artifacts')) {
-    throw new Error('router config artifacts is no longer supported; use artifactRoots');
+    throw new Error('router config artifacts is no longer supported; use artifactsPath');
   }
 }
 
@@ -344,61 +364,6 @@ function readManifests(value: unknown): string[] {
 
 function resolveConfigPath(configDir: string, value: string): string {
   return isAbsolute(value) ? value : resolve(configDir, value);
-}
-
-function readOptionalArtifactRoots(value: unknown, configDir: string): string[] | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      throw new Error('router config artifactRoots must be a non-empty string array');
-    }
-    return value.map((item, index) =>
-      resolveConfigPath(
-        configDir,
-        readString(item, `artifactRoots[${index}]`, String(item))
-      )
-    );
-  }
-  throw new Error('router config artifactRoots must be a non-empty string array');
-}
-
-function readIdentityCliPath(input: {
-  override?: string;
-  raw: unknown;
-  configDir: string;
-  releaseMode?: boolean;
-}): string | undefined {
-  if (input.override !== undefined) {
-    return resolveProcessPath(readString(input.override, 'identityCliPath', input.override));
-  }
-  if (input.raw !== undefined && input.raw !== null) {
-    return resolveConfigPath(
-      input.configDir,
-      readString(input.raw, 'identityCliPath', String(input.raw))
-    );
-  }
-  const envPath = process.env[IDENTITY_CLI_ENV];
-  if (envPath !== undefined && envPath.trim().length > 0) {
-    return resolveProcessPath(envPath);
-  }
-  if (input.releaseMode === true) {
-    return undefined;
-  }
-  return defaultDevIdentityCliPath();
-}
-
-function defaultDevIdentityCliPath(): string {
-  const devHome =
-    process.env.SKIFF_DEV_HOME && process.env.SKIFF_DEV_HOME.trim().length > 0
-      ? process.env.SKIFF_DEV_HOME
-      : join(process.cwd(), '.skiff-instance', 'dev-home');
-  return join(resolve(devHome), 'bin', IDENTITY_CLI_BINARY);
-}
-
-function resolveProcessPath(value: string): string {
-  return isAbsolute(value) ? value : resolve(value);
 }
 
 function readRequiredProfile(value: unknown, name: string): string {
@@ -522,7 +487,7 @@ function rejectRemovedHosts(value: unknown): void {
     return;
   }
   throw new Error(
-    'router config hosts is no longer supported; use top-level rewrite rules'
+    'router config hosts is no longer supported; declare RuntimeAssembly globalIngress Hosts'
   );
 }
 
@@ -582,10 +547,44 @@ function readOptionalPositiveInteger(value: unknown, name: string): number | und
 
 function readRequiredPositiveInteger(value: unknown, name: string): number {
   const numberValue = typeof value === 'string' ? Number(value) : value;
-  if (!Number.isInteger(numberValue) || Number(numberValue) <= 0) {
+  if (!Number.isSafeInteger(numberValue) || Number(numberValue) <= 0) {
     throw new Error(`router config ${name} must be a positive integer`);
   }
   return Number(numberValue);
+}
+
+function readActivationPrepareTimeout(
+  value: unknown,
+  override: string | undefined
+): number {
+  if (override !== undefined) {
+    return readRequiredPositiveInteger(
+      override,
+      'activation.prepareTimeoutMs'
+    );
+  }
+  if (value === undefined || value === null) {
+    return DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
+  }
+  if (!isRecord(value)) {
+    throw new Error(
+      'router config activation.prepareTimeoutMs must be a positive integer'
+    );
+  }
+  const prepareTimeoutMs = value.prepareTimeoutMs;
+  if (prepareTimeoutMs === undefined || prepareTimeoutMs === null) {
+    return DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
+  }
+  if (
+    typeof prepareTimeoutMs !== 'number' ||
+    !Number.isSafeInteger(prepareTimeoutMs) ||
+    prepareTimeoutMs <= 0
+  ) {
+    throw new Error(
+      'router config activation.prepareTimeoutMs must be a positive integer'
+    );
+  }
+  return prepareTimeoutMs;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

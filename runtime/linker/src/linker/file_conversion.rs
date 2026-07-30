@@ -3,33 +3,29 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use skiff_artifact_model as artifact;
 
+use super::execution_validation::validate_file_ir_execution;
 use crate::program::{
     addr::{ExecutableIndex, TypeIndex},
     linked::*,
 };
 
-pub fn linked_file_unit_from_artifact(
-    unit: &skiff_artifact_model::FileIrUnit,
-) -> anyhow::Result<LinkedFileUnit> {
-    if unit.required_receiver_builtin_capability_version > RECEIVER_BUILTIN_CAPABILITY_VERSION {
-        anyhow::bail!(
-            "File IR {} requires receiver builtin capability version {}, but runtime supports {}",
-            unit.file_ir_identity,
-            unit.required_receiver_builtin_capability_version,
-            RECEIVER_BUILTIN_CAPABILITY_VERSION
-        );
-    }
-    validate_receiver_builtin_ops(unit)?;
-    reject_canonical_assembly_calls(unit)?;
-    linked_file_unit_from_artifact_with_canonical_calls(unit, &|target| {
-        anyhow::bail!("canonical call target {target:?} requires a RuntimeAssembly resolver")
-    })
-}
+#[cfg(test)]
+mod timeout_execution_tests;
 
 pub(crate) fn linked_file_unit_from_assembly_artifact(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedFileUnit> {
+    validate_file_ir_execution(unit)?;
+    artifact::validate_file_ir_type_refs(unit).map_err(|error| {
+        anyhow::anyhow!(
+            "File IR {} has invalid type ref at {}: {}",
+            unit.file_ir_identity,
+            error.location,
+            error.message
+        )
+    })?;
     if unit.required_receiver_builtin_capability_version > RECEIVER_BUILTIN_CAPABILITY_VERSION {
         anyhow::bail!(
             "File IR {} requires receiver builtin capability version {}, but runtime supports {}",
@@ -39,12 +35,107 @@ pub(crate) fn linked_file_unit_from_assembly_artifact(
         );
     }
     validate_receiver_builtin_ops(unit)?;
-    linked_file_unit_from_artifact_with_canonical_calls(unit, canonical_call)
+    validate_actor_self_fields(unit)?;
+    linked_file_unit_from_artifact_with_canonical_calls(unit, canonical_call, canonical_db_target)
+}
+
+fn validate_actor_self_fields(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
+    let mut actor_fields_by_executable = BTreeMap::new();
+    for declaration in &unit.actor_declarations {
+        let fields = declaration
+            .abi
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), &field.ty))
+            .collect::<BTreeMap<_, _>>();
+        for executable_index in declaration.method_implementations.values() {
+            if actor_fields_by_executable
+                .insert(
+                    *executable_index,
+                    (&declaration.abi.actor_name, fields.clone()),
+                )
+                .is_some()
+            {
+                anyhow::bail!(
+                    "File IR {} executable index {} is claimed by more than one Actor method",
+                    unit.file_ir_identity,
+                    executable_index
+                );
+            }
+        }
+    }
+
+    for (const_index, constant) in unit.constants.iter().enumerate() {
+        validate_actor_self_body(
+            unit,
+            &constant.body,
+            None,
+            &format!("constant index {const_index}"),
+        )?;
+    }
+    for (executable_index, executable) in unit.executables.iter().enumerate() {
+        let actor_fields = actor_fields_by_executable
+            .get(&(executable_index as u32))
+            .map(|(_, fields)| fields);
+        validate_actor_self_body(
+            unit,
+            &executable.body,
+            actor_fields,
+            &format!("executable `{}`", executable.symbol),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_actor_self_body(
+    unit: &artifact::FileIrUnit,
+    body: &artifact::ExecutableBody,
+    actor_fields: Option<&BTreeMap<&str, &artifact::TypeRefIr>>,
+    owner: &str,
+) -> anyhow::Result<()> {
+    let validate = |field: &str, field_type: &artifact::TypeRefIr| -> anyhow::Result<()> {
+        let Some(fields) = actor_fields else {
+            anyhow::bail!(
+                "File IR {} {owner} uses Actor self field `{field}` outside an Actor method",
+                unit.file_ir_identity
+            );
+        };
+        let Some(declared_type) = fields.get(field) else {
+            anyhow::bail!(
+                "File IR {} {owner} uses undeclared Actor self field `{field}`",
+                unit.file_ir_identity
+            );
+        };
+        if *declared_type != field_type {
+            anyhow::bail!(
+                "File IR {} {owner} Actor self field `{field}` type does not match its declaration",
+                unit.file_ir_identity
+            );
+        }
+        Ok(())
+    };
+
+    for statement in &body.statements {
+        if let artifact::StmtIr::Assign {
+            target: artifact::AssignTargetIr::ActorSelfField { field, field_type },
+            ..
+        } = statement
+        {
+            validate(field, field_type)?;
+        }
+    }
+    for expression in &body.expressions {
+        if let artifact::ExprIr::ActorSelfField { field, field_type } = expression {
+            validate(field, field_type)?;
+        }
+    }
+    Ok(())
 }
 
 fn linked_file_unit_from_artifact_with_canonical_calls(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedFileUnit> {
     Ok(LinkedFileUnit {
         schema_version: unit.schema_version.clone(),
@@ -56,54 +147,141 @@ fn linked_file_unit_from_artifact_with_canonical_calls(
         source_map: linked_source_map(&unit.source_map)?,
         declarations: linked_declarations(&unit.declarations),
         link_targets: linked_link_targets(&unit.link_targets),
+        actor_declarations: linked_actor_declarations(unit)?,
         types: unit.type_table.iter().map(linked_type_decl).collect(),
         constants: unit
             .constants
             .iter()
-            .map(|constant| linked_const(constant, canonical_call))
+            .map(|constant| linked_const(constant, canonical_call, canonical_db_target))
             .collect::<anyhow::Result<Vec<_>>>()?,
         executables: unit
             .executables
             .iter()
-            .map(|executable| linked_executable(executable, canonical_call))
+            .map(|executable| linked_executable(executable, canonical_call, canonical_db_target))
             .collect::<anyhow::Result<Vec<_>>>()?,
         external_refs: linked_external_refs(&unit.external_refs),
     })
 }
 
-fn reject_canonical_assembly_calls(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
-    if !unit.external_refs.service_call_refs.is_empty()
-        || !unit.external_refs.package_callables.is_empty()
-    {
-        anyhow::bail!(
-            "File IR {} contains canonical package/service call refs and must be linked through RuntimeAssembly",
-            unit.file_ir_identity
-        );
-    }
-    for body in unit
-        .constants
+fn linked_actor_declarations(
+    unit: &artifact::FileIrUnit,
+) -> anyhow::Result<Vec<LinkedActorDeclaration>> {
+    let mut names = std::collections::BTreeSet::new();
+    unit.actor_declarations
         .iter()
-        .map(|constant| &constant.body)
-        .chain(unit.executables.iter().map(|executable| &executable.body))
-    {
-        if body.expressions.iter().any(|expression| {
-            matches!(
-                expression,
-                artifact::ExprIr::Call { call }
-                    if matches!(
-                        call.target,
-                        artifact::CallTargetIr::ServiceCall { .. }
-                            | artifact::CallTargetIr::PackageCallable { .. }
-                    )
-            )
-        }) {
-            anyhow::bail!(
-                "File IR {} contains a canonical package/service call and must be linked through RuntimeAssembly",
-                unit.file_ir_identity
-            );
-        }
-    }
-    Ok(())
+        .map(|declaration| {
+            let public_method_identities = declaration
+                .abi
+                .public_methods
+                .iter()
+                .map(|method| method.method_identity.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            let implementation_identities = declaration
+                .method_implementations
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            if public_method_identities != implementation_identities {
+                anyhow::bail!(
+                    "File IR {} actor {} method implementation table does not exactly match public methods",
+                    unit.file_ir_identity,
+                    declaration.abi.actor_name
+                );
+            }
+            let computed_identity = skiff_artifact_identity::actor_abi_identity(&declaration.abi)
+                .with_context(|| {
+                format!(
+                    "failed to compute actor ABI identity for File IR {} actor {}",
+                    unit.file_ir_identity, declaration.abi.actor_name
+                )
+            })?;
+            if computed_identity != declaration.actor_abi_identity {
+                anyhow::bail!(
+                    "File IR {} actor declaration {} ABI identity does not match its canonical ABI",
+                    unit.file_ir_identity,
+                    declaration.abi.actor_name
+                );
+            }
+            let actor_name = declaration.abi.actor_name.as_str();
+            if !names.insert(actor_name) {
+                anyhow::bail!(
+                    "File IR {} has duplicate actor declaration {}",
+                    unit.file_ir_identity,
+                    actor_name
+                );
+            }
+            Ok(LinkedActorDeclaration {
+                actor_type: artifact::ServiceSymbolRef {
+                    module_path: unit.module_path.clone(),
+                    symbol: declaration.abi.actor_name.clone(),
+                },
+                implementation_owner: None,
+                actor_abi_identity: declaration.actor_abi_identity.clone(),
+                actor_implementation_identity: declaration
+                    .actor_implementation_identity
+                    .clone(),
+                actor_name: declaration.abi.actor_name.clone(),
+                actor_id_type: linked_type_ref(&declaration.abi.actor_id_type),
+                fields: declaration
+                    .abi
+                    .fields
+                    .iter()
+                    .map(|field| LinkedActorField {
+                        name: field.name.clone(),
+                        ty: linked_type_ref(&field.ty),
+                        encoding: field.encoding,
+                    })
+                    .collect(),
+                public_methods: declaration
+                    .abi
+                    .public_methods
+                    .iter()
+                    .map(|method| {
+                        let executable_index = declaration
+                            .method_implementations
+                            .get(&method.method_identity)
+                            .copied()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "File IR {} actor {} public method {} has no implementation",
+                                    unit.file_ir_identity,
+                                    actor_name,
+                                    method.method_identity.as_str()
+                                )
+                            })?;
+                        if executable_index as usize >= unit.executables.len() {
+                            anyhow::bail!(
+                                "File IR {} actor {} public method {} implementation index {} is out of bounds",
+                                unit.file_ir_identity,
+                                actor_name,
+                                method.method_identity.as_str(),
+                                executable_index
+                            );
+                        }
+                        Ok(LinkedActorPublicMethod {
+                            method_identity: method.method_identity.clone(),
+                            name: method.name.clone(),
+                            parameters: method
+                                .parameters
+                                .iter()
+                                .map(|parameter| LinkedFunctionTypeParamIr {
+                                    name: parameter.name.clone(),
+                                    ty: linked_type_ref(&parameter.ty),
+                                })
+                                .collect(),
+                            return_type: linked_type_ref(&method.return_type),
+                            may_suspend: method.may_suspend,
+                            implementation:
+                                skiff_runtime_linked_program::LinkedActorMethodImplementation::LocalExecutable {
+                                    executable_index,
+                                },
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+                actor_runtime_abi_version: declaration.abi.actor_runtime_abi_version.clone(),
+            })
+        })
+        .collect()
 }
 
 fn validate_receiver_builtin_ops(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
@@ -353,31 +531,56 @@ fn linked_type_decl(declaration: &artifact::TypeDeclIr) -> TypeDeclIr {
                     .map(|(name, ty)| (name.clone(), linked_type_ref(ty)))
                     .collect(),
             },
+            artifact::TypeDescriptorIr::Representation { representation } => {
+                LinkedTypeDescriptor::Representation {
+                    representation: linked_type_ref(representation),
+                }
+            }
             artifact::TypeDescriptorIr::Alias { target } => LinkedTypeDescriptor::Alias {
                 target: linked_type_ref(target),
             },
-            artifact::TypeDescriptorIr::Union { variants } => LinkedTypeDescriptor::Union {
-                variants: variants.iter().map(linked_type_ref).collect(),
+            artifact::TypeDescriptorIr::Union { branches } => LinkedTypeDescriptor::Union {
+                branches: branches.iter().map(linked_named_union_branch).collect(),
             },
-            artifact::TypeDescriptorIr::Native { symbol } => LinkedTypeDescriptor::Native {
-                symbol: symbol.clone(),
-            },
+            artifact::TypeDescriptorIr::Interface => LinkedTypeDescriptor::Interface,
         },
         type_params: declaration.type_params.clone(),
-        discriminator: declaration.discriminator.clone(),
         implements: declaration.implements.iter().map(linked_type_ref).collect(),
         source_span: declaration.source_span.clone(),
+    }
+}
+
+fn linked_named_union_branch(branch: &artifact::NamedUnionBranchIr) -> LinkedNamedUnionBranch {
+    match branch {
+        artifact::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+            LinkedNamedUnionBranch::ConcreteNominal {
+                nominal_type: linked_type_ref(nominal_type),
+            }
+        }
+        artifact::NamedUnionBranchIr::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } => LinkedNamedUnionBranch::SyntheticDiscriminator {
+            payload_type: linked_type_ref(payload_type),
+            discriminator_field: discriminator_field.clone(),
+            discriminator_value: discriminator_value.clone(),
+        },
+        artifact::NamedUnionBranchIr::Literal { value } => LinkedNamedUnionBranch::Literal {
+            value: value.clone(),
+        },
     }
 }
 
 fn linked_const(
     constant: &artifact::ConstIr,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<ConstIr> {
     Ok(ConstIr {
         name: constant.name.clone(),
         ty: linked_type_ref(&constant.ty),
-        body: linked_body(&constant.body, canonical_call)?,
+        body: linked_body(&constant.body, canonical_call, canonical_db_target)?,
         source_span: constant.source_span.clone(),
     })
 }
@@ -395,6 +598,7 @@ fn linked_external_refs(external_refs: &artifact::ExternalRefTable) -> ExternalR
 fn linked_executable(
     executable: &artifact::ExecutableIr,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedExecutable> {
     Ok(LinkedExecutable {
         kind: match executable.kind {
@@ -428,7 +632,7 @@ fn linked_executable(
             frame_size: executable.slots.frame_size as usize,
         },
         may_suspend: executable.may_suspend,
-        body: linked_body(&executable.body, canonical_call)?,
+        body: linked_body(&executable.body, canonical_call, canonical_db_target)?,
     })
 }
 
@@ -445,6 +649,7 @@ fn linked_slot_kind(kind: artifact::SlotKind) -> &'static str {
 fn linked_body(
     body: &artifact::ExecutableBody,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedExecutableBody> {
     Ok(LinkedExecutableBody {
         blocks: body
@@ -455,11 +660,15 @@ fn linked_body(
                 statements: block.statements.iter().map(linked_stmt_ref).collect(),
             })
             .collect(),
-        statements: body.statements.iter().map(linked_stmt).collect(),
+        statements: body
+            .statements
+            .iter()
+            .map(|statement| linked_stmt(statement, canonical_call))
+            .collect::<anyhow::Result<Vec<_>>>()?,
         expressions: body
             .expressions
             .iter()
-            .map(|expression| linked_expr(expression, canonical_call))
+            .map(|expression| linked_expr(expression, canonical_call, canonical_db_target))
             .collect::<anyhow::Result<Vec<_>>>()?,
     })
 }
@@ -476,8 +685,11 @@ fn linked_stmt_ref(reference: &artifact::StmtRefIr) -> StmtRefIr {
     }
 }
 
-fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
-    match statement {
+fn linked_stmt(
+    statement: &artifact::StmtIr,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedStmtIr> {
+    Ok(match statement {
         artifact::StmtIr::Let { slot, value } => LinkedStmtIr::Let {
             slot: *slot,
             value: linked_expr_ref(value),
@@ -485,6 +697,18 @@ fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
         artifact::StmtIr::Assign { target, value } => LinkedStmtIr::Assign {
             target: linked_assign_target(target),
             value: linked_expr_ref(value),
+        },
+        artifact::StmtIr::Timeout {
+            duration_ms,
+            body,
+            site,
+        } => LinkedStmtIr::Timeout {
+            duration_ms: *duration_ms,
+            body: body.clone(),
+            site: site.clone(),
+        },
+        artifact::StmtIr::Concurrent { plan } => LinkedStmtIr::Concurrent {
+            plan: linked_concurrent_plan(plan),
         },
         artifact::StmtIr::If {
             condition,
@@ -531,6 +755,61 @@ fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
             operation: operation.clone(),
             value: linked_expr_ref(value),
         },
+        artifact::StmtIr::TestEffectRegister {
+            target,
+            expect,
+            step_expect,
+            outcome,
+        } => {
+            let target = match target {
+                artifact::TestEffectRegisterTargetIr::PackageCallable {
+                    package_ref,
+                    callable_id,
+                } => canonical_call(&artifact::CallTargetIr::PackageCallable {
+                    package_ref: package_ref.clone(),
+                    package_callable_id: callable_id.clone(),
+                })?,
+                artifact::TestEffectRegisterTargetIr::ContractOperation {
+                    service_call_ref_index,
+                } => canonical_call(&artifact::CallTargetIr::ServiceCall {
+                    service_call_ref_index: *service_call_ref_index,
+                })?,
+            };
+            LinkedStmtIr::TestEffectRegister {
+                target,
+                expect: expect.as_ref().map(|expected| LinkedTestEffectExpectedIr {
+                    value: linked_expr_ref(&expected.value),
+                    request_type: linked_type_ref(&expected.request_type),
+                }),
+                step_expect: step_expect
+                    .as_ref()
+                    .map(|expected| LinkedTestEffectExpectedIr {
+                        value: linked_expr_ref(&expected.value),
+                        request_type: linked_type_ref(&expected.request_type),
+                    }),
+                outcome: match outcome {
+                    artifact::TestEffectOutcomeIr::Respond { value, value_type } => {
+                        LinkedTestEffectOutcomeIr::Respond {
+                            value: linked_expr_ref(value),
+                            value_type: linked_type_ref(value_type),
+                        }
+                    }
+                    artifact::TestEffectOutcomeIr::Throw {
+                        value,
+                        payload_type,
+                    } => LinkedTestEffectOutcomeIr::Throw {
+                        value: linked_expr_ref(value),
+                        payload_type: linked_type_ref(payload_type),
+                    },
+                    artifact::TestEffectOutcomeIr::Stream { values, item_type } => {
+                        LinkedTestEffectOutcomeIr::Stream {
+                            values: values.iter().map(linked_expr_ref).collect(),
+                            item_type: linked_type_ref(item_type),
+                        }
+                    }
+                },
+            }
+        }
         artifact::StmtIr::Expr { value } => LinkedStmtIr::Expr {
             value: linked_expr_ref(value),
         },
@@ -540,19 +819,27 @@ fn linked_stmt(statement: &artifact::StmtIr) -> LinkedStmtIr {
         artifact::StmtIr::Throw {
             value,
             payload_type,
+            site,
         } => LinkedStmtIr::Throw {
             value: linked_expr_ref(value),
             payload_type: linked_type_ref(payload_type),
+            site: site.clone(),
         },
         artifact::StmtIr::Rethrow { exception_slot } => LinkedStmtIr::Rethrow {
             exception_slot: *exception_slot,
         },
-    }
+    })
 }
 
 fn linked_assign_target(target: &artifact::AssignTargetIr) -> AssignTargetIr {
     match target {
         artifact::AssignTargetIr::Slot { slot } => AssignTargetIr::Slot { slot: *slot },
+        artifact::AssignTargetIr::ActorSelfField { field, field_type } => {
+            AssignTargetIr::ActorSelfField {
+                field: field.clone(),
+                field_type: linked_type_ref(field_type),
+            }
+        }
         artifact::AssignTargetIr::Field { object, field } => AssignTargetIr::Field {
             object: linked_expr_ref(object),
             field: field.clone(),
@@ -580,6 +867,7 @@ fn linked_pattern(pattern: &artifact::PatternIr) -> PatternIr {
 fn linked_expr(
     expression: &artifact::ExprIr,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
 ) -> anyhow::Result<LinkedExprIr> {
     Ok(match expression {
         artifact::ExprIr::Literal { value } => LinkedExprIr::Literal {
@@ -589,6 +877,13 @@ fn linked_expr(
         artifact::ExprIr::LoadConst { const_index } => LinkedExprIr::LoadConst {
             const_index: *const_index,
         },
+        artifact::ExprIr::LoadPackageConst { symbol } => LinkedExprIr::LoadPackageConst {
+            symbol: symbol.clone(),
+        },
+        artifact::ExprIr::ActorSelfField { field, field_type } => LinkedExprIr::ActorSelfField {
+            field: field.clone(),
+            field_type: linked_type_ref(field_type),
+        },
         artifact::ExprIr::Field { object, field } => LinkedExprIr::Field {
             object: linked_expr_ref(object),
             field: field.clone(),
@@ -597,6 +892,12 @@ fn linked_expr(
             type_ref: linked_type_ref(type_ref),
             fields: linked_expr_ref_map(fields),
         },
+        artifact::ExprIr::RepresentationWrap { value, type_ref } => {
+            LinkedExprIr::RepresentationWrap {
+                value: linked_expr_ref(value),
+                type_ref: linked_type_ref(type_ref),
+            }
+        }
         artifact::ExprIr::InterfaceBox {
             value,
             interface,
@@ -627,9 +928,11 @@ fn linked_expr(
         artifact::ExprIr::Throw {
             value,
             payload_type,
+            site,
         } => LinkedExprIr::Throw {
             value: linked_expr_ref(value),
             payload_type: linked_type_ref(payload_type),
+            site: site.clone(),
         },
         artifact::ExprIr::Rethrow { exception_slot } => LinkedExprIr::Rethrow {
             exception_slot: *exception_slot,
@@ -642,18 +945,30 @@ fn linked_expr(
         } => LinkedExprIr::Catch {
             try_expression: linked_expr_ref(try_expression),
             catch_slot: *catch_slot,
-            catch_type: catch_type.as_ref().map(linked_type_ref),
+            catch_type: linked_type_ref(catch_type),
             body: linked_expr_ref(body),
+        },
+        artifact::ExprIr::Timeout {
+            duration_ms,
+            value,
+            site,
+        } => LinkedExprIr::Timeout {
+            duration_ms: *duration_ms,
+            value: linked_expr_ref(value),
+            site: site.clone(),
         },
         artifact::ExprIr::ValueBlock { block, result } => LinkedExprIr::ValueBlock {
             block: block.clone(),
             result: linked_expr_ref(result),
         },
+        artifact::ExprIr::ConcurrentValue { plan } => LinkedExprIr::ConcurrentValue {
+            plan: linked_concurrent_plan(plan),
+        },
         artifact::ExprIr::DbOperation { operation } => LinkedExprIr::DbOperation {
-            operation: linked_db_operation(operation),
+            operation: linked_db_operation(operation, canonical_db_target)?,
         },
         artifact::ExprIr::DbQuery { query } => LinkedExprIr::DbQuery {
-            target: linked_db_target(&query.target),
+            target: linked_db_target(&query.target, canonical_db_target)?,
             query: linked_db_query(&query.query),
             projection: None,
             result_type: Some(linked_type_ref(&query.result_type)),
@@ -662,12 +977,57 @@ fn linked_expr(
             transaction: linked_db_transaction(transaction),
         },
         artifact::ExprIr::DbLeaseClaim { claim } => LinkedExprIr::DbLeaseClaim {
-            claim: linked_db_lease_claim(claim),
+            claim: linked_db_lease_claim(claim, canonical_db_target)?,
         },
         artifact::ExprIr::DbLeaseRead { read } => LinkedExprIr::DbLeaseRead {
-            read: linked_db_lease_read(read),
+            read: linked_db_lease_read(read, canonical_db_target)?,
         },
     })
+}
+
+fn linked_concurrent_plan(plan: &artifact::ConcurrentPlanIr) -> LinkedConcurrentPlanIr {
+    LinkedConcurrentPlanIr {
+        lanes: plan
+            .lanes
+            .iter()
+            .map(|lane| match lane {
+                artifact::ConcurrentLaneIr::Statement {
+                    source_order,
+                    dependencies,
+                    body,
+                    site,
+                } => LinkedConcurrentLaneIr::Statement {
+                    source_order: *source_order,
+                    dependencies: dependencies.clone(),
+                    body: body.clone(),
+                    site: site.clone(),
+                },
+                artifact::ConcurrentLaneIr::Serial {
+                    source_order,
+                    dependencies,
+                    body,
+                    site,
+                } => LinkedConcurrentLaneIr::Serial {
+                    source_order: *source_order,
+                    dependencies: dependencies.clone(),
+                    body: body.clone(),
+                    site: site.clone(),
+                },
+                artifact::ConcurrentLaneIr::Tail {
+                    source_order,
+                    dependencies,
+                    tail,
+                    site,
+                } => LinkedConcurrentLaneIr::Tail {
+                    source_order: *source_order,
+                    dependencies: dependencies.clone(),
+                    tail: linked_expr_ref(tail),
+                    site: site.clone(),
+                },
+            })
+            .collect(),
+        site: plan.site.clone(),
+    }
 }
 
 fn linked_expr_ref_map(map: &BTreeMap<String, artifact::ExprRefIr>) -> BTreeMap<String, ExprRefIr> {
@@ -676,11 +1036,14 @@ fn linked_expr_ref_map(map: &BTreeMap<String, artifact::ExprRefIr>) -> BTreeMap<
         .collect()
 }
 
-fn linked_db_operation(operation: &artifact::DbOperationIr) -> DbOperationIr {
-    DbOperationIr {
+fn linked_db_operation(
+    operation: &artifact::DbOperationIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbOperationIr> {
+    Ok(DbOperationIr {
         op: linked_db_op_kind(operation.op),
         many: operation.many,
-        target: linked_db_target(&operation.target),
+        target: linked_db_target(&operation.target, canonical_db_target)?,
         selector: operation.selector.as_ref().map(linked_db_selector),
         query: operation.query.as_ref().map(linked_db_query),
         projection: operation.projection.as_ref().map(linked_db_projection),
@@ -689,7 +1052,7 @@ fn linked_db_operation(operation: &artifact::DbOperationIr) -> DbOperationIr {
         change: operation.change.as_ref().map(linked_db_change),
         result_type: linked_type_ref(&operation.result_type),
         source_span: operation.source_span.clone(),
-    }
+    })
 }
 
 fn linked_db_op_kind(kind: artifact::DbOpKindIr) -> DbOpKindIr {
@@ -707,11 +1070,15 @@ fn linked_db_op_kind(kind: artifact::DbOpKindIr) -> DbOpKindIr {
     }
 }
 
-fn linked_db_target(target: &artifact::DbTargetIr) -> DbTargetIr {
-    DbTargetIr {
+fn linked_db_target(
+    target: &artifact::DbTargetIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbTargetIr> {
+    Ok(DbTargetIr {
+        target_id: canonical_db_target(target)?,
         type_ref: linked_type_ref(&target.type_ref),
         type_name: target.type_name.clone(),
-    }
+    })
 }
 
 fn linked_db_selector(selector: &artifact::DbSelectorIr) -> DbSelectorIr {
@@ -851,26 +1218,32 @@ fn linked_db_transaction(transaction: &artifact::DbTransactionIr) -> DbTransacti
     }
 }
 
-fn linked_db_lease_claim(claim: &artifact::DbLeaseClaimIr) -> DbLeaseClaimIr {
-    DbLeaseClaimIr {
-        target: linked_db_target(&claim.target),
+fn linked_db_lease_claim(
+    claim: &artifact::DbLeaseClaimIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbLeaseClaimIr> {
+    Ok(DbLeaseClaimIr {
+        target: linked_db_target(&claim.target, canonical_db_target)?,
         key: linked_expr_ref(&claim.key),
         slot: claim.slot.clone(),
         binding_slot: claim.binding_slot,
         body: claim.body.clone(),
         result_type: linked_type_ref(&claim.result_type),
         source_span: claim.source_span.clone(),
-    }
+    })
 }
 
-fn linked_db_lease_read(read: &artifact::DbLeaseReadIr) -> DbLeaseReadIr {
-    DbLeaseReadIr {
-        target: linked_db_target(&read.target),
+fn linked_db_lease_read(
+    read: &artifact::DbLeaseReadIr,
+    canonical_db_target: &dyn Fn(&artifact::DbTargetIr) -> anyhow::Result<DbObjectTargetId>,
+) -> anyhow::Result<DbLeaseReadIr> {
+    Ok(DbLeaseReadIr {
+        target: linked_db_target(&read.target, canonical_db_target)?,
         key: linked_expr_ref(&read.key),
         slot: read.slot.clone(),
         result_type: linked_type_ref(&read.result_type),
         source_span: read.source_span.clone(),
-    }
+    })
 }
 
 fn linked_unary_op(op: artifact::UnaryOpIr) -> UnaryOpIr {
@@ -915,11 +1288,6 @@ fn linked_call(
                 module_path: module_path.clone(),
                 executable_index: *executable_index,
             },
-            artifact::CallTargetIr::ExternalServiceSymbol { symbol } => {
-                LinkedCallTarget::ExternalServiceSymbol {
-                    symbol: symbol.clone(),
-                }
-            }
             artifact::CallTargetIr::ServiceDependencySymbol { symbol } => {
                 LinkedCallTarget::ServiceDependencySymbol {
                     symbol: symbol.clone(),
@@ -927,6 +1295,17 @@ fn linked_call(
             }
             artifact::CallTargetIr::ServiceCall { .. }
             | artifact::CallTargetIr::PackageCallable { .. } => canonical_call(&call.target)?,
+            artifact::CallTargetIr::ActorMethod {
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+            } => LinkedCallTarget::ActorMethod {
+                actor: actor.clone(),
+                actor_abi_identity: actor_abi_identity.clone(),
+                actor_implementation_identity: actor_implementation_identity.clone(),
+                method_identity: method_identity.clone(),
+            },
             artifact::CallTargetIr::Native { target } => LinkedCallTarget::Native {
                 target: target.clone(),
             },
@@ -944,6 +1323,7 @@ fn linked_call(
                 slot: *slot,
             },
         },
+        site: call.site.clone(),
         args: call.args.iter().map(linked_expr_ref).collect(),
         type_args: call
             .type_args
@@ -951,6 +1331,7 @@ fn linked_call(
             .map(|(name, ty)| (name.clone(), linked_type_ref(ty)))
             .collect(),
         metadata: call.metadata.clone(),
+        actor_metadata: None,
     })
 }
 
@@ -963,7 +1344,7 @@ fn linked_field_path(path: &artifact::FieldPathIr) -> FieldPathIr {
 
 fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
     match ty {
-        artifact::TypeRefIr::Native { name, args } => LinkedTypeRef::Native {
+        artifact::TypeRefIr::Builtin { name, args } => LinkedTypeRef::Native {
             name: name.clone(),
             args: args.iter().map(linked_type_ref).collect(),
         },
@@ -982,6 +1363,19 @@ fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
         },
         artifact::TypeRefIr::PackageSymbol { symbol } => LinkedTypeRef::PackageSymbol {
             symbol: symbol.clone(),
+        },
+        artifact::TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => LinkedTypeRef::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        artifact::TypeRefIr::AppliedNominal { base, arguments } => LinkedTypeRef::AppliedNominal {
+            base: linked_nominal_type_ref_base(base),
+            arguments: arguments.iter().map(linked_type_ref).collect(),
         },
         artifact::TypeRefIr::DbObjectSymbol { symbol } => LinkedTypeRef::DbObjectSymbol {
             symbol: symbol.clone(),
@@ -1017,6 +1411,42 @@ fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
                 })
                 .collect(),
             return_type: Box::new(linked_type_ref(return_type)),
+        },
+    }
+}
+
+fn linked_nominal_type_ref_base(base: &artifact::NominalTypeRefBaseIr) -> LinkedNominalTypeRefBase {
+    match base {
+        artifact::NominalTypeRefBaseIr::LocalType { type_index } => {
+            LinkedNominalTypeRefBase::LocalType {
+                type_index: *type_index as TypeIndex,
+            }
+        }
+        artifact::NominalTypeRefBaseIr::PublicationType {
+            module_path,
+            type_index,
+        } => LinkedNominalTypeRefBase::PublicationType {
+            module_path: module_path.clone(),
+            type_index: *type_index as TypeIndex,
+        },
+        artifact::NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+            LinkedNominalTypeRefBase::ServiceSymbol {
+                symbol: symbol.clone(),
+            }
+        }
+        artifact::NominalTypeRefBaseIr::PackageSymbol { symbol } => {
+            LinkedNominalTypeRefBase::PackageSymbol {
+                symbol: symbol.clone(),
+            }
+        }
+        artifact::NominalTypeRefBaseIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => LinkedNominalTypeRefBase::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
         },
     }
 }
@@ -1136,23 +1566,455 @@ fn linked_interface_method_slot_plan(
 mod tests {
     use super::*;
 
+    fn db_target_id() -> DbObjectTargetId {
+        DbObjectTargetId {
+            package_artifact_ref: artifact::PackageArtifactRef {
+                package_id: "example.models".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: artifact::PackageBuildId::new("build:models"),
+                package_local_abi_identity: artifact::PackageLocalAbiIdentity::new("abi:models"),
+            },
+            file_ir_ref: artifact::FileIrRef {
+                file_ir_identity: "file:models".to_string(),
+                module_path: "models".to_string(),
+                artifact_path: None,
+                source_ast_hash: Some("source:models".to_string()),
+            },
+            type_index: 7,
+        }
+    }
+
+    fn artifact_db_target() -> artifact::DbTargetIr {
+        artifact::DbTargetIr {
+            type_ref: artifact::TypeRefIr::PackageSymbol {
+                symbol: artifact::PackageSymbolRef {
+                    package: artifact::PackageRefIr::Dependency {
+                        dependency_ref: "models".to_string(),
+                    },
+                    symbol_path: "models.User".to_string(),
+                    abi_expectation: Some("abi:models".to_string()),
+                },
+            },
+            type_name: "User".to_string(),
+        }
+    }
+
+    fn source_site(seed: u32) -> artifact::InstructionSourceSite {
+        artifact::InstructionSourceSite::Source {
+            span: artifact::SourceSpanRef {
+                source_id: u64::from(seed) + 100,
+                start: artifact::SourcePosition {
+                    line: seed,
+                    column: seed + 1,
+                    offset: Some(seed + 2),
+                },
+                end: artifact::SourcePosition {
+                    line: seed + 3,
+                    column: seed + 4,
+                    offset: Some(seed + 5),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn linked_db_target_carriers_preserve_one_exact_runtime_identity() {
+        let target_id = db_target_id();
+        let resolve = |target: &artifact::DbTargetIr| {
+            assert_eq!(target, &artifact_db_target());
+            Ok(target_id.clone())
+        };
+        let operation = linked_db_operation(
+            &artifact::DbOperationIr {
+                op: artifact::DbOpKindIr::Count,
+                many: false,
+                target: artifact_db_target(),
+                selector: None,
+                query: None,
+                projection: None,
+                body: None,
+                insert_body: None,
+                change: None,
+                result_type: artifact::TypeRefIr::builtin("number"),
+                source_span: None,
+            },
+            &resolve,
+        )
+        .unwrap();
+        let query_target = linked_db_target(&artifact_db_target(), &resolve).unwrap();
+        let claim = linked_db_lease_claim(
+            &artifact::DbLeaseClaimIr {
+                target: artifact_db_target(),
+                key: artifact::ExprRefIr { expression: 0 },
+                slot: "lease".to_string(),
+                binding_slot: Some(0),
+                body: "claimBody".to_string(),
+                result_type: artifact::TypeRefIr::builtin("bool"),
+                source_span: None,
+            },
+            &resolve,
+        )
+        .unwrap();
+        let read = linked_db_lease_read(
+            &artifact::DbLeaseReadIr {
+                target: artifact_db_target(),
+                key: artifact::ExprRefIr { expression: 0 },
+                slot: "lease".to_string(),
+                result_type: artifact::TypeRefIr::builtin("bool"),
+                source_span: None,
+            },
+            &resolve,
+        )
+        .unwrap();
+
+        assert_eq!(operation.target.target_id, target_id);
+        assert_eq!(query_target.target_id, target_id);
+        assert_eq!(claim.target.target_id, target_id);
+        assert_eq!(read.target.target_id, target_id);
+    }
+
+    fn artifact_call(
+        target: artifact::CallTargetIr,
+        site: artifact::InstructionSourceSite,
+    ) -> artifact::CallIr {
+        artifact::CallIr {
+            target,
+            site,
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn linked_throw_statement_and_expression_preserve_exact_source_sites() {
+        let statement_site = source_site(11);
+        let statement = linked_stmt(
+            &artifact::StmtIr::Throw {
+                value: artifact::ExprRefIr { expression: 2 },
+                payload_type: artifact::TypeRefIr::builtin("string"),
+                site: statement_site.clone(),
+            },
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            statement,
+            LinkedStmtIr::Throw { site, .. } if site == statement_site
+        ));
+
+        let expression_site = source_site(29);
+        let expression = linked_expr(
+            &artifact::ExprIr::Throw {
+                value: artifact::ExprRefIr { expression: 5 },
+                payload_type: artifact::TypeRefIr::builtin("number"),
+                site: expression_site.clone(),
+            },
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            expression,
+            LinkedExprIr::Throw { site, .. } if site == expression_site
+        ));
+    }
+
+    #[test]
+    fn linked_throw_preserves_exact_synthetic_site() {
+        let expected = artifact::InstructionSourceSite::Synthetic {
+            reason: artifact::SyntheticInstructionSiteReason::RuntimeControlFlow,
+        };
+        let linked = linked_expr(
+            &artifact::ExprIr::Throw {
+                value: artifact::ExprRefIr { expression: 0 },
+                payload_type: artifact::TypeRefIr::builtin("unknown"),
+                site: expected.clone(),
+            },
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            linked,
+            LinkedExprIr::Throw { site, .. } if site == expected
+        ));
+    }
+
+    #[test]
+    fn linked_local_package_service_and_native_calls_preserve_exact_sites() {
+        let local_site = source_site(41);
+        let local = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::LocalExecutable {
+                    executable_index: 7,
+                },
+                local_site.clone(),
+            ),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(local.site, local_site);
+
+        let package_site = source_site(51);
+        let package = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::PackageCallable {
+                    package_ref: artifact::PackageRefIr::Dependency {
+                        dependency_ref: "models".to_string(),
+                    },
+                    package_callable_id: artifact::PackageCallableId::new("callable:models.lookup"),
+                },
+                package_site.clone(),
+            ),
+            &|target| match target {
+                artifact::CallTargetIr::PackageCallable { .. } => Ok(LinkedCallTarget::Builtin {
+                    op: "resolved-package".to_string(),
+                }),
+                _ => unreachable!(),
+            },
+        )
+        .unwrap();
+        assert_eq!(package.site, package_site);
+
+        let service_site = source_site(61);
+        let service = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::ServiceCall {
+                    service_call_ref_index: artifact::ServiceCallRefIndex::new(3),
+                },
+                service_site.clone(),
+            ),
+            &|target| match target {
+                artifact::CallTargetIr::ServiceCall { .. } => Ok(LinkedCallTarget::Builtin {
+                    op: "resolved-service".to_string(),
+                }),
+                _ => unreachable!(),
+            },
+        )
+        .unwrap();
+        assert_eq!(service.site, service_site);
+
+        let native_site = source_site(71);
+        let native = linked_call(
+            &artifact_call(
+                artifact::CallTargetIr::Native {
+                    target: artifact::NativeTarget {
+                        namespace: "std.http".to_string(),
+                        symbol: "fetch".to_string(),
+                        binding_key: Some("std.http.fetch".to_string()),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                native_site.clone(),
+            ),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(native.site, native_site);
+    }
+
+    #[test]
+    fn linked_required_catch_type_preserves_applied_nominal() {
+        let linked = linked_expr(
+            &artifact::ExprIr::Catch {
+                try_expression: artifact::ExprRefIr { expression: 0 },
+                catch_slot: 1,
+                catch_type: artifact::TypeRefIr::AppliedNominal {
+                    base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 2 },
+                    arguments: vec![artifact::TypeRefIr::builtin("string")],
+                },
+                body: artifact::ExprRefIr { expression: 3 },
+            },
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            linked,
+            LinkedExprIr::Catch {
+                catch_type: LinkedTypeRef::AppliedNominal {
+                    base: LinkedNominalTypeRefBase::LocalType { type_index: 2 },
+                    arguments,
+                },
+                ..
+            } if arguments == vec![LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            }]
+        ));
+    }
+
+    #[test]
+    fn linked_representation_wrap_preserves_child_and_plain_target() {
+        let linked = linked_expr(
+            &artifact::ExprIr::RepresentationWrap {
+                value: artifact::ExprRefIr { expression: 11 },
+                type_ref: artifact::TypeRefIr::LocalType { type_index: 3 },
+            },
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            linked,
+            LinkedExprIr::RepresentationWrap {
+                value: ExprRefIr { expression: 11 },
+                type_ref: LinkedTypeRef::LocalType { type_index: 3 },
+            }
+        );
+    }
+
+    #[test]
+    fn linked_representation_wrap_preserves_external_owner_and_nested_arguments() {
+        let linked = linked_expr(
+            &artifact::ExprIr::RepresentationWrap {
+                value: artifact::ExprRefIr { expression: 19 },
+                type_ref: artifact::TypeRefIr::AppliedNominal {
+                    base: artifact::NominalTypeRefBaseIr::PackageSymbol {
+                        symbol: artifact::PackageSymbolRef {
+                            package: artifact::PackageRefIr::Dependency {
+                                dependency_ref: "models".to_string(),
+                            },
+                            symbol_path: "api.OuterRepresentation".to_string(),
+                            abi_expectation: Some("local-abi:models".to_string()),
+                        },
+                    },
+                    arguments: vec![artifact::TypeRefIr::AppliedNominal {
+                        base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 5 },
+                        arguments: vec![artifact::TypeRefIr::builtin("string")],
+                    }],
+                },
+            },
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            linked,
+            LinkedExprIr::RepresentationWrap {
+                value: ExprRefIr { expression: 19 },
+                type_ref: LinkedTypeRef::AppliedNominal {
+                    base: LinkedNominalTypeRefBase::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::Dependency {
+                                dependency_ref: "models".to_string(),
+                            },
+                            symbol_path: "api.OuterRepresentation".to_string(),
+                            abi_expectation: Some("local-abi:models".to_string()),
+                        },
+                    },
+                    arguments: vec![LinkedTypeRef::AppliedNominal {
+                        base: LinkedNominalTypeRefBase::LocalType { type_index: 5 },
+                        arguments: vec![LinkedTypeRef::Native {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                        }],
+                    }],
+                },
+            }
+        );
+    }
+
+    fn generic_type_file() -> artifact::FileIrUnit {
+        let mut file = artifact::FileIrUnit::empty("models", "source");
+        file.type_table.push(artifact::TypeDeclIr {
+            name: "Box".to_string(),
+            descriptor: artifact::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    artifact::TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+            type_params: vec!["T".to_string()],
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file.type_table.push(artifact::TypeDeclIr {
+            name: "Holder".to_string(),
+            descriptor: artifact::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([(
+                    "boxed".to_string(),
+                    artifact::TypeRefIr::AppliedNominal {
+                        base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 0 },
+                        arguments: vec![artifact::TypeRefIr::builtin("string")],
+                    },
+                )]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file
+    }
+
+    #[test]
+    fn linked_file_conversion_preserves_applied_nominal_wrapper_and_arguments() {
+        let linked = linked_file_unit_from_assembly_artifact(
+            &generic_type_file(),
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        let LinkedTypeDescriptor::Record { fields } = &linked.types[1].descriptor else {
+            panic!("holder must remain a record")
+        };
+        assert!(matches!(
+            &fields["boxed"],
+            LinkedTypeRef::AppliedNominal {
+                base: LinkedNominalTypeRefBase::LocalType { type_index: 0 },
+                arguments
+            } if arguments == &vec![LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            }]
+        ));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_applied_nominal_wrong_arity_before_linking() {
+        let mut file = generic_type_file();
+        let artifact::TypeDescriptorIr::Record { fields } = &mut file.type_table[1].descriptor
+        else {
+            unreachable!()
+        };
+        let artifact::TypeRefIr::AppliedNominal { arguments, .. } =
+            fields.get_mut("boxed").unwrap()
+        else {
+            unreachable!()
+        };
+        arguments.push(artifact::TypeRefIr::builtin("number"));
+
+        let error = linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("has arity 2, expected 1"));
+    }
+
     #[test]
     fn linked_file_conversion_preserves_encrypted_db_field_storage() {
         let mut artifact = artifact::FileIrUnit::empty("internal.credential", "source");
         artifact.declarations.db.insert(
             "Credential".to_string(),
             artifact::DbDeclarationIr {
-                type_ref: artifact::TypeRefIr::native("Credential"),
+                type_ref: artifact::TypeRefIr::builtin("Credential"),
                 type_name: "Credential".to_string(),
                 collection_name: "credential".to_string(),
                 kind: artifact::DbObjectKindIr::Object,
                 key: artifact::DbObjectKeyIr {
                     name: "id".to_string(),
-                    ty: artifact::TypeRefIr::native("string"),
+                    ty: artifact::TypeRefIr::builtin("string"),
                 },
                 fields: vec![artifact::DbObjectFieldIr {
                     name: "apiKey".to_string(),
-                    ty: artifact::TypeRefIr::native("string"),
+                    ty: artifact::TypeRefIr::builtin("string"),
                     storage: artifact::DbFieldStorageIr::Encrypted,
                 }],
                 retention: None,
@@ -1162,10 +2024,255 @@ mod tests {
             },
         );
 
-        let linked = linked_file_unit_from_artifact(&artifact).unwrap();
+        let linked = linked_file_unit_from_assembly_artifact(
+            &artifact,
+            &|target| anyhow::bail!("unexpected canonical call target {target:?}"),
+            &|target| anyhow::bail!("unexpected canonical DB target {target:?}"),
+        )
+        .unwrap();
         assert_eq!(
             linked.declarations.db["Credential"].fields[0].storage,
             DbFieldStorageIr::Encrypted
         );
+    }
+
+    fn actor_file() -> artifact::FileIrUnit {
+        let mut file = artifact::FileIrUnit::empty("actors", "source");
+        let abi = artifact::ActorAbiInput {
+            actor_name: "DocHub".to_string(),
+            actor_id_type: artifact::TypeRefIr::builtin("string"),
+            fields: vec![artifact::ActorFieldIr {
+                name: "nextSeq".to_string(),
+                ty: artifact::TypeRefIr::builtin("number"),
+                encoding: artifact::ActorFieldEncodingIr::CanonicalValueV1,
+            }],
+            public_methods: Vec::new(),
+            actor_runtime_abi_version: artifact::ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        };
+        file.actor_declarations.push(artifact::ActorDeclarationIr {
+            actor_abi_identity: skiff_artifact_identity::actor_abi_identity(&abi).unwrap(),
+            actor_implementation_identity: artifact::ActorImplementationIdentity::new(
+                "actor-impl:test",
+            ),
+            abi,
+            method_implementations: std::collections::BTreeMap::new(),
+        });
+        file
+    }
+
+    fn actor_file_with_method() -> artifact::FileIrUnit {
+        let mut file = actor_file();
+        let method_identity = artifact::ActorMethodIdentity::new("actor-method:read");
+        file.executables.push(artifact::ExecutableIr {
+            kind: artifact::ExecutableKind::ImplMethod,
+            symbol: "actors.DocHub.read".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: artifact::TypeRefIr::builtin("number"),
+            self_type: Some(artifact::TypeRefIr::builtin("number")),
+            slots: artifact::SlotLayout::default(),
+            may_suspend: false,
+            body: artifact::ExecutableBody {
+                expressions: vec![artifact::ExprIr::ActorSelfField {
+                    field: "nextSeq".to_string(),
+                    field_type: artifact::TypeRefIr::builtin("number"),
+                }],
+                ..artifact::ExecutableBody::default()
+            },
+            source_span: None,
+        });
+        file.actor_declarations[0]
+            .abi
+            .public_methods
+            .push(artifact::ActorPublicMethodIr {
+                method_identity: method_identity.clone(),
+                name: "read".to_string(),
+                parameters: Vec::new(),
+                return_type: artifact::TypeRefIr::builtin("number"),
+                may_suspend: false,
+            });
+        file.actor_declarations[0]
+            .method_implementations
+            .insert(method_identity, 0);
+        file.actor_declarations[0].actor_abi_identity =
+            skiff_artifact_identity::actor_abi_identity(&file.actor_declarations[0].abi).unwrap();
+        file
+    }
+
+    #[test]
+    fn linked_file_conversion_preserves_actor_declaration_owner_and_encoding() {
+        let artifact = actor_file();
+        let linked = linked_file_unit_from_assembly_artifact(
+            &artifact,
+            &|target| anyhow::bail!("unexpected canonical call target {target:?}"),
+            &|target| anyhow::bail!("unexpected canonical DB target {target:?}"),
+        )
+        .unwrap();
+        let actor = &linked.actor_declarations[0];
+        assert_eq!(actor.actor_type.module_path, "actors");
+        assert_eq!(actor.actor_type.symbol, "DocHub");
+        assert!(actor.implementation_owner.is_none());
+        assert_eq!(actor.actor_name, "DocHub");
+        assert_eq!(
+            actor.fields[0].encoding,
+            artifact::ActorFieldEncodingIr::CanonicalValueV1
+        );
+    }
+
+    #[test]
+    fn linked_file_conversion_preserves_validated_actor_self_field() {
+        let file = actor_file_with_method();
+        let linked = linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap();
+        assert!(matches!(
+            &linked.executables[0].body.expressions[0],
+            LinkedExprIr::ActorSelfField { field, field_type }
+                if field == "nextSeq"
+                    && field_type == &linked_type_ref(&artifact::TypeRefIr::builtin("number"))
+        ));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_actor_self_field_outside_actor_method() {
+        let mut file = actor_file();
+        file.constants.push(artifact::ConstIr {
+            name: "forged".to_string(),
+            ty: artifact::TypeRefIr::builtin("number"),
+            body: artifact::ExecutableBody {
+                expressions: vec![artifact::ExprIr::ActorSelfField {
+                    field: "nextSeq".to_string(),
+                    field_type: artifact::TypeRefIr::builtin("number"),
+                }],
+                ..artifact::ExecutableBody::default()
+            },
+            source_span: None,
+        });
+        assert!(linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("outside an Actor method"));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_actor_self_field_type_forgery() {
+        let mut file = actor_file_with_method();
+        file.executables[0].body.expressions[0] = artifact::ExprIr::ActorSelfField {
+            field: "nextSeq".to_string(),
+            field_type: artifact::TypeRefIr::builtin("string"),
+        };
+        assert!(linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("type does not match"));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_duplicate_actor_owner() {
+        let mut duplicate = actor_file();
+        duplicate
+            .actor_declarations
+            .push(duplicate.actor_declarations[0].clone());
+        assert!(linked_file_unit_from_assembly_artifact(
+            &duplicate,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate actor declaration"));
+    }
+
+    #[test]
+    fn linked_call_preserves_actor_dispatch_identities_without_executable_address() {
+        let call = artifact::CallIr {
+            target: artifact::CallTargetIr::ActorMethod {
+                actor: artifact::ServiceSymbolRef {
+                    module_path: "actors".to_string(),
+                    symbol: "DocHub".to_string(),
+                },
+                actor_abi_identity: artifact::ActorAbiIdentity::new("actor-abi:test"),
+                actor_implementation_identity: artifact::ActorImplementationIdentity::new(
+                    "actor-impl:test",
+                ),
+                method_identity: artifact::ActorMethodIdentity::new("actor-method:submit"),
+            },
+            site: artifact::InstructionSourceSite::Synthetic {
+                reason: artifact::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+            args: Vec::new(),
+            type_args: std::collections::BTreeMap::new(),
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let linked = linked_call(&call, &|_| unreachable!()).unwrap();
+        let LinkedCallTarget::ActorMethod {
+            actor,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity,
+        } = linked.target
+        else {
+            panic!("Actor call must remain a non-executable Actor target")
+        };
+        assert_eq!(actor.symbol, "DocHub");
+        assert_eq!(actor_abi_identity.as_str(), "actor-abi:test");
+        assert_eq!(actor_implementation_identity.as_str(), "actor-impl:test");
+        assert_eq!(method_identity.as_str(), "actor-method:submit");
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_actor_method_entry_out_of_bounds() {
+        let mut file = actor_file();
+        let method_identity = artifact::ActorMethodIdentity::new("actor-method:submit");
+        file.actor_declarations[0]
+            .abi
+            .public_methods
+            .push(artifact::ActorPublicMethodIr {
+                method_identity: method_identity.clone(),
+                name: "submit".to_string(),
+                parameters: Vec::new(),
+                return_type: artifact::TypeRefIr::builtin("void"),
+                may_suspend: false,
+            });
+        file.actor_declarations[0]
+            .method_implementations
+            .insert(method_identity, 0);
+        file.actor_declarations[0].actor_abi_identity =
+            skiff_artifact_identity::actor_abi_identity(&file.actor_declarations[0].abi).unwrap();
+
+        assert!(linked_file_unit_from_assembly_artifact(
+            &file,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("implementation index 0 is out of bounds"));
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_tampered_actor_abi_identity() {
+        let mut artifact = actor_file();
+        artifact.actor_declarations[0].actor_abi_identity =
+            artifact::ActorAbiIdentity::new("tampered");
+        assert!(linked_file_unit_from_assembly_artifact(
+            &artifact,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("ABI identity does not match"));
     }
 }

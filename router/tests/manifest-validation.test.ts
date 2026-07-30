@@ -1,19 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  loadManifest as loadRuntimeManifest,
-  packageHttpHandlerTarget
-} from '../src/manifest/loadManifest.js';
+import { loadManifest as loadRuntimeManifest } from '../src/manifest/loadManifest.js';
 import {
   httpRequestSchema,
   httpResponseSchema,
   httpResponseStreamEventSchema
 } from './helpers/manifests.js';
 import { closeTrackedResources } from './helpers/runtime.js';
-import {
-  connectionMessageSchema,
-  webSocketManifestValue
-} from './helpers/websocketFixtures.js';
 
 afterEach(closeTrackedResources);
 
@@ -49,47 +42,23 @@ function testOperationAbiId(target: string): string {
 }
 
 describe('router manifest validation', () => {
-  it('defaults service access metadata to public', () => {
-    const loaded = loadManifest(webSocketManifestValue());
+  it.each(['access', 'visibility', 'organizationRole'])(
+    'rejects removed service metadata field %s',
+    (field) => {
+      const manifestValue = httpManifestValue() as any;
+      manifestValue.service[field] =
+        field === 'access' ? { visibility: 'internal' } : 'legacy';
 
-    expect(loaded.service.access).toEqual({ visibility: 'public' });
-  });
+      expect(() => loadManifest(manifestValue)).toThrow(
+        new RegExp(`manifest\\.service does not support .*"${field}"`)
+      );
+    }
+  );
 
-  it('accepts internal service access metadata and defaults organization role', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.service.access = { visibility: 'internal' };
+  it('loads manifests without removed service metadata', () => {
+    const loaded = loadManifest(httpManifestValue());
 
-    const loaded = loadManifest(manifestValue);
-
-    expect(loaded.service.access).toEqual({
-      visibility: 'internal',
-      organizationRole: 'viewer'
-    });
-  });
-
-  it('rejects invalid service access metadata', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.service.access = {
-      visibility: 'public',
-      organizationRole: 'viewer'
-    };
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.access\.organizationRole is only allowed/
-    );
-
-    manifestValue.service.access = { visibility: 'private' };
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.access\.visibility must be public or internal/
-    );
-
-    manifestValue.service.access = {
-      visibility: 'internal',
-      organizationRole: 'admin'
-    };
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.access\.organizationRole must be viewer, maintainer, or owner/
-    );
+    expect(loaded.service).not.toHaveProperty('access');
   });
 
   it('accepts typed HTTP route metadata and exposes it on loaded routes', () => {
@@ -98,7 +67,7 @@ describe('router manifest validation', () => {
       service: {
         id: 'skiff.run/typed-http',
         revisionId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        protocolIdentity: 'skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       },
       operations: [
         {
@@ -185,7 +154,7 @@ describe('router manifest validation', () => {
       service: {
         id: 'skiff.run/typed-http',
         revisionId: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        protocolIdentity: 'skiff-protocol-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
       },
       operations: [
         {
@@ -274,7 +243,7 @@ describe('router manifest validation', () => {
       service: {
         id: 'skiff.run/typed-http',
         revisionId: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        protocolIdentity: 'skiff-protocol-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
       },
       operations: [
         {
@@ -326,7 +295,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'skiff.run/typed-http',
           revisionId: 'abababababababababababababababababababababababababababababababab',
-          protocolIdentity: 'skiff-protocol-v1:sha256:abababababababababababababababababababababababababababababababab'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:abababababababababababababababababababababababababababababababab'
         },
         operations: [
           {
@@ -368,7 +337,7 @@ describe('router manifest validation', () => {
       service: {
         id: 'skiff.run/raw-http-stream',
         revisionId: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-        protocolIdentity: 'skiff-protocol-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
       },
       operations: [
         {
@@ -402,7 +371,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'skiff.run/raw-http-stream',
           revisionId: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-          protocolIdentity: 'skiff-protocol-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
         },
         operations: [
           {
@@ -431,7 +400,7 @@ describe('router manifest validation', () => {
       service: {
         id: 'skiff.run/raw-http-route',
         revisionId: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-        protocolIdentity: 'skiff-protocol-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+        protocolIdentity: 'skiff-service-protocol-v5:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
       },
       operations: [
         {
@@ -488,7 +457,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'skiff.run/http-route-abi',
           revisionId: 'abababababababababababababababababababababababababababababababab',
-          protocolIdentity: 'skiff-protocol-v1:sha256:abababababababababababababababababababababababababababababababab'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:abababababababababababababababababababababababababababababababab'
         },
         operations: [
           {
@@ -533,7 +502,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'skiff.run/http-route-abi',
           revisionId: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
-          protocolIdentity: 'skiff-protocol-v1:sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'
         },
         operations: [
           {
@@ -579,7 +548,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'example.com/legacy-http',
           revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
-          protocolIdentity: 'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:1111111111111111111111111111111111111111111111111111111111111111'
         },
         operations: [
           {
@@ -609,83 +578,17 @@ describe('router manifest validation', () => {
   });
 
 
-  it('rejects old websocket bind manifest shape', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.connect.bind = {
-      input: 'request'
-    };
-
-    expect(() => loadManifest(manifestValue)).toThrow(/websocket client\.connect does not support "bind"/);
-  });
-
-  it('rejects unknown websocket adapter source kinds', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.receive.adapterArgs[1].source.kind =
-      'websocket.connection.context.userId';
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.receive\.adapterArgs\[1\]\.source\.kind must be a known gateway adapter source/
-    );
-  });
-
-  it('rejects websocket connect adapter sources outside connectRequest', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.connect.adapterArgs[0].source.kind = 'websocket.message';
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.connect\.adapterArgs\[0\]\.source\.kind must be websocket\.connectRequest/
-    );
-  });
-
-  it('rejects duplicate websocket adapter params', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.receive.adapterArgs.push({
-      param: 'message',
-      source: { kind: 'websocket.messageBody' }
-    });
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.receive\.adapterArgs has duplicate param message/
-    );
-  });
-
-  it('allows websocket receive handlers that return null', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.operations[1].response = { type: 'null' };
-
-    expect(() => loadManifest(manifestValue)).not.toThrow();
-  });
-
-  it('requires explicit operationAbiId on websocket connect routes', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    delete manifestValue.gateway.websocket.connect.operationAbiId;
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.connect\.operationAbiId must be a non-empty string/
-    );
-  });
-
-  it('rejects websocket receive routes whose operationAbiId differs from the operation', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.receive.operationAbiId = 'operation:test:mismatched-websocket-route';
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.receive\.operationAbiId must match operation WebSocketFixtureConnection\.receive\.operationAbiId/
-    );
-  });
-
-
   it('rejects non-canonical protocol identities in direct manifests', () => {
-    const manifestValue = webSocketManifestValue();
-    manifestValue.service.protocolIdentity = 'skiff-protocol-v1:sha256:not-a-real-hash';
+    const manifestValue = httpManifestValue();
+    manifestValue.service.protocolIdentity = 'skiff-service-protocol-v5:sha256:not-a-real-hash';
 
     expect(() => loadManifest(manifestValue)).toThrow(
-      /manifest\.service\.protocolIdentity must be skiff-protocol-v1/
+      /manifest\.service\.protocolIdentity must be skiff-service-protocol-v5/
     );
   });
 
   it('rejects non-canonical revision ids in direct manifests', () => {
-    const manifestValue = webSocketManifestValue();
+    const manifestValue = httpManifestValue();
     manifestValue.service.revisionId = 'revision-websocket';
 
     expect(() => loadManifest(manifestValue)).toThrow(
@@ -694,7 +597,7 @@ describe('router manifest validation', () => {
   });
 
   it('rejects direct manifests whose service id is not a publication id', () => {
-    const manifestValue = webSocketManifestValue();
+    const manifestValue = httpManifestValue();
     manifestValue.service.id = 'websocket_fixture';
 
     expect(() => loadManifest(manifestValue)).toThrow(
@@ -703,12 +606,12 @@ describe('router manifest validation', () => {
   });
 
   it('rejects raw publication ids in service operation targets', () => {
-    const manifestValue = webSocketManifestValue();
+    const manifestValue = httpManifestValue();
     manifestValue.operations[0]!.target =
-      'service.example.com/websocket_fixture.WebSocketFixtureConnection.connect';
+      'service.example.com/sample.SampleHttpApi.handle';
 
     expect(() => loadManifest(manifestValue)).toThrow(
-      /operation WebSocketFixtureConnection\.connect\.target must be service\.example~com~~websocket_fixture\.<target suffix>/
+      /operation SampleHttpApi\.handle\.target must be service\.example~com~~sample\.<target suffix>/
     );
   });
 
@@ -719,7 +622,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'skiff.run/sample',
           revisionId: '4444444444444444444444444444444444444444444444444444444444444444',
-          protocolIdentity: 'skiff-protocol-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:4444444444444444444444444444444444444444444444444444444444444444'
         },
         operations: [
           {
@@ -764,7 +667,7 @@ describe('router manifest validation', () => {
         service: {
           id: 'skiff.run/sample',
           revisionId: '5555555555555555555555555555555555555555555555555555555555555555',
-          protocolIdentity: 'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+          protocolIdentity: 'skiff-service-protocol-v5:sha256:5555555555555555555555555555555555555555555555555555555555555555'
         },
         operations: [
           {
@@ -787,127 +690,6 @@ describe('router manifest validation', () => {
     ).not.toThrow();
   });
 
-  it('accepts package operation targets for websocket package handlers', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    const connectTarget = packageHttpHandlerTarget(
-      'example.com/socket-kit',
-      'Handler.connect'
-    );
-    const receiveTarget = packageHttpHandlerTarget('example.com/socket-kit', 'receive');
-    manifestValue.operations[0].target = connectTarget;
-    manifestValue.operations[1].target = receiveTarget;
-    manifestValue.gateway.websocket.connect.serviceOperationTarget = connectTarget;
-    manifestValue.gateway.websocket.receive.serviceOperationTarget = receiveTarget;
-
-    const loaded = loadManifest(manifestValue);
-
-    expect(loaded.websocketEntry?.connect?.operationManifest.target).toBe(connectTarget);
-    expect(loaded.websocketEntry?.receive.operationManifest.target).toBe(receiveTarget);
-  });
-
-  it('rejects unencoded package operation targets in direct manifests', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.operations[0].target = 'package.example.com/socket-kit.Handler.connect';
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /operation WebSocketFixtureConnection\.connect\.target must be package\.<encoded package id>\.<encoded symbol path>/
-    );
-  });
-
-  it('rejects old loose WebSocketConnectResult object schemas in direct manifests', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.operations[0].response = {
-      type: 'object',
-      required: ['tag'],
-      properties: {
-        tag: { type: 'string', enum: ['accept', 'reject'] },
-        context: { type: 'any' },
-        binding: { type: 'any' },
-        code: { type: 'integer' },
-        reason: { type: 'string' }
-      },
-      additionalProperties: true
-    };
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /canonical WebSocketConnectResult oneOf schema/
-    );
-  });
-
-  it('rejects legacy websocket receive response message schemas in direct manifests', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.operations[1].response = connectionMessageSchema(true);
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.receive\.response must be null or void response schema/
-    );
-  });
-
-  it('rejects WebSocketConnectResult schemas with extra oneOf branches in direct manifests', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.operations[0].response.oneOf.push({
-      type: 'object',
-      required: ['tag', 'retryAfterMs'],
-      properties: {
-        tag: { type: 'string', enum: ['retry'] },
-        retryAfterMs: { type: 'integer' }
-      },
-      additionalProperties: false
-    });
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /canonical WebSocketConnectResult oneOf schema/
-    );
-  });
-
-  it('rejects WebSocketConnectResult schemas whose accept businessIdentity is not nullable', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    const acceptBranch = manifestValue.operations[0].response.oneOf.find(
-      (branch: any) => branch.properties?.tag?.enum?.[0] === 'accept'
-    );
-    delete acceptBranch.properties.businessIdentity.nullable;
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /canonical WebSocketConnectResult oneOf schema/
-    );
-  });
-
-  it('rejects websocket routes in direct manifests', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.routes = [
-      {
-        path: '/chat/send',
-        operation: 'WebSocketFixtureConnection.receive',
-        bind: {
-          message: 'message.payload'
-        }
-      }
-    ];
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.routes are no longer supported/
-    );
-  });
-
-  it('rejects empty websocket route arrays in direct manifests', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.routes = [];
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.routes are no longer supported/
-    );
-  });
-
-  it('rejects websocket receive adapter sources outside receive matrix', () => {
-    const manifestValue = webSocketManifestValue() as any;
-    manifestValue.gateway.websocket.receive.adapterArgs[1].source.kind = 'websocket.connectRequest';
-
-    expect(() => loadManifest(manifestValue)).toThrow(
-      /websocket client\.receive\.adapterArgs\[1\]\.source\.kind must be websocket\.receiveEvent/
-    );
-  });
-
-
   it('rejects raw HTTP metadata that points at an unknown operation', () => {
     expect(
       () =>
@@ -916,7 +698,7 @@ describe('router manifest validation', () => {
           service: {
             id: 'example.com/sample',
             revisionId: '3333333333333333333333333333333333333333333333333333333333333333',
-            protocolIdentity: 'skiff-protocol-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222'
+            protocolIdentity: 'skiff-service-protocol-v5:sha256:2222222222222222222222222222222222222222222222222222222222222222'
           },
           operations: [
             {
@@ -939,112 +721,35 @@ describe('router manifest validation', () => {
     ).toThrow(/gateway\.http\.raw references unknown operation MissingHttpApi\.handle/);
   });
 
-
-  it('rejects websocket manifests with invalid receive declarations', () => {
-    const baseManifest = webSocketManifestValue();
-    const receiveAdapterArgs = [
-      { param: 'context', source: { kind: 'websocket.connectionContext' } },
-      { param: 'message', source: { kind: 'websocket.message' } },
-      { param: 'userId', source: { kind: 'websocket.businessIdentity' } },
-      { param: 'connectionId', source: { kind: 'websocket.connectionId' } }
-    ];
-
-    expect(() =>
-      loadManifest({
-        ...baseManifest,
-        gateway: {
-          websocket: {
-            id: 'client',
-            path: '/ws',
-            context: { type: 'object', additionalProperties: true },
-            receive: {
-              operation: 'WebSocketFixtureConnection.receive',
-              operationAbiId: testOperationAbiId(
-                'service.example~com~~websocket_fixture.WebSocketFixtureConnection.receive'
-              ),
-              adapterArgs: receiveAdapterArgs
-            }
-          }
-        }
-      })
-    ).toThrow(/declares context without connect/);
-
-    expect(() =>
-      loadManifest({
-        ...baseManifest,
-        gateway: {
-          websocket: {
-            id: 'client',
-            path: '/ws',
-            connect: {
-              operation: 'WebSocketFixtureConnection.connect',
-              operationAbiId: testOperationAbiId(
-                'service.example~com~~websocket_fixture.WebSocketFixtureConnection.connect'
-              ),
-              adapterArgs: [
-                { param: 'input', source: { kind: 'websocket.connectRequest' } }
-              ]
-            },
-            receive: {
-              operation: 'WebSocketFixtureConnection.receive',
-              operationAbiId: testOperationAbiId(
-                'service.example~com~~websocket_fixture.WebSocketFixtureConnection.receive'
-              ),
-              adapterArgs: receiveAdapterArgs.filter((arg) => arg.param !== 'message')
-            }
-          }
-        }
-      })
-    ).toThrow(/websocket client\.receive\.adapterArgs is missing operation parameter message/);
-
-    expect(() =>
-      loadManifest({
-        ...baseManifest,
-        gateway: {
-          websocket: {
-            id: 'client',
-            path: '/ws',
-            connect: {
-              operation: 'WebSocketFixtureConnection.connect',
-              operationAbiId: testOperationAbiId(
-                'service.example~com~~websocket_fixture.WebSocketFixtureConnection.connect'
-              ),
-              adapterArgs: [
-                { param: 'input', source: { kind: 'websocket.connectRequest' } }
-              ]
-            },
-            receive: {
-              operation: 'WebSocketFixtureConnection.receive',
-              operationAbiId: testOperationAbiId(
-                'service.example~com~~websocket_fixture.WebSocketFixtureConnection.receive'
-              ),
-              adapterArgs: [
-                ...receiveAdapterArgs,
-                { param: 'payload', source: { kind: 'websocket.messageBody' } }
-              ]
-            }
-          }
-        }
-      })
-    ).toThrow(/websocket client\.receive\.adapterArgs references unknown operation parameter payload/);
-
-    const arbitraryMessageSchema = webSocketManifestValue() as any;
-    arbitraryMessageSchema.operations[1].parameters[1].schema = {
-      type: 'object',
-      required: ['tag'],
-      properties: {
-        tag: { type: 'string' },
-        payload: { type: 'json' }
-      },
-      additionalProperties: false
-    };
-    expect(() => loadManifest(arbitraryMessageSchema)).not.toThrow();
-
-    const unsupportedMessageField = webSocketManifestValue() as any;
-    unsupportedMessageField.gateway.websocket.receive.adapterArgs[1].source.kind =
-      'websocket.message.payload';
-    expect(() => loadManifest(unsupportedMessageField)).toThrow(
-      /websocket client\.receive\.adapterArgs\[1\]\.source\.kind must be a known gateway adapter source/
-    );
-  });
 });
+
+function httpManifestValue() {
+  return {
+    schemaVersion: 'skiff-runtime-manifest-v1',
+    service: {
+      id: 'example.com/sample',
+      revisionId: '3333333333333333333333333333333333333333333333333333333333333333',
+      protocolIdentity:
+        'skiff-service-protocol-v5:sha256:2222222222222222222222222222222222222222222222222222222222222222'
+    },
+    operations: [
+      {
+        operation: 'SampleHttpApi.handle',
+        operationAbiId:
+          'operation:test:service.example~com~~sample.SampleHttpApi.handle',
+        target: 'service.example~com~~sample.SampleHttpApi.handle',
+        mode: 'unary',
+        parameters: [{ name: 'request', schema: httpRequestSchema() }],
+        response: httpResponseSchema()
+      }
+    ],
+    gateway: {
+      http: {
+        raw: {
+          operation: 'SampleHttpApi.handle',
+          target: 'gateway.example~com~~sample.http.raw'
+        }
+      }
+    }
+  };
+}

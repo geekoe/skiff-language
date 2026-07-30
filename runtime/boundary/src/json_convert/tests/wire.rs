@@ -3,20 +3,105 @@ use serde_json::json;
 use crate::{
     error::RuntimeError,
     json::RuntimeBoundaryCodec,
+    json_convert::{decode_wire_plan_impl, BoundaryStreamHandlePolicy},
     plan::BoundaryUse,
     request_heap::RequestHeap,
     runtime_value::{HeapNode, RuntimeValue, RuntimeValueKey},
-    type_descriptor::{RuntimeTypePlan, RuntimeTypePlanDescriptorExt},
+    type_descriptor::{
+        RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan, RuntimeTypePlanDescriptorExt,
+    },
     value::encode_base64,
+};
+use skiff_artifact_model::PackageSchemaTypeId;
+use skiff_runtime_model::service_error::{
+    CatchIdentity, NominalTypeIdentity, PackageSchemaTypeIdentity,
 };
 
 use super::{
     super::{from_wire, to_wire},
-    helpers::{
-        alias, array, generic, map, named, record, representation, union,
-        websocket_connection_message_descriptor,
-    },
+    helpers::{alias, array, generic, map, named, record, representation, union},
 };
+
+fn package_catch_identity(key: &str, type_id: &str) -> CatchIdentity {
+    CatchIdentity::Nominal(NominalTypeIdentity::PackageSchema(
+        PackageSchemaTypeIdentity::new("example.identity", key, PackageSchemaTypeId::new(type_id))
+            .expect("test PackageSchema identity"),
+    ))
+}
+
+#[test]
+fn typed_wire_decode_preserves_nested_nominal_identity_sidecars() {
+    let item_identity = package_catch_identity("Item", "schema:item");
+    let mut item_plan =
+        RuntimeTypePlan::synthetic_request_record(vec![RuntimeRecordFieldPlan::new(
+            "name",
+            RuntimeTypePlan::synthetic_named_builtin("string", RuntimeTypeNode::String, Vec::new()),
+            true,
+        )]);
+    item_plan.identity.catch_identity = Some(item_identity.clone());
+    let outer_plan = RuntimeTypePlan::synthetic_request_record(vec![
+        RuntimeRecordFieldPlan::new(
+            "items",
+            RuntimeTypePlan::synthetic_array(item_plan.clone()),
+            true,
+        ),
+        RuntimeRecordFieldPlan::new(
+            "lookup",
+            RuntimeTypePlan::synthetic_map(
+                RuntimeTypePlan::synthetic_named_builtin(
+                    "string",
+                    RuntimeTypeNode::String,
+                    Vec::new(),
+                ),
+                item_plan,
+            ),
+            true,
+        ),
+    ]);
+    let mut heap = RequestHeap::default();
+
+    let decoded = decode_wire_plan_impl(
+        &json!({
+            "items": [{ "name": "Ada" }],
+            "lookup": { "primary": { "name": "Grace" } }
+        }),
+        &outer_plan,
+        &mut heap,
+        BoundaryStreamHandlePolicy::ExternalBoundary,
+    )
+    .expect("typed decode");
+    let RuntimeValue::Heap(outer_handle) = decoded else {
+        panic!("outer record");
+    };
+    let items = heap
+        .object_field_carrier(outer_handle, "items")
+        .expect("items field")
+        .expect("items carrier");
+    let RuntimeValue::Heap(items_handle) = items.value() else {
+        panic!("items array");
+    };
+    assert_eq!(
+        heap.array_item_carrier(*items_handle, 0)
+            .expect("items array")
+            .expect("first item")
+            .catch_identity(),
+        Some(&item_identity)
+    );
+    let lookup = heap
+        .object_field_carrier(outer_handle, "lookup")
+        .expect("lookup field")
+        .expect("lookup carrier");
+    let RuntimeValue::Heap(lookup_handle) = lookup.value() else {
+        panic!("lookup map");
+    };
+    assert_eq!(
+        heap.map_entry_carrier(*lookup_handle, &RuntimeValueKey::string("primary"),)
+            .expect("lookup map")
+            .expect("primary item")
+            .catch_identity(),
+        Some(&item_identity)
+    );
+}
 
 #[test]
 fn wire_roundtrip_supports_scalars_bytes_arrays_maps_and_representation_keys() {
@@ -220,127 +305,6 @@ fn ordinary_record_stream_field_is_not_a_request_local_handle_boundary() {
 }
 
 #[test]
-fn websocket_connection_message_descriptor_decodes_and_encodes_text_message() {
-    let expected = websocket_connection_message_descriptor();
-    let input = json!({ "tag": "text", "text": "{\"type\":\"hello\"}" });
-    let mut heap = RequestHeap::default();
-
-    let value = from_wire(&input, &expected, &mut heap).expect("text message should decode");
-    let RuntimeValue::Heap(handle) = value else {
-        panic!("expected heap value");
-    };
-    let HeapNode::Object(object) = heap.get(handle).expect("message should resolve") else {
-        panic!("expected object payload");
-    };
-    assert_eq!(
-        object.fields().get("tag"),
-        Some(&RuntimeValue::String("text".to_string()))
-    );
-
-    let output =
-        to_wire(&RuntimeValue::Heap(handle), &expected, &mut heap).expect("message should encode");
-    assert_eq!(output, input);
-}
-
-#[test]
-fn websocket_connect_result_builtin_descriptors_decode_and_encode() {
-    let context = record(
-        "api.example.ConnectionContext",
-        vec![("userId", named("string"))],
-    );
-    let cases = vec![
-        (
-            generic(
-                "std.websocket.WebSocketConnectResult",
-                vec![context.clone()],
-            ),
-            json!({
-                "tag": "accept",
-                "context": { "userId": "user-1" },
-                "businessIdentity": "user-1",
-                "connectionPolicy": {
-                    "maxConnections": 1,
-                    "overflow": "close-oldest",
-                    "closeCode": 4009,
-                    "closeReason": "host connection replaced",
-                },
-            }),
-        ),
-        (
-            generic(
-                "std.websocket.WebSocketConnectResult",
-                vec![context.clone()],
-            ),
-            json!({
-                "tag": "accept",
-                "context": { "userId": "user-1" },
-                "businessIdentity": "user-1",
-                "connectionPolicy": {
-                    "maxConnections": 1,
-                    "overflow": "reject-new",
-                    "closeCode": null,
-                    "closeReason": null,
-                },
-            }),
-        ),
-        (
-            generic("WebSocketConnectResult", vec![context.clone()]),
-            json!({
-                "tag": "reject",
-                "code": 1008,
-                "reason": "policy",
-            }),
-        ),
-        (
-            generic("std.websocket.WebSocketConnectResult", vec![context]),
-            json!({
-                "tag": "reject",
-                "code": 1013,
-                "reason": "try-again",
-            }),
-        ),
-    ];
-
-    for (expected, input) in cases {
-        let mut heap = RequestHeap::default();
-        let value = from_wire(&input, &expected, &mut heap)
-            .expect("WebSocketConnectResult should decode from builtin descriptor");
-        let output = to_wire(&value, &expected, &mut heap)
-            .expect("WebSocketConnectResult should encode from builtin descriptor");
-        assert_eq!(output, input);
-    }
-}
-
-#[test]
-fn websocket_event_builtin_descriptors_decode_and_encode() {
-    let context = record(
-        "api.example.ConnectionContext",
-        vec![("userId", named("string"))],
-    );
-    let connection = json!({
-        "id": "connection-1",
-        "businessIdentity": "user-1",
-        "context": { "userId": "user-1" },
-    });
-    let cases = vec![(
-        generic("std.websocket.WebSocketReceiveEvent", vec![context.clone()]),
-        json!({
-            "connection": connection.clone(),
-            "message": { "tag": "text", "text": "{\"type\":\"hello\"}" },
-        }),
-    )];
-
-    for (expected, input) in cases {
-        let mut heap = RequestHeap::default();
-        let value = from_wire(&input, &expected, &mut heap)
-            .expect("websocket event should decode from builtin descriptor");
-        let output = to_wire(&value, &expected, &mut heap)
-            .expect("websocket event should encode from builtin descriptor");
-        assert_eq!(output, input);
-    }
-}
-
-#[test]
 fn record_and_json_object_same_wire_shape_decode_to_different_node_kinds() {
     let record = json!({
         "kind": "record",
@@ -405,6 +369,18 @@ fn union_decode_rejects_object_when_string_or_number_branches_fail() {
     let error = from_wire(&json!({ "value": true }), &expected, &mut heap).unwrap_err();
 
     assert!(matches!(error, RuntimeError::Decode(_)));
+    assert!(heap.is_empty());
+}
+
+#[test]
+fn union_decode_fails_closed_when_multiple_exact_branches_match() {
+    let expected = union(vec![named("string"), named("string")]);
+    let mut heap = RequestHeap::default();
+
+    let error = from_wire(&json!("ambiguous"), &expected, &mut heap)
+        .expect_err("an ambiguous branch must not acquire the first branch identity");
+
+    assert!(error.to_string().contains("ambiguously matched"));
     assert!(heap.is_empty());
 }
 

@@ -11,12 +11,10 @@ use std::{
 use skiff_runtime_model::error::{RuntimeErrorPayload, WirePayload};
 use tokio::sync::{mpsc, Notify};
 
-use crate::{HttpResponseMetadata, ResponseError};
+use crate::ResponseError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutboundResponse {
-    Start { http_response: HttpResponseMetadata },
-    Chunk { seq: u64, payload: Vec<u8> },
     End { payload: Vec<u8> },
     Error(ResponseError),
 }
@@ -24,8 +22,6 @@ pub enum OutboundResponse {
 impl OutboundResponse {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Start { .. } => "response.start",
-            Self::Chunk { .. } => "response.chunk",
             Self::End { .. } => "response.end",
             Self::Error(_) => "response.error",
         }
@@ -147,20 +143,13 @@ impl OutboundRequestRegistry {
         })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn complete_for_test(&self, request_id: &str) -> Option<OutboundResponseSender> {
-        let entry = self.remove_entry(request_id)?;
-        entry.terminal.mark_terminal();
-        Some(entry.sender)
-    }
-
-    pub fn sender(&self, request_id: &str) -> Option<OutboundResponseSender> {
-        self.inner
-            .pending
-            .lock()
-            .ok()?
-            .get(request_id)
-            .map(|entry| entry.sender.clone())
+    /// Atomically claims a pending request's terminal outcome.
+    ///
+    /// The returned sender belongs to the sole terminal winner. A concurrent
+    /// cancellation, disconnect, duplicate, or late response receives `None`.
+    pub fn take_terminal_sender(&self, request_id: &str) -> Option<OutboundResponseSender> {
+        self.take_terminal_entry(request_id)
+            .map(|entry| entry.sender)
     }
 
     pub fn contains(&self, request_id: &str) -> bool {
@@ -178,9 +167,24 @@ impl OutboundRequestRegistry {
     }
 
     pub fn remove(&self, request_id: &str) {
-        if let Some(entry) = self.remove_entry(request_id) {
-            entry.terminal.mark_terminal();
+        let _ = self.take_terminal_sender(request_id);
+    }
+
+    pub fn fail_all(&self, error: ResponseError) -> usize {
+        let entries = {
+            let Ok(mut pending) = self.inner.pending.lock() else {
+                return 0;
+            };
+            pending
+                .drain()
+                .filter_map(|(_, entry)| entry.terminal.mark_terminal().then_some(entry))
+                .collect::<Vec<_>>()
+        };
+        let count = entries.len();
+        for entry in entries {
+            let _ = entry.sender.send(OutboundResponse::Error(error.clone()));
         }
+        count
     }
 
     pub fn pending_count(&self) -> usize {
@@ -195,8 +199,29 @@ impl OutboundRequestRegistry {
         self.inner.cancel_send_failed_closed.load(Ordering::Acquire)
     }
 
-    fn remove_entry(&self, request_id: &str) -> Option<OutboundRequestEntry> {
-        self.inner.pending.lock().ok()?.remove(request_id)
+    fn take_terminal_entry(&self, request_id: &str) -> Option<OutboundRequestEntry> {
+        let mut pending = self.inner.pending.lock().ok()?;
+        let entry = pending.remove(request_id)?;
+        entry.terminal.mark_terminal().then_some(entry)
+    }
+
+    fn claim_lease_terminal(
+        &self,
+        request_id: &str,
+        terminal: &OutboundRequestTerminalSignal,
+    ) -> bool {
+        let Ok(mut pending) = self.inner.pending.lock() else {
+            return false;
+        };
+        if !pending
+            .get(request_id)
+            .is_some_and(|entry| entry.terminal.is_same(terminal))
+        {
+            return false;
+        }
+        pending
+            .remove(request_id)
+            .is_some_and(|entry| entry.terminal.mark_terminal())
     }
 
     fn release_lease(&self) {
@@ -234,15 +259,20 @@ impl OutboundRequestLease {
     }
 
     pub fn complete(&self) {
-        if self.terminal.mark_terminal() {
-            let _ = self.registry.remove_entry(&self.request_id);
-        }
+        let _ = self
+            .registry
+            .claim_lease_terminal(&self.request_id, &self.terminal);
     }
 
-    pub fn cancel(&self, reason: &str) {
-        if self.terminal.mark_terminal() {
-            let _ = self.registry.remove_entry(&self.request_id);
+    pub fn cancel(&self, reason: &str) -> bool {
+        if self
+            .registry
+            .claim_lease_terminal(&self.request_id, &self.terminal)
+        {
             self.send_cancel(reason);
+            true
+        } else {
+            false
         }
     }
 
@@ -261,8 +291,10 @@ impl OutboundRequestLease {
 
 impl Drop for OutboundRequestLease {
     fn drop(&mut self) {
-        if self.terminal.mark_terminal() {
-            let _ = self.registry.remove_entry(&self.request_id);
+        if self
+            .registry
+            .claim_lease_terminal(&self.request_id, &self.terminal)
+        {
             self.send_cancel(self.drop_cancel_reason);
         }
         self.registry.release_lease();
@@ -298,6 +330,10 @@ impl OutboundRequestTerminalSignal {
         }
     }
 
+    fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     fn mark_terminal(&self) -> bool {
         if self
             .inner
@@ -310,5 +346,133 @@ impl OutboundRequestTerminalSignal {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn terminal_sender_take_commits_once_before_response_delivery() {
+        let registry = OutboundRequestRegistry::default();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let lease = registry
+            .insert_with_lease("pending".to_string(), sender, None, "caller_cancel")
+            .expect("pending request");
+        let terminal = lease.terminal_signal();
+
+        let sender = registry
+            .take_terminal_sender("pending")
+            .expect("first terminal take must win");
+        terminal.wait_terminal().await;
+        assert!(terminal.is_terminal());
+        assert_eq!(registry.pending_count(), 0);
+        assert!(registry.take_terminal_sender("pending").is_none());
+        assert!(!lease.cancel("late_cancel"));
+
+        sender
+            .send(OutboundResponse::End {
+                payload: b"response".to_vec(),
+            })
+            .expect("terminal winner must retain the response sender");
+        assert_eq!(
+            receiver.recv().await,
+            Some(OutboundResponse::End {
+                payload: b"response".to_vec()
+            })
+        );
+        drop(lease);
+        assert_eq!(registry.active_lease_count(), 0);
+    }
+
+    #[test]
+    fn cancellation_winner_fences_terminal_sender_take() {
+        let registry = OutboundRequestRegistry::default();
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        let lease = registry
+            .insert_with_lease("pending".to_string(), sender, None, "caller_cancel")
+            .expect("pending request");
+
+        assert!(lease.cancel("caller_cancel"));
+        assert!(registry.take_terminal_sender("pending").is_none());
+        assert_eq!(registry.pending_count(), 0);
+    }
+
+    #[test]
+    fn terminal_sender_take_and_cancellation_have_exactly_one_concurrent_winner() {
+        use std::sync::Barrier;
+
+        for iteration in 0..128 {
+            let registry = OutboundRequestRegistry::default();
+            let (sender, _receiver) = mpsc::unbounded_channel();
+            let lease = registry
+                .insert_with_lease(
+                    format!("pending-{iteration}"),
+                    sender,
+                    None,
+                    "caller_cancel",
+                )
+                .expect("pending request");
+            let barrier = Barrier::new(3);
+
+            let (response_won, cancellation_won) = std::thread::scope(|scope| {
+                let response = scope.spawn(|| {
+                    barrier.wait();
+                    registry.take_terminal_sender(lease.request_id()).is_some()
+                });
+                let cancellation = scope.spawn(|| {
+                    barrier.wait();
+                    lease.cancel("caller_cancel")
+                });
+                barrier.wait();
+                (
+                    response.join().expect("response contender"),
+                    cancellation.join().expect("cancellation contender"),
+                )
+            });
+
+            assert_ne!(response_won, cancellation_won);
+            assert_eq!(registry.pending_count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_all_delivers_error_and_commits_each_pending_request() {
+        let registry = OutboundRequestRegistry::default();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let lease = registry
+            .insert_with_lease("pending".to_string(), sender, None, "caller_cancel")
+            .expect("pending request");
+        let terminal = lease.terminal_signal();
+
+        assert_eq!(
+            registry.fail_all(ResponseError {
+                code: "ConnectionClosed".to_string(),
+                message: "router connection closed".to_string(),
+                status: None,
+                details: None,
+            }),
+            1
+        );
+        terminal.wait_terminal().await;
+        assert!(matches!(
+            receiver.recv().await,
+            Some(OutboundResponse::Error(error))
+                if error.code == "ConnectionClosed"
+                    && error.message == "router connection closed"
+        ));
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(
+            registry.fail_all(ResponseError {
+                code: "ConnectionClosed".to_string(),
+                message: "router connection closed".to_string(),
+                status: None,
+                details: None,
+            }),
+            0
+        );
+        drop(lease);
+        assert_eq!(registry.active_lease_count(), 0);
     }
 }

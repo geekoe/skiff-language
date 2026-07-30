@@ -1,16 +1,39 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { installManagedBinary } from '../lib/managed-binary.mjs';
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..', '..');
 const skiffCli = join(scriptDir, '..', 'skiff.mjs');
 const buildDevRuntime = join(scriptDir, '..', 'build-dev-runtime.mjs');
+
+test('same-content managed install repairs executable mode atomically', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-managed-mode-'));
+  const source = join(root, 'source');
+  const destination = join(root, 'bin', 'skiff-compiler');
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(source, '#!/usr/bin/env node\n');
+    await writeFile(destination, '#!/usr/bin/env node\n');
+    await chmod(source, 0o755);
+    await chmod(destination, 0o644);
+
+    await installManagedBinary(source, destination);
+
+    assert.equal((await stat(destination)).mode & 0o7777, 0o755);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('managed runtime binary identity restarts only the matching stale instance', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-managed-binary-'));
@@ -42,6 +65,24 @@ test('managed runtime binary identity restarts only the matching stale instance'
 
     await run('node', [skiffCli, 'instance', 'up', configA], { env: { ...env, FAKE_RUNTIME_VERSION: 'a1' } });
     await run('node', [skiffCli, 'instance', 'up', configB], { env: { ...env, FAKE_RUNTIME_VERSION: 'b1' } });
+    const pathsA = JSON.parse(await runCapture(
+      'node',
+      [skiffCli, 'instance', 'paths', configA, '--json'],
+      { env },
+    ));
+    assert.equal(
+      pathsA.ecosystemStoreCli,
+      join(
+        pathsA.devHome,
+        'bin',
+        process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
+      ),
+    );
+    const compilerInfo = await stat(pathsA.ecosystemStoreCli);
+    assert.equal(compilerInfo.isFile(), true);
+    if (process.platform !== 'win32') {
+      assert.notEqual(compilerInfo.mode & 0o111, 0, 'managed compiler install must be executable');
+    }
     const initialA = await runtimeStatus(configA, env);
     const initialB = await runtimeStatus(configB, env);
     const initialRouterA = await componentStatus(configA, 'router', env);
@@ -78,6 +119,7 @@ test('managed runtime binary identity restarts only the matching stale instance'
     assert.equal((await runtimeStatus(configB, env)).pid, initialB.pid, 'another instance must not be restarted');
 
     const devHomeA = dirname(dirname((await runtimeStatus(configA, env)).managedBinary.path));
+    await rm(pathsA.ecosystemStoreCli);
     await run(
       'node',
       [
@@ -89,6 +131,15 @@ test('managed runtime binary identity restarts only the matching stale instance'
       ],
       { env: { ...env, FAKE_RUNTIME_VERSION: 'a3' } },
     );
+    const compilerAfterBuildDev = await stat(pathsA.ecosystemStoreCli);
+    assert.equal(compilerAfterBuildDev.isFile(), true);
+    if (process.platform !== 'win32') {
+      assert.notEqual(
+        compilerAfterBuildDev.mode & 0o111,
+        0,
+        'build-dev-runtime must reinstall the managed compiler as executable',
+      );
+    }
     const refreshedA = await runtimeStatus(configA, env);
     assert.equal(refreshedA.category, 'running');
     assert.notEqual(refreshedA.pid, restartedA.pid, 'standard build/install must reconcile the active runtime');
@@ -174,6 +225,8 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const binIndex = process.argv.indexOf('--bin');
 const bin = process.argv[binIndex + 1];
+const manifestIndex = process.argv.indexOf('--manifest-path');
+const manifest = process.argv[manifestIndex + 1];
 const outputDir = join(process.env.CARGO_TARGET_DIR, 'debug');
 mkdirSync(outputDir, { recursive: true });
 if (bin === 'runtime') {
@@ -186,8 +239,11 @@ setInterval(() => {}, 60_000);
   const output = join(outputDir, process.platform === 'win32' ? 'runtime.exe' : 'runtime');
   writeFileSync(output, program);
   chmodSync(output, 0o755);
-} else if (bin === 'skiff-artifact-identity') {
-  const output = join(outputDir, process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity');
+} else if (bin === 'skiff-compiler') {
+  if (manifest !== join(process.cwd(), 'compiler', 'Cargo.toml')) {
+    throw new Error('compiler must be built from the current checkout');
+  }
+  const output = join(outputDir, process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler');
   writeFileSync(output, '#!/usr/bin/env node\\n');
   chmodSync(output, 0o755);
 } else {

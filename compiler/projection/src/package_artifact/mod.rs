@@ -7,6 +7,7 @@ mod export_links;
 mod model;
 mod projection;
 mod runtime_requirements;
+mod schema;
 mod visible_types;
 
 pub use boundary::project_boundary_callable;

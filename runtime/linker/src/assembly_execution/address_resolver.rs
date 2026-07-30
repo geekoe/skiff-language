@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{PackageBuildId, PackageRefIr};
 use skiff_runtime_linked_program::{
-    ExecutableAddr, FileAddr, LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr,
+    ConstAddr, DbObjectTargetId, ExecutableAddr, FileAddr, LinkedActorDeclaration,
+    LinkedActorDeclarationOwner, LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr,
     UnitAddr,
 };
 
@@ -130,6 +131,77 @@ impl<'a> AssemblyAddressResolver<'a> {
         })
     }
 
+    pub(super) fn actor_declaration(
+        &self,
+        code_slot: usize,
+        symbol: &ServiceSymbolRef,
+    ) -> anyhow::Result<(LinkedActorDeclarationOwner, &LinkedActorDeclaration)> {
+        let mut resolved = None;
+        for (file_index, file) in self.package_files(code_slot)?.iter().enumerate() {
+            if file.module_path != symbol.module_path {
+                continue;
+            }
+            for declaration in &file.actor_declarations {
+                if declaration.actor_type != *symbol {
+                    continue;
+                }
+                if resolved.is_some() {
+                    anyhow::bail!(
+                        "Actor declaration {}.{} is ambiguous",
+                        symbol.module_path,
+                        symbol.symbol
+                    );
+                }
+                resolved = Some((
+                    LinkedActorDeclarationOwner {
+                        unit: UnitAddr::Package(code_slot),
+                        file: FileAddr::LoadedFileIndex(file_index),
+                        actor_symbol: symbol.symbol.clone(),
+                    },
+                    declaration,
+                ));
+            }
+        }
+        resolved.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Actor method resolves to a type without an Actor declaration: {}.{}",
+                symbol.module_path,
+                symbol.symbol
+            )
+        })
+    }
+
+    pub(super) fn actor_declaration_by_owner(
+        &self,
+        owner: &LinkedActorDeclarationOwner,
+    ) -> anyhow::Result<&LinkedActorDeclaration> {
+        let UnitAddr::Package(code_slot) = owner.unit else {
+            anyhow::bail!("Actor declaration owner cannot use a service unit");
+        };
+        let file_index = self.file_index(code_slot, &owner.file)?;
+        let file = self
+            .package_files(code_slot)?
+            .get(file_index)
+            .expect("validated Actor owner file");
+        let mut declarations = file
+            .actor_declarations
+            .iter()
+            .filter(|declaration| declaration.actor_type.symbol == owner.actor_symbol);
+        let declaration = declarations.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Actor declaration owner references missing symbol {}",
+                owner.actor_symbol
+            )
+        })?;
+        if declarations.next().is_some() {
+            anyhow::bail!(
+                "Actor declaration owner references ambiguous symbol {}",
+                owner.actor_symbol
+            );
+        }
+        Ok(declaration)
+    }
+
     pub(super) fn package_symbol_type_addr(
         &self,
         caller_slot: usize,
@@ -158,6 +230,72 @@ impl<'a> AssemblyAddressResolver<'a> {
         self.type_export_addr(dependency_slot, &export.file, export.type_index as usize)
     }
 
+    pub(super) fn db_target_addr(&self, target: &DbObjectTargetId) -> anyhow::Result<TypeAddr> {
+        self.shared
+            .validate_db_object_target_id(target)
+            .map_err(anyhow::Error::new)?;
+        let mut packages = self
+            .shared
+            .code_slots()
+            .iter()
+            .enumerate()
+            .filter(|(_, code)| code.artifact_ref() == &target.package_artifact_ref);
+        let (code_slot, _) = packages
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DB target package artifact is not loaded"))?;
+        if packages.next().is_some() {
+            anyhow::bail!("DB target package artifact is loaded more than once");
+        }
+        let mut files = self
+            .package_files(code_slot)?
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| {
+                file.file_ir_identity == target.file_ir_ref.file_ir_identity
+                    && file.module_path == target.file_ir_ref.module_path
+                    && target
+                        .file_ir_ref
+                        .source_ast_hash
+                        .as_deref()
+                        .is_none_or(|hash| hash == file.source_ast_hash)
+            });
+        let (file_index, _) = files
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DB target File IR is not loaded"))?;
+        if files.next().is_some() {
+            anyhow::bail!("DB target File IR is ambiguous");
+        }
+        self.type_addr(code_slot, file_index, target.type_index)
+    }
+
+    pub(super) fn package_symbol_const_addr(
+        &self,
+        caller_slot: usize,
+        symbol: &skiff_runtime_linked_program::PackageSymbolRef,
+    ) -> anyhow::Result<ConstAddr> {
+        let dependency_slot = self.resolve_package_ref(caller_slot, &symbol.package)?;
+        let code = self
+            .shared
+            .code_by_slot(PackageCodeSlotIndex::new(dependency_slot))
+            .expect("resolved package ref returns a loaded code slot");
+        if symbol
+            .abi_expectation
+            .as_deref()
+            .is_some_and(|expected| expected != code.local_abi_identity().as_str())
+        {
+            anyhow::bail!("package symbol local ABI expectation mismatches linked package");
+        }
+        let export = code
+            .artifact()
+            .implementation_links
+            .constants
+            .get(&symbol.symbol_path)
+            .ok_or_else(|| {
+                anyhow::anyhow!("package constant {} is not exported", symbol.symbol_path)
+            })?;
+        self.const_export_addr(dependency_slot, &export.file, export.const_index as usize)
+    }
+
     pub(super) fn validate_executable_addr(&self, addr: &ExecutableAddr) -> anyhow::Result<()> {
         let UnitAddr::Package(code_slot) = addr.unit else {
             anyhow::bail!("assembly execution address cannot use a service unit");
@@ -174,6 +312,27 @@ impl<'a> AssemblyAddressResolver<'a> {
         let file_index = self.file_index(code_slot, &addr.file)?;
         self.type_addr(code_slot, file_index, addr.type_index)?;
         Ok(())
+    }
+
+    pub(super) fn type_declaration(
+        &self,
+        addr: &TypeAddr,
+    ) -> anyhow::Result<&skiff_runtime_linked_program::TypeDeclIr> {
+        let UnitAddr::Package(code_slot) = addr.unit else {
+            anyhow::bail!("assembly type address cannot use a service unit");
+        };
+        let file_index = self.file_index(code_slot, &addr.file)?;
+        let file = self
+            .package_files(code_slot)?
+            .get(file_index)
+            .expect("validated type declaration file");
+        file.types.get(addr.type_index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "type index {} is out of bounds for {}",
+                addr.type_index,
+                file.file_ir_identity
+            )
+        })
     }
 
     pub(super) fn validate_const_addr(
@@ -307,6 +466,38 @@ impl<'a> AssemblyAddressResolver<'a> {
             anyhow::bail!("type export File IR ref does not exactly match loaded code");
         }
         self.type_addr(code_slot, file_index, type_index)
+    }
+
+    fn const_export_addr(
+        &self,
+        code_slot: usize,
+        file_ref: &skiff_artifact_model::FileIrRef,
+        const_index: usize,
+    ) -> anyhow::Result<ConstAddr> {
+        let files = self.package_files(code_slot)?;
+        let mut matches = files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.file_ir_identity == file_ref.file_ir_identity);
+        let (file_index, file) = matches
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("constant export file is not loaded"))?;
+        if matches.next().is_some()
+            || file.module_path != file_ref.module_path
+            || file_ref
+                .source_ast_hash
+                .as_deref()
+                .is_some_and(|hash| hash != file.source_ast_hash)
+        {
+            anyhow::bail!("constant export File IR ref does not exactly match loaded code");
+        }
+        let addr = ConstAddr {
+            unit: UnitAddr::Package(code_slot),
+            file: FileAddr::LoadedFileIndex(file_index),
+            const_index,
+        };
+        self.validate_const_addr(&addr)?;
+        Ok(addr)
     }
 
     fn unique_module_file(
