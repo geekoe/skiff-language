@@ -428,6 +428,7 @@ export class AssemblyWebSocketGateway {
         effectiveWebSocketTimeoutMs(this.requestTimeoutMs, binding.timeoutMs),
         { signal }
       );
+    const accepted = decodeWebSocketConnectResponse(response);
     if (response.connectionReceipt.runtimeId === undefined) {
       throw new GatewayError(
         503,
@@ -442,7 +443,7 @@ export class AssemblyWebSocketGateway {
       connection.id,
       response.connectionReceipt
     );
-    return decodeWebSocketConnectResponse(response);
+    return accepted;
   }
 
   private attachSocket(connection: Connection, socket: WebSocket): void {

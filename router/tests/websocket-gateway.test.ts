@@ -162,7 +162,7 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
     expect(fixture.generation.releaseCount).toBe(1);
   });
 
-  it('rejects before admission and releases an acquired handler generation once', async () => {
+  it('rejects before admission without requiring a generation pin', async () => {
     const fixture = await createFixture({ handler: 'package-callable-connect' });
     fixture.dispatcher.respond = () => ({
       result: 'reject',
@@ -175,6 +175,7 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
     await until(() => fixture.generation.releaseCount === 1);
     expect(fixture.gateway.connectionCount()).toBe(0);
     expect(fixture.rpcBridge.connections).toHaveLength(0);
+    expect(fixture.generation.requireCount).toBe(0);
     expect(fixture.generation.releaseCount).toBe(1);
   });
 
@@ -533,17 +534,20 @@ class FakeDispatcher implements AssemblyWebSocketRuntimeDispatcher {
       runtimeId: 'runtime-one'
     }) as RuntimeDispatchConnectionReceipt;
     this.senderByReceipt.set(receipt, this.runtime);
-    this.generation.acquire(
-      request.header.websocketConnect.connectionId,
-      receipt
-    );
+    const response = this.respond(request.header);
+    if (response.result === 'accept') {
+      this.generation.acquire(
+        request.header.websocketConnect.connectionId,
+        receipt
+      );
+    }
     return {
       header: {
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
         type: 'response.end',
         requestId: request.header.requestId,
         payloadPresent: false,
-        websocketConnect: this.respond(request.header)
+        websocketConnect: response
       } as unknown as RuntimeBinaryDispatchResponseWithReceipt['header'],
       payloadBytes: new Uint8Array(),
       connectionReceipt: receipt
