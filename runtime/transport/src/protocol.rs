@@ -5,7 +5,7 @@ use serde::{de, de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
     validate_activation_environment, validate_activation_generation, validate_activation_token,
-    validate_runtime_assembly_identity, ConfigShape, RuntimeAssemblyRef,
+    validate_runtime_assembly_identity, ConfigShape, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::RuntimeClientSessionControl;
@@ -13,8 +13,8 @@ use skiff_runtime_request_contract::RuntimeClientSessionControl;
 pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
 pub const BINARY_FRAME_HEADER_ENCODING_JSON: u8 = 1;
-pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
-pub const RESPONSE_ERROR_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
+pub const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v3";
+pub const RESPONSE_ERROR_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v3";
 
 const BINARY_FRAME_FIXED_HEADER_BYTES: usize = 14;
 
@@ -289,6 +289,7 @@ pub struct RouterBootstrapActivationFrameHeader {
     pub environment: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
+    pub config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

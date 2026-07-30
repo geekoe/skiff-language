@@ -1,5 +1,8 @@
 use serde_json::json;
-use skiff_artifact_model::{AssemblyActivationControl, AssemblyIdentity, RuntimeAssemblyRef};
+use skiff_artifact_model::{
+    AssemblyActivationControl, AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
+    RuntimeConfigSnapshotRef,
+};
 use skiff_runtime_transport::{
     assembly_activation::{
         decode_assembly_activation_frame, encode_assembly_activation_frame,
@@ -17,6 +20,16 @@ fn assembly_ref(byte: char) -> RuntimeAssemblyRef {
     }
 }
 
+fn config_snapshot_ref(byte: char) -> RuntimeConfigSnapshotRef {
+    RuntimeConfigSnapshotRef {
+        snapshot_id: RuntimeConfigSnapshotId::parse(format!(
+            "skiff-runtime-config-snapshot-v1:{}",
+            byte.to_string().repeat(32)
+        ))
+        .unwrap(),
+    }
+}
+
 #[test]
 fn two_replicas_register_one_exact_assembly_identity_independently() {
     let assembly = assembly_ref('a');
@@ -24,12 +37,14 @@ fn two_replicas_register_one_exact_assembly_identity_independently() {
         environment: "prod".to_string(),
         generation: 42,
         assembly: assembly.clone(),
+        config_snapshot: config_snapshot_ref('a'),
         replica_id: "runtime-a".to_string(),
     };
     let second = AssemblyActivationControl::Register {
         environment: "prod".to_string(),
         generation: 42,
         assembly,
+        config_snapshot: config_snapshot_ref('a'),
         replica_id: "runtime-b".to_string(),
     };
 
@@ -68,6 +83,7 @@ fn activation_control_rejects_payload_and_legacy_service_fields() {
         expected_generation: 41,
         candidate_generation: 42,
         assembly: assembly_ref('b'),
+        config_snapshot: config_snapshot_ref('b'),
         replica_id: "runtime-a".to_string(),
         service_db: None,
     };

@@ -88,6 +88,9 @@ fn service_db_is_strict_and_only_allowed_on_router_provisioning_controls() {
         "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
+        "configSnapshot": {
+            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
         "replicaId": "runtime-a",
         "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:45123/test?replicaSet=rs0" }
     });
@@ -140,7 +143,36 @@ fn public_activation_request_cannot_supply_service_db() {
         "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
+        "configSnapshot": {
+            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
         "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:45123/test" }
     });
     assert!(serde_json::from_value::<AssemblyActivationRequest>(request).is_err());
+}
+
+#[test]
+fn activation_v2_hard_cut_rejects_v1_and_missing_snapshot_refs() {
+    let mut request: Value = serde_json::from_str(include_str!(
+        "../../../cross-system-fixtures/package-service-ecosystem/activation-request.json"
+    ))
+    .unwrap();
+    request["schemaVersion"] = Value::String("skiff-assembly-activation-request-v1".into());
+    assert!(serde_json::from_value::<AssemblyActivationRequest>(request).is_err());
+
+    let mut request: Value = serde_json::from_str(include_str!(
+        "../../../cross-system-fixtures/package-service-ecosystem/activation-request.json"
+    ))
+    .unwrap();
+    request.as_object_mut().unwrap().remove("configSnapshot");
+    assert!(serde_json::from_value::<AssemblyActivationRequest>(request).is_err());
+
+    let mut controls: Value = serde_json::from_str(include_str!(
+        "../../../cross-system-fixtures/package-service-ecosystem/control-wire.json"
+    ))
+    .unwrap();
+    for control in controls.as_array_mut().unwrap() {
+        control.as_object_mut().unwrap().remove("configSnapshot");
+        assert!(serde_json::from_value::<AssemblyActivationControl>(control.clone()).is_err());
+    }
 }

@@ -51,24 +51,24 @@
   },
   "activationStateFields": {
     "state": ["schemaVersion", "environment", "committed", "pending"],
-    "committed": ["generation", "assembly"],
-    "pending": ["activationId", "expectedGeneration", "candidateGeneration", "assembly", "participantReplicaIds"]
+    "committed": ["generation", "assembly", "configSnapshot"],
+    "pending": ["activationId", "expectedGeneration", "candidateGeneration", "assembly", "configSnapshot", "participantReplicaIds"]
   },
   "activationRequest": {
-    "schemaVersion": "skiff-assembly-activation-request-v1",
-    "fields": ["schemaVersion", "environment", "activationId", "expectedGeneration", "assembly"],
+    "schemaVersion": "skiff-assembly-activation-request-v2",
+    "fields": ["schemaVersion", "environment", "activationId", "expectedGeneration", "assembly", "configSnapshot"],
     "controlEndpoint": "POST /__skiff/activate-assembly"
   },
   "controlWireFields": {
-    "prepare": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
-    "prepared": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
-    "reject": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId", "reason"],
-    "commit": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
-    "abort": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
-    "register": ["type", "environment", "generation", "assembly", "replicaId"]
+    "prepare": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "configSnapshot", "replicaId"],
+    "prepared": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "configSnapshot", "replicaId"],
+    "reject": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "configSnapshot", "replicaId", "reason"],
+    "commit": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "configSnapshot", "replicaId"],
+    "abort": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "configSnapshot", "replicaId"],
+    "register": ["type", "environment", "generation", "assembly", "configSnapshot", "replicaId"]
   },
   "runtimeAssemblyFrame": {
-    "schemaVersion": "skiff-runtime-frame-v1",
+    "schemaVersion": "skiff-runtime-frame-v3",
     "type": "assembly.activation",
     "headerFields": ["schemaVersion", "type", "control"],
     "payloadBytes": 0,

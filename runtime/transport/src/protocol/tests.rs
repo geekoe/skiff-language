@@ -1225,15 +1225,15 @@ fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
 
     assert_eq!(
         RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
-        "skiff-runtime-frame-v2"
+        "skiff-runtime-frame-v3"
     );
-    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v2");
+    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v3");
 }
 
 #[test]
 fn router_bootstrap_rejects_previous_runtime_frame_generation() {
     let stale = json!({
-        "schemaVersion": "skiff-runtime-frame-v1",
+        "schemaVersion": "skiff-runtime-frame-v2",
         "type": "router.bootstrap",
         "artifactsPath": "/tmp/skiff-artifacts",
         "serviceDb": {

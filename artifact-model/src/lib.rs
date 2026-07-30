@@ -38,6 +38,7 @@ pub mod recoverable;
 pub mod refs;
 pub mod resources;
 pub mod runtime_assembly;
+pub mod runtime_config_snapshot;
 pub mod schema;
 pub mod service_contract;
 pub mod service_unit;
@@ -191,6 +192,11 @@ pub use runtime_assembly::{
     ActivationTemplate, CanonicalPackageLinkPlan, GatewayIngressBinding, PackageCodeSlot,
     ResolvedServiceBinding, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
     ServiceIngressKey,
+};
+pub use runtime_config_snapshot::{
+    validate_runtime_config_snapshot_id, validate_runtime_config_snapshot_ref,
+    RuntimeConfigSnapshotId, RuntimeConfigSnapshotIdParseError, RuntimeConfigSnapshotRef,
+    RUNTIME_CONFIG_SNAPSHOT_ID_PREFIX,
 };
 pub use schema::{
     FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,

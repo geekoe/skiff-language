@@ -1,7 +1,7 @@
 {
   "requestStartHeaders": [
     {
-      "schemaVersion": "skiff-runtime-frame-v2",
+      "schemaVersion": "skiff-runtime-frame-v3",
       "type": "request.start",
       "requestId": "request-http-full",
       "mode": "unary",
@@ -66,7 +66,7 @@
       "testEffectsEnabled": true
     },
     {
-      "schemaVersion": "skiff-runtime-frame-v2",
+      "schemaVersion": "skiff-runtime-frame-v3",
       "type": "request.start",
       "requestId": "request-http-minimal-defaults",
       "mode": "unary",
@@ -103,7 +103,7 @@
       }
     },
     {
-      "schemaVersion": "skiff-runtime-frame-v2",
+      "schemaVersion": "skiff-runtime-frame-v3",
       "type": "request.start",
       "requestId": "request-http-server-stream",
       "mode": "serverStream",
@@ -934,7 +934,7 @@
   ],
   "legacyRequestStartHeaders": [
     {
-      "schemaVersion": "skiff-runtime-frame-v2",
+      "schemaVersion": "skiff-runtime-frame-v3",
       "type": "request.start",
       "requestId": "legacy-request-baseline",
       "mode": "unary",

@@ -3,10 +3,11 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use crate::{
     validate_activation_environment, validate_activation_generation, validate_activation_token,
     validate_expected_activation_generation, validate_runtime_assembly_identity,
-    validate_transition_generations, RuntimeAssemblyRef,
+    validate_runtime_config_snapshot_ref, validate_transition_generations, RuntimeAssemblyRef,
+    RuntimeConfigSnapshotRef,
 };
 
-pub const ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION: &str = "skiff-assembly-activation-request-v1";
+pub const ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION: &str = "skiff-assembly-activation-request-v2";
 
 /// Strict tooling -> router request.  The router derives the candidate
 /// generation and freezes the participant set; neither can be supplied by a
@@ -19,6 +20,7 @@ pub struct AssemblyActivationRequest {
     pub activation_id: String,
     pub expected_generation: u64,
     pub assembly: RuntimeAssemblyRef,
+    pub config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +32,7 @@ struct RawAssemblyActivationRequest {
     #[serde(deserialize_with = "crate::deserialize_activation_generation")]
     expected_generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 impl AssemblyActivationRequest {
@@ -42,7 +45,8 @@ impl AssemblyActivationRequest {
         validate_activation_environment(&self.environment)?;
         validate_activation_token(&self.activation_id, "activationId")?;
         validate_expected_activation_generation(self.expected_generation, "expectedGeneration")?;
-        validate_runtime_assembly_ref(&self.assembly)
+        validate_runtime_assembly_ref(&self.assembly)?;
+        validate_runtime_config_snapshot_ref(&self.config_snapshot)
     }
 }
 
@@ -58,6 +62,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationRequest {
             activation_id: raw.activation_id,
             expected_generation: raw.expected_generation,
             assembly: raw.assembly,
+            config_snapshot: raw.config_snapshot,
         };
         request.validate().map_err(de::Error::custom)?;
         Ok(request)
@@ -98,6 +103,7 @@ pub enum AssemblyActivationControl {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         service_db: Option<AssemblyActivationServiceDb>,
@@ -108,6 +114,7 @@ pub enum AssemblyActivationControl {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
     },
     Reject {
@@ -116,6 +123,7 @@ pub enum AssemblyActivationControl {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
         reason: AssemblyActivationRejectReason,
     },
@@ -125,6 +133,7 @@ pub enum AssemblyActivationControl {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         service_db: Option<AssemblyActivationServiceDb>,
@@ -135,12 +144,14 @@ pub enum AssemblyActivationControl {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
     },
     Register {
         environment: String,
         generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
     },
 }
@@ -161,6 +172,7 @@ enum RawAssemblyActivationControl {
         #[serde(deserialize_with = "crate::deserialize_activation_generation")]
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
         #[serde(default)]
         service_db: Option<AssemblyActivationServiceDb>,
@@ -173,6 +185,7 @@ enum RawAssemblyActivationControl {
         #[serde(deserialize_with = "crate::deserialize_activation_generation")]
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
     },
     Reject {
@@ -183,6 +196,7 @@ enum RawAssemblyActivationControl {
         #[serde(deserialize_with = "crate::deserialize_activation_generation")]
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
         reason: AssemblyActivationRejectReason,
     },
@@ -194,6 +208,7 @@ enum RawAssemblyActivationControl {
         #[serde(deserialize_with = "crate::deserialize_activation_generation")]
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
         #[serde(default)]
         service_db: Option<AssemblyActivationServiceDb>,
@@ -206,6 +221,7 @@ enum RawAssemblyActivationControl {
         #[serde(deserialize_with = "crate::deserialize_activation_generation")]
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
     },
     Register {
@@ -213,6 +229,7 @@ enum RawAssemblyActivationControl {
         #[serde(deserialize_with = "crate::deserialize_activation_generation")]
         generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         replica_id: String,
     },
 }
@@ -237,6 +254,7 @@ impl AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 ..
             }
@@ -246,6 +264,7 @@ impl AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             }
             | Self::Reject {
@@ -254,6 +273,7 @@ impl AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 ..
             }
@@ -263,6 +283,7 @@ impl AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 ..
             }
@@ -272,23 +293,27 @@ impl AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             } => {
                 validate_activation_environment(environment)?;
                 validate_activation_token(activation_id, "activationId")?;
                 validate_transition_generations(*expected_generation, *candidate_generation)?;
                 validate_runtime_assembly_ref(assembly)?;
+                validate_runtime_config_snapshot_ref(config_snapshot)?;
                 validate_activation_token(replica_id, "replicaId")
             }
             Self::Register {
                 environment,
                 generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             } => {
                 validate_activation_environment(environment)?;
                 validate_activation_generation(*generation, "generation")?;
                 validate_runtime_assembly_ref(assembly)?;
+                validate_runtime_config_snapshot_ref(config_snapshot)?;
                 validate_activation_token(replica_id, "replicaId")
             }
         }
@@ -308,6 +333,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 service_db,
             } => Self::Prepare {
@@ -316,6 +342,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 service_db,
             },
@@ -325,6 +352,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             } => Self::Prepared {
                 environment,
@@ -332,6 +360,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             },
             RawAssemblyActivationControl::Reject {
@@ -340,6 +369,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 reason,
             } => Self::Reject {
@@ -348,6 +378,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 reason,
             },
@@ -357,6 +388,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 service_db,
             } => Self::Commit {
@@ -365,6 +397,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 service_db,
             },
@@ -374,6 +407,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             } => Self::Abort {
                 environment,
@@ -381,17 +415,20 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             },
             RawAssemblyActivationControl::Register {
                 environment,
                 generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             } => Self::Register {
                 environment,
                 generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             },
         };

@@ -5,6 +5,7 @@ use skiff_artifact_identity::EnvironmentActivationStatePath;
 use skiff_artifact_model::{
     validate_activation_environment, validate_activation_generation, validate_activation_token,
     validate_runtime_assembly_ref, validate_transition_generations, RuntimeAssemblyRef,
+    RuntimeConfigSnapshotRef,
 };
 
 use super::{
@@ -13,13 +14,14 @@ use super::{
 };
 
 pub const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION: &str =
-    "skiff-environment-activation-state-v1";
+    "skiff-environment-activation-state-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommittedActivation {
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
+    pub config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -29,6 +31,7 @@ pub struct PendingActivation {
     pub expected_generation: u64,
     pub candidate_generation: u64,
     pub assembly: RuntimeAssemblyRef,
+    pub config_snapshot: RuntimeConfigSnapshotRef,
     pub participant_replica_ids: Vec<String>,
 }
 
@@ -47,6 +50,7 @@ struct RawCommittedActivation {
     #[serde(deserialize_with = "skiff_artifact_model::deserialize_activation_generation")]
     generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +62,7 @@ struct RawPendingActivation {
     #[serde(deserialize_with = "skiff_artifact_model::deserialize_activation_generation")]
     candidate_generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
     participant_replica_ids: Vec<String>,
 }
 
@@ -97,12 +102,14 @@ impl<'de> Deserialize<'de> for EnvironmentActivationState {
             committed: CommittedActivation {
                 generation: raw.committed.generation,
                 assembly: raw.committed.assembly,
+                config_snapshot: raw.committed.config_snapshot,
             },
             pending: raw.pending.0.map(|pending| PendingActivation {
                 activation_id: pending.activation_id,
                 expected_generation: pending.expected_generation,
                 candidate_generation: pending.candidate_generation,
                 assembly: pending.assembly,
+                config_snapshot: pending.config_snapshot,
                 participant_replica_ids: pending.participant_replica_ids,
             }),
         };
@@ -124,6 +131,7 @@ impl EnvironmentActivationState {
         environment: impl Into<String>,
         generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
     ) -> Self {
         Self {
             schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
@@ -131,6 +139,7 @@ impl EnvironmentActivationState {
             committed: CommittedActivation {
                 generation,
                 assembly,
+                config_snapshot,
             },
             pending: None,
         }
@@ -153,6 +162,12 @@ impl EnvironmentActivationState {
             path.as_str(),
             validate_runtime_assembly_ref(&self.committed.assembly),
         )?;
+        map_activation_validation(
+            path.as_str(),
+            skiff_artifact_model::validate_runtime_config_snapshot_ref(
+                &self.committed.config_snapshot,
+            ),
+        )?;
         if let Some(pending) = &self.pending {
             validate_token(&pending.activation_id, "activationId", path.as_str())?;
             if pending.expected_generation != self.committed.generation {
@@ -171,6 +186,12 @@ impl EnvironmentActivationState {
             map_activation_validation(
                 path.as_str(),
                 validate_runtime_assembly_ref(&pending.assembly),
+            )?;
+            map_activation_validation(
+                path.as_str(),
+                skiff_artifact_model::validate_runtime_config_snapshot_ref(
+                    &pending.config_snapshot,
+                ),
             )?;
             let participants =
                 normalized_replica_ids(&pending.participant_replica_ids, path.as_str())?;
@@ -252,6 +273,7 @@ impl CanonicalArtifactStore {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
+        config_snapshot: RuntimeConfigSnapshotRef,
         participant_replica_ids: Vec<String>,
     ) -> StorageResult<EnvironmentActivationState> {
         self.read_runtime_assembly(&assembly)?;
@@ -264,6 +286,7 @@ impl CanonicalArtifactStore {
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             participant_replica_ids: participants,
         };
         self.mutate_activation_state(environment, |current| {
@@ -321,6 +344,7 @@ impl CanonicalArtifactStore {
         expected_generation: u64,
         candidate_generation: u64,
         assembly: &RuntimeAssemblyRef,
+        config_snapshot: &RuntimeConfigSnapshotRef,
         connected_replica_ids: &[String],
         prepared_replica_ids: &[String],
     ) -> StorageResult<EnvironmentActivationState> {
@@ -344,6 +368,7 @@ impl CanonicalArtifactStore {
             if current.pending.is_none()
                 && current.committed.generation == candidate_generation
                 && &current.committed.assembly == assembly
+                && &current.committed.config_snapshot == config_snapshot
             {
                 return Ok(current.clone());
             }
@@ -360,6 +385,7 @@ impl CanonicalArtifactStore {
                 || pending.expected_generation != expected_generation
                 || pending.candidate_generation != candidate_generation
                 || &pending.assembly != assembly
+                || &pending.config_snapshot != config_snapshot
             {
                 return cas_error(environment, "commit tuple does not match pending activation");
             }
@@ -379,6 +405,7 @@ impl CanonicalArtifactStore {
             next.committed = CommittedActivation {
                 generation: candidate_generation,
                 assembly: assembly.clone(),
+                config_snapshot: config_snapshot.clone(),
             };
             next.pending = None;
             next.validate()?;

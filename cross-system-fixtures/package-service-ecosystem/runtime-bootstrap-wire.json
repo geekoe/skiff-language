@@ -5,7 +5,7 @@
       "name": "canonical",
       "outcome": "accept",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -16,6 +16,9 @@
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "configSnapshot": {
+            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
         },
         "http": {
@@ -27,7 +30,7 @@
       "name": "missing-artifacts-path",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "serviceDb": {
           "mongoUrl": "mongodb://mongo.internal:27017/skiff"
@@ -41,7 +44,7 @@
       "name": "empty-artifacts-path",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "",
         "serviceDb": {
@@ -56,7 +59,7 @@
       "name": "relative-artifacts-path",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "artifacts",
         "serviceDb": {
@@ -71,7 +74,7 @@
       "name": "non-normalized-artifacts-path",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/../artifacts",
         "serviceDb": {
@@ -86,7 +89,7 @@
       "name": "missing-service-db",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "http": {
@@ -98,7 +101,7 @@
       "name": "missing-mongo-url",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {},
@@ -111,7 +114,7 @@
       "name": "empty-mongo-url",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -126,7 +129,7 @@
       "name": "missing-http",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -138,7 +141,7 @@
       "name": "missing-max-response-bytes",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -151,7 +154,7 @@
       "name": "zero-max-response-bytes",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -166,7 +169,7 @@
       "name": "fractional-max-response-bytes",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -181,7 +184,7 @@
       "name": "overflow-max-response-bytes",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -196,7 +199,7 @@
       "name": "max-request-bytes-is-router-only",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -212,7 +215,7 @@
       "name": "unknown-top-level-field",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -228,7 +231,7 @@
       "name": "unknown-service-db-field",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -244,7 +247,7 @@
       "name": "plural-artifact-roots",
       "outcome": "reject",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v3",
         "type": "router.bootstrap",
         "artifactRoots": [
           "/opt/skiff/artifacts"

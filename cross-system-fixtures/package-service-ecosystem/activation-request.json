@@ -1,9 +1,12 @@
 {
-  "schemaVersion": "skiff-assembly-activation-request-v1",
+  "schemaVersion": "skiff-assembly-activation-request-v2",
   "environment": "test",
   "activationId": "activation-42",
   "expectedGeneration": 41,
   "assembly": {
     "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "configSnapshot": {
+    "snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }
 }

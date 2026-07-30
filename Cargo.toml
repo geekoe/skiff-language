@@ -5,6 +5,7 @@ members = [
   "artifact-model",
   "artifact-identity",
   "deployment",
+  "runtime-config-snapshot",
   "syntax",
   "compiler/core",
   "compiler/contract",
