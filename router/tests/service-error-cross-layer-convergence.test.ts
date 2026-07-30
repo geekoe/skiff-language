@@ -214,9 +214,15 @@ function dispatcherHarness(): DispatcherHarness {
 }
 
 function requestHeader(requestId: string): RuntimeUnaryDispatchFrameHeader {
+  const fixture = runtimeFrameHeaderFixtures['request.start'];
+  const timeoutMs = fixture.deadline?.timeoutMs ?? 1_000;
   return {
-    ...runtimeFrameHeaderFixtures['request.start'],
-    requestId
+    ...fixture,
+    requestId,
+    deadline: {
+      timeoutMs,
+      expiresAt: new Date(Date.now() + timeoutMs).toISOString()
+    }
   };
 }
 

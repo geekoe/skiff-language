@@ -351,13 +351,18 @@ export class RuntimeDispatcher {
       const authority = parent.spawnAuthority;
       const requestId = `spawn-request-${randomUUID()}`;
       const spawnId = submit.spawnId ?? `spawn-${randomUUID()}`;
-      const timeoutMs = derivedSpawnTimeoutMs(parent.request);
-      const request = derivedSpawnRequest(parent.request, submit.target, requestId, timeoutMs);
+      const deadline = derivedSpawnDeadline(parent.request);
+      const request = derivedSpawnRequest(
+        parent.request,
+        submit.target,
+        requestId,
+        deadline
+      );
       await this.dispatchDerivedSpawn(
         ws,
         request,
         payloadBytes,
-        timeoutMs,
+        deadline.timeoutMs,
         authority
       );
       return {
@@ -454,6 +459,7 @@ export class RuntimeDispatcher {
       );
     }
     this.assertConnectionAdmission(ws);
+    const timerMs = runtimeDispatchTimerMs(request, timeoutMs);
     return new Promise<void>((resolve, rejectPromise) => {
       const settle = {
         done: false,
@@ -475,8 +481,8 @@ export class RuntimeDispatcher {
           kind: 'cancelled',
           reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
-        settle.reject(new RuntimeTimeoutError(timeoutMs));
-      }, timeoutMs);
+        settle.reject(new RuntimeTimeoutError(timerMs));
+      }, timerMs);
       const pending: RuntimeDerivedSpawnInvocation = {
         kind: 'derivedSpawn',
         request,
@@ -672,6 +678,12 @@ export class RuntimeDispatcher {
       header,
       connection
     );
+    let timerMs: number;
+    try {
+      timerMs = runtimeDispatchTimerMs(header, timeoutMs);
+    } catch (error) {
+      return Promise.reject(error);
+    }
 
     const executionToken = {};
     return new Promise<RuntimeAssemblyWebSocketJsonRpcDispatchResponse>(
@@ -691,8 +703,8 @@ export class RuntimeDispatcher {
               REQUEST_CANCEL_SITUATION.timeout
             )
           });
-          pending.reject(new RuntimeTimeoutError(timeoutMs));
-        }, timeoutMs);
+          pending.reject(new RuntimeTimeoutError(timerMs));
+        }, timerMs);
 
         const pending: RuntimeAssemblyWebSocketJsonRpcInvocation = {
           kind: 'websocketJsonRpc',
@@ -781,6 +793,7 @@ export class RuntimeDispatcher {
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
     let spawnAuthority: RuntimeSpawnParentAuthority | undefined;
+    let timerMs: number;
     try {
       this.assertRequestIdAvailable(dispatchHeader.requestId);
       this.assertConnectionAdmission(connection.ws);
@@ -788,6 +801,7 @@ export class RuntimeDispatcher {
         dispatchHeader,
         connection
       );
+      timerMs = runtimeDispatchTimerMs(dispatchHeader, timeoutMs);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -802,8 +816,8 @@ export class RuntimeDispatcher {
           kind: 'cancelled',
           reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
-        reject(new RuntimeTimeoutError(timeoutMs));
-      }, timeoutMs);
+        reject(new RuntimeTimeoutError(timerMs));
+      }, timerMs);
 
       const abortCleanup = this.attachAbortHandler(
         dispatchHeader.requestId,
@@ -891,6 +905,7 @@ export class RuntimeDispatcher {
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
     let spawnAuthority: RuntimeSpawnParentAuthority | undefined;
+    let timerMs: number;
     try {
       this.assertRequestIdAvailable(dispatchHeader.requestId);
       this.assertConnectionAdmission(connection.ws);
@@ -898,6 +913,7 @@ export class RuntimeDispatcher {
         dispatchHeader,
         connection
       );
+      timerMs = runtimeDispatchTimerMs(dispatchHeader, timeoutMs);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -910,8 +926,8 @@ export class RuntimeDispatcher {
           kind: 'cancelled',
           reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
-        reject(new RuntimeTimeoutError(timeoutMs));
-      }, timeoutMs);
+        reject(new RuntimeTimeoutError(timerMs));
+      }, timerMs);
 
       const abortCleanup = this.attachAbortHandler(
         dispatchHeader.requestId,
@@ -975,6 +991,7 @@ export class RuntimeDispatcher {
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
     let spawnAuthority: RuntimeSpawnParentAuthority | undefined;
+    let timerMs: number;
     try {
       this.assertRequestIdAvailable(dispatchHeader.requestId);
       this.assertConnectionAdmission(connection.ws);
@@ -982,6 +999,7 @@ export class RuntimeDispatcher {
         dispatchHeader,
         connection
       );
+      timerMs = runtimeDispatchTimerMs(dispatchHeader, timeoutMs);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -994,8 +1012,8 @@ export class RuntimeDispatcher {
           kind: 'cancelled',
           reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
-        reject(new RuntimeTimeoutError(timeoutMs));
-      }, timeoutMs);
+        reject(new RuntimeTimeoutError(timerMs));
+      }, timerMs);
 
       const abortCleanup = this.attachAbortHandler(
         dispatchHeader.requestId,
@@ -1818,7 +1836,10 @@ function derivedSpawnRequest(
   parent: RuntimeAssemblyRequestStartFrameWireHeader,
   target: string,
   requestId: string,
-  timeoutMs: number
+  deadline: {
+    timeoutMs: number;
+    expiresAt: string;
+  }
 ): RuntimeAssemblySpawnRequestStartFrameHeader {
   const testCaseCapability =
     'testCaseCapability' in parent ? parent.testCaseCapability : undefined;
@@ -1839,10 +1860,7 @@ function derivedSpawnRequest(
       targetKind: 'function',
       target
     },
-    deadline: {
-      timeoutMs,
-      expiresAt: new Date(Date.now() + timeoutMs).toISOString()
-    },
+    deadline,
     trace: {
       traceId: parent.trace.traceId,
       spanId: randomUUID(),
@@ -1896,24 +1914,71 @@ function captureRuntimeSpawnParentAuthority(
   });
 }
 
-function derivedSpawnTimeoutMs(
+function derivedSpawnDeadline(
   parent:
     | RuntimeDispatchFrameHeader
     | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
     | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
-): number {
+): {
+  timeoutMs: number;
+  expiresAt: string;
+} {
   if (!('deadline' in parent) || parent.deadline === undefined) {
-    return DEFAULT_DERIVED_SPAWN_TIMEOUT_MS;
+    const now = Date.now();
+    return {
+      timeoutMs: DEFAULT_DERIVED_SPAWN_TIMEOUT_MS,
+      expiresAt: new Date(now + DEFAULT_DERIVED_SPAWN_TIMEOUT_MS).toISOString()
+    };
   }
   const remainingMs = Date.parse(parent.deadline.expiresAt) - Date.now();
-  return Math.max(
-    1,
-    Math.min(
+  if (!Number.isFinite(remainingMs)) {
+    throw new ServiceProtocolBoundaryError(
+      'spawn parent deadline expiresAt must be a valid timestamp'
+    );
+  }
+  if (remainingMs <= 0) {
+    throw new RuntimeTimeoutError(
+      Math.min(
+        DEFAULT_DERIVED_SPAWN_TIMEOUT_MS,
+        parent.deadline.timeoutMs
+      )
+    );
+  }
+  return {
+    timeoutMs: Math.min(
       DEFAULT_DERIVED_SPAWN_TIMEOUT_MS,
       parent.deadline.timeoutMs,
       remainingMs
-    )
-  );
+    ),
+    expiresAt: parent.deadline.expiresAt
+  };
+}
+
+function runtimeDispatchTimerMs(
+  request: {
+    deadline?: {
+      timeoutMs: number;
+      expiresAt: string;
+    };
+  },
+  timeoutMs: number
+): number {
+  const deadline = request.deadline;
+  if (deadline === undefined) {
+    return timeoutMs;
+  }
+  const remainingMs = Date.parse(deadline.expiresAt) - Date.now();
+  if (!Number.isFinite(remainingMs)) {
+    throw new ServiceProtocolBoundaryError(
+      'runtime request deadline expiresAt must be a valid timestamp'
+    );
+  }
+  if (remainingMs <= 0) {
+    throw new RuntimeTimeoutError(
+      Math.min(timeoutMs, deadline.timeoutMs)
+    );
+  }
+  return Math.min(timeoutMs, deadline.timeoutMs, remainingMs);
 }
 
 function spawnSubmitError(error: unknown): {

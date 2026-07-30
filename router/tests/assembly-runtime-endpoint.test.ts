@@ -518,7 +518,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     const rootResponse = postControlJson(
       `${fixture.controlUrl}/__skiff/test-dispatch`,
       mutateTestDispatchBody((body) => {
-        body.timeoutMs = 25;
+        body.timeoutMs = 250;
       })
     );
     const root = await nextRuntimeFrame(ws, 'request.start');
@@ -536,21 +536,31 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       throw new Error('expected derived spawn invocation');
     }
     expect(childReceipt.header.type).toBe('spawn.submit.response');
-    const cancel = await nextRuntimeFrame(ws, 'request.cancel');
-    expect(cancel.header.reason).toBe('timeout');
-    expect([
-      rootValidation.envelope.requestId,
-      childValidation.envelope.requestId
-    ]).toContain(cancel.header.requestId);
-    if (cancel.header.requestId === childValidation.envelope.requestId) {
-      await until(
-        () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 1
-      );
-      sendRootResponseEnd(ws, rootValidation.envelope.requestId);
-      await expect(rootResponse).resolves.toMatchObject({ status: 200 });
-    } else {
-      await expect(rootResponse).resolves.toMatchObject({ status: 504 });
+    if (
+      rootValidation.envelope.deadline === undefined ||
+      childValidation.envelope.deadline === undefined
+    ) {
+      throw new Error('expected parent and derived spawn deadlines');
     }
+    expect(
+      Date.parse(childValidation.envelope.deadline.expiresAt)
+    ).toBeLessThanOrEqual(
+      Date.parse(rootValidation.envelope.deadline.expiresAt)
+    );
+    expect(childValidation.envelope.deadline.expiresAt).toBe(
+      rootValidation.envelope.deadline.expiresAt
+    );
+
+    const childCancel = nextRuntimeFrame(ws, 'request.cancel');
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 1
+    );
+
+    const cancel = await childCancel;
+    expect(cancel.header.reason).toBe('timeout');
+    expect(cancel.header.requestId).toBe(childValidation.envelope.requestId);
     await until(
       () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
     );
@@ -1954,7 +1964,7 @@ function mutateTestDispatchBody(
     Number.isSafeInteger(body.timeoutMs) &&
     body.timeoutMs > 0
   ) {
-    body.timeoutMs = Math.min(body.timeoutMs, 25);
+    body.timeoutMs = Math.min(body.timeoutMs, 250);
   }
   return body;
 }
