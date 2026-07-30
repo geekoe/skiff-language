@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use skiff_runtime_capability_context::{
-    DbCapabilityError, DbCapabilityResult, DbCapabilitySource, DbProviderBuildInput,
-    DbProviderConfig, DbProviderFactory,
+    DbCapabilityError, DbCapabilityFuture, DbCapabilityResult, DbCapabilitySource,
+    DbProviderBuildInput, DbProviderConfig, DbProviderFactory,
 };
 
-use crate::{DbEncryptionKeyring, ServiceDbConfig, ServiceDbRuntime};
+use crate::{
+    index::ServiceDbIndexProvisionPlan, DbEncryptionKeyring, ServiceDbConfig, ServiceDbRuntime,
+};
 
 #[derive(Clone, Default)]
 pub struct MongoServiceDbProviderFactory {
@@ -21,18 +23,40 @@ impl MongoServiceDbProviderFactory {
 
 impl DbProviderFactory for MongoServiceDbProviderFactory {
     fn build(&self, input: DbProviderBuildInput) -> DbCapabilityResult<DbCapabilitySource> {
+        let runtime = self.runtime_from_input(input)?;
+        Ok(DbCapabilitySource::new(Some(
+            Arc::new(runtime).capability_factory(),
+        )))
+    }
+
+    fn provision<'a>(&'a self, inputs: Vec<DbProviderBuildInput>) -> DbCapabilityFuture<'a, ()> {
+        Box::pin(async move {
+            let runtimes = inputs
+                .into_iter()
+                .filter(|input| !input.runtime_program_db.is_empty())
+                .map(|input| self.runtime_from_input(input))
+                .collect::<DbCapabilityResult<Vec<_>>>()?;
+            let plan = ServiceDbIndexProvisionPlan::from_runtimes(&runtimes)
+                .map_err(DbCapabilityError::opaque)?;
+            plan.reconcile().await.map_err(DbCapabilityError::opaque)
+        })
+    }
+}
+
+impl MongoServiceDbProviderFactory {
+    fn runtime_from_input(
+        &self,
+        input: DbProviderBuildInput,
+    ) -> DbCapabilityResult<ServiceDbRuntime> {
         let mut config = service_db_config_from_provider_config(input.config)?;
         config.encryption_cipher = self.keyring.as_ref().map(|keyring| keyring.cipher());
-        let runtime = ServiceDbRuntime::new_with_config(
+        ServiceDbRuntime::new_with_config(
             input.environment,
             input.service_id,
             config,
             &input.runtime_program_db,
         )
-        .map_err(DbCapabilityError::opaque)?;
-        Ok(DbCapabilitySource::new(Some(
-            Arc::new(runtime).capability_factory(),
-        )))
+        .map_err(DbCapabilityError::opaque)
     }
 }
 

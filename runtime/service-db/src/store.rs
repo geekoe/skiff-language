@@ -114,7 +114,7 @@ impl ServiceDbStore {
         }
         if let Err(error) = transaction.session.commit_transaction().await {
             let _ = transaction.session.abort_transaction().await;
-            return Err(error.into());
+            return Err(self.runtime.map_mongo_operation_error(error));
         }
         Ok(())
     }

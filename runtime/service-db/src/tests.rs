@@ -508,6 +508,16 @@ fn mongo_provider_rejects_invalid_opaque_config() {
     }
 }
 
+#[tokio::test]
+async fn mongo_provider_provision_with_no_db_metadata_performs_no_config_or_storage_io() {
+    MongoServiceDbProviderFactory::default()
+        .provision(vec![provider_input(json!({
+            "mongoUrl": "not even a valid Mongo URL"
+        }))])
+        .await
+        .expect("no DB metadata must make provisioning inert");
+}
+
 fn provider_input(config: Value) -> DbProviderBuildInput {
     DbProviderBuildInput {
         environment: "test".to_string(),
@@ -1029,6 +1039,41 @@ fn object_metadata_uses_typed_collection_name_from_service_unit_db() {
         track_event.collection_name,
         service_storage_collection_name("test.local/package", "TrackEvent")
             .expect("physical collection name")
+    );
+}
+
+#[test]
+fn index_plan_maps_business_key_to_id_and_preserves_nested_order() {
+    let metadata = db_metadata(json!([{
+        "kind": "object",
+        "typeName": "User",
+        "collectionName": "users",
+        "key": { "name": "id" },
+        "fields": [{ "name": "profile" }],
+        "indexes": [{
+            "name": "byIdAndEmail",
+            "unique": true,
+            "fields": [
+                {
+                    "field": { "text": "id", "segments": ["id"] },
+                    "direction": "asc"
+                },
+                {
+                    "field": { "text": "profile.email", "segments": ["profile", "email"] },
+                    "direction": "desc"
+                }
+            ],
+            "where": null
+        }]
+    }]));
+    let binding =
+        DbCollectionMetadata::from_ir(&metadata[0], 0).expect("index metadata should parse");
+
+    assert_eq!(
+        binding
+            .index_key_document(&binding.indexes[0])
+            .expect("index keys should project"),
+        doc! { "_id": 1, "profile.email": -1 }
     );
 }
 

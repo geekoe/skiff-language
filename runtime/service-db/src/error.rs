@@ -108,6 +108,8 @@ pub enum ServiceDbError {
     DbDecode { target: String, message: String },
     #[error("db lease lost: {0}")]
     LeaseLost(String),
+    #[error("{message}")]
+    Provision { message: String },
     #[error("database constraint rejected the write")]
     Constraint(DbConstraintViolation),
     #[error(transparent)]
@@ -126,6 +128,12 @@ impl ServiceDbError {
     pub fn db_decode(target: impl Into<String>, message: impl Into<String>) -> Self {
         Self::DbDecode {
             target: target.into(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn provision(message: impl Into<String>) -> Self {
+        Self::Provision {
             message: message.into(),
         }
     }
@@ -173,6 +181,12 @@ impl WirePayload for ServiceDbError {
                 status: None,
                 details: None,
             },
+            ServiceDbError::Provision { message } => RuntimeErrorPayload {
+                code: "ServiceDbProvisionError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(json!({ "retryable": false })),
+            },
             ServiceDbError::Constraint(violation) => RuntimeErrorPayload {
                 code: "std.db.ConstraintError".to_string(),
                 message: DB_CONSTRAINT_MESSAGE.to_string(),
@@ -185,6 +199,15 @@ impl WirePayload for ServiceDbError {
                     message: DB_CONFLICT_MESSAGE.to_string(),
                     status: None,
                     details: Some(db_conflict_details()),
+                }
+            }
+            ServiceDbError::Mongo(error) if is_mongo_duplicate_key_error(error) => {
+                RuntimeErrorPayload {
+                    code: "InternalError".to_string(),
+                    message: "database constraint violation could not be attributed to an admitted collection"
+                        .to_string(),
+                    status: None,
+                    details: None,
                 }
             }
             ServiceDbError::Mongo(error) => RuntimeErrorPayload {

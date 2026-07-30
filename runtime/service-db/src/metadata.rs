@@ -38,9 +38,6 @@ pub struct DbCollectionMetadata {
     pub fields: HashMap<String, DbFieldMetadata>,
     pub leases: HashMap<String, DbLeaseMetadata>,
     pub immutable_file_paths: Vec<Vec<String>>,
-    // Parsed now so object DB metadata stays schema-complete; index creation/planning
-    // will consume this once the runtime owns DB index reconciliation.
-    #[allow(dead_code)]
     pub indexes: Vec<DbIndexMetadata>,
 }
 
@@ -76,7 +73,6 @@ pub struct DbIndexMetadata {
     pub name: String,
     pub unique: bool,
     pub fields: Vec<DbOrderEntry>,
-    pub where_filter: Option<Value>,
 }
 
 impl ServiceDbMetadata {
@@ -169,6 +165,45 @@ impl ServiceDbMetadata {
                     "runtime program db metadata does not declare the exact DB target".to_string(),
                 )
             })
+    }
+
+    pub(crate) fn collections(&self) -> impl Iterator<Item = &DbCollectionMetadata> {
+        self.collections.iter()
+    }
+
+    pub(crate) fn collection_for_physical_name(
+        &self,
+        collection_name: &str,
+    ) -> Option<&DbCollectionMetadata> {
+        self.collections
+            .iter()
+            .find(|collection| collection.collection_name == collection_name)
+    }
+
+    pub(crate) fn constraint_owner_from_mongo_error(
+        &self,
+        error: &mongodb::error::Error,
+    ) -> Option<&DbConstraintTarget> {
+        let error_text = error.to_string();
+        let mut owner = None;
+        for collection in &self.collections {
+            let names_collection = error_text.contains(&collection.collection_name);
+            let names_index = collection.indexes.iter().any(|index| {
+                error_text.contains(&crate::index::managed_index_name(
+                    &collection.package_id,
+                    &collection.logical_collection_name,
+                    &index.name,
+                ))
+            });
+            if !names_collection && !names_index {
+                continue;
+            }
+            if owner.is_some_and(|owner| owner != collection.constraint_target()) {
+                return None;
+            }
+            owner = Some(collection.constraint_target());
+        }
+        owner
     }
 }
 
@@ -559,15 +594,26 @@ fn path_touches_file_path(touched: &[&str], file_path: &[String]) -> bool {
 
 fn parse_indexes(entries: &[DbMetadataIndexIr], index: usize) -> Result<Vec<DbIndexMetadata>> {
     let mut indexes = Vec::new();
+    let mut names = std::collections::HashSet::new();
     for (index_index, entry) in entries.iter().enumerate() {
+        let name = validate_non_empty_name(
+            &entry.name,
+            format!("runtime program db[{index}].indexes[{index_index}].name"),
+        )?;
+        if !names.insert(name.clone()) {
+            return Err(ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db[{index}] repeats index name {name:?}"
+            )));
+        }
+        if entry.where_expr.is_some() {
+            return Err(ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db[{index}].indexes[{index_index}] uses unsupported partial-index metadata"
+            )));
+        }
         indexes.push(DbIndexMetadata {
-            name: validate_non_empty_name(
-                &entry.name,
-                format!("runtime program db[{index}].indexes[{index_index}].name"),
-            )?,
+            name,
             unique: entry.unique,
             fields: parse_order_entries(&entry.fields, index, "indexes.fields")?,
-            where_filter: entry.where_expr.clone(),
         });
     }
     Ok(indexes)

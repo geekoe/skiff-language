@@ -33,6 +33,7 @@ mod capability;
 mod cascade;
 mod encryption;
 mod error;
+mod index;
 mod lease;
 mod mapping;
 mod metadata;
@@ -76,8 +77,8 @@ use lease::{
 pub use lease::{service_db_now_ms, DbLeaseHandle, DbLeaseHold};
 use metadata::{DbCollectionMetadata, ServiceDbMetadata};
 use mongo::{
-    is_mongo_duplicate_key_error, update_without_set_on_insert, MongoFindManyPlan,
-    MongoFindOnePlan, MongoOneWritePlan, MongoSessionExecutor,
+    is_mongo_duplicate_key_error, update_without_set_on_insert, MongoConstraintContext,
+    MongoFindManyPlan, MongoFindOnePlan, MongoOneWritePlan, MongoSessionExecutor,
 };
 pub use store::ServiceDbStore;
 pub type DbStore = ServiceDbStore;
@@ -230,6 +231,13 @@ impl ServiceDbRuntime {
             .await
             .cloned()
             .map_err(ServiceDbError::from)
+    }
+
+    pub(crate) fn map_mongo_operation_error(&self, error: mongodb::error::Error) -> ServiceDbError {
+        match self.metadata.constraint_owner_from_mongo_error(&error) {
+            Some(target) => ServiceDbError::Mongo(error).classify_write_constraint(target),
+            None => ServiceDbError::Mongo(error),
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1285,9 +1293,16 @@ impl ServiceDbRuntime {
         collection_name: &str,
         session: Option<&'a mut ClientSession>,
     ) -> Result<MongoSessionExecutor<'a>> {
+        let constraint_context = self
+            .metadata
+            .collection_for_physical_name(collection_name)
+            .map(|collection| MongoConstraintContext {
+                target: collection.constraint_target().clone(),
+            });
         Ok(MongoSessionExecutor::new(
             self.collection(collection_name).await?,
             session,
+            constraint_context,
         ))
     }
 
@@ -1315,7 +1330,7 @@ impl ServiceDbRuntime {
                 }
                 if let Err(error) = session.commit_transaction().await {
                     let _ = session.abort_transaction().await;
-                    Err(error.into())
+                    Err(self.map_mongo_operation_error(error))
                 } else {
                     Ok(value)
                 }

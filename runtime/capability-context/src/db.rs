@@ -596,10 +596,7 @@ pub trait DbProviderFactory: Send + Sync {
     /// The caller supplies every exact activation input together so a provider can reject
     /// cross-version physical-schema conflicts before performing any storage I/O. Providers
     /// without provisioned storage keep the default no-op and are still validated by `build`.
-    fn provision<'a>(
-        &'a self,
-        _inputs: Vec<DbProviderBuildInput>,
-    ) -> DbCapabilityFuture<'a, ()> {
+    fn provision<'a>(&'a self, _inputs: Vec<DbProviderBuildInput>) -> DbCapabilityFuture<'a, ()> {
         Box::pin(async { Ok(()) })
     }
 }

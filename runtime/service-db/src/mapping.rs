@@ -28,7 +28,7 @@ use skiff_runtime_boundary::{
     },
 };
 
-use super::metadata::DbCollectionMetadata;
+use super::metadata::{DbCollectionMetadata, DbIndexMetadata};
 use skiff_runtime_boundary::db as db_boundary;
 
 const DB_DECODE_TARGET: &str = "std.db";
@@ -400,17 +400,33 @@ impl DbCollectionMetadata {
             for field in &index.fields {
                 self.field_path_to_mongo_name(&field.field, DbFieldUse::Index)?;
             }
-            if let Some(where_filter) = &index.where_filter {
-                let object = where_filter.as_object().cloned().ok_or_else(|| {
-                    ServiceDbError::InvalidDbMetadata(format!(
-                        "runtime program db metadata index {} where filter must be an object",
-                        index.name
-                    ))
-                })?;
-                self.query_document(object)?;
-            }
         }
         Ok(())
+    }
+
+    pub(crate) fn index_key_document(&self, index: &DbIndexMetadata) -> Result<Document> {
+        if index.fields.is_empty() {
+            return Err(ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db metadata index {} must declare at least one field",
+                index.name
+            )));
+        }
+        let mut keys = Document::new();
+        for field in &index.fields {
+            let mongo_name = self.field_path_to_mongo_name(&field.field, DbFieldUse::Index)?;
+            if keys.contains_key(&mongo_name) {
+                return Err(ServiceDbError::InvalidDbMetadata(format!(
+                    "runtime program db metadata index {} repeats physical field {mongo_name}",
+                    index.name
+                )));
+            }
+            let direction = match field.direction {
+                DbOrderDirection::Asc => 1,
+                DbOrderDirection::Desc => -1,
+            };
+            keys.insert(mongo_name, direction);
+        }
+        Ok(keys)
     }
 
     pub fn validated_change_update(
