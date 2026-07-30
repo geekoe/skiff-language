@@ -66,6 +66,52 @@ Router先把frame绑定到发送者的exact assembly registration，再按active
   fact时fail closed；
 - actor/spawn response按同一request与sender correlation返回，Router不恢复service/build inference。
 
+### Activation execution owner switch
+
+Runtime必须同时保留当前active generation和仍被request、stream、WebSocket或callback pin住的draining
+generation。它们组成exact `ActiveAssemblyContextSet`，逻辑key至少包含：
+
+```text
+environment
+runtimeAssemblyRef
+runtimeConfigSnapshotRef
+generation
+serviceDeploymentRef
+```
+
+每个entry是该精确deployment的完整只读activation owner projection。集合不能折叠成“每个service的最新
+context”，也不能在generation drain期间就覆盖旧entry。缺失、重复、assembly/snapshot ref不匹配或
+deployment不属于该exact assembly时fail closed。
+
+`ActivationExecutionContextRebinder`是同一request内切换activation owner的唯一内部操作。它接收：
+
+```text
+source execution context with an exact generation pin
+target service deployment from a validated service binding or callback capability
+entry kind = service provider | callback owner
+```
+
+Rebinder只能在source pin对应的exact `ActiveAssemblyContextSet`中查target。它先验证并完整投影target
+context、创建fresh provider heap及boundary materialization plan，再一次性返回新的execution context；
+失败不得部分修改source或发布半构造context。禁止按serviceId、current active generation、latest pointer、
+ambient registration或thread-local current service补齐target。
+
+重绑定必须原子替换所有deployment-scoped owner：config、service DB、file、actor capability/registry、
+spawn、WebSocket service/entry、telemetry attribution及service dependency bindings。同时保留同一request
+的deadline、内部停止/cancellation、time source、request generation/lifecycle、trace/error、transport
+request identity、stream lifecycle、test effects/case capability与heap limits。保留heap limits不等于共享
+heap；provider使用fresh heap，参数、返回、错误、callback payload和stream item经过boundary
+materialization。
+
+Package静态资源继续随`RuntimeExecutionProjection`和当前callable的Package owner解析，不成为activation
+owner字段。内部`ActorRef`已有显式route owner，rebinder不重写它；caller `ActorExecutionFrame`也不进入
+provider execution。
+
+只有service provider entry和callback owner entry可以调用rebinder。普通continuation、Package direct
+call、actor恢复、spawned request start和native helper只能恢复或创建其已经验证的context，不能借rebinder
+改变owner。Service stream跨generation存活时继续pin原exact set；每个后续item/callback都使用旧generation，
+直到end/error/drop释放pin，不回退到当前active/latest context。
+
 ## Artifact Filesystem Bootstrap
 
 Router与Runtime通过共享artifact filesystem装载immutable records，不依赖或感知registry service：

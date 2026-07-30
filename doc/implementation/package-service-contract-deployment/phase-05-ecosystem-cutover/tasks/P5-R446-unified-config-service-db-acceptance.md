@@ -2,8 +2,9 @@
 
 ## Role
 
-独立只读验收F446A–D exact integration candidates。先核验共同验收矩阵与跨仓库commit/tree，再按风险选择
-聚焦probe；同一代码状态已有昂贵完整gate时不机械重跑。
+独立只读验收F446A–D、F447与F448 exact integration candidate。R447和R448必须已经各自在同一候选上
+PASS。先核验共同验收矩阵与跨仓库commit/tree，再按风险选择聚焦probe；同一代码状态已有昂贵完整gate时
+不机械重跑。
 
 ## Blocking Checks
 
@@ -17,6 +18,12 @@
 - `collection_name_mapping`在production authoring/schema/compiler/artifact/runtime/fixture中为零；logical
   collection identity只由provider DB declaration拥有，physical name由系统编码；
 - runtime frame当前代际只有v3，旧v2 reader/writer/fixture均无兼容路径；
+- service provider/callback只通过generation-pinned atomic rebinder切换owner；deployment-scoped
+  config/DB/file/actor/spawn/WebSocket/telemetry完整重绑，request-scoped deadline/内部停止/time/request
+  generation/lifecycle/trace/error/request identity/stream/test/heap limits保持不变；
+- provider使用fresh heap和boundary materialization，caller actor frame不进入provider，ActorRef显式owner
+  不改写，Package静态资源随RuntimeExecutionProjection，escaping stream保持旧generation pin；
+- exact activation context缺失/歧义时fail closed，不读取latest、ambient或thread-local current service；
 - POSIX secret source未提交、是普通非symlink文件、mode精确`0600`且读取前检查；复制/暂存文件在使用前
   已是`0600`，snapshot store目录/文件为`0700`/`0600`，验收输出不泄漏内容；
 - 无POSIX mode平台要么有明确可验证的owner-only/link-substitution等价边界，要么fail closed；

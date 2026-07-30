@@ -7,8 +7,10 @@
 - Runtime在prepare与cold recovery时先验证snapshot顶层
   `targetEnvironment == activation.environment`及完整assembly/snapshot closure，再为每个
   `(ServiceDeploymentRef, exact Package build)`建立只读ConfigView；
-- request、service call、continuation、stream、callback、actor和spawn沿ActivationContext传播相同snapshot
-  owner，不读取ambient/latest/source YAML；
+- request continuation与stream沿创建时ActivationContext传播相同snapshot owner；service provider与
+  callback按F448只通过generation-pinned atomic rebinder切换到target deployment/capability owner；
+  actor/spawn携带精确ActivationIdentity创建或恢复各自context，所有路径都不读取
+  ambient/latest/source YAML；
 - service DB name/identity由operator选择的受信Mongo endpoint/storage domain、environment与serviceId共同
   定界，不引入platformId；service/package authoring无输入；
 - physical collection name由stable

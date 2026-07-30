@@ -71,8 +71,10 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
    deployment配置共享。
 10. code identity、service API identity、deployment revision与assembly identity必须分开；任何人类可读
     `version`都不参与内容identity计算。
-11. 当前ActivationContext必须随async continuation、stream和callback显式传播；任何service call都以它
-    解析caller binding slot并切换到provider owner。
+11. 当前ActivationContext必须随async continuation和stream显式传播；service call只通过
+    generation-pinned `ActivationExecutionContextRebinder`原子切换到provider owner，callback也只通过
+    同一rebinder切回capability owner。普通continuation不得重绑owner，任何入口都不得按latest或ambient
+    context补事实。
 12. actor、spawn及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
     exact assembly registration及active/draining generation验证，不能按serviceId、package build、display
     name或legacy runtime registration补事实。
@@ -644,6 +646,37 @@ ServiceContract operation
 使用同一error/stream/callback contract与统一runtime内部停止语义，再materialize返回值。它不能因为
 地址可见就直接传递本地引用或method table。
 
+这里的“切换”不是修改caller context中的若干字段，而是一次原子owner rebind。Runtime先从caller已经
+pin住的assembly/config snapshot/generation，在exact `ActiveAssemblyContextSet`中解析目标
+`ServiceDeploymentRef`；再完整构造provider execution context；最后才允许provider执行。任一target、
+generation、deployment或owner projection缺失/歧义时，调用在进入provider前fail closed，caller context
+保持不变。不得读取active/latest generation、latest snapshot、ambient service或thread-local current
+service作为fallback。
+
+原子重绑定按owner把执行上下文拆成两类：
+
+- deployment-scoped owner全部替换为provider deployment的事实：Package-scoped `ConfigView`、service DB、
+  file capability、actor registry/capability、spawn dispatch、WebSocket service/entry lookup、telemetry
+  service attribution及service dependency binding；
+- request-scoped owner保持caller request的同一事实：deadline、runtime内部停止/cancellation、clock/time
+  source、request generation与lifecycle、trace、error channel、runtime transport request identity、
+  stream sink/source lifecycle、test effect registry、opaque test-case capability与heap limits。
+
+request-scoped继承不表示共享caller heap。Provider必须获得fresh request-local heap；参数按contract value
+plan从caller heap materialize到provider heap，unary return、错误payload、callback参数/返回和stream item
+再按相同boundary contract跨heap materialize。Caller的call frames、slot values、mutable roots和
+`ActorExecutionFrame`不得进入provider。Caller actor只在service call实际等待时按既有suspension规则释放
+自己的executor；provider执行不属于caller actor segment。
+
+Package静态资源不属于deployment-scoped capability rebind。它继续随当前callable的
+`RuntimeExecutionProjection`解析：进入provider后使用provider executable对应的Package resource
+projection，Package direct call仍按其当前callable package owner读取。不得把静态资源复制到
+ActivationContext或因deployment相同而改写Package owner。
+
+Runtime内部`ActorRef`携带显式actor type/id/route owner。Rebind只替换“当前service可使用哪个actor
+registry/capability”的deployment owner，不重写已经存在的`ActorRef`显式owner，也不把caller actor frame
+传给provider。
+
 Consumer lowering不会链接provider executable，也不生成伪PackageArtifact。它保存结构化调用引用：
 
 ```text
@@ -667,8 +700,15 @@ Binding vector的逻辑key是`(callerPackageBuildId, serviceRequirementSlot)`，
 都可以拥有slot 0。Package direct call进入dependency package后仍沿用当前ActivationContext，因而该package
 发起的service call会读取同一activation下属于自己的slot。
 
-挂起/恢复、stream producer/consumer和callback dispatch都必须携带显式ActivationContext owner；不能依赖
-thread-local“当前service”。Callback调用切回capability owner后，返回时再恢复receiver context。
+普通挂起/恢复和stream producer/consumer必须保留创建它们时的显式ActivationContext owner；不能依赖
+thread-local“当前service”。Service provider entry和callback capability dispatch是仅有的两个owner
+rebind入口。Callback调用通过rebinder切回capability owner，返回时恢复receiver context；Package direct
+call、普通continuation、actor方法恢复、spawned request start及native helper不能私自调用rebinder。
+
+若service operation返回的stream在generation切换后仍未结束，producer、consumer bridge、callback与每个
+item materialization继续使用创建该stream时pin住的旧generation context set，直到stream end/error/drop
+释放pin。draining generation可以为该既有stream服务，但不能接收新的未pin调用；实现不得为了继续取item
+改查当前active/latest generation。
 
 这里区分三层：
 

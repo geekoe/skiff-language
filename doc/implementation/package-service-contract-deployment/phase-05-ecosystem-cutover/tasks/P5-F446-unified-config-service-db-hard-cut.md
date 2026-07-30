@@ -29,12 +29,16 @@ F446C activation/runtime/service DB
 F446D test-runner + ecosystem migration
              |
              v
+F448 activation owner switch atomic rebind
+             |
+             v
 R446 independent acceptance
 ```
 
 F446A先建立共享DTO/identity checkpoint。F446B不能在tooling内复制临时snapshot DTO。F446C只消费A/B
 checkpoint，不能让Runtime读取source YAML或latest目录。F446D可以把Skiff test-runner与外部仓库迁移拆成
-不同repo worktree并行，但必须消费同一格式，不得增加兼容parser。
+不同repo worktree并行，但必须消费同一格式，不得增加兼容parser。F448负责在F446 activation事实之上把
+service provider/callback的owner切换收敛为原子操作；它不能引入latest fallback或第二套snapshot reader。
 
 ## Common Acceptance
 
@@ -48,8 +52,9 @@ checkpoint，不能让Runtime读取source YAML或latest目录。F446D可以把Sk
 5. generation prepare、commit、drain、cold recovery始终同时携带并精确验证assembly/snapshot refs。
 6. snapshot顶层target environment来自受信producer输入；prepare和cold recovery在物化ConfigView前与
    activation environment精确比较。
-7. 同build在同deployment一份ConfigView，跨deployment隔离；请求、continuation、stream、callback和spawn
-   都不能切换snapshot owner。
+7. 同build在同deployment一份ConfigView，跨deployment隔离；普通continuation与stream保持创建时owner。
+   service provider/callback只能通过generation-pinned atomic rebinder切换到目标deployment/capability
+   owner；spawn创建独立request，不在原request内偷换owner。
 8. service DB identity由operator选择的受信Mongo endpoint/storage domain、environment与serviceId共同
    定界，不引入platformId；无DB metadata不建空DB，跨service访问失败。
 9. physical collection由stable Package ID/declared logical collection identity系统编码；
@@ -61,6 +66,10 @@ checkpoint，不能让Runtime读取source YAML或latest目录。F446D可以把Sk
 12. 旧artifact/profile直接拒绝；没有dual read/write、ambient env或latest-config fallback。
 13. `DeploymentPolicy`、`ResourcePolicy`和deployment/activation `policy` wire为零；external business
     request只使用Router operator配置的`requestTimeoutMs`，service profile、deployment和assembly不能覆盖。
+14. owner rebind完整替换provider的config/DB/file/actor/spawn/WebSocket/telemetry事实，同时保留request
+    deadline/内部停止/time/generation/lifecycle/trace/error/request identity/stream/test/heap limits；
+    provider fresh heap、ActorRef显式owner、caller actor frame隔离与escaping old-generation stream均有
+    证据。
 
 当前实现状态与剩余闭合项见
 [`P5-F446-closure-result.md`](P5-F446-closure-result.md)。该文档在R446独立验收前保持草稿状态。

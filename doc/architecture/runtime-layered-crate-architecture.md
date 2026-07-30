@@ -752,6 +752,33 @@ skiff-runtime-package-test
 - cancellation table。
 - router socket writer。
 
+### `ActiveAssemblyContextSet` 与 `ActivationExecutionContextRebinder`
+
+Host按exact `(environment, RuntimeAssemblyRef, RuntimeConfigSnapshotRef, generation)`持有
+`ActiveAssemblyContextSet`。集合同时包含active generation和仍有显式pin的draining generation，并在每个
+generation下按`ServiceDeploymentRef`提供完整`ServiceRuntimeContext`。它不是latest service registry；
+missing、duplicate或tuple不匹配都fail closed。
+
+`ActivationExecutionContextRebinder`属于host-owned request projection adapter。它是同一request中从caller
+activation owner进入service provider或callback capability owner的唯一入口，并具有以下contract：
+
+- source必须携带exact generation pin，target必须来自已经验证的service binding或callback capability；
+- 只在source pin对应的`ActiveAssemblyContextSet`解析target，不查latest、ambient registration或
+  thread-local current service；
+- 先完整验证target projection、fresh heap与boundary materialization plan，再原子发布新execution
+  context；失败不修改source；
+- config、service DB、file、actor capability、spawn、WebSocket、telemetry和service dependency context
+  从target `ServiceRuntimeContext`重新投影；
+- deadline、内部停止、time、request generation/lifecycle、trace/error、transport request identity、
+  stream/test effect/case capability与heap limits从source request projection继承；
+- provider使用fresh heap，caller call frame、slot、mutable root和`ActorExecutionFrame`不得进入；
+- Package静态资源继续由当前callable的`RuntimeExecutionProjection`拥有；内部`ActorRef`的显式route owner
+  不被改写。
+
+service provider entry与callback owner entry以外的代码不能调用rebinder。普通continuation、stream poll和
+actor恢复只恢复它们已pin的context；spawned request start创建新的request context。Escaping service
+stream继续保留创建时的旧generation set，直到terminal/drop释放pin。
+
 ### `ServiceRuntimeContext`
 
 表示 host 已经把 `LinkedProgramImage` 和 `RuntimeActivation` 组装成可执行 service 后的

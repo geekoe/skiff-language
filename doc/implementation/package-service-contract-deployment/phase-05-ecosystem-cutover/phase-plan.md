@@ -211,7 +211,9 @@ Phase 05当前实现把普通config literal编进ServiceDeployment，把secret�
 | F447A | [Registry v2 and canonical CLI](tasks/P5-F447A-registry-v2-canonical-cli.md) | F447 authority | persistence、structural/live split、remove semantics |
 | F447B | [Dynamic watch and CAS recovery](tasks/P5-F447B-dynamic-watch-cas-recovery.md) | F447A DTO + current activation pair | dynamic input、last-known-good、retry、empty pair |
 | R447 | [Managed dev watch acceptance](tasks/P5-R447-managed-dev-watch-acceptance.md) | F447A/B integrated | 独立状态机/CLI/失败矩阵验收，不执行stable rollout |
-| R446 | [Unified config/service DB acceptance](tasks/P5-R446-unified-config-service-db-acceptance.md) | F446A–D integrated + R447 PASS | 独立验收、反向搜索与terminal stable证据 |
+| F448 | [Activation owner switch atomic rebind](tasks/P5-F448-activation-owner-switch-atomic-rebind.md) | F446 activation exact pair/context | exact context set、provider/callback原子重绑、fresh heap与旧generation stream |
+| R448 | [Activation owner switch acceptance](tasks/P5-R448-activation-owner-switch-acceptance.md) | F448 exact integrated candidate | 独立owner矩阵、missing fail-closed与generation pin验收 |
+| R446 | [Unified config/service DB acceptance](tasks/P5-R446-unified-config-service-db-acceptance.md) | F446A–D + F447/F448 integrated；R447/R448 PASS | 独立验收、反向搜索与terminal stable证据 |
 
 ## 1. 基线与已关闭的实现决策
 

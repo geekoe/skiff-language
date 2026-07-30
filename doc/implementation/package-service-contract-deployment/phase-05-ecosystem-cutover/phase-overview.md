@@ -41,6 +41,15 @@ registry remove四项成立；配置YAML复制结论已被RuntimeConfigSnapshot�
 [`managed-dev-watch.md`](../../../architecture/managed-dev-watch.md)硬切registry v2、dynamic input、
 last-known-good、bounded retry与health-derived activation CAS；不扩到stable rollout。
 
+2026-07-30 activation owner复核：exact assembly/snapshot generation已经建立，但service provider进入链
+仍需证明deployment-scoped与request-scoped owner不会混用。F448按
+[`package-service-contract-deployment.md`](../../../architecture/package-service-contract-deployment.md)
+§6.2和[`runtime-deployment-topology.md`](../../../architecture/runtime-deployment-topology.md)把切换硬切为
+generation-pinned原子rebind：provider/callback是仅有入口，provider获得自己的
+config/DB/file/actor/spawn/WebSocket/telemetry与fresh heap，原request保留deadline、内部停止、
+trace/lifecycle/stream/test等事实；missing exact context不查latest，escaping stream继续pin旧generation。
+R448 PASS前R446保持pending。
+
 ## 输入
 
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 和完整 InProcessBoundary 生产路径。

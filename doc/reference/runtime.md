@@ -102,6 +102,29 @@ Package使用相同裸collection名字不会共享storage。Package dependency�
 相等，再按`ServiceDeploymentRef`隔离snapshot并按精确Package build向slot注入只读配置；比较失败前不得
 物化任何`ConfigView`。cold recovery必须读取generation固定的两个ref，不能读取ambient或latest配置。
 
+### Service call 的 activation owner
+
+同一进程中的service call仍然跨service boundary。进入provider时，Runtime一次性切换到当前request已经
+pin住的同一assembly/snapshot/generation中目标deployment的activation owner：
+
+- provider看到自己的Package配置、service DB、file、actor、spawn、WebSocket、telemetry及service
+  dependency；
+- deadline、内部停止、time source、request generation/lifecycle、trace/error、runtime request identity、
+  stream lifecycle、测试effect/case capability及heap上限仍属于原request；
+- provider使用fresh request heap，参数、返回、错误、callback payload和stream item按ServiceContract
+  materialize，不能直接共享caller heap引用；
+- caller call frame、mutable root和actor execution frame不进入provider；内部actor句柄已有显式owner，
+  不因service owner切换而改写；
+- Package静态资源始终随当前执行callable的Package projection选择，不随deployment context复制。
+
+目标deployment在该exact generation中不存在、歧义或已完成drain时，调用在provider执行前失败。Runtime
+不能改用当前最新generation、latest snapshot或ambient service。普通continuation不切换owner；只有进入
+service provider及调用request-scope callback capability时发生这种原子切换。
+
+若service返回的stream越过generation切换仍在使用，stream继续pin创建时的旧generation；后续item、
+callback和terminal都在原context中完成，直到stream end/error/drop才释放。旧generation进入draining不
+表示把既有stream迁移到新代码或新配置。
+
 ### Runtime连接并发门禁
 
 初期并发门禁只由Router静态配置，不做CPU、内存、数据库或其他动态资源admission。`router.yml`必须在

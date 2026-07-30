@@ -15,6 +15,8 @@
   [`P5-F446B-config-snapshot-tooling.md`](P5-F446B-config-snapshot-tooling.md)、
   [`P5-F446C-activation-runtime-service-db.md`](P5-F446C-activation-runtime-service-db.md)、
   [`P5-F446D-test-runner-ecosystem-migration.md`](P5-F446D-test-runner-ecosystem-migration.md)
+- 新发现的activation owner closure：
+  [`P5-F448-activation-owner-switch-atomic-rebind.md`](P5-F448-activation-owner-switch-atomic-rebind.md)
 - 当前参考：
   [`config.md`](../../../../reference/config.md)、
   [`db.md`](../../../../reference/db.md)、
@@ -67,12 +69,22 @@ combined gate、跨仓库证据或R446。
    - 按[`P5-F447-managed-dev-watch-convergence.md`](P5-F447-managed-dev-watch-convergence.md)完成registry
      v2、dynamic input、last-known-good、bounded retry与health-derived CAS；
    - 配置只走RuntimeConfigSnapshot，不恢复旧YAML复制；F447聚焦验收不执行stable rollout。
-6. **Final evidence**
+6. **Activation owner switch**
+   - exact `ActiveAssemblyContextSet`同时保留active及有pin的draining generation；
+   - service provider与callback只通过generation-pinned
+     `ActivationExecutionContextRebinder`原子切换owner，missing时fail closed且无latest fallback；
+   - config、DB、file、actor、spawn、WebSocket、telemetry等deployment-scoped owner完整重绑；
+   - deadline、内部停止、time、request generation/lifecycle、trace/error/request identity、stream、
+     test effect/case capability与heap limits保持request-scoped；
+   - provider fresh heap/boundary materialization、static resource projection、ActorRef显式owner、
+     caller actor frame隔离及escaping stream旧generation pin均有动态证据。
+7. **Final evidence**
    - 在上述实现合流后的同一精确候选上运行受影响聚焦测试、必要combined gate、跨仓库non-live、
      stable cold activation与Agine chat smoke；
-   - R447先验收managed watch，再交由全新只读R446 owner执行terminal验收。
+   - R447先验收managed watch，R448独立验收activation owner switch，再交由全新只读R446 owner执行
+     terminal验收。
 
-主线程已经按上述四个实现owner派发代码任务。它们完成、合流及重验前，本文件不得改为`PASS`。
+主线程已经为上述实现缺口派发代码任务。它们完成、合流并通过R447/R448前，本文件不得改为`PASS`。
 
 ## Closed Secret Source Decision
 
