@@ -8,7 +8,7 @@ use skiff_compiler::CompilerPlatformSources;
 
 const USAGE: &str = "usage:
   skiff-compiler package <build|publish> <root> --artifact-root <dir> [--environment <name>] [--json]
-  skiff-compiler assembly <build|publish> --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... [--json]";
+  skiff-compiler assembly <build|publish> --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]";
 
 fn main() {
     if let Err(error) = run() {

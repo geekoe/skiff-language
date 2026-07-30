@@ -15,6 +15,7 @@ import test from 'node:test';
 
 import {
   compilerAuthoringInvocation,
+  configSnapshotAuthoringInvocation,
   objectUsage,
   parseObjectArgs,
   renderAuthoringResult,
@@ -137,17 +138,15 @@ test('assembly authoring transports only exact inline deployment roots', () => {
   );
 });
 
-test('assembly authoring rejects empty, duplicate, malformed, and retired root inputs', () => {
+test('assembly authoring accepts empty roots and rejects duplicate, malformed, and retired inputs', () => {
   const base = [
     '--artifact-root',
     '/tmp/artifacts',
     '--environment',
     'dev',
   ];
-  assert.throws(
-    () => parseObjectArgs('assembly', 'build', base),
-    /requires at least one --root-deployment/,
-  );
+  const empty = parseObjectArgs('assembly', 'build', base);
+  assert.deepEqual(empty.rootDeployments, []);
   assert.throws(
     () => parseObjectArgs('assembly', 'build', [
       ...base,
@@ -207,17 +206,15 @@ test('assembly authoring rejects empty, duplicate, malformed, and retired root i
     }),
     /explicit environment/,
   );
-  assert.throws(
-    () => compilerAuthoringInvocation({
-      skiffRoot,
-      kind: 'assembly',
-      action: 'build',
-      artifactRoot: '/tmp/artifacts',
-      environment: 'dev',
-      rootDeployments: [],
-    }),
-    /at least one exact root deployment/,
-  );
+  const emptyInvocation = compilerAuthoringInvocation({
+    skiffRoot,
+    kind: 'assembly',
+    action: 'build',
+    artifactRoot: '/tmp/artifacts',
+    environment: 'dev',
+    rootDeployments: [],
+  });
+  assert.equal(emptyInvocation.args.includes('--root-deployment'), false);
 });
 
 test('assembly activation requires and parses an exact config snapshot reference', () => {
@@ -285,6 +282,29 @@ test('config snapshot production requires a canonical target environment distinc
   await assert.rejects(
     runConfigSnapshotAuthoring({ ...base, environment: '..' }),
     /explicit canonical target environment/,
+  );
+});
+
+test('config snapshot authoring transports an explicit empty service source set', () => {
+  const invocation = configSnapshotAuthoringInvocation({
+    skiffRoot,
+    artifactRoot: '/tmp/artifacts',
+    environment: 'dev',
+    profile: 'dev',
+    assemblyRecord: 'records/runtime-assembly.json',
+    sources: [],
+  });
+  assert.equal(invocation.args.includes('--source'), false);
+  assert.deepEqual(
+    invocation.args.slice(-6),
+    [
+      '--assembly-record',
+      'records/runtime-assembly.json',
+      '--environment',
+      'dev',
+      '--profile',
+      'dev',
+    ],
   );
 });
 

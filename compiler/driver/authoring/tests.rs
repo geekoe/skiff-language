@@ -184,11 +184,6 @@ fn runtime_assembly_projection_rejects_operation_input_before_store_reads() {
             .to_string();
     assert!(invalid_environment.contains("assembly release"));
 
-    let empty = project_runtime_assembly(&root, "dev", &[], false)
-        .unwrap_err()
-        .to_string();
-    assert!(empty.contains("root deployment set must not be empty"));
-
     let duplicate =
         project_runtime_assembly(&root, "dev", &[reference.clone(), reference.clone()], false)
             .unwrap_err()
@@ -206,6 +201,37 @@ fn runtime_assembly_projection_rejects_operation_input_before_store_reads() {
         !root.exists(),
         "invalid operation input must fail before creating or reading the artifact store"
     );
+}
+
+#[test]
+fn runtime_assembly_projection_publishes_the_canonical_empty_assembly_deterministically() {
+    let root = unique_temp_root("runtime-assembly-empty");
+    let first = project_runtime_assembly(&root, "dev", &[], false).unwrap();
+    let second = project_runtime_assembly(&root, "dev", &[], false).unwrap();
+
+    let first_receipt = &first["runtimeAssemblyReceipt"];
+    let second_receipt = &second["runtimeAssemblyReceipt"];
+    assert_eq!(first_receipt["environment"], json!("dev"));
+    assert_eq!(first_receipt["assembly"], second_receipt["assembly"]);
+    assert_eq!(first_receipt["recordPath"], second_receipt["recordPath"]);
+
+    let record_path = first_receipt["recordPath"].as_str().unwrap();
+    let assembly = serde_json::from_slice::<skiff_artifact_model::RuntimeAssembly>(
+        &fs::read(root.join(record_path)).unwrap(),
+    )
+    .unwrap();
+    assert!(assembly.roots.is_empty());
+    assert!(assembly.resolved_deployments.is_empty());
+    assert!(assembly.resolved_contracts.is_empty());
+    assert!(assembly.resolved_packages.is_empty());
+    assert!(assembly.package_link_plan.code_slots.is_empty());
+    assert!(assembly.package_link_plan.package_links.is_empty());
+    assert!(assembly.service_binding_templates.is_empty());
+    assert!(assembly.activation_templates.is_empty());
+    assert!(assembly.gateway_ingress.is_empty());
+    skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

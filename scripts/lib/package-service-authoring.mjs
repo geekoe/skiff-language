@@ -217,59 +217,17 @@ export async function runConfigSnapshotAuthoring({
   assemblyRecord,
   sources,
 }) {
-  if (!isAbsolute(skiffRoot) || !isAbsolute(artifactRoot)) {
-    throw new Error('config snapshot authoring requires absolute skiffRoot and artifactRoot');
-  }
-  if (
-    typeof profile !== 'string'
-    || profile === '.'
-    || profile === '..'
-    || !activationEnvironmentPattern.test(profile)
-  ) {
-    throw new Error('config snapshot authoring requires an explicit canonical profile');
-  }
-  if (
-    typeof environment !== 'string'
-    || environment === '.'
-    || environment === '..'
-    || !activationEnvironmentPattern.test(environment)
-  ) {
-    throw new Error('config snapshot authoring requires an explicit canonical target environment');
-  }
-  if (typeof assemblyRecord !== 'string' || assemblyRecord.length === 0) {
-    throw new Error('config snapshot authoring requires the RuntimeAssembly record path');
-  }
-  if (!Array.isArray(sources) || sources.length === 0) {
-    throw new Error('config snapshot authoring requires at least one service config source');
-  }
-  const args = [
-    'run',
-    '--quiet',
-    '--manifest-path',
-    resolve(skiffRoot, 'config-snapshot-tooling', 'Cargo.toml'),
-    '--',
-    '--artifact-root',
+  const invocation = configSnapshotAuthoringInvocation({
+    skiffRoot,
     artifactRoot,
-    '--assembly-record',
-    assemblyRecord,
-    '--environment',
     environment,
-    '--profile',
     profile,
-  ];
-  for (const source of sources) {
-    if (
-      !isPlainObject(source)
-      || !isAbsolute(source.root)
-      || !isPlainObject(source.deployment)
-    ) {
-      throw new Error('config snapshot source requires an absolute root and exact deployment');
-    }
-    args.push('--source', JSON.stringify(source));
-  }
+    assemblyRecord,
+    sources,
+  });
   await verifySecretConfigSources(profile, sources);
-  const outcome = await captureAttachedCommand('cargo', args, {
-    cwd: skiffRoot,
+  const outcome = await captureAttachedCommand(invocation.command, invocation.args, {
+    cwd: invocation.cwd,
     env: {
       ...process.env,
       CARGO_TARGET_DIR: cargoTargetDir(skiffRoot),
@@ -296,6 +254,67 @@ export async function runConfigSnapshotAuthoring({
     throw new Error('config snapshot production did not return an exact snapshot reference');
   }
   return result;
+}
+
+export function configSnapshotAuthoringInvocation({
+  skiffRoot,
+  artifactRoot,
+  environment,
+  profile,
+  assemblyRecord,
+  sources,
+}) {
+  if (!isAbsolute(skiffRoot) || !isAbsolute(artifactRoot)) {
+    throw new Error('config snapshot authoring requires absolute skiffRoot and artifactRoot');
+  }
+  if (
+    typeof profile !== 'string'
+    || profile === '.'
+    || profile === '..'
+    || !activationEnvironmentPattern.test(profile)
+  ) {
+    throw new Error('config snapshot authoring requires an explicit canonical profile');
+  }
+  if (
+    typeof environment !== 'string'
+    || environment === '.'
+    || environment === '..'
+    || !activationEnvironmentPattern.test(environment)
+  ) {
+    throw new Error('config snapshot authoring requires an explicit canonical target environment');
+  }
+  if (typeof assemblyRecord !== 'string' || assemblyRecord.length === 0) {
+    throw new Error('config snapshot authoring requires the RuntimeAssembly record path');
+  }
+  if (!Array.isArray(sources)) {
+    throw new Error('config snapshot authoring requires a service config source array');
+  }
+  const args = [
+    'run',
+    '--quiet',
+    '--manifest-path',
+    resolve(skiffRoot, 'config-snapshot-tooling', 'Cargo.toml'),
+    '--',
+    '--artifact-root',
+    artifactRoot,
+    '--assembly-record',
+    assemblyRecord,
+    '--environment',
+    environment,
+    '--profile',
+    profile,
+  ];
+  for (const source of sources) {
+    if (
+      !isPlainObject(source)
+      || !isAbsolute(source.root)
+      || !isPlainObject(source.deployment)
+    ) {
+      throw new Error('config snapshot source requires an absolute root and exact deployment');
+    }
+    args.push('--source', JSON.stringify(source));
+  }
+  return { command: 'cargo', cwd: skiffRoot, args };
 }
 
 async function verifySecretConfigSources(profile, sources) {
@@ -433,9 +452,6 @@ export function parseObjectArgs(kind, action, rawArgs) {
   if (kind === 'package' && root === undefined) {
     throw new Error(`skiff ${kind} ${action} requires a root`);
   }
-  if (kind === 'assembly' && rootDeployments.length === 0) {
-    throw new Error(`skiff assembly ${action} requires at least one --root-deployment`);
-  }
   const normalizedRootDeployments = kind === 'assembly'
     ? normalizeRootDeployments(rootDeployments)
     : undefined;
@@ -486,8 +502,8 @@ export function objectUsage(kind) {
     return `usage: ${base}`;
   }
   return [
-    "usage: skiff assembly <build|publish> --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... [--json]",
-    "       skiff assembly activate --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]",
+    "usage: skiff assembly <build|publish> --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]",
+    "       skiff assembly activate --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]",
   ].join('\n');
 }
 
@@ -520,8 +536,8 @@ function parseConfigSnapshotRef(source) {
 }
 
 function normalizeRootDeployments(values) {
-  if (!Array.isArray(values) || values.length === 0) {
-    throw new Error('assembly authoring requires at least one exact root deployment');
+  if (!Array.isArray(values)) {
+    throw new Error('assembly authoring requires an exact root deployment array');
   }
   const normalized = values.map((value, index) => (
     normalizeRootDeployment(value, `root deployment ${index}`)

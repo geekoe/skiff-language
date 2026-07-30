@@ -313,11 +313,6 @@ fn validate_runtime_assembly_projection_input(
     root_deployments: &[ServiceDeploymentRef],
 ) -> AuthoringResult<()> {
     RuntimeAssemblyPointerPath::new(environment)?;
-    if root_deployments.is_empty() {
-        return Err(invalid_input(
-            "runtime assembly root deployment set must not be empty",
-        ));
-    }
     let mut unique = BTreeSet::new();
     for reference in root_deployments {
         ServiceDeploymentRecordPath::new(reference)?;

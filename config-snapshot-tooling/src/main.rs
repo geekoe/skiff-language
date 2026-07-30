@@ -84,9 +84,6 @@ impl Arguments {
         if !artifact_root.is_absolute() {
             return Err("--artifact-root must be absolute".to_string());
         }
-        if sources.is_empty() {
-            return Err("at least one --source is required".to_string());
-        }
         Ok(Self {
             artifact_root,
             assembly_record: assembly_record.ok_or("--assembly-record is required")?,
@@ -138,6 +135,9 @@ fn discover_exact_packages(
         .collect::<BTreeMap<_, _>>();
     if expected.len() != assembly.resolved_packages.len() {
         return Err("assembly contains duplicate PackageBuildId references".into());
+    }
+    if expected.is_empty() {
+        return Ok(BTreeMap::new());
     }
     let mut files = Vec::new();
     collect_package_records(
@@ -251,5 +251,25 @@ mod tests {
         .unwrap();
         assert_eq!(arguments.environment, "staging");
         assert_eq!(arguments.profile, "dev");
+    }
+
+    #[test]
+    fn cli_accepts_an_explicit_empty_service_source_set() {
+        let arguments = Arguments::parse(
+            [
+                "--artifact-root",
+                "/tmp/artifacts",
+                "--assembly-record",
+                "records/runtime-assembly.json",
+                "--environment",
+                "dev",
+                "--profile",
+                "dev",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap();
+        assert!(arguments.sources.is_empty());
     }
 }
