@@ -335,7 +335,7 @@ fn canonical_spawn_function_target_rejects_mismatched_metadata_defensively() {
     let error = super::canonical_spawn_function_target(
         &call,
         &metadata,
-        &ExecutableKind::Function,
+        &skiff_runtime_linked_program::ExecutableKind::Function,
         TARGET_SYMBOL,
     )
     .expect_err("eval must still reject a mismatched target defensively");
