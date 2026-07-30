@@ -94,13 +94,17 @@ CommittedActivationGeneration
 ```
 
 两个ref并列属于同一activation generation，彼此不引用。snapshot ID是随机、不透明、不可从内容或
-artifact identity推导的immutable coordinate。snapshot内部至少按精确`ServiceDeploymentRef`隔离，再把
-canonical Package ID解析到该deployment闭包中的精确Package build。Runtime只把匹配
-`(ServiceDeploymentRef, PackageBuild)`的只读`ConfigView`交给对应执行slot。
+artifact identity推导的immutable coordinate。snapshot顶层必须保存producer从受信operator输入取得的
+`targetEnvironment`；它不是从source YAML、service配置、路径或ambient environment推断的业务值。
+snapshot内部至少按精确`ServiceDeploymentRef`隔离，再把canonical Package ID解析到该deployment闭包中的
+精确Package build。Runtime只把匹配`(ServiceDeploymentRef, PackageBuild)`的只读`ConfigView`交给对应
+执行slot。
 
 配置变化创建新snapshot并提交新activation generation；它不重建PackageArtifact、ServiceDeployment或
-RuntimeAssembly。冷恢复必须读取generation钉住的精确assembly ref和snapshot ref，不能读取目录中的
-“最新配置”、ambient environment或另一个deployment的snapshot分区。
+RuntimeAssembly。Runtime在prepare及cold recovery中都必须先严格比较
+`snapshot.targetEnvironment == activation.environment`，失败时不能物化任何`ConfigView`或切换active
+generation。冷恢复必须读取generation钉住的精确assembly ref和snapshot ref，不能读取目录中的“最新配置”、
+ambient environment或另一个deployment的snapshot分区。
 
 ## 5. Platform Policy Is Not Business Config
 

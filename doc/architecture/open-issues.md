@@ -34,10 +34,11 @@ nominal public path和service dependency cycle已经在
 
 6. **状态层和存储边界**
 
-   DB object、queue、actor和外部resource已经分别有owner；service DB固定由trusted
-   `(platform, environment, serviceId)`派生，不再存在developer-authored state namespace。仍待设计的是
-   跨对象一致性、跨service transaction、缓存一致性和事件/outbox组合。Redis、queue或第三方存储若需要
-   新配置，必须定义独立capability，不能恢复通用`state` binding。
+   DB object、queue、actor和外部resource已经分别有owner；service DB固定由operator选择的受信Mongo
+   endpoint/storage domain、environment与serviceId共同定界，不引入platformId，也不再存在
+   developer-authored state namespace。仍待设计的是跨对象一致性、跨service transaction、缓存一致性和
+   事件/outbox组合。Redis、queue或第三方存储若需要新配置，必须定义独立capability，不能恢复通用
+   `state` binding。
 
 7. **数据 migration**
 

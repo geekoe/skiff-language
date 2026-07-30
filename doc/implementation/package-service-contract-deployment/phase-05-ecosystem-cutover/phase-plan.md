@@ -181,9 +181,14 @@ Phase 05当前实现把普通config literal编进ServiceDeployment，把secret�
 - PackageArtifact只保存own typed config requirements；所有业务值从ServiceDeployment、RuntimeAssembly及
   identity删除，SecretRef整体删除；
 - activation generation并列钉`RuntimeAssemblyRef`与随机opaque immutable
-  `RuntimeConfigSnapshotRef`；snapshot内部按ServiceDeploymentRef和exact Package build隔离；
-- database由trusted `(platform, environment, serviceId)`派生，一个service一个DB；删除manifest state、
-  PackageRuntimeRequirements.state、StateBinding/Kind与deployment state bindings；
+  `RuntimeConfigSnapshotRef`；snapshot顶层保存受信target environment，内部按ServiceDeploymentRef和
+  exact Package build隔离；
+- Runtime prepare/cold recovery在物化任何ConfigView前严格比较snapshot target与activation environment；
+- database由operator选择的受信Mongo endpoint/storage domain、environment与serviceId共同定界，一个
+  service一个DB，不引入platformId；删除manifest state、PackageRuntimeRequirements.state、
+  StateBinding/Kind与deployment state bindings；
+- physical collection由stable Package ID与declared logical collection identity系统编码；删除dependency、
+  requirement、binding与authoring的collection-name mapping全链；
 - test-runner按generated deployment分隔snapshot，注入`skiff.test.ingressUrl`runner overlay，并按
   `(testRunId, generatedTestServiceId)`派生DB；foreign DB test target仍落当前test service DB；
 - `timeout/quota/principal/resources`不是业务配置，当前无效、自报profile字段删除；未来operator policy
@@ -199,6 +204,7 @@ Phase 05当前实现把普通config literal编进ServiceDeployment，把secret�
 | F446B | [Config snapshot tooling checkpoint](tasks/P5-F446B-config-snapshot-tooling.md) | F446A schema | config parser/overlay/snapshot store/tooling |
 | F446C | [Activation/runtime service DB cutover](tasks/P5-F446C-activation-runtime-service-db.md) | F446A + F446B | Router/Runtime generation、ConfigView、DB owner |
 | F446D | [Test runner and ecosystem migration](tasks/P5-F446D-test-runner-ecosystem-migration.md) | F446B + F446C DTO checkpoint | runner、official/internals authoring与stable inputs |
+| F446 closure | [Current closure status](tasks/P5-F446-closure-result.md) | F446A–D implementation checkpoints | 草稿；记录新发现的schema/runtime遗漏与实现owner，不是验收 |
 | R446 | [Unified config/service DB acceptance](tasks/P5-R446-unified-config-service-db-acceptance.md) | F446A–D integrated | 独立验收与反向搜索 |
 
 ## 1. 基线与已关闭的实现决策
@@ -232,7 +238,7 @@ Phase 05当前实现把普通config literal编进ServiceDeployment，把secret�
   rewrite-to-service、build/display name都不选择deployment或handler。
 - RuntimeAssembly ingress key硬切为`(ServiceDeploymentRef, IngressSelector)`；不同service可共享相同
   selector，同service重复失败。ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、
-  RuntimeAssembly v3与runtime frame v2作为同一canonical checkpoint实现，不兼容读取旧Host route或裸
+  RuntimeAssembly v3与runtime frame v3作为同一canonical checkpoint实现，不兼容读取旧Host route、裸
   全局ingress。
 - Router的external request、activation prepare与WebSocket generation release预算互相独立。
   `requestTimeoutMs`不能触发assembly activation abort；service profile没有deployment timeout；
@@ -612,7 +618,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I53A result | [Service protocol v2 reacceptance result](tasks/P5-I53A-service-protocol-v2-reacceptance-result.md) | `95e8ef6` | PASS；与I53有效证据合并 |
 | I02F | [Skiff combined final](tasks/P5-I02F-skiff-combined-final.md) | I53/I53A PASS | 唯一完整combined |
 | I02F result | [Skiff combined final result](tasks/P5-I02F-skiff-combined-final-result.md) | `a4f8e70` | PASS；解除R02 |
-| H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
+| H31 | [R05 batch handoff（历史）](tasks/P5-H31-r05-batch-handoff.md) | historical | 已由F446 current closure取代，不再用于恢复或调度 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
 | D35 | [WS builtin materialization audit](tasks/P5-D35-websocket-builtin-materialization-audit-result.md) | F23D smoke 502 | 三层masked范围闭合 |

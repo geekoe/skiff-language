@@ -11,8 +11,9 @@ DB 架构目标：
 - DB query / projection 是 compiler 可分析的语言结构，不是 Mongo JSON。
 - runtime 接收已经规范化的普通 type descriptor，不理解 `ReadRecord`。
 - Mongo 只存在于 service DB adapter 内，不进入 Skiff source、File IR result type 或 service API schema。
-- service DB连接能力由router/platform activation注入，database identity由trusted
-  `(platform, environment, serviceId)`派生；业务源码和service配置不能选择database、namespace或连接串。
+- service DB连接能力由router/platform activation注入；database identity由operator选择的受信Mongo
+  endpoint/storage domain、environment与serviceId共同定界，不引入`platformId`。业务源码和service配置
+  不能选择database、namespace或连接串。
 - 一个service只有一个数据库；同一service中的Package共享它，但每个DB target仍保留精确
   PackageArtifact/File IR/type identity。
 
@@ -128,9 +129,11 @@ PackageArtifact and linked executable must not duplicate those facts.
 
 Two dependencies may contain the same module path and type name. Their exact
 PackageArtifactRef keeps their DB target identities distinct; name collision is
-not a link error. Physical collection ownership is validated by exact
-stable `(packageId, declared collection identity)` and system encoding;
-authoring does not provide collection-name or database-namespace mappings.
+not a link error. Physical collection ownership is validated by exact stable
+`(packageId, declared logical collection identity)` and system encoding. The
+`db object name` is this logical identity, not a physical name. Package
+dependency, requirement, binding and configuration inputs do not provide
+collection-name or database-namespace mappings.
 
 A test can directly depend on a DB-metadata provider that is also reachable through
 the subject package. These are two real graph edges, not two spellings of one

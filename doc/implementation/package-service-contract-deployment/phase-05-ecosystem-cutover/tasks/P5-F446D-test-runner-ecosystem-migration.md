@@ -6,6 +6,7 @@ Skiff test-runner：
 
 - 一个test service execution仍只构造一个multi-root RuntimeAssembly和一次activation generation；
 - 每个generated deployment在同一RuntimeConfigSnapshot中有独立分区；
+- runner从本次test activation的受信environment坐标写入snapshot顶层，不能从profile或ambient env推断；
 - runner把动态普通HTTP `skiff.test.ingressUrl`作为对应Package的只读runner overlay写入分区，authored同名
   path失败；
 - 每个case DB由`(testRunId, generatedTestServiceId)`派生并清理，不从profile读取namespace；
@@ -16,6 +17,8 @@ Skiff test-runner：
 - Skiff fixtures、official packages、Internals services/tests把三层文件改成Package-ID root mapping；
 - 删除全部manifest/profile `state`、SecretRef declaration、timeout/quota/principal/resources占位字段；
   `package.yml.resources`静态资源不在删除范围；
+- 删除生态authoring、fixture、helper与checker中的dependency collection mapping；Package只在`db object`
+  declaration中拥有logical collection identity；
 - secret明文文件内容不得输出或提交，只迁移key层级并保持ignored/`0600`；
 - stable dev/watch使用snapshot构造链，不复制旧deployment config binding；
 - 删除旧fixture/helper/checker和无消费者的兼容代码。

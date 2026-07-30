@@ -46,13 +46,21 @@ checkpoint，不能让Runtime读取source YAML或latest目录。F446D可以把Sk
 4. 配置变化只改变snapshot ref与activation generation，不改变PackageArtifact、ServiceDeployment、
    RuntimeAssembly或其identity。
 5. generation prepare、commit、drain、cold recovery始终同时携带并精确验证assembly/snapshot refs。
-6. 同build在同deployment一份ConfigView，跨deployment隔离；请求、continuation、stream、callback和spawn
+6. snapshot顶层target environment来自受信producer输入；prepare和cold recovery在物化ConfigView前与
+   activation environment精确比较。
+7. 同build在同deployment一份ConfigView，跨deployment隔离；请求、continuation、stream、callback和spawn
    都不能切换snapshot owner。
-7. service DB identity只由trusted platform/environment/serviceId派生；无DB metadata不建空DB，跨service
-   访问失败；physical collection由stable Package/declared collection identity系统编码，无author mapping。
-8. test case snapshot、ingress overlay和DB identity按generated deployment/test run隔离；foreign target不
+8. service DB identity由operator选择的受信Mongo endpoint/storage domain、environment与serviceId共同
+   定界，不引入platformId；无DB metadata不建空DB，跨service访问失败。
+9. physical collection由stable Package ID/declared logical collection identity系统编码；
+   PackageDependency、PackageRequirement、PackageBinding和authoring均无collection-name mapping。
+10. test case snapshot、ingress overlay和DB identity按generated deployment/test run隔离；foreign target不
    打开provider DB。
-9. official/internals/stable authoring不再含state、secret ref、timeout、quota、principal或resource占位值。
-10. 旧artifact/profile直接拒绝；没有dual read/write、ambient env或latest-config fallback。
-11. `DeploymentPolicy`、`ResourcePolicy`和deployment/activation `policy` wire为零；external business
+11. official/internals/stable authoring不再含state、secret ref、timeout、quota、principal、resource或
+    collection mapping占位值。
+12. 旧artifact/profile直接拒绝；没有dual read/write、ambient env或latest-config fallback。
+13. `DeploymentPolicy`、`ResourcePolicy`和deployment/activation `policy` wire为零；external business
     request只使用Router operator配置的`requestTimeoutMs`，service profile、deployment和assembly不能覆盖。
+
+当前实现状态与剩余闭合项见
+[`P5-F446-closure-result.md`](P5-F446-closure-result.md)。该文档在R446独立验收前保持草稿状态。

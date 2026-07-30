@@ -69,7 +69,9 @@ registration重新推断。不同service可以共享相同method/path；同一se
 歧义header、同一service/version多revision和跨deployment substitution都fail closed。
 
 该路由模型以ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、RuntimeAssembly v3和
-runtime frame v2一次硬切；旧Host-bearing route、裸全局ingress和旧frame不兼容读取。
+runtime frame v3一次硬切；旧Host-bearing route、裸全局ingress或旧frame不兼容读取。v3 activation
+control携带generation钉住的exact assembly/config snapshot refs；普通request仍通过已验证generation pin
+选择对应ActivationContext。
 
 Unary dispatch 最多产生一个 final response：成功时 response end 携带 payload，失败时 response error 携带 runtime error envelope；unary dispatch 不能产生 stream chunk。
 
@@ -86,16 +88,19 @@ Runtime activation对Package diamond保留每条真实dependency edge，但同�
 不参与这些identity。同一Package ID解析到不同build、logical collection identity缺失/重复或system
 physical-name encoding collision都fail closed。
 
-每个service只获得一个由trusted platform按`(platform, environment, serviceId)`派生的数据库。Package不
-声明database state requirement，service/profile也不配置namespace；只有activation闭包含DB metadata时
-Runtime才按需提供service DB handle。同一service的Package共享该数据库，但每次DB operation仍以精确
-PackageArtifact/File IR/type identity选择schema和collection。跨service DB访问禁止。
-Physical collection由stable`(packageId, declared collection identity)`系统编码；不同Package使用相同裸
-collection名字不会共享storage，作者不能提供mapping。
+每个service只获得一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain、
+activation environment与serviceId共同定界；语言模型不引入`platformId`。Package不声明database state
+requirement，service/profile也不配置namespace；只有activation闭包含DB metadata时Runtime才按需提供
+service DB handle。同一service的Package共享该数据库，但每次DB operation仍以精确PackageArtifact/File
+IR/type identity选择schema和collection。跨service DB访问禁止。
+Physical collection由stable`(packageId, declared logical collection identity)`确定性系统编码；不同
+Package使用相同裸collection名字不会共享storage。Package dependency、requirement、binding及配置文件都
+没有author-provided collection-name mapping。
 
 每个committed activation generation并列钉住`RuntimeAssemblyRef`与`RuntimeConfigSnapshotRef`。Runtime
-按`ServiceDeploymentRef`隔离snapshot，再按精确Package build向slot注入只读配置；cold recovery必须读取
-generation固定的两个ref，不能读取ambient或latest配置。
+必须在prepare和cold recovery中先验证snapshot顶层受信`targetEnvironment`与activation environment精确
+相等，再按`ServiceDeploymentRef`隔离snapshot并按精确Package build向slot注入只读配置；比较失败前不得
+物化任何`ConfigView`。cold recovery必须读取generation固定的两个ref，不能读取ambient或latest配置。
 
 ### Runtime连接并发门禁
 

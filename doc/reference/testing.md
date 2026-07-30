@@ -175,6 +175,8 @@ test-only source file 输入：
   multi-root `RuntimeAssembly`，并把所有generated deployment的隔离配置分区写入一个
   `RuntimeConfigSnapshot`，再由一次activation transaction并列提交两个ref。assembly identity和
   activation generation属于test service execution scope，单个case不另有assembly或generation。
+- runner从本次隔离activation的受信target environment写入snapshot顶层；Runtime必须在物化任何case
+  `ConfigView`前验证它与activation environment精确相等。
 - 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
 - runner负责构造逐case synthetic deployment、contract、gateway entry/ingress binding和root request
   frame；package测试由runner自动生成临时test service及其共享multi-root assembly activation。

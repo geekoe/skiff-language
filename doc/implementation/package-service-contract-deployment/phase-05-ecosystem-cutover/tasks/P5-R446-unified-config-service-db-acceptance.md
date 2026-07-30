@@ -12,7 +12,11 @@
 - 反向搜索旧config literal/SecretRef/state binding/profile policy没有production、fixture、golden、sample或
   active task残留；
 - config值不出现在四类artifact JSON、identity preimage、receipt、control frame、health或日志；
-- activation exact-pair recovery、Package ConfigView隔离和platform-derived DB均有真实动态证据；
+- activation exact-pair recovery、snapshot target environment在ConfigView物化前的strict比较、Package
+  ConfigView隔离，以及storage-domain/environment/service-derived DB均有真实动态证据；
+- `collection_name_mapping`在production authoring/schema/compiler/artifact/runtime/fixture中为零；logical
+  collection identity只由provider DB declaration拥有，physical name由系统编码；
+- runtime frame当前代际只有v3，旧v2 reader/writer/fixture均无兼容路径；
 - secret文件未提交，mode正确，验收输出不泄漏内容；
 - full non-live、stable cold activation和Agine chat smoke证据属于同一最终候选。
 

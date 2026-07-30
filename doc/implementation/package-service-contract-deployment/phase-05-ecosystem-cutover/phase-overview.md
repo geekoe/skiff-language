@@ -23,7 +23,17 @@ diamond。D6硬切为同一entry的`alias` + test-only `topLevelAlias`；2026-07
 2026-07-30修正：Phase 03/05把业务配置值、SecretRef和database state binding错误地装入
 ServiceDeployment/RuntimeAssembly。F446按最新canonical架构硬切：一个service仍只有三层配置文件，文件根
 直接按Package ID分区；配置进入独立RuntimeConfigSnapshot，activation generation并列钉assembly/snapshot
-refs；一个service一个平台派生数据库，删除全部author-authored state/namespace与无效policy字段。
+refs；一个service在受信storage domain/environment内只有一个系统派生数据库，删除全部author-authored
+state/namespace与无效policy字段。
+
+2026-07-30 F446收口复核：截至Skiff main `3344a535`，统一配置、activation exact-pair、service DB、
+test-runner隔离及dead binding删除的实现checkpoint已经合流，但R446尚未开始。收口仍需删除
+`collection_name_mapping`全链，以stable Package ID与declared logical collection identity系统编码physical
+collection；RuntimeConfigSnapshot顶层增加受信target environment并在prepare/cold recovery物化
+ConfigView前比较；数据库identity统一为operator选择的受信Mongo endpoint/storage domain +
+environment + serviceId，不引入platformId；Router↔Runtime frame统一为v3。当前状态和证据边界见
+[`P5-F446-closure-result.md`](tasks/P5-F446-closure-result.md)，不得把implementation checkpoint写成R446
+PASS。
 
 ## 输入
 

@@ -533,7 +533,7 @@ selector和policy只由ServiceDeployment及其revision覆盖。只替换实现�
 | ServiceDeployment schema | `skiff-service-deployment-v4` |
 | DeploymentArtifact identity marker / prefix | `skiff-deployment-artifact-identity-v4` / `skiff-deployment-artifact-v4:sha256` |
 | RuntimeAssembly schema / identity marker / prefix | `skiff-runtime-assembly-v3` / `skiff-runtime-assembly-identity-v3` / `skiff-runtime-assembly-v3:sha256` |
-| Router↔Runtime frame schema | `skiff-runtime-frame-v2` |
+| Router↔Runtime frame schema | `skiff-runtime-frame-v3` |
 
 `GatewayEntryIdentity`/GatewayEntry保持v2；ServiceContract/ServiceProtocol、Package artifact/build/local
 ABI/schema与WebSocketEntryId不变。旧Host route字段、裸全局ingress key、旧assembly/wire不得兼容读取。
@@ -1145,9 +1145,9 @@ Linker必须核验type export、provider type declaration与DB attachment指向�
 module suffix或发现顺序lookup。Provider File IR独占collection、key、field、retention、lease、index与
 recoverable metadata；consumer、PackageArtifact和linked executable不得复制这些事实。两个dependency即使
 拥有相同module/type也因PackageArtifactRef不同而保持无冲突。Logical collection identity由stable
-`(packageId, declared collection identity)`定界；Package build/version、dependency alias和edge path不参与
-持久storage identity。Storage adapter把该logical identity确定性编码为当前service DB内的physical
-collection name，开发者不提供mapping。
+`(packageId, declared logical collection identity)`定界；Package build/version、dependency alias和edge
+path不参与持久storage identity。Storage adapter把该logical identity确定性编码为当前service DB内的
+physical collection name；dependency、requirement、binding和配置均不提供mapping。
 
 同一stateful `PackageBuild`可因direct与transitive dependency形成多条真实edge。Assembly/loader先解析每条
 edge，再按以下规则形成activation中的active collection projection与metadata owner：
@@ -1182,25 +1182,31 @@ tombstone。unknown Package ID、required path缺失或类型不符都fail close
 普通与secret文件使用相同schema。secret文件保存ignored、`0600`明文值，不使用`SecretRef`。所有业务配置
 值都不得进入PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly、上述artifact
 identity、receipt、control frame或日志。tooling把overlay结果与exact dependency closure解析成随机opaque
-ID的immutable `RuntimeConfigSnapshot`。snapshot内部先按`ServiceDeploymentRef`隔离，再按exact Package
-build提供只读`ConfigView`；alias和diamond到达路径不参与identity。同build在同deployment内只有一份view，
-同build跨deployment仍严格隔离。
+ID的immutable `RuntimeConfigSnapshot`。snapshot顶层携带producer从受信operator输入写入的
+`targetEnvironment`；该字段不从source YAML或ambient environment推断。snapshot内部先按
+`ServiceDeploymentRef`隔离，再按exact Package build提供只读`ConfigView`；alias和diamond到达路径不参与
+identity。同build在同deployment内只有一份view，同build跨deployment仍严格隔离。
 
 Committed activation generation并列钉住`RuntimeAssemblyRef`和`RuntimeConfigSnapshotRef`，两者互不
-引用。配置变化只创建新snapshot和新generation；cold recovery必须精确恢复两个ref，不能读取latest或
-ambient配置。第一版snapshot store可保存明文；未来整快照加密属于独立store能力，本契约不定义KMS wire，
-也不允许它重新引入字段级SecretRef。
+引用。Runtime prepare和cold recovery都必须在物化任何`ConfigView`前严格比较
+`snapshot.targetEnvironment == activation.environment`。配置变化只创建新snapshot和新generation；
+cold recovery必须精确恢复两个ref，不能读取latest或ambient配置。第一版snapshot store可保存明文；未来
+整快照加密属于独立store能力，本契约不定义KMS wire，也不允许它重新引入字段级SecretRef。
 
-一个service只有一个由trusted platform按`(platform, environment, serviceId)`派生的数据库identity。
-开发者不能在`package.yml`、service profile或源码中配置database/namespace；service version、package
-version、deployment revision和runtime replica都不改变数据库identity。只有activation闭包含DB metadata时
-才按需提供service DB handle。同一service中的Package共享数据库，但保留各自精确
-Package/schema/collection identity；跨service DB访问禁止。service重命名产生新数据库identity，数据迁移
-必须显式执行。physical database name的编码属于platform内部实现，但必须对该tuple确定、无碰撞、满足
-存储后端命名限制并避免把任意service字符串直接当作未校验名称。
+一个service只有一个数据库identity，由operator选择的受信Mongo endpoint/storage domain、environment与
+serviceId共同定界，不引入`platformId`。开发者不能在`package.yml`、service profile或源码中配置
+database/namespace；service version、package version、deployment revision和runtime replica都不改变
+数据库identity。只有activation闭包含DB metadata时才按需提供service DB handle。同一service中的Package
+共享数据库，但保留各自精确Package/schema/collection identity；跨service DB访问禁止。service重命名、
+environment变化或移动到另一个受信storage domain都会产生不同数据库identity，数据迁移必须显式执行。
+physical database name的编码属于operator/runtime内部实现，但必须对该tuple确定、无碰撞、满足存储后端
+命名限制并避免把任意service字符串直接当作未校验名称。
 
-同理，physical collection name由stable`(packageId, declared collection identity)`系统编码。不同Package
-可以使用相同的裸collection名字而不会共享storage；Package ID或collection identity重命名需要显式迁移。
+同理，physical collection name由stable
+`(packageId, declared logical collection identity)`系统编码。`db object name`只声明logical identity，
+不是physical name；Package dependency、requirement、binding和配置输入都不允许author-provided
+collection-name mapping。不同Package可以使用相同的裸collection名字而不会共享storage；Package ID或
+logical collection identity重命名需要显式迁移。
 
 测试数据库按`(testRunId, generatedTestServiceId)`派生。Test-only foreign DB target gate只允许测试源码
 引用dependency的精确DB metadata，实际读写仍落当前generated test service的数据库，不能打开provider
@@ -1316,7 +1322,8 @@ local/dev/CLI backend，不参与production registry，也不与Platform DB dual
 
 `package.yml state`、`PackageRuntimeRequirements.state`、`StateBinding`、`StateBindingKind`与
 `ServiceDeployment.stateBindings`全部删除。Compiler从Package自己的DB schema metadata知道它使用service
-DB；Runtime从trusted platform/environment/service identity派生数据库，不从authoring配置反推。
+DB；Runtime按operator选择的受信Mongo endpoint/storage domain、environment与service identity定界
+数据库，不引入platformId，也不从authoring配置反推。
 
 Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
 自己配置的MongoDB连接持久化activation state；状态CAS与Platform audit在同一事务中追加。不得为了复用其它

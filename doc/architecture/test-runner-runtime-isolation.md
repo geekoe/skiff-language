@@ -47,8 +47,10 @@ runtime，也不能指向 stable developer instance 或固定 `4000` / `4001` �
 config layer读取和dependency graph解析；所有selected cases各自生成fresh synthetic
 `ServiceDeployment`、对应`ServiceContract`和gateway entry/ingress binding，再作为多个root链接进一个
 `RuntimeAssembly`。runner同时为每个generated deployment构造独立snapshot分区，汇入一个
-`RuntimeConfigSnapshot`。随后只提交一次activation transaction，并列钉住assembly ref与snapshot ref；
-所有case使用同一个activation generation，单个case不拥有另一份assembly、snapshot或generation。
+`RuntimeConfigSnapshot`，并从本次隔离activation的受信输入写入snapshot顶层target environment。随后只
+提交一次activation transaction，并列钉住assembly ref与snapshot ref；Runtime先验证snapshot target与
+activation environment精确相等，再物化逐case ConfigView。所有case使用同一个activation generation，
+单个case不拥有另一份assembly、snapshot或generation。
 
 共享assembly/snapshot record严格不等于共享deployment、ConfigView或mutable state。每个case仍拥有独立
 synthetic service identity、deployment/contract/gateway entry/ingress selector、snapshot分区、由

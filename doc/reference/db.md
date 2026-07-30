@@ -35,7 +35,10 @@ db object User {
 - 每个 `db object` 必须声明单字段 primary key。
 - primary key 必须是 attached type 上的 stored field。
 - 用户不能声明 `_id` 字段，底层 `_id` 只由 runtime adapter 从 key 字段映射。
-- 默认 collection name 使用 object 名称，显式 `name` 只用于物理存储映射。
+- `name`声明Package内部稳定的logical collection identity，不是Mongo physical collection name。
+- 省略`name`时使用该`db object`的canonical object identity作为logical collection identity。
+- Runtime按`(packageId, declared logical collection identity)`确定性编码physical collection name；
+  dependency、deployment或配置中不存在作者提供的physical collection mapping。
 - `db object` 不生成 `Row`、`Document`、`Entity` 等额外源码名字。
 
 ### 1.1 Test Dependency DB Targets
@@ -58,17 +61,18 @@ service database上的词法执行边界，本身没有target；其中每个DB o
 两个dependency即使声明相同module path与type name也不会混淆：dependency alias选择精确package
 artifact。运行时仍写入当前test service拥有的唯一database；跨package target不是跨service
 database访问。该数据库由平台按`(testRunId, generatedTestServiceId)`派生，不由测试配置命名。两个
-dependency的logical collection分别由stable`(packageId, declared collection identity)`系统编码；作者不
-提供physical mapping。
+dependency的logical collection分别由stable
+`(packageId, declared logical collection identity)`系统编码；作者不提供physical mapping。
 
 同一含DB metadata的Package可因direct与transitive依赖形成菱形。若两条edge解析到同一精确build且
 owner-relevant facts相同，activation将其合并为一个metadata owner；同一Package ID解析到不同build、
 logical collection identity缺失/重复或system physical-name encoding collision都必须失败。
 
-普通service同样只有一个由trusted platform按`(platform, environment, serviceId)`派生的数据库。开发者
-不能通过`package.yml`或配置文件选择database/namespace；同一service中的所有Package共享该数据库，
-同时每个DB target继续使用精确PackageArtifact/File IR/type identity。不同Package可以使用相同裸
-collection名字而不共享storage；跨service数据库访问禁止。
+普通service同样只有一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain、
+activation environment与serviceId共同定界；不另设`platformId`。开发者不能通过`package.yml`或配置文件
+选择database/namespace；同一service中的所有Package共享该数据库，同时每个DB target继续使用精确
+PackageArtifact/File IR/type identity。不同Package可以使用相同裸collection名字而不共享storage；
+跨service数据库访问禁止。
 
 ## 2. Field Paths And Contextual Keywords
 
@@ -533,7 +537,8 @@ field 也会让缺字段的旧 row 失败。需要保留数据时，必须新建
 
 一旦写入 envelope，旧 runtime / artifact 无法把保留 BSON document 当成 plaintext string。回滚 service artifact 前必须
 停写并迁移或清空 encrypted 数据，不能只删除 `storage` declaration。AAD 使用最终
-`storageServiceId + physicalCollectionName + fieldName`；更改 service storage identity、collection mapping 或 field name
+`storageServiceId + physicalCollectionName + fieldName`；更改 service storage identity、Package ID、
+logical collection identity、system physical-name encoding或field name
 都会让旧密文无法解密，必须按显式存储迁移处理，不能把 rename 当作 metadata-only change。
 
 Keyring 丢失等同于密文不可恢复。数据库备份与 keyring 备份必须分开保存、分别授权，并进行成对恢复演练；恢复任一可能

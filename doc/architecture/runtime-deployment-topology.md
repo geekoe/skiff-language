@@ -20,7 +20,8 @@ developer-authored repository-level `assembly.yml`。每个runtime replica加载
 - replica内共享的是只读code/type/link image；activation-owned ConfigView、DB handle、callback table与
   mutable runtime state不得因PackageBuildId相同而跨ServiceDeployment共享；
 - replica之间heap、CPU调度、request lifecycle与failure独立；
-- service DB由平台按environment与service identity派生，并由同一service的replica共享。
+- service DB由operator选择的受信Mongo endpoint/storage domain、environment与service identity共同
+  定界，并由同一service的replica共享。
 
 该模型可以整体增加CPU、内存和副本可用性，但不能单独隔离或扩缩某个service；一个service的CPU/memory故障
 可能影响同replica内其它service。第一版接受该限制，并要求assembly admission、health、drain与atomic reload
@@ -36,9 +37,11 @@ runtimeConfigSnapshotRef
 ```
 
 二者互不引用。Runtime在prepare时必须同时解析精确assembly和snapshot，snapshot内部按
-`ServiceDeploymentRef`隔离同一Package build跨service配置；任一ref缺失、tampered、指向错误environment
-或不闭合都拒绝prepare。配置变化通过新snapshot和新generation生效，不重建assembly。冷恢复重读同一
-generation的两个ref，不能读取最新配置文件或ambient environment。
+`ServiceDeploymentRef`隔离同一Package build跨service配置；snapshot顶层必须携带producer从受信operator
+输入写入的`targetEnvironment`。Runtime在物化任何`ConfigView`前严格比较
+`snapshot.targetEnvironment == activation.environment`；任一ref缺失、tampered、environment不匹配或
+闭包不完整都拒绝prepare。配置变化通过新snapshot和新generation生效，不重建assembly。冷恢复重读同一
+generation的两个ref并执行相同的environment比较，不能读取最新配置文件或ambient environment。
 
 Canonical runtime connection上的actor、spawn及其它跨request control frame必须显式携带当前
 ActivationIdentity，至少包含assembly identity、generation、runtime replica与deployment revision。Runtime
@@ -77,14 +80,16 @@ Runtime loader保留真实dependency graph，但同一精确`PackageBuild`经dir
 只建立一个code slot、Package-scoped ConfigView和DB metadata owner。同一Package ID解析到不同build、
 logical collection identity缺失/重复或system physical-name encoding collision均拒绝activation。
 Package alias和edge path不参与config或DB identity；physical collection name由stable
-`(packageId, declared collection identity)`系统编码。
+`(packageId, declared logical collection identity)`系统编码。Package dependency、requirement、binding
+与配置输入都不携带author-provided collection-name mapping。
 
 `artifactsPath`和`serviceDb.mongoUrl`是部署拓扑配置，不进入PackageArtifact、ServiceContract、
 ServiceDeployment或RuntimeAssembly identity。Runtime不为二者另设文件配置、环境变量或默认值。
 
 Runtime持有bootstrap DB transport binding不表示所有activation获得DB。只有exact Package闭包含DB
-metadata的service才按需得到`std.db` capability；数据库identity由trusted
-`(platform, environment, serviceId)`派生，service代码看不到provider URL或database name。
+metadata的service才按需得到`std.db` capability；数据库identity由operator选择的受信Mongo
+endpoint/storage domain、environment与serviceId共同定界，不引入`platformId`。service代码看不到
+provider URL或database name。
 
 ## Activation Prepare Budget
 
@@ -137,7 +142,7 @@ deployment与generation；后续JSON-RPC method也只在该pin内解析。
 跨deployment frame substitution全部fail closed。
 
 这次路由模型变化使用ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、
-RuntimeAssembly v3和runtime frame v2硬切。GatewayEntryIdentity v2、ServiceProtocol、Package identities
+RuntimeAssembly v3和runtime frame v3硬切。GatewayEntryIdentity v2、ServiceProtocol、Package identities
 与WebSocketEntryId不因路由scope变化而升级；旧Host-bearing route、裸全局ingress和旧frame不兼容读取。
 
 ## Router HTTP 实例限制
