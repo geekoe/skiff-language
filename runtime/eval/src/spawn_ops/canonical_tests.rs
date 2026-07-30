@@ -312,30 +312,37 @@ async fn canonical_spawn_missing_execution_projection_fails_before_actor_capabil
         .is_empty());
 }
 
-#[tokio::test]
-async fn canonical_spawn_rejects_metadata_target_not_matching_linked_symbol() {
-    let fixture = canonical_spawn_fixture(Some("spawn.fixture.other"));
-    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let context = execution_context(&interpreter, fixture.actor, Some(fixture.eval_target));
+#[test]
+fn canonical_spawn_function_target_rejects_mismatched_metadata_defensively() {
+    let call = skiff_runtime_linked_program::CallIr {
+        target: skiff_runtime_linked_program::LinkedCallTarget::Executable {
+            addr: skiff_runtime_linked_program::ExecutableAddr::package(0, 0, 1),
+        },
+        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+            reason:
+                skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+        },
+        args: Vec::new(),
+        type_args: BTreeMap::new(),
+        metadata: BTreeMap::new(),
+        actor_metadata: None,
+    };
+    let metadata = super::SpawnSubmitTarget {
+        kind: "function".to_string(),
+        name: "function:spawn.fixture.other".to_string(),
+    };
 
-    let error = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut RequestHeap::default(),
-            &fixture.caller_addr,
-            Vec::new(),
-        )
-        .await
-        .expect_err("canonical spawn metadata cannot redirect the linked executable");
+    let error = super::canonical_spawn_function_target(
+        &call,
+        &metadata,
+        &ExecutableKind::Function,
+        TARGET_SYMBOL,
+    )
+    .expect_err("eval must still reject a mismatched target defensively");
 
     assert!(error
         .to_string()
-        .contains("does not match linked executable"));
-    assert!(fixture
-        .submissions
-        .lock()
-        .expect("spawn submissions should be readable")
-        .is_empty());
+        .contains("does not match linked executable function:spawn.fixture.run"));
 }
 
 fn canonical_spawn_fixture(metadata_symbol: Option<&str>) -> CanonicalSpawnFixture {

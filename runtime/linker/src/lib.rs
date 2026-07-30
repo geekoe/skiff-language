@@ -43,7 +43,7 @@ pub use resolver::{
     LinkedProgramImageResolverExt, ProgramError, ProgramResult, ResolvedLinkedExecutable,
 };
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub fn link_package_fixture_from_runtime_assembly(
     assembly: &skiff_artifact_model::RuntimeAssembly,
     packages: impl IntoIterator<Item = skiff_runtime_linked_program::HydratedPackageCode>,

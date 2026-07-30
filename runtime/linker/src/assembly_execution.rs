@@ -202,7 +202,20 @@ pub(crate) fn relink_execution_files_for_test(
 #[cfg(test)]
 mod spawn_route_tests {
     use super::*;
-    use skiff_runtime_linked_program::{FileAddr, UnitAddr};
+    use skiff_artifact_model::{
+        AssemblyIdentity, BlockIr, CanonicalPackageLinkPlan, ExecutableBody, ExecutableIr,
+        FileIrRef, FileIrUnit, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBuildId,
+        PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+        PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, RuntimeAssembly,
+        SlotLayout, StmtIr, StmtRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    };
+    use skiff_runtime_linked_program::{
+        FileAddr, HydratedPackageCode, PublicationResourceTable, UnitAddr,
+    };
+
+    const PACKAGE_ID: &str = "example.canonical-spawn";
+    const TARGET_SYMBOL: &str = "spawn.fixture.run";
 
     fn addr(executable: usize) -> ExecutableAddr {
         ExecutableAddr {
@@ -228,5 +241,174 @@ mod spawn_route_tests {
             insert_spawn_route(&mut routes, "function:run".to_string(), addr(2)).unwrap_err();
         assert!(error.to_string().contains("more than one executable"));
         assert_eq!(routes.get("function:run"), Some(&addr(1)));
+    }
+
+    #[test]
+    fn metadata_target_not_matching_linked_symbol_fails_linking() {
+        let mut file = FileIrUnit::empty("spawn.fixture", "source:canonical-spawn");
+        file.executables = vec![
+            caller_executable("spawn.fixture.other"),
+            target_executable(),
+        ];
+        skiff_artifact_identity::assign_file_ir_identity(&mut file)
+            .expect("canonical spawn File IR should receive an identity");
+        let mut package = private_package(&file);
+        skiff_artifact_identity::assign_package_artifact_identities(&mut package)
+            .expect("canonical spawn package should receive identities");
+        let package_ref = package_ref(&package);
+        let assembly = RuntimeAssembly {
+            schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+            assembly_identity: AssemblyIdentity::new("assembly:canonical-spawn-linker"),
+            roots: Vec::new(),
+            resolved_deployments: Vec::new(),
+            resolved_contracts: Vec::new(),
+            resolved_packages: vec![package_ref.clone()],
+            package_link_plan: CanonicalPackageLinkPlan {
+                code_slots: vec![PackageCodeSlot {
+                    package: package_ref,
+                }],
+                package_links: Vec::new(),
+            },
+            service_binding_templates: Vec::new(),
+            activation_templates: Vec::new(),
+            gateway_ingress: Vec::new(),
+        };
+        let schema_index = PackageSchemaIndex {
+            package_id: package.package_schema_index.package_id.clone(),
+            package_schema_index_identity: package
+                .package_schema_index
+                .package_schema_index_identity
+                .clone(),
+            types: BTreeMap::new(),
+        };
+        let hydrated = HydratedPackageCode::new(
+            Arc::new(package),
+            vec![Arc::new(file)],
+            PublicationResourceTable::default(),
+        )
+        .with_schema_index(Arc::new(schema_index));
+
+        let error = crate::link_package_fixture_from_runtime_assembly(&assembly, [hydrated])
+            .expect_err("mismatched spawn metadata must fail while linking");
+
+        assert_eq!(
+            error.to_string(),
+            "spawnSubmit metadata target function:spawn.fixture.other does not match linked executable function:spawn.fixture.run"
+        );
+    }
+
+    fn caller_executable(metadata_symbol: &str) -> ExecutableIr {
+        ExecutableIr {
+            kind: skiff_artifact_model::ExecutableKind::Function,
+            symbol: "spawn.fixture.submit".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: skiff_artifact_model::TypeRefIr::builtin("null"),
+            self_type: None,
+            slots: SlotLayout::default(),
+            may_suspend: true,
+            body: ExecutableBody {
+                blocks: vec![BlockIr {
+                    label: "entry".to_string(),
+                    statements: vec![StmtRefIr { statement: 0 }, StmtRefIr { statement: 1 }],
+                }],
+                statements: vec![
+                    StmtIr::Spawn {
+                        call: skiff_artifact_model::ExprRefIr { expression: 0 },
+                    },
+                    StmtIr::Return { value: None },
+                ],
+                expressions: vec![skiff_artifact_model::ExprIr::Call {
+                    call: skiff_artifact_model::CallIr {
+                        target: skiff_artifact_model::CallTargetIr::LocalExecutable {
+                            executable_index: 1,
+                        },
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
+                        args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::from([(
+                            "spawnSubmit".to_string(),
+                            MetadataValue::Object(BTreeMap::from([
+                                (
+                                    "targetKind".to_string(),
+                                    MetadataValue::String("function".to_string()),
+                                ),
+                                (
+                                    "target".to_string(),
+                                    MetadataValue::String(format!("function:{metadata_symbol}")),
+                                ),
+                            ])),
+                        )]),
+                    },
+                }],
+            },
+            source_span: None,
+        }
+    }
+
+    fn target_executable() -> ExecutableIr {
+        ExecutableIr {
+            kind: skiff_artifact_model::ExecutableKind::Function,
+            symbol: TARGET_SYMBOL.to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: skiff_artifact_model::TypeRefIr::builtin("null"),
+            self_type: None,
+            slots: SlotLayout::default(),
+            may_suspend: false,
+            body: ExecutableBody::default(),
+            source_span: None,
+        }
+    }
+
+    fn private_package(file: &FileIrUnit) -> PackageArtifact {
+        PackageArtifact {
+            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            package_id: PACKAGE_ID.to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new("unassigned"),
+            files: vec![FileIrRef {
+                file_ir_identity: file.file_ir_identity.clone(),
+                module_path: file.module_path.clone(),
+                artifact_path: None,
+                source_ast_hash: Some(file.source_ast_hash.clone()),
+            }],
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
+                public_symbols: BTreeMap::new(),
+                implementation_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: PACKAGE_ID.to_string(),
+                package_schema_index_identity:
+                    skiff_artifact_identity::package_schema_index_identity(
+                        PACKAGE_ID,
+                        &BTreeMap::new(),
+                    )
+                    .expect("empty Package schema index is canonical"),
+            },
+            package_schema_type_records: BTreeMap::new(),
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        }
+    }
+
+    fn package_ref(package: &PackageArtifact) -> PackageArtifactRef {
+        PackageArtifactRef {
+            package_id: package.package_id.clone(),
+            package_version: package.package_version.clone(),
+            package_build_id: package.package_build_id.clone(),
+            package_local_abi_identity: package.package_local_abi.local_abi_identity.clone(),
+        }
     }
 }
