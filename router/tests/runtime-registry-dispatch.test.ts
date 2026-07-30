@@ -758,11 +758,12 @@ describe('router runtime registry dispatch', () => {
       'request-capacity-disconnect'
     );
     const disconnect = dispatch('request-capacity-disconnect');
-    await disconnectFramePromise;
-    await closeSocket(runtimeA, 'runtime capacity disconnect');
-    await expect(disconnect).rejects.toMatchObject({
+    const disconnectResult = expect(disconnect).rejects.toMatchObject({
       code: 'std.service.ProviderUnavailableError'
     });
+    await disconnectFramePromise;
+    await closeSocket(runtimeA, 'runtime capacity disconnect');
+    await disconnectResult;
     expect(
       dispatcher.countInFlight({
         runtimeId: 'runtime-capacity-a',
