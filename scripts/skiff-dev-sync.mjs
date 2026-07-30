@@ -1,29 +1,40 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import {
   defaultAssemblyActivationUrl,
-  maxExpectedAssemblyGeneration,
-  requestAssemblyActivation,
   runConfigSnapshotAuthoring,
   runCompilerAuthoring,
 } from './lib/package-service-authoring.mjs';
+import { activateDevAssembly } from './lib/dev-assembly-activation.mjs';
+export {
+  activateDevAssembly,
+  readRouterActivationState,
+} from './lib/dev-assembly-activation.mjs';
+import {
+  assertEnvironment,
+  assertServiceId,
+  devRegistrySchemaVersion,
+  emptyDevRegistry,
+  readStoredDevRegistry,
+  writeStoredDevRegistry,
+} from './lib/dev-registry-store.mjs';
+import { parseSimpleYamlObject } from './lib/simple-yaml.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = dirname(scriptDir);
 const defaultDevHome = resolve(process.env.SKIFF_DEV_HOME ?? join(skiffRoot, '.skiff-instance', 'dev-home'));
 const defaultRegistryPath = join(defaultDevHome, 'watch.json');
 const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
-const registrySchemaVersion = 'skiff-package-service-dev-registry-v1';
 const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);
 const devBuildStates = new WeakMap();
 
-const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--expected-generation <n>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
+const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
@@ -39,80 +50,160 @@ export async function main(rawArgs, dependencies = {}) {
   if (options.help) {
     return null;
   }
-  const registry = await readDevRegistry(options.config, { allowMissing: options.roots.length > 0 });
-  const roots = await normalizedRoots([...registry.roots, ...options.roots]);
-  const environment = options.environment ?? registry.environment;
-  const run = () => runDevSyncOnce({
-    roots,
-    environment,
-    artifactRoot: options.artifactRoot,
-    activationUrl: options.activationUrl,
-    activationId: options.activationId,
-    expectedGeneration: options.expectedGeneration,
-    buildOnly: options.buildOnly,
-    skiffRoot: dependencies.skiffRoot ?? skiffRoot,
-    fetchImpl: dependencies.fetchImpl ?? fetch,
-    compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
-    configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
-  });
-
-  if (!options.watch) {
-    const result = await run();
-    printResult(result, options.json);
-    return result;
+  if (options.watch) {
+    return runDevWatch(options, dependencies);
   }
-
-  let expectedGeneration = options.expectedGeneration;
-  const fingerprint = await rootsFingerprint(roots);
-  let successfulCodeFingerprint = await rootsCodeFingerprint(roots);
-  const initial = await runDevSyncOnce({
-    roots,
-    environment,
+  const registry = await readDevRegistry(options.config, {
+    allowMissing: options.roots.length > 0,
+  });
+  const result = await runDevSyncOnce({
+    roots: [...registry.roots, ...options.roots],
+    environment: options.environment ?? registry.environment,
     artifactRoot: options.artifactRoot,
     activationUrl: options.activationUrl,
     activationId: options.activationId,
-    expectedGeneration,
     buildOnly: options.buildOnly,
     skiffRoot: dependencies.skiffRoot ?? skiffRoot,
     fetchImpl: dependencies.fetchImpl ?? fetch,
     compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
     configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
+    activationWait: dependencies.activationWait ?? delay,
   });
-  let buildState = reusableDevBuildState(initial);
-  expectedGeneration = nextExpectedGeneration(initial, expectedGeneration);
-  printResult(initial, options.json);
+  printResult(result, options.json);
+  return result;
+}
 
-  await watchAuthoringRootChanges({
-    roots,
-    initialFingerprint: fingerprint,
-    initialCodeFingerprint: successfulCodeFingerprint,
-    pollIntervalMs: options.pollIntervalMs,
-    onChange: async ({ codeFingerprint: currentCodeFingerprint }) => {
-      try {
-        const configOnly = currentCodeFingerprint === successfulCodeFingerprint;
-        const result = await runDevSyncOnce({
-          roots,
-          environment,
-          artifactRoot: options.artifactRoot,
-          activationUrl: options.activationUrl,
-          activationId: undefined,
-          expectedGeneration,
-          buildOnly: options.buildOnly,
-          skiffRoot: dependencies.skiffRoot ?? skiffRoot,
-          fetchImpl: dependencies.fetchImpl ?? fetch,
-          compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
-          configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
-          buildState: configOnly ? buildState : undefined,
-        });
-        buildState = reusableDevBuildState(result);
-        successfulCodeFingerprint = currentCodeFingerprint;
-        expectedGeneration = nextExpectedGeneration(result, expectedGeneration);
-        printResult(result, options.json);
-      } catch (error) {
-        console.error(`dev sync rejected: ${formatError(error)}`);
+export async function runDevWatch(options, dependencies = {}) {
+  const wait = dependencies.wait ?? delay;
+  const now = dependencies.now ?? Date.now;
+  const reportError = dependencies.reportError
+    ?? ((error) => console.error(`dev sync rejected: ${formatError(error)}`));
+  const syncRunner = dependencies.syncRunner ?? runDevSyncOnce;
+  const buildStateFromResult =
+    dependencies.buildStateFromResult ?? reusableDevBuildState;
+  const emitResult = dependencies.printResult ?? printResult;
+  let lastKnownRegistry;
+  let lastRegistryError;
+  let successful;
+  let pending;
+  let retryDelayMs = 1000;
+  let retryAt = 0;
+  let first = true;
+  for (;;) {
+    if (!first) {
+      await wait(options.pollIntervalMs);
+    }
+    first = false;
+
+    let registry;
+    try {
+      registry = await readDevRegistry(options.config);
+      lastKnownRegistry = registry;
+      lastRegistryError = undefined;
+    } catch (error) {
+      if (errorCauseCode(error) === 'ENOENT' && lastKnownRegistry === undefined) {
+        registry = emptyDevRegistry();
+        lastKnownRegistry = registry;
+      } else if (lastKnownRegistry !== undefined) {
+        registry = lastKnownRegistry;
+        const signature = formatError(error);
+        if (signature !== lastRegistryError) {
+          reportError(
+            new Error(`${signature}; continuing with the last known-good dev registry`),
+          );
+          lastRegistryError = signature;
+        }
+      } else {
+        throw error;
       }
-    },
-  });
+    }
+
+    let desired;
+    try {
+      desired = await devWatchObservation({
+        registryPath: options.config,
+        registry,
+        explicitRoots: options.roots,
+        environmentOverride: options.environment,
+      });
+    } catch (error) {
+      reportError(error);
+      continue;
+    }
+
+    if (pending?.fingerprint !== desired.fingerprint) {
+      if (successful?.fingerprint === desired.fingerprint) {
+        pending = undefined;
+      } else {
+        pending = desired;
+        retryDelayMs = 1000;
+        retryAt = 0;
+      }
+    }
+    if (pending === undefined || now() < retryAt) {
+      continue;
+    }
+
+    try {
+      const configOnly = successful?.codeFingerprint === pending.codeFingerprint;
+      const result = await syncRunner({
+        roots: pending.roots,
+        environment: pending.environment,
+        artifactRoot: options.artifactRoot,
+        activationUrl: options.activationUrl,
+        activationId: options.activationId,
+        buildOnly: options.buildOnly,
+        skiffRoot: dependencies.skiffRoot ?? skiffRoot,
+        fetchImpl: dependencies.fetchImpl ?? fetch,
+        compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+        configSnapshotRunner:
+          dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
+        activationWait: dependencies.activationWait ?? delay,
+        buildState: configOnly ? successful.buildState : undefined,
+      });
+      successful = {
+        ...pending,
+        buildState: buildStateFromResult(result),
+      };
+      pending = undefined;
+      retryDelayMs = 1000;
+      retryAt = 0;
+      emitResult(result, options.json);
+    } catch (error) {
+      reportError(error);
+      retryAt = now() + retryDelayMs;
+      retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+    }
+  }
+}
+
+async function devWatchObservation({
+  registryPath,
+  registry,
+  explicitRoots,
+  environmentOverride,
+}) {
+  const roots = await normalizedRoots([...registry.roots, ...explicitRoots]);
+  const environment = environmentOverride ?? registry.environment;
+  assertEnvironment(environment);
+  const treeFingerprint = await rootsFingerprint(roots);
+  const codeTreeFingerprint = await rootsCodeFingerprint(roots);
+  return {
+    roots,
+    environment,
+    fingerprint: structuredFingerprint({
+      registryPath,
+      environment,
+      roots,
+      treeFingerprint,
+    }),
+    codeFingerprint: structuredFingerprint({
+      registryPath,
+      environment,
+      roots,
+      treeFingerprint: codeTreeFingerprint,
+    }),
+  };
 }
 
 export async function runDevSyncOnce({
@@ -121,28 +212,15 @@ export async function runDevSyncOnce({
   artifactRoot,
   activationUrl = defaultAssemblyActivationUrl,
   activationId,
-  expectedGeneration,
   buildOnly = false,
   skiffRoot: compilerRoot = skiffRoot,
   fetchImpl = fetch,
   compilerRunner = runCompilerAuthoring,
   configSnapshotRunner = runConfigSnapshotAuthoring,
+  activationWait = delay,
   buildState,
 }) {
   assertEnvironment(environment);
-  if (
-    !buildOnly
-    && (
-      !Number.isSafeInteger(expectedGeneration)
-      || Object.is(expectedGeneration, -0)
-      || expectedGeneration < 0
-      || expectedGeneration > maxExpectedAssemblyGeneration
-    )
-  ) {
-    throw new Error(
-      `dev sync activation expected generation must be between 0 and ${maxExpectedAssemblyGeneration}`,
-    );
-  }
   const classified = await normalizedRoots(roots);
   await mkdir(artifactRoot, { recursive: true });
   const build = buildState ?? await buildDevAssembly({
@@ -190,14 +268,14 @@ export async function runDevSyncOnce({
   if (buildOnly) {
     return result;
   }
-  const activation = await requestAssemblyActivation({
+  const activation = await activateDevAssembly({
     fetchImpl,
     activationUrl,
     activationId,
-    expectedGeneration,
     environment,
     assembly: assemblyReceipt.assembly,
     configSnapshot: configSnapshotReceipt.snapshot,
+    wait: activationWait,
   });
   const activated = {
     ...result,
@@ -257,9 +335,6 @@ async function buildDevAssembly({
         deployment: receipt.serviceDeploymentReceipt?.deployment,
       });
     }
-  }
-  if (serviceDeploymentReceipts.length === 0) {
-    throw new Error('dev sync requires at least one service package root to form RuntimeAssembly roots');
   }
   const rootDeployments = serviceDeploymentReceipts.map((receipt) => receipt?.deployment);
   if (rootDeployments.some((reference) => !isPlainObject(reference))) {
@@ -332,49 +407,16 @@ function isUnpublishedExactDependency(error) {
   return /has no published (?:PackageArtifact|ServiceContract) pointer/.test(formatError(error));
 }
 
-export async function readDevRegistry(path = defaultRegistryPath, { allowMissing = false } = {}) {
-  const registryPath = resolve(path);
-  let value;
-  try {
-    value = JSON.parse(await readFile(registryPath, 'utf8'));
-  } catch (error) {
-    if (allowMissing && error?.code === 'ENOENT') {
-      return { schemaVersion: registrySchemaVersion, environment: 'dev', roots: [] };
-    }
-    throw new Error(`failed to read dev registry ${registryPath}: ${formatError(error)}`);
-  }
-  if (!isPlainObject(value)) {
-    throw new Error(`${registryPath} must contain a JSON object`);
-  }
-  const fields = Object.keys(value).sort();
-  const expected = ['environment', 'roots', 'schemaVersion'];
-  if (JSON.stringify(fields) !== JSON.stringify(expected)) {
-    throw new Error(`${registryPath} fields must be exactly ${expected.join(', ')}`);
-  }
-  if (value.schemaVersion !== registrySchemaVersion) {
-    throw new Error(`${registryPath} schemaVersion must be ${registrySchemaVersion}`);
-  }
-  assertEnvironment(value.environment);
-  if (!Array.isArray(value.roots)) {
-    throw new Error(`${registryPath} roots must be an array`);
-  }
-  return {
-    schemaVersion: registrySchemaVersion,
-    environment: value.environment,
-    roots: await normalizedRoots(value.roots, registryPath),
-  };
+export async function readDevRegistry(path = defaultRegistryPath, options = {}) {
+  return readStoredDevRegistry(path, options);
 }
 
 export async function writeDevRegistry(path, registry) {
-  const registryPath = resolve(path);
-  const roots = await normalizedRoots(registry.roots, registryPath);
-  assertEnvironment(registry.environment);
-  await mkdir(dirname(registryPath), { recursive: true });
-  await writeFile(registryPath, `${JSON.stringify({
-    schemaVersion: registrySchemaVersion,
+  return writeStoredDevRegistry(path, {
+    schemaVersion: devRegistrySchemaVersion,
     environment: registry.environment,
-    roots,
-  }, null, 2)}\n`);
+    roots: registry.roots,
+  });
 }
 
 export async function classifyAuthoringRoot(root) {
@@ -426,7 +468,13 @@ export async function classifyAuthoringRoot(root) {
   if (legacy.length > 0) {
     throw new Error(`${absolute} contains retired independent authoring file(s): ${legacy.join(', ')}`);
   }
-  return { kind: 'package', root: absolute };
+  if (!present.includes('service.yml')) {
+    return { kind: 'package', root: absolute };
+  }
+  const servicePath = join(absolute, 'service.yml');
+  const service = parseSimpleYamlObject(await readFile(servicePath, 'utf8'), servicePath);
+  assertServiceId(service.id, `${servicePath} id`);
+  return { kind: 'service', root: absolute, serviceId: service.id };
 }
 
 export function parseDevSyncArgs(rawArgs) {
@@ -435,7 +483,6 @@ export function parseDevSyncArgs(rawArgs) {
     config: defaultRegistryPath,
     artifactRoot: defaultArtifactRoot,
     activationUrl: defaultAssemblyActivationUrl,
-    expectedGeneration: undefined,
     activationId: undefined,
     environment: undefined,
     pollIntervalMs: 500,
@@ -455,7 +502,6 @@ export function parseDevSyncArgs(rawArgs) {
     ['--activation-url', 'activationUrl'],
     ['--activation-id', 'activationId'],
     ['--environment', 'environment'],
-    ['--expected-generation', 'expectedGeneration'],
     ['--poll-interval-ms', 'pollIntervalMs'],
   ]);
   const seen = new Set();
@@ -498,14 +544,7 @@ export function parseDevSyncArgs(rawArgs) {
   }
   result.config = resolve(result.config);
   result.artifactRoot = resolve(result.artifactRoot);
-  result.expectedGeneration = parseNonNegativeInteger(result.expectedGeneration, '--expected-generation');
-  if (result.expectedGeneration > maxExpectedAssemblyGeneration) {
-    throw new Error(`--expected-generation must not exceed ${maxExpectedAssemblyGeneration}`);
-  }
   result.pollIntervalMs = parsePositiveInteger(result.pollIntervalMs, '--poll-interval-ms');
-  if (!result.buildOnly && result.expectedGeneration === undefined) {
-    throw new Error('--expected-generation is required unless --build-only is used');
-  }
   return result;
 }
 
@@ -517,12 +556,20 @@ async function normalizedRoots(values, label = 'dev registry') {
       throw new Error(`${label} root ${index} must be an object`);
     }
     const fields = Object.keys(value).sort();
-    if (fields.some((field) => field !== 'kind' && field !== 'root') || !fields.includes('root')) {
-      throw new Error(`${label} root ${index} fields must be root and optional kind`);
+    if (
+      fields.some((field) => !['kind', 'root', 'serviceId'].includes(field))
+      || !fields.includes('root')
+    ) {
+      throw new Error(`${label} root ${index} fields must be root and optional kind/serviceId`);
     }
     const detected = await classifyAuthoringRoot(value.root);
     if (value.kind !== undefined && value.kind !== detected.kind) {
       throw new Error(`${value.root} is ${detected.kind}, not declared kind ${value.kind}`);
+    }
+    if (value.serviceId !== undefined && value.serviceId !== detected.serviceId) {
+      throw new Error(
+        `${value.root} declares serviceId ${detected.serviceId}, not stored ${value.serviceId}`,
+      );
     }
     roots.push(detected);
   }
@@ -532,13 +579,22 @@ async function normalizedRoots(values, label = 'dev registry') {
       throw new Error(`dev registry contains duplicate root ${roots[index].root}`);
     }
   }
+  const serviceIds = new Set();
+  for (const entry of roots) {
+    if (entry.serviceId !== undefined && serviceIds.has(entry.serviceId)) {
+      throw new Error(`dev registry contains duplicate serviceId ${entry.serviceId}`);
+    }
+    if (entry.serviceId !== undefined) {
+      serviceIds.add(entry.serviceId);
+    }
+  }
   return roots;
 }
 
 async function rootsFingerprint(roots) {
   const hash = createHash('sha256');
-  for (const { kind, root } of roots) {
-    hash.update(`${kind}\0${root}\0`);
+  for (const { kind, root, serviceId } of roots) {
+    hash.update(`${kind}\0${root}\0${serviceId ?? ''}\0`);
     await hashTree(root, root, hash);
   }
   return hash.digest('hex');
@@ -546,8 +602,8 @@ async function rootsFingerprint(roots) {
 
 async function rootsCodeFingerprint(roots) {
   const hash = createHash('sha256');
-  for (const { kind, root } of roots) {
-    hash.update(`${kind}\0${root}\0`);
+  for (const { kind, root, serviceId } of roots) {
+    hash.update(`${kind}\0${root}\0${serviceId ?? ''}\0`);
     await hashTree(root, root, hash, { skipRootConfig: true });
   }
   return hash.digest('hex');
@@ -569,11 +625,11 @@ export async function watchAuthoringRootChanges({
     if (next === fingerprint) {
       continue;
     }
-    fingerprint = next;
     const nextCodeFingerprint = await rootsCodeFingerprint(roots);
     const kind = nextCodeFingerprint === codeFingerprint ? 'config' : 'code';
+    await onChange({ kind, codeFingerprint: nextCodeFingerprint });
+    fingerprint = next;
     codeFingerprint = nextCodeFingerprint;
-    await onChange({ kind, codeFingerprint });
   }
 }
 
@@ -621,12 +677,6 @@ function rejectDuplicateCoordinate(owners, key, root) {
   owners.set(key, root);
 }
 
-function nextExpectedGeneration(result, fallback) {
-  const response = result?.assemblyActivationReceipt?.response;
-  const candidates = [response?.committed?.generation, response?.generation, response?.candidateGeneration];
-  return candidates.find((value) => Number.isSafeInteger(value) && value >= 0) ?? fallback;
-}
-
 function parseNonNegativeInteger(value, label) {
   if (value === undefined) {
     return undefined;
@@ -649,18 +699,27 @@ function parsePositiveInteger(value, label) {
   return parsed;
 }
 
-function assertEnvironment(value) {
-  if (typeof value !== 'string' || !/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/.test(value)) {
-    throw new Error('environment must use only letters, digits, dot, dash, or underscore');
-  }
-}
-
 function printResult(result, json) {
   if (json) {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
   console.log(JSON.stringify(result));
+}
+
+function structuredFingerprint(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function errorCauseCode(error) {
+  let current = error;
+  while (current !== undefined && current !== null) {
+    if (typeof current === 'object' && typeof current.code === 'string') {
+      return current.code;
+    }
+    current = typeof current === 'object' ? current.cause : undefined;
+  }
+  return undefined;
 }
 
 function isPlainObject(value) {

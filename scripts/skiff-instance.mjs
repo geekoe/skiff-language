@@ -82,8 +82,8 @@ const usage = `usage:
   skiff instance supervise <config>
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
-  skiff instance sync <config> [root] --expected-generation <n> [--environment <name>] [--activation-id <id>] [--build-only] [--json]
-  skiff instance watch <config> [root] --expected-generation <n> [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
+  skiff instance sync <config> [root] [--environment <name>] [--activation-id <id>] [--build-only] [--json]
+  skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 try {
   await main(process.argv.slice(2));
@@ -612,8 +612,6 @@ function managedProcessSpecs(config) {
             config.paths.artifactRoot,
             '--activation-url',
             `${config.urls.routerControl}/__skiff/activate-assembly`,
-            '--expected-generation',
-            '0',
           ],
           cwd: skiffRoot,
           ports: [],

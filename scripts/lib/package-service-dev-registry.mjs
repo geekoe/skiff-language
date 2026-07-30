@@ -16,6 +16,9 @@ export async function runDevRegistryCommand(rawArgs, {
   }
   const parsed = parseArgs(action, rawArgs.slice(1), defaultConfig);
   const registry = await readDevRegistry(parsed.config, { allowMissing: true });
+  if (action !== 'add' && parsed.environment !== undefined) {
+    throw new Error(`dev registry ${action} does not accept --environment`);
+  }
   if (parsed.environment !== undefined) {
     registry.environment = parsed.environment;
   }
@@ -32,8 +35,8 @@ export async function runDevRegistryCommand(rawArgs, {
     return registry;
   }
 
-  const target = resolve(parsed.root);
   if (action === 'add') {
+    const target = resolve(parsed.root);
     const entry = await classifyAuthoringRoot(target);
     registry.roots = registry.roots.filter(({ root }) => root !== target);
     registry.roots.push(entry);
@@ -42,14 +45,41 @@ export async function runDevRegistryCommand(rawArgs, {
     return registry;
   }
 
-  const before = registry.roots.length;
-  registry.roots = registry.roots.filter(({ root }) => root !== target);
-  if (registry.roots.length === before) {
-    throw new Error(`no registered authoring root matched ${target}`);
+  const matches = matchRegistryRemovalTarget(registry.roots, parsed.root);
+  if (matches.length === 0) {
+    throw new Error(
+      `no registered authoring root or service ID matched ${parsed.root}`,
+    );
   }
+  const [removed] = matches;
+  registry.roots = registry.roots.filter(({ root }) => root !== removed.root);
   await writeDevRegistry(parsed.config, registry);
-  stdout(`removed authoring root ${target}`);
+  stdout(
+    `removed ${removed.kind} root ${removed.root}`
+    + (removed.serviceId === undefined ? '' : ` (${removed.serviceId})`),
+  );
   return registry;
+}
+
+export function matchRegistryRemovalTarget(
+  roots,
+  target,
+  {
+    resolveTarget = resolve,
+  } = {},
+) {
+  const resolvedTarget = resolveTarget(target);
+  const matches = roots.filter(
+    ({ root, serviceId }) => root === resolvedTarget || serviceId === target,
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `registry remove target ${target} is ambiguous across ${matches
+        .map(({ root, serviceId }) => `${serviceId ?? '(package)'} at ${root}`)
+        .join(', ')}`,
+    );
+  }
+  return matches;
 }
 
 function parseArgs(action, rawArgs, defaultConfig) {

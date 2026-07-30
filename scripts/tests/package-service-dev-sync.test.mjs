@@ -14,12 +14,19 @@ import {
 } from '../skiff-dev-sync.mjs';
 import { writePackageRoot } from './package-service-fixtures.mjs';
 
-test('dev registry accepts only package roots and preserves strict schema', async () => {
+test('dev registry distinguishes package and service roots and preserves strict schema', async () => {
   const fixture = await rootsFixture('registry');
   const registryPath = join(fixture.temp, 'watch.json');
-  await writeDevRegistry(registryPath, { environment: 'dev', roots: fixture.roots });
+  const classified = await Promise.all(
+    fixture.roots.map(({ root }) => classifyAuthoringRoot(root)),
+  );
+  await writeDevRegistry(registryPath, { environment: 'dev', roots: classified });
   const registry = await readDevRegistry(registryPath);
-  assert.deepEqual(registry.roots.map(({ kind }) => kind), ['package', 'package']);
+  assert.deepEqual(registry.roots.map(({ kind }) => kind), ['package', 'service']);
+  assert.equal(
+    registry.roots.find(({ kind }) => kind === 'service').serviceId,
+    'example.com/health',
+  );
 
   const invalid = JSON.parse(await readFile(registryPath, 'utf8'));
   invalid.services = [];
@@ -70,8 +77,9 @@ test('external service control files require a service role in package roots', a
 
     await writeFile(join(ordinary, 'service.yml'), 'id: example.com/health\n');
     assert.deepEqual(await classifyAuthoringRoot(ordinary), {
-      kind: 'package',
+      kind: 'service',
       root: ordinary,
+      serviceId: 'example.com/health',
     });
   }
 });
@@ -195,7 +203,10 @@ test('dev sync has one package phase and consumes generated service receipts bef
       }]);
       return snapshotReceipt;
     },
-    fetchImpl: async () => {
+    fetchImpl: async (_url, init) => {
+      if (init.method === 'GET') {
+        return activeAssemblyHealth(7, '1', '2');
+      }
       events.push('prepare');
       return jsonResponse({ committed: { generation: 8, assembly: { assemblyIdentity } } });
     },
@@ -257,7 +268,10 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
       return compilerReceipt(input);
     },
     configSnapshotRunner: async () => snapshotReceiptFor('4'),
-    fetchImpl: async (_url, { body }) => {
+    fetchImpl: async (_url, { body, method }) => {
+      if (method === 'GET') {
+        return activeAssemblyHealth(0, '1', '2');
+      }
       const request = JSON.parse(body);
       assert.equal(request.schemaVersion, 'skiff-assembly-activation-request-v2');
       assert.equal(request.configSnapshot.snapshotId, configSnapshotId);
@@ -284,7 +298,10 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
       assert.equal(sources[0].root, serviceRoot);
       return snapshotReceiptFor('6');
     },
-    fetchImpl: async (_url, { body }) => {
+    fetchImpl: async (_url, { body, method }) => {
+      if (method === 'GET') {
+        return activeAssemblyHealth(1, '1', '2');
+      }
       const request = JSON.parse(body);
       assert.deepEqual(request.assembly, { assemblyIdentity });
       assert.deepEqual(request.configSnapshot, { snapshotId: secondSnapshotId });
@@ -352,6 +369,20 @@ function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
+  });
+}
+
+function activeAssemblyHealth(generation, assemblyDigit, snapshotDigit) {
+  return jsonResponse({
+    ok: true,
+    activeAssembly: {
+      environment: 'dev',
+      generation,
+      assemblyIdentity:
+        `skiff-runtime-assembly-v3:sha256:${assemblyDigit.repeat(64)}`,
+      configSnapshotId:
+        `skiff-runtime-config-snapshot-v1:${snapshotDigit.repeat(32)}`,
+    },
   });
 }
 

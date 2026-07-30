@@ -38,11 +38,11 @@ const usage = `usage:
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
-  skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
-  skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
-  skiff dev registry list [--config <path>]
-  skiff dev registry add <root> [--environment <name>] [--config <path>]
-  skiff dev registry remove <root> [--config <path>]
+  skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
+  skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff service dev registry list [--config <path>]
+  skiff service dev registry add <root> [--environment <name>] [--config <path>]
+  skiff service dev registry remove <service-id-or-root> [--config <path>]
   skiff instance init <config> [--force]
   skiff instance paths <config> [--json]
   skiff instance status <config> [--json]
@@ -55,8 +55,8 @@ const usage = `usage:
   skiff instance supervise <config>
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
-  skiff instance sync <config> [root] --expected-generation <n> [--environment <name>] [--activation-id <id>] [--build-only] [--json]
-  skiff instance watch <config> [root] --expected-generation <n> [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff instance sync <config> [root] [--environment <name>] [--activation-id <id>] [--build-only] [--json]
+  skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff package build <root> --artifact-root <dir> [--environment <name>] [--json]
   skiff package publish <root> --artifact-root <dir> [--environment <name>] [--json]
   skiff assembly <build|publish> --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... [--json]
@@ -86,6 +86,9 @@ async function main(args) {
       return;
     case 'dev':
       await devCommand(args);
+      return;
+    case 'service':
+      await serviceCommand(args);
       return;
     case 'instance':
       await run('node', [join(scriptDir, 'skiff-instance.mjs'), ...args], process.cwd());
@@ -133,12 +136,21 @@ async function devCommand(args) {
     case 'watch':
       await run('node', [join(scriptDir, 'skiff-dev-sync.mjs'), '--watch', ...args], process.cwd());
       return;
-    case 'registry':
-      await runDevRegistryCommand(args, { defaultConfig: defaultWatchRegistryPath });
-      return;
     default:
       throw new Error(`unknown dev command ${subcommand || '(missing)'}\n${usage}`);
   }
+}
+
+async function serviceCommand(args) {
+  const subcommand = args.shift();
+  if (subcommand !== 'dev') {
+    throw new Error(`unknown service command ${subcommand || '(missing)'}\n${usage}`);
+  }
+  const action = args.shift();
+  if (action !== 'registry') {
+    throw new Error(`unknown service dev command ${action || '(missing)'}\n${usage}`);
+  }
+  await runDevRegistryCommand(args, { defaultConfig: defaultWatchRegistryPath });
 }
 
 async function projectInit(rawArgs) {

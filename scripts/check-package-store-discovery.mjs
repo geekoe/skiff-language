@@ -64,19 +64,19 @@ async function checkCanonicalDevRegistry() {
   await writeFile(join(contractRoot, 'contract.yml'), '{}\n');
   await writeFile(join(deploymentRoot, 'deployment.yml'), '{}\n');
   await runSkiff([
-    'dev', 'registry', 'add', join(tempRoot, 'consumer'),
+    'service', 'dev', 'registry', 'add', join(tempRoot, 'consumer'),
     '--config', registryPath,
     '--environment', 'checker',
   ]);
   await runSkiffFailure([
-    'dev', 'registry', 'add', contractRoot, '--config', registryPath,
+    'service', 'dev', 'registry', 'add', contractRoot, '--config', registryPath,
   ], 'must contain package.yml');
   await runSkiffFailure([
-    'dev', 'registry', 'add', deploymentRoot, '--config', registryPath,
+    'service', 'dev', 'registry', 'add', deploymentRoot, '--config', registryPath,
   ], 'must contain package.yml');
   const registry = JSON.parse(await readFile(registryPath, 'utf8'));
   const kinds = registry.roots.map(({ kind }) => kind).sort();
-  if (registry.schemaVersion !== 'skiff-package-service-dev-registry-v1'
+  if (registry.schemaVersion !== 'skiff-package-service-dev-registry-v2'
       || registry.environment !== 'checker'
       || JSON.stringify(kinds) !== JSON.stringify(['package'])
       || Object.hasOwn(registry, 'services')) {

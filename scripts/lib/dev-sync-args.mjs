@@ -5,7 +5,6 @@ export const instanceDevSyncOptions = Object.freeze([
   '--artifact-root',
   '--activation-url',
   '--activation-id',
-  '--expected-generation',
   '--environment',
   '--poll-interval-ms',
 ]);
@@ -15,7 +14,6 @@ const forwardOptionOrder = Object.freeze([
   ['artifactRoot', '--artifact-root'],
   ['activationUrl', '--activation-url'],
   ['activationId', '--activation-id'],
-  ['expectedGeneration', '--expected-generation'],
   ['environment', '--environment'],
   ['config', '--config'],
   ['pollIntervalMs', '--poll-interval-ms'],
