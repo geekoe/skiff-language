@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v3';
-const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v1';
+const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v4';
+const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v2';
 const ENVIRONMENT_STATE_SCHEMA_VERSION = 'skiff-environment-activation-state-v1';
 const PACKAGE_POINTER_SCHEMA_VERSION = 'skiff-package-artifact-pointer-v1';
-const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v1';
+const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v2';
 
 const TEST_SERVICE_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
 const TEST_SERVICE_PACKAGE_VERSION = '1.0.0';
@@ -20,6 +20,8 @@ const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v7:sha256:${HA
 const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v2:sha256:${HASH}$`);
 const SERVICE_PROTOCOL_IDENTITY = new RegExp(`^skiff-service-protocol-v5:sha256:${HASH}$`);
 const GATEWAY_IDENTITY = new RegExp(`^skiff-gateway-entry-v2:sha256:${HASH}$`);
+const CONFIG_SNAPSHOT_IDENTITY =
+  /^skiff-runtime-config-snapshot-v1:[a-f0-9]{32}$/;
 const TEST_CASE_GATEWAY_IDENTITY =
   'skiff-gateway-entry-v2:sha256:b97af7d9ff0b9ddbfcb6ea8b19e6173722095c99f1566ccd6b1a6fd2ead3f305';
 const SMOKE_PROBE_GATEWAY_IDENTITY =
@@ -46,6 +48,7 @@ export function readPackageServiceFixtureReceipt(
     receipt.candidate,
     [
       'assembly',
+      'configSnapshot',
       'contracts',
       'deployments',
       'entrypoints',
@@ -55,6 +58,10 @@ export function readPackageServiceFixtureReceipt(
     'fixture candidate',
   );
   runtimeAssemblyRef(candidate.assembly, 'fixture candidate assembly');
+  runtimeConfigSnapshotRef(
+    candidate.configSnapshot,
+    'fixture candidate config snapshot',
+  );
   const testService = packageArtifactRef(candidate.testService, 'fixture test service');
   assert.equal(testService.packageId, packageId);
   assert.equal(testService.packageVersion, packageVersion);
@@ -72,7 +79,7 @@ export function readPackageServiceFixtureReceipt(
     candidate.deployments[0],
     'fixture test-service deployment',
   );
-  assert.equal(contract.serviceId, testCaseServiceId(packageId, 0));
+  assertTestCaseServiceId(contract.serviceId, packageId, 0);
   assert.equal(contract.contractVersion, packageVersion);
   assert.equal(deployment.serviceId, contract.serviceId);
   assert.equal(deployment.contractVersion, contract.contractVersion);
@@ -115,10 +122,14 @@ export function validatePackageServiceBootstrapReceipt(receipt, expectedEnvironm
   assert.equal(receipt.environment, expectedEnvironment);
   const bootstrap = exactObject(
     receipt.bootstrap,
-    ['assembly', 'generation', 'std'],
+    ['assembly', 'configSnapshot', 'generation', 'std'],
     'bootstrap payload',
   );
   runtimeAssemblyRef(bootstrap.assembly, 'bootstrap assembly');
+  runtimeConfigSnapshotRef(
+    bootstrap.configSnapshot,
+    'bootstrap config snapshot',
+  );
   assert.equal(bootstrap.generation, 0, 'bootstrap must install generation 0');
 
   const std = exactObject(bootstrap.std, ['package', 'pointer', 'pointerPath'], 'bootstrap std');
@@ -167,12 +178,24 @@ export function validatePackageServiceBootstrapReceipt(receipt, expectedEnvironm
 
 export function validatePackageServiceActivationReceipt(
   activation,
-  { environment, assemblyIdentity, expectedGeneration = 0 },
+  {
+    environment,
+    assemblyIdentity,
+    configSnapshotId,
+    expectedGeneration = 0,
+  },
 ) {
   exactObject(activation, ['request', 'response'], 'assembly activation receipt');
   const request = exactObject(
     activation.request,
-    ['activationId', 'assembly', 'environment', 'expectedGeneration', 'schemaVersion'],
+    [
+      'activationId',
+      'assembly',
+      'configSnapshot',
+      'environment',
+      'expectedGeneration',
+      'schemaVersion',
+    ],
     'assembly activation request receipt',
   );
   assert.equal(request.schemaVersion, ACTIVATION_REQUEST_SCHEMA_VERSION);
@@ -182,6 +205,13 @@ export function validatePackageServiceActivationReceipt(
   assert.ok(request.activationId.length > 0);
   assert.equal(runtimeAssemblyRef(request.assembly, 'activation request assembly').assemblyIdentity,
     assemblyIdentity);
+  assert.equal(
+    runtimeConfigSnapshotRef(
+      request.configSnapshot,
+      'activation request config snapshot',
+    ).snapshotId,
+    configSnapshotId,
+  );
 
   const response = exactObject(
     activation.response,
@@ -192,7 +222,7 @@ export function validatePackageServiceActivationReceipt(
   assert.ok(Array.isArray(response.replicas), 'activation response replicas must be an array');
   const committed = exactObject(
     response.committed,
-    ['assembly', 'generation'],
+    ['assembly', 'configSnapshot', 'generation'],
     'activation committed tuple',
   );
   const committedGeneration = expectedGeneration + 1;
@@ -201,15 +231,23 @@ export function validatePackageServiceActivationReceipt(
     runtimeAssemblyRef(committed.assembly, 'activation committed assembly').assemblyIdentity,
     assemblyIdentity,
   );
+  assert.equal(
+    runtimeConfigSnapshotRef(
+      committed.configSnapshot,
+      'activation committed config snapshot',
+    ).snapshotId,
+    configSnapshotId,
+  );
   const active = exactObject(
     response.activeAssembly,
-    ['assemblyIdentity', 'environment', 'generation'],
+    ['assemblyIdentity', 'configSnapshotId', 'environment', 'generation'],
     'activation active tuple',
   );
   assert.deepEqual(active, {
     environment,
     generation: committedGeneration,
     assemblyIdentity,
+    configSnapshotId,
   });
   return response;
 }
@@ -218,6 +256,7 @@ export async function waitForPackageServiceAssemblyReady({
   healthUrl,
   environment,
   assemblyIdentity,
+  configSnapshotId,
   generation = 1,
   signal,
   readHealth = readControlHealth,
@@ -240,7 +279,7 @@ export async function waitForPackageServiceAssemblyReady({
       );
       const readiness = packageServiceAssemblyReadiness(
         health,
-        { environment, generation, assemblyIdentity },
+        { environment, generation, assemblyIdentity, configSnapshotId },
       );
       if (readiness.ready) return readiness;
       lastReason = readiness.reason;
@@ -265,7 +304,7 @@ export async function waitForPackageServiceAssemblyReady({
 
 export function packageServiceAssemblyReadiness(
   health,
-  { environment, generation, assemblyIdentity },
+  { environment, generation, assemblyIdentity, configSnapshotId },
 ) {
   if (!isPlainObject(health) || health.ok !== true) {
     return notReady('control health did not return ok:true');
@@ -274,7 +313,8 @@ export function packageServiceAssemblyReadiness(
   if (!isPlainObject(active)
     || active.environment !== environment
     || active.generation !== generation
-    || active.assemblyIdentity !== assemblyIdentity) {
+    || active.assemblyIdentity !== assemblyIdentity
+    || active.configSnapshotId !== configSnapshotId) {
     return notReady('active assembly tuple does not match the committed candidate');
   }
   if (health.pendingActivation !== null) {
@@ -290,6 +330,7 @@ export function packageServiceAssemblyReadiness(
     && candidate.environment === environment
     && candidate.generation === generation
     && candidate.assemblyIdentity === assemblyIdentity
+    && candidate.configSnapshotId === configSnapshotId
     && candidate.state === 'healthy'
     && candidate.connected === true);
   if (replicas.length === 0) {
@@ -371,6 +412,12 @@ function runtimeAssemblyRef(value, label) {
   return value;
 }
 
+function runtimeConfigSnapshotRef(value, label) {
+  exactObject(value, ['snapshotId'], label);
+  assert.match(value.snapshotId ?? '', CONFIG_SNAPSHOT_IDENTITY);
+  return value;
+}
+
 function exactObject(value, keys, label) {
   assert.ok(isPlainObject(value), `${label} must be an object`);
   assert.deepEqual(Object.keys(value).sort(), [...keys].sort(), `${label} must have exact keys`);
@@ -398,9 +445,16 @@ function coordinateSegment(value) {
   return value.replaceAll('.', '~d').replaceAll('/', '~s');
 }
 
-function testCaseServiceId(packageId, caseIndex) {
-  const digest = createHash('sha256').update(packageId).digest('hex').slice(0, 32);
-  return `test.skiff/p-${digest}/case-${caseIndex}`;
+function assertTestCaseServiceId(value, packageId, caseIndex) {
+  const packageDigest =
+    createHash('sha256').update(packageId).digest('hex').slice(0, 16);
+  assert.match(
+    value,
+    new RegExp(
+      `^test\\.skiff/p-${packageDigest}/e-[a-f0-9]{16}/case-${caseIndex}$`,
+    ),
+    'test service identity must isolate one package and one test execution',
+  );
 }
 
 function identityHash(value, pattern) {

@@ -263,6 +263,7 @@ fn canonical_execution_rejects_invalid_runtime_roots_and_ingress_before_network(
         platform_sources: platform_sources(),
         runtime_artifact_root: Some(runtime_artifact_root),
         base_assembly: None,
+        base_config_snapshot: None,
         activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
         ingress_url,
         target_environment: "runner-preflight".to_string(),
@@ -340,7 +341,6 @@ fn write_minimal_test_service(root: &Path) {
         "id: test.skiff/runner-preflight\nkind: test\n",
     )
     .unwrap();
-    fs::write(root.join("config.skiff-test.yml"), "{}\n").unwrap();
     fs::write(
         root.join("main.test.skiff"),
         "test \"preflight\" { assert true }\n",

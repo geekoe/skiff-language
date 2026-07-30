@@ -16,6 +16,12 @@ import {
 
 const productionAssembly =
   `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
+const productionConfigSnapshot =
+  `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
+const productionTuple = {
+  assemblyIdentity: productionAssembly,
+  configSnapshotId: productionConfigSnapshot,
+};
 const ownerFiles = [
   'encrypted-storage-live-contract.mjs',
   'encrypted-storage-live-mongo-probe.mjs',
@@ -121,6 +127,7 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     testFile: '/tmp/encrypted.live.test.skiff',
     artifactRoot: '/tmp/canonical-store',
     baseAssembly: productionAssembly,
+    baseConfigSnapshot: productionConfigSnapshot,
     activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
     ingressUrl: 'http://ingress.test:4100',
     environment: 'dev',
@@ -142,6 +149,8 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     repoRoot,
     '--base-assembly',
     productionAssembly,
+    '--base-config-snapshot',
+    productionConfigSnapshot,
     '--live',
     '--activation-url',
     'http://router.test:4101/__skiff/activate-assembly',
@@ -159,6 +168,7 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     '--artifact-root',
     '--platform-source-root',
     '--base-assembly',
+    '--base-config-snapshot',
     '--activation-url',
     '--ingress-url',
     '--environment',
@@ -206,7 +216,7 @@ test('encrypted-storage build-only command owns all three canonical roots', () =
 test('encrypted-storage production assembly comes only from a complete real receipt', () => {
   assert.deepEqual(
     encryptedStorageProductionAssembly(completeBuildReceipt()),
-    { assemblyIdentity: productionAssembly },
+    productionTuple,
   );
   for (const [label, mutate] of [
     ['runtime assembly receipt is missing', (receipt) => {
@@ -221,6 +231,12 @@ test('encrypted-storage production assembly comes only from a complete real rece
     ['assembly identity is not canonical', (receipt) => {
       receipt.runtimeAssemblyReceipt.assembly.assemblyIdentity =
         `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
+    }],
+    ['config snapshot identity is not canonical', (receipt) => {
+      delete receipt.runtimeConfigSnapshotReceipt;
+    }],
+    ['config snapshot identity is not canonical', (receipt) => {
+      receipt.runtimeConfigSnapshotReceipt.snapshot.snapshotId = 'snapshot-latest';
     }],
     ['required package roots are incomplete', (receipt) => {
       receipt.packageArtifactReceipts.pop();
@@ -241,7 +257,7 @@ test('encrypted-storage production assembly comes only from a complete real rece
 test('successful test activation is followed by production restore in generation order', async () => {
   const activationState = {
     currentGeneration: 8,
-    productionAssembly: { assemblyIdentity: productionAssembly },
+    productionAssembly: productionTuple,
   };
   const events = [];
   const result = await runEncryptedStorageTestLifecycle({
@@ -261,11 +277,12 @@ test('successful test activation is followed by production restore in generation
   assert.deepEqual(events, [
     ['test', {
       baseAssembly: productionAssembly,
+      baseConfigSnapshot: productionConfigSnapshot,
       expectedGeneration: 8,
     }],
     ['cleanup', 'transient'],
     ['restore', {
-      assembly: { assemblyIdentity: productionAssembly },
+      assembly: productionTuple,
       expectedGeneration: 9,
     }],
   ]);
@@ -276,7 +293,7 @@ test('successful test activation is followed by production restore in generation
 test('production restore still runs after post-test observation failure', async () => {
   const activationState = {
     currentGeneration: 2,
-    productionAssembly: { assemblyIdentity: productionAssembly },
+    productionAssembly: productionTuple,
   };
   const restored = [];
   await assert.rejects(
@@ -302,7 +319,7 @@ test('production restore still runs after post-test observation failure', async 
 test('test and restore failures remain aggregated after generation is proven', async () => {
   const activationState = {
     currentGeneration: 12,
-    productionAssembly: { assemblyIdentity: productionAssembly },
+    productionAssembly: productionTuple,
   };
   const error = await runEncryptedStorageTestLifecycle({
     activationState,
@@ -413,6 +430,9 @@ function completeBuildReceipt() {
     runtimeAssemblyReceipt: {
       environment: 'dev',
       assembly: { assemblyIdentity: productionAssembly },
+    },
+    runtimeConfigSnapshotReceipt: {
+      snapshot: { snapshotId: productionConfigSnapshot },
     },
   };
 }

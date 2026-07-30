@@ -120,11 +120,13 @@ export async function runPackageServiceI02Combined({
           expectedGeneration: 0,
           environment,
           assembly: receipt.candidate.assembly,
+          configSnapshot: receipt.candidate.configSnapshot,
           signal,
         });
         const activationResponse = validatePackageServiceActivationReceipt(activation, {
           environment,
           assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
+          configSnapshotId: receipt.candidate.configSnapshot.snapshotId,
           expectedGeneration: 0,
         });
         assert.equal(
@@ -138,6 +140,7 @@ export async function runPackageServiceI02Combined({
           environment,
           generation,
           assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
+          configSnapshotId: receipt.candidate.configSnapshot.snapshotId,
           signal,
           readHealth,
         });
@@ -195,6 +198,7 @@ export async function runPackageServiceI02Combined({
                 expectedGeneration: 1,
                 environment,
                 assembly: receipt.candidate.assembly,
+                configSnapshot: receipt.candidate.configSnapshot,
                 signal,
               });
             } catch (error) {
@@ -215,6 +219,7 @@ export async function runPackageServiceI02Combined({
           environment,
           generation,
           assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
+          configSnapshotId: receipt.candidate.configSnapshot.snapshotId,
           signal,
           readHealth,
         });

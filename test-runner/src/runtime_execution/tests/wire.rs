@@ -142,6 +142,7 @@ fn activation_receipt_and_canonical_pending_decode_strictly() {
     assert_eq!(receipt.environment, ENVIRONMENT);
     assert_eq!(receipt.generation, 2);
     assert_eq!(receipt.assembly.assembly_identity.as_str(), ASSEMBLY_B);
+    assert_eq!(receipt.config_snapshot.snapshot_id.as_str(), SNAPSHOT_B);
 
     let health = decode_health_snapshot(&health_body(
         ENVIRONMENT,
@@ -312,9 +313,13 @@ fn pending_exact_shape_mutations_fail_closed() {
         .as_object_mut()
         .unwrap()
         .remove("candidateGeneration");
+    let mut invalid_snapshot = valid_pending();
+    invalid_snapshot["configSnapshot"]["snapshotId"] =
+        Value::String("not-a-config-snapshot".to_string());
     assert_pending_mutations_fail(vec![
         ("unknown pending field", unknown),
         ("missing pending field", missing),
+        ("invalid config snapshot", invalid_snapshot),
     ]);
 }
 
@@ -359,6 +364,19 @@ fn activation_state_safe_generation_and_identity_mutations_fail_closed() {
         ));
         assert!(result.is_err(), "mutation {name} was accepted");
     }
+
+    let mut invalid_snapshot: Value = serde_json::from_str(&health_body(
+        ENVIRONMENT,
+        2,
+        ASSEMBLY_B,
+        Value::Null,
+        Vec::new(),
+        Vec::new(),
+    ))
+    .unwrap();
+    invalid_snapshot["activeAssembly"]["configSnapshotId"] =
+        Value::String("invalid-config-snapshot".to_string());
+    assert!(decode_health_snapshot(&invalid_snapshot.to_string()).is_err());
 }
 
 #[test]

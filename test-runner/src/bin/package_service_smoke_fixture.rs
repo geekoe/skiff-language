@@ -8,6 +8,9 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationState};
+use skiff_runtime_config_snapshot::{
+    new_runtime_config_snapshot_ref, RuntimeConfigSnapshot, RuntimeConfigSnapshotStore,
+};
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,
     canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
@@ -178,10 +181,11 @@ fn emit_bootstrap(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schemaVersion": "skiff-package-service-bootstrap-v1",
+            "schemaVersion": "skiff-package-service-bootstrap-v2",
             "environment": environment,
             "bootstrap": {
                 "assembly": bootstrap["assembly"],
+                "configSnapshot": bootstrap["configSnapshot"],
                 "generation": bootstrap["generation"],
                 "std": std.to_json(),
             },
@@ -271,11 +275,12 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schemaVersion": "skiff-package-service-smoke-fixture-v3",
+            "schemaVersion": "skiff-package-service-smoke-fixture-v4",
             "environment": args.environment,
             "bootstrap": bootstrap,
             "candidate": {
                 "assembly": assembly,
+                "configSnapshot": fixture.records.config_snapshot.snapshot_ref(),
                 "testService": fixture.test_service,
                 "testServiceRecordPath": test_service_record_path,
                 "contracts": contracts,
@@ -309,12 +314,21 @@ fn initialize_empty_environment(
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut empty)?;
     store.write_runtime_assembly(&empty)?;
     let reference = runtime_assembly_ref(&empty)?;
+    let config_snapshot_ref = new_runtime_config_snapshot_ref();
+    let config_snapshot = RuntimeConfigSnapshot::new(config_snapshot_ref.clone(), Vec::new())?;
+    RuntimeConfigSnapshotStore::create(store.root().join("runtime-config"))?
+        .publish(&config_snapshot)?;
     store.initialize_environment_activation(&EnvironmentActivationState::initial(
         environment,
         0,
         reference.clone(),
+        config_snapshot_ref.clone(),
     ))?;
-    Ok(json!({ "generation": 0, "assembly": reference }))
+    Ok(json!({
+        "generation": 0,
+        "assembly": reference,
+        "configSnapshot": config_snapshot_ref,
+    }))
 }
 
 fn next(args: &mut impl Iterator<Item = String>, option: &str) -> anyhow::Result<String> {

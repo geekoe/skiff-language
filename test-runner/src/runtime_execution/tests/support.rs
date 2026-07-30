@@ -1,4 +1,5 @@
 use serde_json::Value;
+use skiff_artifact_model::RuntimeConfigSnapshotRef;
 
 pub(super) const ENVIRONMENT: &str = "package-tests";
 pub(super) const ASSEMBLY_A: &str = concat!(
@@ -9,7 +10,16 @@ pub(super) const ASSEMBLY_B: &str = concat!(
     "skiff-runtime-assembly-v3:sha256:",
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 );
+pub(super) const SNAPSHOT_A: &str =
+    "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+pub(super) const SNAPSHOT_B: &str =
+    "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 pub(super) const REPLICA: &str = "runtime-two";
+
+pub(super) fn snapshot_ref(snapshot_id: &str) -> RuntimeConfigSnapshotRef {
+    serde_json::from_value(serde_json::json!({ "snapshotId": snapshot_id }))
+        .expect("canonical test config snapshot ref")
+}
 
 pub(super) fn activation_receipt_body() -> String {
     serde_json::json!({
@@ -17,11 +27,13 @@ pub(super) fn activation_receipt_body() -> String {
         "committed": {
             "generation": 2,
             "assembly": { "assemblyIdentity": ASSEMBLY_B },
+            "configSnapshot": { "snapshotId": SNAPSHOT_B },
         },
         "activeAssembly": {
             "environment": ENVIRONMENT,
             "generation": 2,
             "assemblyIdentity": ASSEMBLY_B,
+            "configSnapshotId": SNAPSHOT_B,
         },
         "replicas": [replica(1, ASSEMBLY_A, "draining", true)],
     })
@@ -42,6 +54,7 @@ pub(super) fn health_body(
             "environment": environment,
             "generation": generation,
             "assemblyIdentity": assembly_identity,
+            "configSnapshotId": snapshot_for_assembly(assembly_identity),
             "ingressCount": 1,
         },
         "pendingActivation": pending,
@@ -73,6 +86,9 @@ pub(super) fn pending(
         "expectedGeneration": expected_generation,
         "candidateGeneration": candidate_generation,
         "assembly": { "assemblyIdentity": assembly_identity },
+        "configSnapshot": {
+            "snapshotId": snapshot_for_assembly(assembly_identity),
+        },
         "participantReplicaIds": participants,
     })
 }
@@ -88,6 +104,7 @@ pub(super) fn replica(
         "environment": ENVIRONMENT,
         "generation": generation,
         "assemblyIdentity": assembly_identity,
+        "configSnapshotId": snapshot_for_assembly(assembly_identity),
         "state": state,
         "connected": connected,
         "inFlightCount": 0,
@@ -95,6 +112,14 @@ pub(super) fn replica(
         "connectionReleaseAckCount": 0,
         "registeredAt": "2026-07-22T00:00:00.000Z",
     })
+}
+
+fn snapshot_for_assembly(assembly_identity: &str) -> &'static str {
+    if assembly_identity == ASSEMBLY_A {
+        SNAPSHOT_A
+    } else {
+        SNAPSHOT_B
+    }
 }
 
 pub(super) fn capability(runtime_id: &str, connected: bool) -> Value {

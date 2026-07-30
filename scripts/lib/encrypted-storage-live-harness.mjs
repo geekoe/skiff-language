@@ -176,12 +176,17 @@ export class EncryptedStorageLiveHarness {
     const databasesBefore = new Set(await this.databaseNames());
     const result = await runEncryptedStorageTestLifecycle({
       activationState: this.activationState,
-      runTest: ({ baseAssembly, expectedGeneration }) => runCommand(
+      runTest: ({
+        baseAssembly,
+        baseConfigSnapshot,
+        expectedGeneration,
+      }) => runCommand(
         'cargo',
         encryptedStorageTestRunnerArgs({
           testFile,
           artifactRoot: this.paths.artifactRoot,
           baseAssembly,
+          baseConfigSnapshot,
           activationUrl: this.activationUrl,
           ingressUrl: this.routerHttpUrl,
           environment: TARGET_ENVIRONMENT,
@@ -275,11 +280,13 @@ export class EncryptedStorageLiveHarness {
       activationUrl: this.activationUrl,
       expectedGeneration,
       environment: TARGET_ENVIRONMENT,
-      assembly,
+      assembly: { assemblyIdentity: assembly.assemblyIdentity },
+      configSnapshot: { snapshotId: assembly.configSnapshotId },
     });
     validatePackageServiceActivationReceipt(activation, {
       environment: TARGET_ENVIRONMENT,
       assemblyIdentity: assembly.assemblyIdentity,
+      configSnapshotId: assembly.configSnapshotId,
       expectedGeneration,
     });
   }

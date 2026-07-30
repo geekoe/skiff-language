@@ -173,13 +173,6 @@ fn write_test_service(root: &Path, service_id: &str, api: &str, production: &str
         format!("id: {service_id}\nkind: test\n"),
     )
     .expect("write service.yml");
-    fs::write(
-        root.join("config.skiff-test.yml"),
-        format!(
-            "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:{service_id}\n"
-        ),
-    )
-    .expect("write config.skiff-test.yml");
     fs::write(root.join("main.skiff"), production).expect("write production source");
     fs::write(root.join("main.test.skiff"), tests).expect("write test source");
 }

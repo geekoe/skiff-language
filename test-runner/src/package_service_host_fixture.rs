@@ -1,16 +1,21 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    PackageArtifactRef, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    PackageArtifact, PackageArtifactRef, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
+    ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, project_runtime_assembly, AuthoringObject},
     CompilerPlatformSources,
 };
+use skiff_config_snapshot_tooling::{
+    produce_runtime_config_snapshot, ConfigSnapshotProductionInput, ServiceConfigSource,
+};
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 pub const PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION: &str =
-    "skiff-package-service-host-fixture-v1";
+    "skiff-package-service-host-fixture-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageServiceHostFixtureReceipt {
@@ -23,6 +28,7 @@ pub struct PackageServiceHostFixtureReceipt {
     pub provider_deployment: ServiceDeploymentRef,
     pub consumer_deployment: ServiceDeploymentRef,
     pub base_assembly: RuntimeAssemblyRef,
+    pub base_config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 impl PackageServiceHostFixtureReceipt {
@@ -44,6 +50,7 @@ impl PackageServiceHostFixtureReceipt {
                 "consumer": self.consumer_deployment,
             },
             "baseAssembly": self.base_assembly,
+            "baseConfigSnapshot": self.base_config_snapshot,
         })
     }
 
@@ -99,6 +106,15 @@ pub fn prepare_package_service_host_fixture(
 
     let root_deployments = [provider.deployment.clone(), consumer.deployment.clone()];
     let base_assembly = project_assembly(artifact_root, environment, &root_deployments)?;
+    let base_config_snapshot = project_config_snapshot(
+        artifact_root,
+        environment,
+        &base_assembly,
+        [
+            (provider.deployment.clone(), provider_root),
+            (consumer.deployment.clone(), consumer_root),
+        ],
+    )?;
 
     Ok(PackageServiceHostFixtureReceipt {
         environment: environment.to_string(),
@@ -110,6 +126,7 @@ pub fn prepare_package_service_host_fixture(
         provider_deployment: provider.deployment,
         consumer_deployment: consumer.deployment,
         base_assembly,
+        base_config_snapshot,
     })
 }
 
@@ -148,23 +165,44 @@ fn prepare_service_root(
     configured: bool,
 ) -> anyhow::Result<std::path::PathBuf> {
     copy_fixture_tree(source, target)?;
-    let config_values = if configured {
-        "config:\n  app.token: owned-by-base\n"
-    } else {
-        ""
-    };
-    let principal = if configured {
-        "service:consumer"
-    } else {
-        "service:provider"
-    };
-    fs::write(
-        target.join(format!("config.{environment}.yml")),
-        format!(
-            "{config_values}timeout: 1000\nquota:\n  cpuMillis: 100\n  memoryBytes: 1048576\nprincipal: {principal}\n"
-        ),
-    )?;
+    if configured {
+        fs::write(
+            target.join(format!("config.{environment}.yml")),
+            "\"example.com/consumer\":\n  app:\n    token: owned-by-base\n",
+        )?;
+    }
     Ok(target.to_path_buf())
+}
+
+fn project_config_snapshot(
+    artifact_root: &Path,
+    profile: &str,
+    assembly_ref: &RuntimeAssemblyRef,
+    sources: [(ServiceDeploymentRef, std::path::PathBuf); 2],
+) -> anyhow::Result<RuntimeConfigSnapshotRef> {
+    let store = CanonicalArtifactStore::open(artifact_root)?;
+    let assembly = store.read_runtime_assembly(assembly_ref)?.as_ref().clone();
+    let package_artifacts = assembly
+        .resolved_packages
+        .iter()
+        .map(|reference| {
+            let artifact = store.read_package_artifact(reference)?.as_ref().clone();
+            Ok((reference.clone(), artifact))
+        })
+        .collect::<Result<BTreeMap<PackageArtifactRef, PackageArtifact>, _>>()?;
+    let receipt = produce_runtime_config_snapshot(
+        ConfigSnapshotProductionInput {
+            profile: profile.to_string(),
+            assembly,
+            package_artifacts,
+            sources: sources
+                .into_iter()
+                .map(|(deployment, root)| ServiceConfigSource { deployment, root })
+                .collect(),
+        },
+        artifact_root,
+    )?;
+    Ok(receipt.snapshot)
 }
 
 fn copy_fixture_tree(source: &Path, target: &Path) -> anyhow::Result<()> {

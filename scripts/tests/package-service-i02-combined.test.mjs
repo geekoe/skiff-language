@@ -160,6 +160,9 @@ connect:
     [...source.matchAll(/^function ([A-Za-z0-9_]+)\(/gm)]
       .map((match) => match[1]),
     [
+      'submittedReceiptSource',
+      'nestedSubmittedReceipt',
+      'firstSubmittedReceipt',
       'acceptSubmittedReceipt',
       'submitSpawnReceipt',
       '__skiffHttpProbe',
@@ -432,7 +435,7 @@ function validI02SpawnSubmitFixtureReceipt(environment) {
   fixture.candidate.testServiceRecordPath = fixture.candidate.testServiceRecordPath
     .replace('package-service-websocket-smoke', 'package-service-i02-spawn-submit');
   const serviceId =
-    `test.skiff/p-${createHash('sha256').update(packageId).digest('hex').slice(0, 32)}/case-0`;
+    `test.skiff/p-${createHash('sha256').update(packageId).digest('hex').slice(0, 16)}/e-0123456789abcdef/case-0`;
   fixture.candidate.contracts[0].serviceId = serviceId;
   fixture.candidate.deployments[0].serviceId = serviceId;
   for (const entrypoint of fixture.candidate.entrypoints) {

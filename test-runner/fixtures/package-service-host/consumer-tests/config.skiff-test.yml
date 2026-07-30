@@ -1,7 +1,3 @@
-config:
-  app.token: owned-by-test-service
-timeout: 30000
-quota:
-  cpuMillis: 500
-  memoryBytes: 268435456
-principal: service:test.skiff/package-service-host-consumer-tests
+"example.com/consumer":
+  app:
+    token: owned-by-test-service

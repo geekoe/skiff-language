@@ -20,6 +20,8 @@ import {
 } from '../lib/skiff-source-test-suite.mjs';
 
 const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
+const configSnapshotIdentity =
+  `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
 
 test('checked-in test-service source inventory remains exact', async () => {
   const fixtureRoot = fileURLToPath(
@@ -218,6 +220,7 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     }),
   );
   assert.equal(commands[4].args.includes('--base-assembly'), true);
+  assert.equal(commands[4].args.includes('--base-config-snapshot'), true);
   assert.deepEqual(commands[4].options.env, {
     ...environment,
     SKIFF_TEST_EXPECTED_GENERATION: '2',
@@ -389,6 +392,7 @@ test('package-service host receipt has one strict schema and canonical assembly 
       [(value) => { value.schemaVersion = 'legacy'; }, /schemaVersion/],
       [(value) => { value.environment = 'other'; }, /environment/],
       [(value) => { value.baseAssembly.assemblyIdentity = 'not-canonical'; }, /must be canonical/],
+      [(value) => { value.baseConfigSnapshot.snapshotId = 'not-canonical'; }, /must be canonical/],
       [
         (value) => {
           value.baseAssembly.assemblyIdentity =
@@ -427,7 +431,7 @@ test('package-service host receipt has one strict schema and canonical assembly 
 
 function hostFixtureReceipt() {
   return {
-    schemaVersion: 'skiff-package-service-host-fixture-v1',
+    schemaVersion: 'skiff-package-service-host-fixture-v2',
     environment: 'skiff-test',
     contracts: {
       payments: contractRef('payments'),
@@ -443,6 +447,7 @@ function hostFixtureReceipt() {
       consumer: deploymentRef('consumer'),
     },
     baseAssembly: { assemblyIdentity },
+    baseConfigSnapshot: { snapshotId: configSnapshotIdentity },
   };
 }
 

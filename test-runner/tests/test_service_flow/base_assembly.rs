@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use skiff_artifact_identity::package_artifact_ref;
 use skiff_compiler::authoring::{build_authoring_object, AuthoringObject};
 use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
 use skiff_test_runner::{
     canonical_store::CanonicalBaseAssembly,
     package_service_host_fixture::prepare_package_service_host_fixture,
@@ -41,11 +42,6 @@ fn ordinary_test_service_loads_exact_transitive_store_closure_and_ignores_decoy_
     fs::write(
         service.join("service.yml"),
         "id: test.skiff/transitive-store\nkind: test\n",
-    )
-    .unwrap();
-    fs::write(
-        service.join("config.skiff-test.yml"),
-        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/transitive-store\n",
     )
     .unwrap();
     fs::write(
@@ -136,6 +132,7 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
     let base = CanonicalBaseAssembly::load(
         &artifacts,
         Some(receipt.base_assembly.assembly_identity.as_str()),
+        Some(receipt.base_config_snapshot.snapshot_id.as_str()),
     )
     .expect("load exact base assembly");
     assert_eq!(
@@ -311,6 +308,29 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
             assembly_identity: fixture.records.assembly.assembly_identity.clone(),
         })
         .expect("projected test assembly written to runtime root");
+    let combined_snapshot = RuntimeConfigSnapshotStore::open(runtime.join("runtime-config"))
+        .unwrap()
+        .read(fixture.records.config_snapshot.snapshot_ref())
+        .expect("combined config snapshot written to runtime root");
+    assert_eq!(
+        combined_snapshot.deployments().len(),
+        3,
+        "one test deployment and two exact base deployments share one snapshot"
+    );
+    let base_consumer = combined_snapshot
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment() == &receipt.consumer_deployment)
+        .expect("base consumer config partition");
+    let consumer_config = base_consumer
+        .packages()
+        .iter()
+        .find(|package| package.package_build_id() == &receipt.consumer_package.package_build_id)
+        .expect("base consumer package config");
+    assert_eq!(
+        consumer_config.config()["app"]["token"],
+        serde_json::json!("owned-by-base")
+    );
 }
 
 fn copy_tree(source: &Path, target: &Path) {

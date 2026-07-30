@@ -82,8 +82,6 @@ fn split_external_manifests_require_and_preserve_the_service_role_marker() {
     .unwrap();
     fs::write(split.join("http.yml"), "{}\n").unwrap();
     fs::write(split.join("websocket.yml"), "path: /socket\n").unwrap();
-    fs::write(split.join("config.skiff-test.yml"), "timeout: 30000\n").unwrap();
-
     let profile = read_test_service_profile(&split, PackageCompileWorkflow::Test)
         .unwrap()
         .expect("service.yml kind: test should declare the test service role");

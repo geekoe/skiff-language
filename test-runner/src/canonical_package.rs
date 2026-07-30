@@ -5,8 +5,7 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    ContractRequirement, HttpGatewayDocumentAuthoring, PackageArtifact, PackageLocalAbiIdentity,
-    ServiceAuthoringKind, ServiceConfigProfileAuthoring,
+    ContractRequirement, PackageArtifact, PackageLocalAbiIdentity, ServiceAuthoringKind,
 };
 use skiff_compiler::{
     compile_package, compile_service_package, CompilerPlatformSources, PackageCompileError,
@@ -37,6 +36,7 @@ const TEST_SERVICE_CONFIG_PROFILE: &str = "skiff-test";
 
 #[derive(Debug, Clone)]
 pub struct CanonicalPackageProject {
+    pub source_root: PathBuf,
     pub package: PublishedPackageArtifact,
     pub dependency_packages: Vec<PackageArtifact>,
     pub contract_dependencies: Vec<PackageContractCompileDependency>,
@@ -48,8 +48,6 @@ pub struct CanonicalPackageProject {
 pub struct CanonicalTestServiceProfile {
     pub service_id: String,
     pub profile_name: String,
-    pub authoring: ServiceConfigProfileAuthoring,
-    pub http: Option<HttpGatewayDocumentAuthoring>,
     pub service_root: ServicePackageRoot,
 }
 
@@ -104,8 +102,8 @@ pub enum CanonicalPackageProjectError {
     },
     #[error("package manifest path {path} has no package root")]
     MissingPackageRoot { path: String },
-    #[error("test service {service_id} requires config.{profile}.yml")]
-    MissingTestServiceProfile { service_id: String, profile: String },
+    #[error("test service {service_id} may only be compiled by the skiff test workflow")]
+    TestServiceWorkflowRequired { service_id: String },
 }
 
 /// Compile one package source input through the production canonical pipeline.
@@ -334,6 +332,7 @@ fn compile_package_project_after_platform_context_guard(
     };
     let dependency_packages = read_compiled_dependency_closure(&store, &package.artifact)?;
     Ok(CanonicalPackageProject {
+        source_root: root.to_path_buf(),
         package,
         dependency_packages,
         contract_dependencies,
@@ -362,24 +361,14 @@ fn read_test_service_profile(
         return Ok(None);
     }
     if workflow != PackageCompileWorkflow::Test {
-        return Err(CanonicalPackageProjectError::MissingTestServiceProfile {
+        return Err(CanonicalPackageProjectError::TestServiceWorkflowRequired {
             service_id: service.service.id,
-            profile: TEST_SERVICE_CONFIG_PROFILE.to_string(),
         });
     }
-    let profile = service
-        .config_profiles
-        .get(TEST_SERVICE_CONFIG_PROFILE)
-        .ok_or_else(|| CanonicalPackageProjectError::MissingTestServiceProfile {
-            service_id: service.service.id.clone(),
-            profile: TEST_SERVICE_CONFIG_PROFILE.to_string(),
-        })?;
     let service_id = service.service.id.clone();
     Ok(Some(CanonicalTestServiceProfile {
         service_id,
         profile_name: TEST_SERVICE_CONFIG_PROFILE.to_string(),
-        authoring: profile.authoring.clone(),
-        http: service.http.clone(),
         service_root: service,
     }))
 }

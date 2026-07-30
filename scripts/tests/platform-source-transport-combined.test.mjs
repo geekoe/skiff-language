@@ -120,6 +120,8 @@ test('package and test transports share the platform root while assembly stays f
           root: join(skiffRoot, 'test-runner/fixtures/package-service-host/consumer-tests'),
           artifactRoot,
           baseAssembly: `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`,
+          baseConfigSnapshot:
+            `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`,
         }),
       },
       {
@@ -152,6 +154,8 @@ test('package and test transports share the platform root while assembly stays f
           artifactRoot,
           baseAssembly:
             `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`,
+          baseConfigSnapshot:
+            `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`,
           activationUrl:
             'http://router.test:4101/__skiff/activate-assembly',
           ingressUrl: 'http://router.test:4100',

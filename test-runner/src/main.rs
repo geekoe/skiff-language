@@ -10,7 +10,7 @@ use skiff_test_runner::{
     run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
 fn main() -> ExitCode {
     let stdout = io::stdout();
@@ -54,6 +54,7 @@ struct RawCliArgs {
     artifact_root: Option<PathBuf>,
     platform_source_root: Option<PathBuf>,
     base_assembly: Option<String>,
+    base_config_snapshot: Option<String>,
     activation_url: Option<String>,
     ingress_url: Option<String>,
     environment: Option<String>,
@@ -82,6 +83,11 @@ fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
                 &arg,
             )?,
             "--base-assembly" => set_once(&mut parsed.base_assembly, next(&mut args, &arg)?, &arg)?,
+            "--base-config-snapshot" => set_once(
+                &mut parsed.base_config_snapshot,
+                next(&mut args, &arg)?,
+                &arg,
+            )?,
             "--activation-url" => {
                 let value = next(&mut args, &arg)?;
                 validate_activation_url(&value)?;
@@ -123,6 +129,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         artifact_root,
         platform_source_root,
         base_assembly,
+        base_config_snapshot,
         activation_url,
         ingress_url,
         environment,
@@ -137,6 +144,11 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         platform_source_root.ok_or_else(|| "missing --platform-source-root".to_string())?;
     let platform_sources =
         CompilerPlatformSources::new(&platform_source_root).map_err(|error| error.to_string())?;
+    if base_assembly.is_some() != base_config_snapshot.is_some() {
+        return Err(
+            "--base-assembly and --base-config-snapshot must be provided together".to_string(),
+        );
+    }
     if live
         && (activation_url.is_none()
             || ingress_url.is_none()
@@ -199,6 +211,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
             platform_sources,
             runtime_artifact_root,
             base_assembly,
+            base_config_snapshot,
             activation_url,
             ingress_url,
             target_environment,

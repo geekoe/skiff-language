@@ -9,7 +9,6 @@ use std::{
 use skiff_artifact_identity::{
     assign_package_artifact_identities, package_artifact_ref, PackageArtifactPointerPath,
 };
-use skiff_artifact_model::{BoundaryCallableProjection, PackageRuntimeCapabilityRequirement};
 use skiff_compiler::authoring::{author_official_std_package, publish_package_artifact_records};
 use skiff_deployment::storage::{CanonicalArtifactStore, PackageArtifactPointer};
 
@@ -185,27 +184,19 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
     let different = TestRoot::new("different-pointer");
     let different_store = CanonicalArtifactStore::create(different.path()).unwrap();
     let mut alternative = expected;
+    let first_public_symbol = alternative
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .keys()
+        .next()
+        .cloned()
+        .expect("std exports at least one public symbol");
     alternative
         .artifact
-        .runtime_requirements
-        .runtime_capabilities
-        .push(PackageRuntimeCapabilityRequirement {
-            capability: "canonical-std-seed-test".to_string(),
-            required_version: "1".to_string(),
-        });
-    for projection in alternative.artifact.boundary_projections.values_mut() {
-        if let BoundaryCallableProjection::Available {
-            implementation_requirements,
-            ..
-        } = projection
-        {
-            implementation_requirements
-                .runtime_capabilities
-                .push("canonical-std-seed-test".to_string());
-            implementation_requirements.runtime_capabilities.sort();
-            implementation_requirements.runtime_capabilities.dedup();
-        }
-    }
+        .package_local_abi
+        .public_symbols
+        .remove(&first_public_symbol);
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
     let alternative_receipt =
         publish_package_artifact_records(different_store.root(), &alternative).unwrap();

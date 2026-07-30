@@ -6,11 +6,12 @@ use std::{
 use skiff_artifact_identity::{service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
     AssemblyIdentity, PackageArtifact, PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef,
-    ServiceContract, ServiceDeployment,
+    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceContract, ServiceDeployment,
 };
 use skiff_compiler::{authoring::publish_package_artifact_records, PublishedPackageArtifact};
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_deployment::storage::PackageArtifactAdmissionCache;
+use skiff_runtime_config_snapshot::{RuntimeConfigSnapshot, RuntimeConfigSnapshotStore};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
@@ -18,6 +19,7 @@ use crate::canonical_fixture::CanonicalFixtureError;
 #[derive(Debug, Clone, Default)]
 pub struct CanonicalBaseAssembly {
     pub assembly: Option<RuntimeAssembly>,
+    pub config_snapshot: Option<RuntimeConfigSnapshot>,
     pub packages: Vec<PackageArtifact>,
     pub contracts: Vec<ServiceContract>,
     pub deployments: Vec<ServiceDeployment>,
@@ -27,9 +29,15 @@ impl CanonicalBaseAssembly {
     pub fn load(
         artifact_root: &Path,
         identity: Option<&str>,
+        config_snapshot_id: Option<&str>,
     ) -> Result<Self, CanonicalFixtureError> {
-        let Some(identity) = identity else {
-            return Ok(Self::default());
+        let (Some(identity), Some(config_snapshot_id)) = (identity, config_snapshot_id) else {
+            if identity.is_none() && config_snapshot_id.is_none() {
+                return Ok(Self::default());
+            }
+            return Err(CanonicalFixtureError::InvalidInput(
+                "base assembly and base config snapshot must be provided together".to_string(),
+            ));
         };
         let store = CanonicalArtifactStore::open(artifact_root)?;
         let reference = RuntimeAssemblyRef {
@@ -51,8 +59,36 @@ impl CanonicalBaseAssembly {
             .iter()
             .map(|reference| Ok(store.read_package_artifact(reference)?.as_ref().clone()))
             .collect::<Result<Vec<_>, skiff_deployment::storage::EcosystemStorageError>>()?;
+        let config_snapshot_ref = RuntimeConfigSnapshotRef {
+            snapshot_id: RuntimeConfigSnapshotId::parse(config_snapshot_id).map_err(|error| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "base config snapshot identity is invalid: {error}"
+                ))
+            })?,
+        };
+        let config_snapshot =
+            RuntimeConfigSnapshotStore::open(artifact_root.join("runtime-config"))
+                .and_then(|store| store.read(&config_snapshot_ref))
+                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        let expected = assembly
+            .resolved_deployments
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let actual = config_snapshot
+            .deployments()
+            .iter()
+            .map(|deployment| deployment.deployment().clone())
+            .collect::<BTreeSet<_>>();
+        if expected != actual || actual.len() != config_snapshot.deployments().len() {
+            return Err(CanonicalFixtureError::InvalidInput(
+                "base config snapshot deployments do not exactly match the base assembly"
+                    .to_string(),
+            ));
+        }
         Ok(Self {
             assembly: Some(assembly),
+            config_snapshot: Some(config_snapshot),
             packages,
             contracts,
             deployments,
@@ -67,6 +103,7 @@ pub struct CanonicalTestRecords {
     pub contracts: Vec<ServiceContract>,
     pub deployments: Vec<ServiceDeployment>,
     pub assembly: RuntimeAssembly,
+    pub config_snapshot: RuntimeConfigSnapshot,
     pub base_assembly: Option<RuntimeAssembly>,
 }
 
@@ -142,6 +179,11 @@ impl CanonicalTestRecords {
             written.push(target.write_service_deployment(deployment)?);
         }
         written.push(target.write_runtime_assembly(&self.assembly)?);
+        written.push(
+            RuntimeConfigSnapshotStore::create(runtime_artifact_root.join("runtime-config"))
+                .and_then(|store| store.publish(&self.config_snapshot))
+                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?,
+        );
         Ok(written)
     }
 }

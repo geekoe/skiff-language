@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
 
 const identity = (prefix, character) => `${prefix}:${character.repeat(64)}`;
+const snapshotIdentity = (character) =>
+  `skiff-runtime-config-snapshot-v1:${character.repeat(32)}`;
 
 export const smokeFixtureIdentities = Object.freeze({
   assembly: identity('skiff-runtime-assembly-v3:sha256', 'a'),
   bootstrapAssembly: identity('skiff-runtime-assembly-v3:sha256', '0'),
+  configSnapshot: snapshotIdentity('c'),
+  bootstrapConfigSnapshot: snapshotIdentity('0'),
   testServiceBuild: identity('skiff-package-build-v10:sha256', '1'),
   testServiceAbi: identity('skiff-package-local-abi-v7:sha256', '2'),
   testServiceProtocol: identity('skiff-service-protocol-v5:sha256', '3'),
@@ -36,11 +40,12 @@ export function validSmokeFixtureReceipt(environment) {
     deploymentArtifactIdentity: smokeFixtureIdentities.testServiceDeployment,
   };
   return {
-    schemaVersion: 'skiff-package-service-smoke-fixture-v3',
+    schemaVersion: 'skiff-package-service-smoke-fixture-v4',
     environment,
     bootstrap: null,
     candidate: {
       assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
+      configSnapshot: { snapshotId: smokeFixtureIdentities.configSnapshot },
       testService,
       testServiceRecordPath:
         `records/package-artifacts/test~dskiff~spackage-service-websocket-smoke/1.0.0/${hash(testService.packageBuildId)}/package.json`,
@@ -86,10 +91,13 @@ export function validBootstrapReceipt(environment, {
   const recordPath =
     `records/package-artifacts/skiff~drun~sstd/1.0.0/${hash(artifact.packageBuildId)}/package.json`;
   return {
-    schemaVersion: 'skiff-package-service-bootstrap-v1',
+    schemaVersion: 'skiff-package-service-bootstrap-v2',
     environment,
     bootstrap: {
       assembly: { assemblyIdentity: smokeFixtureIdentities.bootstrapAssembly },
+      configSnapshot: {
+        snapshotId: smokeFixtureIdentities.bootstrapConfigSnapshot,
+      },
       generation: 0,
       std: {
         package: {
@@ -114,22 +122,25 @@ export function validBootstrapReceipt(environment, {
 export function validActivationReceipt(environment) {
   return {
     request: {
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment,
       activationId: 'p5-f27c-test',
       expectedGeneration: 0,
       assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
+      configSnapshot: { snapshotId: smokeFixtureIdentities.configSnapshot },
     },
     response: {
       ok: true,
       committed: {
         generation: 1,
         assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
+        configSnapshot: { snapshotId: smokeFixtureIdentities.configSnapshot },
       },
       activeAssembly: {
         environment,
         generation: 1,
         assemblyIdentity: smokeFixtureIdentities.assembly,
+        configSnapshotId: smokeFixtureIdentities.configSnapshot,
       },
       replicas: [],
     },
@@ -144,6 +155,7 @@ export function readyAssemblyHealth(environment, overrides = {}) {
       environment,
       generation: 1,
       assemblyIdentity: smokeFixtureIdentities.assembly,
+      configSnapshotId: smokeFixtureIdentities.configSnapshot,
       ingressCount: 2,
     },
     pendingActivation: null,
@@ -158,6 +170,7 @@ export function readyAssemblyHealth(environment, overrides = {}) {
       environment,
       generation: 1,
       assemblyIdentity: smokeFixtureIdentities.assembly,
+      configSnapshotId: smokeFixtureIdentities.configSnapshot,
       state: 'healthy',
       connected: true,
       inFlightCount: 0,
@@ -179,6 +192,7 @@ function hash(identityValue) {
 }
 
 function testCaseServiceId(packageId, caseIndex) {
-  const digest = createHash('sha256').update(packageId).digest('hex').slice(0, 32);
-  return `test.skiff/p-${digest}/case-${caseIndex}`;
+  const packageDigest =
+    createHash('sha256').update(packageId).digest('hex').slice(0, 16);
+  return `test.skiff/p-${packageDigest}/e-0123456789abcdef/case-${caseIndex}`;
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -59,6 +59,9 @@ test('owned WebSocket source fixtures use private current connect authoring', as
       'test.skiff/package-service-i02-spawn-submit',
       'marker: main.submitSpawnReceipt\n',
       [
+        'submittedReceiptSource',
+        'nestedSubmittedReceipt',
+        'firstSubmittedReceipt',
         'acceptSubmittedReceipt',
         'submitSpawnReceipt',
         '__skiffHttpProbe',
@@ -67,12 +70,11 @@ test('owned WebSocket source fixtures use private current connect authoring', as
     ],
   ]) {
     const root = join('test-runner', 'fixtures', name);
-    const [actualApi, service, http, websocket, config, source] = await Promise.all([
+    const [actualApi, service, http, websocket, source] = await Promise.all([
       readFile(join(root, 'api.yml'), 'utf8'),
       readFile(join(root, 'service.yml'), 'utf8'),
       readFile(join(root, 'http.yml'), 'utf8'),
       readFile(join(root, 'websocket.yml'), 'utf8'),
-      readFile(join(root, 'config.skiff-test.yml'), 'utf8'),
       readFile(join(root, 'main.skiff'), 'utf8'),
     ]);
     assert.equal(actualApi, api, `${name} API`);
@@ -96,10 +98,10 @@ kind: test
 `,
       `${name} HTTP authoring`,
     );
-    assert.doesNotMatch(
-      config,
-      /^\s*maxConcurrency:/m,
-      `${name} must not carry Router-owned concurrency in service config`,
+    await assert.rejects(
+      access(join(root, 'config.skiff-test.yml')),
+      { code: 'ENOENT' },
+      `${name} must not carry an empty legacy test profile`,
     );
     assert.equal(
       websocket,
@@ -128,14 +130,14 @@ connect:
   }
 });
 
-test('v3 receipt accepts exactly the test-service and probe HTTP gateways', () => {
+test('v4 receipt accepts exactly the test-service and probe HTTP gateways', () => {
   const receipt = validSmokeFixtureReceipt(ENVIRONMENT);
   const decoded = readPackageServiceFixtureReceipt(
     JSON.stringify(receipt),
     ENVIRONMENT,
   );
 
-  assert.equal(decoded.schemaVersion, 'skiff-package-service-smoke-fixture-v3');
+  assert.equal(decoded.schemaVersion, 'skiff-package-service-smoke-fixture-v4');
   assert.equal(decoded.candidate.entrypoints.length, 2);
   assert.deepEqual(
     decoded.candidate.entrypoints.map((entrypoint) => ({
@@ -174,6 +176,10 @@ test('retired receipt schemas and entrypoint fields fail closed without dual-rea
   const v2 = validSmokeFixtureReceipt(ENVIRONMENT);
   v2.schemaVersion = 'skiff-package-service-smoke-fixture-v2';
   cases.push(['v2 schema', v2]);
+  const v3 = validSmokeFixtureReceipt(ENVIRONMENT);
+  v3.schemaVersion = 'skiff-package-service-smoke-fixture-v3';
+  delete v3.candidate.configSnapshot;
+  cases.push(['v3 schema', v3]);
 
   const contract = validSmokeFixtureReceipt(ENVIRONMENT);
   contract.candidate.entrypoints[0].contract = {

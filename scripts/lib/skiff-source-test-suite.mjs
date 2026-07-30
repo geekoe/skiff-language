@@ -15,14 +15,18 @@ const defaultSkiffRoot = resolve(scriptDir, '..', '..');
 const hostFixtureRelativeRoot = join('test-runner', 'fixtures', 'package-service-host');
 const hostConsumerRelativeRoot = join(hostFixtureRelativeRoot, 'consumer');
 const hostTestRelativeRoot = join(hostFixtureRelativeRoot, 'consumer-tests');
-const hostReceiptSchemaVersion = 'skiff-package-service-host-fixture-v1';
+const hostReceiptSchemaVersion = 'skiff-package-service-host-fixture-v2';
 
 export function skiffSourceTestRunnerCargoArgs({
   skiffRoot,
   root,
   artifactRoot,
   baseAssembly,
+  baseConfigSnapshot,
 }) {
+  if ((baseAssembly === undefined) !== (baseConfigSnapshot === undefined)) {
+    throw new Error('base assembly and base config snapshot must be provided together');
+  }
   return [
     'run',
     '--quiet',
@@ -37,6 +41,9 @@ export function skiffSourceTestRunnerCargoArgs({
     '--platform-source-root',
     resolve(skiffRoot),
     ...(baseAssembly === undefined ? [] : ['--base-assembly', baseAssembly]),
+    ...(baseConfigSnapshot === undefined
+      ? []
+      : ['--base-config-snapshot', baseConfigSnapshot]),
     '--deny-skips',
     '--require-tests',
   ];
@@ -111,6 +118,7 @@ export async function readPackageServiceHostFixtureReceipt(path, expectedEnviron
   const receipt = JSON.parse(await readFile(path, 'utf8'));
   exactKeys(receipt, [
     'baseAssembly',
+    'baseConfigSnapshot',
     'contracts',
     'deployments',
     'environment',
@@ -140,6 +148,14 @@ export async function readPackageServiceHostFixtureReceipt(path, expectedEnviron
   );
   if (!/^skiff-runtime-assembly-v3:sha256:[a-f0-9]{64}$/.test(assemblyIdentity)) {
     throw new Error('base assembly assemblyIdentity must be canonical');
+  }
+  exactKeys(receipt.baseConfigSnapshot, ['snapshotId'], 'base config snapshot');
+  if (
+    !/^skiff-runtime-config-snapshot-v1:[a-f0-9]{32}$/.test(
+      receipt.baseConfigSnapshot.snapshotId,
+    )
+  ) {
+    throw new Error('base config snapshot snapshotId must be canonical');
   }
   return receipt;
 }
@@ -231,6 +247,7 @@ export async function runCanonicalSkiffSourceTests({
           root: host.testRoot,
           artifactRoot: stack.sourceArtifactRoot,
           baseAssembly: receipt.baseAssembly.assemblyIdentity,
+          baseConfigSnapshot: receipt.baseConfigSnapshot.snapshotId,
         }),
         {
           cwd: skiffRoot,

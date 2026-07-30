@@ -83,11 +83,14 @@ fn exact_replica_tuple_is_required() {
     wrong_environment["environment"] = Value::String("other-environment".to_string());
     let wrong_generation = replica(1, ASSEMBLY_B, "healthy", true);
     let wrong_assembly = replica(2, ASSEMBLY_A, "healthy", true);
+    let mut wrong_snapshot = replica(2, ASSEMBLY_B, "healthy", true);
+    wrong_snapshot["configSnapshotId"] = Value::String(SNAPSHOT_A.to_string());
 
     for (name, non_matching) in [
         ("environment", wrong_environment),
         ("generation", wrong_generation),
         ("assembly", wrong_assembly),
+        ("config snapshot", wrong_snapshot),
     ] {
         let polled = scripted_poll(
             vec![
@@ -237,10 +240,19 @@ fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
 #[test]
 fn activation_receipt_must_match_the_requested_tuple() {
     let receipt = || wire::decode_activation_receipt(&activation_receipt_body()).unwrap();
-    assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_B).is_ok());
-    assert!(target_from_receipt(receipt(), "other", 2, ASSEMBLY_B).is_err());
-    assert!(target_from_receipt(receipt(), ENVIRONMENT, 3, ASSEMBLY_B).is_err());
-    assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_A).is_err());
+    let snapshot_b = snapshot_ref(SNAPSHOT_B);
+    assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_B, &snapshot_b).is_ok());
+    assert!(target_from_receipt(receipt(), "other", 2, ASSEMBLY_B, &snapshot_b).is_err());
+    assert!(target_from_receipt(receipt(), ENVIRONMENT, 3, ASSEMBLY_B, &snapshot_b).is_err());
+    assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_A, &snapshot_b).is_err());
+    assert!(target_from_receipt(
+        receipt(),
+        ENVIRONMENT,
+        2,
+        ASSEMBLY_B,
+        &snapshot_ref(SNAPSHOT_A),
+    )
+    .is_err());
 }
 
 #[test]
@@ -249,7 +261,8 @@ fn readiness_target_preserves_dev_target_environment() {
     receipt["activeAssembly"]["environment"] = Value::String("dev".to_string());
     let receipt = wire::decode_activation_receipt(&receipt.to_string()).unwrap();
 
-    let target = target_from_receipt(receipt, "dev", 2, ASSEMBLY_B).unwrap();
+    let target =
+        target_from_receipt(receipt, "dev", 2, ASSEMBLY_B, &snapshot_ref(SNAPSHOT_B)).unwrap();
 
     assert_eq!(target.environment, "dev");
 }
@@ -260,6 +273,7 @@ fn target() -> ReadinessTarget {
         ENVIRONMENT,
         2,
         ASSEMBLY_B,
+        &snapshot_ref(SNAPSHOT_B),
     )
     .unwrap()
 }

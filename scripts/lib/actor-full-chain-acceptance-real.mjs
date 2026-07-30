@@ -30,7 +30,7 @@ export async function runActorFullChainAcceptance({
         { cwd: checkout, env: isolatedEnv, signal },
       );
       const receipt = JSON.parse(outcome.stdout);
-      assert.equal(receipt.schemaVersion, 'skiff-package-service-smoke-fixture-v3');
+      assert.equal(receipt.schemaVersion, 'skiff-package-service-smoke-fixture-v4');
       assert.equal(receipt.candidate.testService.packageId, 'test.skiff/actor-full-chain-acceptance');
       const unary = receipt.candidate.entrypoints.find(
         (entrypoint) => entrypoint.gatewayEntryKey === 'probe',

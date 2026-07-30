@@ -50,18 +50,23 @@ fn activation_request_preserves_dev_target_environment() {
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
     };
 
-    let body = activation_request_body("dev", "activation-dev", 7, &assembly).unwrap();
+    let config_snapshot = test_support::snapshot_ref(test_support::SNAPSHOT_B);
+    let body =
+        activation_request_body("dev", "activation-dev", 7, &assembly, &config_snapshot).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(
         body,
         serde_json::json!({
-            "schemaVersion": "skiff-assembly-activation-request-v1",
+            "schemaVersion": "skiff-assembly-activation-request-v2",
             "environment": "dev",
             "activationId": "activation-dev",
             "expectedGeneration": 7,
             "assembly": {
                 "assemblyIdentity": test_support::ASSEMBLY_B,
+            },
+            "configSnapshot": {
+                "snapshotId": test_support::SNAPSHOT_B,
             },
         })
     );
@@ -577,7 +582,7 @@ fn business_failure_response(code: &str, message: &str) -> String {
     serde_json::json!({
         "ok": true,
         "header": {
-            "schemaVersion": "skiff-runtime-frame-v2",
+            "schemaVersion": "skiff-runtime-frame-v3",
             "type": "response.error",
             "requestId": "package-test-failure",
             "errorKind": "control",
@@ -595,7 +600,7 @@ fn valid_business_success_response() -> String {
     serde_json::json!({
         "ok": true,
         "header": {
-            "schemaVersion": "skiff-runtime-frame-v2",
+            "schemaVersion": "skiff-runtime-frame-v3",
             "type": "response.end",
             "requestId": "package-test-success",
             "payloadPresent": true,

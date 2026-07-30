@@ -7,7 +7,7 @@ use std::{
 };
 
 use skiff_artifact_identity::runtime_assembly_ref;
-use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef};
+use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
@@ -44,7 +44,11 @@ pub fn run_package_cases(
     inline_effects::reject_legacy_manifest(package_root)?;
     read_root_package_manifest(&options.platform_sources, package_root)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let base = CanonicalBaseAssembly::load(source_artifact_root, options.base_assembly.as_deref())?;
+    let base = CanonicalBaseAssembly::load(
+        source_artifact_root,
+        options.base_assembly.as_deref(),
+        options.base_config_snapshot.as_deref(),
+    )?;
     let run_scope = test_service_run_scope()?;
     let ingress_url = options.ingress_url.as_deref().ok_or_else(|| {
         CanonicalFixtureError::InvalidInput(
@@ -84,6 +88,7 @@ fn execute_shared_assembly(
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
     let assembly_ref = runtime_assembly_ref(&records.assembly)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let config_snapshot_ref = records.config_snapshot.snapshot_ref().clone();
     let requested_identity = assembly_ref.assembly_identity.as_str().to_string();
     execute_shared_assembly_with(
         entrypoints,
@@ -99,6 +104,7 @@ fn execute_shared_assembly(
                 &activation_id,
                 expected_generation,
                 &assembly_ref,
+                &config_snapshot_ref,
             )?;
             let activation = http::request_url(
                 activation_url,
@@ -122,6 +128,7 @@ fn execute_shared_assembly(
                 &options.target_environment,
                 candidate_generation,
                 &requested_identity,
+                &config_snapshot_ref,
             )?;
             Ok(ActivatedAssembly {
                 assembly: receipt.assembly,
@@ -213,13 +220,15 @@ fn activation_request_body(
     activation_id: &str,
     expected_generation: u64,
     assembly: &RuntimeAssemblyRef,
+    config_snapshot: &RuntimeConfigSnapshotRef,
 ) -> Result<Vec<u8>, CanonicalFixtureError> {
     serde_json::to_vec(&serde_json::json!({
-        "schemaVersion": "skiff-assembly-activation-request-v1",
+        "schemaVersion": "skiff-assembly-activation-request-v2",
         "environment": target_environment,
         "activationId": activation_id,
         "expectedGeneration": expected_generation,
         "assembly": assembly,
+        "configSnapshot": config_snapshot,
     }))
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
 }

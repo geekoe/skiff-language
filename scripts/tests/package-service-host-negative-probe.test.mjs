@@ -13,6 +13,8 @@ import {
 } from '../lib/package-service-host-negative-probe.mjs';
 
 const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
+const configSnapshotId =
+  `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
 
 test('command-double runs only one copied-consumer negative Host probe', async () => {
   const root = await makeCheckout();
@@ -32,7 +34,10 @@ test('command-double runs only one copied-consumer negative Host probe', async (
       readHostReceipt: async (path, environment) => {
         assert.match(path, /package-service-host-receipt\.json$/);
         assert.equal(environment, 'skiff-test');
-        return { baseAssembly: { assemblyIdentity } };
+        return {
+          baseAssembly: { assemblyIdentity },
+          baseConfigSnapshot: { snapshotId: configSnapshotId },
+        };
       },
       runCommand: async (command, args, options) => {
         commands.push({ command, args, options });
@@ -93,6 +98,7 @@ test('command-double runs only one copied-consumer negative Host probe', async (
     assert.equal(commands.length, 2);
     assert.equal(commands[0].args.includes('--prepare-host-base'), true);
     assert.equal(commands[1].args.includes('--base-assembly'), true);
+    assert.equal(commands[1].args.includes('--base-config-snapshot'), true);
     assert.equal(commands[1].args.includes('--deny-skips'), true);
     assert.equal(commands[1].args.includes('--require-tests'), true);
     assert.equal(commands[1].args.includes('--live'), false);
@@ -128,7 +134,10 @@ test('command-double rejects retry, synthesized response, or a missing Runtime d
           skiffRoot: root,
           graceWindowMs: 25,
           runtimeOwner: commandDoubleRuntimeOwner,
-          readHostReceipt: async () => ({ baseAssembly: { assemblyIdentity } }),
+          readHostReceipt: async () => ({
+            baseAssembly: { assemblyIdentity },
+            baseConfigSnapshot: { snapshotId: configSnapshotId },
+          }),
           runCommand: async (_command, args) => {
             if (args.includes('--prepare-host-base')) return commandOutcome(0);
             state.requests.push(failedRequest());

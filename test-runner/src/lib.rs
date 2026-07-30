@@ -7,10 +7,10 @@
 //! case does not own a separate assembly or generation.
 //!
 //! Each case still receives its own synthetic `ServiceDeployment`, `ServiceContract`, gateway
-//! entry, ingress binding, state namespace, heap, effect registry and execution nonce. Sharing
-//! an assembly does not share a deployment or mutable state. Every root dispatch receives a
-//! new opaque `testCaseCapability`; direct and recursive spawn requests inherit that exact
-//! capability instead of creating or borrowing one from another root.
+//! entry, ingress binding, generated service identity, config snapshot partition, heap, effect
+//! registry and execution nonce. Sharing an assembly does not share a deployment or mutable state.
+//! Every root dispatch receives a new opaque `testCaseCapability`; direct and recursive spawn
+//! requests inherit that exact capability instead of creating or borrowing one from another root.
 
 use std::{
     fs,
@@ -57,6 +57,7 @@ pub struct SkiffTestOptions {
     /// Harness-owned writable canonical root. It has no public CLI spelling.
     pub runtime_artifact_root: Option<PathBuf>,
     pub base_assembly: Option<String>,
+    pub base_config_snapshot: Option<String>,
     pub activation_url: Option<String>,
     pub ingress_url: Option<String>,
     /// Router/Runtime activation target; it never selects a test service config profile.
@@ -167,7 +168,7 @@ pub fn run_skiff_tests_with_options(
     }
     if project.test_service_profile.is_none() {
         return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(
-            "test execution requires service.yml kind: test and config.skiff-test.yml; package test overlays are unsupported"
+            "test execution requires service.yml kind: test; package test overlays are unsupported"
                 .to_string(),
         )
         .into());

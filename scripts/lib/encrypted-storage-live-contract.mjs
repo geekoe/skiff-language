@@ -8,6 +8,8 @@ export const ENCRYPTED_STORAGE_TARGET_ENVIRONMENT = 'dev';
 
 const RUNTIME_ASSEMBLY_IDENTITY =
   /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
+const RUNTIME_CONFIG_SNAPSHOT_IDENTITY =
+  /^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/;
 const REQUIRED_PACKAGE_COORDINATES = new Set([
   'example.com/encrypted-live-default@0.1.0',
   'example.com/encrypted-live-mapped@0.1.0',
@@ -22,6 +24,7 @@ export function encryptedStorageTestRunnerArgs({
   testFile,
   artifactRoot,
   baseAssembly,
+  baseConfigSnapshot,
   activationUrl,
   ingressUrl,
   environment,
@@ -31,6 +34,9 @@ export function encryptedStorageTestRunnerArgs({
   requiredAbsolutePath(artifactRoot, 'encrypted-storage artifact root');
   if (!RUNTIME_ASSEMBLY_IDENTITY.test(baseAssembly ?? '')) {
     throw new Error('encrypted-storage base assembly must be canonical');
+  }
+  if (!RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(baseConfigSnapshot ?? '')) {
+    throw new Error('encrypted-storage base config snapshot must be canonical');
   }
   requiredActivationUrl(activationUrl);
   requiredIngressUrl(ingressUrl);
@@ -56,6 +62,8 @@ export function encryptedStorageTestRunnerArgs({
     repoRoot,
     '--base-assembly',
     baseAssembly,
+    '--base-config-snapshot',
+    baseConfigSnapshot,
     '--live',
     '--activation-url',
     activationUrl,
@@ -120,6 +128,14 @@ export function encryptedStorageProductionAssembly(receipt) {
   ) {
     throw new Error('assembly identity is not canonical');
   }
+  const configSnapshot = receipt?.runtimeConfigSnapshotReceipt?.snapshot;
+  if (
+    !isPlainObject(configSnapshot)
+    || Object.keys(configSnapshot).length !== 1
+    || !RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(configSnapshot.snapshotId ?? '')
+  ) {
+    throw new Error('config snapshot identity is not canonical');
+  }
   const packageCoordinates = exactStringSet(
     receipt.packageArtifactReceipts,
     (entry) => {
@@ -140,7 +156,10 @@ export function encryptedStorageProductionAssembly(receipt) {
   if (!setsEqual(serviceIds, REQUIRED_SERVICE_IDS)) {
     throw new Error('required service roots are incomplete');
   }
-  return Object.freeze({ assemblyIdentity: assembly.assemblyIdentity });
+  return Object.freeze({
+    assemblyIdentity: assembly.assemblyIdentity,
+    configSnapshotId: configSnapshot.snapshotId,
+  });
 }
 
 export function encryptedStorageIngressRequest({
@@ -196,8 +215,14 @@ export async function runEncryptedStorageTestLifecycle({
   }
   const expectedGeneration = activationState.currentGeneration;
   const baseAssembly = activationState.productionAssembly.assemblyIdentity;
+  const baseConfigSnapshot =
+    activationState.productionAssembly.configSnapshotId;
   const [testOutcome, observationOutcome] = await Promise.allSettled([
-    Promise.resolve().then(() => runTest({ baseAssembly, expectedGeneration })),
+    Promise.resolve().then(() => runTest({
+      baseAssembly,
+      baseConfigSnapshot,
+      expectedGeneration,
+    })),
     Promise.resolve().then(() => observeStorage()),
   ]);
   const failures = [];
@@ -353,8 +378,11 @@ function assertActivationState(state) {
   const assembly = state.productionAssembly;
   if (
     !isPlainObject(assembly)
-    || Object.keys(assembly).length !== 1
+    || Object.keys(assembly).length !== 2
     || !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity ?? '')
+    || !RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(
+      assembly.configSnapshotId ?? '',
+    )
   ) {
     throw new Error(
       'encrypted-storage lifecycle requires a canonical production assembly',

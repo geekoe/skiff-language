@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{Map, Value};
-use skiff_artifact_model::RuntimeAssemblyRef;
+use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 use skiff_deployment::storage::{
     CommittedActivation, EnvironmentActivationState, PendingActivation,
     ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
@@ -9,7 +9,7 @@ use skiff_runtime_model::service_error::{OpaqueServiceError, ServiceErrorEnvelop
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
-const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v2";
+const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v3";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TestDispatchOutcome {
@@ -28,6 +28,7 @@ pub(super) struct ActivationReceipt {
     pub(super) environment: String,
     pub(super) generation: u64,
     pub(super) assembly: RuntimeAssemblyRef,
+    pub(super) config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +51,7 @@ pub(super) struct ReplicaSnapshot {
     pub(super) environment: String,
     pub(super) generation: u64,
     pub(super) assembly: RuntimeAssemblyRef,
+    pub(super) config_snapshot: RuntimeConfigSnapshotRef,
     pub(super) state: ReplicaState,
     pub(super) connected: bool,
     pub(super) connection_pin_count: u64,
@@ -386,7 +388,10 @@ fn decode_activation_receipt_inner(body: &str) -> Result<ActivationReceipt, Stri
         "activation receipt activeAssembly",
     )?;
     decode_replicas(field(root, "replicas", "activation receipt")?)?;
-    if committed.generation != active.generation || committed.assembly != active.assembly {
+    if committed.generation != active.generation
+        || committed.assembly != active.assembly
+        || committed.config_snapshot != active.config_snapshot
+    {
         return Err("committed and activeAssembly tuples differ".to_string());
     }
     validate_activation_state(&active, None)?;
@@ -437,6 +442,7 @@ fn validate_activation_state(
         committed: CommittedActivation {
             generation: active.generation,
             assembly: active.assembly.clone(),
+            config_snapshot: active.config_snapshot.clone(),
         },
         pending,
     }
@@ -447,13 +453,23 @@ fn validate_activation_state(
 struct CommittedCoordinate {
     generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 fn decode_committed(value: &Value) -> Result<CommittedCoordinate, String> {
-    let committed = exact_object(value, &["generation", "assembly"], &[], "committed")?;
+    let committed = exact_object(
+        value,
+        &["generation", "assembly", "configSnapshot"],
+        &[],
+        "committed",
+    )?;
     Ok(CommittedCoordinate {
         generation: u64_field(committed, "generation", "committed")?,
         assembly: decode_assembly_ref(field(committed, "assembly", "committed")?, "committed")?,
+        config_snapshot: decode_config_snapshot_ref(
+            field(committed, "configSnapshot", "committed")?,
+            "committed",
+        )?,
     })
 }
 
@@ -467,10 +483,16 @@ fn decode_active(
             "environment",
             "generation",
             "assemblyIdentity",
+            "configSnapshotId",
             "ingressCount",
         ][..]
     } else {
-        &["environment", "generation", "assemblyIdentity"][..]
+        &[
+            "environment",
+            "generation",
+            "assemblyIdentity",
+            "configSnapshotId",
+        ][..]
     };
     let active = exact_object(value, required, &[], context)?;
     if with_ingress_count {
@@ -480,6 +502,10 @@ fn decode_active(
         environment: string_field(active, "environment", context)?.to_string(),
         generation: u64_field(active, "generation", context)?,
         assembly: decode_assembly_identity(field(active, "assemblyIdentity", context)?, context)?,
+        config_snapshot: decode_config_snapshot_identity(
+            field(active, "configSnapshotId", context)?,
+            context,
+        )?,
     })
 }
 
@@ -494,6 +520,7 @@ fn decode_pending(value: &Value) -> Result<Option<PendingActivation>, String> {
             "expectedGeneration",
             "candidateGeneration",
             "assembly",
+            "configSnapshot",
             "participantReplicaIds",
         ],
         &[],
@@ -505,6 +532,10 @@ fn decode_pending(value: &Value) -> Result<Option<PendingActivation>, String> {
         candidate_generation: u64_field(pending, "candidateGeneration", "pendingActivation")?,
         assembly: decode_assembly_ref(
             field(pending, "assembly", "pendingActivation")?,
+            "pendingActivation",
+        )?,
+        config_snapshot: decode_config_snapshot_ref(
+            field(pending, "configSnapshot", "pendingActivation")?,
             "pendingActivation",
         )?,
         participant_replica_ids: string_array_field(
@@ -586,6 +617,7 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
             "environment",
             "generation",
             "assemblyIdentity",
+            "configSnapshotId",
             "state",
             "connected",
             "inFlightCount",
@@ -624,6 +656,10 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
             field(replica, "assemblyIdentity", &context)?,
             &context,
         )?,
+        config_snapshot: decode_config_snapshot_identity(
+            field(replica, "configSnapshotId", &context)?,
+            &context,
+        )?,
         state,
         connected: bool_field(replica, "connected", &context)?,
         connection_pin_count,
@@ -660,6 +696,24 @@ fn decode_assembly_identity(value: &Value, context: &str) -> Result<RuntimeAssem
 fn decode_assembly_ref(value: &Value, context: &str) -> Result<RuntimeAssemblyRef, String> {
     serde_json::from_value(value.clone())
         .map_err(|error| format!("{context}.assembly is invalid: {error}"))
+}
+
+fn decode_config_snapshot_identity(
+    value: &Value,
+    context: &str,
+) -> Result<RuntimeConfigSnapshotRef, String> {
+    let identity = value
+        .as_str()
+        .ok_or_else(|| format!("{context}.configSnapshotId must be a string"))?;
+    decode_config_snapshot_ref(&serde_json::json!({ "snapshotId": identity }), context)
+}
+
+fn decode_config_snapshot_ref(
+    value: &Value,
+    context: &str,
+) -> Result<RuntimeConfigSnapshotRef, String> {
+    serde_json::from_value(value.clone())
+        .map_err(|error| format!("{context}.configSnapshot is invalid: {error}"))
 }
 
 fn decode_json(body: &str, context: &str) -> Result<Value, String> {

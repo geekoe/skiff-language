@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -16,16 +16,20 @@ use skiff_artifact_model::{
     DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision,
     GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
     IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord, RuntimeCapabilityBinding,
-    ServiceContract, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceContract,
+    ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
+    ServiceRequirementKey, ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::id::PublicationId;
+use skiff_config_snapshot_tooling::{
+    load_service_config, project_runtime_config_snapshot_with_base, ConfigSnapshotDeploymentInput,
+    ConfigSnapshotPackageInput, ServiceConfigLayers,
+};
 use skiff_deployment::{
     assembly::resolve_runtime_assembly_with_validated_packages,
     projection::project_service_deployment_with_validated_packages,
 };
+use skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref;
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
@@ -36,10 +40,8 @@ use crate::{
 };
 
 static TEST_SERVICE_EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const TEST_INGRESS_CONFIG_PATH: &str = "skiff.test.ingressUrl";
 mod http_entry;
-mod profile;
-
-use profile::{selected_profile_bindings, SelectedProfileBindings};
 
 #[derive(Debug, Clone)]
 pub struct CanonicalTestServiceEntrypoint {
@@ -86,7 +88,7 @@ pub fn assemble_test_service_fixture(
     cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
-    let scope = format!("fixture:{}", project.package.artifact.package_build_id);
+    let scope = test_service_execution_nonce()?;
     assemble_test_service_fixture_inner(project, cases, base, &scope, None)
 }
 
@@ -123,7 +125,7 @@ fn assemble_test_service_fixture_inner(
     }
     let test_profile = project.test_service_profile.as_ref().ok_or_else(|| {
         CanonicalFixtureError::InvalidInput(
-            "test execution requires service.yml kind: test and config.skiff-test.yml".to_string(),
+            "test execution requires service.yml kind: test".to_string(),
         )
     })?;
     let service_api = project.service_api.as_ref().ok_or_else(|| {
@@ -131,8 +133,13 @@ fn assemble_test_service_fixture_inner(
             "compiled test service omitted its ordinary service API projection".to_string(),
         )
     })?;
-    let execution_nonce = test_service_execution_nonce()?;
-    let service_ids = test_service_case_ids(&project.package.artifact.package_id, cases.len())?;
+    if run_scope.is_empty() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "test-service execution scope must be non-empty".to_string(),
+        ));
+    }
+    let service_ids =
+        test_service_case_ids(&project.package.artifact.package_id, run_scope, cases.len())?;
     let gateway_inputs = cases
         .iter()
         .enumerate()
@@ -148,16 +155,6 @@ fn assemble_test_service_fixture_inner(
     let test_service_ref = validated_deployment_packages[0].reference().clone();
     let package_bindings = canonical_package_bindings(&validated_deployment_packages)?;
     let service_selectors = test_service_selectors(&deployment_packages, &base)?;
-    let state_requirements = test_service_state_requirements(&deployment_packages)?;
-    let profile_bindings = selected_profile_bindings(
-        project,
-        &project.package.artifact,
-        &state_requirements,
-        None,
-        ingress_url,
-    )?;
-    let runtime_capability_bindings =
-        selected_runtime_capability_bindings(project, &deployment_packages, None);
     let mut all_packages = deployment_packages.clone();
     let mut validated_all_packages = validated_deployment_packages.clone();
     extend_unique_validated_packages(
@@ -180,12 +177,9 @@ fn assemble_test_service_fixture_inner(
         let contract = specialize_test_service_contract(&service_api.contract, service_id)?;
         let contract_ref = service_contract_ref(&contract)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        let case_scope = test_service_case_scope(run_scope, &execution_nonce, index, case);
-        let state_bindings = test_service_state_bindings(&state_requirements, &case_scope)?;
         let generated = http_entry::project(
             project,
             &contract,
-            ingress_url,
             validated_implementation,
             validated_dependency_packages,
         )?;
@@ -219,9 +213,6 @@ fn assemble_test_service_fixture_inner(
                 service_selectors.clone(),
                 gateway_entries,
                 deployment_ingress,
-                profile_bindings.clone(),
-                state_bindings,
-                runtime_capability_bindings.clone(),
             ),
             &contract,
             &deployment_packages,
@@ -252,10 +243,16 @@ fn assemble_test_service_fixture_inner(
             },
         ));
     }
-    let roots = case_entries
-        .iter()
-        .map(|(_, entrypoint)| entrypoint.deployment.clone())
-        .collect::<Vec<_>>();
+    let mut roots = base
+        .assembly
+        .as_ref()
+        .map(|assembly| assembly.roots.clone())
+        .unwrap_or_default();
+    roots.extend(
+        case_entries
+            .iter()
+            .map(|(_, entrypoint)| entrypoint.deployment.clone()),
+    );
     let mut all_contracts = base.contracts.clone();
     all_contracts.extend(contracts.iter().cloned());
     let mut all_deployments = base.deployments.clone();
@@ -268,11 +265,37 @@ fn assemble_test_service_fixture_inner(
         &validated_all_packages,
     )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let config_snapshot = test_service_config_snapshot(
+        project,
+        &deployments,
+        &deployment_packages,
+        &base,
+        ingress_url,
+    )?;
+    let assembly_deployments = assembly
+        .resolved_deployments
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let snapshot_deployments = config_snapshot
+        .deployments()
+        .iter()
+        .map(|deployment| deployment.deployment().clone())
+        .collect::<BTreeSet<_>>();
+    if assembly_deployments != snapshot_deployments
+        || snapshot_deployments.len() != config_snapshot.deployments().len()
+    {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "test assembly and config snapshot must contain the same exact deployment set"
+                .to_string(),
+        ));
+    }
     let records = Arc::new(CanonicalTestRecords {
         packages: vec![project.package.clone()],
         contracts,
         deployments,
         assembly,
+        config_snapshot,
         base_assembly: base.assembly.clone(),
     });
     let case_fixtures = case_entries
@@ -288,6 +311,102 @@ fn assemble_test_service_fixture_inner(
         cases: case_fixtures,
         package_identity_admission_count,
     })
+}
+
+fn test_service_config_snapshot(
+    project: &CanonicalPackageProject,
+    deployments: &[ServiceDeployment],
+    packages: &[PackageArtifact],
+    base: &CanonicalBaseAssembly,
+    ingress_url: Option<&str>,
+) -> Result<skiff_runtime_config_snapshot::RuntimeConfigSnapshot, CanonicalFixtureError> {
+    if base.assembly.is_some() != base.config_snapshot.is_some() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "base assembly and base config snapshot must form one exact pair".to_string(),
+        ));
+    }
+    let profile = project
+        .test_service_profile
+        .as_ref()
+        .map(|profile| profile.profile_name.as_str())
+        .ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(
+                "config snapshot projection requires service.yml kind: test".to_string(),
+            )
+        })?;
+    let mut config = load_service_config(&project.source_root, profile)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    if let Some(ingress_url) = ingress_url {
+        inject_runner_ingress_config(
+            &mut config,
+            &project.package.artifact.package_id,
+            ingress_url,
+        )?;
+    }
+    let package_inputs = packages
+        .iter()
+        .map(|package| ConfigSnapshotPackageInput {
+            package_id: package.package_id.clone(),
+            package_build_id: package.package_build_id.clone(),
+            requirements: package.runtime_requirements.config.clone(),
+        })
+        .collect::<Vec<_>>();
+    let inputs = deployments
+        .iter()
+        .map(|deployment| ConfigSnapshotDeploymentInput {
+            deployment: service_deployment_ref(deployment),
+            source_path: project.source_root.clone(),
+            config: config.clone(),
+            packages: package_inputs.clone(),
+        })
+        .collect();
+    let base_deployments = base
+        .config_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.deployments().to_vec())
+        .unwrap_or_default();
+    project_runtime_config_snapshot_with_base(
+        new_runtime_config_snapshot_ref(),
+        base_deployments,
+        inputs,
+    )
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
+}
+
+fn inject_runner_ingress_config(
+    config: &mut ServiceConfigLayers,
+    implementation_package_id: &str,
+    ingress_url: &str,
+) -> Result<(), CanonicalFixtureError> {
+    let package = config
+        .entry(implementation_package_id.to_string())
+        .or_default();
+    let skiff = package
+        .entry("skiff".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let skiff = skiff.as_object_mut().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "test service authored {TEST_INGRESS_CONFIG_PATH} below non-object path skiff"
+        ))
+    })?;
+    let test = skiff
+        .entry("test".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let test = test.as_object_mut().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "test service authored {TEST_INGRESS_CONFIG_PATH} below non-object path skiff.test"
+        ))
+    })?;
+    if test.contains_key("ingressUrl") {
+        return Err(CanonicalFixtureError::InvalidInput(format!(
+            "test service authored reserved config path {TEST_INGRESS_CONFIG_PATH}"
+        )));
+    }
+    test.insert(
+        "ingressUrl".to_string(),
+        serde_json::Value::String(ingress_url.to_string()),
+    );
+    Ok(())
 }
 
 fn contract_package_schema_records(
@@ -471,9 +590,6 @@ fn test_service_deployment_input(
     service_selectors: Vec<ServiceSelectorBinding>,
     gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: Vec<DeploymentIngressBinding>,
-    profile_bindings: SelectedProfileBindings,
-    state_bindings: Vec<StateBinding>,
-    runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
 ) -> ServiceDeploymentInput {
     let revision = implementation
         .package_build_id
@@ -481,12 +597,6 @@ fn test_service_deployment_input(
         .rsplit(':')
         .next()
         .unwrap_or("test-service");
-    let SelectedProfileBindings {
-        config_literals,
-        secret_refs,
-        resource_bindings,
-        policy,
-    } = profile_bindings;
     ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract,
@@ -497,63 +607,11 @@ fn test_service_deployment_input(
         service_selectors,
         gateway_entries,
         ingress,
-        config_literals,
-        secret_refs,
-        state_bindings,
-        resource_bindings,
-        runtime_capability_bindings,
-        policy,
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!("{service_id} case {case_index}"),
-            notes: BTreeMap::from([
-                ("configOwner".to_string(), "test deployment".to_string()),
-                ("stateOwner".to_string(), "test deployment".to_string()),
-                ("resourceOwner".to_string(), "test deployment".to_string()),
-            ]),
+            notes: BTreeMap::new(),
         },
     }
-}
-
-fn test_service_state_requirements(
-    packages: &[PackageArtifact],
-) -> Result<BTreeMap<String, StateBindingKind>, CanonicalFixtureError> {
-    let mut requirements = BTreeMap::<String, StateBindingKind>::new();
-    for package in packages {
-        for requirement in &package.runtime_requirements.state {
-            match requirements.get(&requirement.key) {
-                Some(kind) if kind != &requirement.kind => {
-                    return Err(CanonicalFixtureError::InvalidInput(format!(
-                        "test-service state requirement {} has conflicting kinds {:?} and {:?}",
-                        requirement.key, kind, requirement.kind
-                    )));
-                }
-                Some(_) => {}
-                None => {
-                    requirements.insert(requirement.key.clone(), requirement.kind);
-                }
-            }
-        }
-    }
-    Ok(requirements)
-}
-
-fn test_service_state_bindings(
-    requirements: &BTreeMap<String, StateBindingKind>,
-    run_scope: &str,
-) -> Result<Vec<StateBinding>, CanonicalFixtureError> {
-    if run_scope.is_empty() {
-        return Err(CanonicalFixtureError::InvalidInput(
-            "test-service state run scope must be non-empty".to_string(),
-        ));
-    }
-    Ok(requirements
-        .iter()
-        .map(|(requirement_key, kind)| StateBinding {
-            namespace: test_service_state_namespace(run_scope, requirement_key, *kind),
-            requirement_key: requirement_key.clone(),
-            kind: *kind,
-        })
-        .collect())
 }
 
 fn test_service_execution_nonce() -> Result<String, CanonicalFixtureError> {
@@ -567,64 +625,6 @@ fn test_service_execution_nonce() -> Result<String, CanonicalFixtureError> {
         .as_nanos();
     let sequence = TEST_SERVICE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     Ok(format!("{}-{timestamp}-{sequence}", std::process::id()))
-}
-
-fn test_service_case_scope(
-    run_scope: &str,
-    assembly_nonce: &str,
-    index: usize,
-    case: &TestServiceCase,
-) -> String {
-    format!(
-        "{run_scope}\0execution:{assembly_nonce}\0case:{index}\0{}::{}",
-        case.module_path, case.name
-    )
-}
-
-fn test_service_state_namespace(
-    run_scope: &str,
-    requirement_key: &str,
-    kind: StateBindingKind,
-) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"skiff-test-service-state-v1\0");
-    digest.update(run_scope.as_bytes());
-    digest.update(b"\0");
-    if kind != StateBindingKind::Database {
-        digest.update(requirement_key.as_bytes());
-    }
-    digest.update(b"\0");
-    digest.update(format!("{kind:?}").as_bytes());
-    let hash = format!("{:x}", digest.finalize());
-    format!("skiff_pt_{}", &hash[..40])
-}
-
-fn selected_runtime_capability_bindings(
-    project: &CanonicalPackageProject,
-    packages: &[PackageArtifact],
-    owner: Option<&ServiceDeployment>,
-) -> Vec<RuntimeCapabilityBinding> {
-    if project.test_service_profile.is_none() {
-        return owner
-            .map(|deployment| deployment.runtime_capability_bindings.clone())
-            .unwrap_or_default();
-    }
-    packages
-        .iter()
-        .flat_map(|package| &package.runtime_requirements.runtime_capabilities)
-        .map(|requirement| {
-            (
-                requirement.capability.clone(),
-                requirement.required_version.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .map(|(capability, version)| RuntimeCapabilityBinding {
-            capability,
-            version,
-        })
-        .collect()
 }
 
 fn extend_unique_validated_packages(
@@ -666,6 +666,7 @@ struct TestServiceCaseOrigin<'a> {
 
 fn test_service_case_ids(
     package_id: &str,
+    execution_scope: &str,
     case_count: usize,
 ) -> Result<Vec<String>, CanonicalFixtureError> {
     let origins = (0..case_count)
@@ -674,26 +675,48 @@ fn test_service_case_ids(
             case_index,
         })
         .collect::<Vec<_>>();
-    test_service_case_ids_with_digest(&origins, test_service_package_digest)
+    test_service_case_ids_with_digest(
+        &origins,
+        execution_scope,
+        test_service_package_digest,
+        test_service_execution_digest,
+    )
 }
 
 fn test_service_package_digest(package_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(package_id.as_bytes());
     let hash = format!("{:x}", digest.finalize());
-    hash[..32].to_string()
+    hash[..16].to_string()
+}
+
+fn test_service_execution_digest(execution_scope: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"skiff-test-service-execution-v1\0");
+    digest.update(execution_scope.as_bytes());
+    let hash = format!("{:x}", digest.finalize());
+    hash[..16].to_string()
 }
 
 fn test_service_case_ids_with_digest(
     origins: &[TestServiceCaseOrigin<'_>],
+    execution_scope: &str,
     package_digest: impl Fn(&str) -> String,
+    execution_digest: impl Fn(&str) -> String,
 ) -> Result<Vec<String>, CanonicalFixtureError> {
+    if execution_scope.is_empty() {
+        return Err(CanonicalFixtureError::InvalidInput(
+            "test-service execution scope must be non-empty".to_string(),
+        ));
+    }
+    let execution_digest = execution_digest(execution_scope);
     let service_ids = origins
         .iter()
         .map(|origin| {
             format!(
-                "test.skiff/p-{}/case-{}",
+                "test.skiff/p-{}/e-{}/case-{}",
                 package_digest(origin.package_id),
+                execution_digest,
                 origin.case_index
             )
         })
@@ -716,7 +739,7 @@ mod tests {
 
     use super::{
         test_service_case_ids, test_service_case_ids_with_digest, test_service_execution_nonce,
-        TestServiceCaseOrigin,
+        PublicationId, TestServiceCaseOrigin,
     };
 
     #[test]
@@ -734,13 +757,40 @@ mod tests {
 
     #[test]
     fn case_ids_use_the_canonical_package_digest_coordinate() {
-        let [service_id] = test_service_case_ids("agine.ai/api-tests", 1)
+        let [service_id] = test_service_case_ids("agine.ai/api-tests", "execution-a", 1)
             .unwrap()
             .try_into()
             .unwrap();
         assert_eq!(
             service_id,
-            "test.skiff/p-df02597bee463b7bd9eb5efe9b37360e/case-0"
+            "test.skiff/p-df02597bee463b7b/e-ca2a9581bcfa0549/case-0"
+        );
+        assert!(PublicationId::parse(&service_id).is_ok());
+    }
+
+    #[test]
+    fn repeated_test_invocations_receive_distinct_service_ids() {
+        let first = test_service_case_ids("agine.ai/api-tests", "execution-a", 2).unwrap();
+        let second = test_service_case_ids("agine.ai/api-tests", "execution-b", 2).unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|service_id| service_id.split("/case-").next().unwrap())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            1,
+            "all cases in one invocation share one execution identity"
+        );
+        assert!(first.iter().all(|service_id| !second.contains(service_id)));
+        assert_eq!(
+            first[0]
+                .split("/e-")
+                .next()
+                .expect("package service-id prefix"),
+            second[0]
+                .split("/e-")
+                .next()
+                .expect("package service-id prefix")
         );
     }
 
@@ -757,10 +807,15 @@ mod tests {
             },
         ];
         let digest_input = "test-only-secret-digest-input";
-        let error = test_service_case_ids_with_digest(&origins, |_| {
-            let _captured_without_diagnostic_exposure = digest_input;
-            "00000000000000000000000000000000".to_string()
-        })
+        let error = test_service_case_ids_with_digest(
+            &origins,
+            "execution",
+            |_| {
+                let _captured_without_diagnostic_exposure = digest_input;
+                "0000000000000000".to_string()
+            },
+            |_| "1111111111111111".to_string(),
+        )
         .unwrap_err()
         .to_string();
         assert!(error.contains("first.example/package"));

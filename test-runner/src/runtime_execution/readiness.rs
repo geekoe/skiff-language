@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_artifact_model::RuntimeAssemblyRef;
+use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
@@ -20,6 +20,7 @@ pub(super) struct ReadinessTarget {
     environment: String,
     generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,7 @@ pub(super) fn target_from_receipt(
     environment: &str,
     generation: u64,
     assembly_identity: &str,
+    config_snapshot: &RuntimeConfigSnapshotRef,
 ) -> Result<ReadinessTarget, CanonicalFixtureError> {
     if receipt.environment != environment {
         return Err(readiness_error(format!(
@@ -52,10 +54,17 @@ pub(super) fn target_from_receipt(
             receipt.assembly.assembly_identity
         )));
     }
+    if &receipt.config_snapshot != config_snapshot {
+        return Err(readiness_error(format!(
+            "activation receipt config snapshot mismatch: expected {}, got {}",
+            config_snapshot.snapshot_id, receipt.config_snapshot.snapshot_id
+        )));
+    }
     Ok(ReadinessTarget {
         environment: receipt.environment,
         generation: receipt.generation,
         assembly: receipt.assembly,
+        config_snapshot: receipt.config_snapshot,
     })
 }
 
@@ -148,6 +157,12 @@ fn classify(
             target.generation
         )));
     }
+    if snapshot.active.config_snapshot != target.config_snapshot {
+        return Err(readiness_error(format!(
+            "router health has conflicting config snapshot at generation {}",
+            target.generation
+        )));
+    }
     if snapshot.pending_activation {
         return Ok(ReadinessStatus::Waiting(
             "router health still has a pending activation".to_string(),
@@ -158,6 +173,7 @@ fn classify(
         replica.environment == target.environment
             && replica.generation == target.generation
             && replica.assembly == target.assembly
+            && replica.config_snapshot == target.config_snapshot
     });
     let mut matching_count = 0;
     let mut dispatch_ready_count = 0;

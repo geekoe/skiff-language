@@ -150,11 +150,6 @@ fn multiple_cases_receive_separate_deployments_in_one_shared_assembly() {
     )
     .unwrap();
     fs::write(
-        service.join("config.skiff-test.yml"),
-        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/case-isolation\n",
-    )
-    .unwrap();
-    fs::write(
         service.join("alpha.test.skiff"),
         "test \"first\" { assert true }\ntest \"second\" { assert true }\n",
     )
@@ -246,14 +241,11 @@ fn multiple_cases_receive_separate_deployments_in_one_shared_assembly() {
         fixture.cases[1].entrypoint.deployment
     );
     assert_ne!(fixture.cases[0].contract, fixture.cases[1].contract);
-    assert!(fixture
-        .records
-        .deployments
-        .windows(2)
-        .all(|pair| pair[0].config_literals == pair[1].config_literals
-            && pair[0].secret_refs == pair[1].secret_refs
-            && pair[0].resource_bindings == pair[1].resource_bindings
-            && pair[0].policy == pair[1].policy));
+    assert_eq!(
+        fixture.records.config_snapshot.deployments().len(),
+        fixture.records.deployments.len(),
+        "each exact case deployment owns one config partition in the shared snapshot"
+    );
     fixture
         .publish(&artifacts, &runtime_artifacts)
         .expect("multi-case publish writes the shared canonical records");
@@ -307,8 +299,8 @@ mod base_assembly;
 #[path = "test_service_flow/fixture_compilation.rs"]
 mod fixture_compilation;
 
-#[path = "test_service_flow/profile_state.rs"]
-mod profile_state;
+#[path = "test_service_flow/config_snapshot.rs"]
+mod config_snapshot;
 
 #[path = "test_service_flow/roots.rs"]
 mod roots;

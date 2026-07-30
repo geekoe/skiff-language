@@ -43,6 +43,8 @@ skiff-compiler-core = { path = "../compiler/core" }
 skiff-compiler-input = { path = "../compiler/input" }
 skiff-compiler-source = { path = "../compiler/source" }
 skiff-deployment = { path = "../deployment" }
+skiff-config-snapshot-tooling = { path = "../config-snapshot-tooling" }
+skiff-runtime-config-snapshot = { path = "../runtime-config-snapshot" }
 skiff-artifact-model = { path = "../artifact-model" }
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-syntax = { path = "../syntax" }

@@ -32,7 +32,7 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]
+  skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
@@ -189,6 +189,7 @@ async function test(rawArgs) {
     optionsWithValues: new Set([
       '--artifact-root',
       '--base-assembly',
+      '--base-config-snapshot',
       '--activation-url',
       '--ingress-url',
       '--environment',
@@ -207,6 +208,14 @@ async function test(rawArgs) {
   }
   if (args.options.artifactRoot === undefined) {
     throw new Error('skiff test requires --artifact-root');
+  }
+  if (
+    (args.options.baseAssembly === undefined)
+    !== (args.options.baseConfigSnapshot === undefined)
+  ) {
+    throw new Error(
+      '--base-assembly and --base-config-snapshot must be provided together',
+    );
   }
   const explicitArtifactRoot = resolve(args.options.artifactRoot);
   await requireExistingDirectory(explicitArtifactRoot, 'skiff test --artifact-root');
@@ -252,6 +261,7 @@ async function test(rawArgs) {
   testArgs.push('--platform-source-root', skiffRoot);
   if (args.options.baseAssembly !== undefined) {
     testArgs.push('--base-assembly', args.options.baseAssembly);
+    testArgs.push('--base-config-snapshot', args.options.baseConfigSnapshot);
   }
   if (live) {
     testArgs.push(
