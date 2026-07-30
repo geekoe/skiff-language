@@ -1,5 +1,7 @@
 //! Runtime config view helpers used by direct runtime integrations.
 
+use std::fmt;
+
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 use skiff_artifact_model::{ConfigShape, ConfigShapeEntry};
@@ -15,11 +17,24 @@ use skiff_runtime_model::request_heap::RequestHeap;
 
 use crate::error::{Result as RuntimeResult, RuntimeError};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeConfigView {
     resolved_config: Value,
     _redacted_resolved_config: Option<Value>,
     config_shape: ConfigShape,
+}
+
+impl fmt::Debug for RuntimeConfigView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeConfigView")
+            .field("config_shape", &self.config_shape)
+            .field(
+                "has_redacted_resolved_config",
+                &self._redacted_resolved_config.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl RuntimeConfigView {

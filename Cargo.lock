@@ -2514,6 +2514,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",

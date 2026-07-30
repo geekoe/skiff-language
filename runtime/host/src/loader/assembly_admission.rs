@@ -466,7 +466,7 @@ impl AssemblyAdmissionController {
         );
 
         let prepared = self
-            .build_started_candidate(generation, &identity, assembly, resolver, None)
+            .build_started_candidate(generation, &identity, assembly, resolver, None, None)
             .await?;
         let active = self.publish(generation, identity, prepared)?;
         info!(
@@ -484,6 +484,7 @@ impl AssemblyAdmissionController {
         assembly: Arc<RuntimeAssembly>,
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
+        environment: Option<&str>,
     ) -> anyhow::Result<PreparedAssembly>
     where
         R: RuntimeAssemblyContentResolver + Sync + ?Sized,
@@ -537,6 +538,8 @@ impl AssemblyAdmissionController {
             &self.runtime_replica_id,
             &self.db_provider,
             service_db,
+            environment,
+            resolver,
         ) {
             Ok(contexts) => Arc::new(contexts),
             Err(error) => {

@@ -20,6 +20,7 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
+use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 
 /// Immutable activation owners and canonical target facts published with one assembly generation.
 #[derive(Debug)]
@@ -34,13 +35,18 @@ pub(crate) struct ActiveAssemblyContextSet {
 }
 
 impl ActiveAssemblyContextSet {
-    pub(crate) fn from_candidate(
+    pub(crate) fn from_candidate<R>(
         candidate: &AssemblyLinkedCandidate,
         generation: u64,
         runtime_replica_id: &str,
         db_provider: &DbProviderSource,
         service_db: Option<&AssemblyActivationServiceDb>,
-    ) -> anyhow::Result<Self> {
+        environment: Option<&str>,
+        resolver: &R,
+    ) -> anyhow::Result<Self>
+    where
+        R: RuntimeAssemblyContentResolver + ?Sized,
+    {
         if runtime_replica_id.trim().is_empty() {
             anyhow::bail!("runtime replica id must be non-empty for activation construction");
         }
@@ -65,12 +71,29 @@ impl ActiveAssemblyContextSet {
             let activation_websocket_entry = websocket_entry
                 .as_ref()
                 .map(AdmittedWebSocketEntry::activation_parts);
-            let activation = ActivationContext::from_assembly_templates_with_websocket_entry(
+            let resolved_secrets = if linked.source().secret_refs.is_empty() {
+                Vec::new()
+            } else {
+                let environment = environment.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "activation {:?} requires an environment-scoped secret source",
+                        deployment
+                    )
+                })?;
+                resolver.resolve_activation_secrets(
+                    environment,
+                    deployment,
+                    &linked.source().secret_refs,
+                )?
+            };
+            let activation =
+                ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
                 candidate.assembly().assembly_identity.clone(),
                 generation,
                 runtime_replica_id,
                 linked.source(),
                 binding_template,
+                &resolved_secrets,
                 activation_websocket_entry,
             )
             .with_context(|| {

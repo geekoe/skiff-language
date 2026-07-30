@@ -198,6 +198,7 @@ impl AssemblyAdmissionController {
                 resolver,
                 "exact RuntimeAssembly record resolution failed",
                 service_db,
+                &transition.environment,
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)
@@ -278,6 +279,7 @@ impl AssemblyAdmissionController {
                 resolver,
                 "committed RuntimeAssembly recovery resolution failed",
                 service_db,
+                &transition.environment,
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)

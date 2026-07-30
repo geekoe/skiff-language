@@ -1178,6 +1178,15 @@ Service source的`config.*.yml`选择或提供：
 - 选择DB、Redis、actor、queue等外部state namespace；
 - 定义timeout、quota与principal。
 
+SecretRef在ServiceDeployment和RuntimeAssembly中始终只是opaque binding，secret值不得进入immutable
+artifact、activation state、control frame或日志。filesystem runtime在environment prepare/recovery时，
+从artifact root的
+`configs/services/<service storage id>/config.<environment>.secret.yml`读取当前service的`service`
+subtree，只解析该activation声明的精确binding path，并把值作为transient in-memory config view交给
+ActivationContext；package代码继续共享当前宿主service的config view，不增加package secret namespace。
+secret source缺失、YAML非法、binding path缺失或值为`null`都必须使该activation fail closed，不能跳过、
+猜值或回退到ambient environment。
+
 Service profile没有`lifecycle`配置面；旧`maxConcurrency`和`idleTimeoutMs`均删除，出现`lifecycle`
 必须fail closed。`DeploymentPolicy`不包含`activation`，ServiceDeployment、DeploymentArtifact、
 RuntimeAssembly和artifact identity都不得复制并发或空闲超时。初期唯一并发配置是`router.yml`现有

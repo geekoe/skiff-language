@@ -6,12 +6,12 @@ use std::{
 use anyhow::Context;
 use skiff_artifact_model::{
     package_schema_descriptor_refs, BoundaryCallbackContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeRef,
-    FileIrRef, FileIrUnit, GatewayEntryKey, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceIngressKey,
+    BoundaryStreamContract, ConfigLiteralBinding, ContractOperationId, ContractTypeDescriptor,
+    ContractTypeRef, FileIrRef, FileIrUnit, GatewayEntryKey, PackageArtifact, PackageArtifactRef,
+    PackageBuildId, PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly,
+    RuntimeAssemblyRef, SecretRefBinding, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceIngressKey,
 };
 
 mod content_validation;
@@ -74,6 +74,26 @@ pub trait RuntimeAssemblyContentResolver {
         package: &PackageArtifactRef,
         reference: &PublicationResourceRef,
     ) -> anyhow::Result<Arc<[u8]>>;
+
+    /// Resolve deployment SecretRef bindings from runtime-local state.
+    ///
+    /// Secret values are intentionally absent from immutable deployment and assembly records.
+    /// A production resolver must provide them at activation time without persisting them back
+    /// into the canonical artifact store.
+    fn resolve_activation_secrets(
+        &self,
+        _environment: &str,
+        deployment: &ServiceDeploymentRef,
+        bindings: &[SecretRefBinding],
+    ) -> anyhow::Result<Vec<ConfigLiteralBinding>> {
+        if bindings.is_empty() {
+            return Ok(Vec::new());
+        }
+        anyhow::bail!(
+            "runtime activation secret source is unavailable for service {}",
+            deployment.service_id
+        )
+    }
 }
 
 /// Production resolver boundary for the root immutable assembly record.

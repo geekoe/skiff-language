@@ -5,6 +5,18 @@ use skiff_runtime_boundary::type_descriptor::{RuntimeTypePlan, RuntimeTypePlanDe
 use super::{materialize_internal_json, materialize_json, sanitize_wire_json, RuntimeConfigView};
 
 #[test]
+fn runtime_config_debug_never_exposes_values() {
+    let config = RuntimeConfigView::from_value(json!({
+        "provider": {
+            "apiKey": "test-secret"
+        }
+    }));
+    let debug = format!("{config:?}");
+    assert!(debug.contains("RuntimeConfigView"));
+    assert!(!debug.contains("test-secret"));
+}
+
+#[test]
 fn config_require_decodes_supported_types() {
     let config = RuntimeConfigView::from_resolved_config(
         json!({

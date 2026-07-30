@@ -54,6 +54,7 @@ impl AssemblyAdmissionController {
         resolver: &R,
         resolution_context: &'static str,
         service_db: Option<&AssemblyActivationServiceDb>,
+        environment: &str,
     ) -> Result<PreparedAssembly, (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -82,16 +83,23 @@ impl AssemblyAdmissionController {
                 return Err((AssemblyActivationRejectReason::Resolve, error.into()));
             }
         }
-        self.build_started_candidate(generation, &identity, assembly, resolver, service_db)
-            .await
-            .map_err(|error| {
-                let reason = self
-                    .health()
-                    .ok()
-                    .and_then(|health| health.last_outcome)
-                    .map(|outcome| reject_reason_for_stage(outcome.stage))
-                    .unwrap_or(AssemblyActivationRejectReason::Admission);
-                (reason, error)
-            })
+        self.build_started_candidate(
+            generation,
+            &identity,
+            assembly,
+            resolver,
+            service_db,
+            Some(environment),
+        )
+        .await
+        .map_err(|error| {
+            let reason = self
+                .health()
+                .ok()
+                .and_then(|health| health.last_outcome)
+                .map(|outcome| reject_reason_for_stage(outcome.stage))
+                .unwrap_or(AssemblyActivationRejectReason::Admission);
+            (reason, error)
+        })
     }
 }

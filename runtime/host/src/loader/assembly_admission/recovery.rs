@@ -40,6 +40,7 @@ impl AssemblyAdmissionController {
                 resolver,
                 "committed RuntimeAssembly recovery resolution failed",
                 service_db,
+                environment,
             )
             .await
             .map_err(|(_, error)| error)?;
