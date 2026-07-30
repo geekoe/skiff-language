@@ -74,13 +74,14 @@ test('instance init writes the configured environment and root into router/runti
       routerConfig,
       /^runtime:\n  port: \d+\n  path: \/runtime\n  maxConcurrency: 128$/m,
     );
+    assert.doesNotMatch(routerConfig, /idleTimeoutMs/);
     assert.doesNotMatch(routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(routerConfig, /^artifactRoots?:/m);
     const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
     assert.match(runtimeConfig, /^environment: "f04-host-test"$/m);
     assert.doesNotMatch(runtimeConfig, /^artifactRoots?:/m);
     assert.doesNotMatch(runtimeConfig, /mongoUrl/);
-    assert.doesNotMatch(runtimeConfig, /maxConcurrency/);
+    assert.doesNotMatch(runtimeConfig, /maxConcurrency|idleTimeoutMs/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -106,6 +107,7 @@ test('isolated test instance writes explicit runtime concurrency to router.yml',
       routerConfig,
       /^runtime:\n  port: 46101\n  path: \/runtime\n  maxConcurrency: 128$/m,
     );
+    assert.doesNotMatch(routerConfig, /idleTimeoutMs/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

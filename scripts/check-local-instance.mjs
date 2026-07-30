@@ -76,10 +76,11 @@ try {
     routerConfigText,
     /^runtime:\n  port: 4101\n  path: \/runtime\n  maxConcurrency: 128$/m,
   );
+  assert.doesNotMatch(routerConfigText, /idleTimeoutMs/);
   assert.doesNotMatch(routerConfigText, /bodyLimitBytes/);
   assert.doesNotMatch(
     runtimeConfigText,
-    /maxRequestBytes|maxResponseBytes|maxConcurrency|bodyLimitBytes/,
+    /maxRequestBytes|maxResponseBytes|maxConcurrency|idleTimeoutMs|bodyLimitBytes/,
   );
   assert.doesNotMatch(routerConfigText, /^artifactRoots?:/m);
   assert.doesNotMatch(runtimeConfigText, /^artifactRoots?:/m);

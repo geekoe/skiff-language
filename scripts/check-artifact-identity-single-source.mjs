@@ -634,13 +634,8 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
-    typeName: 'ActivationPolicy',
-    requiredFields: Object.freeze(['idle_timeout_ms']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/deployment.rs',
     typeName: 'DeploymentPolicy',
-    requiredFields: Object.freeze(['timeout_ms', 'resources', 'activation', 'principal']),
+    requiredFields: Object.freeze(['timeout_ms', 'resources', 'principal']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -1609,11 +1604,8 @@ pub struct RuntimeCapabilityBinding { pub capability: String, pub version: Strin
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourcePolicy { pub cpu_millis: u32, pub memory_bytes: u64 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationPolicy { pub idle_timeout_ms: Option<u64> }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentPolicy {
-  pub timeout_ms: Option<u64>, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
-  pub principal: String,
+  pub timeout_ms: Option<u64>, pub resources: ResourcePolicy, pub principal: String,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentDiagnosticText { pub display_name: String, pub notes: Map }
@@ -1706,11 +1698,11 @@ pub struct ActivationTemplate {
       expectedFailures: 0,
     },
     {
-      name: 'rejects Router-owned concurrency in deployment activation policy',
+      name: 'rejects retired activation policy in deployment policy',
       files: canonicalDeploymentAssemblyFiles({
         deployment: canonicalDeploymentText.replace(
-          'pub struct ActivationPolicy { pub idle_timeout_ms:',
-          'pub struct ActivationPolicy { pub max_concurrency: u32, pub idle_timeout_ms:',
+          'pub resources: ResourcePolicy, pub principal:',
+          'pub resources: ResourcePolicy, pub activation: ActivationPolicy, pub principal:',
         ),
       }),
       expectedFailures: 1,
