@@ -50,6 +50,23 @@ runtime:
   maxConcurrency: 256
 ```
 
+For local development, the repository also provides a separate Host ingress
+process in `scripts/local-ingress.mjs`. It is not part of the Router and does
+not change Router routing semantics. It consumes an explicit JSON Host map,
+overwrites any client-supplied selector headers, and forwards HTTP and
+WebSocket traffic to the Router:
+
+```bash
+cp scripts/local-ingress.example.json /path/to/local-ingress.json
+node scripts/local-ingress.mjs --config /path/to/local-ingress.json
+```
+
+The config owns the listen endpoint, Router upstream, and exact
+`Host -> service/version` mappings. Hosts are matched case-insensitively with
+the request port ignored; there is no wildcard, artifact scan, or latest
+version lookup. Unknown Hosts return `421`, and
+`GET /__local_ingress/health` is handled by the ingress itself.
+
 `environment`, `artifactsPath`, and `serviceDb.mongoUrl` are required for
 RuntimeAssembly routing. The Router reads immutable records below
 `artifactsPath`, while activation state and audit are stored transactionally in

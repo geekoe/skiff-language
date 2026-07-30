@@ -1,0 +1,16 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 4003
+  },
+  "upstream": {
+    "host": "127.0.0.1",
+    "port": 4000
+  },
+  "hosts": {
+    "sample.localhost": {
+      "service": "example.com/sample",
+      "version": "0.1.0"
+    }
+  }
+}
