@@ -1,16 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{service_contract_ref, ValidatedPackageArtifact};
 use skiff_artifact_model::{
-    ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentPolicy, DeploymentRevision,
-    HttpGatewayDocumentAuthoring, MetadataValue, PackageArtifact, PackageBinding,
-    PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord, ResourceBinding,
-    ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding, ServiceConfigProfileAuthoring,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceManifestAuthoring, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
-    StateBindingKind, WebSocketGatewayDocumentAuthoring, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    DeploymentDiagnosticText, DeploymentRevision, HttpGatewayDocumentAuthoring, PackageArtifact,
+    PackageBinding, PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
+    ServiceDeploymentOperationInput, ServiceManifestAuthoring, ServiceRequirementKey,
+    ServiceSelectorBinding, WebSocketGatewayDocumentAuthoring,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{
@@ -32,8 +30,6 @@ pub struct GeneratedServiceDeploymentInput<'a> {
     pub service: &'a ServiceManifestAuthoring,
     pub http: Option<&'a HttpGatewayDocumentAuthoring>,
     pub websocket: Option<&'a WebSocketGatewayDocumentAuthoring>,
-    pub profile_name: &'a str,
-    pub profile: &'a ServiceConfigProfileAuthoring,
     pub service_api: &'a ServiceApiProjection,
     pub implementation: &'a PackageArtifact,
     pub package_closure: &'a [PackageArtifact],
@@ -46,11 +42,6 @@ pub enum GeneratedServiceDeploymentError {
     InvalidInput(String),
     #[error("service manifest field {field} is invalid: {message}")]
     InvalidManifest {
-        field: &'static str,
-        message: String,
-    },
-    #[error("config profile field {field} is invalid: {message}")]
-    InvalidProfile {
         field: &'static str,
         message: String,
     },
@@ -128,25 +119,12 @@ pub fn generate_service_deployment_with_validated_packages(
         service_selectors: service_selectors(&input),
         gateway_entries,
         ingress,
-        config_literals: keyed_values("config", &input.profile.config)?
-            .into_iter()
-            .map(|(path, value)| ConfigLiteralBinding {
-                path,
-                value: MetadataValue::from_json(value),
-            })
-            .collect(),
-        secret_refs: keyed_strings("secrets", &input.profile.secrets)?
-            .into_iter()
-            .map(|(path, secret_ref)| SecretRefBinding { path, secret_ref })
-            .collect(),
-        state_bindings: state_bindings(&input.profile.state)?,
-        resource_bindings: resource_bindings(&input.profile.resources)?,
+        resource_bindings: Vec::new(),
         runtime_capability_bindings: runtime_capability_bindings(&input),
-        policy: deployment_policy(input.profile)?,
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!(
-                "{}@{} ({})",
-                input.service.id, input.implementation.package_version, input.profile_name
+                "{}@{}",
+                input.service.id, input.implementation.package_version
             ),
             notes: BTreeMap::new(),
         },
@@ -435,122 +413,6 @@ fn runtime_capability_bindings(
         .collect()
 }
 
-fn keyed_values(
-    field: &'static str,
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, serde_json::Value>, GeneratedServiceDeploymentError> {
-    keyed_typed(field, value)
-}
-
-fn keyed_strings(
-    field: &'static str,
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, String>, GeneratedServiceDeploymentError> {
-    keyed_typed(field, value)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StateAuthoring {
-    kind: StateBindingKind,
-    namespace: String,
-}
-
-fn state_bindings(
-    value: &serde_json::Value,
-) -> Result<Vec<StateBinding>, GeneratedServiceDeploymentError> {
-    let values: BTreeMap<String, StateAuthoring> = keyed_typed("state", value)?;
-    Ok(values
-        .into_iter()
-        .map(|(requirement_key, binding)| StateBinding {
-            requirement_key,
-            kind: binding.kind,
-            namespace: binding.namespace,
-        })
-        .collect())
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ResourceAuthoring {
-    capability: String,
-    resource_ref: String,
-}
-
-fn resource_bindings(
-    value: &serde_json::Value,
-) -> Result<Vec<ResourceBinding>, GeneratedServiceDeploymentError> {
-    let values: BTreeMap<String, ResourceAuthoring> = keyed_typed("resources", value)?;
-    Ok(values
-        .into_iter()
-        .map(|(requirement_key, binding)| ResourceBinding {
-            requirement_key,
-            capability: binding.capability,
-            resource_ref: binding.resource_ref,
-        })
-        .collect())
-}
-
-fn keyed_typed<T: for<'de> Deserialize<'de>>(
-    field: &'static str,
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, T>, GeneratedServiceDeploymentError> {
-    if value.is_null() {
-        return Ok(BTreeMap::new());
-    }
-    serde_json::from_value(value.clone()).map_err(|error| {
-        GeneratedServiceDeploymentError::InvalidProfile {
-            field,
-            message: error.to_string(),
-        }
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct QuotaAuthoring {
-    cpu_millis: u32,
-    memory_bytes: u64,
-}
-
-fn deployment_policy(
-    profile: &ServiceConfigProfileAuthoring,
-) -> Result<DeploymentPolicy, GeneratedServiceDeploymentError> {
-    let timeout_ms: Option<u64> = optional_profile_field("timeout", &profile.timeout)?;
-    let quota: QuotaAuthoring = profile_field("quota", &profile.quota)?;
-    let principal: String = profile_field("principal", &profile.principal)?;
-    Ok(DeploymentPolicy {
-        timeout_ms,
-        resources: ResourcePolicy {
-            cpu_millis: quota.cpu_millis,
-            memory_bytes: quota.memory_bytes,
-        },
-        principal,
-    })
-}
-
-fn profile_field<T: for<'de> Deserialize<'de>>(
-    field: &'static str,
-    value: &serde_json::Value,
-) -> Result<T, GeneratedServiceDeploymentError> {
-    serde_json::from_value(value.clone()).map_err(|error| {
-        GeneratedServiceDeploymentError::InvalidProfile {
-            field,
-            message: error.to_string(),
-        }
-    })
-}
-
-fn optional_profile_field<T: for<'de> Deserialize<'de>>(
-    field: &'static str,
-    value: &serde_json::Value,
-) -> Result<Option<T>, GeneratedServiceDeploymentError> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    profile_field(field, value).map(Some)
-}
-
 fn generated_revision(
     input: &GeneratedServiceDeploymentInput<'_>,
 ) -> Result<DeploymentRevision, GeneratedServiceDeploymentError> {
@@ -558,9 +420,7 @@ fn generated_revision(
     service.service_calls = input.service_api.service_calls.clone();
     let bytes = skiff_canonical_json::canonical_json_bytes(&(
         &service.id,
-        input.profile_name,
         &input.implementation.package_build_id,
-        input.profile,
         &service,
         input.http,
         input.websocket,

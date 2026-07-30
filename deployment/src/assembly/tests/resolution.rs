@@ -389,7 +389,13 @@ fn changing_a_resolved_build_or_activation_template_changes_identity() {
         Vec::new(),
     );
     let mut changed = base.clone();
-    changed.policy.timeout_ms = Some(1234);
+    changed
+        .resource_bindings
+        .push(skiff_artifact_model::ResourceBinding {
+            requirement_key: "identity-only".to_string(),
+            capability: "identity-only".to_string(),
+            resource_ref: "resource://changed".to_string(),
+        });
     assign_service_deployment_identity(&mut changed).unwrap();
     let base_assembly = resolve_runtime_assembly(
         &[deployment_ref(&base)],

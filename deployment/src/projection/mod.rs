@@ -87,7 +87,6 @@ fn project_service_deployment_after_package_validation(
         ingress: input.ingress,
         resource_bindings: input.resource_bindings,
         runtime_capability_bindings: input.runtime_capability_bindings,
-        policy: input.policy,
         diagnostic_text: input.diagnostic_text,
     };
     normalize_deployment(&mut deployment);

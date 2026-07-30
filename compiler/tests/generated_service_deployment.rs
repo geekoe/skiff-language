@@ -3,8 +3,7 @@ mod common;
 use common::{package_project::compile_service_package_project, TestDir};
 use serde_json::json;
 use skiff_artifact_model::{
-    HttpGatewayDocumentAuthoring, ServiceConfigProfileAuthoring, ServiceManifestAuthoring,
-    WebSocketGatewayDocumentAuthoring,
+    HttpGatewayDocumentAuthoring, ServiceManifestAuthoring, WebSocketGatewayDocumentAuthoring,
 };
 use skiff_compiler::{
     generate_service_deployment, generate_service_deployment_with_validated_packages,
@@ -14,16 +13,13 @@ use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::assembly::resolve_runtime_assembly;
 
 #[test]
-fn generates_exact_operations_and_profile_bindings() {
+fn generates_exact_operations_without_runtime_config_values() {
     let (project, service_api) = compile_fixture("generated-positive", "\"ok\"");
     let service = manifest();
-    let profile = profile();
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile,
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
@@ -50,16 +46,12 @@ fn generates_exact_operations_and_profile_bindings() {
     assert!(operation_wire.get("packagePublicPath").is_none());
     assert!(deployment.gateway_entries.is_empty());
     assert!(deployment.ingress.is_empty());
-    assert_eq!(deployment.config_literals[0].path, "registry.token");
-    assert_eq!(deployment.policy.principal, "service:registry");
 
     let explicit_empty_http = HttpGatewayDocumentAuthoring::default();
     let explicit_empty = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
         http: Some(&explicit_empty_http),
         websocket: None,
-        profile_name: "prod",
-        profile: &profile,
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
@@ -79,15 +71,12 @@ fn validated_package_admission_cannot_be_reused_for_different_input() {
     let mut different = project.package.artifact.clone();
     different.package_id = "example.com/different-package".to_string();
     let service = manifest();
-    let profile = profile();
 
     let error = generate_service_deployment_with_validated_packages(
         GeneratedServiceDeploymentInput {
             service: &service,
             http: None,
             websocket: None,
-            profile_name: "prod",
-            profile: &profile,
             service_api: &service_api,
             implementation: &different,
             package_closure: &[],
@@ -140,7 +129,7 @@ packages:
         .join("1.0.0");
     root.write(
         dependency_path.join("package.yml"),
-        "id: example.com/mapping-store\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
+        "id: example.com/mapping-store\nversion: 1.0.0\n",
     );
     root.write(dependency_path.join("api.yml"), "{}\n");
     root.write(
@@ -177,14 +166,6 @@ db object PackageSecret {
         kind: skiff_artifact_model::ServiceAuthoringKind::Service,
         service_calls: vec!["read".to_string()],
     };
-    let mut mapping_profile = profile();
-    mapping_profile.config = json!({});
-    mapping_profile.state = json!({
-        "database": {
-            "kind": "database",
-            "namespace": "collection-mapping-fixture"
-        }
-    });
     let closure = project
         .dependency_packages
         .iter()
@@ -194,8 +175,6 @@ db object PackageSecret {
         service: &service,
         http: None,
         websocket: None,
-        profile_name: "fixture",
-        profile: &mapping_profile,
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &closure,
@@ -225,108 +204,14 @@ db object PackageSecret {
 }
 
 #[test]
-fn omitted_or_null_timeout_does_not_generate_a_policy_override() {
-    let (project, service_api) = compile_fixture("generated-no-timeout", "\"ok\"");
-    let mut profile = profile();
-    profile.timeout = serde_json::Value::Null;
-
-    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest(),
-        http: None,
-        websocket: None,
-        profile_name: "prod",
-        profile: &profile,
-        service_api: &service_api,
-        implementation: &project.package.artifact,
-        package_closure: &[],
-        package_schema_records: &project.package.resolved_package_schema_type_records,
-    })
-    .unwrap();
-
-    assert_eq!(deployment.policy.timeout_ms, None);
-    let encoded = serde_json::to_value(&deployment).unwrap();
-    assert!(!encoded["policy"]
-        .as_object()
-        .unwrap()
-        .contains_key("timeoutMs"));
-
-    let decoded: skiff_artifact_model::ServiceDeployment = serde_json::from_value(encoded).unwrap();
-    assert_eq!(decoded, deployment);
-    assert_eq!(
-        decoded.deployment_artifact_identity,
-        deployment.deployment_artifact_identity
-    );
-}
-
-#[test]
-fn explicit_timeout_is_the_only_generated_timeout_override() {
-    let (project, service_api) = compile_fixture("generated-explicit-timeout", "\"ok\"");
-    let mut profile = profile();
-    profile.timeout = json!(1250);
-    let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest(),
-        http: None,
-        websocket: None,
-        profile_name: "prod",
-        profile: &profile,
-        service_api: &service_api,
-        implementation: &project.package.artifact,
-        package_closure: &[],
-        package_schema_records: &project.package.resolved_package_schema_type_records,
-    })
-    .unwrap();
-
-    assert_eq!(deployment.policy.timeout_ms, Some(1250));
-    assert_eq!(
-        serde_json::to_value(&deployment).unwrap()["policy"]["timeoutMs"],
-        json!(1250)
-    );
-}
-
-#[test]
-fn invalid_timeout_values_fail_closed() {
-    let (project, service_api) = compile_fixture("generated-invalid-timeout", "\"ok\"");
-    for (label, timeout) in [
-        ("zero", json!(0)),
-        ("negative", json!(-1)),
-        ("fraction", json!(1.5)),
-        ("string", json!("1000")),
-        ("object-with-extra-field", json!({"milliseconds": 1000})),
-    ] {
-        let mut profile = profile();
-        profile.timeout = timeout;
-        let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-            service: &manifest(),
-            http: None,
-            websocket: None,
-            profile_name: "prod",
-            profile: &profile,
-            service_api: &service_api,
-            implementation: &project.package.artifact,
-            package_closure: &[],
-            package_schema_records: &project.package.resolved_package_schema_type_records,
-        })
-        .unwrap_err();
-        let message = error.to_string();
-        assert!(
-            message.contains("timeout") || message.contains("greater than zero"),
-            "{label}: {message}"
-        );
-    }
-}
-
-#[test]
 fn automatic_service_api_mapping_fails_closed() {
     let (project, mut service_api) = compile_fixture("generated-negative", "\"ok\"");
-    let profile = profile();
 
     service_api.available.clear();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &manifest(),
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile,
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
@@ -366,8 +251,6 @@ fn automatic_service_api_mapping_fails_closed() {
         service: &manifest(),
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile,
         service_api: &duplicate,
         implementation: &duplicate_project.package.artifact,
         package_closure: &[],
@@ -389,8 +272,6 @@ fn generated_deployment_identity_failure_uses_compiler_owned_error_shape() {
         service: &manifest(),
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile(),
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
@@ -416,8 +297,6 @@ fn generated_deployment_projection_failure_uses_compiler_owned_error_shape() {
         service: &manifest(),
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile(),
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &repeated,
@@ -474,14 +353,10 @@ raw:
         .iter()
         .map(|package| package.artifact.clone())
         .collect::<Vec<_>>();
-    let mut http_profile = profile();
-    http_profile.config = json!({});
     let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &service,
         http: Some(&http),
         websocket: None,
-        profile_name: "prod",
-        profile: &http_profile,
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &closure,
@@ -510,34 +385,14 @@ routes:
 }
 
 #[test]
-fn unbound_requirement_and_identity_mismatch_fail_closed() {
+fn service_identity_mismatch_fails_closed() {
     let (project, service_api) = compile_fixture("generated-unbound", "\"ok\"");
-    let mut missing = profile();
-    missing.config = json!({});
-    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
-        service: &manifest(),
-        http: None,
-        websocket: None,
-        profile_name: "prod",
-        profile: &missing,
-        service_api: &service_api,
-        implementation: &project.package.artifact,
-        package_closure: &[],
-        package_schema_records: &project.package.resolved_package_schema_type_records,
-    })
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("missing config binding registry.token"));
-
     let mut wrong_service = manifest();
     wrong_service.id = "example.com/other".to_string();
     let error = generate_service_deployment(GeneratedServiceDeploymentInput {
         service: &wrong_service,
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile(),
         service_api: &service_api,
         implementation: &project.package.artifact,
         package_closure: &[],
@@ -739,8 +594,6 @@ fn generate(
         service: &manifest(),
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile(),
         service_api: api,
         implementation: artifact,
         package_closure: closure,
@@ -762,8 +615,6 @@ fn generate_with_manifest(
         service,
         http: None,
         websocket: None,
-        profile_name: "prod",
-        profile: &profile(),
         service_api: api,
         implementation: artifact,
         package_closure: &[],
@@ -845,16 +696,4 @@ fn compile_selection_fixture(
         "function read() -> string { return \"read\" }\nfunction write() -> string { return \"write\" }\nfunction configured() -> string { return config.require<string>(\"registry.token\") }\n",
     );
     compile_service_package_project(root.path()).unwrap()
-}
-
-fn profile() -> ServiceConfigProfileAuthoring {
-    ServiceConfigProfileAuthoring {
-        config: json!({"registry.token": "token"}),
-        secrets: json!({}),
-        state: json!({}),
-        resources: json!({}),
-        timeout: json!(1000),
-        quota: json!({"cpuMillis": 100, "memoryBytes": 1048576}),
-        principal: json!("service:registry"),
-    }
 }

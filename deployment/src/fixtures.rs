@@ -6,14 +6,14 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId,
     DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
-    GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef, PackageBuildId,
-    PackageCallableId, PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly,
-    ServiceBindingTemplate, ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput,
-    ServiceDeploymentRef, ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
+    IngressSelector, PackageArtifactRef, PackageBuildId, PackageCallableId, PackageCodeSlot,
+    PackageLocalAbiIdentity, RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentOperationInput, ServiceDeploymentRef,
+    ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
@@ -33,17 +33,6 @@ pub fn service_contract_ref_fixture() -> ServiceContractRef {
         service_id: "example.echo".to_string(),
         contract_version: "1.0.0".to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("protocol"),
-    }
-}
-
-pub fn deployment_policy_fixture() -> DeploymentPolicy {
-    DeploymentPolicy {
-        timeout_ms: Some(5_000),
-        resources: ResourcePolicy {
-            cpu_millis: 100,
-            memory_bytes: 1_048_576,
-        },
-        principal: "service:example.echo".to_string(),
     }
 }
 
@@ -103,7 +92,6 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
         }],
         resource_bindings: Vec::new(),
         runtime_capability_bindings: Vec::new(),
-        policy: deployment_policy_fixture(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Echo deployment".to_string(),
             notes: BTreeMap::new(),
@@ -129,7 +117,6 @@ pub fn service_deployment_fixture() -> Result<ServiceDeployment> {
         ingress: input.ingress,
         resource_bindings: input.resource_bindings,
         runtime_capability_bindings: input.runtime_capability_bindings,
-        policy: input.policy,
         diagnostic_text: input.diagnostic_text,
     };
     assign_service_deployment_identity(&mut deployment)?;
@@ -185,7 +172,6 @@ pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
             deployment: deployment_ref.clone(),
             implementation_package_build_id: deployment.implementation.package_build_id.clone(),
             resource_bindings: deployment.resource_bindings.clone(),
-            policy: deployment.policy.clone(),
         }],
         gateway_ingress: Vec::new(),
     };

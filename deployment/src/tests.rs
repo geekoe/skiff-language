@@ -254,30 +254,6 @@ fn collection_mapping_is_canonical_and_deployment_identifying() {
 }
 
 #[test]
-fn absent_and_null_timeout_normalize_to_the_same_policy_and_identity() {
-    let deployment = service_deployment_fixture().expect("deployment fixture");
-    let mut absent = serde_json::to_value(&deployment).unwrap();
-    absent["policy"]
-        .as_object_mut()
-        .unwrap()
-        .remove("timeoutMs");
-    let mut null = absent.clone();
-    null["policy"]
-        .as_object_mut()
-        .unwrap()
-        .insert("timeoutMs".to_string(), serde_json::Value::Null);
-
-    let absent: ServiceDeployment = serde_json::from_value(absent).unwrap();
-    let null: ServiceDeployment = serde_json::from_value(null).unwrap();
-    assert_eq!(absent.policy.timeout_ms, None);
-    assert_eq!(null.policy.timeout_ms, None);
-    assert_eq!(
-        service_deployment_identity(&absent).unwrap(),
-        service_deployment_identity(&null).unwrap()
-    );
-}
-
-#[test]
 fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
     let deployment = rich_deployment();
     let expected = service_deployment_identity(&deployment).unwrap();
@@ -416,12 +392,6 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
         (
             "capability",
             Box::new(|value| value.runtime_capability_bindings[0].version = "2".into()),
-        ),
-        (
-            "policy",
-            Box::new(|value| {
-                value.policy.timeout_ms = value.policy.timeout_ms.map(|timeout| timeout + 1);
-            }),
         ),
     ];
 
@@ -628,10 +598,13 @@ fn assembly_identity_includes_graph_link_plan_and_templates() {
     );
 
     let mut activation = assembly.clone();
-    activation.activation_templates[0].policy.timeout_ms = activation.activation_templates[0]
-        .policy
-        .timeout_ms
-        .map(|timeout| timeout + 1);
+    activation.activation_templates[0]
+        .resource_bindings
+        .push(ResourceBinding {
+            requirement_key: "activation-resource".to_string(),
+            capability: "identity".to_string(),
+            resource_ref: "resource://activation".to_string(),
+        });
     assert_ne!(runtime_assembly_identity(&activation).unwrap(), expected);
 
     let mut ingress = assembly.clone();

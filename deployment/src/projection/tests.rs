@@ -252,14 +252,6 @@ impl ProjectionFixture {
                 capability: "async".to_string(),
                 version: "1".to_string(),
             }],
-            policy: DeploymentPolicy {
-                timeout_ms: Some(1_000),
-                resources: ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "service:example.echo".to_string(),
-            },
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "Echo deployment".to_string(),
                 notes: BTreeMap::new(),

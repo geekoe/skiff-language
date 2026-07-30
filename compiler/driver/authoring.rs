@@ -75,7 +75,7 @@ pub fn build_authoring_object(
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    _environment: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     match object {
@@ -88,7 +88,6 @@ pub fn build_authoring_object(
                 root,
                 &manifest,
                 &store,
-                environment,
                 publish_pointer,
             )
         }),
@@ -111,7 +110,6 @@ fn build_package_after_platform_context_guard(
     root: &Path,
     manifest: &PackageManifest,
     store: &CanonicalArtifactStore,
-    environment: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     reject_legacy_service_authoring(root)?;
@@ -175,23 +173,12 @@ fn build_package_after_platform_context_guard(
             }),
         );
 
-        let profile = match service_root.config_profiles.get(environment) {
-            Some(profile) => &profile.authoring,
-            None => {
-                return Err(invalid_input(format!(
-                    "service package {} requires config.{environment}.yml to generate its environment-specific ServiceDeployment",
-                    root.display()
-                )))
-            }
-        };
         let package_closure = reachable_package_closure(store, &published.artifact, &available)?;
         let package_schema_records = published.resolved_package_schema_type_records.clone();
         let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
             service: &service_root.service,
             http: service_root.http.as_ref(),
             websocket: service_root.websocket.as_ref(),
-            profile_name: environment,
-            profile,
             service_api: &service_api,
             implementation: &published.artifact,
             package_closure: &package_closure,

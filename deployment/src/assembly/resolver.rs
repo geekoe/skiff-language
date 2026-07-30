@@ -155,7 +155,6 @@ impl<'a, 'c> Resolver<'a, 'c> {
             deployment: reference.clone(),
             implementation_package_build_id: deployment.implementation.package_build_id.clone(),
             resource_bindings: deployment.resource_bindings.clone(),
-            policy: deployment.policy.clone(),
         };
         activation
             .resource_bindings

@@ -9,9 +9,8 @@ use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey,
     GatewayExternalSchema, GatewayProtocolSurface, GatewayWebSocketDownlinkFrame,
     GatewayWebSocketRpcProfile, HttpGatewayDocumentAuthoring, IngressProtocol,
-    PackageLocalAbiSymbol, PackageTypeRef, ServiceConfigProfileAuthoring, ServiceDeployment,
-    ServiceManifestAuthoring, TypeRefIr, WebSocketGatewayDocumentAuthoring,
-    WEBSOCKET_GATEWAY_ENTRY_KEY,
+    PackageLocalAbiSymbol, PackageTypeRef, ServiceDeployment, ServiceManifestAuthoring, TypeRefIr,
+    WebSocketGatewayDocumentAuthoring, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
@@ -431,8 +430,6 @@ fn real_split_websocket_path_mutation_preserves_package_and_contract_bytes() {
         service: &first_root.service,
         http: None,
         websocket: first_root.websocket.as_ref(),
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &first_api,
         implementation: &first_project.package.artifact,
         package_closure: &first_closure,
@@ -456,8 +453,6 @@ fn real_split_websocket_path_mutation_preserves_package_and_contract_bytes() {
         service: &second_root.service,
         http: None,
         websocket: second_root.websocket.as_ref(),
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &second_api,
         implementation: &second_project.package.artifact,
         package_closure: &second_closure,
@@ -676,8 +671,6 @@ jsonRpc:
         service: &fixture.service,
         http: Some(&http),
         websocket: Some(&fixture.websocket),
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &fixture.api,
         implementation: &fixture.project.package.artifact,
         package_closure: &closure,
@@ -954,8 +947,6 @@ impl Fixture {
             service: &self.service,
             http: None,
             websocket,
-            profile_name: "dev",
-            profile: &profile(),
             service_api: &self.api,
             implementation: &self.project.package.artifact,
             package_closure: &closure,
@@ -991,18 +982,6 @@ fn compile_fixture(
 
 fn parse_service(fields: &str) -> WebSocketGatewayDocumentAuthoring {
     serde_yaml::from_str(fields).unwrap()
-}
-
-fn profile() -> ServiceConfigProfileAuthoring {
-    ServiceConfigProfileAuthoring {
-        config: json!({}),
-        secrets: json!({}),
-        state: json!({}),
-        resources: json!({}),
-        timeout: json!(1000),
-        quota: json!({"cpuMillis": 100, "memoryBytes": 1048576}),
-        principal: json!("service:websocket"),
-    }
 }
 
 fn websocket_key() -> GatewayEntryKey {

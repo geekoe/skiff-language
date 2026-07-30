@@ -10,8 +10,7 @@ use serde_json::json;
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayExternalSchema, GatewayProtocolSurface,
     HttpGatewayDocumentAuthoring, PackageLocalAbiSymbol, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, ServiceConfigProfileAuthoring, ServiceDeployment,
-    ServiceManifestAuthoring,
+    PackageSchemaTypeRecord, ServiceDeployment, ServiceManifestAuthoring,
 };
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
@@ -471,8 +470,6 @@ fn real_split_http_file_mutation_preserves_package_and_contract_bytes() {
         service: &first_root.service,
         http: first_root.http.as_ref(),
         websocket: None,
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &first_api,
         implementation: &first_project.package.artifact,
         package_closure: &first_closure,
@@ -497,8 +494,6 @@ fn real_split_http_file_mutation_preserves_package_and_contract_bytes() {
         service: &second_root.service,
         http: second_root.http.as_ref(),
         websocket: None,
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &second_api,
         implementation: &second_project.package.artifact,
         package_closure: &second_closure,
@@ -551,8 +546,6 @@ function second(body: IntegerInput) -> IntegerOutput { return { value: body.valu
         service: &first_root.service,
         http: first_root.http.as_ref(),
         websocket: None,
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &first_api,
         implementation: &first_project.package.artifact,
         package_closure: &first_closure,
@@ -572,8 +565,6 @@ function second(body: IntegerInput) -> IntegerOutput { return { value: body.valu
         service: &second_root.service,
         http: second_root.http.as_ref(),
         websocket: None,
-        profile_name: "dev",
-        profile: &profile(),
         service_api: &second_api,
         implementation: &second_project.package.artifact,
         package_closure: &second_closure,
@@ -971,8 +962,6 @@ impl Fixture {
             service: &self.service,
             http: Some(http),
             websocket: None,
-            profile_name: "dev",
-            profile: &profile(),
             service_api: &self.api,
             implementation,
             package_closure: &closure,
@@ -1103,18 +1092,6 @@ fn assert_schema_records_fail_closed(
 
 fn parse_service(http: &str) -> HttpGatewayDocumentAuthoring {
     serde_yaml::from_str(http).unwrap()
-}
-
-fn profile() -> ServiceConfigProfileAuthoring {
-    ServiceConfigProfileAuthoring {
-        config: json!({}),
-        secrets: json!({}),
-        state: json!({}),
-        resources: json!({}),
-        timeout: json!(1000),
-        quota: json!({"cpuMillis": 100, "memoryBytes": 1048576}),
-        principal: json!("service:http-gateway"),
-    }
 }
 
 fn gateway_key(value: &str) -> skiff_artifact_model::GatewayEntryKey {

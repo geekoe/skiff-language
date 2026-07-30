@@ -226,7 +226,6 @@ pub fn deployment(
         ingress: Vec::new(),
         resource_bindings: Vec::new(),
         runtime_capability_bindings: Vec::new(),
-        policy: crate::fixtures::deployment_policy_fixture(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: contract.service_id.clone(),
             notes: BTreeMap::new(),
