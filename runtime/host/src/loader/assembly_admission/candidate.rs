@@ -88,19 +88,36 @@ impl AssemblyAdmissionController {
         }
         let config_snapshot = config_snapshot_resolver
             .resolve(config_snapshot_reference)
-            .map_err(|error| {
+            .map_err(|_| {
                 let _ = self.fail_candidate(generation, &identity, AssemblyCandidateStage::Load);
                 (
                     AssemblyActivationRejectReason::Resolve,
-                    anyhow::anyhow!("exact RuntimeConfigSnapshot resolution failed: {error}"),
+                    anyhow::anyhow!(
+                        "RuntimeConfigSnapshot {} resolution failed",
+                        config_snapshot_reference.snapshot_id
+                    ),
                 )
             })?;
         if config_snapshot.snapshot_ref() != config_snapshot_reference {
             let _ = self.fail_candidate(generation, &identity, AssemblyCandidateStage::Load);
             return Err((
                 AssemblyActivationRejectReason::Resolve,
-                anyhow::anyhow!("resolved RuntimeConfigSnapshot content mismatches exact ref"),
+                anyhow::anyhow!(
+                    "RuntimeConfigSnapshot {} rejected: resolved content does not match the requested opaque id",
+                    config_snapshot_reference.snapshot_id
+                ),
             ));
+        }
+        if let Err(error) = super::super::config_snapshot::validate_snapshot_environment(
+            &config_snapshot,
+            environment,
+        ) {
+            let _ = self.fail_candidate_config_snapshot_environment(
+                generation,
+                &identity,
+                config_snapshot_reference,
+            );
+            return Err((AssemblyActivationRejectReason::Admission, error));
         }
         self.build_started_candidate(
             generation,

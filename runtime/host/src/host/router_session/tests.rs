@@ -761,6 +761,61 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
         .contains("assembly activation serviceDb is not supported"));
 }
 
+#[tokio::test]
+async fn activation_rejects_environment_other_than_runtime_trust_domain_before_resolution() {
+    let host = test_host();
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let artifact_path = std::env::temp_dir().join(format!(
+        "skiff-runtime-bootstrap-environment-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+        artifact_path.join("runtime-config"),
+    )
+    .expect("test config snapshot store should open");
+    let mut bootstrap = Some(super::ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
+        )
+        .expect("test resolver should open"),
+        config_snapshot_store,
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://bootstrap-owner".to_string(),
+        },
+        activation: super::test_bootstrap_activation(),
+        max_response_bytes: 67_108_864,
+    });
+    let mut activation = serde_json::to_value(assembly_activation_control("prepare"))
+        .expect("activation should encode as JSON");
+    activation
+        .as_object_mut()
+        .expect("activation should be an object")
+        .insert("environment".to_string(), json!("prod"));
+    let activation: skiff_artifact_model::AssemblyActivationControl =
+        serde_json::from_value(activation).expect("activation control should decode");
+    let frame = encode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &activation,
+    )
+    .expect("activation frame should encode");
+
+    let error = super::dispatch_router_binary_frame_inner(
+        &host,
+        "skiff-router-session-v1:opaque:test-session",
+        &frame,
+        &sender,
+        None,
+        &mut bootstrap,
+    )
+    .await
+    .expect_err("foreign activation environment must fail before snapshot resolution");
+
+    assert!(error
+        .to_string()
+        .contains("does not match Runtime trusted environment"));
+}
+
 #[test]
 fn assembly_activation_reply_uses_runtime_to_router_codec() {
     let (sender, mut receiver) = mpsc::unbounded_channel();

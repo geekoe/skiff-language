@@ -132,6 +132,19 @@ pub(crate) fn materialize_snapshot_config(
     Ok(materialized)
 }
 
+pub(crate) fn validate_snapshot_environment(
+    snapshot: &RuntimeConfigSnapshot,
+    trusted_environment: &str,
+) -> anyhow::Result<()> {
+    if snapshot.environment() != trusted_environment {
+        anyhow::bail!(
+            "RuntimeConfigSnapshot {} rejected: environment mismatch",
+            snapshot.snapshot_ref().snapshot_id
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn materialize_empty_config_for_test(
     candidate: &AssemblyLinkedCandidate,
@@ -251,6 +264,7 @@ impl skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver for TestSnapsh
 
 #[cfg(test)]
 pub(crate) fn snapshot_for_assembly<R>(
+    environment: &str,
     assembly: &skiff_artifact_model::RuntimeAssembly,
     resolver: &R,
 ) -> (
@@ -291,7 +305,7 @@ where
             .expect("test config deployment should be valid")
         })
         .collect();
-    let snapshot = RuntimeConfigSnapshot::new(reference.clone(), deployments)
+    let snapshot = RuntimeConfigSnapshot::new(environment, reference.clone(), deployments)
         .expect("test config snapshot should be valid");
     (reference, TestSnapshotResolver::new(snapshot))
 }

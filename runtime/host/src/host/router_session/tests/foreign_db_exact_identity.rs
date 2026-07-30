@@ -485,8 +485,11 @@ async fn shared_test_assembly_isolation() {
     })
     .unwrap();
     let resolver = FilesystemRuntimeAssemblyContentResolver::open(&runtime_artifacts).unwrap();
-    let (config_snapshot, config_resolver) =
-        crate::loader::config_snapshot::snapshot_for_assembly(&shared_assembly, &resolver);
+    let (config_snapshot, config_resolver) = crate::loader::config_snapshot::snapshot_for_assembly(
+        "p3x-foreign-db",
+        &shared_assembly,
+        &resolver,
+    );
     host.assembly_admission
         .recover_committed(
             "p3x-foreign-db",

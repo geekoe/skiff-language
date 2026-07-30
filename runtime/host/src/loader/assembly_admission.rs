@@ -717,6 +717,21 @@ impl AssemblyAdmissionController {
         identity: &AssemblyIdentity,
         stage: AssemblyCandidateStage,
     ) -> anyhow::Result<()> {
+        self.fail_candidate_with_health_error(
+            generation,
+            identity,
+            stage,
+            format!("whole-assembly {} failed", stage.as_str()),
+        )
+    }
+
+    fn fail_candidate_with_health_error(
+        &self,
+        generation: u64,
+        identity: &AssemblyIdentity,
+        stage: AssemblyCandidateStage,
+        health_error: String,
+    ) -> anyhow::Result<()> {
         let mut state = self
             .state
             .write()
@@ -729,11 +744,28 @@ impl AssemblyAdmissionController {
             succeeded: false,
             stage,
             observed_at: OffsetDateTime::now_utc(),
-            // Health deliberately retains a stage-only diagnostic. Resolver/linker errors may
-            // contain secret-bearing deployment values and remain only in the returned error.
-            error: Some(format!("whole-assembly {} failed", stage.as_str())),
+            // Resolver/linker errors may contain secret-bearing deployment values. Health keeps
+            // only a bounded, explicitly redacted category supplied by the caller.
+            error: Some(health_error),
         });
         Ok(())
+    }
+
+    fn fail_candidate_config_snapshot_environment(
+        &self,
+        generation: u64,
+        identity: &AssemblyIdentity,
+        config_snapshot: &RuntimeConfigSnapshotRef,
+    ) -> anyhow::Result<()> {
+        self.fail_candidate_with_health_error(
+            generation,
+            identity,
+            AssemblyCandidateStage::Load,
+            format!(
+                "RuntimeConfigSnapshot {} environment mismatch",
+                config_snapshot.snapshot_id
+            ),
+        )
     }
 
     #[cfg(test)]
@@ -806,6 +838,11 @@ impl RuntimeHost {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
+        if activation_control_environment(&control) != self.environment {
+            anyhow::bail!(
+                "assembly activation environment does not match Runtime trusted environment"
+            );
+        }
         self.assembly_admission
             .apply_activation_control(control, resolver, config_snapshot_resolver, service_db)
             .await
@@ -864,6 +901,17 @@ impl RuntimeHost {
             .ok_or_else(|| anyhow::anyhow!("Actor service activation context is missing"))?;
         drop(deployments);
         Ok(Some(ActiveActorExecutionRoute { active, activation }))
+    }
+}
+
+fn activation_control_environment(control: &AssemblyActivationControl) -> &str {
+    match control {
+        AssemblyActivationControl::Prepare { environment, .. }
+        | AssemblyActivationControl::Prepared { environment, .. }
+        | AssemblyActivationControl::Reject { environment, .. }
+        | AssemblyActivationControl::Commit { environment, .. }
+        | AssemblyActivationControl::Abort { environment, .. }
+        | AssemblyActivationControl::Register { environment, .. } => environment,
     }
 }
 

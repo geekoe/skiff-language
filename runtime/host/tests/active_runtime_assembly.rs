@@ -39,11 +39,14 @@ impl skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver for EmptySnaps
     }
 }
 
-fn empty_snapshot() -> (RuntimeConfigSnapshotRef, EmptySnapshotResolver) {
+fn empty_snapshot(environment: &str) -> (RuntimeConfigSnapshotRef, EmptySnapshotResolver) {
     let reference = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
-    let snapshot =
-        skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(reference.clone(), Vec::new())
-            .unwrap();
+    let snapshot = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
+        environment,
+        reference.clone(),
+        Vec::new(),
+    )
+    .unwrap();
     (reference, EmptySnapshotResolver { snapshot })
 }
 
@@ -226,7 +229,7 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
     let assembly = Arc::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
     let resolver = EmptyAssemblyResolver { assembly };
-    let (config_snapshot, config_resolver) = empty_snapshot();
+    let (config_snapshot, config_resolver) = empty_snapshot("prod");
     let host = runtime_host("runtime-a");
 
     let prepared = host
@@ -320,6 +323,34 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
         .unwrap()
         .unwrap();
     assert_eq!(recovered, committed);
+}
+
+#[tokio::test]
+async fn prepare_rejects_dev_config_snapshot_for_prod_before_ack() {
+    let assembly = Arc::new(empty_assembly());
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
+    let resolver = EmptyAssemblyResolver { assembly };
+    let (config_snapshot, config_resolver) = empty_snapshot("dev");
+    let host = runtime_host("runtime-a");
+
+    let reply = host
+        .apply_assembly_activation_control(
+            transition("prepare", reference, config_snapshot, "runtime-a"),
+            &resolver,
+            &config_resolver,
+        )
+        .await
+        .expect("environment mismatch is a fail-closed activation reply")
+        .expect("prepare must receive a reply");
+
+    assert!(matches!(
+        reply,
+        AssemblyActivationControl::Reject {
+            reason: AssemblyActivationRejectReason::Admission,
+            ..
+        }
+    ));
+    assert!(host.active_assembly_registration().unwrap().is_none());
 }
 
 #[tokio::test]

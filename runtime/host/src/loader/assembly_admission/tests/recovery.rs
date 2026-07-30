@@ -172,7 +172,7 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     let resolver = EmptyRecordResolver::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
     let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly(&resolver.assembly, &resolver);
+        config_snapshot_for_assembly("prod", &resolver.assembly, &resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-a",
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
@@ -280,11 +280,55 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
 }
 
 #[tokio::test]
+async fn cold_recovery_rejects_config_snapshot_from_another_environment_before_config_views() {
+    let resolver = EmptyRecordResolver::new(empty_assembly());
+    let assembly = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
+    let (snapshot, snapshot_resolver) =
+        config_snapshot_for_assembly("dev", &resolver.assembly, &resolver);
+    let snapshot_id = snapshot.snapshot_id.to_string();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
+
+    let error = controller
+        .recover_committed(
+            "prod",
+            0,
+            &assembly,
+            &snapshot,
+            &resolver,
+            &snapshot_resolver,
+            None,
+        )
+        .await
+        .expect_err("dev config snapshot must not recover into prod");
+    let message = error.to_string();
+    assert!(message.contains(&snapshot_id), "{message}");
+    assert!(message.contains("environment mismatch"), "{message}");
+    assert!(!message.contains("dev"), "{message}");
+    assert!(!message.contains("prod"), "{message}");
+    assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(resolver.content_reads.load(Ordering::SeqCst), 0);
+    assert!(controller.active().unwrap().is_none());
+
+    let outcome = controller.health().unwrap().last_outcome.unwrap();
+    assert_eq!(outcome.stage, AssemblyCandidateStage::Load);
+    let expected_health_error = format!("RuntimeConfigSnapshot {snapshot_id} environment mismatch");
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some(expected_health_error.as_str())
+    );
+}
+
+#[tokio::test]
 async fn activation_and_recovery_pin_assembly_and_config_snapshot_as_one_exact_pair() {
     let resolver = EmptyRecordResolver::new(empty_assembly());
     let assembly = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
-    let (snapshot_a, resolver_a) = config_snapshot_for_assembly(&resolver.assembly, &resolver);
-    let (snapshot_b, resolver_b) = config_snapshot_for_assembly(&resolver.assembly, &resolver);
+    let (snapshot_a, resolver_a) =
+        config_snapshot_for_assembly("prod", &resolver.assembly, &resolver);
+    let (snapshot_b, resolver_b) =
+        config_snapshot_for_assembly("prod", &resolver.assembly, &resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-a",
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
@@ -368,9 +412,9 @@ async fn prepare_rejects_an_unresolvable_exact_config_snapshot_before_ack() {
     let resolver = EmptyRecordResolver::new(empty_assembly());
     let assembly = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
     let (_available_snapshot, available_resolver) =
-        config_snapshot_for_assembly(&resolver.assembly, &resolver);
+        config_snapshot_for_assembly("prod", &resolver.assembly, &resolver);
     let (missing_snapshot, _missing_resolver) =
-        config_snapshot_for_assembly(&resolver.assembly, &resolver);
+        config_snapshot_for_assembly("prod", &resolver.assembly, &resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-a",
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
@@ -378,7 +422,7 @@ async fn prepare_rejects_an_unresolvable_exact_config_snapshot_before_ack() {
 
     let reply = controller
         .apply_activation_control(
-            generation_one_control("prepare", assembly, missing_snapshot),
+            generation_one_control("prepare", assembly.clone(), missing_snapshot.clone()),
             &resolver,
             &available_resolver,
             None,
@@ -394,4 +438,26 @@ async fn prepare_rejects_an_unresolvable_exact_config_snapshot_before_ack() {
         }
     ));
     assert!(controller.active().unwrap().is_none());
+
+    let recovery_controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
+    let error = recovery_controller
+        .recover_committed(
+            "prod",
+            0,
+            &assembly,
+            &missing_snapshot,
+            &resolver,
+            &available_resolver,
+            None,
+        )
+        .await
+        .expect_err("missing config snapshot must fail cold recovery");
+    let message = error.to_string();
+    assert!(message.contains(missing_snapshot.snapshot_id.as_str()));
+    assert!(message.contains("resolution failed"));
+    assert!(!message.contains("test config snapshot ref mismatch"));
+    assert!(recovery_controller.active().unwrap().is_none());
 }
