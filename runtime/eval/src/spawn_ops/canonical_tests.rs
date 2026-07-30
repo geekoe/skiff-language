@@ -4,14 +4,13 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    ActivationPolicy, AssemblyIdentity, BlockIr, CanonicalPackageLinkPlan,
-    DeploymentArtifactIdentity, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
-    ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, MetadataValue, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PackageCodeSlot, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
-    ResourcePolicy, RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeploymentRef,
-    SlotLayout, StmtIr, StmtRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    AssemblyIdentity, BlockIr, CanonicalPackageLinkPlan, DeploymentArtifactIdentity,
+    DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr,
+    ExprRefIr, FileIrRef, FileIrUnit, MetadataValue, PackageArtifact, PackageArtifactRef,
+    PackageBuildId, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef, ResourcePolicy,
+    RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr,
+    StmtRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_activation::{
     ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
@@ -555,9 +554,6 @@ fn activation_context(
                 resources: ResourcePolicy {
                     cpu_millis: 100,
                     memory_bytes: 1_048_576,
-                },
-                activation: ActivationPolicy {
-                    idle_timeout_ms: None,
                 },
                 principal: "test".to_string(),
             },

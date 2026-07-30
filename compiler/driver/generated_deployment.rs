@@ -4,14 +4,13 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{service_contract_ref, ValidatedPackageArtifact};
 use skiff_artifact_model::{
-    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentPolicy,
-    DeploymentRevision, HttpGatewayDocumentAuthoring, MetadataValue, PackageArtifact,
-    PackageBinding, PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding,
-    ServiceConfigProfileAuthoring, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
-    ServiceDeploymentOperationInput, ServiceManifestAuthoring, ServiceRequirementKey,
-    ServiceSelectorBinding, StateBinding, StateBindingKind, WebSocketGatewayDocumentAuthoring,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentPolicy, DeploymentRevision,
+    HttpGatewayDocumentAuthoring, MetadataValue, PackageArtifact, PackageBinding,
+    PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord, ResourceBinding,
+    ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding, ServiceConfigProfileAuthoring,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
+    ServiceManifestAuthoring, ServiceRequirementKey, ServiceSelectorBinding, StateBinding,
+    StateBindingKind, WebSocketGatewayDocumentAuthoring, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{
@@ -514,32 +513,17 @@ struct QuotaAuthoring {
     memory_bytes: u64,
 }
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LifecycleAuthoring {
-    #[serde(default)]
-    idle_timeout_ms: Option<u64>,
-}
-
 fn deployment_policy(
     profile: &ServiceConfigProfileAuthoring,
 ) -> Result<DeploymentPolicy, GeneratedServiceDeploymentError> {
     let timeout_ms: Option<u64> = optional_profile_field("timeout", &profile.timeout)?;
     let quota: QuotaAuthoring = profile_field("quota", &profile.quota)?;
-    let lifecycle = if profile.lifecycle.is_null() {
-        LifecycleAuthoring::default()
-    } else {
-        profile_field("lifecycle", &profile.lifecycle)?
-    };
     let principal: String = profile_field("principal", &profile.principal)?;
     Ok(DeploymentPolicy {
         timeout_ms,
         resources: ResourcePolicy {
             cpu_millis: quota.cpu_millis,
             memory_bytes: quota.memory_bytes,
-        },
-        activation: ActivationPolicy {
-            idle_timeout_ms: lifecycle.idle_timeout_ms,
         },
         principal,
     })

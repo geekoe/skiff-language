@@ -4,9 +4,9 @@ use std::sync::{
 };
 
 use skiff_artifact_model::{
-    ActivationPolicy, AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity,
-    DeploymentPolicy, DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey, IngressProtocol,
-    IngressSelector, PackageBuildId, ResourcePolicy, ServiceContractRef, ServiceDeploymentRef,
+    AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentPolicy,
+    DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey, IngressProtocol, IngressSelector,
+    PackageBuildId, ResourcePolicy, ServiceContractRef, ServiceDeploymentRef,
     ServiceProtocolIdentity, ServiceRequirementKey, WebSocketEntryId,
 };
 
@@ -42,9 +42,6 @@ fn empty_owned_bindings() -> ActivationOwnedBindings {
             resources: ResourcePolicy {
                 cpu_millis: 100,
                 memory_bytes: 1_024,
-            },
-            activation: ActivationPolicy {
-                idle_timeout_ms: Some(1_000),
             },
             principal: "test".to_string(),
         },

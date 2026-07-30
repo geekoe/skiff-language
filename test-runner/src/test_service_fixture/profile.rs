@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use skiff_artifact_model::{
-    ActivationPolicy, ConfigLiteralBinding, DeploymentPolicy, MetadataValue, PackageArtifact,
-    ResourceBinding, ResourcePolicy, SecretRefBinding, ServiceDeployment, StateBindingKind,
+    ConfigLiteralBinding, DeploymentPolicy, MetadataValue, PackageArtifact, ResourceBinding,
+    ResourcePolicy, SecretRefBinding, ServiceDeployment, StateBindingKind,
 };
 
 use crate::{
@@ -119,9 +119,6 @@ fn default_test_service_policy() -> SelectedProfileBindings {
                 cpu_millis: 100,
                 memory_bytes: 64 * 1024 * 1024,
             },
-            activation: ActivationPolicy {
-                idle_timeout_ms: None,
-            },
             principal: "test:package-runner".to_string(),
         },
     }
@@ -146,13 +143,6 @@ struct TestResourceAuthoring {
 struct TestQuotaAuthoring {
     cpu_millis: u32,
     memory_bytes: u64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TestLifecycleAuthoring {
-    #[serde(default)]
-    idle_timeout_ms: Option<u64>,
 }
 
 fn profile_map<T: for<'de> Deserialize<'de>>(
@@ -215,11 +205,6 @@ fn test_service_policy(
     test_service: &CanonicalTestServiceProfile,
 ) -> Result<DeploymentPolicy, CanonicalFixtureError> {
     let quota = profile_value::<TestQuotaAuthoring>(test_service, "quota")?;
-    let lifecycle = if test_service.authoring.lifecycle.is_null() {
-        TestLifecycleAuthoring::default()
-    } else {
-        profile_value::<TestLifecycleAuthoring>(test_service, "lifecycle")?
-    };
     let principal = profile_value::<String>(test_service, "principal")?;
     let timeout_ms = if test_service.authoring.timeout.is_null() {
         None
@@ -231,9 +216,6 @@ fn test_service_policy(
         resources: ResourcePolicy {
             cpu_millis: quota.cpu_millis,
             memory_bytes: quota.memory_bytes,
-        },
-        activation: ActivationPolicy {
-            idle_timeout_ms: lifecycle.idle_timeout_ms,
         },
         principal,
     })
@@ -247,7 +229,6 @@ fn profile_value<T: for<'de> Deserialize<'de>>(
         "timeout" => &test_service.authoring.timeout,
         "quota" => &test_service.authoring.quota,
         "principal" => &test_service.authoring.principal,
-        "lifecycle" => &test_service.authoring.lifecycle,
         _ => unreachable!("profile scalar field is compiler-owned"),
     };
     serde_json::from_value(value.clone()).map_err(|error| {

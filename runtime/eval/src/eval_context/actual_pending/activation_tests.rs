@@ -717,9 +717,6 @@ mod server_stream_fixture {
                     cpu_millis: 100,
                     memory_bytes: 1_048_576,
                 },
-                activation: artifact::ActivationPolicy {
-                    idle_timeout_ms: None,
-                },
                 principal: "test".to_string(),
             },
         }

@@ -126,7 +126,7 @@ async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
     let unary = &routes["/current-scope/unary"];
     assert_eq!(
         unary.assembly_identity().as_str(),
-        "skiff-runtime-assembly-v3:sha256:a06e9806093074f986212d0feb1646be6a77ba69fb0fb42ae9067924e2d6b9ee"
+        "skiff-runtime-assembly-v3:sha256:91d6b18aaa34d8ebe35c78e28dbfaa98cae0e6075aceedfe4cc2bbda03f4ceb3"
     );
     assert_eq!(
         unary.gateway_entry_identity().as_str(),

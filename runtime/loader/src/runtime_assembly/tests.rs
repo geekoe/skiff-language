@@ -2,7 +2,7 @@ use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
-    ActivationPolicy, ActivationTemplate, BoundaryCallableProjection, BoundaryCallbackContract,
+    ActivationTemplate, BoundaryCallableProjection, BoundaryCallbackContract,
     BoundaryEffectGuarantee, BoundaryImplementationRequirements, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
@@ -2084,9 +2084,6 @@ fn policy() -> DeploymentPolicy {
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_024,
-        },
-        activation: ActivationPolicy {
-            idle_timeout_ms: None,
         },
         principal: "service:health".to_string(),
     }

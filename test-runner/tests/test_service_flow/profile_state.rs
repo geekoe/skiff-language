@@ -52,14 +52,6 @@ fn fixed_profile_projects_config_secret_policy_and_typed_isolated_state() {
         assert_eq!(deployment.policy.timeout_ms, Some(25_000));
         assert_eq!(deployment.policy.resources.cpu_millis, 250);
         assert_eq!(deployment.policy.resources.memory_bytes, 134_217_728);
-        assert_eq!(deployment.policy.activation.idle_timeout_ms, Some(5_000));
-        assert!(
-            serde_json::to_value(&deployment.policy.activation)
-                .unwrap()
-                .get("maxConcurrency")
-                .is_none(),
-            "service deployment activation policy must not project retired concurrency"
-        );
         assert_eq!(
             deployment.policy.principal,
             "service:test.skiff/profile-state"
@@ -143,8 +135,6 @@ quota:
   cpuMillis: 250
   memoryBytes: 134217728
 principal: service:test.skiff/profile-state
-lifecycle:
-  idleTimeoutMs: 5000
 "#,
     );
     let project = compile_package_project_for_test(&platform_sources(), &service, &artifacts)
@@ -160,44 +150,26 @@ lifecycle:
 }
 
 #[test]
-fn http_profile_rejects_retired_concurrency_and_reserved_ingress_override() {
+fn http_profile_rejects_retired_lifecycle_and_reserved_ingress_override() {
     let root = TestRoot::new("http-profile-negative");
     let artifacts = root.path().join("artifacts");
     let service = root.path().join("service");
     CanonicalArtifactStore::create(&artifacts).unwrap();
     write_http_test_service(&service);
 
-    write_http_profile(&service, Some(1), BTreeMap::new());
+    write_http_profile(&service, true, BTreeMap::new());
     let error = assemble_service(&service, &artifacts).unwrap_err();
-    assert!(error.contains("maxConcurrency"), "{error}");
+    assert!(error.contains("lifecycle"), "{error}");
     assert!(error.contains("unknown field"), "{error}");
 
     write_http_profile(
         &service,
-        None,
+        false,
         BTreeMap::from([("skiff.test.ingressUrl", "http://authored.invalid")]),
     );
     let error = assemble_service(&service, &artifacts).unwrap_err();
     assert!(error.contains("skiff.test.ingressUrl"), "{error}");
     assert!(error.contains("reserved"), "{error}");
-}
-
-#[test]
-fn http_profile_accepts_omitted_and_explicit_empty_lifecycle() {
-    let root = TestRoot::new("http-profile-optional-lifecycle");
-    let artifacts = root.path().join("artifacts");
-    let service = root.path().join("service");
-    CanonicalArtifactStore::create(&artifacts).unwrap();
-    write_http_test_service(&service);
-
-    write_http_profile(&service, None, BTreeMap::new());
-    assemble_service(&service, &artifacts).expect("omitted lifecycle");
-
-    let profile_path = service.join("config.skiff-test.yml");
-    let mut profile = fs::read_to_string(&profile_path).unwrap();
-    profile.push_str("lifecycle: {}\n");
-    fs::write(profile_path, profile).unwrap();
-    assemble_service(&service, &artifacts).expect("explicit empty lifecycle");
 }
 
 fn assemble_service(service: &Path, artifacts: &Path) -> Result<(), String> {
@@ -271,8 +243,6 @@ quota:
   cpuMillis: 250
   memoryBytes: 134217728
 principal: service:test.skiff/profile-state
-lifecycle:
-  idleTimeoutMs: 5000
 "#,
     );
 }
@@ -315,11 +285,7 @@ fn write_http_test_service(root: &Path) {
     .unwrap();
 }
 
-fn write_http_profile(
-    root: &Path,
-    retired_max_concurrency: Option<u32>,
-    config: BTreeMap<&str, &str>,
-) {
+fn write_http_profile(root: &Path, retired_lifecycle: bool, config: BTreeMap<&str, &str>) {
     let config = if config.is_empty() {
         " {}".to_string()
     } else {
@@ -332,8 +298,8 @@ fn write_http_profile(
                 .join("\n")
         )
     };
-    let lifecycle = retired_max_concurrency
-        .map(|value| format!("lifecycle:\n  maxConcurrency: {value}\n"))
+    let lifecycle = retired_lifecycle
+        .then_some("lifecycle: {}\n")
         .unwrap_or_default();
     write_profile(
         root,

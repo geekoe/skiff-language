@@ -224,8 +224,6 @@ pub struct ServiceConfigProfileAuthoring {
     pub quota: serde_json::Value,
     #[serde(default)]
     pub principal: serde_json::Value,
-    #[serde(default)]
-    pub lifecycle: serde_json::Value,
 }
 
 #[cfg(test)]
@@ -296,6 +294,16 @@ mod tests {
                 "{field} must not remain in service.yml"
             );
         }
+    }
+
+    #[test]
+    fn service_config_profile_rejects_retired_lifecycle() {
+        assert!(
+            serde_yaml::from_str::<ServiceConfigProfileAuthoring>(
+                "quota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:users\nlifecycle: {}\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]

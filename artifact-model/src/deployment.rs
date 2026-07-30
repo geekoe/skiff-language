@@ -224,17 +224,10 @@ pub struct ResourcePolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationPolicy {
-    pub idle_timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     pub resources: ResourcePolicy,
-    pub activation: ActivationPolicy,
     pub principal: String,
 }
 
@@ -300,17 +293,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn activation_policy_rejects_retired_service_concurrency() {
-        let canonical = json!({"idleTimeoutMs": null});
-        let decoded = serde_json::from_value::<ActivationPolicy>(canonical.clone()).unwrap();
-        assert_eq!(decoded.idle_timeout_ms, None);
+    fn deployment_policy_rejects_retired_activation() {
+        let canonical = json!({
+            "resources": {
+                "cpuMillis": 100,
+                "memoryBytes": 1048576
+            },
+            "principal": "service:example.com/users"
+        });
+        let decoded = serde_json::from_value::<DeploymentPolicy>(canonical.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
 
-        let retired = json!({
-            "maxConcurrency": 4,
-            "idleTimeoutMs": null
-        });
-        assert!(serde_json::from_value::<ActivationPolicy>(retired).is_err());
+        let mut retired = canonical;
+        retired["activation"] = json!({"idleTimeoutMs": null});
+        assert!(serde_json::from_value::<DeploymentPolicy>(retired).is_err());
     }
 
     #[test]

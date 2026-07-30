@@ -4,18 +4,18 @@ use skiff_artifact_identity::{
     assign_runtime_assembly_identity, assign_service_deployment_identity, gateway_entry_identity,
 };
 use skiff_artifact_model::{
-    ActivationPolicy, ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan,
-    ConfigLiteralBinding, ContractOperationId, DeploymentArtifactIdentity,
-    DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding,
-    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterArg,
-    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
-    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
-    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
-    IngressSelector, MetadataValue, PackageArtifactRef, PackageBuildId, PackageCallableId,
-    PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly,
-    ServiceBindingTemplate, ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput,
-    ServiceDeploymentRef, ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, ConfigLiteralBinding,
+    ContractOperationId, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy,
+    DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, MetadataValue, PackageArtifactRef,
+    PackageBuildId, PackageCallableId, PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy,
+    RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentOperationInput, ServiceDeploymentRef, ServiceProtocolIdentity,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -43,9 +43,6 @@ pub fn deployment_policy_fixture() -> DeploymentPolicy {
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_048_576,
-        },
-        activation: ActivationPolicy {
-            idle_timeout_ms: Some(30_000),
         },
         principal: "service:example.echo".to_string(),
     }
