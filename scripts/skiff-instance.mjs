@@ -45,6 +45,9 @@ import {
   readManagedPidMetadataFile,
   removeManagedPidMetadata,
 } from './lib/managed-pid-metadata.mjs';
+import {
+  managedProcessSpawnInvocation,
+} from './lib/managed-process-spawn.mjs';
 import { createSupervisedEntryLifecycle } from './lib/supervised-entry-lifecycle.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -676,6 +679,7 @@ async function componentStatus(config, name) {
 
 async function startManagedProcess(config, spec, options = {}) {
   const managedBinary = await managedBinaryMetadata(spec);
+  const invocation = managedProcessSpawnInvocation(spec);
   let out;
   let err;
   let child;
@@ -683,7 +687,7 @@ async function startManagedProcess(config, spec, options = {}) {
     out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
     err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
     // child-process-owner: managed-component
-    child = spawnManagedChild(spec.command, spec.args, {
+    child = spawnManagedChild(invocation.command, invocation.args, {
       cwd: spec.cwd,
       env: processEnv(),
       detached: true,
