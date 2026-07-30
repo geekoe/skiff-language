@@ -48,7 +48,6 @@ impl TestCaseCapability {
 struct TestCaseRegistryOwner {
     cases: HashMap<TestCaseCapability, Arc<TestCaseState>>,
     requests: HashMap<String, TestCaseCapability>,
-    retired_capabilities: HashSet<TestCaseCapability>,
 }
 
 struct TestCaseState {
@@ -114,8 +113,7 @@ impl TestCaseRegistry {
             .owner
             .lock()
             .expect("test case registry owner lock poisoned");
-        if owner.cases.contains_key(&capability) || owner.retired_capabilities.contains(&capability)
-        {
+        if owner.cases.contains_key(&capability) {
             return Err(RuntimeError::Unsupported(
                 "test case capability was already registered".to_string(),
             ));
@@ -258,6 +256,15 @@ impl TestCaseRegistry {
             .contains_key(request_id)
     }
 
+    #[cfg(test)]
+    fn owner_counts(&self) -> (usize, usize) {
+        let owner = self
+            .owner
+            .lock()
+            .expect("test case registry owner lock poisoned");
+        (owner.cases.len(), owner.requests.len())
+    }
+
     pub(crate) fn self_ingress_for_request(
         &self,
         request_id: &str,
@@ -302,7 +309,6 @@ fn prepare_finalization(
     {
         owner.cases.remove(&state.capability);
     }
-    owner.retired_capabilities.insert(state.capability.clone());
     let sender = state
         .finalization_sender
         .lock()
@@ -972,7 +978,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_duplicate_and_retired_capabilities_fail_closed_without_leaks() {
+    async fn unknown_and_active_duplicate_capabilities_fail_closed_without_leaks() {
         let registry = TestHttpEntryRegistry::default();
         let root = registry
             .begin_root_case(
@@ -1026,19 +1032,29 @@ mod tests {
         drop(child);
         root.finalize().await.unwrap();
         assert!(registry
+            .begin_derived("case-once", "late-child".to_string())
+            .err()
+            .expect("finalized capability must be unknown to derived requests")
+            .to_string()
+            .contains("unknown or finalized"));
+        assert_eq!(registry.test_cases.owner_counts(), (0, 0));
+
+        // Router capabilities are random and not expected to be reissued.
+        // The Runtime does not retain an unbounded tombstone merely to reject
+        // a hypothetical root replay after the prior case is fully gone.
+        registry
             .begin_root_case(
                 "case-once",
-                "reused-root".to_string(),
+                "fresh-root".to_string(),
                 "activation-a".to_string(),
                 "http://127.0.0.1:44100/test-case",
                 deployment(),
             )
-            .err()
-            .expect("retired capability reuse must fail")
-            .to_string()
-            .contains("already registered"));
-        assert!(!registry.test_cases.contains_request("root"));
-        assert!(!registry.test_cases.contains_request("child"));
+            .unwrap()
+            .finalize()
+            .await
+            .unwrap();
+        assert_eq!(registry.test_cases.owner_counts(), (0, 0));
     }
 
     #[test]
@@ -1068,6 +1084,7 @@ mod tests {
         drop(recursive);
         assert!(!registry.test_cases.contains_capability("case-drop"));
         assert_eq!(state.finalization_count.load(Ordering::Acquire), 1);
+        assert_eq!(registry.test_cases.owner_counts(), (0, 0));
     }
 
     fn deployment() -> ServiceDeploymentRef {
