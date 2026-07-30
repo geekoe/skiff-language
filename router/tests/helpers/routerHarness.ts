@@ -56,9 +56,13 @@ export class RouterHarness {
 
   static async create(input: {
     manifest: LoadedManifest;
+    maxConcurrency?: number;
     registryControl?: RuntimeEndpointListenOptions['control'];
   }): Promise<RouterHarness> {
-    const harness = new RouterHarness(withBuildId(input.manifest), createRuntimeRouter());
+    const harness = new RouterHarness(
+      withBuildId(input.manifest),
+      createRuntimeRouter({}, input.maxConcurrency ?? 64)
+    );
     await harness.listenRegistry({ control: input.registryControl });
     return harness;
   }

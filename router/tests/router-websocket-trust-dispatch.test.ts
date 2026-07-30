@@ -43,7 +43,8 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     } satisfies RuntimeFrameSender;
     const dispatcher = new RuntimeDispatcher({
       registry: registry(),
-      frameSender: sender
+      frameSender: sender,
+      maxConcurrency: 64
     });
     const header = connectHeader();
     const responsePromise = dispatcher.dispatchAssemblyWebSocketConnect(
@@ -96,7 +97,8 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const runtime = socket();
     const dispatcher = new RuntimeDispatcher({
       registry: registry(),
-      frameSender: { sendFrame: vi.fn() }
+      frameSender: { sendFrame: vi.fn() },
+      maxConcurrency: 64
     });
     const header = connectHeader();
     const response = dispatcher.dispatchAssemblyWebSocketConnect(
@@ -116,6 +118,64 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     });
     await expect(response).rejects.toThrow(/websocketConnect is required/);
   });
+
+  it('rejects saturated pinned WebSocket connects and admits after terminal release', async () => {
+    const runtime = socket();
+    const dispatcher = new RuntimeDispatcher({
+      registry: registry(),
+      frameSender: { sendFrame: vi.fn() },
+      maxConcurrency: 1
+    });
+    const firstHeader = connectHeader('connect-capacity-first');
+    const first = dispatcher.dispatchAssemblyWebSocketConnect(
+      { header: firstHeader, payloadBytes: new Uint8Array() },
+      1_000,
+      { runtimeId: 'runtime-one', ws: runtime }
+    );
+
+    await expect(
+      dispatcher.dispatchAssemblyWebSocketConnect(
+        {
+          header: connectHeader('connect-capacity-overload'),
+          payloadBytes: new Uint8Array()
+        },
+        1_000,
+        { runtimeId: 'runtime-one', ws: runtime }
+      )
+    ).rejects.toThrow(/maxConcurrency 1/);
+
+    dispatcher.resolveRequest(runtime, {
+      header: {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: firstHeader.requestId,
+        payloadPresent: false,
+        websocketConnect: { result: 'accept' }
+      } as never,
+      payloadBytes: new Uint8Array()
+    });
+    await first;
+
+    const reusedHeader = connectHeader('connect-capacity-reused');
+    const reused = dispatcher.dispatchAssemblyWebSocketConnect(
+      { header: reusedHeader, payloadBytes: new Uint8Array() },
+      1_000,
+      { runtimeId: 'runtime-one', ws: runtime }
+    );
+    dispatcher.resolveRequest(runtime, {
+      header: {
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: reusedHeader.requestId,
+        payloadPresent: false,
+        websocketConnect: { result: 'accept' }
+      } as never,
+      payloadBytes: new Uint8Array()
+    });
+    await expect(reused).resolves.toMatchObject({
+      header: { requestId: reusedHeader.requestId }
+    });
+  });
 });
 
 function registry(): RuntimeDispatchRegistry {
@@ -131,11 +191,13 @@ function socket(): WebSocket {
   return { readyState: WebSocket.OPEN } as WebSocket;
 }
 
-function connectHeader(): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+function connectHeader(
+  requestId = 'request-one'
+): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
   return {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'request.start',
-    requestId: 'request-one',
+    requestId,
     mode: 'unary',
     caller: { kind: 'gateway' },
     routing: {
@@ -152,7 +214,7 @@ function connectHeader(): RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
     },
     trace: { traceId: 'trace', spanId: 'span' },
     websocketConnect: {
-      connectionId: 'connection-one',
+      connectionId: requestId === 'request-one' ? 'connection-one' : requestId,
       url: 'ws://chat.localhost/v1/chat',
       query: [],
       headers: [],

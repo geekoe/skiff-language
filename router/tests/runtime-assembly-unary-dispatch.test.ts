@@ -1364,7 +1364,11 @@ async function createFixture(
       http: { maxResponseBytes: 67108864 }
     }
   });
-  const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
+  const dispatcher = new RuntimeDispatcher({
+    registry: assemblyRegistry,
+    frameSender: endpoint,
+    maxConcurrency: 64
+  });
   endpoint.setDispatcher(dispatcher);
   const runtimeListen = await endpoint.listen({ port: 0 });
   const gateway = new AssemblyHttpGateway({

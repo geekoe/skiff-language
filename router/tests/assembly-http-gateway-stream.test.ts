@@ -576,7 +576,8 @@ async function createFixture(
   });
   const dispatcher = new RuntimeDispatcher({
     registry: assemblyRegistry,
-    frameSender: endpoint
+    frameSender: endpoint,
+    maxConcurrency: 64
   });
   endpoint.setDispatcher(dispatcher);
   const endpointAddress = await endpoint.listen({ port: 0 });

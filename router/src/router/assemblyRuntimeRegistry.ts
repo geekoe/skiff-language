@@ -52,7 +52,6 @@ interface AssemblyDeploymentBinding {
   deploymentRevision: string;
   packageBuildId: string;
   serviceProtocolIdentity: string;
-  maxConcurrency: number;
   timeoutMs?: number;
 }
 
@@ -233,13 +232,6 @@ export class AssemblyRuntimeRegistry {
       serviceId,
       buildId: binding.packageBuildId,
       serviceProtocolIdentity: binding.serviceProtocolIdentity,
-      inFlightCount:
-        this.inFlightCounter?.countDeploymentInFlight?.(
-          replica,
-          serviceId,
-          binding.deploymentRevision
-        ) ?? this.countInFlight(replica),
-      maxConcurrency: binding.maxConcurrency,
       ...(binding.timeoutMs === undefined ? {} : { timeoutMs: binding.timeoutMs }),
       activationIdentity: { ...header.activationIdentity }
     };
@@ -326,7 +318,9 @@ export class AssemblyRuntimeRegistry {
   private pickHealthyDispatchConnection():
     | RuntimeDispatchConnection
     | ProviderUnavailableError {
-    const candidates = this.dispatchCandidates();
+    const candidates = this.dispatchCandidates().filter(
+      (replica) => this.inFlightCounter?.hasCapacity(replica) ?? true
+    );
     if (candidates.length === 0) {
       return new ProviderUnavailableError(
         'No healthy replica matches the committed RuntimeAssembly generation'
@@ -467,7 +461,6 @@ function deploymentBindingsByService(
       deploymentRevision: deployment.deploymentRevision,
       packageBuildId: runtimeBinding.packageBuildId,
       serviceProtocolIdentity: contract.serviceProtocolIdentity,
-      maxConcurrency: runtimeBinding.maxConcurrency,
       ...(runtimeBinding.timeoutMs === undefined
         ? {}
         : { timeoutMs: runtimeBinding.timeoutMs })
@@ -487,7 +480,6 @@ function setDeploymentBinding(
     (existing.deploymentRevision !== binding.deploymentRevision ||
       existing.packageBuildId !== binding.packageBuildId ||
       existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity ||
-      existing.maxConcurrency !== binding.maxConcurrency ||
       existing.timeoutMs !== binding.timeoutMs)
   ) {
     throw new Error(

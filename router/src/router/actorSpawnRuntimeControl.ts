@@ -30,8 +30,6 @@ export interface RuntimeControlSource {
   serviceId: string;
   buildId: string;
   serviceProtocolIdentity: string;
-  inFlightCount: number;
-  maxConcurrency: number;
   timeoutMs?: number;
   activationIdentity: ActivationIdentityFrameMetadata;
 }

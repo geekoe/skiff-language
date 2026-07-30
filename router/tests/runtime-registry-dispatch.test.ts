@@ -655,6 +655,122 @@ describe('router runtime registry dispatch', () => {
     await expect(dispatch).resolves.toEqual({ runtimeId: 'runtime-binary-register' });
   });
 
+  it('skips saturated runtimes for service calls and reuses capacity after response.end', async () => {
+    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
+    const runtimeRouter = trackResource(createRuntimeRouter({}, 1));
+    const { dispatcher, endpoint } = runtimeRouter;
+    const registryListen = await endpoint.listen({ port: 0 });
+    const target = 'service.skiff~run~~hello.HelloApi.hello';
+    const registration = {
+      type: 'runtime.register' as const,
+      serviceId: manifest.service.id,
+      revisionId: manifest.service.revisionId,
+      buildId: DEFAULT_TEST_BUILD_ID,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: [target]
+    };
+    const runtimeA = await openBinaryRegisteredRuntime(registryListen.url, {
+      ...registration,
+      runtimeId: 'runtime-capacity-a'
+    });
+    const runtimeB = await openBinaryRegisteredRuntime(registryListen.url, {
+      ...registration,
+      runtimeId: 'runtime-capacity-b'
+    });
+    const dispatch = (requestId: string) =>
+      dispatcher.dispatchBinary(
+        {
+          header: serviceRequestStart({
+            requestId,
+            callerTarget: 'service.example.Caller.invoke',
+            target,
+            serviceId: manifest.service.id,
+            serviceProtocolIdentity: manifest.service.protocolIdentity
+          }),
+          payloadBytes: new Uint8Array()
+        },
+        2_000
+      );
+
+    const firstFramePromise = waitForRuntimeRequestFrame(
+      runtimeA,
+      'request-capacity-first'
+    );
+    const first = dispatch('request-capacity-first');
+    const firstFrame = await firstFramePromise;
+
+    const secondFramePromise = waitForRuntimeRequestFrame(
+      runtimeB,
+      'request-capacity-second'
+    );
+    const second = dispatch('request-capacity-second');
+    const secondFrame = await secondFramePromise;
+
+    await expect(dispatch('request-capacity-overload')).rejects.toMatchObject({
+      code: 'std.service.ProviderUnavailableError'
+    });
+
+    sendRuntimeBinaryResponse(runtimeA, firstFrame.header.requestId, 'first');
+    await expect(first).resolves.toMatchObject({
+      header: { type: 'response.end' }
+    });
+
+    const reusedFramePromise = waitForRuntimeRequestFrame(
+      runtimeA,
+      'request-capacity-reused'
+    );
+    const reused = dispatch('request-capacity-reused');
+    const reusedFrame = await reusedFramePromise;
+    sendRuntimeBinaryResponse(runtimeA, reusedFrame.header.requestId, 'reused');
+    await expect(reused).resolves.toMatchObject({
+      header: { type: 'response.end' }
+    });
+
+    runtimeB.send(
+      encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'request.cancel',
+        requestId: secondFrame.header.requestId,
+        reason: 'caller_cancel'
+      })
+    );
+    await expect(second).rejects.toMatchObject({
+      code: 'std.service.ProviderUnavailableError'
+    });
+
+    const afterCancelFramePromise = waitForRuntimeRequestFrame(
+      runtimeB,
+      'request-capacity-after-cancel'
+    );
+    const afterCancel = dispatch('request-capacity-after-cancel');
+    const afterCancelFrame = await afterCancelFramePromise;
+    sendRuntimeBinaryResponse(
+      runtimeB,
+      afterCancelFrame.header.requestId,
+      'after-cancel'
+    );
+    await expect(afterCancel).resolves.toMatchObject({
+      header: { type: 'response.end' }
+    });
+
+    const disconnectFramePromise = waitForRuntimeRequestFrame(
+      runtimeA,
+      'request-capacity-disconnect'
+    );
+    const disconnect = dispatch('request-capacity-disconnect');
+    await disconnectFramePromise;
+    await closeSocket(runtimeA, 'runtime capacity disconnect');
+    await expect(disconnect).rejects.toMatchObject({
+      code: 'std.service.ProviderUnavailableError'
+    });
+    expect(
+      dispatcher.countInFlight({
+        runtimeId: 'runtime-capacity-a',
+        ws: runtimeA
+      })
+    ).toBe(0);
+  });
+
   it('runs a binary-only runtime session through control, dispatch, timeout cancel, and connection.send', async () => {
     const manifest = loadRuntimeTestManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());
@@ -1084,7 +1200,7 @@ describe('router runtime registry dispatch', () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const target = 'service.skiff~run~~hello.HelloApi.hello';
 
-    const runtimeRouter = trackResource(createRuntimeRouter());
+    const runtimeRouter = trackResource(createRuntimeRouter({}, 1));
     const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const runtime = await openRegisteredRuntime(registryListen.url, {
@@ -1123,13 +1239,30 @@ describe('router runtime registry dispatch', () => {
       reason: 'timeout'
     });
     expect(cancel.payloadByteLength).toBe(0);
+
+    const reusedFramePromise = waitForRuntimeRequestFrame(
+      runtime,
+      'request-after-timeout'
+    );
+    const reused = dispatchBinaryJson(
+      dispatcher,
+      createRequestStart({
+        requestId: 'request-after-timeout',
+        target,
+        serviceProtocolIdentity: manifest.service.protocolIdentity
+      }),
+      1_000
+    );
+    const reusedFrame = await reusedFramePromise;
+    sendRuntimeBinaryResponse(runtime, reusedFrame.header.requestId, '"reused"');
+    await expect(reused).resolves.toBe('reused');
   });
 
   it('keeps binary serverStream pending after response.start until response.end terminal', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const target = 'service.skiff~run~~hello.HelloApi.stream';
 
-    const runtimeRouter = trackResource(createRuntimeRouter());
+    const runtimeRouter = trackResource(createRuntimeRouter({}, 1));
     const { dispatcher, endpoint } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const runtime = await openRegisteredRuntime(registryListen.url, {
@@ -1186,6 +1319,23 @@ describe('router runtime registry dispatch', () => {
     expect(dispatcher.pendingLifecycleCounters()).toMatchObject({
       pendingStream: 1
     });
+    await expect(
+      dispatcher.dispatchBinary(
+        {
+          header: serviceRequestStart({
+            requestId: 'request-stream-capacity-overload',
+            callerTarget: 'service.example.Caller.invoke',
+            target,
+            serviceId: manifest.service.id,
+            serviceProtocolIdentity: manifest.service.protocolIdentity
+          }),
+          payloadBytes: new Uint8Array()
+        },
+        1_000
+      )
+    ).rejects.toMatchObject({
+      code: 'std.service.ProviderUnavailableError'
+    });
 
     runtime.send(
       encodeRuntimeFrame({
@@ -1205,6 +1355,29 @@ describe('router runtime registry dispatch', () => {
       pendingStream: 0
     });
     expect(closeCount).toBe(1);
+
+    const reusedFramePromise = waitForRuntimeRequestFrame(
+      runtime,
+      'request-stream-capacity-reused'
+    );
+    const reused = dispatcher.dispatchBinary(
+      {
+        header: serviceRequestStart({
+          requestId: 'request-stream-capacity-reused',
+          callerTarget: 'service.example.Caller.invoke',
+          target,
+          serviceId: manifest.service.id,
+          serviceProtocolIdentity: manifest.service.protocolIdentity
+        }),
+        payloadBytes: new Uint8Array()
+      },
+      1_000
+    );
+    const reusedFrame = await reusedFramePromise;
+    sendRuntimeBinaryResponse(runtime, reusedFrame.header.requestId, 'reused');
+    await expect(reused).resolves.toMatchObject({
+      header: { requestId: 'request-stream-capacity-reused' }
+    });
   });
 
   it('cancels runtime work and closes stream writer on stream callback errors', async () => {

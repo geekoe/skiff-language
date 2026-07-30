@@ -50,6 +50,8 @@ describe('Router runtime bootstrap session', () => {
         'http:',
         '  maxRequestBytes: 1048576',
         '  maxResponseBytes: 2097152',
+        'runtime:',
+        '  maxConcurrency: 64',
         ''
       ].join('\n')
     );
@@ -73,7 +75,7 @@ describe('Router runtime bootstrap session', () => {
     const configPath = join(dir, 'router.yml');
     await writeFile(
       configPath,
-      `${lines.join('\n')}\nhttp:\n  maxRequestBytes: 1048576\n  maxResponseBytes: 2097152\n`
+      `${lines.join('\n')}\nhttp:\n  maxRequestBytes: 1048576\n  maxResponseBytes: 2097152\nruntime:\n  maxConcurrency: 64\n`
     );
     await expect(loadRouterConfig(configPath)).rejects.toThrow(/must be a non-empty string/);
   });
@@ -89,7 +91,11 @@ describe('Router runtime bootstrap session', () => {
       }
     });
     endpoints.push(endpoint);
-    endpoint.setDispatcher(new RuntimeDispatcher({ registry, frameSender: endpoint }));
+    endpoint.setDispatcher(new RuntimeDispatcher({
+      registry,
+      frameSender: endpoint,
+      maxConcurrency: 64
+    }));
     const listening = await endpoint.listen({ port: 0 });
 
     const socket = new WebSocket(listening.url);

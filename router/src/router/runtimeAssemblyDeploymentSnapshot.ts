@@ -42,7 +42,6 @@ const PACKAGE_LOCAL_ABI_IDENTITY_PATTERN =
 interface DecodedServiceDeployment {
   ref: RuntimeAssemblyDeploymentRef;
   packageBuildId: string;
-  maxConcurrency: number;
   gatewayEntries: ReadonlyMap<string, DecodedDeploymentGatewayEntry>;
   ingress: readonly DecodedDeploymentIngressBinding[];
   timeoutMs?: number;
@@ -161,7 +160,6 @@ export function joinRuntimeAssemblyDeployments(
     deploymentRuntimeBindings: decodedDeployments.map((deployment) => ({
       deployment: deployment.ref,
       packageBuildId: deployment.packageBuildId,
-      maxConcurrency: deployment.maxConcurrency,
       ...(deployment.timeoutMs === undefined
         ? {}
         : { timeoutMs: deployment.timeoutMs })
@@ -444,7 +442,7 @@ function decodeServiceDeployment(
     decodeDeploymentIngressBinding(entry, `${label}.ingress[${index}]`)
   );
   assertUniqueSelectors(ingress, `${label}.ingress`);
-  const policy = decodeDeploymentPolicy(value.policy, `${label}.policy`);
+  const timeoutMs = decodeDeploymentPolicy(value.policy, `${label}.policy`);
   const computedDeploymentIdentity =
     deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(value);
   if (deploymentArtifactIdentity !== computedDeploymentIdentity) {
@@ -455,10 +453,9 @@ function decodeServiceDeployment(
   return {
     ref: expected,
     packageBuildId: implementation.packageBuildId,
-    maxConcurrency: policy.maxConcurrency,
     gatewayEntries,
     ingress,
-    ...(policy.timeoutMs === undefined ? {} : { timeoutMs: policy.timeoutMs })
+    ...(timeoutMs === undefined ? {} : { timeoutMs })
   };
 }
 
@@ -650,7 +647,7 @@ function decodeDeploymentIngressBinding(
 function decodeDeploymentPolicy(
   input: unknown,
   label: string
-): { maxConcurrency: number; timeoutMs?: number } {
+): number | undefined {
   const value = exactObject(input, label);
   exactFieldsWithOptional(
     value,
@@ -669,7 +666,7 @@ function decodeDeploymentPolicy(
     ['maxConcurrency', 'idleTimeoutMs'],
     `${label}.activation`
   );
-  const maxConcurrency = positiveSafeInteger(
+  positiveSafeInteger(
     activation.maxConcurrency,
     `${label}.activation.maxConcurrency`
   );
@@ -680,12 +677,9 @@ function decodeDeploymentPolicy(
     );
   }
   if (!Object.hasOwn(value, 'timeoutMs')) {
-    return { maxConcurrency };
+    return undefined;
   }
-  return {
-    maxConcurrency,
-    timeoutMs: positiveSafeInteger(value.timeoutMs, `${label}.timeoutMs`)
-  };
+  return positiveSafeInteger(value.timeoutMs, `${label}.timeoutMs`);
 }
 
 function decodeImplementation(

@@ -211,7 +211,10 @@ describe('loop-risk health detail', () => {
     // dispatcher cancel terminal path and health zero-window schema.
     const stormAttempts = 96;
     const manifest = loadRawHttpManifest();
-    const harness = await RouterHarness.create({ manifest });
+    const harness = await RouterHarness.create({
+      manifest,
+      maxConcurrency: stormAttempts
+    });
     const runtime = await harness.registerRuntime({
       runtimeId: 'runtime-loop-risk-cancel-storm'
     });

@@ -599,6 +599,23 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       }
     });
 
+    const actorFind = nextRuntimeFrame(ws, 'actor.find.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.find.request'],
+      rpcId: 'actor-find-while-request-capacity-full',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: actorKey()
+    }));
+    await expect(actorFind).resolves.toMatchObject({
+      header: {
+        type: 'actor.find.response',
+        rpcId: 'actor-find-while-request-capacity-full',
+        found: false
+      }
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters().pendingUnary).toBe(1);
+
     sendSpawnSubmit(
       ws,
       'spawn-rpc-capacity',
@@ -1185,19 +1202,16 @@ async function createFixture(
       assembly(
         ASSEMBLY_A,
         testGateway,
-        initial.maxConcurrency,
         initial.timeoutMs
       ),
       assembly(
         ASSEMBLY_B,
         testGateway,
-        initial.maxConcurrency,
         initial.timeoutMs
       ),
       assembly(
         ASSEMBLY_C,
         testGateway,
-        initial.maxConcurrency,
         initial.timeoutMs
       )
     ]),
@@ -1209,7 +1223,11 @@ async function createFixture(
   });
   endpoint.setCoordinator(coordinator);
   await coordinator.initialize();
-  const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
+  const dispatcher = new RuntimeDispatcher({
+    registry: assemblyRegistry,
+    frameSender: endpoint,
+    maxConcurrency: initial.maxConcurrency ?? 64
+  });
   endpoint.setDispatcher(dispatcher);
   const controlPlane = new AssemblyControlPlane({
     coordinator,
@@ -1287,7 +1305,6 @@ function transition(
 function assembly(
   assemblyIdentity: string,
   includeTestGateway = false,
-  maxConcurrency = 8,
   timeoutMs = 1_000
 ): LoadedRuntimeAssembly {
   const revision = deploymentRevision(assemblyIdentity);
@@ -1313,7 +1330,6 @@ function assembly(
         : [{
             deployment,
             packageBuildId: PACKAGE_BUILD_ID,
-            maxConcurrency,
             timeoutMs
           }],
     gatewayIngress:

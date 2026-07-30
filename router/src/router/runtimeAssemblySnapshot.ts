@@ -51,7 +51,6 @@ export interface RuntimeAssemblyDeploymentRef {
 export interface RuntimeAssemblyDeploymentRuntimeBinding {
   deployment: RuntimeAssemblyDeploymentRef;
   packageBuildId: string;
-  maxConcurrency: number;
   timeoutMs?: number;
 }
 

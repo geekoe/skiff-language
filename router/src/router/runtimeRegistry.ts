@@ -137,11 +137,7 @@ export interface RuntimeConnectionFence {
 
 export interface RuntimeInFlightCounter {
   countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number;
-  countDeploymentInFlight?(
-    runtime: RuntimeDispatchRuntimeIdentity,
-    serviceId: string,
-    deploymentRevision: string
-  ): number;
+  hasCapacity(runtime: RuntimeDispatchRuntimeIdentity): boolean;
 }
 
 export interface RuntimeConnectionProvider {
@@ -738,7 +734,8 @@ export class RuntimeRegistry {
       if (
         runtime.ws.readyState === WebSocket.OPEN &&
         runtime.revisionState !== 'retired' &&
-        runtimeSupportsPackageTestDispatch(runtime)
+        runtimeSupportsPackageTestDispatch(runtime) &&
+        this.connectionHasCapacity(runtime)
       ) {
         candidates.push({
           runtimeId: runtime.runtimeId,
@@ -752,7 +749,8 @@ export class RuntimeRegistry {
       if (
         runtime.ws.readyState === WebSocket.OPEN &&
         !candidateConnections.has(runtime.ws) &&
-        runtimeSupportsPackageTestDispatch(runtime)
+        runtimeSupportsPackageTestDispatch(runtime) &&
+        this.connectionHasCapacity(runtime)
       ) {
         candidates.push({
           runtimeId: runtime.runtimeId,
@@ -815,7 +813,8 @@ export class RuntimeRegistry {
       if (
         runtime.ws.readyState !== WebSocket.OPEN ||
         runtime.revisionState === 'retired' ||
-        !runtime.targets.has(input.request.target)
+        !runtime.targets.has(input.request.target) ||
+        !this.connectionHasCapacity(runtime)
       ) {
         return false;
       }
@@ -946,6 +945,7 @@ export class RuntimeRegistry {
     const clients = this.registeredAndLazyClients().filter(
       (ws) =>
         ws.readyState === WebSocket.OPEN &&
+        this.connectionHasCapacity({ runtimeId: '', ws }) &&
         !this.hasRegisteredTargetBuildOnConnection(
           ws,
           request,
@@ -1021,6 +1021,10 @@ export class RuntimeRegistry {
 
     runtime.revisionState =
       this.countInFlight(runtime) > 0 ? 'draining' : 'retained';
+  }
+
+  private connectionHasCapacity(runtime: RuntimeDispatchRuntimeIdentity): boolean {
+    return this.inFlightCounter?.hasCapacity(runtime) ?? true;
   }
 
   private hasActiveTarget(runtime: RegisteredRuntime): boolean {

@@ -25,8 +25,19 @@ async function writeRouterConfigFixture(path: string, contents: string): Promise
         ].filter(Boolean).join('\n')
       )
     : `${contents}\nhttp:\n  maxRequestBytes: 67108864\n  maxResponseBytes: 67108864`;
+  const withRuntimeCapacity = /^runtime:/m.test(withHttpCeilings)
+    ? withHttpCeilings.replace(
+        /^runtime:\s*$/m,
+        [
+          'runtime:',
+          /^\s+maxConcurrency:/m.test(withHttpCeilings)
+            ? ''
+            : '  maxConcurrency: 64'
+        ].filter(Boolean).join('\n')
+      )
+    : `${withHttpCeilings}\nruntime:\n  maxConcurrency: 64`;
   const required = [
-    withHttpCeilings,
+    withRuntimeCapacity,
     /^artifactsPath:/m.test(contents) ? '' : 'artifactsPath: ./artifacts',
     /^serviceDb:/m.test(contents)
       ? ''
@@ -54,7 +65,8 @@ describe('router config', () => {
   it('keeps the checked-in example explicit about the shared artifact path', async () => {
     const examplePath = fileURLToPath(new URL('../router.example.yml', import.meta.url));
     await expect(loadRouterConfig(examplePath)).resolves.toMatchObject({
-      artifactsPath: resolve(fileURLToPath(new URL('..', import.meta.url)), '../var/skiff-artifacts')
+      artifactsPath: resolve(fileURLToPath(new URL('..', import.meta.url)), '../var/skiff-artifacts'),
+      runtimeMaxConcurrency: 256
     });
   });
 
@@ -80,6 +92,7 @@ describe('router config', () => {
         'runtime:',
         '  port: 5011',
         '  path: /runtime-dev',
+        '  maxConcurrency: 17',
         'fileBackend:',
         '  local:',
         '    root: ../var/skiff-file-blobs',
@@ -142,6 +155,7 @@ describe('router config', () => {
       ],
       runtimePath: '/runtime-dev',
       runtimePort: 5011,
+      runtimeMaxConcurrency: 17,
       websocketPath: '/socket',
     });
   });
@@ -167,6 +181,48 @@ describe('router config', () => {
       serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff' },
       http: { maxResponseBytes: 222 }
     });
+  });
+
+  it('requires runtime.maxConcurrency and rejects non-positive unsafe values', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const missingPath = join(dir, 'router-missing.yml');
+    await writeFileRaw(
+      missingPath,
+      [
+        'profile: dev',
+        'artifactsPath: ./artifacts',
+        'serviceDb:',
+        '  mongoUrl: mongodb://127.0.0.1:27017/skiff',
+        'http:',
+        '  maxRequestBytes: 1',
+        '  maxResponseBytes: 1',
+        'runtime:',
+        '  port: 4001',
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(missingPath)).rejects.toThrow(
+      /runtime\.maxConcurrency must be a positive integer/
+    );
+
+    for (const [index, value] of [
+      '0',
+      '-1',
+      '1.5',
+      '"64"',
+      '{}',
+      '9007199254740992'
+    ].entries()) {
+      const configPath = join(dir, `router-runtime-capacity-${index}.yml`);
+      await writeRouterConfigFixture(
+        configPath,
+        ['profile: dev', 'runtime:', `  maxConcurrency: ${value}`, ''].join('\n')
+      );
+      await expect(loadRouterConfig(configPath)).rejects.toThrow(
+        /runtime\.maxConcurrency must be a positive integer/
+      );
+    }
   });
 
   it('allows command line overrides on top of router.yml', async () => {

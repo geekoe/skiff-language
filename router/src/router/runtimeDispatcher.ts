@@ -249,6 +249,7 @@ export interface RuntimeBinaryStreamHandlers {
 
 export interface RuntimeDispatcherOptions {
   frameSender: RuntimeFrameSender;
+  maxConcurrency: number;
   registry: RuntimeDispatchRegistry;
 }
 
@@ -297,10 +298,15 @@ export class RuntimeDispatcher {
   >();
 
   constructor(private readonly options: RuntimeDispatcherOptions) {
+    if (
+      !Number.isSafeInteger(options.maxConcurrency) ||
+      options.maxConcurrency <= 0
+    ) {
+      throw new Error('runtime maxConcurrency must be a positive safe integer');
+    }
     this.options.registry.setInFlightCounter({
       countInFlight: (runtime) => this.countInFlight(runtime),
-      countDeploymentInFlight: (runtime, serviceId, deploymentRevision) =>
-        this.countDeploymentInFlight(runtime, serviceId, deploymentRevision)
+      hasCapacity: (runtime) => this.hasConnectionCapacity(runtime.ws)
     });
   }
 
@@ -332,11 +338,6 @@ export class RuntimeDispatcher {
       const requestId = `spawn-request-${randomUUID()}`;
       const spawnId = submit.spawnId ?? `spawn-${randomUUID()}`;
       const timeoutMs = source.timeoutMs ?? DEFAULT_DERIVED_SPAWN_TIMEOUT_MS;
-      if (source.inFlightCount >= source.maxConcurrency) {
-        throw new ProviderUnavailableError(
-          'Runtime activation has reached its request concurrency capacity'
-        );
-      }
       const request = derivedSpawnRequest(parent.request, submit.target, requestId, timeoutMs);
       await this.dispatchDerivedSpawn(
         ws,
@@ -430,6 +431,7 @@ export class RuntimeDispatcher {
         )
       );
     }
+    this.assertConnectionAdmission(ws);
     return new Promise<void>((resolve, rejectPromise) => {
       const settle = {
         done: false,
@@ -640,6 +642,7 @@ export class RuntimeDispatcher {
         )
       );
     }
+    this.assertConnectionAdmission(connection.ws);
 
     const executionToken = {};
     return new Promise<RuntimeAssemblyWebSocketJsonRpcDispatchResponse>(
@@ -747,6 +750,12 @@ export class RuntimeDispatcher {
       return Promise.reject(new ProviderUnavailableError('Pinned runtime disconnected'));
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
+    try {
+      this.assertRequestIdAvailable(dispatchHeader.requestId);
+      this.assertConnectionAdmission(connection.ws);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const connectionReceipt =
       options.connectionReceipt ?? this.issueConnectionReceipt(connection);
 
@@ -845,6 +854,12 @@ export class RuntimeDispatcher {
       return Promise.reject(new ProviderUnavailableError());
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
+    try {
+      this.assertRequestIdAvailable(dispatchHeader.requestId);
+      this.assertConnectionAdmission(connection.ws);
+    } catch (error) {
+      return Promise.reject(error);
+    }
 
     return new Promise<RuntimeBinaryDispatchResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -917,6 +932,12 @@ export class RuntimeDispatcher {
       );
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
+    try {
+      this.assertRequestIdAvailable(dispatchHeader.requestId);
+      this.assertConnectionAdmission(connection.ws);
+    } catch (error) {
+      return Promise.reject(error);
+    }
 
     return new Promise<RuntimeBinaryDispatchResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -987,33 +1008,40 @@ export class RuntimeDispatcher {
   }
 
   countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number {
+    return this.countInFlightForConnection(runtime.ws);
+  }
+
+  private countInFlightForConnection(ws: WebSocket): number {
     let count = 0;
     for (const pending of this.pending.values()) {
-      if (this.pendingBelongsToRuntime(pending, runtime)) {
+      if (pending.ws === ws) {
         count += 1;
       }
     }
     return count;
   }
 
-  private countDeploymentInFlight(
-    runtime: RuntimeDispatchRuntimeIdentity,
-    serviceId: string,
-    deploymentRevision: string
-  ): number {
-    let count = 0;
-    for (const pending of this.pending.values()) {
-      if (
-        this.pendingBelongsToRuntime(pending, runtime) &&
-        hasRuntimeAssemblyRouting(pending.request) &&
-        pending.request.routing.deployment.serviceId === serviceId &&
-        pending.request.routing.deployment.deploymentRevision ===
-          deploymentRevision
-      ) {
-        count += 1;
-      }
+  private hasConnectionCapacity(ws: WebSocket): boolean {
+    return (
+      ws.readyState === WebSocket.OPEN &&
+      this.countInFlightForConnection(ws) < this.options.maxConcurrency
+    );
+  }
+
+  private assertConnectionAdmission(ws: WebSocket): void {
+    if (!this.hasConnectionCapacity(ws)) {
+      throw new ProviderUnavailableError(
+        `Runtime connection has reached maxConcurrency ${this.options.maxConcurrency}`
+      );
     }
-    return count;
+  }
+
+  private assertRequestIdAvailable(requestId: string): void {
+    if (this.pending.has(requestId)) {
+      throw new ServiceProtocolBoundaryError(
+        `runtime dispatch requestId ${requestId} is already pending`
+      );
+    }
   }
 
   pendingLifecycleCounters(): RuntimeDispatcherPendingCounters {
@@ -1629,15 +1657,6 @@ export class RuntimeDispatcher {
     return pending.ws === ws;
   }
 
-  private pendingBelongsToRuntime(
-    pending: RuntimeInvocation,
-    runtime: RuntimeDispatchRuntimeIdentity
-  ): boolean {
-    if (pending.runtimeId !== undefined) {
-      return pending.runtimeId === runtime.runtimeId;
-    }
-    return pending.ws === runtime.ws;
-  }
 }
 
 function validateCanonicalAssemblyUnaryResponse(

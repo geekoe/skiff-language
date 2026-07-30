@@ -122,6 +122,41 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   expect(registry.snapshot()[0]).not.toHaveProperty('target');
 });
 
+it('skips saturated assembly replicas without hiding them from actor control', () => {
+  const snapshots = new RouterActiveAssemblySnapshotStore();
+  snapshots.replace(snapshot(1, ASSEMBLY_A));
+  const registry = new AssemblyRuntimeRegistry(snapshots);
+  const socketA = fakeSocket();
+  const socketB = fakeSocket();
+  register(registry, socketA, 'replica-a', 1, ASSEMBLY_A);
+  register(registry, socketB, 'replica-b', 1, ASSEMBLY_A);
+  const saturated = new Set<WebSocket>([socketA]);
+  registry.setInFlightCounter({
+    countInFlight: ({ ws }) => saturated.has(ws) ? 1 : 0,
+    hasCapacity: ({ ws }) => !saturated.has(ws)
+  });
+  const request = assemblyHttpRequestHeader({
+    snapshot: snapshots.get(),
+    binding,
+    requestId: 'request-capacity',
+    timeoutMs: 1000,
+    httpRequest: httpRequest()
+  });
+
+  expect(registry.pickDispatchConnection(request)).toMatchObject({
+    runtimeId: 'replica-b'
+  });
+  expect(registry.actorRuntimeCandidates('example/models')).toEqual([
+    { runtimeId: 'replica-a', ws: socketA },
+    { runtimeId: 'replica-b', ws: socketB }
+  ]);
+
+  saturated.add(socketB);
+  expect(registry.pickDispatchConnection(request)).toBeInstanceOf(
+    ProviderUnavailableError
+  );
+});
+
 function httpRequest() {
   return {
     method: 'GET',
@@ -146,7 +181,6 @@ function snapshot(generation: number, assemblyIdentity: string): RouterActiveAss
     deploymentRuntimeBindings: [{
       deployment: binding.deployment,
       packageBuildId: PACKAGE_BUILD_ID,
-      maxConcurrency: 8,
       timeoutMs: 1000
     }],
     ingress: new RuntimeAssemblyIngressIndex([binding])
