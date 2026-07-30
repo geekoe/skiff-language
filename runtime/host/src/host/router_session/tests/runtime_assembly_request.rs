@@ -4,13 +4,13 @@ use serde_json::json;
 use skiff_artifact_model::{
     AssemblyIdentity, GatewayDispatchMode, GatewayProtocolSurface, IngressProtocol,
 };
-use skiff_runtime_request::RouterWriterMessage;
+use skiff_runtime_request::{OutboundControlMessage, RouterWriterMessage};
 use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RequestCancelFrameHeader,
         ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseEndFrameMetadata,
-        ResponseErrorFrameHeader, ResponseStartFrameHeader, TypedEnvelope,
-        BINARY_FRAME_HEADER_ENCODING_JSON, BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
+        ResponseErrorFrameHeader, ResponseStartFrameHeader, SpawnSubmitResponseFrameHeader,
+        TypedEnvelope, BINARY_FRAME_HEADER_ENCODING_JSON, BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
         RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
@@ -18,6 +18,8 @@ use skiff_runtime_transport::{
         RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
         RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestRoutingFrameHeader,
         RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
+        RuntimeAssemblySpawnInvocationFrameHeader, RuntimeAssemblySpawnRequestCallerFrameHeader,
+        RuntimeAssemblySpawnRequestRoutingFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
     },
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -26,6 +28,95 @@ use tokio::{sync::mpsc, time::timeout};
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
 pub(super) mod fixture;
+
+#[tokio::test]
+async fn host_direct_spawn_executes_exact_route_and_cleans_supervision() {
+    let (host, route) = fixture::admitted_spawn_submit_host().await;
+    let parent = canonical_header(&route, "host-direct-spawn-parent");
+    let parent_frame = encode_binary_frame(&parent, b"null").unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &parent_frame, &sender).await.unwrap();
+
+    let message = timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("spawn submit timeout")
+        .expect("spawn submit channel");
+    let RouterWriterMessage::Control(OutboundControlMessage::SpawnSubmit {
+        request: submit,
+        payload,
+    }) = message
+    else {
+        panic!("compiled spawn statement must emit spawn.submit")
+    };
+    assert!(submit
+        .build_id
+        .as_deref()
+        .is_some_and(|build| build.starts_with("skiff-package-build-v10:sha256:")));
+    assert_eq!(submit.target_kind, "function");
+    assert!(!payload.is_empty());
+
+    let receipt = encode_binary_frame(
+        &SpawnSubmitResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "spawn.submit.response".to_string(),
+            rpc_id: submit.rpc_id.clone(),
+            spawn_id: "spawn-direct-1".to_string(),
+            request_id: "host-direct-spawn-child".to_string(),
+            status: "submitted".to_string(),
+        },
+        &[],
+    )
+    .unwrap();
+    dispatch(&host, &receipt, &sender).await.unwrap();
+    let Terminal::End(parent_end, _) = recv_terminal(&mut receiver).await else {
+        panic!("parent request must finish after submitted receipt")
+    };
+    assert_eq!(parent_end.request_id, parent.request_id);
+
+    let spawn = direct_spawn_header(
+        &route,
+        "host-direct-spawn-child",
+        submit.target.clone(),
+        None,
+    );
+    let spawn_frame = encode_binary_frame(&spawn, &payload).unwrap();
+    dispatch(&host, &spawn_frame, &sender).await.unwrap();
+    let Terminal::End(end, returned_payload) = recv_terminal(&mut receiver).await else {
+        panic!("exact direct spawn target must finish successfully")
+    };
+    assert_eq!(end.request_id, spawn.request_id);
+    assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
+    assert!(returned_payload.is_empty());
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+
+    let unknown = direct_spawn_header(
+        &route,
+        "host-direct-spawn-unknown",
+        "function:missing".to_string(),
+        None,
+    );
+    let unknown_frame = encode_binary_frame(&unknown, &payload).unwrap();
+    dispatch(&host, &unknown_frame, &sender).await.unwrap();
+    let Terminal::Error(error, _) = recv_terminal(&mut receiver).await else {
+        panic!("unknown direct spawn target must fail closed")
+    };
+    assert_eq!(error.request_id(), unknown.request_id);
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+
+    let expired = direct_spawn_header(
+        &route,
+        "host-direct-spawn-expired",
+        submit.target,
+        Some(deadline(0, 0)),
+    );
+    let expired_frame = encode_binary_frame(&expired, &payload).unwrap();
+    dispatch(&host, &expired_frame, &sender).await.unwrap();
+    let Terminal::Error(error, _) = recv_terminal(&mut receiver).await else {
+        panic!("expired direct spawn request must use ordinary response.error")
+    };
+    assert_eq!(error.request_id(), expired.request_id);
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+}
 
 #[tokio::test]
 async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
@@ -766,6 +857,44 @@ fn canonical_header(
             headers: Vec::new(),
         },
         test_effects_enabled: false,
+        test_case_capability: None,
+    }
+}
+
+fn direct_spawn_header(
+    route: &ActiveAssemblyRoute,
+    request_id: &str,
+    target: String,
+    deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
+) -> RuntimeAssemblySpawnRequestStartFrameHeader {
+    RuntimeAssemblySpawnRequestStartFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        frame_type: "request.start".to_string(),
+        request_id: request_id.to_string(),
+        mode: "unary".to_string(),
+        caller: RuntimeAssemblySpawnRequestCallerFrameHeader {
+            kind: "service".to_string(),
+        },
+        routing: RuntimeAssemblySpawnRequestRoutingFrameHeader {
+            kind: "runtimeAssembly".to_string(),
+            assembly_identity: route.assembly_identity().clone(),
+            assembly_generation: route.generation(),
+            deployment: route.deployment().clone(),
+        },
+        invocation: RuntimeAssemblySpawnInvocationFrameHeader {
+            kind: "spawn".to_string(),
+            target_kind: "function".to_string(),
+            target,
+        },
+        deadline,
+        trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace_id: format!("trace-{request_id}"),
+            span_id: "span-host-direct-spawn".to_string(),
+            parent_span_id: None,
+            sampled: None,
+        },
+        test_effects_enabled: false,
+        test_case_capability: None,
     }
 }
 

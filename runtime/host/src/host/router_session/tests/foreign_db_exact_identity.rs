@@ -522,6 +522,7 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
             headers: Vec::new(),
         },
         test_effects_enabled: true,
+        test_case_capability: Some("test-case-capability-p3x".to_string()),
     };
     let frame = encode_binary_frame(&header, b"null").unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel::<RouterWriterMessage>();
