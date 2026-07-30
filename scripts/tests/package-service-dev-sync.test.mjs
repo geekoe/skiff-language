@@ -34,6 +34,89 @@ test('dev registry distinguishes package and service roots and preserves strict 
   await assert.rejects(readDevRegistry(registryPath), /fields must be exactly/);
 });
 
+test('registry classifies real service manifest shapes and persists their service IDs', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-service-manifests-'));
+  const manifests = [
+    {
+      name: 'agine',
+      id: 'agine.ai/api',
+      source: 'id: agine.ai/api\n',
+    },
+    {
+      name: 'aihub',
+      id: 'agine.ai/aihub',
+      source: [
+        'id: agine.ai/aihub',
+        '',
+        'serviceCalls:',
+        '  - managedLlm',
+        '  - providerCatalog',
+        '',
+      ].join('\n'),
+    },
+    {
+      name: 'codex-relay',
+      id: 'agine.ai/codex-relay',
+      source: [
+        'id: agine.ai/codex-relay',
+        'serviceCalls:',
+        '  - relayProxy',
+        '',
+      ].join('\n'),
+    },
+  ];
+  const roots = [];
+  for (const manifest of manifests) {
+    const root = join(temp, manifest.name);
+    await writePackageRoot(root, { packageId: manifest.id });
+    await writeFile(join(root, 'service.yml'), manifest.source);
+    roots.push(await classifyAuthoringRoot(root));
+  }
+
+  assert.deepEqual(
+    roots.map(({ kind, serviceId }) => ({ kind, serviceId })),
+    manifests.map(({ id }) => ({ kind: 'service', serviceId: id })),
+  );
+  const registryPath = join(temp, 'watch.json');
+  await writeDevRegistry(registryPath, { environment: 'dev', roots });
+  assert.deepEqual(
+    (await readDevRegistry(registryPath)).roots.map(({ serviceId }) => serviceId).sort(),
+    manifests.map(({ id }) => id).sort(),
+  );
+});
+
+test('registry service manifest identity parsing fails closed', async () => {
+  const malformed = [
+    {
+      name: 'sequence-root',
+      source: '- id: example.com/service\n',
+      error: /root must be an object/,
+    },
+    {
+      name: 'duplicate-id',
+      source: 'id: example.com/first\nid: example.com/second\n',
+      error: /YAML parse error.*Map keys must be unique/,
+    },
+    {
+      name: 'invalid-yaml',
+      source: 'id: example.com/service\nserviceCalls:\n  - valid\n broken\n',
+      error: /YAML parse error/,
+    },
+    {
+      name: 'invalid-kind',
+      source: 'id: example.com/service\nkind: worker\n',
+      error: /kind must be service or test/,
+    },
+  ];
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-malformed-service-'));
+  for (const fixture of malformed) {
+    const root = join(temp, fixture.name);
+    await writePackageRoot(root);
+    await writeFile(join(root, 'service.yml'), fixture.source);
+    await assert.rejects(classifyAuthoringRoot(root), fixture.error);
+  }
+});
+
 test('missing package manifest and retired authoring files fail closed', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-invalid-'));
   await assert.rejects(classifyAuthoringRoot(temp), /must contain package\.yml/);

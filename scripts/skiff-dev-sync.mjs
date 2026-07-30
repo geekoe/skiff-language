@@ -18,12 +18,11 @@ export {
 } from './lib/dev-assembly-activation.mjs';
 import {
   assertEnvironment,
-  assertServiceId,
   devRegistrySchemaVersion,
   readStoredDevRegistry,
   writeStoredDevRegistry,
 } from './lib/dev-registry-store.mjs';
-import { parseSimpleYamlObject } from './lib/simple-yaml.mjs';
+import { parseServiceManifestIdentity } from './lib/service-manifest-identity.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = dirname(scriptDir);
@@ -502,8 +501,10 @@ export async function classifyAuthoringRoot(root) {
     return { kind: 'package', root: absolute };
   }
   const servicePath = join(absolute, 'service.yml');
-  const service = parseSimpleYamlObject(await readFile(servicePath, 'utf8'), servicePath);
-  assertServiceId(service.id, `${servicePath} id`);
+  const service = parseServiceManifestIdentity(
+    await readFile(servicePath, 'utf8'),
+    servicePath,
+  );
   return { kind: 'service', root: absolute, serviceId: service.id };
 }
 

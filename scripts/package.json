@@ -17,6 +17,9 @@
     "test": "node verify.mjs --only scripts",
     "websocket-fixture:smoke": "node ../runtime/scripts/websocket-fixture-smoke-playwright.mjs"
   },
+  "dependencies": {
+    "yaml": "^2.8.3"
+  },
   "devDependencies": {
     "playwright": "^1.56.1"
   }
