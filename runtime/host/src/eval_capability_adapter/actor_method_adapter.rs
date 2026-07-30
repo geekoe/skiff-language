@@ -77,6 +77,7 @@ impl ActorMethodEvalExecution {
         )?;
         let package_configs = super::assembly_request_adapter::package_config_views(
             input.execution_image.as_ref(),
+            input.activation.implementation_package_build_id(),
             &input.activation.owned_bindings().config_literals,
         )?;
         let target = "actor.method".to_string();

@@ -338,8 +338,10 @@ impl RuntimeWebSocketJsonRpcEvalAdapter for RuntimeAssemblyExecutionContext {
 
 pub(super) fn package_config_views(
     image: &skiff_runtime_linked_program::AssemblyExecutionImage,
+    implementation_package_build_id: &skiff_artifact_model::PackageBuildId,
     literals: &[skiff_artifact_model::ConfigLiteralBinding],
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
+    let active_slots = activation_package_slots(image, implementation_package_build_id)?;
     let mut requirements_by_slot = Vec::with_capacity(image.execution_packages().len());
     for (slot, package) in image.execution_packages().iter().enumerate() {
         if package.code_slot().index() != slot {
@@ -350,18 +352,61 @@ pub(super) fn package_config_views(
         }
         requirements_by_slot.push(package.artifact().runtime_requirements.config.as_slice());
     }
-    package_config_views_from_requirements(&requirements_by_slot, literals)
+    package_config_views_from_requirements(&requirements_by_slot, &active_slots, literals)
+}
+
+fn activation_package_slots(
+    image: &skiff_runtime_linked_program::AssemblyExecutionImage,
+    implementation_package_build_id: &skiff_artifact_model::PackageBuildId,
+) -> anyhow::Result<std::collections::BTreeSet<usize>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let links = image
+        .shared_packages()
+        .package_link_plan()
+        .package_links
+        .iter()
+        .map(|binding| (binding.key.clone(), &binding.package.package_build_id))
+        .collect::<BTreeMap<_, _>>();
+    let mut active_slots = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut pending = vec![implementation_package_build_id.clone()];
+    while let Some(build_id) = pending.pop() {
+        if !visited.insert(build_id.clone()) {
+            continue;
+        }
+        let package = image.code_by_build(&build_id).ok_or_else(|| {
+            anyhow::anyhow!("activation package closure targets missing build {build_id}")
+        })?;
+        active_slots.insert(package.code_slot().index());
+        for requirement in &package.artifact().package_requirements {
+            let key = skiff_artifact_model::PackageRequirementKey {
+                caller_package_build_id: build_id.clone(),
+                package_requirement_alias: requirement.alias.clone(),
+            };
+            let provider = links.get(&key).ok_or_else(|| {
+                anyhow::anyhow!("activation package requirement {key:?} has no canonical link")
+            })?;
+            pending.push((*provider).clone());
+        }
+    }
+    Ok(active_slots)
 }
 
 fn package_config_views_from_requirements(
     requirements_by_slot: &[&[skiff_artifact_model::PackageConfigRequirement]],
+    active_slots: &std::collections::BTreeSet<usize>,
     literals: &[skiff_artifact_model::ConfigLiteralBinding],
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
     use std::collections::BTreeSet;
 
     let mut known_paths = BTreeSet::new();
     let mut views = Vec::with_capacity(requirements_by_slot.len());
-    for requirements in requirements_by_slot {
+    for (slot, requirements) in requirements_by_slot.iter().enumerate() {
+        if !active_slots.contains(&slot) {
+            views.push(crate::config_view::RuntimeConfigView::from_activation_literals(&[])?);
+            continue;
+        }
         let required_paths = requirements
             .iter()
             .map(|requirement| requirement.path.as_str())
@@ -393,6 +438,8 @@ fn package_config_views_from_requirements(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
     use skiff_artifact_model::{ConfigLiteralBinding, MetadataValue, PackageConfigRequirement};
 
@@ -422,6 +469,7 @@ mod tests {
         let dependency = [requirement("dependency.token", "string", true)];
         let views = package_config_views_from_requirements(
             &[&own, &dependency],
+            &BTreeSet::from([0, 1]),
             &[
                 literal("cookieName", MetadataValue::String("sid".into())),
                 literal("maxAgeSeconds", MetadataValue::Number(3600.into())),
@@ -449,14 +497,17 @@ mod tests {
     #[test]
     fn package_config_projection_fails_closed() {
         let own = [requirement("cookieName", "string", true)];
+        let active_slots = BTreeSet::from([0]);
 
-        let missing = package_config_views_from_requirements(&[&own], &[]).unwrap_err();
+        let missing =
+            package_config_views_from_requirements(&[&own], &active_slots, &[]).unwrap_err();
         assert!(missing
             .to_string()
             .contains("cookieName required value is missing"));
 
         let wrong_type = package_config_views_from_requirements(
             &[&own],
+            &active_slots,
             &[literal("cookieName", MetadataValue::Number(1.into()))],
         )
         .unwrap_err();
@@ -466,6 +517,7 @@ mod tests {
 
         let unknown = package_config_views_from_requirements(
             &[&own],
+            &active_slots,
             &[
                 literal("cookieName", MetadataValue::String("sid".into())),
                 literal("retired.key", MetadataValue::String("stale".into())),
@@ -478,6 +530,7 @@ mod tests {
 
         let duplicate = package_config_views_from_requirements(
             &[&own],
+            &active_slots,
             &[
                 literal("cookieName", MetadataValue::String("sid".into())),
                 literal("cookieName", MetadataValue::String("other".into())),
@@ -485,5 +538,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(duplicate.to_string().contains("cookieName is duplicated"));
+    }
+
+    #[test]
+    fn package_config_projection_is_scoped_to_the_active_deployment_closure() {
+        let relay = [];
+        let agine = [];
+        let http_session = [
+            requirement("cookieName", "string", true),
+            requirement("maxAgeSeconds", "number", true),
+        ];
+
+        let relay_views = package_config_views_from_requirements(
+            &[&relay, &agine, &http_session],
+            &BTreeSet::from([0]),
+            &[],
+        )
+        .expect("Relay must not validate Agine's http-session config shape");
+        assert_eq!(relay_views.len(), 3);
+        assert_eq!(relay_views[0].resolved_config_value(), &json!({}));
+        assert_eq!(relay_views[2].resolved_config_value(), &json!({}));
+
+        let missing_agine = package_config_views_from_requirements(
+            &[&relay, &agine, &http_session],
+            &BTreeSet::from([1, 2]),
+            &[],
+        )
+        .unwrap_err();
+        assert!(missing_agine
+            .to_string()
+            .contains("cookieName required value is missing"));
+
+        let agine_views = package_config_views_from_requirements(
+            &[&relay, &agine, &http_session],
+            &BTreeSet::from([1, 2]),
+            &[
+                literal("cookieName", MetadataValue::String("agine_session".into())),
+                literal("maxAgeSeconds", MetadataValue::Number(2_592_000.into())),
+            ],
+        )
+        .expect("Agine must validate its own http-session config");
+        assert_eq!(
+            agine_views[2].resolved_config_value(),
+            &json!({"cookieName": "agine_session", "maxAgeSeconds": 2_592_000})
+        );
+
+        let foreign_literal = package_config_views_from_requirements(
+            &[&relay, &agine, &http_session],
+            &BTreeSet::from([0]),
+            &[literal(
+                "cookieName",
+                MetadataValue::String("agine_session".into()),
+            )],
+        )
+        .unwrap_err();
+        assert!(foreign_literal
+            .to_string()
+            .contains("cookieName is not required by an exact active package slot"));
     }
 }
