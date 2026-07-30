@@ -573,6 +573,29 @@ fn file_ir_db_indexes_require_unique_names_fields_and_ordered_specs() {
         .get_mut("Thread")
         .expect("fixture DB")
         .fields[0];
+    owner.ty = TypeRefIr::Union {
+        items: vec![
+            TypeRefIr::Literal {
+                value: crate::types::LiteralIr::String {
+                    value: "open".to_string(),
+                },
+            },
+            TypeRefIr::Literal {
+                value: crate::types::LiteralIr::String {
+                    value: "closed".to_string(),
+                },
+            },
+        ],
+    };
+    validate_file_ir_db_indexes(&unit)
+        .expect("string literal unions have one scalar Mongo representation");
+
+    let owner = &mut unit
+        .declarations
+        .db
+        .get_mut("Thread")
+        .expect("fixture DB")
+        .fields[0];
     owner.ty = TypeRefIr::Builtin {
         name: "Array".to_string(),
         args: vec![TypeRefIr::builtin("string")],

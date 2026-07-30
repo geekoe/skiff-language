@@ -192,6 +192,7 @@ fn production_package_compile_accepts_only_scalar_index_keys() {
               count: integer,
               active: bool,
               at: OptionalDate,
+              state: "open" | "closed",
               data: bytes,
               nested: Nested?
             }
@@ -201,6 +202,7 @@ fn production_package_compile_accepts_only_scalar_index_keys() {
               index byCount(count)
               index byActive(active)
               index byAt(at)
+              index byState(state)
               index byData(data)
               index byNestedLabel(nested.label)
             }
@@ -236,6 +238,37 @@ fn production_package_compile_accepts_only_scalar_index_keys() {
     ] {
         assert_compile_error(source, expected);
     }
+}
+
+#[test]
+fn production_package_compile_accepts_root_qualified_scalar_aliases() {
+    compile_sources(&[
+        (
+            "api/ids.skiff",
+            "api.ids",
+            "alias UserId = string type Sequence = number type Owner { id: UserId }",
+        ),
+        (
+            "internal/model.skiff",
+            "internal.model",
+            r#"
+                alias UserId = root.api.ids.UserId
+                type User {
+                  id: UserId,
+                  ownerId: root.api.ids.UserId,
+                  sequence: root.api.ids.Sequence,
+                  owner: root.api.ids.Owner
+                }
+                db object User {
+                  primary key(id)
+                  index byOwner(ownerId)
+                  index bySequence(sequence)
+                  index byNestedOwner(owner.id)
+                }
+            "#,
+        ),
+    ])
+    .expect("root-qualified aliases and represented scalar types are indexable");
 }
 
 #[test]

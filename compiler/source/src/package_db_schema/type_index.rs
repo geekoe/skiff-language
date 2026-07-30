@@ -105,6 +105,15 @@ impl<'a> PackageDbTypeIndex<'a> {
         seen: &mut BTreeSet<(String, String)>,
     ) -> bool {
         match ty {
+            TypeExpr::StringLiteral(_) => true,
+            TypeExpr::Union(items)
+                if !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| matches!(item, TypeExpr::StringLiteral(_))) =>
+            {
+                true
+            }
             TypeExpr::Nullable(inner) if nullable => {
                 self.is_indexable_scalar_expr(owner, inner, false, seen)
             }
@@ -127,7 +136,8 @@ impl<'a> PackageDbTypeIndex<'a> {
                 if is_explicit_indexable_scalar(name) {
                     return true;
                 }
-                if let Some(target) = owner.alias_targets.get(name) {
+                let canonical_name = canonical_source_type_name(name);
+                if let Some(target) = owner.alias_targets.get(canonical_name) {
                     let key = (owner.module_path.to_string(), name.clone());
                     if !seen.insert(key.clone()) {
                         return false;
@@ -166,6 +176,7 @@ impl<'a> PackageDbTypeIndex<'a> {
 }
 
 fn source_type_lookup_key(module_path: &str, type_name: &str) -> Option<SourceSymbolKey> {
+    let type_name = canonical_source_type_name(type_name);
     if let Some((source_module, source_symbol)) = type_name.rsplit_once('.') {
         if source_module.is_empty() || source_symbol.is_empty() {
             return None;
@@ -186,7 +197,7 @@ fn expand_transparent_aliases(raw: &str, aliases: &BTreeMap<String, String>) -> 
         if !args.is_empty() {
             return Some(current);
         }
-        let Some(target) = aliases.get(&name) else {
+        let Some(target) = aliases.get(canonical_source_type_name(&name)) else {
             return Some(current);
         };
         if !seen.insert(name) {
@@ -194,6 +205,10 @@ fn expand_transparent_aliases(raw: &str, aliases: &BTreeMap<String, String>) -> 
         }
         current = target.clone();
     }
+}
+
+fn canonical_source_type_name(name: &str) -> &str {
+    name.strip_prefix("root.").unwrap_or(name)
 }
 
 fn unwrap_nullable_named_type(ty: &TypeExpr) -> Option<&str> {

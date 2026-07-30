@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::types::{TypeDescriptorIr, TypeRefIr};
+use crate::types::{LiteralIr, TypeDescriptorIr, TypeRefIr};
 
 use super::{DbDeclarationIr, DbFieldStorageIr, DbIndexDirectionIr, FileIrUnit};
 
@@ -271,6 +271,22 @@ fn is_indexable_scalar(
     seen: &mut BTreeSet<u32>,
 ) -> bool {
     match ty {
+        TypeRefIr::Literal {
+            value: LiteralIr::String { .. },
+        } => true,
+        TypeRefIr::Union { items }
+            if !items.is_empty()
+                && items.iter().all(|item| {
+                    matches!(
+                        item,
+                        TypeRefIr::Literal {
+                            value: LiteralIr::String { .. }
+                        }
+                    )
+                }) =>
+        {
+            true
+        }
         TypeRefIr::Builtin { name, args }
             if args.is_empty() && is_db_indexable_scalar_builtin(name) =>
         {
