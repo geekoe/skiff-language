@@ -12,9 +12,8 @@ use skiff_artifact_model::{
     GatewayAdapterSource, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
     GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
     PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    PackageRequirementKey, ResolvedServiceBinding, ResourceBinding, RuntimeAssembly,
-    RuntimeCapabilityBinding, ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding,
-    GATEWAY_ENTRY_IDENTITY_PREFIX,
+    PackageRequirementKey, ResolvedServiceBinding, RuntimeAssembly, ServiceDeployment,
+    ServiceRequirementKey, ServiceSelectorBinding, GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use crate::fixtures::{
@@ -85,17 +84,6 @@ fn rich_deployment() -> ServiceDeployment {
         },
         gateway_entry_key: health_key,
     });
-    deployment.resource_bindings.push(ResourceBinding {
-        requirement_key: "mailer".to_string(),
-        capability: "smtp".to_string(),
-        resource_ref: "resource://mailer/default".to_string(),
-    });
-    deployment
-        .runtime_capability_bindings
-        .push(RuntimeCapabilityBinding {
-            capability: "clock".to_string(),
-            version: "1".to_string(),
-        });
     assign_service_deployment_identity(&mut deployment).expect("rich deployment identity");
     deployment
 }
@@ -179,8 +167,6 @@ fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
     reordered.package_bindings.reverse();
     reordered.service_selectors.reverse();
     reordered.ingress.reverse();
-    reordered.resource_bindings.reverse();
-    reordered.runtime_capability_bindings.reverse();
     let entries = reordered.gateway_entries.clone();
     reordered.gateway_entries = BTreeMap::new();
     for (key, entry) in entries.into_iter().rev() {
@@ -385,14 +371,6 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
                     gateway_entry_identity(&entry.protocol_surface).unwrap();
             }),
         ),
-        (
-            "resource",
-            Box::new(|value| value.resource_bindings[0].resource_ref = "resource://next".into()),
-        ),
-        (
-            "capability",
-            Box::new(|value| value.runtime_capability_bindings[0].version = "2".into()),
-        ),
     ];
 
     for (label, mutate) in cases {
@@ -596,16 +574,6 @@ fn assembly_identity_includes_graph_link_plan_and_templates() {
         runtime_assembly_identity(&service_template).unwrap(),
         expected
     );
-
-    let mut activation = assembly.clone();
-    activation.activation_templates[0]
-        .resource_bindings
-        .push(ResourceBinding {
-            requirement_key: "activation-resource".to_string(),
-            capability: "identity".to_string(),
-            resource_ref: "resource://activation".to_string(),
-        });
-    assert_ne!(runtime_assembly_identity(&activation).unwrap(), expected);
 
     let mut ingress = assembly.clone();
     ingress

@@ -152,11 +152,7 @@ pub fn package(
         package_requirements,
         contract_requirements,
         service_requirements,
-        runtime_requirements: PackageRuntimeRequirements {
-            config: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
-        },
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs,
@@ -224,8 +220,6 @@ pub fn deployment(
         service_selectors,
         gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: Vec::new(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: contract.service_id.clone(),
             notes: BTreeMap::new(),

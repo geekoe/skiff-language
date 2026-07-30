@@ -85,8 +85,6 @@ fn project_service_deployment_after_package_validation(
         service_selectors: input.service_selectors,
         gateway_entries: input.gateway_entries,
         ingress: input.ingress,
-        resource_bindings: input.resource_bindings,
-        runtime_capability_bindings: input.runtime_capability_bindings,
         diagnostic_text: input.diagnostic_text,
     };
     normalize_deployment(&mut deployment);
@@ -199,16 +197,6 @@ fn normalize_deployment(deployment: &mut ServiceDeployment) {
     deployment
         .ingress
         .sort_by(|left, right| left.selector.cmp(&right.selector));
-    deployment
-        .resource_bindings
-        .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
-    deployment
-        .runtime_capability_bindings
-        .sort_by(|left, right| {
-            left.capability
-                .cmp(&right.capability)
-                .then_with(|| left.version.cmp(&right.version))
-        });
 }
 
 #[cfg(test)]

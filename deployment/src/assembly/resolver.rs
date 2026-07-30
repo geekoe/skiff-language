@@ -151,14 +151,10 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 bindings: bindings.into_values().collect(),
             },
         );
-        let mut activation = ActivationTemplate {
+        let activation = ActivationTemplate {
             deployment: reference.clone(),
             implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-            resource_bindings: deployment.resource_bindings.clone(),
         };
-        activation
-            .resource_bindings
-            .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
         self.activation_templates
             .insert(reference.clone(), activation);
     }

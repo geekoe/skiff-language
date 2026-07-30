@@ -90,8 +90,6 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
             },
             gateway_entry_key,
         }],
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: Vec::new(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Echo deployment".to_string(),
             notes: BTreeMap::new(),
@@ -115,8 +113,6 @@ pub fn service_deployment_fixture() -> Result<ServiceDeployment> {
         service_selectors: input.service_selectors,
         gateway_entries: input.gateway_entries,
         ingress: input.ingress,
-        resource_bindings: input.resource_bindings,
-        runtime_capability_bindings: input.runtime_capability_bindings,
         diagnostic_text: input.diagnostic_text,
     };
     assign_service_deployment_identity(&mut deployment)?;
@@ -171,7 +167,6 @@ pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
         activation_templates: vec![ActivationTemplate {
             deployment: deployment_ref.clone(),
             implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-            resource_bindings: deployment.resource_bindings.clone(),
         }],
         gateway_ingress: Vec::new(),
     };

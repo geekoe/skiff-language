@@ -84,12 +84,8 @@ impl ProjectionFixture {
                 value_type: "string".to_string(),
                 required: true,
             }],
-            state: vec![BoundaryStateRequirement {
-                key: "echo-db".to_string(),
-                kind: BoundaryStateKind::ExternalResource,
-            }],
+            state: Vec::new(),
             native_capabilities: Vec::new(),
-            runtime_capabilities: vec!["async".to_string()],
             complete_may_effects: no_effects(),
             provenance: facts.provenance.clone(),
         };
@@ -202,14 +198,6 @@ impl ProjectionFixture {
                         value_type: "string".to_string(),
                     },
                 }],
-                resources: vec![PackageResourceRequirement {
-                    key: "echo-db".to_string(),
-                    capability: "mongodb".to_string(),
-                }],
-                runtime_capabilities: vec![PackageRuntimeCapabilityRequirement {
-                    capability: "async".to_string(),
-                    required_version: "1".to_string(),
-                }],
             },
             callable_semantic_facts: BTreeMap::from([(callable_id.clone(), facts)]),
             boundary_projections: BTreeMap::from([(
@@ -243,15 +231,6 @@ impl ProjectionFixture {
             service_selectors: Vec::new(),
             gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
-            resource_bindings: vec![ResourceBinding {
-                requirement_key: "echo-db".to_string(),
-                capability: "mongodb".to_string(),
-                resource_ref: "resource:echo".to_string(),
-            }],
-            runtime_capability_bindings: vec![RuntimeCapabilityBinding {
-                capability: "async".to_string(),
-                version: "1".to_string(),
-            }],
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "Echo deployment".to_string(),
                 notes: BTreeMap::new(),
@@ -690,27 +669,7 @@ fn deployment_requires_the_exact_validated_package_schema_closure() {
 }
 
 #[test]
-fn required_activation_bindings_and_protocol_identity_are_exact() {
-    let mut fixture = ProjectionFixture::new();
-    fixture.input.resource_bindings.clear();
-    assert!(matches!(
-        fixture.project(),
-        Err(ProjectionError::MissingRequirementBinding {
-            kind: "resource",
-            ..
-        })
-    ));
-
-    let mut fixture = ProjectionFixture::new();
-    fixture.input.runtime_capability_bindings.clear();
-    assert!(matches!(
-        fixture.project(),
-        Err(ProjectionError::MissingRequirementBinding {
-            kind: "runtime capability",
-            ..
-        })
-    ));
-
+fn protocol_identity_is_exact() {
     let mut fixture = ProjectionFixture::new();
     fixture.input.contract.service_protocol_identity = ServiceProtocolIdentity::new("wrong");
     assert!(matches!(
@@ -1063,11 +1022,7 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
-        runtime_requirements: PackageRuntimeRequirements {
-            config: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
-        },
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),

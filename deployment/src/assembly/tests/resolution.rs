@@ -379,40 +379,4 @@ fn changing_a_resolved_build_or_activation_template_changes_identity() {
     )
     .unwrap();
     assert_ne!(build_a.assembly_identity, build_b.assembly_identity);
-
-    let template_package = package("package.identity-template", &[], &[]);
-    let base = deployment(
-        &root_contract,
-        &template_package,
-        "template-revision",
-        Vec::new(),
-        Vec::new(),
-    );
-    let mut changed = base.clone();
-    changed
-        .resource_bindings
-        .push(skiff_artifact_model::ResourceBinding {
-            requirement_key: "identity-only".to_string(),
-            capability: "identity-only".to_string(),
-            resource_ref: "resource://changed".to_string(),
-        });
-    assign_service_deployment_identity(&mut changed).unwrap();
-    let base_assembly = resolve_runtime_assembly(
-        &[deployment_ref(&base)],
-        &[base],
-        std::slice::from_ref(&root_contract),
-        std::slice::from_ref(&template_package),
-    )
-    .unwrap();
-    let changed_assembly = resolve_runtime_assembly(
-        &[deployment_ref(&changed)],
-        &[changed],
-        &[root_contract],
-        &[template_package],
-    )
-    .unwrap();
-    assert_ne!(
-        base_assembly.assembly_identity,
-        changed_assembly.assembly_identity
-    );
 }

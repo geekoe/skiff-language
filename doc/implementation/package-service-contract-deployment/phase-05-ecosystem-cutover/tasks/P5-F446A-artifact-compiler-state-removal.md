@@ -5,10 +5,12 @@
 建立后续任务唯一共享checkpoint：
 
 - 从ServiceDeploymentInput、ServiceDeployment、DeploymentArtifact、RuntimeAssembly、activation template及
-  identity projection删除config literal、SecretRef、state/resource/policy字段，删除`DeploymentPolicy`与
-  `ResourcePolicy`类型；service级timeout、quota、principal、CPU和memory占位值不保留；
+  identity projection删除config literal、SecretRef、state/resource/runtime-capability/policy字段，删除
+  `DeploymentPolicy`、`ResourcePolicy`、`ResourceBinding`与`RuntimeCapabilityBinding`类型；service级
+  timeout、quota、principal、CPU和memory占位值不保留；
 - 删除SecretRef DTO/validator/identity、PackageRuntimeRequirements.state、StateBinding、
-  StateBindingKind及所有public re-export；
+  StateBindingKind、`PackageResourceRequirement`、`PackageRuntimeCapabilityRequirement`及所有public
+  re-export；`PackageRuntimeRequirements`只保存本Package的typed config requirements；
 - `package.yml state`成为unknown key并fail closed；
 - Package compiler只从本Package源码收集own typed config requirements和DB metadata，不复制dependency；
 - 定义strict `RuntimeConfigSnapshotRef`、snapshot DTO与committed generation中并列的assembly/snapshot refs；
@@ -26,3 +28,8 @@ producer/reader/golden/checker同commit更新，不兼容旧shape。
 - compiler fixture证明service package own requirements、dependency requirements不复制、DB metadata不再要求
   manifest state；
 - 反向搜索覆盖生产、public API、golden和checker，不只删主DTO。
+
+删除边界必须精确：`package.yml.resources`、`PackageArtifact.staticResources`、resource blob
+store/loader和`std.resource.*`属于Package静态资源能力，继续保留；`NativeRequiredContext`、
+`NativeCapabilityContexts`及Router `runtime.capabilities` transport feature flags也继续保留，不能因名称
+相似而当作上述空binding脚手架删除。
