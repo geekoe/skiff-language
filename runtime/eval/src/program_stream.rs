@@ -74,9 +74,11 @@ impl Interpreter {
         stream_value: Value,
         item_type: Option<RuntimeTypePlan>,
         cancel_signals: &[StreamCancelSignal],
+        prepared_supervision: Option<SupervisedStreamConsumptionChild>,
     ) -> Result<Flow> {
         let stream_runtime = context.stream_runtime();
-        let supervision = env.stream_consumer_supervision_for(&stream_value);
+        let supervision =
+            prepared_supervision.or_else(|| env.stream_consumer_supervision_for(&stream_value));
         let mut cleanup = match &supervision {
             Some(supervision) => supervision.consumer_cleanup(&stream_value),
             None => StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value),
@@ -184,6 +186,7 @@ impl Interpreter {
                 stream_value.clone(),
                 Some(item_type),
                 std::slice::from_ref(&cancel_signal),
+                None,
             )
             .await;
         consumer_result
@@ -316,30 +319,33 @@ impl Interpreter {
     /// runs it concurrently with `consumer`, mirroring how
     /// `exec_program_stream_producer_for_in` co-drives an inline producer. When
     /// no producer is parked for the stream this simply awaits the consumer.
-    pub async fn drive_deferred_stream_producer<'fut, T, Fut>(
+    pub async fn drive_deferred_stream_producer<T, Factory, Fut>(
         &self,
         context: ProgramExecutionContext<'_>,
         addr: &ExecutableAddr,
         stream_value: &Value,
-        consumer: Fut,
+        consumer: Factory,
     ) -> Result<T>
     where
-        Fut: std::future::Future<Output = Result<T>> + 'fut,
+        Factory: FnOnce(Option<SupervisedStreamConsumptionChild>) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
     {
         let Some(prepared) =
             stream_id(stream_value).and_then(|id| self.deferred_stream_producers.take(id))
         else {
-            return consumer.await;
+            return consumer(None).await;
         };
         // The producer now runs on its own spawned task rather than being
         // co-driven with the consumer, so the consumer future no longer compounds
         // producer-stack frames and the previous `Box::pin` mitigation is no
         // longer required.
+        let prepared = PreparedNativeStreamProducer::new(prepared);
+        let supervision = prepared.consumption_child();
         self.exec_prepared_native_stream_producer_arg(
             context,
             addr,
-            PreparedNativeStreamProducer::new(prepared),
-            consumer,
+            prepared,
+            consumer(Some(supervision)),
         )
         .await
     }

@@ -171,6 +171,7 @@ async fn f445h_e4r_stream_invocation_binary_loop_natural_end_disarms_cleanup() {
             &RuntimeTypePlan::json_value_plan(),
             &[],
             false,
+            None,
             &mut |event| {
                 events.push(event);
                 Ok::<_, ()>(())
@@ -268,6 +269,7 @@ pub(super) async fn logical_end_cleanup_count() -> usize {
             &RuntimeTypePlan::json_value_plan(),
             &[],
             false,
+            None,
             &mut |event| {
                 events.push(event);
                 Ok::<_, ()>(())

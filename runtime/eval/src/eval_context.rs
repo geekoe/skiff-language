@@ -787,24 +787,26 @@ impl<'a> EvalContext<'a> {
             let interpreter = self.interpreter;
             let drive_context = self.context.clone();
             let addr = self.addr;
-            let consumer = interpreter.exec_program_stream_for_in(
-                self.context.clone(),
-                self.heap,
-                self.env,
-                self.addr,
-                self.file,
-                self.executable,
-                item_slot,
-                body,
-                stream_value.clone(),
-                stream_item_type,
-                &cancel_signals,
-            );
             // If this stream value is backed by a deferred producer (a producer
             // call bound to a value rather than consumed inline), co-drive that
             // producer here so its `emit`s run with their own stream sink.
             return interpreter
-                .drive_deferred_stream_producer(drive_context, addr, &stream_value, consumer)
+                .drive_deferred_stream_producer(drive_context, addr, &stream_value, |supervision| {
+                    interpreter.exec_program_stream_for_in(
+                        self.context.clone(),
+                        self.heap,
+                        self.env,
+                        self.addr,
+                        self.file,
+                        self.executable,
+                        item_slot,
+                        body,
+                        stream_value.clone(),
+                        stream_item_type,
+                        &cancel_signals,
+                        supervision,
+                    )
+                })
                 .await;
         }
 

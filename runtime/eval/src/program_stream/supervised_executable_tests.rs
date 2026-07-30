@@ -5,8 +5,11 @@ use std::{
 
 use serde_json::json;
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
+use skiff_runtime_boundary::stream::stream_id;
 use skiff_runtime_boundary::type_descriptor::RuntimeTypePlanDescriptorExt;
-use skiff_runtime_capability_context::SupervisedStreamConsumptionLease;
+use skiff_runtime_capability_context::{
+    StreamRuntimeError, SupervisedStreamConsumptionChild, SupervisedStreamConsumptionLease,
+};
 use skiff_runtime_linked_program::{
     ExecutableAddr, ExecutableKind, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay,
     LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedFileUnit, LinkedTypeDescriptor,
@@ -182,6 +185,97 @@ async fn prepared_stream_outer_drop_cleans_registry_without_late_result() {
     assert_stream_closed(&stream_runtime, &stream_value).await;
 }
 
+#[tokio::test]
+async fn deferred_stream_drive_natural_end_completes_without_leak() {
+    let fixture = deferred_fixture(emit_then_end_producer()).await;
+    let stream_runtime = fixture.stream_runtime.clone();
+    let stream_value = fixture.stream_value.clone();
+    let values = fixture
+        .interpreter
+        .drive_deferred_stream_producer(
+            fixture.context,
+            &fixture.caller_addr,
+            &fixture.stream_value,
+            |supervision| {
+                consume_deferred_stream(stream_runtime.clone(), stream_value.clone(), supervision)
+            },
+        )
+        .await
+        .expect("deferred producer should reach natural End");
+
+    assert_eq!(values, 2);
+    assert_stream_closed(&stream_runtime, &stream_value).await;
+}
+
+#[tokio::test]
+async fn deferred_stream_drive_cancellation_closes_without_leak() {
+    let fixture = deferred_fixture(emit_then_end_producer()).await;
+    let stream_runtime = fixture.stream_runtime.clone();
+    let stream_value = fixture.stream_value.clone();
+    let result = fixture
+        .interpreter
+        .drive_deferred_stream_producer(
+            fixture.context,
+            &fixture.caller_addr,
+            &fixture.stream_value,
+            |_| async { Err::<(), _>(RuntimeError::Cancelled) },
+        )
+        .await;
+
+    assert!(matches!(result, Err(RuntimeError::Cancelled)));
+    assert_stream_closed(&stream_runtime, &stream_value).await;
+}
+
+#[tokio::test]
+async fn deferred_stream_drive_preserves_consumed_producer_error() {
+    let fixture = deferred_fixture(emit_then_fail_producer()).await;
+    let stream_runtime = fixture.stream_runtime.clone();
+    let stream_value = fixture.stream_value.clone();
+    let error = fixture
+        .interpreter
+        .drive_deferred_stream_producer(
+            fixture.context,
+            &fixture.caller_addr,
+            &fixture.stream_value,
+            |supervision| {
+                consume_deferred_stream(stream_runtime.clone(), stream_value.clone(), supervision)
+            },
+        )
+        .await
+        .expect_err("deferred producer error should reach its consumer");
+
+    assert!(
+        !error.to_string().contains("unknown Stream value"),
+        "consumed producer terminal must not trigger a second registry read: {error}"
+    );
+    assert_stream_closed(&stream_runtime, &stream_value).await;
+}
+
+async fn consume_deferred_stream(
+    stream_runtime: StreamRuntime,
+    stream_value: serde_json::Value,
+    supervision: Option<SupervisedStreamConsumptionChild>,
+) -> crate::error::Result<usize> {
+    let supervision = supervision.expect("parked deferred producer must provide supervision");
+    let mut cleanup = supervision.consumer_cleanup(&stream_value);
+    let mut values = 0usize;
+    loop {
+        match stream_runtime.next(&stream_value).await {
+            Ok(StreamPoll::Item(_) | StreamPoll::InternalItem(_)) => values += 1,
+            Ok(StreamPoll::End) => {
+                cleanup.reached_end();
+                return Ok(values);
+            }
+            Err(error) => {
+                if matches!(&error, StreamRuntimeError::Producer(_)) {
+                    supervision.observe_producer_error(&stream_value);
+                }
+                return Err(RuntimeError::from(error));
+            }
+        }
+    }
+}
+
 async fn execute_program(executables: Vec<LinkedExecutable>) -> crate::error::Result<RuntimeValue> {
     let (interpreter, _) = interpreter_with_executables(executables);
     let context = execution_context(&interpreter);
@@ -244,7 +338,19 @@ struct PreparedFixture {
     stream_value: serde_json::Value,
 }
 
+struct DeferredFixture {
+    interpreter: Interpreter,
+    context: ProgramExecutionContext<'static>,
+    caller_addr: ExecutableAddr,
+    stream_runtime: StreamRuntime,
+    stream_value: serde_json::Value,
+}
+
 async fn prepared_fixture() -> PreparedFixture {
+    prepared_fixture_with(emit_then_end_producer()).await
+}
+
+async fn prepared_fixture_with(producer: LinkedExecutable) -> PreparedFixture {
     let (interpreter, file) = interpreter_with_executables(vec![
         executable(
             "caller",
@@ -256,7 +362,7 @@ async fn prepared_fixture() -> PreparedFixture {
                 "expressions": []
             }),
         ),
-        emit_then_end_producer(),
+        producer,
     ]);
     let context = execution_context(&interpreter);
     let stream_runtime = context.stream_runtime();
@@ -306,6 +412,75 @@ async fn prepared_fixture() -> PreparedFixture {
         context,
         caller_addr,
         prepared,
+        stream_runtime,
+        stream_value,
+    }
+}
+
+async fn deferred_fixture(producer_executable: LinkedExecutable) -> DeferredFixture {
+    let (interpreter, file) = interpreter_with_executables(vec![
+        executable(
+            "caller",
+            Vec::new(),
+            SlotLayoutIr::default(),
+            json!({
+                "blocks": [{ "label": "entry", "statements": [] }],
+                "statements": [],
+                "expressions": []
+            }),
+        ),
+        producer_executable,
+    ]);
+    let context = execution_context(&interpreter);
+    let stream_runtime = context.stream_runtime();
+    let caller_addr = ExecutableAddr::service(0, 0);
+    let producer_addr = ExecutableAddr::service(0, 1);
+    let mut heap = RequestHeap::default();
+    let mut env = Env::for_program_executable(&file.executables[0], None, 0).expect("caller env");
+    let producer = StreamProducerCall {
+        addr: producer_addr.clone(),
+        receiver_const: None,
+        producer_self: None,
+        call: skiff_runtime_linked_program::CallIr {
+            target: LinkedCallTarget::Executable {
+                addr: producer_addr,
+            },
+            site: site(),
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            actor_metadata: None,
+        },
+        item_type: RuntimeTypePlan::from_descriptor(&json!({
+            "kind": "builtin",
+            "name": "string",
+            "args": []
+        }))
+        .expect("string stream item plan"),
+    };
+    let prepared = interpreter
+        .prepare_stream_producer(
+            RuntimeExecutionProjection::for_context(&interpreter, &context)
+                .expect("legacy execution projection"),
+            context.clone(),
+            &mut heap,
+            &mut env,
+            &caller_addr,
+            &file,
+            &file.executables[0],
+            producer,
+        )
+        .await
+        .expect("deferred producer");
+    let stream_value = prepared.stream_value.clone();
+    let id = stream_id(&stream_value)
+        .expect("prepared stream has an id")
+        .to_string();
+    interpreter.deferred_stream_producers.insert(id, prepared);
+    DeferredFixture {
+        interpreter,
+        context,
+        caller_addr,
         stream_runtime,
         stream_value,
     }

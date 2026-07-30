@@ -24,7 +24,10 @@ use super::{
         binary_http_request_parameter_value, binary_http_request_parameter_value_with_plan,
         binary_http_response_from_runtime_value, linked_http_response_stream_item_type,
     },
-    capabilities::{ExecutionControl, StreamCancelSignal, StreamPoll, TypedStreamSink},
+    capabilities::{
+        ExecutionControl, StreamCancelSignal, StreamPoll, StreamRuntimeError,
+        SupervisedStreamConsumptionChild, TypedStreamSink,
+    },
     env::{Env, Flow},
     exceptions::annotate_runtime_type_plan,
     flow_completion::FlowCompletionPolicy,
@@ -1069,6 +1072,7 @@ impl Interpreter {
             item_type,
             cancel_signals,
             false,
+            None,
             on_event,
         )
         .await
@@ -1080,6 +1084,7 @@ impl Interpreter {
         stream_value: &Value,
         item_type: &RuntimeTypePlan,
         cancel_signals: &[StreamCancelSignal],
+        supervision: Option<SupervisedStreamConsumptionChild>,
         on_event: &mut F,
     ) -> EvalStreamResult<(), E>
     where
@@ -1091,6 +1096,7 @@ impl Interpreter {
             item_type,
             cancel_signals,
             true,
+            supervision.as_ref(),
             on_event,
         )
         .await
@@ -1103,17 +1109,26 @@ impl Interpreter {
         item_type: &RuntimeTypePlan,
         cancel_signals: &[StreamCancelSignal],
         allow_internal_items: bool,
+        supervision: Option<&SupervisedStreamConsumptionChild>,
         on_event: &mut F,
     ) -> EvalStreamResult<(), E>
     where
         F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
     {
         let stream_runtime = context.stream_runtime();
-        let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
+        let mut cleanup = match supervision {
+            Some(supervision) => supervision.consumer_cleanup(stream_value),
+            None => StreamConsumerCleanup::new(stream_runtime.clone(), stream_value),
+        };
         loop {
             let item = current_scope::next(context, &stream_runtime, stream_value, cancel_signals)
                 .await
                 .map_err(EvalStreamExecutionError::Eval)?;
+            if matches!(&item, Err(StreamRuntimeError::Producer(_))) {
+                if let Some(supervision) = supervision {
+                    supervision.observe_producer_error(stream_value);
+                }
+            }
             let item = map_eval_error(item)?;
             let mut heap = context.request_heap();
             let item = if allow_internal_items {
