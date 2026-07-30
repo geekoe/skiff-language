@@ -1,6 +1,10 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
@@ -65,21 +69,34 @@ impl<T> RuntimeHttpGatewayTestEffectLease for T where T: Send + Sync {}
 #[doc(hidden)]
 pub struct RuntimeHttpGatewayTestEffectExecution {
     context: skiff_runtime_eval::TestEffectCaseContext,
-    finalize: bool,
-    _lease: Box<dyn RuntimeHttpGatewayTestEffectLease>,
+    owner: RuntimeHttpGatewayTestEffectOwner,
+}
+
+enum RuntimeHttpGatewayTestEffectOwner {
+    Nested(Box<dyn RuntimeHttpGatewayTestEffectLease>),
+    Root(Pin<Box<dyn Future<Output = skiff_runtime_eval::error::Result<()>> + Send + 'static>>),
 }
 
 impl RuntimeHttpGatewayTestEffectExecution {
     #[doc(hidden)]
-    pub fn new(
+    pub fn nested(
         context: skiff_runtime_eval::TestEffectCaseContext,
-        finalize: bool,
         lease: impl Send + Sync + 'static,
     ) -> Self {
         Self {
             context,
-            finalize,
-            _lease: Box::new(lease),
+            owner: RuntimeHttpGatewayTestEffectOwner::Nested(Box::new(lease)),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn root(
+        context: skiff_runtime_eval::TestEffectCaseContext,
+        finalization: impl Future<Output = skiff_runtime_eval::error::Result<()>> + Send + 'static,
+    ) -> Self {
+        Self {
+            context,
+            owner: RuntimeHttpGatewayTestEffectOwner::Root(Box::pin(finalization)),
         }
     }
 }
@@ -108,7 +125,7 @@ pub async fn execute_runtime_http_gateway_request(
     validate_request(target, &request)?;
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
-    let test_effect_execution = handles.eval_adapter.begin_test_effect_execution()?;
+    let mut test_effect_execution = handles.eval_adapter.begin_test_effect_execution()?;
     let interpreter = match test_effect_execution.as_ref() {
         Some(test_effect_execution) => {
             Interpreter::for_runtime_assembly_with_test_effect_case_context(
@@ -188,13 +205,18 @@ pub async fn execute_runtime_http_gateway_request(
                 .map(|()| BoundaryResponse::StreamSent)
         }
     };
-    let finalization_result = if test_effect_execution
-        .as_ref()
-        .is_some_and(|execution| execution.finalize)
+    let finalization_result = match test_effect_execution
+        .take()
+        .map(|execution| execution.owner)
     {
-        interpreter.finalize_test_case().map_err(RequestError::from)
-    } else {
-        Ok(())
+        Some(RuntimeHttpGatewayTestEffectOwner::Root(finalization)) => {
+            finalization.await.map_err(RequestError::from)
+        }
+        Some(RuntimeHttpGatewayTestEffectOwner::Nested(lease)) => {
+            drop(lease);
+            Ok(())
+        }
+        None => Ok(()),
     };
     match (body_result, finalization_result) {
         (Err(body_error), _) => Err(body_error),

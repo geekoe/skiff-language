@@ -8,9 +8,9 @@ pub(crate) struct RuntimeAssemblyEvalAdapterContextInput {
     pub(crate) runtime_id: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
-    pub(crate) gateway_entry_key: String,
+    pub(crate) execution_target: String,
     pub(crate) service_protocol_identity: String,
-    pub(crate) ingress_selector: skiff_artifact_model::IngressSelector,
+    pub(crate) ingress_selector: Option<skiff_artifact_model::IngressSelector>,
     pub(crate) db_source: concrete::DbCapabilitySource,
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
@@ -34,6 +34,7 @@ pub(super) struct RuntimeAssemblyRequestMetadata {
     pub(super) trace: serde_json::Value,
     pub(super) test_effects_enabled: bool,
     pub(super) test_ingress_url: Option<String>,
+    pub(super) test_case_capability: Option<String>,
 }
 
 pub(super) struct RuntimeAssemblyExecutionContext {
@@ -55,6 +56,7 @@ pub(super) struct RuntimeAssemblyExecutionContext {
     http_response_max_bytes: usize,
     pub(super) test_http_entries: concrete::TestHttpEntryRegistry,
     pub(super) test_ingress_url: Option<String>,
+    pub(super) test_case_capability: Option<String>,
     pub(super) request: RequestEnvelope,
     operation: RuntimeOperation,
 }
@@ -85,7 +87,7 @@ impl RuntimeAssemblyExecutionContext {
         let request = RequestEnvelope {
             request_id: metadata.request_id,
             mode: metadata.mode.clone(),
-            target: input.gateway_entry_key.clone(),
+            target: input.execution_target.clone(),
             operation_abi_id: None,
             selector: None,
             service_id: Some(deployment.service_id.clone()),
@@ -97,7 +99,7 @@ impl RuntimeAssemblyExecutionContext {
             service_protocol_identity: input.service_protocol_identity.clone(),
             contract_identity: None,
             activation_identity: Some(input.activation.activation_id().as_str().to_string()),
-            ingress_selector: Some(input.ingress_selector),
+            ingress_selector: input.ingress_selector,
             binary_http: None,
             http_adapter: None,
             test_effects_enabled: metadata.test_effects_enabled,
@@ -107,8 +109,8 @@ impl RuntimeAssemblyExecutionContext {
         };
         let operation = RuntimeOperation {
             operation_abi_id: None,
-            operation: input.gateway_entry_key.clone(),
-            target: input.gateway_entry_key,
+            operation: input.execution_target.clone(),
+            target: input.execution_target,
             mode: metadata.mode,
             parameters: Vec::new(),
             service_protocol_identity: Some(input.service_protocol_identity),
@@ -133,6 +135,7 @@ impl RuntimeAssemblyExecutionContext {
             http_response_max_bytes: input.http_response_max_bytes,
             test_http_entries: input.test_http_entries,
             test_ingress_url: metadata.test_ingress_url,
+            test_case_capability: metadata.test_case_capability,
             request,
             operation,
         })
@@ -165,10 +168,8 @@ impl RuntimeAssemblyExecutionContext {
                 self.http_options.clone(),
             )
             .with_test_http_self_ingress(
-                self.test_http_entries.self_ingress_for_execution(
-                    self.activation.activation_id().as_str(),
-                    self.request.test_effects_enabled,
-                ),
+                self.test_http_entries
+                    .self_ingress_for_request(&self.request.request_id),
             ),
         );
         let service_id = self.activation.identity().deployment.service_id.as_str();

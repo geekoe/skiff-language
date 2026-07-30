@@ -6,21 +6,19 @@ use serde_json::{json, Value};
 use crate::protocol::decode_router_bootstrap_frame_header;
 use crate::protocol::{
     decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
-    encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
-    ActorGetOrCreateRequestFrameHeader, ActorRemoveRequestFrameHeader,
-    ActorReplaceRequestFrameHeader, ConnectionSendEnvelope, ConnectionSendFrameHeader,
-    PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
-    RequestTestEffectDouble, ResponseEndFrameHeader, ResponseErrorFrameHeader,
-    ResponseStartFrameHeader, RouterControlEnvelope, RuntimeCallerFrameHeader,
-    RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
-    RuntimeDeadlineFrameHeader, RuntimeDispatchModeCapability, RuntimeErrorFramePayload,
-    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
+    encode_binary_frame, ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader,
+    ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendEnvelope,
+    ConnectionSendFrameHeader, PackageTestStartFrameHeader, RequestCancelFrameHeader,
+    RequestStartFrameHeader, RequestTestEffectDouble, ResponseEndFrameHeader,
+    ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
+    RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader,
+    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDeadlineFrameHeader,
+    RuntimeDispatchModeCapability, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
+    RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
     RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope,
-    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnClaimDescriptorFrameMetadata,
-    SpawnClaimRequestFrameHeader, SpawnClaimResponseFrameHeader, SpawnCompleteRequestFrameHeader,
-    SpawnFailRequestFrameHeader, SpawnRenewRequestFrameHeader, SpawnSubmitRequestFrameHeader,
+    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
     TelemetryBatchEnvelope, TelemetryProtocol, TelemetryTopic, TelemetryVisibility,
     ValidatedResponseErrorFrame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
@@ -88,72 +86,6 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
     }
 }
 
-fn activation_identity() -> ActivationIdentityFrameMetadata {
-    ActivationIdentityFrameMetadata {
-        assembly_identity:
-            "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
-        generation: 7,
-        runtime_replica_id: "runtime-replica-7".to_string(),
-        deployment_revision: "deployment-revision-7".to_string(),
-    }
-}
-
-#[test]
-fn spawn_claim_structured_activation_identity_round_trips() {
-    let build_id =
-        "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let request = SpawnClaimRequestFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "spawn.claim.request".to_string(),
-        rpc_id: "rpc-package-test-claim".to_string(),
-        runtime_id: "runtime-package-test".to_string(),
-        worker_id: "worker-package-test".to_string(),
-        service_id: "example.com/hello".to_string(),
-        service_version: "0.1.0".to_string(),
-        service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
-        supported_targets: vec!["function:package.test".to_string()],
-        supported_spawn_compatibility_keys: vec!["compatibility-key".to_string()],
-        build_id: Some(build_id.to_string()),
-        activation_identity: activation_identity(),
-        max_execution_ms: Some(5_000.0),
-        max_concurrency: Some(1.0),
-    };
-    let request_frame = encode_binary_frame(&request, &[]).expect("spawn claim request encodes");
-    let (decoded_request, payload): (SpawnClaimRequestFrameHeader, Vec<u8>) =
-        decode_typed_binary_frame(&request_frame).expect("spawn claim request decodes");
-    assert_eq!(decoded_request, request);
-    assert!(payload.is_empty());
-
-    let response = SpawnClaimResponseFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "spawn.claim.response".to_string(),
-        rpc_id: request.rpc_id.clone(),
-        claimed: true,
-        item: Some(SpawnClaimDescriptorFrameMetadata {
-            item_id: "item-package-test".to_string(),
-            lease_id: "lease-package-test".to_string(),
-            spawn_execution_id: "execution-package-test".to_string(),
-            runtime_request_id: "request-package-test".to_string(),
-            spawn_id: "spawn-package-test".to_string(),
-            target_kind: "function".to_string(),
-            target: "function:package.test".to_string(),
-            service_id: "example.com/hello".to_string(),
-            service_version: "0.1.0".to_string(),
-            service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
-            build_id: build_id.to_string(),
-            activation_identity: activation_identity(),
-            payload_schema_identity: None,
-            lease_expires_at: None,
-        }),
-    };
-    let response_frame = encode_binary_frame(&response, &[]).expect("spawn claim response encodes");
-    let (decoded_response, payload): (SpawnClaimResponseFrameHeader, Vec<u8>) =
-        decode_typed_binary_frame(&response_frame).expect("spawn claim response decodes");
-    assert_eq!(decoded_response, response);
-    assert!(payload.is_empty());
-}
-
 #[test]
 fn actor_spawn_requests_share_strict_activation_identity_corpus() {
     let corpus: Value = serde_json::from_str(include_str!(
@@ -218,44 +150,6 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
                 "serviceVersion": "1.0.0",
                 "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
                 "target": "Worker.run"
-            }),
-        ),
-        merge_json(
-            &base,
-            json!({
-                "type": "spawn.claim.request",
-                "workerId": "worker-7",
-                "serviceId": "example.com/worker",
-                "serviceVersion": "1.0.0",
-                "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
-                "supportedTargets": ["Worker.run"],
-                "supportedSpawnCompatibilityKeys": ["worker-v1"]
-            }),
-        ),
-        merge_json(
-            &base,
-            json!({
-                "type": "spawn.renew.request",
-                "itemId": "item-7",
-                "leaseId": "lease-7",
-                "workerId": "worker-7"
-            }),
-        ),
-        merge_json(
-            &base,
-            json!({
-                "type": "spawn.complete.request",
-                "itemId": "item-7",
-                "leaseId": "lease-7"
-            }),
-        ),
-        merge_json(
-            &base,
-            json!({
-                "type": "spawn.fail.request",
-                "itemId": "item-7",
-                "leaseId": "lease-7",
-                "reason": "failed"
             }),
         ),
     ];
@@ -333,18 +227,6 @@ fn decode_actor_spawn_request(value: Value) -> Result<(), serde_json::Error> {
         }
         Some("spawn.submit.request") => {
             serde_json::from_value::<SpawnSubmitRequestFrameHeader>(value).map(drop)
-        }
-        Some("spawn.claim.request") => {
-            serde_json::from_value::<SpawnClaimRequestFrameHeader>(value).map(drop)
-        }
-        Some("spawn.renew.request") => {
-            serde_json::from_value::<SpawnRenewRequestFrameHeader>(value).map(drop)
-        }
-        Some("spawn.complete.request") => {
-            serde_json::from_value::<SpawnCompleteRequestFrameHeader>(value).map(drop)
-        }
-        Some("spawn.fail.request") => {
-            serde_json::from_value::<SpawnFailRequestFrameHeader>(value).map(drop)
         }
         _ => unreachable!("test only supplies actor/spawn request frames"),
     }

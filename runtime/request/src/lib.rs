@@ -22,6 +22,7 @@ mod response_stream_writer;
 mod response_writer;
 mod runner;
 mod runtime_ingress;
+mod spawn_execution;
 mod websocket_connect_execution;
 mod websocket_connect_target;
 mod websocket_jsonrpc_execution;
@@ -66,8 +67,7 @@ pub use outbound::{
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
     OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage,
-    RuntimeDeadlineControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
-    SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
+    RuntimeDeadlineControl, SpawnSubmitControlRequest,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,
@@ -81,6 +81,11 @@ pub use runner::{
 };
 pub use skiff_runtime_eval::{
     RuntimeWebSocketJsonRpcExecutionOutcome, RuntimeWebSocketJsonRpcExecutionTerminal,
+};
+pub use spawn_execution::{
+    execute_runtime_spawn_request, RuntimeAssemblySpawnTarget, RuntimeSpawnEvalAdapter,
+    RuntimeSpawnEvalExecutionInputParts, RuntimeSpawnExecutionHandles, RuntimeSpawnExecutionInput,
+    RuntimeSpawnRequest, RuntimeSpawnTestEffectExecution,
 };
 pub use websocket_connect_execution::{
     execute_runtime_websocket_connect, RuntimeWebSocketConnectEvalAdapter,

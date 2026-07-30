@@ -3,10 +3,10 @@ use skiff_artifact_model::MetadataValue;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
 use skiff_runtime_capability_context::{ActivationIdentityControl, SpawnSubmitControlRequest};
 use skiff_runtime_linked_program::{
-    CallIr, ExecutableAddr, ExprRefIr, LinkedCallTarget, LinkedExprIr,
+    CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, LinkedCallTarget, LinkedExprIr,
 };
 use skiff_runtime_model::{
-    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue,
+    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue, value::HeapNode,
 };
 
 use crate::{
@@ -14,8 +14,12 @@ use crate::{
     capabilities::ActorClient,
     error::{Result, RuntimeError},
     invocation::EvalProgramProjection,
+    program_execution::ProgramExecutionContext,
     recoverable_behavior::EvalRecoverableBehaviorHooks,
-    recoverable_spawn_payload::executable_request_recoverable_expected_plan,
+    recoverable_spawn_payload::{
+        decode_spawn_args_payload, executable_request_recoverable_expected_plan,
+    },
+    Interpreter, RuntimeAssemblyEvalTarget,
 };
 
 use super::{eval_context::EvalContext, program_ir::program_expression_ref};
@@ -23,6 +27,101 @@ use super::{eval_context::EvalContext, program_ir::program_expression_ref};
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1:sha256:";
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
+
+/// Resolves one Router-authenticated direct-spawn target only from the immutable route index
+/// validated while the exact active assembly image was linked.
+pub fn resolve_runtime_assembly_spawn_target(
+    eval_target: &RuntimeAssemblyEvalTarget,
+    target: &str,
+) -> Result<ExecutableAddr> {
+    let projection = eval_target.execution_projection().clone();
+    projection
+        .image()
+        .spawn_route(target)
+        .cloned()
+        .ok_or_else(|| RuntimeError::Protocol {
+            target: target.to_string(),
+            message: "canonical spawn target is not registered in the active assembly".to_string(),
+        })
+}
+
+/// Decodes one direct-spawn recoverable args payload against the exact executable plan and runs
+/// it in the caller-provided independent request context.
+pub async fn execute_runtime_assembly_spawn_target(
+    interpreter: &Interpreter,
+    context: ProgramExecutionContext<'_>,
+    eval_target: &RuntimeAssemblyEvalTarget,
+    addr: &ExecutableAddr,
+    payload: &[u8],
+) -> Result<()> {
+    let projection = eval_target.execution_projection().clone();
+    let resolved = projection.resolve_executable(addr)?;
+    if resolved.executable.kind != ExecutableKind::Function {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "canonical spawn target {} is not a function",
+            resolved.executable.symbol
+        )));
+    }
+    let expected = executable_request_recoverable_expected_plan(
+        projection.type_view(),
+        &resolved.addr,
+        resolved.executable,
+    )?;
+    let execution_projection = RuntimeExecutionProjection::Assembly(projection.clone());
+    let behavior_hooks = EvalRecoverableBehaviorHooks::new_for_execution(&execution_projection)?;
+    let activation = eval_target.activation_context();
+    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload)
+        .with_origin_service(
+            PayloadServiceRef::new(activation.identity().deployment.service_id.clone())
+                .with_version(activation.identity().deployment.contract_version.clone())
+                .with_build_id(
+                    activation
+                        .implementation_package_build_id()
+                        .as_str()
+                        .to_string(),
+                ),
+        );
+    let mut heap = context.request_heap();
+    let decoded =
+        decode_spawn_args_payload(payload, &expected, &boundary, &mut heap, &behavior_hooks)?;
+    let RuntimeValue::Heap(args_handle) = decoded else {
+        return Err(RuntimeError::InvalidArtifact(
+            "canonical spawn args payload did not decode to an object".to_string(),
+        ));
+    };
+    let HeapNode::Object(args_object) = heap.get(args_handle)? else {
+        return Err(RuntimeError::InvalidArtifact(
+            "canonical spawn args payload did not decode to an object".to_string(),
+        ));
+    };
+    let args = resolved
+        .executable
+        .params
+        .iter()
+        .map(|parameter| {
+            args_object
+                .fields()
+                .get(&parameter.name)
+                .cloned()
+                .ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(format!(
+                        "canonical spawn args payload is missing parameter {}",
+                        parameter.name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let value = interpreter
+        .execute_runtime_assembly_addr(context, &mut heap, &resolved.addr, args)
+        .await?;
+    if value != RuntimeValue::Null {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "canonical spawn target {} returned a value",
+            resolved.executable.symbol
+        )));
+    }
+    Ok(())
+}
 
 pub async fn submit_spawn_statement(
     context: &mut EvalContext<'_>,

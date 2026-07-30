@@ -14,14 +14,16 @@ mod strict_json;
 
 use lexical::{
     deserialize_assembly_identity, deserialize_dispatch_mode, deserialize_gateway_caller_kind,
-    deserialize_gateway_entry_identity, deserialize_optional_websocket_jsonrpc_business_identity,
-    deserialize_request_start_type, deserialize_response_end_type,
-    deserialize_runtime_assembly_routing_kind,
+    deserialize_gateway_entry_identity, deserialize_optional_test_case_capability,
+    deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
+    deserialize_response_end_type, deserialize_runtime_assembly_routing_kind,
     deserialize_runtime_assembly_websocket_jsonrpc_connection_id,
     deserialize_runtime_assembly_websocket_jsonrpc_method,
     deserialize_runtime_assembly_websocket_jsonrpc_request_id,
     deserialize_runtime_frame_schema_version, deserialize_safe_activation_generation,
-    deserialize_service_deployment_ref, deserialize_unary_dispatch_mode,
+    deserialize_service_caller_kind, deserialize_service_deployment_ref,
+    deserialize_spawn_invocation_kind, deserialize_spawn_target, deserialize_spawn_target_kind,
+    deserialize_spawn_unary_dispatch_mode, deserialize_unary_dispatch_mode,
     deserialize_websocket_jsonrpc_unary_dispatch_mode,
 };
 use metadata::deserialize_present_option;
@@ -63,6 +65,7 @@ pub enum RuntimeAssemblyRequestStartFrameWireHeader {
     Http(RuntimeAssemblyRequestStartFrameHeader),
     WebSocketConnect(RuntimeAssemblyWebSocketConnectRequestStartFrameHeader),
     WebSocketJsonRpc(RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader),
+    Spawn(RuntimeAssemblySpawnRequestStartFrameHeader),
 }
 
 impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
@@ -71,6 +74,16 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
         D: Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
+        if value
+            .get("invocation")
+            .and_then(|invocation| invocation.get("kind"))
+            .and_then(serde_json::Value::as_str)
+            == Some("spawn")
+        {
+            return serde_json::from_value(value)
+                .map(Self::Spawn)
+                .map_err(de::Error::custom);
+        }
         let protocol = value
             .get("routing")
             .and_then(|routing| routing.get("ingress"))
@@ -103,6 +116,66 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
             )),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblySpawnRequestStartFrameHeader {
+    #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
+    pub schema_version: String,
+    #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
+    pub frame_type: String,
+    pub request_id: String,
+    #[serde(deserialize_with = "deserialize_spawn_unary_dispatch_mode")]
+    pub mode: String,
+    pub caller: RuntimeAssemblySpawnRequestCallerFrameHeader,
+    pub routing: RuntimeAssemblySpawnRequestRoutingFrameHeader,
+    pub invocation: RuntimeAssemblySpawnInvocationFrameHeader,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
+    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
+    pub test_effects_enabled: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_test_case_capability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub test_case_capability: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblySpawnRequestCallerFrameHeader {
+    #[serde(deserialize_with = "deserialize_service_caller_kind")]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblySpawnRequestRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+    pub kind: String,
+    #[serde(deserialize_with = "deserialize_assembly_identity")]
+    pub assembly_identity: AssemblyIdentity,
+    #[serde(deserialize_with = "deserialize_safe_activation_generation")]
+    pub assembly_generation: u64,
+    #[serde(deserialize_with = "deserialize_service_deployment_ref")]
+    pub deployment: ServiceDeploymentRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblySpawnInvocationFrameHeader {
+    #[serde(deserialize_with = "deserialize_spawn_invocation_kind")]
+    pub kind: String,
+    #[serde(deserialize_with = "deserialize_spawn_target_kind")]
+    pub target_kind: String,
+    #[serde(deserialize_with = "deserialize_spawn_target")]
+    pub target: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,6 +532,18 @@ pub fn decode_runtime_assembly_request_start_frame(
             if payload.is_empty() || payload.len() > CONNECTION_REQUEST_MAX_PAYLOAD_BYTES {
                 return Err(TransportError::decode(
                     "invalid runtimeAssembly websocketJsonRpc request.start frame: payload must be present and within the payload limit",
+                ));
+            }
+        }
+        RuntimeAssemblyRequestStartFrameWireHeader::Spawn(spawn) => {
+            if payload.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly spawn request.start frame: recoverable args payload must be present",
+                ));
+            }
+            if spawn.request_id.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly spawn request.start frame: requestId must be non-empty",
                 ));
             }
         }

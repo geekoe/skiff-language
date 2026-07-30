@@ -897,7 +897,7 @@ mod tests {
             envelope_type: "spawn.submit.response".to_string(),
             rpc_id: rpc_id.clone(),
             spawn_id: "spawn-test".to_string(),
-            item_id: "item-test".to_string(),
+            request_id: "request-test".to_string(),
             status: "submitted".to_string(),
         };
         outbound_requests
@@ -962,7 +962,7 @@ mod tests {
             envelope_type: "spawn.submit.response".to_string(),
             rpc_id: rpc_id.clone(),
             spawn_id: "spawn-test".to_string(),
-            item_id: "item-test".to_string(),
+            request_id: "request-test".to_string(),
             status: "queued".to_string(),
         };
         outbound_requests

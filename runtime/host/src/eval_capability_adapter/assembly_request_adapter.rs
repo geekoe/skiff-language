@@ -1,13 +1,15 @@
 use skiff_runtime_eval::program_execution::ProgramExecutionContext;
 use skiff_runtime_request::{
     RuntimeHttpGatewayEvalAdapter, RuntimeHttpGatewayEvalExecutionInputParts,
+    RuntimeSpawnEvalAdapter, RuntimeSpawnEvalExecutionInputParts,
     RuntimeWebSocketConnectEvalAdapter, RuntimeWebSocketConnectEvalExecutionInputParts,
     RuntimeWebSocketJsonRpcEvalAdapter, RuntimeWebSocketJsonRpcEvalExecutionInputParts,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestClientSessionFrameHeader,
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
 
@@ -37,6 +39,7 @@ pub(crate) fn http_gateway_eval_adapter(
             .header
             .test_effects_enabled
             .then_some(input.header.http_request.url),
+        None,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -60,6 +63,7 @@ pub(crate) fn websocket_connect_eval_adapter(
         input.header.deadline.as_ref(),
         &input.header.trace,
         input.header.test_effects_enabled,
+        None,
         None,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
@@ -85,7 +89,38 @@ pub(crate) fn websocket_jsonrpc_eval_adapter(
         &input.header.trace,
         input.header.test_effects_enabled,
         None,
+        None,
     )?;
+    Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
+        input.context,
+        metadata,
+    )?))
+}
+
+pub(crate) struct RuntimeSpawnEvalAdapterInput {
+    pub(crate) context: RuntimeAssemblyEvalAdapterContextInput,
+    pub(crate) header: RuntimeAssemblySpawnRequestStartFrameHeader,
+}
+
+pub(crate) fn spawn_eval_adapter(
+    input: RuntimeSpawnEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeSpawnEvalAdapter>> {
+    let metadata = RuntimeAssemblyRequestMetadata {
+        request_id: input.header.request_id,
+        mode: input.header.mode,
+        caller: serde_json::to_value(input.header.caller)?,
+        client_session: None,
+        deadline: input
+            .header
+            .deadline
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?,
+        trace: serde_json::to_value(input.header.trace)?,
+        test_effects_enabled: input.header.test_effects_enabled,
+        test_ingress_url: None,
+        test_case_capability: input.header.test_case_capability,
+    };
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
         metadata,
@@ -101,6 +136,7 @@ fn request_metadata(
     trace: &RuntimeAssemblyRequestTraceFrameHeader,
     test_effects_enabled: bool,
     test_ingress_url: Option<String>,
+    test_case_capability: Option<String>,
 ) -> anyhow::Result<RuntimeAssemblyRequestMetadata> {
     Ok(RuntimeAssemblyRequestMetadata {
         request_id,
@@ -111,7 +147,54 @@ fn request_metadata(
         trace: serde_json::to_value(trace)?,
         test_effects_enabled,
         test_ingress_url,
+        test_case_capability,
     })
+}
+
+impl RuntimeSpawnEvalAdapter for RuntimeAssemblyExecutionContext {
+    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
+        runtime_factory()
+    }
+
+    fn begin_test_effect_execution(
+        &self,
+    ) -> skiff_runtime_request::RequestResult<
+        Option<skiff_runtime_request::RuntimeSpawnTestEffectExecution>,
+    > {
+        let Some(capability) = self.test_case_capability.as_deref() else {
+            return Ok(None);
+        };
+        let lease = self
+            .test_http_entries
+            .begin_derived(capability, self.request.request_id.clone())
+            .map_err(|error| skiff_runtime_request::RequestError::Unsupported(error.to_string()))?;
+        Ok(Some(
+            skiff_runtime_request::RuntimeSpawnTestEffectExecution::new(lease.effects(), lease),
+        ))
+    }
+
+    fn execution_context<'a>(
+        &'a self,
+        parts: RuntimeSpawnEvalExecutionInputParts<'a>,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        target: &'a skiff_runtime_request::RuntimeAssemblySpawnTarget,
+    ) -> ProgramExecutionContext<'a> {
+        let RuntimeSpawnEvalExecutionInputParts {
+            request: _,
+            execution,
+            cancellation,
+            cancelled: _,
+            execution_budget: _,
+            request_heap_limits,
+        } = parts;
+        self.program_execution_context(
+            execution,
+            cancellation,
+            request_heap_limits,
+            interpreter,
+            target.eval(),
+        )
+    }
 }
 
 impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
@@ -146,11 +229,22 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
             self.test_http_entries.borrow_child(activation_id)
         };
         Ok(execution.map(|execution| {
-            skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::new(
-                execution.effects(),
-                execution.finalize(),
-                execution,
-            )
+            let effects = execution.effects();
+            if execution.finalize() {
+                let finalization_effects = effects.clone();
+                skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::root(
+                    effects,
+                    async move {
+                        let result = finalization_effects.finalize();
+                        drop(execution);
+                        result
+                    },
+                )
+            } else {
+                skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::nested(
+                    effects, execution,
+                )
+            }
         }))
     }
 

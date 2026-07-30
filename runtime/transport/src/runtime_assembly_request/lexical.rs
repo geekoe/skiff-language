@@ -10,6 +10,7 @@ use crate::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 const MAX_RUNTIME_ASSEMBLY_REQUEST_ID_BYTES: usize = 1024;
 const MAX_WEBSOCKET_JSONRPC_METHOD_BYTES: usize = 256;
 const MAX_WEBSOCKET_JSONRPC_BUSINESS_IDENTITY_BYTES: usize = 1024;
+const MAX_TEST_CASE_CAPABILITY_BYTES: usize = 1024;
 
 pub(super) fn deserialize_runtime_frame_schema_version<'de, D>(
     deserializer: D,
@@ -53,6 +54,73 @@ where
         "unary",
         "runtimeAssembly websocketConnect request.start mode",
     )
+}
+
+pub(super) fn deserialize_spawn_unary_dispatch_mode<'de, D>(
+    deserializer: D,
+) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_exact_string(
+        deserializer,
+        "unary",
+        "runtimeAssembly spawn request.start mode",
+    )
+}
+
+pub(super) fn deserialize_service_caller_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_exact_string(deserializer, "service", "runtimeAssembly spawn caller.kind")
+}
+
+pub(super) fn deserialize_spawn_invocation_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_exact_string(
+        deserializer,
+        "spawn",
+        "runtimeAssembly request.start invocation.kind",
+    )
+}
+
+pub(super) fn deserialize_spawn_target_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_exact_string(
+        deserializer,
+        "function",
+        "runtimeAssembly spawn invocation.targetKind",
+    )
+}
+
+pub(super) fn deserialize_spawn_target<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_canonical_string(
+        deserializer,
+        MAX_RUNTIME_ASSEMBLY_REQUEST_ID_BYTES,
+        "runtimeAssembly spawn invocation.target",
+    )
+}
+
+pub(super) fn deserialize_optional_test_case_capability<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_canonical_string(
+        deserializer,
+        MAX_TEST_CASE_CAPABILITY_BYTES,
+        "runtimeAssembly spawn testCaseCapability",
+    )
+    .map(Some)
 }
 
 pub(super) fn deserialize_websocket_jsonrpc_unary_dispatch_mode<'de, D>(

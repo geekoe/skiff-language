@@ -1,8 +1,10 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::Context;
+use skiff_artifact_model::MetadataValue;
 use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, LinkedCallTarget, LinkedFileUnit, RuntimeExecutionPackage,
+    AssemblyExecutionImage, ExecutableAddr, ExecutableKind, LinkedCallTarget, LinkedExprIr,
+    LinkedFileUnit, RuntimeExecutionPackage,
 };
 
 use crate::linker::linked_file_unit_from_assembly_artifact;
@@ -31,9 +33,95 @@ pub(super) fn link_assembly_execution_image(
                 .map_err(anyhow::Error::new)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    AssemblyExecutionImage::try_new(shared, code_slots, types, Arc::new(service_error_types))
+    let image =
+        AssemblyExecutionImage::try_new(shared, code_slots, types, Arc::new(service_error_types))
+            .map_err(anyhow::Error::new)?;
+    let spawn_routes = build_spawn_routes(&image)?;
+    image
+        .with_spawn_routes(spawn_routes)
         .map(Arc::new)
         .map_err(anyhow::Error::new)
+}
+
+fn build_spawn_routes(
+    image: &AssemblyExecutionImage,
+) -> anyhow::Result<BTreeMap<String, ExecutableAddr>> {
+    const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
+
+    let mut routes = BTreeMap::<String, ExecutableAddr>::new();
+    for package in image.execution_packages() {
+        for file in package.files() {
+            for owner in &file.executables {
+                for expression in &owner.body.expressions {
+                    let LinkedExprIr::Call { call } = expression else {
+                        continue;
+                    };
+                    let Some(metadata) = call.metadata.get(SPAWN_SUBMIT_METADATA_KEY) else {
+                        continue;
+                    };
+                    let MetadataValue::Object(metadata) = metadata else {
+                        anyhow::bail!(
+                            "spawnSubmit metadata must be an object with targetKind and target"
+                        );
+                    };
+                    let Some(MetadataValue::String(target_kind)) = metadata.get("targetKind")
+                    else {
+                        anyhow::bail!("spawnSubmit metadata targetKind must be a string");
+                    };
+                    if target_kind != "function" {
+                        anyhow::bail!(
+                            "spawnSubmit metadata targetKind {target_kind} is unsupported"
+                        );
+                    }
+                    let Some(MetadataValue::String(metadata_target)) = metadata.get("target")
+                    else {
+                        anyhow::bail!("spawnSubmit metadata target must be a string");
+                    };
+                    let (addr, expected_metadata_target) = match &call.target {
+                        LinkedCallTarget::Executable { addr } => {
+                            let executable =
+                                image.executable_at(addr).map_err(anyhow::Error::new)?;
+                            (
+                                executable.addr().clone(),
+                                format!("function:{}", executable.executable().symbol),
+                            )
+                        }
+                        LinkedCallTarget::PackageDirect { call } => (
+                            call.executable_addr().clone(),
+                            format!("package:{}", call.package_callable_id().as_str()),
+                        ),
+                        _ => anyhow::bail!(
+                            "canonical spawn function target is not an exact linked executable"
+                        ),
+                    };
+                    let executable = image.executable_at(&addr).map_err(anyhow::Error::new)?;
+                    if executable.executable().kind != ExecutableKind::Function {
+                        anyhow::bail!(
+                            "canonical spawn target {} is not a function",
+                            executable.executable().symbol
+                        );
+                    }
+                    if metadata_target != &expected_metadata_target {
+                        anyhow::bail!(
+                            "spawnSubmit metadata target {metadata_target} does not match linked executable {expected_metadata_target}"
+                        );
+                    }
+                    let route_target = format!("function:{}", executable.executable().symbol);
+                    let canonical_addr = executable.addr().clone();
+                    if let Some(existing) =
+                        routes.insert(route_target.clone(), canonical_addr.clone())
+                    {
+                        if existing != canonical_addr {
+                            anyhow::bail!(
+                                "canonical spawn route {route_target} resolves to more than one executable"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(routes)
 }
 
 fn convert_canonical_files(
