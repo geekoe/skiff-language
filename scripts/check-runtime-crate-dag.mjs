@@ -12,6 +12,7 @@ const runtimeDag = new Map([
     'skiff-runtime-host',
     [
       'skiff-runtime-transport',
+      'skiff-runtime-config-snapshot',
       'skiff-runtime-request',
       'skiff-runtime-package-test',
       'skiff-runtime-loader',
@@ -35,6 +36,7 @@ const runtimeDag = new Map([
       'skiff-runtime-model',
     ],
   ],
+  ['skiff-runtime-config-snapshot', []],
   [
     'skiff-runtime-transport',
     ['skiff-runtime-request-contract', 'skiff-runtime-model'],
@@ -131,6 +133,7 @@ const expectedPromotedRuntimePackages = new Set([
   'skiff-runtime-activation',
   'skiff-runtime-boundary',
   'skiff-runtime-capability-context',
+  'skiff-runtime-config-snapshot',
   'skiff-runtime-eval',
   'skiff-runtime-host',
   'skiff-runtime-linked-program',
@@ -154,6 +157,7 @@ const hostBoundaryTarget = {
   ],
   allowedRuntimeDeps: [
     'skiff-runtime-transport',
+    'skiff-runtime-config-snapshot',
     'skiff-runtime-request',
     'skiff-runtime-package-test',
     'skiff-runtime-loader',
@@ -731,6 +735,12 @@ function runSelfTests() {
           hostResult.debts.map((edge) => edge.dependencyName),
           expectedHostBoundaryTargetDebts,
           'expected Stage 1 host target debts',
+        );
+        assert(
+          hostResult.allowed.some(
+            (edge) => edge.dependencyName === 'skiff-runtime-config-snapshot',
+          ),
+          'expected host -> runtime-config-snapshot to be a target-allowed typed storage edge',
         );
         assert(hostResult.unregisteredDebts.length === 0, 'expected no unregistered host target debts');
       },

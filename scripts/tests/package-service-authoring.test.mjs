@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -278,6 +287,54 @@ test('config snapshot production requires a canonical target environment distinc
     /explicit canonical target environment/,
   );
 });
+
+test(
+  'config snapshot CLI rejects insecure, symlink, and non-regular secret sources before cargo',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'skiff-config-secret-mode-'));
+    try {
+      const secret = join(root, 'config.dev.secret.yml');
+      const base = {
+        skiffRoot,
+        artifactRoot: '/tmp/artifacts',
+        environment: 'dev',
+        profile: 'dev',
+        assemblyRecord: 'records/assembly.json',
+        sources: [{
+          root,
+          deployment: rootDeployment,
+        }],
+      };
+      await writeFile(secret, '"example.com/service": { apiKey: must-not-leak }\n');
+      await chmod(secret, 0o644);
+      await assert.rejects(
+        runConfigSnapshotAuthoring(base),
+        (error) => (
+          /chmod 600/.test(error.message)
+          && !error.message.includes('must-not-leak')
+        ),
+      );
+
+      const real = join(root, 'real-secret.yml');
+      await rename(secret, real);
+      await symlink(real, secret);
+      await assert.rejects(
+        runConfigSnapshotAuthoring(base),
+        /regular file, not a symlink/,
+      );
+
+      await rm(secret);
+      await mkdir(secret);
+      await assert.rejects(
+        runConfigSnapshotAuthoring(base),
+        /regular file, not a symlink/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test('human service API output renders the exact compiler projection', () => {
   const result = {

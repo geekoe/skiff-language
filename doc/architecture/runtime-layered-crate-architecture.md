@@ -65,7 +65,8 @@ Skiff 尚未发布。本文不要求兼容旧 runtime internal API、旧 artifac
 
 | Boundary | May Depend On |
 | --- | --- |
-| `runtime-host` | `runtime-transport`, `runtime-request`, `runtime-package-test`, `runtime-loader`, `runtime-linker`, `runtime-linked-program`, `runtime-activation`, `runtime-capability-context`, `runtime-model` |
+| `runtime-host` | `runtime-transport`, `runtime-config-snapshot`, `runtime-request`, `runtime-package-test`, `runtime-loader`, `runtime-linker`, `runtime-linked-program`, `runtime-activation`, `runtime-capability-context`, `runtime-model` |
+| `runtime-config-snapshot` | artifact-model config snapshot reference/Package/deployment identity DTOs and canonical JSON only; no other `skiff-runtime-*` crate |
 | `runtime-transport` | `runtime-request` response event contract, runtime protocol DTO, `runtime-model` |
 | `runtime-package-test` | `runtime-loader` `ArtifactGraph`, `runtime-linker` behavior, `runtime-linked-program` DTOs, `runtime-activation`, `skiff-artifact-model`, `runtime-model` |
 | `runtime-request` | `runtime-eval`, `runtime-boundary`, `runtime-capability-context`, `runtime-linked-program` linked image DTOs, `runtime-activation` activation types, `runtime-model` |
@@ -223,6 +224,13 @@ struct BoundaryConversionPlan {
 - `eval/boundary.rs`
 - `config_view.rs`
 - `host/service_db.rs`
+
+### `skiff-runtime-config-snapshot`
+
+`skiff-runtime-config-snapshot`拥有独立配置快照的严格record、受限文件store和typed read边界。它校验
+schema、activation environment、精确deployment/Package分区、canonical JSON、权限和opaque snapshot
+reference；向Host返回`RuntimeConfigSnapshot`及其已验证的package-local config object。Host不得重新解析
+snapshot wire，也不得用`serde_json::Map`重建该object。该crate不依赖其他`skiff-runtime-*` crate。
 
 ### `skiff-runtime-loader`
 

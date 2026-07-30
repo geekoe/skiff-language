@@ -71,9 +71,12 @@ config.yml
     apiKey: local-development-value
 ```
 
-私密文件必须被版本控制忽略；tooling创建或复制它时必须使用仅owner可读写的`0600`权限，包含它的目录应为
-`0700`。明文不得写入PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly、这些对象的
-identity、receipt、control frame或日志。
+私密文件必须被版本控制忽略。在POSIX平台，tooling在读取任何
+`config.<profile>.secret.yml`之前必须确认它是非symlink普通文件且权限精确为`0600`；否则fail closed并提示
+执行`chmod 600`。tooling创建或仍有必要复制它时，必须在发布或使用副本前显式设置`0600`，包含它的目录应为
+`0700`。没有POSIX mode bit的平台不伪造等价权限检查，但仍必须执行非symlink普通文件和版本控制忽略检查。
+明文不得写入PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly、这些对象的identity、
+receipt、control frame或日志。
 
 第一版配置快照可以由受信runtime storage以明文保存。未来加密应作为独立snapshot store的整份envelope
 能力加入；它不能重新引入字段级`SecretRef`，也不能改变本文件的authoring schema。本版本不定义KMS wire、

@@ -92,9 +92,12 @@ Per-service build output (the intermediate `service-assembly.json`, `router-mani
 Dev sync reads service-root config sources in place and publishes only the merged,
 validated immutable snapshot. It never copies the source YAML into the artifact
 root. `config.<profile>.secret.yml` must be untracked and covered by the
-repository ignore rules; tooling rejects a secret file whose ignored status
-cannot be proven. Snapshot receipts and logs contain only the opaque reference,
-record path, and counts, never configuration values.
+repository ignore rules. On POSIX, it must also be a non-symlink regular file
+with mode `0600`; tooling fails closed with a `chmod 600` hint otherwise.
+Platforms without POSIX mode bits skip only that mode check. Any still-required
+plaintext fixture copy is explicitly changed to `0600` before use. Snapshot
+receipts and logs contain only the opaque reference, record path, and counts,
+never configuration values.
 
 Package sources are configured by the nearest ancestor `skiff.yml`:
 

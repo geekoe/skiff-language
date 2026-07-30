@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import { cargoTargetDir } from './cargo-target-dir.mjs';
 import { captureAttachedCommand } from './command-execution.mjs';
@@ -219,8 +220,13 @@ export async function runConfigSnapshotAuthoring({
   if (!isAbsolute(skiffRoot) || !isAbsolute(artifactRoot)) {
     throw new Error('config snapshot authoring requires absolute skiffRoot and artifactRoot');
   }
-  if (typeof profile !== 'string' || profile.length === 0) {
-    throw new Error('config snapshot authoring requires an explicit profile');
+  if (
+    typeof profile !== 'string'
+    || profile === '.'
+    || profile === '..'
+    || !activationEnvironmentPattern.test(profile)
+  ) {
+    throw new Error('config snapshot authoring requires an explicit canonical profile');
   }
   if (
     typeof environment !== 'string'
@@ -261,6 +267,7 @@ export async function runConfigSnapshotAuthoring({
     }
     args.push('--source', JSON.stringify(source));
   }
+  await verifySecretConfigSources(profile, sources);
   const outcome = await captureAttachedCommand('cargo', args, {
     cwd: skiffRoot,
     env: {
@@ -289,6 +296,30 @@ export async function runConfigSnapshotAuthoring({
     throw new Error('config snapshot production did not return an exact snapshot reference');
   }
   return result;
+}
+
+async function verifySecretConfigSources(profile, sources) {
+  const filename = `config.${profile}.secret.yml`;
+  for (const source of sources) {
+    const path = join(source.root, filename);
+    let metadata;
+    try {
+      metadata = await lstat(path);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        continue;
+      }
+      throw new Error(`failed to inspect secret config ${path}`, { cause: error });
+    }
+    if (metadata.isSymbolicLink() || !metadata.isFile()) {
+      throw new Error(`secret config ${path} must be a regular file, not a symlink`);
+    }
+    if (process.platform !== 'win32' && (metadata.mode & 0o7777) !== 0o600) {
+      throw new Error(
+        `secret config ${path} permissions must be 0600; run \`chmod 600 <path>\` before retrying`,
+      );
+    }
+  }
 }
 
 export function compilerAuthoringInvocation({

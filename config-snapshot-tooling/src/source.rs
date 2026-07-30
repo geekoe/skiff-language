@@ -1,5 +1,8 @@
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use serde_json::{Map, Number, Value};
 
 use crate::error::{invalid, io_error};
@@ -17,8 +20,10 @@ pub fn load_service_config(
         service_root.join(format!("config.{profile}.yml")),
         service_root.join(format!("config.{profile}.secret.yml")),
     ];
-    if paths[2].exists() {
-        verify_secret_file_is_ignored(&paths[2])?;
+    match fs::symlink_metadata(&paths[2]) {
+        Ok(_) => verify_secret_file_is_ignored(&paths[2])?,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(io_error("inspect secret config", &paths[2], source)),
     }
 
     let mut merged = BTreeMap::new();
@@ -55,6 +60,13 @@ pub fn verify_secret_file_is_ignored(path: &Path) -> ConfigSnapshotToolingResult
         return Err(invalid(
             path,
             "secret config must be a regular file, not a symlink",
+        ));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o7777 != 0o600 {
+        return Err(invalid(
+            path,
+            "secret config permissions must be 0600; run `chmod 600 <path>` before retrying",
         ));
     }
     let parent = path
@@ -272,6 +284,9 @@ fn git_status(cwd: &Path, args: &[&str]) -> ConfigSnapshotToolingResult<bool> {
 mod tests {
     use std::{collections::BTreeMap, fs, process::Command};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -349,16 +364,15 @@ mod tests {
 "#,
         )
         .unwrap();
-        fs::write(
-            repository.path().join("config.dev.secret.yml"),
+        write_secret(
+            &repository.path().join("config.dev.secret.yml"),
             r#"
 "example.com/service":
   nested:
     secret: value
   count: null
 "#,
-        )
-        .unwrap();
+        );
 
         let loaded = load_service_config(repository.path(), "dev").unwrap();
         assert_eq!(
@@ -383,7 +397,7 @@ mod tests {
     fn loader_rejects_unignored_or_tracked_secret_and_non_package_root_keys() {
         let repository = git_repository();
         let secret = repository.path().join("config.dev.secret.yml");
-        fs::write(&secret, "\"example.com/service\": { key: value }\n").unwrap();
+        write_secret(&secret, "\"example.com/service\": { key: value }\n");
         let error = load_service_config(repository.path(), "dev").unwrap_err();
         assert!(error.to_string().contains("ignore rules"));
 
@@ -410,6 +424,48 @@ mod tests {
         assert!(error.to_string().contains("canonical Package ID"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn loader_rejects_insecure_secret_mode_symlinks_and_non_regular_paths() {
+        let repository = git_repository();
+        fs::write(
+            repository.path().join(".gitignore"),
+            "config.*.secret.yml\n",
+        )
+        .unwrap();
+        let secret = repository.path().join("config.dev.secret.yml");
+        fs::write(
+            &secret,
+            "\"example.com/service\": { apiKey: must-not-leak }\n",
+        )
+        .unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = load_service_config(repository.path(), "dev")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("chmod 600"), "{error}");
+        assert!(!error.contains("must-not-leak"), "{error}");
+
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(load_service_config(repository.path(), "dev").is_ok());
+
+        fs::remove_file(&secret).unwrap();
+        let target = repository.path().join("real-secret.yml");
+        write_secret(&target, "\"example.com/service\": { apiKey: linked }\n");
+        symlink(&target, &secret).unwrap();
+        let error = load_service_config(repository.path(), "dev")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("regular file, not a symlink"), "{error}");
+
+        fs::remove_file(&secret).unwrap();
+        fs::create_dir(&secret).unwrap();
+        let error = load_service_config(repository.path(), "dev")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("regular file, not a symlink"), "{error}");
+    }
+
     #[test]
     fn loader_rejects_duplicate_author_keys_in_one_layer() {
         let repository = git_repository();
@@ -431,6 +487,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         git(root.path(), &["init", "--quiet"]);
         root
+    }
+
+    fn write_secret(path: &std::path::Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     fn git(root: &std::path::Path, arguments: &[&str]) {

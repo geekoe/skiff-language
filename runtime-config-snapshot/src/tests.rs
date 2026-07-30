@@ -127,6 +127,10 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
     );
     assert_eq!(value["environment"], "dev");
     assert_eq!(record.environment(), "dev");
+    assert_eq!(
+        record.deployments()[0].packages()[0].config_value(),
+        json!({"apiKey": "secret", "nested": {"a": 1, "z": 2}})
+    );
     assert!(value.get("assembly").is_none());
     assert!(value.get("assemblyRef").is_none());
     assert!(value.get("assemblyIdentity").is_none());

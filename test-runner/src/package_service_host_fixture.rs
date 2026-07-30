@@ -223,13 +223,64 @@ fn copy_fixture_tree(source: &Path, target: &Path) -> anyhow::Result<()> {
         let entry = entry?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "fixture source tree contains symlink {}",
+                source_path.display()
+            );
+        }
+        if file_type.is_dir() {
             copy_fixture_tree(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            validate_secret_copy_source(&source_path)?;
+            fs::copy(&source_path, &target_path)?;
+            secure_copied_secret(&target_path)?;
         } else {
-            fs::copy(source_path, target_path)?;
+            anyhow::bail!(
+                "fixture source tree contains non-regular path {}",
+                source_path.display()
+            );
         }
     }
     Ok(())
+}
+
+fn validate_secret_copy_source(path: &Path) -> anyhow::Result<()> {
+    if !is_secret_config_path(path) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if fs::metadata(path)?.permissions().mode() & 0o7777 != 0o600 {
+            anyhow::bail!(
+                "secret config {} permissions must be 0600; run `chmod 600 <path>` before retrying",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn secure_copied_secret(path: &Path) -> anyhow::Result<()> {
+    if !is_secret_config_path(path) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn is_secret_config_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| name.starts_with("config.") && name.ends_with(".secret.yml"))
 }
 
 fn publish_package(
@@ -287,6 +338,9 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
     use super::copy_fixture_tree;
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -329,6 +383,48 @@ mod tests {
             fs::read(target.join("nested/source.skiff")).unwrap(),
             fs::read(source.join("nested/source.skiff")).unwrap()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_copy_rejects_symlinks_and_secures_secret_config() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "skiff-host-fixture-secret-copy-{}-{sequence}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&source).unwrap();
+        let secret = source.join("config.dev.secret.yml");
+        fs::write(
+            &secret,
+            "\"example.com/service\": { apiKey: must-not-leak }\n",
+        )
+        .unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let insecure = copy_fixture_tree(&source, &target).unwrap_err().to_string();
+        assert!(insecure.contains("chmod 600"), "{insecure}");
+        assert!(!insecure.contains("must-not-leak"), "{insecure}");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        copy_fixture_tree(&source, &target).unwrap();
+        assert_eq!(
+            fs::metadata(target.join("config.dev.secret.yml"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let linked = source.join("linked.skiff");
+        symlink(&secret, &linked).unwrap();
+        let error = copy_fixture_tree(&source, &target).unwrap_err().to_string();
+        assert!(error.contains("contains symlink"), "{error}");
+        assert!(!error.contains("must-not-leak"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 }

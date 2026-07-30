@@ -239,6 +239,19 @@ impl RuntimeConfigPackage {
         &self.config
     }
 
+    /// Returns the validated package-local config as one owned JSON object.
+    ///
+    /// Runtime consumers use this typed record accessor instead of rebuilding
+    /// snapshot wire objects or importing raw JSON map assembly at the load boundary.
+    pub fn config_value(&self) -> Value {
+        Value::Object(
+            self.config
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        )
+    }
+
     fn validate(&self, path: &Path, budget: &mut ConfigBudget) -> RuntimeConfigSnapshotResult<()> {
         validate_identity(self.package_build_id.as_str(), "packageBuildId", path)?;
         validate_object(&self.config, 1, budget, path)
