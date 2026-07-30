@@ -200,6 +200,38 @@ fn activation_context_materializes_exact_resolved_secret_paths_in_memory() {
         Err(ActivationContextError::MissingResolvedSecret { path })
             if path == "provider.apiKey"
     ));
+    assert!(matches!(
+        ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
+            AssemblyIdentity::new("assembly-with-secret"),
+            1,
+            "replica-a",
+            &template,
+            &binding_template,
+            &[
+                resolved[0].clone(),
+                ConfigLiteralBinding {
+                    path: "provider.unknown".to_string(),
+                    value: MetadataValue::String("must-not-escape".to_string()),
+                },
+            ],
+            None,
+        ),
+        Err(ActivationContextError::UnexpectedResolvedSecret { path })
+            if path == "provider.unknown"
+    ));
+    assert!(matches!(
+        ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
+            AssemblyIdentity::new("assembly-with-secret"),
+            1,
+            "replica-a",
+            &template,
+            &binding_template,
+            &[resolved[0].clone(), resolved[0].clone()],
+            None,
+        ),
+        Err(ActivationContextError::DuplicateResolvedSecret { path })
+            if path == "provider.apiKey"
+    ));
 }
 
 #[test]

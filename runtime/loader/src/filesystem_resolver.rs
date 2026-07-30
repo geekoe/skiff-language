@@ -263,8 +263,12 @@ mod secret_tests {
     }
 
     fn deployment() -> ServiceDeploymentRef {
+        deployment_for("example.com/service")
+    }
+
+    fn deployment_for(service_id: &str) -> ServiceDeploymentRef {
         ServiceDeploymentRef {
-            service_id: "example.com/service".to_string(),
+            service_id: service_id.to_string(),
             contract_version: "1.0.0".to_string(),
             deployment_revision: DeploymentRevision::new("sha256-test"),
             deployment_artifact_identity: DeploymentArtifactIdentity::new(
@@ -273,12 +277,33 @@ mod secret_tests {
         }
     }
 
+    fn binding(path: &str) -> SecretRefBinding {
+        SecretRefBinding {
+            path: path.to_string(),
+            secret_ref: format!("secret:{}", path.replace('.', "-")),
+        }
+    }
+
+    fn write_secret_source(root: &TestRoot, service_id: &str, environment: &str, source: &str) {
+        let service_storage_id =
+            skiff_artifact_identity::publication_storage_segment(service_id, "service id")
+                .expect("project service storage id");
+        let service_config_dir = root
+            .path()
+            .join("configs")
+            .join("services")
+            .join(service_storage_id);
+        std::fs::create_dir_all(&service_config_dir).expect("create service config directory");
+        std::fs::write(
+            service_config_dir.join(format!("config.{environment}.secret.yml")),
+            source,
+        )
+        .expect("write test secret source");
+    }
+
     #[test]
     fn resolves_only_bound_service_secret_paths() {
-        let bindings = vec![SecretRefBinding {
-            path: "provider.apiKey".to_string(),
-            secret_ref: "secret:provider-key".to_string(),
-        }];
+        let bindings = vec![binding("provider.apiKey")];
         let resolved = resolve_service_secret_bindings(
             "service:\n  provider:\n    apiKey: test-secret\n  unrelated: ignored\n",
             &deployment(),
@@ -295,10 +320,7 @@ mod secret_tests {
 
     #[test]
     fn rejects_missing_bound_service_secret_path_without_exposing_values() {
-        let bindings = vec![SecretRefBinding {
-            path: "provider.apiKey".to_string(),
-            secret_ref: "secret:provider-key".to_string(),
-        }];
+        let bindings = vec![binding("provider.apiKey")];
         let error = resolve_service_secret_bindings(
             "service:\n  provider:\n    other: do-not-report\n",
             &deployment(),
@@ -311,21 +333,55 @@ mod secret_tests {
     }
 
     #[test]
-    fn filesystem_resolver_reads_exact_environment_service_secret_source() {
-        let root = TestRoot::new();
-        let service_config_dir = root.path().join("configs/services/example~com~~service");
-        std::fs::create_dir_all(&service_config_dir).expect("create service config directory");
-        std::fs::write(
-            service_config_dir.join("config.dev.secret.yml"),
-            "service:\n  provider:\n    apiKey: test-secret\n",
+    fn rejects_unknown_and_null_bindings_without_exposing_source_values() {
+        let source =
+            "service:\n  provider:\n    apiKey: source-value-must-stay-private\n    nullKey:\n";
+        for path in ["provider.unknown", "provider.nullKey"] {
+            let error = resolve_service_secret_bindings(source, &deployment(), &[binding(path)])
+                .expect_err("unknown and null secret bindings must fail closed");
+            let message = error.to_string();
+            assert!(message.contains(path));
+            assert!(!message.contains("source-value-must-stay-private"));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_yaml_without_exposing_source_contents() {
+        let error = resolve_service_secret_bindings(
+            "service: [private-source-value",
+            &deployment(),
+            &[binding("provider.apiKey")],
         )
-        .expect("write test secret source");
+        .expect_err("invalid secret YAML must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("invalid YAML"));
+        assert!(!message.contains("private-source-value"));
+    }
+
+    #[test]
+    fn filesystem_resolver_reads_only_exact_environment_and_service_secret_source() {
+        let root = TestRoot::new();
+        write_secret_source(
+            &root,
+            "example.com/service",
+            "dev",
+            "service:\n  provider:\n    apiKey: test-secret\n",
+        );
+        write_secret_source(
+            &root,
+            "example.com/service",
+            "prod",
+            "service:\n  provider:\n    apiKey: wrong-environment-value\n",
+        );
+        write_secret_source(
+            &root,
+            "example.com/other",
+            "dev",
+            "service:\n  provider:\n    apiKey: wrong-service-value\n",
+        );
         let resolver = FilesystemRuntimeAssemblyContentResolver::open(root.path())
             .expect("open filesystem resolver");
-        let bindings = vec![SecretRefBinding {
-            path: "provider.apiKey".to_string(),
-            secret_ref: "secret:provider-key".to_string(),
-        }];
+        let bindings = vec![binding("provider.apiKey")];
 
         let resolved = resolver
             .resolve_activation_secrets("dev", &deployment(), &bindings)
@@ -333,5 +389,55 @@ mod secret_tests {
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].path, "provider.apiKey");
+        assert_eq!(
+            resolved[0].value,
+            skiff_artifact_model::MetadataValue::String("test-secret".to_string())
+        );
+    }
+
+    #[test]
+    fn filesystem_resolver_never_falls_back_to_wrong_service_or_environment() {
+        let root = TestRoot::new();
+        write_secret_source(
+            &root,
+            "example.com/service",
+            "dev",
+            "service:\n  provider:\n    apiKey: dev-only-value\n",
+        );
+        write_secret_source(
+            &root,
+            "example.com/other",
+            "prod",
+            "service:\n  provider:\n    apiKey: other-service-value\n",
+        );
+        let resolver = FilesystemRuntimeAssemblyContentResolver::open(root.path())
+            .expect("open filesystem resolver");
+        let bindings = vec![binding("provider.apiKey")];
+
+        let wrong_environment = resolver
+            .resolve_activation_secrets("prod", &deployment(), &bindings)
+            .expect_err("resolver must not fall back to another environment");
+        let wrong_service = resolver
+            .resolve_activation_secrets("dev", &deployment_for("example.com/missing"), &bindings)
+            .expect_err("resolver must not fall back to another service");
+
+        for message in [wrong_environment.to_string(), wrong_service.to_string()] {
+            assert!(message.contains("failed to read"));
+            assert!(!message.contains("dev-only-value"));
+            assert!(!message.contains("other-service-value"));
+        }
+    }
+
+    #[test]
+    fn filesystem_resolver_rejects_invalid_environment_before_path_resolution() {
+        let root = TestRoot::new();
+        let resolver = FilesystemRuntimeAssemblyContentResolver::open(root.path())
+            .expect("open filesystem resolver");
+
+        let error = resolver
+            .resolve_activation_secrets("../prod", &deployment(), &[binding("provider.apiKey")])
+            .expect_err("invalid environment must fail before filesystem lookup");
+
+        assert!(error.to_string().contains("environment"));
     }
 }

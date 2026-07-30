@@ -20,6 +20,8 @@ struct CountingResolver {
     packages: Vec<(PackageArtifactRef, Arc<PackageArtifact>)>,
     files: Vec<(PackageArtifactRef, FileIrRef, Arc<FileIrUnit>)>,
     reads: AtomicUsize,
+    secret_environments: Mutex<Vec<String>>,
+    reject_secret_resolution: bool,
 }
 
 impl RuntimeAssemblyRecordResolver for CountingResolver {
@@ -126,6 +128,31 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
         self.reads.fetch_add(1, Ordering::SeqCst);
         anyhow::bail!("fixture has no static resources")
     }
+
+    fn resolve_activation_secrets(
+        &self,
+        environment: &str,
+        _deployment: &ServiceDeploymentRef,
+        bindings: &[SecretRefBinding],
+    ) -> anyhow::Result<Vec<ConfigLiteralBinding>> {
+        if bindings.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.secret_environments
+            .lock()
+            .unwrap()
+            .push(environment.to_string());
+        if self.reject_secret_resolution {
+            anyhow::bail!("fixture activation secret source is unavailable");
+        }
+        Ok(bindings
+            .iter()
+            .map(|binding| ConfigLiteralBinding {
+                path: binding.path.clone(),
+                value: MetadataValue::String("fixture-secret".to_string()),
+            })
+            .collect())
+    }
 }
 
 struct FullChainFixture {
@@ -143,10 +170,28 @@ struct FullChainFixture {
 
 impl FullChainFixture {
     fn new() -> Self {
-        Self::with_consumer_collection(None)
+        Self::with_consumer_options(None, Vec::new())
     }
 
     fn with_consumer_collection(root_collection: Option<&str>) -> Self {
+        Self::with_consumer_options(root_collection, Vec::new())
+    }
+
+    fn with_required_secret() -> Self {
+        Self::with_consumer_options(
+            None,
+            vec![SecretRefBinding {
+                path: "provider.apiKey".to_string(),
+                secret_ref: "secret:provider-api-key".to_string(),
+            }],
+        )
+    }
+
+    fn with_consumer_options(
+        root_collection: Option<&str>,
+        consumer_secret_refs: Vec<SecretRefBinding>,
+    ) -> Self {
+        let consumer_requires_secret = !consumer_secret_refs.is_empty();
         let operation_contract = operation_contract();
         let (provider_contract, provider_operation_id) = service_contract(
             "example.phase-three.provider",
@@ -202,7 +247,7 @@ impl FullChainFixture {
         let consumer_state = root_collection
             .map(|_| vec![database_state_requirement()])
             .unwrap_or_default();
-        let consumer_package = implementation_package(
+        let mut consumer_package = implementation_package(
             "example.phase-three-consumer",
             "check",
             consumer_callable_id.clone(),
@@ -211,6 +256,34 @@ impl FullChainFixture {
             Some((provider_requirement, provider_call)),
             consumer_state,
         );
+        if consumer_requires_secret {
+            consumer_package
+                .runtime_requirements
+                .config
+                .push(PackageConfigRequirement {
+                    path: "provider.apiKey".to_string(),
+                    value_type: "string".to_string(),
+                    required: true,
+                });
+            for projection in consumer_package.boundary_projections.values_mut() {
+                let BoundaryCallableProjection::Available {
+                    implementation_requirements,
+                    ..
+                } = projection
+                else {
+                    continue;
+                };
+                implementation_requirements
+                    .config
+                    .push(BoundaryConfigRequirement {
+                        path: "provider.apiKey".to_string(),
+                        value_type: "string".to_string(),
+                        required: true,
+                    });
+            }
+            skiff_artifact_identity::assign_package_artifact_identities(&mut consumer_package)
+                .unwrap();
+        }
         let consumer_package_ref = package_ref(&consumer_package);
 
         let provider_deployment = project_service_deployment(
@@ -266,7 +339,7 @@ impl FullChainFixture {
                 gateway_entries: BTreeMap::new(),
                 ingress: Vec::new(),
                 config_literals: Vec::new(),
-                secret_refs: Vec::new(),
+                secret_refs: consumer_secret_refs,
                 state_bindings: root_collection
                     .map(|_| {
                         vec![StateBinding {
@@ -335,6 +408,8 @@ impl FullChainFixture {
                 ),
             ],
             reads: AtomicUsize::new(0),
+            secret_environments: Mutex::new(Vec::new()),
+            reject_secret_resolution: true,
         };
         Self {
             assembly,
@@ -672,6 +747,8 @@ impl CollectionMappingFixture {
             packages: resolver_packages,
             files: resolver_files,
             reads: AtomicUsize::new(0),
+            secret_environments: Mutex::new(Vec::new()),
+            reject_secret_resolution: true,
         };
         Self { assembly, resolver }
     }
@@ -756,6 +833,71 @@ fn mapping_service_db() -> AssemblyActivationServiceDb {
     AssemblyActivationServiceDb {
         mongo_url: "mongodb://fixture.invalid".to_string(),
     }
+}
+
+#[tokio::test]
+async fn prepare_fails_closed_when_required_activation_secret_is_unavailable() {
+    let fixture = FullChainFixture::with_required_secret();
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
+
+    let reply = controller
+        .apply_activation_control(
+            AssemblyActivationControl::Prepare {
+                environment: "prod".to_string(),
+                activation_id: "secret-prepare".to_string(),
+                expected_generation: 0,
+                candidate_generation: 1,
+                assembly: reference,
+                replica_id: "runtime-a".to_string(),
+                service_db: None,
+            },
+            &fixture.resolver,
+            None,
+        )
+        .await
+        .expect("unavailable secret source should produce a protocol rejection");
+
+    assert!(matches!(
+        reply,
+        Some(AssemblyActivationControl::Reject {
+            reason: AssemblyActivationRejectReason::Admission,
+            ..
+        })
+    ));
+    assert!(controller.active().unwrap().is_none());
+    assert_eq!(
+        *fixture.resolver.secret_environments.lock().unwrap(),
+        vec!["prod".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn committed_recovery_fails_closed_when_required_activation_secret_is_unavailable() {
+    let fixture = FullChainFixture::with_required_secret();
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
+
+    let error = controller
+        .recover_committed("prod", 7, &reference, &fixture.resolver, None)
+        .await
+        .expect_err("committed recovery must not publish without required secrets");
+
+    assert!(error
+        .to_string()
+        .contains("activation context construction"));
+    assert!(!error.to_string().contains("fixture-secret"));
+    assert!(controller.active().unwrap().is_none());
+    assert_eq!(
+        *fixture.resolver.secret_environments.lock().unwrap(),
+        vec!["prod".to_string()]
+    );
 }
 
 #[tokio::test]
