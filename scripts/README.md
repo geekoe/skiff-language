@@ -337,9 +337,10 @@ An explicitly selected Skiff stack must already be running with a connected runt
 must name that stack's canonical activation endpoint, ingress origin, existing artifact root,
 environment, and expected generation. The runner never defaults to the stable instance; non-live
 execution never writes its external input artifact root. The selected `.test.skiff` file must belong
-to a canonical package root containing `package.yml`. Tests that require existing service, config,
-state, resource, or runtime-capability bindings must also select that exact runtime assembly with
-`--base-assembly`. Canonical/manual gating should pass `--deny-skips` and `--require-tests`.
+to a canonical package root containing `package.yml`. Tests that require existing services must
+select that exact runtime assembly with `--base-assembly`; its business config is selected
+independently with the matching `--base-config-snapshot`. Canonical/manual gating should pass
+`--deny-skips` and `--require-tests`.
 
 ```bash
 cd skiff-language
@@ -348,6 +349,7 @@ node scripts/skiff.mjs test \
   --live \
   --artifact-root /path/to/that-instance/artifacts \
   --base-assembly '<assembly-identity>' \
+  --base-config-snapshot '<config-snapshot-identity>' \
   --activation-url 'http://127.0.0.1:<control-port>/__skiff/activate-assembly' \
   --ingress-url 'http://127.0.0.1:<ingress-port>' \
   --environment '<environment>' \

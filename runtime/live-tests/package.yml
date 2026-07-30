@@ -1,8 +1,5 @@
 id: skiff.run/runtime-live
 version: 0.1.0
-state:
-  runtime-live-store:
-    kind: database
 packages:
   - id: example.com/runtime-live-kit
     version: 1.0.0

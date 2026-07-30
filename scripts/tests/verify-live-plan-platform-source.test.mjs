@@ -21,7 +21,7 @@ test('runtime-live forwards the absolute repository root exactly once', async ()
     );
     await writeFile(
       join(fixtureRoot, 'config.skiff-test.yml'),
-      'timeout: 120000\n',
+      '"example.com/runtime-live": {}\n',
     );
     await writeFile(join(fixtureRoot, 'context.live.test.skiff'), 'test "context" {}\n');
     for (const executable of ['cargo', 'node']) {

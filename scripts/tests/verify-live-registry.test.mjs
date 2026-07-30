@@ -843,7 +843,7 @@ async function runtimeFixture(prefix) {
   );
   await writeFile(
     join(packageRoot, 'config.skiff-test.yml'),
-    'timeout: 120000\n',
+    '"example.com/runtime-live-fixture": {}\n',
   );
   await writeFile(testFile, 'test defaultRun false\n');
   return {

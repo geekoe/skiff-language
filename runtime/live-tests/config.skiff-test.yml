@@ -1,14 +1,6 @@
-config:
-  runtimeLive.operation: operation-marker
-  runtimeLive.db: db-marker
-  runtimeLive.file: file-marker
-  runtimeLive.httpAdapter: http-marker
-state:
-  runtime-live-store:
-    kind: database
-    namespace: runtime-live
-timeout: 120000
-quota:
-  cpuMillis: 500
-  memoryBytes: 268435456
-principal: service:skiff.run/runtime-live
+"skiff.run/runtime-live":
+  runtimeLive:
+    operation: operation-marker
+    db: db-marker
+    file: file-marker
+    httpAdapter: http-marker

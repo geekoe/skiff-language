@@ -1269,7 +1269,7 @@ async function writeCanonicalRuntimeLiveFixture(rootPath, relativePath) {
   );
   await writeFile(
     join(packageRoot, 'config.skiff-test.yml'),
-    'timeout: 120000\n',
+    '"example.com/runtime-live-fixture": {}\n',
   );
 }
 

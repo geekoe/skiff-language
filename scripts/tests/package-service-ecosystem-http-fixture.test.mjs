@@ -11,12 +11,11 @@ import {
 
 const ENVIRONMENT = 'p5-f387-http-fixture';
 
-test('router compiler fixture uses split HTTP authoring and keeps dev timeout', async () => {
+test('router compiler fixture uses split HTTP authoring without an empty business config profile', async () => {
   const root = join('compiler', 'tests', 'fixtures', 'router-websocket-fixture');
-  const [service, http, config] = await Promise.all([
+  const [service, http] = await Promise.all([
     readFile(join(root, 'service.yml'), 'utf8'),
     readFile(join(root, 'http.yml'), 'utf8'),
-    readFile(join(root, 'config.dev.yml'), 'utf8'),
   ]);
   assert.equal(service, 'id: example.com/websocket_fixture\n');
   assert.equal(
@@ -31,7 +30,11 @@ test('router compiler fixture uses split HTTP authoring and keeps dev timeout', 
       source: { kind: http.body }
 `,
   );
-  assert.match(config, /^timeout: 120000$/m);
+  await assert.rejects(
+    access(join(root, 'config.dev.yml')),
+    { code: 'ENOENT' },
+    'router fixture must not carry an empty platform-policy profile',
+  );
 });
 
 test('owned WebSocket source fixtures use private current connect authoring', async () => {

@@ -1,11 +1,3 @@
-config:
-  encryptedLive.testRunnerSecret: encrypted-live-test-runner-secret
-state:
-  encrypted-live-default-store:
-    kind: database
-    namespace: encrypted-live-default
-timeout: 120000
-quota:
-  cpuMillis: 500
-  memoryBytes: 268435456
-principal: service:example.com/encrypted-live-default
+"example.com/encrypted-live-default":
+  encryptedLive:
+    testRunnerSecret: encrypted-live-test-runner-secret

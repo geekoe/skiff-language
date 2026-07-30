@@ -132,7 +132,10 @@ async function runtimeFixture({ fixtureNames = RUNTIME_FIXTURES } = {}) {
     join(packageRoot, 'package.yml'),
     'id: example.com/runtime-live\nversion: 1.0.0\n',
   );
-  await writeFile(join(packageRoot, 'config.skiff-test.yml'), 'timeout: 120000\n');
+  await writeFile(
+    join(packageRoot, 'config.skiff-test.yml'),
+    '"example.com/runtime-live": {}\n',
+  );
   await Promise.all(fixtureNames.map((name) =>
     writeFile(join(internalRoot, name), 'test defaultRun false\n')));
   await Promise.all(['cargo', 'node'].map(async (executable) => {

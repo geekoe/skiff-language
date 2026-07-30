@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -21,13 +22,16 @@ import {
 
 const usage =
   'usage: node scripts/check-db-encrypted-storage-live.mjs [--help]';
+const STORAGE_ENVIRONMENT = 'dev';
 const DEFAULT_SERVICE = 'example.com/encrypted-live-default';
 const MAPPED_SERVICE = 'example.com/encrypted-live-mapped';
-const DEFAULT_DATABASE = storageDatabaseName(DEFAULT_SERVICE);
-const MAPPED_DATABASE = storageDatabaseName(MAPPED_SERVICE);
-const DEFAULT_COLLECTION = 'Credential';
-const ARCHIVE_COLLECTION = 'CredentialArchive';
-const MAPPED_COLLECTION = 'mapped_package_secret';
+const MAPPED_PACKAGE = 'example.com/encrypted-live-store';
+const DEFAULT_DATABASE = storageDatabaseName(STORAGE_ENVIRONMENT, DEFAULT_SERVICE);
+const MAPPED_DATABASE = storageDatabaseName(STORAGE_ENVIRONMENT, MAPPED_SERVICE);
+const DEFAULT_COLLECTION = storageCollectionName(DEFAULT_SERVICE, 'Credential');
+const ARCHIVE_COLLECTION = storageCollectionName(DEFAULT_SERVICE, 'CredentialArchive');
+const MAPPED_COLLECTION = storageCollectionName(MAPPED_PACKAGE, 'package_secret');
+const MAPPED_SERVICE_COLLECTION = storageCollectionName(MAPPED_SERVICE, 'Credential');
 const DEFAULT_BASE = '/encrypted-live/default';
 const MAPPED_BASE = '/encrypted-live/mapped';
 
@@ -127,6 +131,7 @@ async function run(rawArgs) {
     defaultCollection: DEFAULT_COLLECTION,
     archiveCollection: ARCHIVE_COLLECTION,
     mappedCollection: MAPPED_COLLECTION,
+    mappedServiceCollection: MAPPED_SERVICE_COLLECTION,
     defaultBase: DEFAULT_BASE,
     mappedBase: MAPPED_BASE,
     retiredStorage: testRunnerStorage,
@@ -469,13 +474,19 @@ async function assertPhysicalStorage(state, keyId) {
   assert(defaultCollections.includes(DEFAULT_COLLECTION), 'default physical collection missing');
   assert(defaultCollections.includes(ARCHIVE_COLLECTION), 'second default physical collection missing');
   assert(mappedCollections.includes(MAPPED_COLLECTION), 'mapped final physical collection missing');
-  assert(mappedCollections.includes(DEFAULT_COLLECTION), 'mapped service-owned Credential collection missing');
+  assert(
+    mappedCollections.includes(MAPPED_SERVICE_COLLECTION),
+    'mapped service-owned Credential collection missing',
+  );
   assert(!mappedCollections.includes('package_secret'), 'unmapped package collection must not be used');
 
   const documents = await liveHarness.rawDocuments(DEFAULT_DATABASE, DEFAULT_COLLECTION);
   const archiveDocuments = await liveHarness.rawDocuments(DEFAULT_DATABASE, ARCHIVE_COLLECTION);
   const mappedDocuments = await liveHarness.rawDocuments(MAPPED_DATABASE, MAPPED_COLLECTION);
-  const mappedServiceDocuments = await liveHarness.rawDocuments(MAPPED_DATABASE, DEFAULT_COLLECTION);
+  const mappedServiceDocuments = await liveHarness.rawDocuments(
+    MAPPED_DATABASE,
+    MAPPED_SERVICE_COLLECTION,
+  );
   const raw = JSON.stringify([documents, archiveDocuments, mappedDocuments, mappedServiceDocuments]);
   assert(documents.length > ROTATION_PAGE_SIZE, 'default rotation fixture must span more than one scan page');
   for (const plaintext of state.plaintexts) {
@@ -527,7 +538,7 @@ async function assertCrossContextCopyFails(state) {
   source = await rawDefault(state.main.id);
   const mappedServiceTarget = await liveHarness.rawDocument(
     MAPPED_DATABASE,
-    DEFAULT_COLLECTION,
+    MAPPED_SERVICE_COLLECTION,
     state.serviceProbe.id,
   );
   assert(source._id === mappedServiceTarget._id, 'service-only AAD probe must keep record id unchanged');
@@ -535,7 +546,7 @@ async function assertCrossContextCopyFails(state) {
     state.main.apiKey === state.serviceProbe.apiKey,
     'service-only AAD probe must keep the encrypted plaintext unchanged',
   );
-  await liveHarness.setRawFields(MAPPED_DATABASE, DEFAULT_COLLECTION, state.serviceProbe.id, {
+  await liveHarness.setRawFields(MAPPED_DATABASE, MAPPED_SERVICE_COLLECTION, state.serviceProbe.id, {
     apiKey: source.apiKey,
   });
   await assertReadFailsClosed(
@@ -651,8 +662,32 @@ function assertKeyringUnchanged(before, after) {
   );
 }
 
-function storageDatabaseName(serviceId) {
-  return serviceId.replaceAll('.', '~').replaceAll('/', '~~');
+function storageDatabaseName(environment, serviceId) {
+  return `skiff_${storageIdentityDigest(
+    'skiff-service-db-storage-identity-v1',
+    environment,
+    serviceId,
+  )}`;
+}
+
+function storageCollectionName(packageId, declaredCollectionIdentity) {
+  return `_skiff_c1_${storageIdentityDigest(
+    'skiff-package-collection-storage-identity-v1',
+    packageId,
+    declaredCollectionIdentity,
+  )}`;
+}
+
+function storageIdentityDigest(...parts) {
+  const hash = createHash('sha256');
+  for (const part of parts) {
+    const value = Buffer.from(part, 'utf8');
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(value.length));
+    hash.update(length);
+    hash.update(value);
+  }
+  return hash.digest('base64url');
 }
 
 function assertPortsInAllowedRange(ports) {

@@ -42,7 +42,7 @@ export function createRotationInventory(config) {
     {
       storageServiceId: config.mappedService,
       database: config.mappedDatabase,
-      collection: config.defaultCollection,
+      collection: config.mappedServiceCollection,
       fields: ['apiKey'],
       scanPath: `${config.mappedBase}/service-probe-scan`,
       rewritePath: `${config.mappedBase}/service-probe-rewrite-batch`,
