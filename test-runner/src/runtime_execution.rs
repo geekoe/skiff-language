@@ -60,7 +60,7 @@ pub fn run_package_cases(
         ingress_url,
     )?;
     fixture.publish(source_artifact_root, runtime_artifact_root)?;
-    let shared_records = shared_fixture_records(&fixture.cases)?.clone();
+    let shared_records = fixture.records.clone();
     let entrypoints = fixture
         .cases
         .into_iter()
@@ -73,28 +73,6 @@ pub fn run_package_cases(
         ingress_url,
         options,
     )
-}
-
-fn shared_fixture_records(
-    cases: &[crate::test_service_fixture::CanonicalTestServiceCaseFixture],
-) -> Result<&CanonicalTestRecords, CanonicalFixtureError> {
-    let first = cases.first().ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(
-            "shared test-service execution requires at least one case".to_string(),
-        )
-    })?;
-    let shared_assembly = runtime_assembly_ref(&first.records.assembly)
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    for case in &cases[1..] {
-        let case_assembly = runtime_assembly_ref(&case.records.assembly)
-            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        if case_assembly != shared_assembly {
-            return Err(CanonicalFixtureError::InvalidInput(
-                "test-service fixture cases must reference one shared runtime assembly".to_string(),
-            ));
-        }
-    }
-    Ok(&first.records)
 }
 
 fn execute_shared_assembly(
