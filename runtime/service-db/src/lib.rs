@@ -36,6 +36,8 @@ mod error;
 mod lease;
 mod mapping;
 mod metadata;
+#[cfg(any(feature = "migration-tool", test))]
+pub mod migration_tool;
 mod mongo;
 mod prepared_runtime;
 mod provider;
@@ -48,6 +50,10 @@ pub use capability::{
 pub use encryption::{
     DbEncryptedFieldContext, DbEncryptionCipher, DbEncryptionError, DbEncryptionKeyring,
     DbEncryptionKeyringError, SERVICE_DB_ENCRYPTION_KEYRING_FORMAT,
+};
+#[cfg(any(feature = "migration-tool", test))]
+pub use encryption::{
+    DbMigrationCrypto, MigrationDocumentResult, MigrationSemanticCommitment, MigrationTargetContext,
 };
 pub use error::{
     DbConstraintKind, DbConstraintTarget, DbConstraintViolation, Result, ServiceDbError,

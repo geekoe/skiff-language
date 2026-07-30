@@ -22,6 +22,13 @@ use serde::{
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+#[cfg(any(feature = "migration-tool", test))]
+mod migration;
+#[cfg(any(feature = "migration-tool", test))]
+pub use migration::{
+    DbMigrationCrypto, MigrationDocumentResult, MigrationSemanticCommitment, MigrationTargetContext,
+};
+
 pub const SERVICE_DB_ENCRYPTION_KEYRING_FORMAT: &str = "skiff-service-db-keyring-v1";
 
 const FIELD_KDF_SALT: &[u8] = b"skiff-service-db-encrypted-field-v2";

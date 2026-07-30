@@ -495,7 +495,7 @@ collection 和 top-level field 都派生出不同的 field key。
 ```javascript
 {
   _skiff_encrypted: {
-    version: 1,
+    version: 2,
     keyId: "2026-01",
     nonce: BinData(0, "..."),
     ciphertext: BinData(0, "...")
@@ -507,6 +507,7 @@ AEAD additional authenticated data（AAD）确定性绑定以下逻辑上下文�
 
 ```text
 keyId
+storageEnvironment
 storageServiceId
 finalPhysicalCollectionName
 topLevelFieldName
@@ -621,7 +622,47 @@ writer 和 `storageServiceId`。当前只支持维护窗口内的停写轮换，
 普通 read 不隐式写回旧 key envelope。不能在并发写入时用 read+set 轮换，不能只迁移一个 storage service、只滚动部分
 replica，或在 cohort 外 writer 尚未纳管时删除旧 key。
 
-### 10.7 当前非目标
+### 10.7 Storage identity hard-cut 离线迁移
+
+当旧数据仍使用 version 1 envelope、旧 service database 名或旧物理 collection 名时，正常 Runtime
+继续只接受 version 2，不提供兼容读取。仓库提供单独的离线 binary：
+
+```bash
+cargo run -p skiff-runtime-service-db \
+  --features migration-tool \
+  --bin skiff-service-db-migrate -- \
+  inventory \
+  --plan /secure/service-db-mapping-receipt.json \
+  --runtime-config /etc/skiff/runtime.yml \
+  --router-config /etc/skiff/router.yml \
+  --receipt /secure/service-db-execution-receipt.json
+```
+
+实际迁移把 `inventory` 换成 `migrate`，并额外传
+`--confirm-writers-stopped`。mapping receipt 本身还必须声明 `offline: true`；二者缺一时不写
+Mongo。receipt 对每个 collection 显式列出 source/target 的 environment、service ID、database、
+Package ID、logical collection、physical collection 和 encrypted fields。工具拒绝 glob、宽泛 database
+目标、重复 source/target，以及任何不等于系统从 `environment + serviceId` 和
+`packageId + logicalCollection` 推导结果的 target。
+每个 `mappingId` 必须是 `m-` 加 32 个小写十六进制字符的 opaque ID，不能放业务名字或 secret。
+
+工具先对全部 collection 做只读 inventory 和目标碰撞检查，再复制到 target database 内的确定性临时
+collection。普通 BSON 原样复制；version 1 encrypted field 只在迁移进程内解密，立即用 version 2 的
+`environment + serviceId + finalPhysicalCollection + field + recordId` 上下文重加密。旧解密器只由
+`migration-tool` feature 和测试编译，正常 Runtime build 不含 version 1 fallback。
+
+每个临时 collection 复制原索引，并通过 count、索引摘要和 keyring-bound semantic commitment
+验证。相同 `_id` 只有在 staged 内容语义完全相同时才视为 crash resume；不同内容、非空 target 或
+已有空 target 都 fail closed。所有 collection staged 后，用 Mongo atomic rename 逐个发布；`0600`
+execution receipt 记录 resume 状态。崩溃后必须使用完全相同的 plan 和 keyring fingerprint
+继续。工具不删除旧 database/collection，运行完成后也由操作者另行保留和核对。
+
+Runtime config 是 keyring 路径的唯一来源，Router config 是 Mongo URL 的唯一来源；mapping/execution
+receipt 都不保存连接凭据，工具也不接受命令行 root key。stdout、receipt 和错误只包含
+opaque migration/mapping ID、状态与数量，不包含 plaintext、Mongo document、key material 或 keyring
+路径。
+
+### 10.8 当前非目标
 
 Encrypted stored fields 当前不提供 KMS / HSM 接入、自动 key rotation、在线 re-encryption、searchable / deterministic
 encryption、nullable 或 nested encrypted field、用户自定义 codec、通用 schema migration、plaintext 自动升级、secret
