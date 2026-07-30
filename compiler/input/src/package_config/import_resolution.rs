@@ -39,10 +39,7 @@ pub(super) fn resolve_package_imports(
             ));
             continue;
         }
-        selected.insert(
-            manifest.id.to_string(),
-            resolve_package_with_config(manifest, dependency.config.clone()),
-        );
+        selected.insert(manifest.id.to_string(), resolve_package(manifest));
     }
     for import in imports {
         if import.first().map(String::as_str) == Some("ext") {
@@ -102,26 +99,14 @@ pub(super) fn resolve_package_imports(
         });
     }
 
-    super::transitive_dependencies::add_transitive_package_dependencies(
-        &mut selected,
-        available,
-        dependencies,
-    )?;
+    super::transitive_dependencies::add_transitive_package_dependencies(&mut selected, available)?;
 
     Ok(selected.into_values().collect())
 }
 
 pub(super) fn resolve_package(manifest: &PackageManifest) -> ResolvedPackage {
-    resolve_package_with_config(manifest, super::empty_dependency_config())
-}
-
-pub(super) fn resolve_package_with_config(
-    manifest: &PackageManifest,
-    config: serde_json::Value,
-) -> ResolvedPackage {
     ResolvedPackage {
         manifest: manifest.clone(),
-        config,
     }
 }
 

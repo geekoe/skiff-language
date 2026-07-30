@@ -73,13 +73,15 @@ fn materializer_preserves_canonical_config_requirements_without_a_second_shape_o
     projected.runtime_requirements.config = vec![
         PackageConfigRequirement {
             path: "app.timeout".to_string(),
-            value_type: "number".to_string(),
-            required: false,
+            access: skiff_artifact_model::PackageConfigAccess::Optional {
+                value_type: "number".to_string(),
+            },
         },
         PackageConfigRequirement {
             path: "app.token".to_string(),
-            value_type: "string".to_string(),
-            required: true,
+            access: skiff_artifact_model::PackageConfigAccess::Required {
+                value_type: "string".to_string(),
+            },
         },
     ];
     assign_package_artifact_identities(&mut projected).unwrap();
@@ -254,7 +256,6 @@ fn fixture() -> (
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },

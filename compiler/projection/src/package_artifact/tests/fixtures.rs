@@ -500,10 +500,10 @@ pub(super) fn runtime_requirements(capability: &str) -> PackageRuntimeRequiremen
     PackageRuntimeRequirements {
         config: vec![skiff_artifact_model::PackageConfigRequirement {
             path: "app.token".to_string(),
-            value_type: "string".to_string(),
-            required: true,
+            access: skiff_artifact_model::PackageConfigAccess::Required {
+                value_type: "string".to_string(),
+            },
         }],
-        state: Vec::new(),
         resources: vec![PackageResourceRequirement {
             key: "database".to_string(),
             capability: "mongodb".to_string(),

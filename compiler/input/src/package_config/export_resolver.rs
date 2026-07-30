@@ -340,7 +340,6 @@ mod tests {
             version: "0.1.0".to_string(),
             alias: Some("llm".to_string()),
             top_level_alias: None,
-            config: serde_json::json!({}),
             collection_name_mapping: BTreeMap::new(),
         };
         let manifest = PackageManifest::new(

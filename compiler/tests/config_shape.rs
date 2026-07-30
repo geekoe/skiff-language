@@ -20,14 +20,20 @@ function configured() -> string {
         project.package.artifact.runtime_requirements.config,
         vec![
             skiff_artifact_model::PackageConfigRequirement {
+                path: "app.enabled".to_string(),
+                access: skiff_artifact_model::PackageConfigAccess::Presence,
+            },
+            skiff_artifact_model::PackageConfigRequirement {
                 path: "app.region".to_string(),
-                value_type: "string".to_string(),
-                required: false,
+                access: skiff_artifact_model::PackageConfigAccess::Optional {
+                    value_type: "string".to_string(),
+                },
             },
             skiff_artifact_model::PackageConfigRequirement {
                 path: "app.token".to_string(),
-                value_type: "string".to_string(),
-                required: true,
+                access: skiff_artifact_model::PackageConfigAccess::Required {
+                    value_type: "string".to_string(),
+                },
             },
         ]
     );

@@ -10,13 +10,10 @@ use compiler_input_model::{
     is_standard_package_id, PackageCompilePolicy, PackageDependency, PublicationApiSpec,
 };
 
-use super::{
-    config_requirements::DependencyPackageConfigFacts, ConfigRequirementSet, PublicationApiSeed,
-};
+use super::PublicationApiSeed;
 
 pub struct SourceCompileLinkedFacts {
     pub publication_api_seed: PublicationApiSeed,
-    pub dependency_config_requirements: ConfigRequirementSet,
 }
 
 pub struct SourceCompileLinkedFactsInput<'a, 'source> {
@@ -24,7 +21,6 @@ pub struct SourceCompileLinkedFactsInput<'a, 'source> {
     pub parsed_sources: &'a [ParsedCompilerSource],
     pub production_sources: &'source [CompilerSourceFile],
     pub package_dependencies: &'a [PackageDependency],
-    pub dependency_package_config_facts: Option<&'a [DependencyPackageConfigFacts<'a>]>,
     pub policy: PackageCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
     pub dependency_analysis: &'a crate::SourceDependencyAnalysisInput,
@@ -56,19 +52,8 @@ impl SourceCompileLinkedFacts {
             )?,
             None => PublicationApiSeed::no_publication_api(),
         };
-        let dependency_config_requirements = input
-            .dependency_package_config_facts
-            .map(|package_facts| {
-                ConfigRequirementSet::from_service_package_graph(
-                    input.package_dependencies,
-                    package_facts,
-                )
-            })
-            .transpose()?
-            .unwrap_or_else(ConfigRequirementSet::empty);
         Ok(Self {
             publication_api_seed,
-            dependency_config_requirements,
         })
     }
 }

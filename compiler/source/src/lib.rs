@@ -68,10 +68,7 @@ pub use config_metadata::{
     source_config_metadata_batches_from_parsed_sources, source_config_metadata_from_parsed_sources,
     SourceConfigMetadata, SourceConfigMetadataBatchInput, SourceConfigMetadataInput,
 };
-pub use config_requirements::{
-    ConfigRequirement, ConfigRequirementAccess, ConfigRequirementDependencyStep,
-    ConfigRequirementScope, ConfigRequirementSet, DependencyPackageConfigFacts,
-};
+pub use config_requirements::{ConfigRequirement, ConfigRequirementAccess, ConfigRequirementSet};
 pub use config_usage::ConfigSourceSpan;
 pub use contract_type_resolution::{
     SourceCallableSignatureFacts, SourceExecutableReceiver, SourceExecutableSignature,
@@ -164,7 +161,6 @@ fn build_from_linked(
     )?;
     let parsed_sources = linked.parsed_sources;
     package_db_schema::validate_package_db_schema(&parsed_sources)?;
-    let dependency_package_config_facts = linked.package_facts.map(dependency_package_config_facts);
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
     let mut package_db_metadata_index =
         package_db_metadata_index(linked.package_facts, linked.package_dependencies)
@@ -207,7 +203,6 @@ fn build_from_linked(
         parsed_sources: &parsed_sources,
         production_sources: &linked.production_sources,
         package_dependencies: linked.package_dependencies,
-        dependency_package_config_facts: dependency_package_config_facts.as_deref(),
         policy: linked.policy,
         publication_api: linked.publication_api,
         dependency_analysis,
@@ -231,7 +226,6 @@ fn build_from_linked(
         source_identity,
         declaration_anchors,
         config_usage_seed,
-        dependency_config_requirements: linked_facts.dependency_config_requirements,
         dependency_analysis,
     })
 }
@@ -475,28 +469,6 @@ fn split_public_path(path: &str) -> (String, String) {
     path.rsplit_once('.')
         .map(|(module_path, source_name)| (module_path.to_string(), source_name.to_string()))
         .unwrap_or_else(|| (String::new(), path.to_string()))
-}
-
-fn dependency_package_config_facts<'facts>(
-    package_facts: &'facts [SourceCompilePackageFacts<'_>],
-) -> Vec<config_requirements::DependencyPackageConfigFacts<'facts>> {
-    package_facts
-        .iter()
-        .map(
-            |package| config_requirements::DependencyPackageConfigFacts {
-                id: package.id(),
-                version: package.version(),
-                dependencies: package
-                    .dependencies()
-                    .iter()
-                    .map(
-                        config_requirements::ConfigRequirementDependencyStep::from_package_dependency_fact,
-                    )
-                    .collect(),
-                own_config_requirements: package.compile_model().own_config_requirements(),
-            },
-        )
-        .collect()
 }
 
 #[cfg(test)]

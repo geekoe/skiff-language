@@ -26,11 +26,10 @@ pub use contract_dependencies::{
 };
 pub use dependencies::{
     canonical_publication_dependency_id, collect_package_dependency_violations,
-    dependency_config_is_empty, empty_dependency_config, is_complex_package_dependency_id,
-    is_publication_dependency_id, is_reserved_source_import_alias,
-    is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
-    is_standard_package_id, is_valid_source_import_alias, PackageDependency, ResolvedPackage,
-    ResolvedPackageGraph,
+    is_complex_package_dependency_id, is_publication_dependency_id,
+    is_reserved_source_import_alias, is_safe_publication_artifact_id_component,
+    is_safe_publication_artifact_path_segment, is_standard_package_id,
+    is_valid_source_import_alias, PackageDependency, ResolvedPackage, ResolvedPackageGraph,
 };
 pub use error::InputAssemblyError;
 pub use manifest::{
@@ -45,8 +44,8 @@ pub use resources::{
 };
 pub use service_config::{
     read_http_gateway_document, read_service_package_root, read_websocket_gateway_document,
-    ServiceConfigProfile, ServicePackageRoot, ServiceSourceConfigError, HTTP_CONFIG_FILE,
-    SERVICE_CONFIG_FILE, WEBSOCKET_CONFIG_FILE,
+    ServicePackageRoot, ServiceSourceConfigError, HTTP_CONFIG_FILE, SERVICE_CONFIG_FILE,
+    WEBSOCKET_CONFIG_FILE,
 };
 pub use skiff_compiler_input_model::{
     CompilerRawSourceFile, PublicationResourceInput, PublicationResourceSpec,

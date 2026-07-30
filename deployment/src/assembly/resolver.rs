@@ -154,19 +154,11 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let mut activation = ActivationTemplate {
             deployment: reference.clone(),
             implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-            config_literals: deployment.config_literals.clone(),
-            secret_refs: deployment.secret_refs.clone(),
-            state_bindings: deployment.state_bindings.clone(),
+            resource_bindings: deployment.resource_bindings.clone(),
             policy: deployment.policy.clone(),
         };
         activation
-            .config_literals
-            .sort_by(|left, right| left.path.cmp(&right.path));
-        activation
-            .secret_refs
-            .sort_by(|left, right| left.path.cmp(&right.path));
-        activation
-            .state_bindings
+            .resource_bindings
             .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
         self.activation_templates
             .insert(reference.clone(), activation);
@@ -211,12 +203,26 @@ impl<'a, 'c> Resolver<'a, 'c> {
         let mut pending = VecDeque::from([deployment.implementation.clone()]);
         let mut visited = BTreeSet::new();
         let mut closure = BTreeMap::new();
+        let mut build_by_package_id = BTreeMap::new();
         let mut used_binding_keys = BTreeSet::new();
 
         while let Some(reference) = pending.pop_front() {
             let package = self.candidates.package(&reference)?;
             if !visited.insert(package.package_build_id.clone()) {
                 continue;
+            }
+            if let Some(first_build_id) = build_by_package_id.insert(
+                package.package_id.as_str(),
+                package.package_build_id.clone(),
+            ) {
+                if first_build_id != package.package_build_id {
+                    return Err(AssemblyResolutionError::MultiplePackageBuildsForId {
+                        activation: activation.clone(),
+                        package_id: package.package_id.clone(),
+                        first_build_id,
+                        second_build_id: package.package_build_id.clone(),
+                    });
+                }
             }
             self.insert_resolved_package(reference.clone())?;
             closure.insert(package.package_build_id.clone(), package);

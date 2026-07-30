@@ -1034,8 +1034,8 @@ resources:
 }
 
 #[test]
-fn parses_typed_package_state_requirements_without_deployment_namespace() {
-    let manifest = read_temp_manifest(
+fn package_manifest_rejects_retired_state_requirements() {
+    let error = read_temp_manifest(
         "state-requirement",
         r#"
 id: example.com/app
@@ -1045,28 +1045,9 @@ state:
     kind: database
 "#,
     )
-    .unwrap();
-    let requirement = &manifest.state["registry-store"];
-    assert_eq!(requirement.key, "registry-store");
-    assert_eq!(
-        requirement.kind,
-        skiff_artifact_model::StateBindingKind::Database
-    );
-
-    let error = read_temp_manifest(
-        "state-requirement-namespace",
-        r#"
-id: example.com/app
-version: 1.0.0
-state:
-  registry-store:
-    kind: database
-    namespace: deployment-owned
-"#,
-    )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("unknown field `namespace`"), "{error}");
+    assert!(error.contains("unknown field `state`"), "{error}");
 }
 
 fn read_temp_manifest(name: &str, text: &str) -> Result<PackageManifest, PackageConfigError> {
@@ -1116,7 +1097,6 @@ fn package_dependency(id: &str, version: &str) -> PackageDependency {
         version: version.to_string(),
         alias: Some("pkg".to_string()),
         top_level_alias: None,
-        config: empty_dependency_config(),
         collection_name_mapping: BTreeMap::new(),
     }
 }

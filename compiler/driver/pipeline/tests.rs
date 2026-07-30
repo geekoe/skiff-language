@@ -580,7 +580,6 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },

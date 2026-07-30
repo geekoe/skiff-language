@@ -4,12 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    dependency_config_is_empty as publication_dependency_config_is_empty,
-    empty_dependency_config as publication_empty_dependency_config,
     is_complex_package_dependency_id, is_reserved_source_import_alias,
     is_standard_package_id as publication_is_standard_package_id, CompilerPlatformSources,
     PublicationApiSpec, PublicationApiSpecEntry, PublicationManifest, ResolvedPackage,
@@ -72,14 +69,6 @@ pub fn package_manifest_key(id: &str, version: &str) -> PackageManifestKey {
 
 pub fn manifest_key(manifest: &PackageManifest) -> PackageManifestKey {
     package_manifest_key(manifest.id.as_str(), &manifest.version)
-}
-
-pub fn empty_dependency_config() -> Value {
-    publication_empty_dependency_config()
-}
-
-pub fn dependency_config_is_empty(value: &Value) -> bool {
-    publication_dependency_config_is_empty(value)
 }
 
 #[derive(Debug, Error)]

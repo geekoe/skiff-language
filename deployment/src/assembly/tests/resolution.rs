@@ -5,7 +5,7 @@ use skiff_artifact_identity::{
     validate_runtime_assembly_identity,
 };
 use skiff_artifact_model::{
-    ConfigLiteralBinding, DeploymentIngressBinding, MetadataValue, PackageConfigRequirement,
+    DeploymentIngressBinding, PackageConfigAccess, PackageConfigRequirement,
 };
 
 use super::fixtures::*;
@@ -335,8 +335,9 @@ fn changing_a_resolved_build_or_activation_template_changes_identity() {
         .config
         .push(PackageConfigRequirement {
             path: "variant".to_string(),
-            value_type: "string".to_string(),
-            required: false,
+            access: PackageConfigAccess::Optional {
+                value_type: "string".to_string(),
+            },
         });
     assign_package_artifact_identities(&mut dependency_b).unwrap();
     assert_eq!(
@@ -388,10 +389,7 @@ fn changing_a_resolved_build_or_activation_template_changes_identity() {
         Vec::new(),
     );
     let mut changed = base.clone();
-    changed.config_literals.push(ConfigLiteralBinding {
-        path: "message".to_string(),
-        value: MetadataValue::String("changed".to_string()),
-    });
+    changed.policy.timeout_ms = Some(1234);
     assign_service_deployment_identity(&mut changed).unwrap();
     let base_assembly = resolve_runtime_assembly(
         &[deployment_ref(&base)],

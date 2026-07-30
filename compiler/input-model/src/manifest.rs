@@ -1,7 +1,6 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
 use crate::{PackageDependency, PublicationApiSpec, PublicationResourceSpec};
-use skiff_artifact_model::PackageStateRequirement;
 use skiff_compiler_core::id::{PublicationId, PublicationIdError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +10,6 @@ pub struct PublicationManifest {
     pub api: PublicationApiSpec,
     pub dependencies: Vec<PackageDependency>,
     pub resources: Vec<PublicationResourceSpec>,
-    pub state: BTreeMap<String, PackageStateRequirement>,
     pub provenance: ManifestProvenance,
 }
 
@@ -29,7 +27,6 @@ impl PublicationManifest {
             api,
             dependencies,
             resources: Vec::new(),
-            state: BTreeMap::new(),
             provenance,
         }
     }
@@ -48,14 +45,8 @@ impl PublicationManifest {
             api,
             dependencies,
             resources,
-            state: BTreeMap::new(),
             provenance,
         }
-    }
-
-    pub fn with_state(mut self, state: BTreeMap<String, PackageStateRequirement>) -> Self {
-        self.state = state;
-        self
     }
 }
 

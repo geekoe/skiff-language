@@ -85,10 +85,11 @@ impl ProjectionFixture {
                 required: true,
             }],
             state: vec![BoundaryStateRequirement {
-                key: "echo-state".to_string(),
-                kind: BoundaryStateKind::Database,
+                key: "echo-db".to_string(),
+                kind: BoundaryStateKind::ExternalResource,
             }],
             native_capabilities: Vec::new(),
+            runtime_capabilities: vec!["async".to_string()],
             complete_may_effects: no_effects(),
             provenance: facts.provenance.clone(),
         };
@@ -197,12 +198,17 @@ impl ProjectionFixture {
             runtime_requirements: PackageRuntimeRequirements {
                 config: vec![PackageConfigRequirement {
                     path: "echo.token".to_string(),
-                    value_type: "string".to_string(),
-                    required: true,
+                    access: PackageConfigAccess::Required {
+                        value_type: "string".to_string(),
+                    },
                 }],
-                state: vec![PackageStateRequirement {
-                    key: "echo-state".to_string(),
-                    kind: StateBindingKind::Database,
+                resources: vec![PackageResourceRequirement {
+                    key: "echo-db".to_string(),
+                    capability: "mongodb".to_string(),
+                }],
+                runtime_capabilities: vec![PackageRuntimeCapabilityRequirement {
+                    capability: "async".to_string(),
+                    required_version: "1".to_string(),
                 }],
             },
             callable_semantic_facts: BTreeMap::from([(callable_id.clone(), facts)]),
@@ -237,15 +243,14 @@ impl ProjectionFixture {
             service_selectors: Vec::new(),
             gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
-            config_literals: vec![ConfigLiteralBinding {
-                path: "echo.token".to_string(),
-                value: MetadataValue::String("public-value".to_string()),
+            resource_bindings: vec![ResourceBinding {
+                requirement_key: "echo-db".to_string(),
+                capability: "mongodb".to_string(),
+                resource_ref: "resource:echo".to_string(),
             }],
-            secret_refs: Vec::new(),
-            state_bindings: vec![StateBinding {
-                requirement_key: "echo-state".to_string(),
-                kind: StateBindingKind::Database,
-                namespace: "echo".to_string(),
+            runtime_capability_bindings: vec![RuntimeCapabilityBinding {
+                capability: "async".to_string(),
+                version: "1".to_string(),
             }],
             policy: DeploymentPolicy {
                 timeout_ms: Some(1_000),
@@ -695,35 +700,23 @@ fn deployment_requires_the_exact_validated_package_schema_closure() {
 #[test]
 fn required_activation_bindings_and_protocol_identity_are_exact() {
     let mut fixture = ProjectionFixture::new();
-    fixture.input.config_literals.clear();
+    fixture.input.resource_bindings.clear();
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::MissingRequirementBinding { kind: "config", .. })
+        Err(ProjectionError::MissingRequirementBinding {
+            kind: "resource",
+            ..
+        })
     ));
 
     let mut fixture = ProjectionFixture::new();
-    fixture.input.state_bindings.clear();
+    fixture.input.runtime_capability_bindings.clear();
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::MissingRequirementBinding { kind: "state", .. })
-    ));
-
-    let mut fixture = ProjectionFixture::new();
-    fixture.input.state_bindings[0].kind = StateBindingKind::Queue;
-    assert!(matches!(
-        fixture.project(),
-        Err(ProjectionError::RequirementBindingMismatch { kind: "state", .. })
-    ));
-
-    let mut fixture = ProjectionFixture::new();
-    fixture.input.state_bindings.push(StateBinding {
-        requirement_key: "unexpected".to_string(),
-        kind: StateBindingKind::Database,
-        namespace: "unexpected".to_string(),
-    });
-    assert!(matches!(
-        fixture.project(),
-        Err(ProjectionError::ExtraRequirementBinding { kind: "state", .. })
+        Err(ProjectionError::MissingRequirementBinding {
+            kind: "runtime capability",
+            ..
+        })
     ));
 
     let mut fixture = ProjectionFixture::new();
@@ -735,27 +728,6 @@ fn required_activation_bindings_and_protocol_identity_are_exact() {
             ..
         })
     ));
-}
-
-#[test]
-fn secret_refs_remain_opaque_and_are_distinct_from_literals() {
-    let fixture = ProjectionFixture::new();
-    let literal = fixture.project().unwrap();
-
-    let mut secret_fixture = ProjectionFixture::new();
-    secret_fixture.input.config_literals.clear();
-    secret_fixture.input.secret_refs = vec![SecretRefBinding {
-        path: "echo.token".to_string(),
-        secret_ref: "vault:echo/token".to_string(),
-    }];
-    let secret = secret_fixture.project().unwrap();
-    assert_ne!(
-        literal.deployment_artifact_identity,
-        secret.deployment_artifact_identity
-    );
-    let wire = serde_json::to_string(&secret).unwrap();
-    assert!(wire.contains("vault:echo/token"));
-    assert!(!wire.contains("resolvedSecret"));
 }
 
 #[test]
@@ -891,13 +863,68 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
 }
 
 #[test]
+fn exact_package_closure_rejects_multiple_builds_for_one_package_id() {
+    let mut fixture = ProjectionFixture::new();
+    let dependency_a = dependency_artifact("resource-a");
+    let dependency_b = dependency_artifact("resource-b");
+    assert_eq!(dependency_a.package_id, dependency_b.package_id);
+    assert_eq!(
+        dependency_a.package_local_abi.local_abi_identity,
+        dependency_b.package_local_abi.local_abi_identity
+    );
+    assert_ne!(dependency_a.package_build_id, dependency_b.package_build_id);
+
+    fixture.implementation.package_requirements = ["util-a", "util-b"]
+        .into_iter()
+        .map(|alias| PackageRequirement {
+            alias: alias.to_string(),
+            package_id: dependency_a.package_id.clone(),
+            exact_version: dependency_a.package_version.clone(),
+            expected_local_abi: dependency_a.package_local_abi.local_abi_identity.clone(),
+            collection_name_mapping: BTreeMap::new(),
+            expected_package_build: None,
+        })
+        .collect();
+    fixture.refresh_implementation_ref();
+    fixture.input.package_bindings = vec![
+        PackageBinding {
+            key: PackageRequirementKey {
+                caller_package_build_id: fixture.implementation.package_build_id.clone(),
+                package_requirement_alias: "util-a".to_string(),
+            },
+            package: package_ref(&dependency_a),
+            collection_name_mapping: BTreeMap::new(),
+        },
+        PackageBinding {
+            key: PackageRequirementKey {
+                caller_package_build_id: fixture.implementation.package_build_id.clone(),
+                package_requirement_alias: "util-b".to_string(),
+            },
+            package: package_ref(&dependency_b),
+            collection_name_mapping: BTreeMap::new(),
+        },
+    ];
+
+    assert!(matches!(
+        project_service_deployment(
+            fixture.input,
+            &fixture.contract,
+            &[fixture.implementation, dependency_a, dependency_b],
+            &fixture.package_schema_records,
+        ),
+        Err(ProjectionError::MultiplePackageBuildsForId { .. })
+    ));
+}
+
+#[test]
 fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
     let mut fixture = ProjectionFixture::new();
     let mut dependency = dependency_artifact("resource");
     dependency.runtime_requirements.config = vec![PackageConfigRequirement {
         path: "dependency.only".to_string(),
-        value_type: "string".to_string(),
-        required: true,
+        access: PackageConfigAccess::Required {
+            value_type: "string".to_string(),
+        },
     }];
     assign_package_artifact_identities(&mut dependency).unwrap();
     fixture.implementation.package_requirements = vec![PackageRequirement {
@@ -935,11 +962,6 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
         package: package_ref(&dependency),
         collection_name_mapping: BTreeMap::new(),
     }];
-    fixture.input.config_literals.push(ConfigLiteralBinding {
-        path: "dependency.only".to_string(),
-        value: MetadataValue::String("value".to_string()),
-    });
-
     assert!(matches!(
         project_service_deployment(
             fixture.input,
@@ -1051,7 +1073,8 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),

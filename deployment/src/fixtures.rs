@@ -4,18 +4,17 @@ use skiff_artifact_identity::{
     assign_runtime_assembly_identity, assign_service_deployment_identity, gateway_entry_identity,
 };
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, ConfigLiteralBinding,
-    ContractOperationId, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy,
-    DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
-    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
+    GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, IngressProtocol, IngressSelector, MetadataValue, PackageArtifactRef,
-    PackageBuildId, PackageCallableId, PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy,
-    RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentOperationInput, ServiceDeploymentRef, ServiceProtocolIdentity,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef, PackageBuildId,
+    PackageCallableId, PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput,
+    ServiceDeploymentRef, ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -102,12 +101,8 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
             },
             gateway_entry_key,
         }],
-        config_literals: vec![ConfigLiteralBinding {
-            path: "message.prefix".to_string(),
-            value: MetadataValue::String("hello".to_string()),
-        }],
-        secret_refs: Vec::new(),
-        state_bindings: Vec::new(),
+        resource_bindings: Vec::new(),
+        runtime_capability_bindings: Vec::new(),
         policy: deployment_policy_fixture(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Echo deployment".to_string(),
@@ -132,9 +127,8 @@ pub fn service_deployment_fixture() -> Result<ServiceDeployment> {
         service_selectors: input.service_selectors,
         gateway_entries: input.gateway_entries,
         ingress: input.ingress,
-        config_literals: input.config_literals,
-        secret_refs: input.secret_refs,
-        state_bindings: input.state_bindings,
+        resource_bindings: input.resource_bindings,
+        runtime_capability_bindings: input.runtime_capability_bindings,
         policy: input.policy,
         diagnostic_text: input.diagnostic_text,
     };
@@ -190,9 +184,7 @@ pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
         activation_templates: vec![ActivationTemplate {
             deployment: deployment_ref.clone(),
             implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-            config_literals: deployment.config_literals.clone(),
-            secret_refs: deployment.secret_refs.clone(),
-            state_bindings: deployment.state_bindings.clone(),
+            resource_bindings: deployment.resource_bindings.clone(),
             policy: deployment.policy.clone(),
         }],
         gateway_ingress: Vec::new(),

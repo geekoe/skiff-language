@@ -154,7 +154,8 @@ pub fn package(
         service_requirements,
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
@@ -223,9 +224,8 @@ pub fn deployment(
         service_selectors,
         gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
-        config_literals: Vec::new(),
-        secret_refs: Vec::new(),
-        state_bindings: Vec::new(),
+        resource_bindings: Vec::new(),
+        runtime_capability_bindings: Vec::new(),
         policy: crate::fixtures::deployment_policy_fixture(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: contract.service_id.clone(),

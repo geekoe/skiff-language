@@ -8,13 +8,12 @@ use skiff_artifact_identity::{
     validate_service_deployment_ref,
 };
 use skiff_artifact_model::{
-    ConfigLiteralBinding, ContractOperationId, DeploymentIngressBinding,
-    DeploymentOperationBinding, GatewayAdapterArg, GatewayAdapterSource, GatewayEntryIdentity,
-    GatewayEntryKey, GatewayExternalSchema, GatewayIngressBinding, GatewayProtocolSurface,
-    IngressProtocol, IngressSelector, MetadataValue, PackageArtifactRef, PackageBinding,
-    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageRequirementKey,
-    ResolvedServiceBinding, RuntimeAssembly, SecretRefBinding, ServiceDeployment,
-    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
+    ContractOperationId, DeploymentIngressBinding, DeploymentOperationBinding, GatewayAdapterArg,
+    GatewayAdapterSource, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
+    GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
+    PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    PackageRequirementKey, ResolvedServiceBinding, ResourceBinding, RuntimeAssembly,
+    RuntimeCapabilityBinding, ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding,
     GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
@@ -86,19 +85,17 @@ fn rich_deployment() -> ServiceDeployment {
         },
         gateway_entry_key: health_key,
     });
-    deployment.config_literals.push(ConfigLiteralBinding {
-        path: "message.suffix".to_string(),
-        value: MetadataValue::String("!".to_string()),
+    deployment.resource_bindings.push(ResourceBinding {
+        requirement_key: "mailer".to_string(),
+        capability: "smtp".to_string(),
+        resource_ref: "resource://mailer/default".to_string(),
     });
-    deployment.secret_refs.push(SecretRefBinding {
-        path: "auth.token".to_string(),
-        secret_ref: "vault://echo/token".to_string(),
-    });
-    deployment.state_bindings.push(StateBinding {
-        requirement_key: "messages".to_string(),
-        kind: StateBindingKind::Database,
-        namespace: "echo-messages".to_string(),
-    });
+    deployment
+        .runtime_capability_bindings
+        .push(RuntimeCapabilityBinding {
+            capability: "clock".to_string(),
+            version: "1".to_string(),
+        });
     assign_service_deployment_identity(&mut deployment).expect("rich deployment identity");
     deployment
 }
@@ -163,13 +160,6 @@ fn strict_wire_rejects_unknown_and_missing_semantic_fields() {
     );
     assert!(serde_json::from_value::<ServiceSelectorBinding>(selector).is_err());
 
-    let mut secret = serde_json::to_value(&rich_deployment().secret_refs[0]).unwrap();
-    secret
-        .as_object_mut()
-        .unwrap()
-        .insert("resolvedBytes".to_string(), serde_json::json!("forbidden"));
-    assert!(serde_json::from_value::<SecretRefBinding>(secret).is_err());
-
     let assembly = runtime_assembly_fixture().expect("assembly fixture");
     let mut assembly_value = serde_json::to_value(assembly).unwrap();
     assembly_value
@@ -189,9 +179,8 @@ fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
     reordered.package_bindings.reverse();
     reordered.service_selectors.reverse();
     reordered.ingress.reverse();
-    reordered.config_literals.reverse();
-    reordered.secret_refs.reverse();
-    reordered.state_bindings.reverse();
+    reordered.resource_bindings.reverse();
+    reordered.runtime_capability_bindings.reverse();
     let entries = reordered.gateway_entries.clone();
     reordered.gateway_entries = BTreeMap::new();
     for (key, entry) in entries.into_iter().rev() {
@@ -421,18 +410,12 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
             }),
         ),
         (
-            "config literal",
-            Box::new(|value| {
-                value.config_literals[0].value = MetadataValue::String("changed".into());
-            }),
+            "resource",
+            Box::new(|value| value.resource_bindings[0].resource_ref = "resource://next".into()),
         ),
         (
-            "secret ref",
-            Box::new(|value| value.secret_refs[0].secret_ref = "vault://echo/next".into()),
-        ),
-        (
-            "state",
-            Box::new(|value| value.state_bindings[0].namespace = "echo-next".into()),
+            "capability",
+            Box::new(|value| value.runtime_capability_bindings[0].version = "2".into()),
         ),
         (
             "policy",

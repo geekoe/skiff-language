@@ -496,10 +496,7 @@ fn timeout_and_value_walkers_reach_config_roots_calls_stream_and_db_paths() {
             }
         "#,
     );
-    assert_eq!(
-        model.effective_config_requirements().requirements().len(),
-        1
-    );
+    assert_eq!(model.own_config_requirements().requirements().len(), 1);
     assert!(model
         .resolved_call_targets()
         .iter()

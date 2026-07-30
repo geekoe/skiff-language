@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{de, Deserialize, Deserializer};
-use serde_json::{Map, Value};
 use skiff_compiler_core::id::{PublicationId, SKIFF_STD_PUBLICATION_ID};
 
 pub use skiff_compiler_core::path_safety::{
@@ -14,7 +13,6 @@ pub struct PackageDependency {
     pub version: String,
     pub alias: Option<String>,
     pub top_level_alias: Option<String>,
-    pub config: Value,
     pub collection_name_mapping: BTreeMap<String, String>,
 }
 
@@ -25,7 +23,6 @@ impl PackageDependency {
             version: "1.0.0".to_string(),
             alias: None,
             top_level_alias: None,
-            config: empty_dependency_config(),
             collection_name_mapping: BTreeMap::new(),
         }
     }
@@ -69,18 +66,9 @@ impl<'de> Deserialize<'de> for PackageDependency {
             version,
             alias: dependency.alias,
             top_level_alias: dependency.top_level_alias,
-            config: empty_dependency_config(),
             collection_name_mapping: dependency.collection_name_mapping.unwrap_or_default(),
         })
     }
-}
-
-pub fn empty_dependency_config() -> Value {
-    Value::Object(Map::new())
-}
-
-pub fn dependency_config_is_empty(value: &Value) -> bool {
-    matches!(value, Value::Object(object) if object.is_empty())
 }
 
 pub fn collect_package_dependency_violations(

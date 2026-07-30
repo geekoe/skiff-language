@@ -100,7 +100,8 @@ fn projection_error(package_id: &str, message: impl Into<String>) -> ProjectionE
 mod tests {
     use super::*;
     use skiff_artifact_model::{
-        config_shape_from_package_requirements, BoundaryConfigRequirement, PackageConfigRequirement,
+        config_shape_from_package_requirements, BoundaryConfigRequirement, PackageConfigAccess,
+        PackageConfigRequirement,
     };
 
     fn package_requirements<'a>(
@@ -129,8 +130,9 @@ mod tests {
     fn available_boundary_config_must_be_an_exact_package_requirement_subset() {
         let shape = config_shape_from_package_requirements(&[PackageConfigRequirement {
             path: "app.token".to_string(),
-            value_type: "string".to_string(),
-            required: true,
+            access: PackageConfigAccess::Required {
+                value_type: "string".to_string(),
+            },
         }])
         .unwrap();
         let package_requirements = package_requirements(&shape);

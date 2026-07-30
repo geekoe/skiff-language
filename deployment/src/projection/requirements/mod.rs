@@ -1,12 +1,11 @@
 mod activation;
-mod config;
 mod service_selectors;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    BoundaryConfigRequirement, BoundaryStateKind, PackageArtifact, PackageConfigRequirement,
-    PackageStateRequirement, ServiceDeploymentInput, StateBindingKind,
+    BoundaryConfigRequirement, BoundaryStateKind, PackageArtifact, PackageConfigAccess,
+    PackageConfigRequirement, PackageResourceRequirement, ServiceDeploymentInput,
 };
 
 use super::{
@@ -22,34 +21,51 @@ pub(super) fn validate_requirement_bindings(
     service_selectors::validate(input, closure)?;
 
     let implementation_requirements = package_runtime_requirements(closure.implementation(input))?;
-    let mut config = BTreeMap::<String, PackageConfigRequirement>::new();
-    let mut states = BTreeMap::<String, StateBindingKind>::new();
+    let mut resources = BTreeMap::<String, PackageResourceRequirement>::new();
+    let mut capabilities = BTreeMap::<String, String>::new();
     for artifact in closure.artifacts() {
         let package_requirements = package_runtime_requirements(artifact)?;
-        for requirement in package_requirements.config.values() {
-            merge_config_requirement(&mut config, requirement)?;
+        for requirement in package_requirements.resources.values() {
+            merge_resource_requirement(&mut resources, requirement)?;
         }
-        for requirement in package_requirements.state.values() {
-            merge_state_requirement(&mut states, requirement)?;
+        for (capability, required_version) in package_requirements.capabilities {
+            match capabilities.get(&capability) {
+                Some(version) if version != &required_version => {
+                    return Err(ProjectionError::ConflictingRequirement {
+                        kind: "runtime capability",
+                        key: capability,
+                        message: format!(
+                            "required versions {version} and {required_version} differ"
+                        ),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    capabilities.insert(capability, required_version);
+                }
+            }
         }
     }
 
+    let mut native_capabilities = BTreeSet::new();
     for callable in selected {
         validate_selected_requirements(
             callable,
             &implementation_requirements.config,
-            &implementation_requirements.state,
-            &mut states,
+            &implementation_requirements.resources,
+            &implementation_requirements.capabilities,
+            &mut native_capabilities,
         )?;
     }
 
-    config::validate_bindings(input, &config)?;
-    activation::validate_state_bindings(input, &states)
+    activation::validate_resource_bindings(input, &resources, &native_capabilities)?;
+    activation::validate_runtime_capability_bindings(input, &capabilities)
 }
 
 struct RuntimeRequirements {
     config: BTreeMap<String, PackageConfigRequirement>,
-    state: BTreeMap<String, PackageStateRequirement>,
+    resources: BTreeMap<String, PackageResourceRequirement>,
+    capabilities: BTreeMap<String, String>,
 }
 
 fn package_runtime_requirements(
@@ -68,43 +84,40 @@ fn package_runtime_requirements(
             ));
         }
     }
-    let mut state = BTreeMap::new();
-    for requirement in &artifact.runtime_requirements.state {
-        if state
+    let mut resources = BTreeMap::new();
+    for requirement in &artifact.runtime_requirements.resources {
+        if resources
             .insert(requirement.key.clone(), requirement.clone())
             .is_some()
         {
             return Err(repeated_package_requirement(
                 artifact,
-                "state",
+                "resource",
                 &requirement.key,
             ));
         }
     }
-    Ok(RuntimeRequirements { config, state })
-}
-
-fn merge_state_requirement(
-    states: &mut BTreeMap<String, StateBindingKind>,
-    requirement: &PackageStateRequirement,
-) -> ProjectionResult<()> {
-    match states.get(&requirement.key) {
-        Some(existing) if existing != &requirement.kind => {
-            Err(ProjectionError::ConflictingRequirement {
-                kind: "state",
-                key: requirement.key.clone(),
-                message: format!(
-                    "required kinds {existing:?} and {:?} differ",
-                    requirement.kind
-                ),
-            })
-        }
-        Some(_) => Ok(()),
-        None => {
-            states.insert(requirement.key.clone(), requirement.kind);
-            Ok(())
+    let mut capabilities = BTreeMap::new();
+    for requirement in &artifact.runtime_requirements.runtime_capabilities {
+        if capabilities
+            .insert(
+                requirement.capability.clone(),
+                requirement.required_version.clone(),
+            )
+            .is_some()
+        {
+            return Err(repeated_package_requirement(
+                artifact,
+                "runtime capability",
+                &requirement.capability,
+            ));
         }
     }
+    Ok(RuntimeRequirements {
+        config,
+        resources,
+        capabilities,
+    })
 }
 
 fn repeated_package_requirement(
@@ -122,27 +135,24 @@ fn repeated_package_requirement(
     }
 }
 
-fn merge_config_requirement(
-    config: &mut BTreeMap<String, PackageConfigRequirement>,
-    requirement: &PackageConfigRequirement,
+fn merge_resource_requirement(
+    resources: &mut BTreeMap<String, PackageResourceRequirement>,
+    requirement: &PackageResourceRequirement,
 ) -> ProjectionResult<()> {
-    match config.get_mut(&requirement.path) {
-        Some(existing) if existing.value_type != requirement.value_type => {
+    match resources.get(&requirement.key) {
+        Some(existing) if existing.capability != requirement.capability => {
             Err(ProjectionError::ConflictingRequirement {
-                kind: "config",
-                key: requirement.path.clone(),
+                kind: "resource",
+                key: requirement.key.clone(),
                 message: format!(
-                    "value types {} and {} differ",
-                    existing.value_type, requirement.value_type
+                    "capabilities {} and {} differ",
+                    existing.capability, requirement.capability
                 ),
             })
         }
-        Some(existing) => {
-            existing.required |= requirement.required;
-            Ok(())
-        }
+        Some(_) => Ok(()),
         None => {
-            config.insert(requirement.path.clone(), requirement.clone());
+            resources.insert(requirement.key.clone(), requirement.clone());
             Ok(())
         }
     }
@@ -151,8 +161,9 @@ fn merge_config_requirement(
 fn validate_selected_requirements(
     callable: &SelectedCallable<'_>,
     config: &BTreeMap<String, PackageConfigRequirement>,
-    declared_states: &BTreeMap<String, PackageStateRequirement>,
-    states: &mut BTreeMap<String, StateBindingKind>,
+    resources: &BTreeMap<String, PackageResourceRequirement>,
+    capabilities: &BTreeMap<String, String>,
+    native_capabilities: &mut BTreeSet<String>,
 ) -> ProjectionResult<()> {
     let mut selected_config = BTreeSet::new();
     for requirement in &callable.requirements.config {
@@ -175,51 +186,21 @@ fn validate_selected_requirements(
             ));
         }
         match requirement.kind {
+            BoundaryStateKind::ExternalResource => {
+                if !resources.contains_key(&requirement.key) {
+                    return Err(ProjectionError::CallableFactsMismatch {
+                        callable_id: callable.callable_id.clone(),
+                        message: format!(
+                            "external resource {} is absent from package runtime requirements",
+                            requirement.key
+                        ),
+                    });
+                }
+            }
             BoundaryStateKind::Database
             | BoundaryStateKind::Redis
             | BoundaryStateKind::Actor
-            | BoundaryStateKind::Queue => {
-                let kind = match requirement.kind {
-                    BoundaryStateKind::Database => StateBindingKind::Database,
-                    BoundaryStateKind::Redis => StateBindingKind::Redis,
-                    BoundaryStateKind::Actor => StateBindingKind::Actor,
-                    BoundaryStateKind::Queue => StateBindingKind::Queue,
-                };
-                match declared_states.get(&requirement.key) {
-                    Some(declared) if declared.kind == kind => {}
-                    Some(declared) => {
-                        return Err(ProjectionError::CallableFactsMismatch {
-                            callable_id: callable.callable_id.clone(),
-                            message: format!(
-                                "state {} kind {:?} does not match package runtime requirement {:?}",
-                                requirement.key, kind, declared.kind
-                            ),
-                        });
-                    }
-                    None => {
-                        return Err(ProjectionError::CallableFactsMismatch {
-                            callable_id: callable.callable_id.clone(),
-                            message: format!(
-                                "state {} is absent from package runtime requirements",
-                                requirement.key
-                            ),
-                        });
-                    }
-                }
-                match states.get(&requirement.key) {
-                    Some(existing) if existing != &kind => {
-                        return Err(ProjectionError::ConflictingRequirement {
-                            kind: "state",
-                            key: requirement.key.clone(),
-                            message: format!("required kinds {existing:?} and {kind:?} differ"),
-                        });
-                    }
-                    Some(_) => {}
-                    None => {
-                        states.insert(requirement.key.clone(), kind);
-                    }
-                }
-            }
+            | BoundaryStateKind::Queue => {}
         }
     }
     let mut selected_native = BTreeSet::new();
@@ -230,6 +211,25 @@ fn validate_selected_requirements(
                 "native capability",
                 capability,
             ));
+        }
+        native_capabilities.insert(capability.clone());
+    }
+    let mut selected_runtime = BTreeSet::new();
+    for capability in &callable.requirements.runtime_capabilities {
+        if !selected_runtime.insert(capability.as_str()) {
+            return Err(duplicate_callable_requirement(
+                callable,
+                "runtime capability",
+                capability,
+            ));
+        }
+        if !capabilities.contains_key(capability) {
+            return Err(ProjectionError::CallableFactsMismatch {
+                callable_id: callable.callable_id.clone(),
+                message: format!(
+                    "runtime capability {capability} is absent from package runtime requirements"
+                ),
+            });
         }
     }
     Ok(())
@@ -261,7 +261,16 @@ fn validate_boundary_config(
                     boundary.path
                 ),
             })?;
-    if package.value_type != boundary.value_type || package.required != boundary.required {
+    let exact = match &package.access {
+        PackageConfigAccess::Presence => false,
+        PackageConfigAccess::Optional { value_type } => {
+            value_type == &boundary.value_type && !boundary.required
+        }
+        PackageConfigAccess::Required { value_type } => {
+            value_type == &boundary.value_type && boundary.required
+        }
+    };
+    if !exact {
         return Err(ProjectionError::CallableFactsMismatch {
             callable_id: callable.callable_id.clone(),
             message: format!(

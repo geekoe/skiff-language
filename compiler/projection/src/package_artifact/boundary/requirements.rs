@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     BoundaryConfigRequirement, BoundaryImplementationRequirements, BoundaryStateKind,
-    BoundaryStateRequirement, CallableMayEffects, CallableProvenanceSummary,
+    BoundaryStateRequirement, CallableMayEffects, CallableProvenanceSummary, PackageConfigAccess,
     PackageRuntimeRequirements,
 };
 
@@ -12,34 +12,27 @@ pub(super) fn implementation_requirements(
     let mut config = runtime
         .config
         .iter()
-        .map(|requirement| BoundaryConfigRequirement {
-            path: requirement.path.clone(),
-            value_type: requirement.value_type.clone(),
-            required: requirement.required,
+        .filter_map(|requirement| {
+            let (value_type, required) = match &requirement.access {
+                PackageConfigAccess::Presence => return None,
+                PackageConfigAccess::Optional { value_type } => (value_type.clone(), false),
+                PackageConfigAccess::Required { value_type } => (value_type.clone(), true),
+            };
+            Some(BoundaryConfigRequirement {
+                path: requirement.path.clone(),
+                value_type,
+                required,
+            })
         })
         .collect::<Vec<_>>();
     config.sort_by(|left, right| left.path.cmp(&right.path));
     let mut state = runtime
-        .state
+        .resources
         .iter()
         .map(|requirement| BoundaryStateRequirement {
             key: requirement.key.clone(),
-            kind: match requirement.kind {
-                skiff_artifact_model::StateBindingKind::Database => BoundaryStateKind::Database,
-                skiff_artifact_model::StateBindingKind::Redis => BoundaryStateKind::Redis,
-                skiff_artifact_model::StateBindingKind::Actor => BoundaryStateKind::Actor,
-                skiff_artifact_model::StateBindingKind::Queue => BoundaryStateKind::Queue,
-            },
+            kind: BoundaryStateKind::ExternalResource,
         })
-        .chain(
-            runtime
-                .resources
-                .iter()
-                .map(|requirement| BoundaryStateRequirement {
-                    key: requirement.key.clone(),
-                    kind: BoundaryStateKind::ExternalResource,
-                }),
-        )
         .collect::<Vec<_>>();
     state.sort_by(|left, right| left.key.cmp(&right.key));
     let mut runtime_capabilities = runtime

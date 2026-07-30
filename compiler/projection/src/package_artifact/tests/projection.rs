@@ -238,7 +238,9 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
 #[test]
 fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
     let mut invalid_type = runtime_requirements("async");
-    invalid_type.config[0].value_type = "bytes".to_string();
+    invalid_type.config[0].access = skiff_artifact_model::PackageConfigAccess::Required {
+        value_type: "bytes".to_string(),
+    };
     let error = project_fixture_with_runtime_requirements(SignatureSet::Complete, invalid_type)
         .unwrap_err()
         .to_string();

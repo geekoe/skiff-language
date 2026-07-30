@@ -546,7 +546,6 @@ mod tests {
                         implementation_requirements:
                             skiff_artifact_model::BoundaryImplementationRequirements {
                                 config: Vec::new(),
-                                state: Vec::new(),
                                 native_capabilities: Vec::new(),
                                 runtime_capabilities: Vec::new(),
                                 complete_may_effects: skiff_artifact_model::CallableMayEffects {
@@ -581,7 +580,6 @@ mod tests {
                 implementation_requirements:
                     skiff_artifact_model::BoundaryImplementationRequirements {
                         config: Vec::new(),
-                        state: Vec::new(),
                         native_capabilities: Vec::new(),
                         runtime_capabilities: Vec::new(),
                         complete_may_effects: skiff_artifact_model::CallableMayEffects {
@@ -642,7 +640,6 @@ mod tests {
             service_requirements: Vec::new(),
             runtime_requirements: PackageRuntimeRequirements {
                 config: Vec::new(),
-                state: Vec::new(),
                 resources: Vec::new(),
                 runtime_capabilities: Vec::new(),
             },

@@ -70,6 +70,16 @@ pub enum AssemblyResolutionError {
         second: PackageArtifactRef,
     },
 
+    #[error(
+        "activation {activation:?} resolves package {package_id} to multiple builds {first_build_id} and {second_build_id}"
+    )]
+    MultiplePackageBuildsForId {
+        activation: ServiceDeploymentRef,
+        package_id: String,
+        first_build_id: PackageBuildId,
+        second_build_id: PackageBuildId,
+    },
+
     #[error("activation {activation:?} has no package binding for {key:?}")]
     MissingPackageBinding {
         activation: ServiceDeploymentRef,

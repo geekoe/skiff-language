@@ -6,12 +6,9 @@ use skiff_artifact_model::{
     InterfaceInstantiationRef, LiteralIr, NominalTypeRefBaseIr, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
-    ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
-    ConfigRequirementProjection, ConfigRequirementProvenanceProjection,
-    ConfigRequirementPublicationProjection, ConfigRequirementScopeProjection,
-    ConfigRequirementSetProjection, ConfigRequirementsSeed, ConfigSourcePositionProjection,
-    ConfigSourceSpanProjection, EntryFunctionSignature, EntryParamSpec, EntryTypeSpec,
-    ExportBindingProjection, ExportCallableProjection, ExportPublicInstanceInterfaceProjection,
+    ConfigRequirementAccessProjection, ConfigRequirementProjection, ConfigRequirementSetProjection,
+    EntryFunctionSignature, EntryParamSpec, EntryTypeSpec, ExportBindingProjection,
+    ExportCallableProjection, ExportPublicInstanceInterfaceProjection,
     ExportPublicInstanceMethodProjection, ExportPublicInstanceProjection, ExportSchemaProjection,
     ExportSymbolProjection, PackageEntrypointProjectionFacts, ProjectionAbiDeclarationIds,
     ProjectionCallableEffectFacts, ProjectionDeclarationKey, ProjectionEntrypointAbiIndex,
@@ -30,9 +27,9 @@ use skiff_compiler_source::{
         abi::{abi_alias_id_from_anchor, abi_interface_id_from_anchor, abi_type_id_from_anchor},
         SourceDeclarationKind,
     },
-    ConfigRequirement, ConfigRequirementAccess, ConfigRequirementScope, ConfigRequirementSet,
-    ConfigSourceSpan, ExpressionOwnerKey, PackageSourceModel, PublicationApiSeed,
-    ResolvedCallTarget, SourceInterfaceConformanceKey, SourceSymbolKey,
+    ConfigRequirement, ConfigRequirementAccess, ConfigRequirementSet, ExpressionOwnerKey,
+    PackageSourceModel, PublicationApiSeed, ResolvedCallTarget, SourceInterfaceConformanceKey,
+    SourceSymbolKey,
 };
 
 use crate::{package_callable_signatures, CompiledPackage, ProjectionInputBuildError};
@@ -56,7 +53,7 @@ pub fn build_projection_input(
     let source = ProjectionSourceFacts::new(ProjectionSourceFactsParts {
         publication_api_seed: publication_api_seed_projection(model.publication_api().seed()),
         export_bindings,
-        config_requirements: config_requirements_seed(model),
+        config_requirements: config_requirement_set_projection(model.own_config_requirements()),
         abi_ids: abi_declaration_ids(model, compiled.file_ir_units()),
         callable_effects: callable_effect_facts(model, compiled.file_ir_units()),
         callable_semantic_facts: callable_semantic_facts(model, compiled.file_ir_units()),
@@ -485,15 +482,6 @@ fn source_symbol_key_projection(key: &SourceSymbolKey) -> ProjectionSourceSymbol
     ProjectionSourceSymbolKey::new(key.module_path(), key.symbol())
 }
 
-fn config_requirements_seed(model: &PackageSourceModel) -> ConfigRequirementsSeed {
-    ConfigRequirementsSeed::new(
-        config_requirement_set_projection(&model.legacy_config_projection_requirements()),
-        config_requirement_set_projection(model.own_config_requirements()),
-        config_requirement_set_projection(model.dependency_config_requirements()),
-        config_requirement_set_projection(model.effective_config_requirements()),
-    )
-}
-
 fn config_requirement_set_projection(set: &ConfigRequirementSet) -> ConfigRequirementSetProjection {
     ConfigRequirementSetProjection::new(
         set.requirements()
@@ -505,45 +493,8 @@ fn config_requirement_set_projection(set: &ConfigRequirementSet) -> ConfigRequir
 
 fn config_requirement_projection(requirement: &ConfigRequirement) -> ConfigRequirementProjection {
     ConfigRequirementProjection {
-        scope: config_requirement_scope_projection(requirement.scope()),
         path: requirement.path().to_string(),
         access: config_requirement_access_projection(requirement.access()),
-        provenances: requirement
-            .provenances()
-            .iter()
-            .map(|provenance| ConfigRequirementProvenanceProjection {
-                source_path: provenance.source_path().to_string(),
-                source_span: provenance.source_span().map(config_source_span_projection),
-                declaring_publication: provenance.declaring_publication().map(|publication| {
-                    ConfigRequirementPublicationProjection {
-                        id: publication.id().to_string(),
-                        version: publication.version().to_string(),
-                    }
-                }),
-                dependency_path: provenance
-                    .dependency_path()
-                    .iter()
-                    .map(|step| ConfigRequirementDependencyStepProjection {
-                        id: step.id().to_string(),
-                        version: step.version().to_string(),
-                        alias: step.alias().map(str::to_string),
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
-}
-
-fn config_requirement_scope_projection(
-    scope: &ConfigRequirementScope,
-) -> ConfigRequirementScopeProjection {
-    match scope {
-        ConfigRequirementScope::Service => ConfigRequirementScopeProjection::Service,
-        ConfigRequirementScope::Package { package_id } => {
-            ConfigRequirementScopeProjection::Package {
-                package_id: package_id.clone(),
-            }
-        }
     }
 }
 
@@ -558,21 +509,6 @@ fn config_requirement_access_projection(
             ConfigRequirementAccessProjection::Optional { ty: ty.clone() }
         }
         ConfigRequirementAccess::Has => ConfigRequirementAccessProjection::Has,
-    }
-}
-
-fn config_source_span_projection(span: ConfigSourceSpan) -> ConfigSourceSpanProjection {
-    ConfigSourceSpanProjection {
-        start: ConfigSourcePositionProjection {
-            line: span.start.line,
-            column: span.start.column,
-            offset: span.start.offset,
-        },
-        end: ConfigSourcePositionProjection {
-            line: span.end.line,
-            column: span.end.column,
-            offset: span.end.offset,
-        },
     }
 }
 

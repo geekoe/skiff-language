@@ -3,13 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     package_schema_descriptor_refs, AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr,
     CallableSemanticFacts, ContractTypeNameability, DbMetadataIr, FileIrUnit, PackageArtifact,
     PackageBuildId, PackageLocalAbiIdentity, PackageRequirement, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageStateRequirement,
-    TypeRefIr,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -311,7 +309,6 @@ pub struct ProjectionInput {
     lowering: ProjectionLoweringFacts,
     callable_signatures: ProjectionPackageCallableSignatureFacts,
     resources: Vec<PublicationResourceProjectionInput>,
-    state_requirements: Vec<PackageStateRequirement>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -334,7 +331,6 @@ impl ProjectionInput {
             lowering,
             callable_signatures,
             resources: Vec::new(),
-            state_requirements: Vec::new(),
         }
     }
 
@@ -353,20 +349,11 @@ impl ProjectionInput {
             lowering,
             callable_signatures,
             resources,
-            state_requirements: Vec::new(),
         }
     }
 
     pub fn with_resources(mut self, resources: Vec<PublicationResourceProjectionInput>) -> Self {
         self.resources = resources;
-        self
-    }
-
-    pub fn with_state_requirements(
-        mut self,
-        state_requirements: Vec<PackageStateRequirement>,
-    ) -> Self {
-        self.state_requirements = state_requirements;
         self
     }
 
@@ -398,10 +385,6 @@ impl<'a> ProjectionView<'a> {
 
     pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {
         &self.input.resources
-    }
-
-    pub fn state_requirements(&self) -> &'a [PackageStateRequirement] {
-        &self.input.state_requirements
     }
 }
 
@@ -464,7 +447,7 @@ pub struct ProjectionSourceMetadata {
 pub struct ProjectionSourceFacts {
     publication_api_seed: PublicationApiProjectionSeed,
     export_bindings: ExportBindingProjection,
-    config_requirements: ConfigRequirementsSeed,
+    config_requirements: ConfigRequirementSetProjection,
     abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
     callable_effects: ProjectionCallableEffectFacts,
     callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
@@ -474,7 +457,7 @@ pub struct ProjectionSourceFacts {
 pub struct ProjectionSourceFactsParts {
     pub publication_api_seed: PublicationApiProjectionSeed,
     pub export_bindings: ExportBindingProjection,
-    pub config_requirements: ConfigRequirementsSeed,
+    pub config_requirements: ConfigRequirementSetProjection,
     pub abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
     pub callable_effects: ProjectionCallableEffectFacts,
     pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
@@ -500,7 +483,7 @@ impl ProjectionSourceFacts {
         &self.export_bindings
     }
 
-    pub fn config_requirements(&self) -> &ConfigRequirementsSeed {
+    pub fn config_requirements(&self) -> &ConfigRequirementSetProjection {
         &self.config_requirements
     }
 
@@ -941,46 +924,6 @@ pub struct ProjectionAbiDeclarationIds {
     pub interface_id: Option<AbiInterfaceId>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ConfigRequirementsSeed {
-    legacy: ConfigRequirementSetProjection,
-    own: ConfigRequirementSetProjection,
-    dependency: ConfigRequirementSetProjection,
-    effective: ConfigRequirementSetProjection,
-}
-
-impl ConfigRequirementsSeed {
-    pub fn new(
-        legacy: ConfigRequirementSetProjection,
-        own: ConfigRequirementSetProjection,
-        dependency: ConfigRequirementSetProjection,
-        effective: ConfigRequirementSetProjection,
-    ) -> Self {
-        Self {
-            legacy,
-            own,
-            dependency,
-            effective,
-        }
-    }
-
-    pub fn legacy(&self) -> &ConfigRequirementSetProjection {
-        &self.legacy
-    }
-
-    pub fn own(&self) -> &ConfigRequirementSetProjection {
-        &self.own
-    }
-
-    pub fn dependency(&self) -> &ConfigRequirementSetProjection {
-        &self.dependency
-    }
-
-    pub fn effective(&self) -> &ConfigRequirementSetProjection {
-        &self.effective
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigRequirementSetProjection {
     requirements: Vec<ConfigRequirementProjection>,
@@ -998,17 +941,11 @@ impl ConfigRequirementSetProjection {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConfigRequirementProjection {
-    pub scope: ConfigRequirementScopeProjection,
     pub path: String,
     pub access: ConfigRequirementAccessProjection,
-    pub provenances: Vec<ConfigRequirementProvenanceProjection>,
 }
 
 impl ConfigRequirementProjection {
-    pub fn scope(&self) -> &ConfigRequirementScopeProjection {
-        &self.scope
-    }
-
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -1016,16 +953,6 @@ impl ConfigRequirementProjection {
     pub fn access(&self) -> &ConfigRequirementAccessProjection {
         &self.access
     }
-
-    pub fn provenances(&self) -> &[ConfigRequirementProvenanceProjection] {
-        &self.provenances
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConfigRequirementScopeProjection {
-    Service,
-    Package { package_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1033,82 +960,6 @@ pub enum ConfigRequirementAccessProjection {
     Require { ty: String },
     Optional { ty: String },
     Has,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ConfigRequirementProvenanceProjection {
-    pub source_path: String,
-    pub source_span: Option<ConfigSourceSpanProjection>,
-    pub declaring_publication: Option<ConfigRequirementPublicationProjection>,
-    pub dependency_path: Vec<ConfigRequirementDependencyStepProjection>,
-}
-
-impl ConfigRequirementProvenanceProjection {
-    pub fn source_path(&self) -> &str {
-        &self.source_path
-    }
-
-    pub fn source_span(&self) -> Option<ConfigSourceSpanProjection> {
-        self.source_span
-    }
-
-    pub fn declaring_publication(&self) -> Option<&ConfigRequirementPublicationProjection> {
-        self.declaring_publication.as_ref()
-    }
-
-    pub fn dependency_path(&self) -> &[ConfigRequirementDependencyStepProjection] {
-        &self.dependency_path
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ConfigSourceSpanProjection {
-    pub start: ConfigSourcePositionProjection,
-    pub end: ConfigSourcePositionProjection,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ConfigSourcePositionProjection {
-    pub line: usize,
-    pub column: usize,
-    pub offset: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ConfigRequirementPublicationProjection {
-    pub id: String,
-    pub version: String,
-}
-
-impl ConfigRequirementPublicationProjection {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ConfigRequirementDependencyStepProjection {
-    pub id: String,
-    pub version: String,
-    pub alias: Option<String>,
-}
-
-impl ConfigRequirementDependencyStepProjection {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    pub fn alias(&self) -> Option<&str> {
-        self.alias.as_deref()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1291,7 +1142,6 @@ mod resolved_package_schema_tests {
             "serviceRequirements": [],
             "runtimeRequirements": {
                 "config": [],
-                "state": [],
                 "resources": [],
                 "runtimeCapabilities": []
             },

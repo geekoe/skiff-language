@@ -1,14 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use serde_yaml::Value as YamlValue;
 use skiff_artifact_model::{
     validate_gateway_adapter_args, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryKey,
-    HttpGatewayDocumentAuthoring, ServiceAuthoringKind, ServiceConfigProfileAuthoring,
-    ServiceManifestAuthoring, WebSocketGatewayDocumentAuthoring,
+    HttpGatewayDocumentAuthoring, ServiceAuthoringKind, ServiceManifestAuthoring,
+    WebSocketGatewayDocumentAuthoring,
 };
 use thiserror::Error;
 
@@ -23,19 +23,11 @@ pub const HTTP_CONFIG_FILE: &str = "http.yml";
 pub const WEBSOCKET_CONFIG_FILE: &str = "websocket.yml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceConfigProfile {
-    pub name: String,
-    pub path: PathBuf,
-    pub authoring: ServiceConfigProfileAuthoring,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServicePackageRoot {
     pub package: PackageManifest,
     pub service: ServiceManifestAuthoring,
     pub http: Option<HttpGatewayDocumentAuthoring>,
     pub websocket: Option<WebSocketGatewayDocumentAuthoring>,
-    pub config_profiles: BTreeMap<String, ServiceConfigProfile>,
     _validated: ServicePackageRootValidation,
 }
 
@@ -72,13 +64,11 @@ pub fn read_service_package_root(
     let http = read_optional_http_gateway_document(&root.join(HTTP_CONFIG_FILE))?;
     let websocket = read_optional_websocket_gateway_document(&root.join(WEBSOCKET_CONFIG_FILE))?;
     validate_top_level_aliases(&package, service.kind, &package_path)?;
-    let config_profiles = read_config_profiles(root)?;
     Ok(ServicePackageRoot {
         package,
         service,
         http,
         websocket,
-        config_profiles,
         _validated: ServicePackageRootValidation,
     })
 }
@@ -460,71 +450,6 @@ fn validate_ingress_path(label: &str, path: &str, violations: &mut Vec<String>) 
     }
 }
 
-fn read_config_profiles(
-    root: &Path,
-) -> Result<BTreeMap<String, ServiceConfigProfile>, ServiceSourceConfigError> {
-    let entries = fs::read_dir(root).map_err(|source| ServiceSourceConfigError::Read {
-        path: root.display().to_string(),
-        source,
-    })?;
-    let mut profiles = BTreeMap::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| ServiceSourceConfigError::Read {
-            path: root.display().to_string(),
-            source,
-        })?;
-        let path = entry.path();
-        let Some(name) = config_profile_name(&path) else {
-            continue;
-        };
-        let text = read(&path)?;
-        reject_dependency_keys(&path, &text)?;
-        let authoring = serde_yaml::from_str::<ServiceConfigProfileAuthoring>(&text)
-            .map_err(|source| parse_error(&path, source))?;
-        profiles.insert(
-            name.clone(),
-            ServiceConfigProfile {
-                name,
-                path,
-                authoring,
-            },
-        );
-    }
-    Ok(profiles)
-}
-
-fn reject_dependency_keys(path: &Path, text: &str) -> Result<(), ServiceSourceConfigError> {
-    let value =
-        serde_yaml::from_str::<YamlValue>(text).map_err(|source| parse_error(path, source))?;
-    let Some(mapping) = value.as_mapping() else {
-        return Ok(());
-    };
-    for forbidden in ["packages", "services", "contracts", "dependencies"] {
-        if mapping.contains_key(YamlValue::String(forbidden.to_string())) {
-            return Err(validation_error(
-                path,
-                vec![format!(
-                    "{forbidden} may not be declared by a config profile; dependencies belong to package.yml"
-                )],
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn config_profile_name(path: &Path) -> Option<String> {
-    let file_name = path.file_name()?.to_str()?;
-    let profile = file_name.strip_prefix("config.")?.strip_suffix(".yml")?;
-    if profile.is_empty()
-        || !profile
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return None;
-    }
-    Some(profile.to_string())
-}
-
 fn read(path: &Path) -> Result<String, ServiceSourceConfigError> {
     fs::read_to_string(path).map_err(|source| ServiceSourceConfigError::Read {
         path: path.display().to_string(),
@@ -552,6 +477,7 @@ fn validation_error(path: &Path, violations: Vec<String>) -> ServiceSourceConfig
 #[cfg(test)]
 mod tests {
     use std::{
+        path::PathBuf,
         process,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -628,7 +554,6 @@ jsonRpc:
             websocket.json_rpc[&GatewayEntryKey::parse("status").unwrap()].method,
             "status.get"
         );
-        assert!(source.config_profiles.contains_key("dev"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -710,7 +635,6 @@ jsonRpc:
         assert_eq!(selected.package.api, missing.package.api);
         assert_eq!(selected.package.dependencies, missing.package.dependencies);
         assert_eq!(selected.package.resources, missing.package.resources);
-        assert_eq!(selected.package.state, missing.package.state);
         assert_eq!(selected.package.services, missing.package.services);
     }
 
@@ -773,49 +697,6 @@ jsonRpc:
                 "unexpected error for {name}: {error}"
             );
         }
-    }
-
-    #[test]
-    fn account_profile_without_timeout_is_canonical_null() {
-        let root = fixture_root("account-profile-without-timeout");
-        write(
-            &root,
-            "package.yml",
-            "id: skiff.run/account\nversion: 0.1.0\n",
-        );
-        write(&root, "api.yml", "{}\n");
-        write(&root, "service.yml", "id: skiff.run/account\n");
-        write(&root, "http.yml", "{}\n");
-        write(
-            &root,
-            "config.dev.yml",
-            "config:\n  account:\n    dnsResolverBaseUrls: https://dns.alidns.com/resolve,https://doh.pub/dns-query,https://cloudflare-dns.com/dns-query\n  cookieName: skiff_account_session\n  maxAgeSeconds: 2592000\n",
-        );
-
-        let source = read_service_package_root(&root).unwrap();
-        assert!(source.config_profiles["dev"].authoring.timeout.is_null());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn config_profile_rejects_unknown_policy_fields() {
-        let root = fixture_root("profile-unknown-policy-field");
-        write(
-            &root,
-            "package.yml",
-            "id: example.com/account\nversion: 0.1.0\n",
-        );
-        write(&root, "api.yml", "{}\n");
-        write(&root, "service.yml", "id: example.com/account\n");
-        write(
-            &root,
-            "config.dev.yml",
-            "timeout: 1000\ntimeoutUnit: milliseconds\n",
-        );
-
-        let error = read_service_package_root(&root).unwrap_err();
-        assert!(error.to_string().contains("unknown field `timeoutUnit`"));
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1281,17 +1162,6 @@ jsonRpc:
         fs::create_dir(root.join("http.yml")).unwrap();
         let error = read_service_package_root(&root).unwrap_err().to_string();
         assert!(error.contains("must be a regular file"), "{error}");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn config_profile_rejects_dependencies() {
-        let root = fixture_root("profile-dependencies");
-        write(&root, "package.yml", "id: example.com/a\nversion: 1.0.0\n");
-        write(&root, "api.yml", "{}\n");
-        write(&root, "service.yml", "id: example.com/a\n");
-        write(&root, "config.dev.yml", "services: []\n");
-        assert!(read_service_package_root(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

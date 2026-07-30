@@ -25,10 +25,10 @@ use super::source_identity::PublicationDeclarationAnchors;
 use super::SourceSymbolKey;
 use super::{
     api::{PublicCallableKind, PublicModuleExport, PublicSymbolKind, PublicTypeKind},
-    publication_type_symbols, validate_source_name_resolution_from_model, ConfigRequirementScope,
-    ConfigRequirementSet, ExpressionSourceMap, ExpressionTypeModel, NameResolutionModel,
-    PackageCompilePlan, PublicationApiSeed, PublicationTypeSymbolIndex, ResolvedCallTargetFacts,
-    TypeResolutionContext, TypeResolutionModel, TypeResolutionPackageFacts,
+    publication_type_symbols, validate_source_name_resolution_from_model, ConfigRequirementSet,
+    ExpressionSourceMap, ExpressionTypeModel, NameResolutionModel, PackageCompilePlan,
+    PublicationApiSeed, PublicationTypeSymbolIndex, ResolvedCallTargetFacts, TypeResolutionContext,
+    TypeResolutionModel, TypeResolutionPackageFacts,
 };
 use crate::shared::publication_error::PublicationError;
 
@@ -135,11 +135,7 @@ pub struct PackageSourceModel {
     source_identity: String,
     #[allow(dead_code)]
     declaration_anchors: PublicationDeclarationAnchors,
-    #[allow(dead_code)]
     own_config_requirements: ConfigRequirementSet,
-    #[allow(dead_code)]
-    dependency_config_requirements: ConfigRequirementSet,
-    effective_config_requirements: ConfigRequirementSet,
     execution_semantics: super::SourceExecutionSemantics,
 }
 
@@ -158,7 +154,6 @@ pub struct PackageSourceModelInput<'a> {
     pub source_identity: String,
     pub declaration_anchors: PublicationDeclarationAnchors,
     pub config_usage_seed: ConfigUsageSeed,
-    pub dependency_config_requirements: ConfigRequirementSet,
     pub dependency_analysis: &'a super::SourceDependencyAnalysisInput,
 }
 
@@ -283,15 +278,8 @@ impl PackageSourceModel {
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source callable signature resolution failed:\n- {message}"),
         })?;
-        let own_config_requirements = ConfigRequirementSet::from_usage_seed(
-            &input.config_usage_seed,
-            ConfigRequirementScope::from_publication_policy(policy.as_borrowed()),
-        );
-        let dependency_config_requirements = input.dependency_config_requirements;
-        let effective_config_requirements = ConfigRequirementSet::effective(
-            &own_config_requirements,
-            &dependency_config_requirements,
-        )?;
+        let own_config_requirements =
+            ConfigRequirementSet::from_usage_seed(&input.config_usage_seed);
         Ok(Self {
             sources: PackageSourceSet::new(input.parsed_sources, policy),
             indexes,
@@ -313,8 +301,6 @@ impl PackageSourceModel {
             source_identity: input.source_identity,
             declaration_anchors: input.declaration_anchors,
             own_config_requirements,
-            dependency_config_requirements,
-            effective_config_requirements,
             execution_semantics,
         })
     }
@@ -416,25 +402,8 @@ impl PackageSourceModel {
         &self.declaration_anchors
     }
 
-    #[allow(dead_code)]
     pub fn own_config_requirements(&self) -> &ConfigRequirementSet {
         &self.own_config_requirements
-    }
-
-    #[allow(dead_code)]
-    pub fn dependency_config_requirements(&self) -> &ConfigRequirementSet {
-        &self.dependency_config_requirements
-    }
-
-    #[allow(dead_code)]
-    pub fn effective_config_requirements(&self) -> &ConfigRequirementSet {
-        &self.effective_config_requirements
-    }
-
-    pub fn legacy_config_projection_requirements(&self) -> ConfigRequirementSet {
-        self.effective_config_requirements.matching_scope(
-            &ConfigRequirementScope::from_publication_policy(self.sources.policy.as_borrowed()),
-        )
     }
 
     pub fn with_semantic_context<T, E>(

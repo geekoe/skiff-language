@@ -3,17 +3,13 @@ use std::path::Path;
 use compiler_input_model::{PackageCompilePolicy, PackageDependency, PublicationApiSpec};
 
 use crate::{
-    config_requirements::DependencyPackageConfigFacts, parsed_sources::ParsedCompilerSource,
-    root_refs, source_graph::CompilerSourceFile, ConfigRequirementScope, ConfigRequirementSet,
-    PublicationError, SourceCompileLinkedFacts, SourceCompileLinkedFactsInput,
+    parsed_sources::ParsedCompilerSource, root_refs, source_graph::CompilerSourceFile,
+    ConfigRequirementSet, PublicationError,
 };
 
 #[derive(Debug)]
 pub struct SourceConfigMetadata {
-    legacy_config_projection_requirements: ConfigRequirementSet,
     own_config_requirements: ConfigRequirementSet,
-    dependency_config_requirements: ConfigRequirementSet,
-    effective_config_requirements: ConfigRequirementSet,
 }
 
 pub struct SourceConfigMetadataInput<'a, 'source> {
@@ -21,7 +17,6 @@ pub struct SourceConfigMetadataInput<'a, 'source> {
     pub parsed_sources: &'a [ParsedCompilerSource],
     pub production_sources: &'source [CompilerSourceFile],
     pub package_dependencies: &'a [PackageDependency],
-    pub dependency_package_config_facts: Option<&'a [DependencyPackageConfigFacts<'a>]>,
     pub policy: PackageCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
 }
@@ -31,7 +26,6 @@ pub struct SourceConfigMetadataBatchInput<'a, 'source> {
     pub parsed_sources: &'a [ParsedCompilerSource],
     pub production_sources: &'source [CompilerSourceFile],
     pub package_dependencies: &'a [PackageDependency],
-    pub dependency_package_config_facts: Option<&'a [DependencyPackageConfigFacts<'a>]>,
     pub policy: PackageCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
     pub entrypoint_function_names: &'a [String],
@@ -45,25 +39,14 @@ pub fn source_config_metadata_from_parsed_sources(
         input.production_sources,
         input.policy,
     )?;
-    let linked_facts = SourceCompileLinkedFacts::build(SourceCompileLinkedFactsInput {
-        diagnostic_root: input.diagnostic_root,
-        parsed_sources: input.parsed_sources,
-        production_sources: input.production_sources,
-        package_dependencies: input.package_dependencies,
-        dependency_package_config_facts: input.dependency_package_config_facts,
-        policy: input.policy,
-        publication_api: input.publication_api,
-        dependency_analysis: &crate::SourceDependencyAnalysisInput::default(),
-    })?;
     let config_usage_seed = crate::config_usage::collect_config_usage_seed_from_parsed_sources(
         input.diagnostic_root,
         input.parsed_sources,
     )?;
-    source_config_metadata_from_config_usage_seed(
+    Ok(source_config_metadata_from_config_usage_seed(
         &config_usage_seed,
-        &linked_facts.dependency_config_requirements,
         input.policy,
-    )
+    ))
 }
 
 pub fn source_config_metadata_batches_from_parsed_sources(
@@ -74,30 +57,18 @@ pub fn source_config_metadata_batches_from_parsed_sources(
         input.production_sources,
         input.policy,
     )?;
-    let linked_facts = SourceCompileLinkedFacts::build(SourceCompileLinkedFactsInput {
-        diagnostic_root: input.diagnostic_root,
-        parsed_sources: input.parsed_sources,
-        production_sources: input.production_sources,
-        package_dependencies: input.package_dependencies,
-        dependency_package_config_facts: input.dependency_package_config_facts,
-        policy: input.policy,
-        publication_api: input.publication_api,
-        dependency_analysis: &crate::SourceDependencyAnalysisInput::default(),
-    })?;
-    crate::config_usage::collect_config_usage_seed_batches_from_parsed_sources(
-        input.diagnostic_root,
-        input.parsed_sources,
-        input.entrypoint_function_names,
-    )?
-    .iter()
-    .map(|config_usage_seed| {
-        source_config_metadata_from_config_usage_seed(
-            config_usage_seed,
-            &linked_facts.dependency_config_requirements,
-            input.policy,
-        )
-    })
-    .collect()
+    Ok(
+        crate::config_usage::collect_config_usage_seed_batches_from_parsed_sources(
+            input.diagnostic_root,
+            input.parsed_sources,
+            input.entrypoint_function_names,
+        )?
+        .iter()
+        .map(|config_usage_seed| {
+            source_config_metadata_from_config_usage_seed(config_usage_seed, input.policy)
+        })
+        .collect(),
+    )
 }
 
 fn validate_source_config_metadata_input(
@@ -113,39 +84,17 @@ fn validate_source_config_metadata_input(
 
 fn source_config_metadata_from_config_usage_seed(
     config_usage_seed: &crate::config_usage::ConfigUsageSeed,
-    dependency_config_requirements: &ConfigRequirementSet,
     policy: PackageCompilePolicy<'_>,
-) -> Result<SourceConfigMetadata, PublicationError> {
-    let scope = ConfigRequirementScope::from_publication_policy(policy);
-    let own_config_requirements =
-        ConfigRequirementSet::from_usage_seed(config_usage_seed, scope.clone());
-    let effective_config_requirements =
-        ConfigRequirementSet::effective(&own_config_requirements, dependency_config_requirements)?;
-    let legacy_config_projection_requirements =
-        effective_config_requirements.matching_scope(&scope);
-
-    Ok(SourceConfigMetadata {
-        legacy_config_projection_requirements,
+) -> SourceConfigMetadata {
+    let _ = policy;
+    let own_config_requirements = ConfigRequirementSet::from_usage_seed(config_usage_seed);
+    SourceConfigMetadata {
         own_config_requirements,
-        dependency_config_requirements: dependency_config_requirements.clone(),
-        effective_config_requirements,
-    })
+    }
 }
 
 impl SourceConfigMetadata {
-    pub fn legacy_config_projection_requirements(&self) -> &ConfigRequirementSet {
-        &self.legacy_config_projection_requirements
-    }
-
     pub fn own_config_requirements(&self) -> &ConfigRequirementSet {
         &self.own_config_requirements
-    }
-
-    pub fn dependency_config_requirements(&self) -> &ConfigRequirementSet {
-        &self.dependency_config_requirements
-    }
-
-    pub fn effective_config_requirements(&self) -> &ConfigRequirementSet {
-        &self.effective_config_requirements
     }
 }

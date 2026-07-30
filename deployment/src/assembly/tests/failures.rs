@@ -216,8 +216,9 @@ fn the_same_caller_edge_cannot_select_activation_relative_builds() {
         .config
         .push(PackageConfigRequirement {
             path: "variant".to_string(),
-            value_type: "string".to_string(),
-            required: false,
+            access: skiff_artifact_model::PackageConfigAccess::Optional {
+                value_type: "string".to_string(),
+            },
         });
     assign_package_artifact_identities(&mut dependency_b).unwrap();
     assert_eq!(
@@ -256,6 +257,59 @@ fn the_same_caller_edge_cannot_select_activation_relative_builds() {
     assert!(matches!(
         error,
         AssemblyResolutionError::ConflictingPackageLink { .. }
+    ));
+}
+
+#[test]
+fn one_activation_cannot_resolve_multiple_builds_for_one_package_id() {
+    let root_contract = contract("service.package-build-ambiguity");
+    let dependency_a = package("package.shared-build", &[], &[]);
+    let mut dependency_b = dependency_a.clone();
+    dependency_b
+        .runtime_requirements
+        .config
+        .push(PackageConfigRequirement {
+            path: "variant".to_string(),
+            access: skiff_artifact_model::PackageConfigAccess::Optional {
+                value_type: "string".to_string(),
+            },
+        });
+    assign_package_artifact_identities(&mut dependency_b).unwrap();
+    assert_eq!(
+        dependency_a.package_local_abi.local_abi_identity,
+        dependency_b.package_local_abi.local_abi_identity
+    );
+    assert_ne!(dependency_a.package_build_id, dependency_b.package_build_id);
+
+    let root_package = package(
+        "package.root-build-ambiguity",
+        &[
+            ("dependency-a", &dependency_a),
+            ("dependency-b", &dependency_b),
+        ],
+        &[],
+    );
+    let root_deployment = deployment(
+        &root_contract,
+        &root_package,
+        "root-revision",
+        vec![
+            package_binding(&root_package, "dependency-a", &dependency_a),
+            package_binding(&root_package, "dependency-b", &dependency_b),
+        ],
+        Vec::new(),
+    );
+
+    let error = resolve_runtime_assembly(
+        &[deployment_ref(&root_deployment)],
+        &[root_deployment],
+        std::slice::from_ref(&root_contract),
+        &[root_package, dependency_a, dependency_b],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AssemblyResolutionError::MultiplePackageBuildsForId { .. }
     ));
 }
 

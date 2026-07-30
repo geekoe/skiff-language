@@ -88,16 +88,6 @@ impl CompiledPackage {
         self.model.own_config_requirements()
     }
 
-    #[cfg(feature = "test-support")]
-    pub fn dependency_config_requirements(&self) -> &ConfigRequirementSet {
-        self.model.dependency_config_requirements()
-    }
-
-    #[cfg(feature = "test-support")]
-    pub fn effective_config_requirements(&self) -> &ConfigRequirementSet {
-        self.model.effective_config_requirements()
-    }
-
     pub fn service_db_metadata(&self) -> &[DbMetadataIr] {
         self.lowered.service_db_metadata()
     }

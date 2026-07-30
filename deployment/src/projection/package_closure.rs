@@ -150,6 +150,21 @@ impl<'a> PackageClosure<'a> {
                 });
             }
         }
+        let mut build_by_package_id = BTreeMap::new();
+        for build_id in &reachable {
+            let package = by_build[build_id];
+            if let Some(first_build_id) =
+                build_by_package_id.insert(package.package_id.as_str(), build_id)
+            {
+                if first_build_id != build_id {
+                    return Err(ProjectionError::MultiplePackageBuildsForId {
+                        package_id: package.package_id.clone(),
+                        first_build_id: first_build_id.clone(),
+                        second_build_id: build_id.clone(),
+                    });
+                }
+            }
+        }
 
         Ok(Self { by_build })
     }

@@ -13,10 +13,10 @@ pub use compile_input::{
 pub use compile_policy::PackageCompilePolicy;
 pub use dependencies::{
     canonical_publication_dependency_id, collect_package_dependency_violations,
-    dependency_config_is_empty, empty_dependency_config, is_complex_package_dependency_id,
-    is_publication_dependency_id, is_reserved_source_import_alias,
-    is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
-    is_standard_package_id, is_valid_source_import_alias, PackageDependency,
+    is_complex_package_dependency_id, is_publication_dependency_id,
+    is_reserved_source_import_alias, is_safe_publication_artifact_id_component,
+    is_safe_publication_artifact_path_segment, is_standard_package_id,
+    is_valid_source_import_alias, PackageDependency,
 };
 pub use manifest::{
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,
