@@ -20,7 +20,6 @@ import {
   assertEnvironment,
   assertServiceId,
   devRegistrySchemaVersion,
-  emptyDevRegistry,
   readStoredDevRegistry,
   writeStoredDevRegistry,
 } from './lib/dev-registry-store.mjs';
@@ -88,23 +87,37 @@ export async function runDevWatch(options, dependencies = {}) {
   let pending;
   let retryDelayMs = 1000;
   let retryAt = 0;
+  let registryRetryDelayMs = 1000;
+  let registryRetryAt = 0;
+  const deferUntilFirstValidRegistry = (error) => {
+    const signature = formatError(error);
+    const shouldReport = signature !== lastRegistryError;
+    lastRegistryError = signature;
+    registryRetryAt = now() + registryRetryDelayMs;
+    registryRetryDelayMs = Math.min(registryRetryDelayMs * 2, 30000);
+    if (shouldReport) {
+      reportError(
+        new Error(`${signature}; waiting for the first valid dev registry`),
+      );
+    }
+  };
   let first = true;
   for (;;) {
     if (!first) {
       await wait(options.pollIntervalMs);
     }
     first = false;
+    if (lastKnownRegistry === undefined && now() < registryRetryAt) {
+      continue;
+    }
 
     let registry;
+    let registryIsCurrent = true;
     try {
       registry = await readDevRegistry(options.config);
-      lastKnownRegistry = registry;
-      lastRegistryError = undefined;
     } catch (error) {
-      if (errorCauseCode(error) === 'ENOENT' && lastKnownRegistry === undefined) {
-        registry = emptyDevRegistry();
-        lastKnownRegistry = registry;
-      } else if (lastKnownRegistry !== undefined) {
+      registryIsCurrent = false;
+      if (lastKnownRegistry !== undefined) {
         registry = lastKnownRegistry;
         const signature = formatError(error);
         if (signature !== lastRegistryError) {
@@ -114,7 +127,8 @@ export async function runDevWatch(options, dependencies = {}) {
           lastRegistryError = signature;
         }
       } else {
-        throw error;
+        deferUntilFirstValidRegistry(error);
+        continue;
       }
     }
 
@@ -127,8 +141,24 @@ export async function runDevWatch(options, dependencies = {}) {
         environmentOverride: options.environment,
       });
     } catch (error) {
-      reportError(error);
+      if (lastKnownRegistry === undefined) {
+        deferUntilFirstValidRegistry(error);
+      } else {
+        const signature = formatError(error);
+        if (signature !== lastRegistryError) {
+          reportError(
+            new Error(`${signature}; continuing with the last known-good dev registry`),
+          );
+          lastRegistryError = signature;
+        }
+      }
       continue;
+    }
+    if (registryIsCurrent) {
+      lastKnownRegistry = registry;
+      lastRegistryError = undefined;
+      registryRetryDelayMs = 1000;
+      registryRetryAt = 0;
     }
 
     if (pending?.fingerprint !== desired.fingerprint) {
@@ -709,17 +739,6 @@ function printResult(result, json) {
 
 function structuredFingerprint(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
-function errorCauseCode(error) {
-  let current = error;
-  while (current !== undefined && current !== null) {
-    if (typeof current === 'object' && typeof current.code === 'string') {
-      return current.code;
-    }
-    current = typeof current === 'object' ? current.cause : undefined;
-  }
-  return undefined;
 }
 
 function isPlainObject(value) {

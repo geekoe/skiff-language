@@ -38,7 +38,7 @@ Registry使用`skiff-package-service-dev-registry-v2`。顶层只有：
   "environment": "dev",
   "roots": [
     {
-      "kind": "package",
+      "kind": "service",
       "root": "/absolute/project/root",
       "serviceId": "example.com/users"
     }
@@ -46,10 +46,10 @@ Registry使用`skiff-package-service-dev-registry-v2`。顶层只有：
 }
 ```
 
-每个entry持久保存`kind`、规范化绝对`root`和可选`serviceId`。当前authoring root的canonical kind为
-`package`；当这个Package具有service role时，`serviceId`必填且必须等于entry写入时`service.yml`声明的
-canonical service ID，普通Package entry不得保存`serviceId`。数组按`kind + root` canonical排序，同一
-root或service ID不得重复。
+每个entry持久保存`kind`、规范化绝对`root`和可选`serviceId`。普通Package root的canonical kind为
+`package`；同时具有`package.yml`和`service.yml`的Package具有service role，其canonical kind为
+`service`，`serviceId`必填且必须等于entry写入时`service.yml`声明的canonical service ID。普通Package
+entry不得保存`serviceId`。数组按`kind + root` canonical排序，同一root或service ID不得重复。
 
 读取分成两个阶段：
 

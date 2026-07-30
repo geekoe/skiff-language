@@ -59,8 +59,8 @@ const usage = `usage:
   skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff package build <root> --artifact-root <dir> [--environment <name>] [--json]
   skiff package publish <root> --artifact-root <dir> [--environment <name>] [--json]
-  skiff assembly <build|publish> --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... [--json]
-  skiff assembly activate --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
+  skiff assembly <build|publish> --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
+  skiff assembly activate --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
 `;
 
 try {

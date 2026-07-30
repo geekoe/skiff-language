@@ -127,6 +127,11 @@ test('registry writer atomically replaces the file and persists service identity
   const fixture = await serviceFixture('atomic', 'example.com/atomic');
   const registryPath = join(fixture.temp, 'watch.json');
   const entry = await classifyAuthoringRoot(fixture.root);
+  assert.deepEqual(entry, {
+    kind: 'service',
+    root: fixture.root,
+    serviceId: 'example.com/atomic',
+  });
   await writeDevRegistry(registryPath, {
     environment: 'dev',
     roots: [entry],
@@ -293,7 +298,7 @@ test('watch reloads registry environment and sorted roots after atomic replaceme
   ]);
 });
 
-test('watch preserves last-known-good registry across bad JSON and ENOENT', async () => {
+test('watch preserves last-known-good registry across invalid live roots, bad JSON, and ENOENT', async () => {
   const fixture = await serviceFixture('watch-lkg', 'example.com/watch-lkg');
   const registryPath = join(fixture.temp, 'watch.json');
   const entry = await classifyAuthoringRoot(fixture.root);
@@ -313,10 +318,19 @@ test('watch preserves last-known-good registry across bad JSON and ENOENT', asyn
       wait: async () => {
         polls += 1;
         if (polls === 1) {
-          await writeFile(registryPath, '{invalid json');
+          await writeDevRegistry(registryPath, {
+            environment: 'invalid-live-root',
+            roots: [{
+              kind: 'service',
+              root: join(fixture.temp, 'missing-service'),
+              serviceId: 'example.com/missing',
+            }],
+          });
         } else if (polls === 2) {
-          await rm(registryPath);
+          await writeFile(registryPath, '{invalid json');
         } else if (polls === 3) {
+          await rm(registryPath);
+        } else if (polls === 4) {
           await writeDevRegistry(registryPath, {
             environment: 'recovered',
             roots: [entry],
@@ -329,8 +343,49 @@ test('watch preserves last-known-good registry across bad JSON and ENOENT', asyn
     /last-known-good sequence complete/,
   );
   assert.deepEqual(calls, ['dev', 'recovered']);
+  assert.equal(
+    errors.some((message) => message.includes('continuing with the last known-good')),
+    true,
+  );
   assert.equal(errors.some((message) => message.includes('last known-good')), true);
   assert.equal(errors.some((message) => message.includes('ENOENT')), true);
+});
+
+test('watch does not synthesize an empty activation before its first valid registry', async () => {
+  const fixture = await serviceFixture('watch-first-registry', 'example.com/watch-first');
+  const registryPath = join(fixture.temp, 'missing-watch.json');
+  const calls = [];
+  const errors = [];
+  let clock = 0;
+  let polls = 0;
+  await assert.rejects(
+    runDevWatch(watchOptions(registryPath), {
+      now: () => clock,
+      syncRunner: async ({ roots }) => {
+        calls.push(roots.map(({ serviceId }) => serviceId));
+        return {};
+      },
+      buildStateFromResult: () => ({}),
+      printResult: () => {},
+      reportError: (error) => errors.push(error.message),
+      wait: async (milliseconds) => {
+        clock += milliseconds;
+        polls += 1;
+        if (clock === 1000) {
+          await writeDevRegistry(registryPath, {
+            environment: 'dev',
+            roots: [await classifyAuthoringRoot(fixture.root)],
+          });
+        } else if (polls === 3) {
+          throw new Error('first-registry sequence complete');
+        }
+      },
+    }),
+    /first-registry sequence complete/,
+  );
+  assert.deepEqual(calls, [['example.com/watch-first']]);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /waiting for the first valid dev registry/);
 });
 
 test('watch retries failed content with exponential delay and new content replaces pending work', async () => {
@@ -380,7 +435,7 @@ test('watch retries failed content with exponential delay and new content replac
   assert.equal(maxActive, 1);
 });
 
-test('empty registry still builds and activates the explicit empty assembly candidate', async () => {
+test('empty registry still builds the explicit empty assembly candidate', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'skiff-empty-dev-assembly-'));
   let assemblyInput;
   const result = await runDevSyncOnce({
@@ -410,6 +465,131 @@ test('empty registry still builds and activates the explicit empty assembly cand
   });
   assert.deepEqual(assemblyInput.rootDeployments, []);
   assert.deepEqual(result.serviceDeploymentReceipts, []);
+});
+
+test('removing the final service converges watch to one exact empty assembly and snapshot pair', async () => {
+  const fixture = await serviceFixture('remove-last', 'example.com/remove-last');
+  const registryPath = join(fixture.temp, 'watch.json');
+  await writeDevRegistry(registryPath, {
+    environment: 'dev',
+    roots: [await classifyAuthoringRoot(fixture.root)],
+  });
+  const nonemptyAssembly = {
+    assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'c'.repeat(64)}`,
+  };
+  const emptyAssembly = {
+    assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'d'.repeat(64)}`,
+  };
+  const nonemptyConfig = {
+    snapshotId: `skiff-runtime-config-snapshot-v1:${'e'.repeat(32)}`,
+  };
+  const emptyConfig = {
+    snapshotId: `skiff-runtime-config-snapshot-v1:${'f'.repeat(32)}`,
+  };
+  let active = activeTuple(0, '1', '2');
+  const activationRequests = [];
+  let watchWaits = 0;
+
+  await assert.rejects(
+    runDevWatch({
+      ...watchOptions(registryPath),
+      buildOnly: false,
+    }, {
+      compilerRunner: async (input) => {
+        if (input.kind === 'package') {
+          return {
+            packageArtifactReceipt: {
+              artifact: {
+                packageId: 'example.com/remove-last-package',
+                packageVersion: '1.0.0',
+              },
+            },
+            serviceDeploymentReceipt: {
+              deployment: {
+                serviceId: 'example.com/remove-last',
+                contractVersion: '1.0.0',
+                deploymentRevision: 'revision-1',
+                deploymentArtifactIdentity:
+                  `skiff-deployment-artifact-v2:sha256:${'9'.repeat(64)}`,
+              },
+            },
+          };
+        }
+        const assembly = input.rootDeployments.length === 0
+          ? emptyAssembly
+          : nonemptyAssembly;
+        return {
+          runtimeAssemblyReceipt: {
+            assembly,
+            recordPath: input.rootDeployments.length === 0
+              ? 'records/empty-assembly.json'
+              : 'records/nonempty-assembly.json',
+          },
+        };
+      },
+      configSnapshotRunner: async ({ sources }) => ({
+        runtimeConfigSnapshotReceipt: {
+          snapshot: sources.length === 0 ? emptyConfig : nonemptyConfig,
+          recordPath: sources.length === 0
+            ? 'runtime-config/snapshots/empty.json'
+            : 'runtime-config/snapshots/nonempty.json',
+        },
+      }),
+      fetchImpl: async (_url, init) => {
+        if (init.method === 'GET') {
+          return healthResponse(active);
+        }
+        const request = JSON.parse(init.body);
+        activationRequests.push(request);
+        active = {
+          environment: 'dev',
+          generation: active.generation + 1,
+          assembly: request.assembly,
+          configSnapshot: request.configSnapshot,
+        };
+        return jsonResponse({ ok: true, committed: active });
+      },
+      printResult: () => {},
+      wait: async () => {
+        watchWaits += 1;
+        if (watchWaits === 1) {
+          await runDevRegistryCommand([
+            'remove',
+            'example.com/remove-last',
+            '--config',
+            registryPath,
+          ], {
+            defaultConfig: registryPath,
+            stdout: () => {},
+          });
+          return;
+        }
+        throw new Error('remove-last sequence complete');
+      },
+    }),
+    /remove-last sequence complete/,
+  );
+
+  assert.deepEqual(
+    activationRequests.map((request) => ({
+      expectedGeneration: request.expectedGeneration,
+      assembly: request.assembly,
+      configSnapshot: request.configSnapshot,
+    })),
+    [
+      {
+        expectedGeneration: 0,
+        assembly: nonemptyAssembly,
+        configSnapshot: nonemptyConfig,
+      },
+      {
+        expectedGeneration: 1,
+        assembly: emptyAssembly,
+        configSnapshot: emptyConfig,
+      },
+    ],
+  );
+  assert.deepEqual((await readDevRegistry(registryPath)).roots, []);
 });
 
 function watchOptions(registryPath) {
