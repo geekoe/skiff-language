@@ -191,6 +191,8 @@ fn deployment_with(kind: GatewayAdapterKind) -> ServiceDeployment {
         service_selectors: Vec::new(),
         gateway_entries: BTreeMap::from([(key.clone(), gateway_entry(kind))]),
         ingress: vec![selector("/gateway", key)],
+        resource_bindings: Vec::new(),
+        runtime_capability_bindings: Vec::new(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Gateway deployment".to_string(),
             notes: BTreeMap::new(),
@@ -275,12 +277,14 @@ fn input_from(deployment: &ServiceDeployment) -> ServiceDeploymentInput {
         service_selectors: deployment.service_selectors.clone(),
         gateway_entries: deployment.gateway_entries.clone(),
         ingress: deployment.ingress.clone(),
+        resource_bindings: deployment.resource_bindings.clone(),
+        runtime_capability_bindings: deployment.runtime_capability_bindings.clone(),
         diagnostic_text: deployment.diagnostic_text.clone(),
     }
 }
 
 #[test]
-fn deployment_and_input_wire_reject_retired_activation_binding_and_policy_fields() {
+fn deployment_and_input_wire_reject_retired_policy() {
     let deployment = deployment_with(GatewayAdapterKind::TypedJson);
     let policy = serde_json::json!({
         "timeoutMs": 1000,
@@ -291,25 +295,13 @@ fn deployment_and_input_wire_reject_retired_activation_binding_and_policy_fields
         "principal": "service:example.service"
     });
 
-    for (field, value) in [
-        ("resourceBindings", serde_json::json!([])),
-        ("runtimeCapabilityBindings", serde_json::json!([])),
-        ("policy", policy),
-    ] {
-        let mut deployment_wire = serde_json::to_value(&deployment).unwrap();
-        deployment_wire[field] = value.clone();
-        assert!(
-            serde_json::from_value::<ServiceDeployment>(deployment_wire).is_err(),
-            "{field} unexpectedly survived the deployment hard cut"
-        );
+    let mut deployment_wire = serde_json::to_value(&deployment).unwrap();
+    deployment_wire["policy"] = policy.clone();
+    assert!(serde_json::from_value::<ServiceDeployment>(deployment_wire).is_err());
 
-        let mut input_wire = serde_json::to_value(input_from(&deployment)).unwrap();
-        input_wire[field] = value;
-        assert!(
-            serde_json::from_value::<ServiceDeploymentInput>(input_wire).is_err(),
-            "{field} unexpectedly survived the deployment input hard cut"
-        );
-    }
+    let mut input_wire = serde_json::to_value(input_from(&deployment)).unwrap();
+    input_wire["policy"] = policy;
+    assert!(serde_json::from_value::<ServiceDeploymentInput>(input_wire).is_err());
 }
 
 #[test]
