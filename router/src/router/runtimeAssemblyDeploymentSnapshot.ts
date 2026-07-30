@@ -367,8 +367,6 @@ function decodeServiceDeployment(
     'serviceSelectors',
     'gatewayEntries',
     'ingress',
-    'resourceBindings',
-    'runtimeCapabilityBindings',
     'diagnosticText'
   ], label);
   if (value.schemaVersion !== 'skiff-service-deployment-v4') {

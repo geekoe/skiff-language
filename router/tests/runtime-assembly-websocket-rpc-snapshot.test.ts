@@ -239,7 +239,13 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
     );
   });
 
-  it.each(['configLiterals', 'secretRefs', 'stateBindings'])(
+  it.each([
+    'configLiterals',
+    'secretRefs',
+    'stateBindings',
+    'resourceBindings',
+    'runtimeCapabilityBindings'
+  ])(
     'strictly rejects the removed ServiceDeployment field %s',
     (field) => {
       const fixture = currentWebSocketFixture();
@@ -433,8 +439,6 @@ function currentWebSocketFixture(): Fixture {
       { selector: physicalSelector, gatewayEntryKey: 'websocket' },
       { selector: methodSelector, gatewayEntryKey: 'status' }
     ],
-    resourceBindings: [],
-    runtimeCapabilityBindings: [],
     diagnosticText: { displayName: 'chat-current', notes: {} }
   };
   const currentDeploymentIdentity =

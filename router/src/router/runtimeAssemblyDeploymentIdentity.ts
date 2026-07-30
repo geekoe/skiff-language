@@ -39,27 +39,7 @@ export function deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(
       compareCanonicalJson
     ),
     gatewayEntries: value.gatewayEntries,
-    ingress: sortedRecords(value.ingress, compareIngressBindings),
-    resourceBindings: sortedRecords(
-      value.resourceBindings,
-      (left, right) =>
-        compareStrings(
-          recordString(left, 'requirementKey'),
-          recordString(right, 'requirementKey')
-        )
-    ),
-    runtimeCapabilityBindings: sortedRecords(
-      value.runtimeCapabilityBindings,
-      (left, right) =>
-        compareStrings(
-          recordString(left, 'capability'),
-          recordString(right, 'capability')
-        ) ||
-        compareStrings(
-          recordString(left, 'version'),
-          recordString(right, 'version')
-        )
-    )
+    ingress: sortedRecords(value.ingress, compareIngressBindings)
   };
   return `skiff-deployment-artifact-v4:sha256:${createHash('sha256')
     .update(stableStringify(projection))

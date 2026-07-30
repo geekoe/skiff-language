@@ -567,17 +567,32 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
           principal: 'service:skiff.run/echo'
         };
       }
+    },
+    {
+      name: 'retired resource bindings',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[1]!.resourceBindings = [];
+      }
+    },
+    {
+      name: 'retired runtime capability bindings',
+      mutate: (fixture: Fixture) => {
+        fixture.deployments[1]!.runtimeCapabilityBindings = [];
+      }
     }
-  ])('rejects invalid deployment mode or retired policy: $name', async ({ mutate }) => {
-    const root = await fixtureRoot();
-    const fixture = canonicalFixture();
-    mutate(fixture);
-    await writeFixture(root, fixture);
+  ])(
+    'rejects invalid deployment mode or retired field: $name',
+    async ({ mutate }) => {
+      const root = await fixtureRoot();
+      const fixture = canonicalFixture();
+      mutate(fixture);
+      await writeFixture(root, fixture);
 
-    await expect(
-      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
-    ).rejects.toThrow();
-  });
+      await expect(
+        loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+      ).rejects.toThrow();
+    }
+  );
 });
 
 interface Fixture {
@@ -853,8 +868,6 @@ function deployment(
       },
       gatewayEntryKey
     }],
-    resourceBindings: [],
-    runtimeCapabilityBindings: [],
     diagnosticText: { displayName: gatewayEntryKey, notes: {} }
   };
   record.deploymentArtifactIdentity =
