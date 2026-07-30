@@ -195,10 +195,10 @@ pub(crate) fn prepare_interface_call(
     let owner_target = receiver_target
         .with_request_activation(owner_request)
         .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    let owner_context = context
-        .context
-        .clone()
-        .with_runtime_assembly_target(owner_target);
+    let owner_context = context.context.clone().switch_activation_owner(
+        owner_target,
+        crate::program_execution::ActivationExecutionOperation::callback_method(method_abi_id),
+    )?;
     let owner_context = OwnedProgramExecutionContext::capture(&owner_context);
     if owner_context.borrow().actor_execution_frame().is_some() {
         return Err(RuntimeError::InvalidArtifact(

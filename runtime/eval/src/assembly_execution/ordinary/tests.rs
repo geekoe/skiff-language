@@ -1860,6 +1860,13 @@ fn execution_context_with_actor_and_stream_runtime<'a>(
 ) -> ProgramExecutionContext<'a> {
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
+    let test_effect_doubles = interpreter.test_effect_double_context();
+    let rebinder = test_runtime::activation_execution_context_rebinder(
+        &actor,
+        stream_runtime.clone(),
+        test_effect_doubles.clone(),
+        interpreter.http_options.clone(),
+    );
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -1872,14 +1879,14 @@ fn execution_context_with_actor_and_stream_runtime<'a>(
         http_client: effects.http_client_context(
             interpreter.http_options.clone(),
             stream_runtime,
-            interpreter.test_effect_double_context(),
+            test_effect_doubles.clone(),
         ),
-        test_effect_doubles: interpreter.test_effect_double_context(),
+        test_effect_doubles,
         actor: actor.clone(),
         spawn: actor,
         request_heap_limits: RequestHeapLimits::default(),
     })
-    .with_websocket_capability_rebinder(test_runtime::websocket_rebinder())
+    .with_activation_execution_context_rebinder(rebinder)
     .with_runtime_assembly_target(target)
 }
 

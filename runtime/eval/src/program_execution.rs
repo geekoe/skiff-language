@@ -7,7 +7,7 @@ use std::{
 };
 
 use async_recursion::async_recursion;
-use skiff_artifact_model::InstructionSourceSite;
+use skiff_artifact_model::{ContractOperationId, InstructionSourceSite};
 use skiff_runtime_linked_program::{
     ConstAddr, ExecutableAddr, ExecutableKind, ExprRefIr, LinkedExecutable, LinkedExprIr,
     LinkedFileUnit, LinkedStmtIr, LinkedTypeRef,
@@ -27,7 +27,7 @@ use super::{
         FileSourceStreamContext, HttpClientCapabilityContext, OwnedActorCapabilityContext,
         OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedWebsocketCapabilityContext,
         StreamRuntime, StreamRuntimeOwner, TelemetryCapabilityContext, TestEffectDoubleContext,
-        TimeCapabilityContext, WebsocketCapabilityContext, WebsocketCapabilityRebinder,
+        TimeCapabilityContext, WebsocketCapabilityContext,
     },
     error::attach_source_frame,
     eval_context::EvalContext,
@@ -69,6 +69,81 @@ pub struct ProgramExecutionInput<'a> {
     pub request_heap_limits: RequestHeapLimits,
 }
 
+/// The exact operation that caused execution to enter another activation owner.
+///
+/// This is execution metadata, not a routing selector. The Host receives it only after Eval has
+/// resolved an exact target from the generation-pinned assembly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivationExecutionOperation {
+    ServiceCall { operation_id: ContractOperationId },
+    CallbackMethod { method_abi_id: String },
+}
+
+impl ActivationExecutionOperation {
+    pub fn service_call(operation_id: ContractOperationId) -> Self {
+        Self::ServiceCall { operation_id }
+    }
+
+    pub fn callback_method(method_abi_id: impl Into<String>) -> Self {
+        Self::CallbackMethod {
+            method_abi_id: method_abi_id.into(),
+        }
+    }
+}
+
+/// Owned deployment-scoped capabilities for one exact activation owner.
+///
+/// Construction happens outside Eval from an immutable, generation-pinned Host context set. The
+/// bundle is deliberately indivisible: a failed rebind cannot leave config, DB, file, actor,
+/// spawn, WebSocket, telemetry or HTTP effects owned by different deployments.
+pub struct OwnedActivationExecutionCapabilityBundle {
+    config: OwnedConfigCapabilityContext,
+    db: DbCapabilityContext,
+    file_source: FileCapabilitySource,
+    websocket: OwnedWebsocketCapabilityContext,
+    effects: EffectDispatchContext,
+    http_client: HttpClientCapabilityContext,
+    actor: OwnedActorCapabilityContext,
+    spawn: OwnedActorCapabilityContext,
+}
+
+impl OwnedActivationExecutionCapabilityBundle {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        config: OwnedConfigCapabilityContext,
+        db: DbCapabilityContext,
+        file_source: FileCapabilitySource,
+        websocket: OwnedWebsocketCapabilityContext,
+        effects: EffectDispatchContext,
+        http_client: HttpClientCapabilityContext,
+        actor: OwnedActorCapabilityContext,
+        spawn: OwnedActorCapabilityContext,
+    ) -> Self {
+        Self {
+            config,
+            db,
+            file_source,
+            websocket,
+            effects,
+            http_client,
+            actor,
+            spawn,
+        }
+    }
+}
+
+/// Host-provided, generation-pinned activation capability lookup.
+///
+/// Implementations must resolve only inside the immutable context set that owns `target`. They
+/// must not consult a current/latest activation pointer.
+pub trait ActivationExecutionContextRebinder: Send + Sync {
+    fn rebind(
+        &self,
+        target: &RuntimeAssemblyEvalTarget,
+        operation: &ActivationExecutionOperation,
+    ) -> Result<OwnedActivationExecutionCapabilityBundle>;
+}
+
 pub struct ProgramExecutionContext<'a> {
     execution: OwnedExecutionControl,
     execution_clock: execution_scope::ExecutionClock,
@@ -78,7 +153,7 @@ pub struct ProgramExecutionContext<'a> {
     file_source_stream: FileSourceStreamContext<'a>,
     time: TimeCapabilityContext<'a>,
     websocket: WebsocketCapabilityContext<'a>,
-    websocket_rebinder: Option<WebsocketCapabilityRebinder>,
+    activation_execution_context_rebinder: Option<Arc<dyn ActivationExecutionContextRebinder>>,
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
@@ -93,6 +168,74 @@ pub struct ProgramExecutionContext<'a> {
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
 }
 
+fn validate_activation_execution_capability_bundle(
+    receiver: &ProgramExecutionContext<'_>,
+    target: &RuntimeAssemblyEvalTarget,
+    bundle: &OwnedActivationExecutionCapabilityBundle,
+) -> Result<()> {
+    let expected_service = target
+        .activation_context()
+        .identity()
+        .deployment
+        .service_id
+        .as_str();
+    let expected_version = target
+        .activation_context()
+        .identity()
+        .deployment
+        .contract_version
+        .as_str();
+    if bundle.actor.service_id() != expected_service
+        || bundle.spawn.service_id() != expected_service
+        || bundle.websocket.service_id() != expected_service
+        || bundle.actor.service_version() != expected_version
+        || bundle.spawn.service_version() != expected_version
+        || bundle.actor.request_build_id()
+            != target
+                .activation_context()
+                .implementation_package_build_id()
+                .as_str()
+        || bundle.spawn.request_build_id()
+            != target
+                .activation_context()
+                .implementation_package_build_id()
+                .as_str()
+    {
+        return Err(RuntimeError::InvalidArtifact(
+            "activation execution capability bundle does not match the exact target owner"
+                .to_string(),
+        ));
+    }
+    if bundle.actor.runtime_id() != receiver.actor.runtime_id()
+        || bundle.spawn.runtime_id() != receiver.spawn.runtime_id()
+        || bundle.actor.request_id() != receiver.actor.request_id()
+        || bundle.spawn.request_id() != receiver.spawn.request_id()
+        || bundle.actor.trace_id() != receiver.actor.trace_id()
+        || bundle.spawn.trace_id() != receiver.spawn.trace_id()
+    {
+        return Err(RuntimeError::InvalidArtifact(
+            "activation owner switch changed request-wide execution identity".to_string(),
+        ));
+    }
+    let target_identity = target.activation_context().identity();
+    let expected_activation_identity =
+        skiff_runtime_capability_context::ActivationIdentityControl {
+            assembly_identity: target_identity.assembly_identity.clone(),
+            generation: target_identity.assembly_generation,
+            runtime_replica_id: target_identity.runtime_replica_id.clone(),
+            deployment_revision: target_identity.deployment.deployment_revision.clone(),
+        };
+    if bundle.actor.activation_identity() != Some(&expected_activation_identity)
+        || bundle.spawn.activation_identity() != Some(&expected_activation_identity)
+    {
+        return Err(RuntimeError::InvalidArtifact(
+            "activation execution capability bundle is not pinned to the exact target activation"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl<'a> Clone for ProgramExecutionContext<'a> {
     fn clone(&self) -> Self {
         Self {
@@ -104,7 +247,9 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             file_source_stream: self.file_source_stream.clone(),
             time: self.time.clone(),
             websocket: self.websocket.clone(),
-            websocket_rebinder: self.websocket_rebinder.clone(),
+            activation_execution_context_rebinder: self
+                .activation_execution_context_rebinder
+                .clone(),
             effects: self.effects.clone(),
             http_client: self.http_client.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
@@ -137,7 +282,7 @@ impl<'a> ProgramExecutionContext<'a> {
             file_source_stream: input.file_source_stream,
             time: input.time,
             websocket: input.websocket,
-            websocket_rebinder: None,
+            activation_execution_context_rebinder: None,
             effects: input.effects,
             http_client: input.http_client,
             test_effect_doubles: input.test_effect_doubles,
@@ -168,36 +313,67 @@ impl<'a> ProgramExecutionContext<'a> {
         self
     }
 
-    pub fn with_websocket_capability_rebinder(
+    pub fn with_activation_execution_context_rebinder(
         mut self,
-        rebinder: WebsocketCapabilityRebinder,
+        rebinder: Arc<dyn ActivationExecutionContextRebinder>,
     ) -> Self {
-        self.websocket_rebinder = Some(rebinder);
+        self.activation_execution_context_rebinder = Some(rebinder);
         self
     }
 
-    pub(crate) fn with_provider_websocket_capability(
-        mut self,
-        service_id: &str,
-        websocket_entry_id: Option<&str>,
-    ) -> Result<Self> {
-        let rebinder = self.websocket_rebinder.as_ref().ok_or_else(|| {
-            RuntimeError::InvalidArtifact(
-                "provider activation requires a WebSocket capability rebinder".to_string(),
-            )
-        })?;
-        self.websocket = rebinder.for_activation(service_id, websocket_entry_id);
-        Ok(self)
-    }
-
-    /// Starts a provider-local service stack while retaining request-wide
-    /// trace identity and the shared error-id sequence.
+    /// Changes the deployment-owned execution capabilities as one fail-closed unit.
     ///
-    /// Boundary consumers call this only when entering a provider activation;
-    /// ordinary local calls continue to inherit their request-local stack.
-    pub(crate) fn with_provider_service_stack_scope(mut self) -> Self {
+    /// `target` must already belong to the exact admitted assembly generation. The rebinder is
+    /// installed by the Host from that same generation-pinned context set; Eval never asks it to
+    /// select an activation or consult a latest pointer.
+    pub fn switch_activation_owner(
+        mut self,
+        target: RuntimeAssemblyEvalTarget,
+        operation: ActivationExecutionOperation,
+    ) -> Result<Self> {
+        let receiver = self.runtime_assembly_target()?;
+        if receiver.request_activation().generation() != target.request_activation().generation()
+            || receiver.execution_image().assembly_identity()
+                != target.execution_image().assembly_identity()
+        {
+            return Err(RuntimeError::InvalidArtifact(
+                "activation owner switch crossed its admitted assembly generation".to_string(),
+            ));
+        }
+        target.ensure_execution_ready()?;
+        let rebinder = self
+            .activation_execution_context_rebinder
+            .as_ref()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "activation owner switch requires an execution context rebinder".to_string(),
+                )
+            })?;
+        let bundle = rebinder.rebind(&target, &operation)?;
+        validate_activation_execution_capability_bundle(&self, &target, &bundle)?;
+
+        let OwnedActivationExecutionCapabilityBundle {
+            config,
+            db,
+            file_source,
+            websocket,
+            effects,
+            http_client,
+            actor,
+            spawn,
+        } = bundle;
+        self.config = config;
+        self.db = db;
+        self.file = file_source.context_for_request(self.db.clone());
+        self.websocket = websocket;
+        self.effects = effects;
+        self.http_client = http_client;
+        self.actor = actor;
+        self.spawn = spawn;
+        self.actor_execution_frame = None;
         reset_provider_local_stack(&mut self.local_call_stack);
-        self
+        self = self.with_runtime_assembly_target(target);
+        Ok(self)
     }
 
     pub(crate) fn with_actor_execution_frame(
@@ -381,7 +557,7 @@ pub struct OwnedProgramExecutionContext {
     stream_runtime: StreamRuntime,
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
     websocket: OwnedWebsocketCapabilityContext,
-    websocket_rebinder: Option<WebsocketCapabilityRebinder>,
+    activation_execution_context_rebinder: Option<Arc<dyn ActivationExecutionContextRebinder>>,
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
@@ -409,7 +585,9 @@ impl OwnedProgramExecutionContext {
             stream_runtime: context.file_source_stream.stream_runtime_handle(),
             _stream_runtime_owner: context.stream_runtime_owner(),
             websocket: context.websocket.owned(),
-            websocket_rebinder: context.websocket_rebinder.clone(),
+            activation_execution_context_rebinder: context
+                .activation_execution_context_rebinder
+                .clone(),
             effects: context.effects.clone(),
             http_client: context.http_client.clone(),
             test_effect_doubles: context.test_effect_doubles.clone(),
@@ -451,7 +629,8 @@ impl OwnedProgramExecutionContext {
         });
         context.execution_clock = self.execution_clock.clone();
         context.exception_trace_id = self.exception_trace_id.clone();
-        context.websocket_rebinder = self.websocket_rebinder.clone();
+        context.activation_execution_context_rebinder =
+            self.activation_execution_context_rebinder.clone();
         context.exception_error_sequence = self.exception_error_sequence.clone();
         context.local_call_stack = self.local_call_stack.clone();
         let mut context = match &self.runtime_assembly_target {

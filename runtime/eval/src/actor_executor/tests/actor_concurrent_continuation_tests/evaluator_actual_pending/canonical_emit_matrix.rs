@@ -680,14 +680,22 @@ async fn start_stream(
 ) -> (Value, ActorExecutionFrame) {
     let (frame, mut heap) = fixture.evaluator.actor_frame().await;
     let mut env = Env::new();
+    let actor = test_runtime::actor_context();
+    let test_effect_doubles = fixture.evaluator.interpreter.test_effect_double_context();
+    let rebinder = test_runtime::activation_execution_context_rebinder(
+        &actor,
+        runtime.clone(),
+        test_effect_doubles,
+        fixture.evaluator.interpreter.http_options.clone(),
+    );
     let context = program_context_with_stream(
         &fixture.evaluator.interpreter,
-        test_runtime::actor_context(),
+        actor,
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
         runtime,
     )
-    .with_websocket_capability_rebinder(test_runtime::websocket_rebinder())
+    .with_activation_execution_context_rebinder(rebinder)
     .with_runtime_assembly_target(fixture.target.clone());
     let mut eval = fixture.evaluator.eval_context_with(
         context,

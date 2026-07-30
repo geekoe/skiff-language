@@ -162,40 +162,6 @@ impl<'a> WebsocketCapabilityContext<'a> {
 
 pub type OwnedWebsocketCapabilityContext = WebsocketCapabilityContext<'static>;
 
-type WebsocketCapabilityRebind =
-    dyn for<'a> Fn(&'a str, Option<&'a str>) -> OwnedWebsocketCapabilityContext + Send + Sync;
-
-/// Rebuilds the WebSocket native capability when execution crosses into a provider activation.
-///
-/// The returned context is owned so provider unary and stream execution can retain it for their
-/// full lifetime without borrowing caller-local routing data.
-#[derive(Clone)]
-pub struct WebsocketCapabilityRebinder {
-    rebind: Arc<WebsocketCapabilityRebind>,
-}
-
-impl WebsocketCapabilityRebinder {
-    pub fn new<F>(rebind: F) -> Self
-    where
-        F: for<'a> Fn(&'a str, Option<&'a str>) -> OwnedWebsocketCapabilityContext
-            + Send
-            + Sync
-            + 'static,
-    {
-        Self {
-            rebind: Arc::new(rebind),
-        }
-    }
-
-    pub fn for_activation(
-        &self,
-        service_id: &str,
-        websocket_entry_id: Option<&str>,
-    ) -> OwnedWebsocketCapabilityContext {
-        (self.rebind)(service_id, websocket_entry_id)
-    }
-}
-
 pub use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorClient,
     ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorRemoveControlRequest,
@@ -382,6 +348,11 @@ impl TestEffectDoubleContext {
 
     pub fn next_test_effect_double(&self, target: &str) -> Option<TestEffectDouble> {
         self.inner.next_test_effect_double(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_same_request_context(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     pub fn ensure_fully_consumed(&self) -> Result<()> {

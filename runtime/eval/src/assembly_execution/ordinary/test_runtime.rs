@@ -41,9 +41,14 @@ use crate::{
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalRuntimeFactory, EvalRuntimeFactoryApi,
         HttpRuntimeOptions, TestEffectDouble, TestEffectDoubleContext, TestEffectDoubleContextApi,
-        WebsocketCapabilityContext, WebsocketCapabilityRebinder,
+        WebsocketCapabilityContext,
     },
     error::{Result, RuntimeError},
+    program_execution::{
+        ActivationExecutionContextRebinder, ActivationExecutionOperation,
+        OwnedActivationExecutionCapabilityBundle,
+    },
+    RuntimeAssemblyEvalTarget,
 };
 
 #[path = "test_runtime/scoped_execution.rs"]
@@ -84,28 +89,80 @@ pub(crate) fn websocket_context() -> WebsocketCapabilityContext<'static> {
     })
 }
 
-pub(crate) fn websocket_rebinder() -> WebsocketCapabilityRebinder {
-    WebsocketCapabilityRebinder::new(|service_id, websocket_entry_id| {
-        WebsocketCapabilityContext::new(TestWebsocket {
-            service_id: service_id.to_string(),
-            websocket_entry_id: websocket_entry_id.map(str::to_string),
-        })
-        .owned()
+pub(crate) fn activation_execution_context_rebinder(
+    request_actor: &ActorCapabilityContext<'_>,
+    stream_runtime: StreamRuntime,
+    test_effect_doubles: TestEffectDoubleContext,
+    http_options: HttpRuntimeOptions,
+) -> Arc<dyn ActivationExecutionContextRebinder> {
+    Arc::new(TestActivationExecutionContextRebinder {
+        request_actor: request_actor.owned(),
+        stream_runtime,
+        test_effect_doubles,
+        http_options,
     })
 }
 
 pub(crate) fn actor_context() -> ActorCapabilityContext<'static> {
-    ActorCapabilityContext::new(TestActor { trace_id: None })
+    ActorCapabilityContext::new(TestActor::request(None))
 }
 
 pub(crate) fn actor_context_with_trace(trace_id: &'static str) -> ActorCapabilityContext<'static> {
-    ActorCapabilityContext::new(TestActor {
-        trace_id: Some(trace_id),
-    })
+    ActorCapabilityContext::new(TestActor::request(Some(trace_id.to_string())))
 }
 
 pub(crate) fn effects_context() -> EffectDispatchContext {
     EffectDispatchContext::new(TestEffects)
+}
+
+struct TestActivationExecutionContextRebinder {
+    request_actor: OwnedActorCapabilityContext,
+    stream_runtime: StreamRuntime,
+    test_effect_doubles: TestEffectDoubleContext,
+    http_options: HttpRuntimeOptions,
+}
+
+impl ActivationExecutionContextRebinder for TestActivationExecutionContextRebinder {
+    fn rebind(
+        &self,
+        target: &RuntimeAssemblyEvalTarget,
+        _operation: &ActivationExecutionOperation,
+    ) -> Result<OwnedActivationExecutionCapabilityBundle> {
+        let actor =
+            ActorCapabilityContext::new(TestActor::for_activation(&self.request_actor, target))
+                .owned();
+        let service_id = target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id
+            .as_str();
+        let websocket_entry_id = target
+            .activation_context()
+            .websocket_entry_id()
+            .map(|entry| entry.as_str());
+        let websocket = WebsocketCapabilityContext::new(TestWebsocket {
+            service_id: service_id.to_string(),
+            websocket_entry_id: websocket_entry_id.map(str::to_string),
+        })
+        .owned();
+        let effects = effects_context();
+        let http_client = effects.http_client_context(
+            self.http_options.clone(),
+            self.stream_runtime.clone(),
+            self.test_effect_doubles.clone(),
+        );
+        Ok(OwnedActivationExecutionCapabilityBundle::new(
+            ConfigCapabilityContext::owned(&config_context()),
+            DbCapabilityContext::unavailable(),
+            FileCapabilitySource::new(TestFileSource),
+            websocket,
+            effects,
+            http_client,
+            actor.clone(),
+            actor,
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -753,7 +810,52 @@ impl FileSourceStreamApi for TestFileSourceStream {
 
 #[derive(Clone)]
 struct TestActor {
-    trace_id: Option<&'static str>,
+    service_id: String,
+    service_version: String,
+    request_id: String,
+    request_build_id: String,
+    runtime_id: String,
+    trace_id: Option<String>,
+    activation_identity: Option<ActivationIdentityControl>,
+}
+
+impl TestActor {
+    fn request(trace_id: Option<String>) -> Self {
+        Self {
+            service_id: "test-service".to_string(),
+            service_version: "1.0.0".to_string(),
+            request_id: "test-request".to_string(),
+            request_build_id: "test-build".to_string(),
+            runtime_id: "test-runtime".to_string(),
+            trace_id,
+            activation_identity: None,
+        }
+    }
+
+    fn for_activation(
+        request: &ActorCapabilityContext<'_>,
+        target: &RuntimeAssemblyEvalTarget,
+    ) -> Self {
+        let activation = target.activation_context();
+        let identity = activation.identity();
+        Self {
+            service_id: identity.deployment.service_id.clone(),
+            service_version: identity.deployment.contract_version.clone(),
+            request_id: request.request_id().to_string(),
+            request_build_id: activation
+                .implementation_package_build_id()
+                .as_str()
+                .to_string(),
+            runtime_id: request.runtime_id().to_string(),
+            trace_id: request.trace_id().map(str::to_string),
+            activation_identity: Some(ActivationIdentityControl {
+                assembly_identity: identity.assembly_identity.clone(),
+                generation: identity.assembly_generation,
+                runtime_replica_id: identity.runtime_replica_id.clone(),
+                deployment_revision: identity.deployment.deployment_revision.clone(),
+            }),
+        }
+    }
 }
 
 impl ActorCapabilityApi for TestActor {
@@ -766,22 +868,22 @@ impl ActorCapabilityApi for TestActor {
     }
 
     fn runtime_id(&self) -> &str {
-        "test-runtime"
+        &self.runtime_id
     }
     fn service_id(&self) -> &str {
-        "test-service"
+        &self.service_id
     }
     fn service_version(&self) -> &str {
-        "1.0.0"
+        &self.service_version
     }
     fn request_id(&self) -> &str {
-        "test-request"
+        &self.request_id
     }
     fn request_target(&self) -> &str {
         "test-service"
     }
     fn request_build_id(&self) -> &str {
-        "test-build"
+        &self.request_build_id
     }
     fn spawn_service_protocol_identity(&self) -> &str {
         ""
@@ -793,10 +895,10 @@ impl ActorCapabilityApi for TestActor {
         None
     }
     fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        None
+        self.activation_identity.as_ref()
     }
     fn trace_id(&self) -> Option<&str> {
-        self.trace_id
+        self.trace_id.as_deref()
     }
 
     fn get_or_create_actor<'a>(

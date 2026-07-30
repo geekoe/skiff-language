@@ -213,6 +213,9 @@ mod server_stream_fixture {
     pub(super) struct Fixture {
         pub(super) target: RuntimeAssemblyEvalTarget,
         pub(super) caller_addr: ExecutableAddr,
+        pub(super) provider: Arc<ActivationContext>,
+        pub(super) next_provider: Arc<ActivationContext>,
+        pub(super) operation: artifact::ContractOperationId,
     }
 
     struct Resolver {
@@ -368,6 +371,16 @@ mod server_stream_fixture {
             Vec::new(),
         )
         .expect("activation stream provider activation");
+        let next_provider = ActivationContext::new(
+            activation_identity(
+                assembly_identity.clone(),
+                SERVICE_ID,
+                "activation-stream-provider-r2",
+            ),
+            provider_ref.package_build_id.clone(),
+            Vec::new(),
+        )
+        .expect("second admitted activation stream provider");
         let binding = ActivationServiceBinding::new(
             artifact::ServiceRequirementKey {
                 caller_package_build_id: caller_ref.package_build_id.clone(),
@@ -391,6 +404,10 @@ mod server_stream_fixture {
         let activations = BTreeMap::from([
             (caller.activation_id().clone(), Arc::clone(&caller)),
             (provider.activation_id().clone(), Arc::clone(&provider)),
+            (
+                next_provider.activation_id().clone(),
+                Arc::clone(&next_provider),
+            ),
         ]);
         let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(Resolver {
             activations,
@@ -411,6 +428,9 @@ mod server_stream_fixture {
                 file: FileAddr::LoadedFileIndex(0),
                 executable: 0,
             },
+            provider,
+            next_provider,
+            operation: artifact::ContractOperationId::new(OPERATION_ID),
         }
     }
 
@@ -430,9 +450,59 @@ mod server_stream_fixture {
         target: RuntimeAssemblyEvalTarget,
         stream_runtime: crate::capabilities::StreamRuntime,
     ) -> ProgramExecutionContext<'a> {
-        let execution = test_runtime::execution_control();
+        execution_context_with_options(
+            interpreter,
+            target,
+            stream_runtime,
+            test_runtime::execution_control(),
+            true,
+        )
+    }
+
+    pub(super) fn execution_context_with_deadline<'a>(
+        interpreter: &Interpreter,
+        target: RuntimeAssemblyEvalTarget,
+        deadline: std::time::Instant,
+    ) -> ProgramExecutionContext<'a> {
+        execution_context_with_options(
+            interpreter,
+            target,
+            interpreter.stream_runtime.clone(),
+            test_runtime::execution_control_with_deadline(Some(deadline)),
+            true,
+        )
+    }
+
+    pub(super) fn execution_context_without_rebinder<'a>(
+        interpreter: &Interpreter,
+        target: RuntimeAssemblyEvalTarget,
+    ) -> ProgramExecutionContext<'a> {
+        execution_context_with_options(
+            interpreter,
+            target,
+            interpreter.stream_runtime.clone(),
+            test_runtime::execution_control(),
+            false,
+        )
+    }
+
+    fn execution_context_with_options<'a>(
+        interpreter: &Interpreter,
+        target: RuntimeAssemblyEvalTarget,
+        stream_runtime: crate::capabilities::StreamRuntime,
+        execution: skiff_runtime_capability_context::ExecutionControl<'static>,
+        install_rebinder: bool,
+    ) -> ProgramExecutionContext<'a> {
         let effects = test_runtime::effects_context();
-        ProgramExecutionContext::new(ProgramExecutionInput {
+        let actor = test_runtime::actor_context();
+        let test_effect_doubles = interpreter.test_effect_double_context();
+        let rebinder = test_runtime::activation_execution_context_rebinder(
+            &actor,
+            stream_runtime.clone(),
+            test_effect_doubles.clone(),
+            interpreter.http_options.clone(),
+        );
+        let context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: test_runtime::config_context(),
             db: DbCapabilityContext::unavailable(),
@@ -444,15 +514,19 @@ mod server_stream_fixture {
             http_client: effects.http_client_context(
                 interpreter.http_options.clone(),
                 stream_runtime,
-                interpreter.test_effect_double_context(),
+                test_effect_doubles.clone(),
             ),
-            test_effect_doubles: interpreter.test_effect_double_context(),
-            actor: test_runtime::actor_context(),
-            spawn: test_runtime::actor_context(),
+            test_effect_doubles,
+            actor: actor.clone(),
+            spawn: actor,
             request_heap_limits: RequestHeapLimits::default(),
         })
-        .with_websocket_capability_rebinder(test_runtime::websocket_rebinder())
-        .with_runtime_assembly_target(target)
+        .with_runtime_assembly_target(target);
+        if install_rebinder {
+            context.with_activation_execution_context_rebinder(rebinder)
+        } else {
+            context
+        }
     }
 
     fn provider_file() -> artifact::FileIrUnit {
@@ -733,6 +807,160 @@ mod server_stream_fixture {
             reason: artifact::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
         }
     }
+}
+
+fn exact_owner_target(
+    root: &RuntimeAssemblyEvalTarget,
+    owner: Arc<skiff_runtime_activation::ActivationContext>,
+) -> RuntimeAssemblyEvalTarget {
+    let request = root
+        .request_activation()
+        .switch_to(owner)
+        .expect("fixture owners share one admitted assembly generation");
+    root.with_request_activation(request)
+        .expect("fixture owner is present in the exact resolver")
+}
+
+#[tokio::test]
+async fn activation_owner_switch_rebinds_a_b_c_and_callback_return_as_one_request() {
+    use skiff_runtime_model::runtime_value::ActorRef;
+
+    let fixture = server_stream_fixture::fixture();
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let actor_frame_fixture = ActorFrameFixture::new();
+    let (actor_frame, _actor_heap) = actor_frame_fixture.frame().await;
+    let context = server_stream_fixture::execution_context_with_deadline(
+        &interpreter,
+        fixture.target.clone(),
+        deadline,
+    )
+    .with_actor_execution_frame(actor_frame);
+    let request_generation = context
+        .runtime_assembly_target()
+        .expect("root target")
+        .request_activation()
+        .generation();
+    let request_effects = context.test_effect_double_context();
+    let actor_ref = ActorRef::new(
+        "example.original-actor-owner",
+        "actor-type",
+        "actor-id-type",
+        "actor-id-v1",
+        b"actor-id".to_vec(),
+        "actor-id-hash",
+        Some(7),
+    );
+
+    let provider_target = exact_owner_target(&fixture.target, Arc::clone(&fixture.provider));
+    let provider = context
+        .switch_activation_owner(
+            provider_target,
+            crate::program_execution::ActivationExecutionOperation::service_call(
+                fixture.operation.clone(),
+            ),
+        )
+        .expect("A to B owner switch");
+    assert_eq!(provider.execution().deadline(), Some(deadline));
+    assert_eq!(
+        provider
+            .runtime_assembly_target()
+            .expect("provider target")
+            .request_activation()
+            .generation(),
+        request_generation
+    );
+    assert!(
+        provider
+            .test_effect_double_context()
+            .is_same_request_context(&request_effects),
+        "test case effects remain request-owned"
+    );
+    assert!(
+        provider.actor_execution_frame().is_none(),
+        "a provider never inherits its caller Actor frame"
+    );
+    assert!(
+        provider
+            .config_context()
+            .read_config_target(&fixture.caller_addr, "missing", &[], None)
+            .is_err(),
+        "an owner with no config stays unavailable"
+    );
+    assert!(
+        provider
+            .db_context()
+            .require_store("missing", "no DB metadata")
+            .is_err(),
+        "an owner with no DB metadata stays unavailable"
+    );
+
+    let next_target = exact_owner_target(&fixture.target, Arc::clone(&fixture.next_provider));
+    let next = provider
+        .switch_activation_owner(
+            next_target,
+            crate::program_execution::ActivationExecutionOperation::service_call(
+                fixture.operation.clone(),
+            ),
+        )
+        .expect("B to C owner switch");
+    assert!(Arc::ptr_eq(
+        next.runtime_assembly_target()
+            .expect("next provider target")
+            .activation_context(),
+        &fixture.next_provider,
+    ));
+
+    let receiver_request = next
+        .runtime_assembly_target()
+        .expect("next provider target")
+        .request_activation()
+        .restore_receiver();
+    let receiver_target = fixture
+        .target
+        .with_request_activation(receiver_request)
+        .expect("callback receiver target");
+    let returned = next
+        .switch_activation_owner(
+            receiver_target,
+            crate::program_execution::ActivationExecutionOperation::callback_method(
+                "callback:owner",
+            ),
+        )
+        .expect("callback returns to A owner");
+    assert!(Arc::ptr_eq(
+        returned
+            .runtime_assembly_target()
+            .expect("callback owner target")
+            .activation_context(),
+        fixture.target.activation_context(),
+    ));
+    assert_eq!(
+        actor_ref.service_id(),
+        "example.original-actor-owner",
+        "owner switching does not rewrite an existing ActorRef value"
+    );
+}
+
+#[test]
+fn activation_owner_switch_without_generation_pinned_rebinder_fails_closed() {
+    let fixture = server_stream_fixture::fixture();
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = server_stream_fixture::execution_context_without_rebinder(
+        &interpreter,
+        fixture.target.clone(),
+    );
+    let provider_target = exact_owner_target(&fixture.target, Arc::clone(&fixture.provider));
+    let error = match context.switch_activation_owner(
+        provider_target,
+        crate::program_execution::ActivationExecutionOperation::service_call(fixture.operation),
+    ) {
+        Ok(_) => panic!("missing rebinder must reject the owner switch"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, RuntimeError::InvalidArtifact(message) if message.contains("rebinder"))
+    );
 }
 
 struct NoopWake;

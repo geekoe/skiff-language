@@ -688,14 +688,12 @@ fn provider_execution_context<'a>(
     let provider_target = receiver
         .runtime_assembly_target()?
         .with_request_activation(target.provider_request().clone())?;
-    let provider = target.provider_activation();
-    let service_id = provider.identity().deployment.service_id.as_str();
-    let websocket_entry_id = provider.websocket_entry_id().map(|entry| entry.as_str());
-    Ok(receiver
-        .clone()
-        .with_provider_websocket_capability(service_id, websocket_entry_id)?
-        .with_runtime_assembly_target(provider_target)
-        .with_provider_service_stack_scope())
+    receiver.clone().switch_activation_owner(
+        provider_target,
+        crate::program_execution::ActivationExecutionOperation::service_call(
+            target.descriptor().operation_id.clone(),
+        ),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
