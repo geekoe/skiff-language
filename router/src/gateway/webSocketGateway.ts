@@ -29,7 +29,6 @@ import type {
   RuntimeBinaryDispatchResponseWithReceipt,
   RuntimeDispatchConnectionReceipt
 } from '../router/runtimeDispatcher.js';
-import type { RuntimeDispatchConnection } from '../router/runtimeRegistry.js';
 import {
   canonicalHttpHost,
   type RouterActiveAssemblySnapshot,
@@ -76,7 +75,6 @@ export interface AssemblyWebSocketRuntimeDispatcher {
       payloadBytes: Uint8Array;
     },
     timeoutMs: number,
-    connection: RuntimeDispatchConnection,
     options?: { signal?: AbortSignal }
   ): Promise<RuntimeBinaryDispatchResponseWithReceipt>;
   isRuntimeConnectionReceiptSender(
@@ -129,9 +127,6 @@ export interface AssemblyWebSocketGatewayOptions {
   >;
   generationLifecycle: WebSocketGenerationLifecycleRouter;
   runtimeConnectionSend: RuntimeConnectionSendSource;
-  selectRuntime(
-    binding: RuntimeAssemblyIngressBinding
-  ): RuntimeDispatchConnection | undefined;
   runtimeOwner(
     sender: WebSocket,
     serviceId: string
@@ -406,22 +401,6 @@ export class AssemblyWebSocketGateway {
     url: URL,
     signal: AbortSignal
   ): Promise<ConnectAccept> {
-    const runtime = this.options.selectRuntime(binding);
-    if (runtime === undefined) {
-      throw new GatewayError(
-        503,
-        'ProviderUnavailable',
-        'no healthy runtime owns the committed WebSocket deployment'
-      );
-    }
-    if (runtime.runtimeId === undefined) {
-      throw new GatewayError(
-        503,
-        'ProviderUnavailable',
-        'selected WebSocket runtime has no pinned replica identity'
-      );
-    }
-    connection.runtimeReplicaId = runtime.runtimeId;
     this.options.generationLifecycle.expectConnection({
       serviceId: connection.serviceId,
       assemblyIdentity: connection.assemblyIdentity,
@@ -447,9 +426,16 @@ export class AssemblyWebSocketGateway {
           payloadBytes: new Uint8Array()
         },
         effectiveWebSocketTimeoutMs(this.requestTimeoutMs, binding.timeoutMs),
-        runtime,
         { signal }
       );
+    if (response.connectionReceipt.runtimeId === undefined) {
+      throw new GatewayError(
+        503,
+        'ProviderUnavailable',
+        'selected WebSocket runtime has no pinned replica identity'
+      );
+    }
+    connection.runtimeReplicaId = response.connectionReceipt.runtimeId;
     connection.runtimeReceipt = response.connectionReceipt;
     this.lifecycle.bindRuntime(connection.id, response.connectionReceipt);
     this.options.generationLifecycle.requireAcquired(

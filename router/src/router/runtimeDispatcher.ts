@@ -200,6 +200,11 @@ export interface RuntimeAssemblyWebSocketJsonRpcDispatchOptions {
   signal: AbortSignal;
 }
 
+export type RuntimeAssemblyWebSocketConnectDispatchOptions = Pick<
+  RuntimeBinaryDispatchOptions,
+  'signal'
+>;
+
 const runtimeDispatchConnectionReceiptBrand: unique symbol = Symbol(
   'RuntimeDispatchConnectionReceipt'
 );
@@ -566,8 +571,7 @@ export class RuntimeDispatcher {
       payloadBytes: Uint8Array;
     },
     timeoutMs: number,
-    connection: RuntimeDispatchConnection,
-    options: RuntimeBinaryDispatchOptions = {}
+    options: RuntimeAssemblyWebSocketConnectDispatchOptions = {}
   ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
     const validation = validateRuntimeAssemblyRequestStartFrameWireHeader(
       request.header
@@ -593,6 +597,9 @@ export class RuntimeDispatcher {
         )
       );
     }
+    const connection = this.options.registry.pickDispatchConnection(
+      request.header
+    );
     return this.dispatchBinaryWithConnection(
       request,
       timeoutMs,

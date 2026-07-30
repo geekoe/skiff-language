@@ -41,12 +41,15 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
     const frameSender = {
       sendFrame: vi.fn()
     } satisfies RuntimeFrameSender;
-    const dispatchRegistry = registry();
+    const dispatchRegistry = registry(runtime);
     const pickDispatchConnection = vi
       .fn<RuntimeDispatchRegistry['pickDispatchConnection']>()
-      .mockImplementation(() => {
-        throw new Error('receipt dispatch must not reselect a runtime');
-      });
+      .mockImplementation((request) =>
+        runtimeConnection(
+          request as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+          runtime
+        )
+      );
     dispatchRegistry.pickDispatchConnection = pickDispatchConnection;
     const dispatcher = new RuntimeDispatcher({
       registry: dispatchRegistry,
@@ -56,8 +59,7 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
     const connect = connectHeader('connect-receipt');
     const connectResponse = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: connect, payloadBytes: new Uint8Array() },
-      1_000,
-      runtimeConnection(connect, runtime)
+      1_000
     );
     dispatcher.resolveRequest(runtime, {
       header: {
@@ -98,13 +100,13 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
       },
       payloadBytes: Buffer.from('null', 'utf8')
     });
-    expect(pickDispatchConnection).not.toHaveBeenCalled();
+    expect(pickDispatchConnection).toHaveBeenCalledOnce();
   });
 
   it('does not classify a method-bearing request as a pending connect acquire', async () => {
     const runtime = socket();
     const dispatcher = new RuntimeDispatcher({
-      registry: registry(),
+      registry: registry(runtime),
       frameSender: { sendFrame: vi.fn() },
       maxConcurrency: 64
     });
@@ -114,11 +116,7 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
         header: methodRequest as unknown as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
         payloadBytes: new Uint8Array()
       },
-      1_000,
-      runtimeConnection(
-        methodRequest as unknown as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-        runtime
-      )
+      1_000
     );
 
     try {
@@ -676,11 +674,17 @@ interface DispatcherHarness {
   frames: RecordedFrame[];
 }
 
+const selectHarnessRuntime = new WeakMap<
+  RuntimeDispatcher,
+  (runtime: WebSocket) => void
+>();
+
 function createHarness(
   onFrame?: (frame: RecordedFrame, dispatcher: RuntimeDispatcher) => void,
   maxConcurrency = 64
 ): DispatcherHarness {
   const frames: RecordedFrame[] = [];
+  let selectedRuntime: WebSocket | undefined;
   let dispatcher: RuntimeDispatcher;
   const frameSender: RuntimeFrameSender = {
     sendFrame(
@@ -694,9 +698,23 @@ function createHarness(
     }
   };
   dispatcher = new RuntimeDispatcher({
-    registry: registry(),
+    registry: {
+      setInFlightCounter: () => undefined,
+      pickDispatchConnection: (request) =>
+        selectedRuntime === undefined
+          ? null
+          : runtimeConnection(
+              request as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+              selectedRuntime
+            ),
+      refreshAllRuntimeStates: () => undefined,
+      refreshRuntimeStatesForRequest: () => undefined
+    },
     frameSender,
     maxConcurrency
+  });
+  selectHarnessRuntime.set(dispatcher, (runtime) => {
+    selectedRuntime = runtime;
   });
   return { dispatcher, frames };
 }
@@ -707,10 +725,10 @@ async function acquireReceipt(
   requestId: string
 ): Promise<RuntimeDispatchConnectionReceipt> {
   const header = connectHeader(requestId);
+  selectHarnessRuntime.get(dispatcher)?.(runtime);
   const pending = dispatcher.dispatchAssemblyWebSocketConnect(
     { header, payloadBytes: new Uint8Array() },
-    1_000,
-    runtimeConnection(header, runtime)
+    1_000
   );
   dispatcher.resolveRequest(runtime, {
     header: {
@@ -770,10 +788,14 @@ function cancelFrames(
     );
 }
 
-function registry(): RuntimeDispatchRegistry {
+function registry(runtime: WebSocket): RuntimeDispatchRegistry {
   return {
     setInFlightCounter: () => undefined,
-    pickDispatchConnection: () => null,
+    pickDispatchConnection: (request) =>
+      runtimeConnection(
+        request as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        runtime
+      ),
     refreshAllRuntimeStates: () => undefined,
     refreshRuntimeStatesForRequest: () => undefined
   };

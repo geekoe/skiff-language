@@ -196,8 +196,6 @@ const webSocketGateway = new AssemblyWebSocketGateway({
   rpcBridge: webSocketRpcBridge,
   generationLifecycle,
   runtimeConnectionSend: runtimeEndpoint,
-  selectRuntime: (binding) =>
-    registry.actorRuntimeCandidates(binding.deployment.serviceId)[0],
   runtimeOwner: (sender, serviceId) => {
     const replicaId = registry.replicaIdForConnection(sender);
     const replica =

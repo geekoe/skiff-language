@@ -41,16 +41,28 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const sender = {
       sendFrame: vi.fn()
     } satisfies RuntimeFrameSender;
+    const dispatchRegistry = registry(runtime);
+    const pickDispatchConnection = vi.spyOn(
+      dispatchRegistry,
+      'pickDispatchConnection'
+    );
     const dispatcher = new RuntimeDispatcher({
-      registry: registry(),
+      registry: dispatchRegistry,
       frameSender: sender,
       maxConcurrency: 64
     });
     const header = connectHeader();
     const responsePromise = dispatcher.dispatchAssemblyWebSocketConnect(
       { header, payloadBytes: new Uint8Array() },
-      1_000,
-      runtimeConnection(header, runtime)
+      1_000
+    );
+    expect(pickDispatchConnection).toHaveBeenCalledOnce();
+    expect(pickDispatchConnection).toHaveBeenCalledWith(header);
+    expect(sender.sendFrame).toHaveBeenCalledWith(
+      runtime,
+      header,
+      new Uint8Array(),
+      expect.any(Function)
     );
 
     const tuple = {
@@ -96,15 +108,14 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
   it('rejects a non-WebSocket terminal response on the current connect lane', async () => {
     const runtime = socket();
     const dispatcher = new RuntimeDispatcher({
-      registry: registry(),
+      registry: registry(runtime),
       frameSender: { sendFrame: vi.fn() },
       maxConcurrency: 64
     });
     const header = connectHeader();
     const response = dispatcher.dispatchAssemblyWebSocketConnect(
       { header, payloadBytes: new Uint8Array() },
-      1_000,
-      runtimeConnection(header, runtime)
+      1_000
     );
 
     dispatcher.resolveRequest(runtime, {
@@ -119,18 +130,48 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     await expect(response).rejects.toThrow(/websocketConnect is required/);
   });
 
+  it('fails closed before sending when registry selection lacks immutable authority', async () => {
+    const runtime = socket();
+    const sender = {
+      sendFrame: vi.fn()
+    } satisfies RuntimeFrameSender;
+    const dispatcher = new RuntimeDispatcher({
+      registry: {
+        ...registry(runtime),
+        pickDispatchConnection: () => ({
+          runtimeId: 'runtime-one',
+          ws: runtime
+        })
+      },
+      frameSender: sender,
+      maxConcurrency: 64
+    });
+
+    await expect(
+      dispatcher.dispatchAssemblyWebSocketConnect(
+        {
+          header: connectHeader('connect-missing-authority'),
+          payloadBytes: new Uint8Array()
+        },
+        1_000
+      )
+    ).rejects.toThrow(
+      'RuntimeAssembly dispatch selection is missing immutable spawn authority'
+    );
+    expect(sender.sendFrame).not.toHaveBeenCalled();
+  });
+
   it('rejects saturated pinned WebSocket connects and admits after terminal release', async () => {
     const runtime = socket();
     const dispatcher = new RuntimeDispatcher({
-      registry: registry(),
+      registry: registry(runtime),
       frameSender: { sendFrame: vi.fn() },
       maxConcurrency: 1
     });
     const firstHeader = connectHeader('connect-capacity-first');
     const first = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: firstHeader, payloadBytes: new Uint8Array() },
-      1_000,
-      runtimeConnection(firstHeader, runtime)
+      1_000
     );
 
     await expect(
@@ -139,8 +180,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
           header: connectHeader('connect-capacity-overload'),
           payloadBytes: new Uint8Array()
         },
-        1_000,
-        runtimeConnection(connectHeader('connect-capacity-overload'), runtime)
+        1_000
       )
     ).rejects.toThrow(/maxConcurrency 1/);
 
@@ -159,8 +199,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const reusedHeader = connectHeader('connect-capacity-reused');
     const reused = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: reusedHeader, payloadBytes: new Uint8Array() },
-      1_000,
-      runtimeConnection(reusedHeader, runtime)
+      1_000
     );
     dispatcher.resolveRequest(runtime, {
       header: {
@@ -178,10 +217,14 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
   });
 });
 
-function registry(): RuntimeDispatchRegistry {
+function registry(runtime: WebSocket): RuntimeDispatchRegistry {
   return {
     setInFlightCounter: () => undefined,
-    pickDispatchConnection: () => null,
+    pickDispatchConnection: (request) =>
+      runtimeConnection(
+        request as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        runtime
+      ),
     refreshAllRuntimeStates: () => undefined,
     refreshRuntimeStatesForRequest: () => undefined
   };

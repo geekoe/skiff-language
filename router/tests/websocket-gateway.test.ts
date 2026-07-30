@@ -26,7 +26,6 @@ import type {
   RuntimeBinaryDispatchResponseWithReceipt,
   RuntimeDispatchConnectionReceipt
 } from '../src/router/runtimeDispatcher.js';
-import type { RuntimeDispatchConnection } from '../src/router/runtimeRegistry.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
@@ -436,10 +435,6 @@ async function createFixture(input: {
     generationLifecycle:
       generation as unknown as WebSocketGenerationLifecycleRouter,
     runtimeConnectionSend: send,
-    selectRuntime: () => ({
-      runtimeId: owners.get(runtime)!.replicaId,
-      ws: runtime
-    }),
     runtimeOwner: (sender, serviceId) =>
       serviceId === undefined || serviceId === SERVICE_ID
         ? owners.get(sender)
@@ -531,14 +526,13 @@ class FakeDispatcher implements AssemblyWebSocketRuntimeDispatcher {
       header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
       payloadBytes: Uint8Array;
     },
-    _timeoutMs: number,
-    connection: RuntimeDispatchConnection
+    _timeoutMs: number
   ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
     this.requests.push(request.header);
     const receipt = Object.freeze({
-      runtimeId: connection.runtimeId
+      runtimeId: 'runtime-one'
     }) as RuntimeDispatchConnectionReceipt;
-    this.senderByReceipt.set(receipt, connection.ws);
+    this.senderByReceipt.set(receipt, this.runtime);
     this.generation.acquire(
       request.header.websocketConnect.connectionId,
       receipt
