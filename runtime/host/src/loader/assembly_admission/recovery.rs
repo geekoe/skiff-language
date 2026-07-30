@@ -5,16 +5,19 @@ impl AssemblyAdmissionController {
     ///
     /// Pending activation data is validated by the canonical store reader but is not
     /// activated here. Any staged heap state from the previous session is discarded.
-    pub(crate) async fn recover_committed<R>(
+    pub(crate) async fn recover_committed<R, C>(
         &self,
         environment: &str,
         generation: u64,
         assembly: &RuntimeAssemblyRef,
+        config_snapshot: &RuntimeConfigSnapshotRef,
         resolver: &R,
+        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let _reload = self.reload.lock().await;
         self.discard_transient_for_reconnect()?;
@@ -24,11 +27,14 @@ impl AssemblyAdmissionController {
             .map_err(anyhow::Error::msg)?;
         skiff_artifact_model::validate_runtime_assembly_ref(assembly)
             .map_err(anyhow::Error::msg)?;
+        skiff_artifact_model::validate_runtime_config_snapshot_ref(config_snapshot)
+            .map_err(anyhow::Error::msg)?;
 
         let committed = CommittedAssembly {
             environment: environment.to_string(),
             generation,
             assembly: assembly.clone(),
+            config_snapshot: config_snapshot.clone(),
         };
         self.validate_recovery_transition(&committed)?;
 
@@ -37,7 +43,9 @@ impl AssemblyAdmissionController {
             .resolve_started_exact_candidate(
                 generation,
                 assembly,
+                config_snapshot,
                 resolver,
+                config_snapshot_resolver,
                 "committed RuntimeAssembly recovery resolution failed",
                 service_db,
                 environment,
@@ -71,6 +79,13 @@ impl AssemblyAdmissionController {
             }
             if durable.generation == current.generation && current.assembly != durable.assembly {
                 anyhow::bail!("durable committed assembly changed without generation advance");
+            }
+            if durable.generation == current.generation
+                && current.config_snapshot != durable.config_snapshot
+            {
+                anyhow::bail!(
+                    "durable committed config snapshot changed without generation advance"
+                );
             }
         }
         Ok(())

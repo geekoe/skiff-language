@@ -3,10 +3,10 @@ use std::sync::{Arc, RwLock};
 use anyhow::Context;
 use skiff_artifact_model::{
     AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyActivationServiceDb,
-    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, DeploymentPolicy,
-    GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayEntryProtocolSurface, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
-    IngressProtocol, IngressSelector, RuntimeAssembly, RuntimeAssemblyRef, ServiceContractRef,
+    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GatewayAdapterKind,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayProtocolSurface, GatewayWebSocketRpcProfile, IngressProtocol, IngressSelector,
+    RuntimeAssembly, RuntimeAssemblyRef, RuntimeConfigSnapshotRef, ServiceContractRef,
     ServiceDeploymentRef, ServiceIngressKey, WebSocketEntryId,
 };
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
@@ -38,6 +38,7 @@ mod recovery;
 #[derive(Debug)]
 pub(crate) struct ActiveAssembly {
     generation: u64,
+    config_snapshot: RuntimeConfigSnapshotRef,
     admitted_at: OffsetDateTime,
     candidate: Arc<AssemblyLinkedCandidate>,
     contexts: Arc<ActiveAssemblyContextSet>,
@@ -46,6 +47,7 @@ pub(crate) struct ActiveAssembly {
 #[derive(Debug)]
 struct PreparedAssembly {
     generation: u64,
+    config_snapshot: RuntimeConfigSnapshotRef,
     candidate: Arc<AssemblyLinkedCandidate>,
     contexts: Arc<ActiveAssemblyContextSet>,
 }
@@ -57,6 +59,7 @@ struct AssemblyTransition {
     expected_generation: u64,
     candidate_generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug)]
@@ -70,6 +73,7 @@ struct CommittedAssembly {
     environment: String,
     generation: u64,
     assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 /// One request-entry route pinned to the exact active generation used for lookup.
@@ -79,7 +83,6 @@ pub(crate) struct ActiveAssemblyRoute {
     ingress_key: ServiceIngressKey,
     entry: Arc<LinkedGatewayEntry>,
     activation: Arc<ActivationContext>,
-    policy: DeploymentPolicy,
 }
 
 /// Immutable committed-assembly snapshot for one Actor owner execution.
@@ -111,6 +114,15 @@ impl ActiveActorExecutionRoute {
             .contexts
             .db_source(self.activation.activation_id())
             .ok_or_else(|| anyhow::anyhow!("Actor activation has no DB capability source"))
+    }
+
+    pub(crate) fn config_views(
+        &self,
+    ) -> anyhow::Result<Arc<super::config_snapshot::ActivationConfigViews>> {
+        self.active
+            .contexts
+            .config_views(&self.activation.identity().deployment)
+            .ok_or_else(|| anyhow::anyhow!("Actor activation has no scoped config views"))
     }
 }
 
@@ -145,10 +157,6 @@ impl ActiveAssemblyRoute {
 
     pub(crate) fn protocol_surface(&self) -> &GatewayEntryProtocolSurface {
         self.entry.protocol_surface()
-    }
-
-    pub(crate) fn deployment_policy(&self) -> &DeploymentPolicy {
-        &self.policy
     }
 
     pub(crate) fn service_protocol_identity(
@@ -237,7 +245,6 @@ impl ActiveAssemblyRoute {
             },
             entry: Arc::clone(&sibling.linked_entry),
             activation: Arc::clone(&self.activation),
-            policy: self.policy.clone(),
         })
     }
 
@@ -324,6 +331,15 @@ impl ActiveAssemblyRoute {
             .db_source(self.activation.activation_id())
             .ok_or_else(|| anyhow::anyhow!("active activation has no DB capability source"))
     }
+
+    pub(crate) fn config_views(
+        &self,
+    ) -> anyhow::Result<Arc<super::config_snapshot::ActivationConfigViews>> {
+        self.active
+            .contexts
+            .config_views(self.deployment())
+            .ok_or_else(|| anyhow::anyhow!("active activation has no scoped config views"))
+    }
 }
 
 impl ActiveAssembly {
@@ -333,6 +349,10 @@ impl ActiveAssembly {
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub(crate) fn config_snapshot(&self) -> &RuntimeConfigSnapshotRef {
+        &self.config_snapshot
     }
 
     pub(crate) fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
@@ -466,7 +486,9 @@ impl AssemblyAdmissionController {
         );
 
         let prepared = self
-            .build_started_candidate(generation, &identity, assembly, resolver, None, None)
+            .build_started_candidate(
+                generation, &identity, assembly, resolver, None, None, None, None,
+            )
             .await?;
         let active = self.publish(generation, identity, prepared)?;
         info!(
@@ -485,10 +507,25 @@ impl AssemblyAdmissionController {
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
         environment: Option<&str>,
+        config_snapshot_ref: Option<&RuntimeConfigSnapshotRef>,
+        config_snapshot: Option<&skiff_runtime_config_snapshot::RuntimeConfigSnapshot>,
     ) -> anyhow::Result<PreparedAssembly>
     where
         R: RuntimeAssemblyContentResolver + Sync + ?Sized,
     {
+        let config_snapshot_ref = match (config_snapshot_ref, config_snapshot) {
+            (Some(reference), Some(snapshot)) if snapshot.snapshot_ref() == reference => {
+                reference.clone()
+            }
+            (Some(_), Some(_)) => {
+                anyhow::bail!("resolved RuntimeConfigSnapshot content mismatches exact ref")
+            }
+            #[cfg(test)]
+            (None, None) => skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref(),
+            _ => anyhow::bail!(
+                "Runtime activation requires one exact RuntimeConfigSnapshot ref and record"
+            ),
+        };
         let hydrated = match RuntimeAssemblyLoader::new(resolver).load(assembly) {
             Ok(hydrated) => hydrated,
             Err(error) => {
@@ -539,6 +576,7 @@ impl AssemblyAdmissionController {
             &self.db_provider,
             service_db,
             environment,
+            config_snapshot,
         ) {
             Ok(contexts) => Arc::new(contexts),
             Err(error) => {
@@ -554,6 +592,7 @@ impl AssemblyAdmissionController {
         };
         Ok(PreparedAssembly {
             generation,
+            config_snapshot: config_snapshot_ref,
             candidate,
             contexts,
         })
@@ -609,16 +648,11 @@ impl AssemblyAdmissionController {
             .contexts
             .activation_for_deployment(entry.owner())
             .ok_or_else(|| anyhow::anyhow!("active assembly gateway has no activation context"))?;
-        let linked_activation = active
-            .activation(entry.owner())
-            .ok_or_else(|| anyhow::anyhow!("active assembly gateway has no activation template"))?;
-        let policy = linked_activation.deployment().policy.clone();
         Ok(Some(ActiveAssemblyRoute {
             active,
             ingress_key: key.clone(),
             entry,
             activation,
-            policy,
         }))
     }
 
@@ -712,6 +746,7 @@ impl AssemblyAdmissionController {
         let admitted_at = OffsetDateTime::now_utc();
         let active = Arc::new(ActiveAssembly {
             generation,
+            config_snapshot: prepared.config_snapshot,
             admitted_at,
             candidate: prepared.candidate,
             contexts: prepared.contexts,
@@ -740,30 +775,39 @@ impl AssemblyAdmissionController {
 impl RuntimeHost {
     /// Applies one router-coordinated activation transition through the exact
     /// production record resolver boundary.
-    pub async fn apply_assembly_activation_control<R>(
+    pub async fn apply_assembly_activation_control<R, C>(
         &self,
         control: AssemblyActivationControl,
         resolver: &R,
+        config_snapshot_resolver: &C,
     ) -> anyhow::Result<Option<AssemblyActivationControl>>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
-        self.apply_bootstrapped_assembly_activation_control(control, resolver, None)
-            .await
+        self.apply_bootstrapped_assembly_activation_control(
+            control,
+            resolver,
+            config_snapshot_resolver,
+            None,
+        )
+        .await
     }
 
     /// Production activation with the connection bootstrap's fixed DB transport binding.
-    pub async fn apply_bootstrapped_assembly_activation_control<R>(
+    pub async fn apply_bootstrapped_assembly_activation_control<R, C>(
         &self,
         control: AssemblyActivationControl,
         resolver: &R,
+        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
     ) -> anyhow::Result<Option<AssemblyActivationControl>>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         self.assembly_admission
-            .apply_activation_control(control, resolver, service_db)
+            .apply_activation_control(control, resolver, config_snapshot_resolver, service_db)
             .await
     }
 
@@ -881,11 +925,15 @@ fn publish_committed_locked(
     let identity = prepared.candidate.assembly().assembly_identity.clone();
     if prepared.generation != committed.generation
         || identity != committed.assembly.assembly_identity
+        || prepared.config_snapshot != committed.config_snapshot
     {
-        anyhow::bail!("prepared assembly does not match committed publication tuple");
+        anyhow::bail!(
+            "prepared assembly/config snapshot does not match committed publication tuple"
+        );
     }
     let active = Arc::new(ActiveAssembly {
         generation: prepared.generation,
+        config_snapshot: prepared.config_snapshot,
         admitted_at,
         candidate: prepared.candidate,
         contexts: prepared.contexts,

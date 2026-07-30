@@ -705,7 +705,6 @@ mod server_stream_fixture {
             service_requirements: Vec::new(),
             runtime_requirements: artifact::PackageRuntimeRequirements {
                 config: Vec::new(),
-                state: Vec::new(),
                 resources: Vec::new(),
                 runtime_capabilities: Vec::new(),
             },
@@ -718,14 +717,6 @@ mod server_stream_fixture {
     fn activation_bindings() -> ActivationOwnedBindings {
         ActivationOwnedBindings {
             resource_bindings: Vec::new(),
-            policy: artifact::DeploymentPolicy {
-                timeout_ms: Some(1_000),
-                resources: artifact::ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "test".to_string(),
-            },
         }
     }
 

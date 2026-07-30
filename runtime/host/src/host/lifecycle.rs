@@ -45,7 +45,9 @@ impl RuntimeHost {
         environment: &str,
         generation: u64,
         assembly: &skiff_artifact_model::RuntimeAssemblyRef,
+        config_snapshot: &skiff_artifact_model::RuntimeConfigSnapshotRef,
         resolver: &skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
+        config_snapshot_resolver: &skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
         service_db: &skiff_artifact_model::AssemblyActivationServiceDb,
     ) -> Result<()> {
         if environment != self.environment {
@@ -66,7 +68,9 @@ impl RuntimeHost {
                 environment,
                 generation,
                 assembly,
+                config_snapshot,
                 resolver,
+                config_snapshot_resolver,
                 Some(service_db),
             )
             .await

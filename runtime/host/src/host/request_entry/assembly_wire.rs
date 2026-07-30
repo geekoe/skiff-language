@@ -57,6 +57,7 @@ pub(super) struct AdmittedSpawnRequest {
     pub(super) target: RuntimeAssemblySpawnTarget,
     pub(super) activation: Arc<ActivationContext>,
     pub(super) execution_image: Arc<AssemblyExecutionImage>,
+    pub(super) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     pub(super) db_source: DbCapabilitySource,
     pub(super) service_protocol_identity: String,
 }
@@ -196,7 +197,7 @@ impl RuntimeHost {
         };
         let route = self.lookup_active_assembly_request_route(&key)?;
         validate_route(&header, &selector, &route)?;
-        header.deadline = effective_deadline(&header, &route)?;
+        header.deadline = effective_deadline(&header)?;
         if header
             .deadline
             .as_ref()
@@ -241,11 +242,8 @@ impl RuntimeHost {
                 profile,
             )?;
         validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
-        header.deadline = effective_request_deadline(
-            header.deadline.as_ref(),
-            resolved.method_route.deployment_policy().timeout_ms,
-            "WebSocket JSON-RPC",
-        )?;
+        header.deadline =
+            effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
         Ok(AdmittedWebSocketJsonRpcRequest {
             resolved,
             header,
@@ -322,9 +320,14 @@ impl RuntimeHost {
                 target: header.invocation.target.clone(),
                 message: "spawn activation has no DB capability source".to_string(),
             })?;
-        let policy = linked_activation.deployment().policy.clone();
-        header.deadline =
-            effective_request_deadline(header.deadline.as_ref(), policy.timeout_ms, "spawn")?;
+        let config_views = active
+            .contexts()
+            .config_views(&header.routing.deployment)
+            .ok_or_else(|| RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: "spawn activation has no scoped config views".to_string(),
+            })?;
+        header.deadline = effective_request_deadline(header.deadline.as_ref(), "spawn")?;
         if header
             .deadline
             .as_ref()
@@ -345,6 +348,7 @@ impl RuntimeHost {
             target,
             activation,
             execution_image,
+            config_views,
             db_source,
             service_protocol_identity: linked_activation
                 .deployment()
@@ -368,7 +372,7 @@ impl RuntimeHost {
         };
         let route = self.lookup_active_assembly_request_route(&key)?;
         validate_route(header, &selector, &route)?;
-        effective_deadline(header, &route)
+        effective_deadline(header)
     }
 }
 
@@ -745,18 +749,12 @@ fn validate_route(
 
 fn effective_deadline(
     header: &RuntimeAssemblyRequestStartFrameHeader,
-    route: &ActiveAssemblyRoute,
 ) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
-    effective_request_deadline(
-        header.deadline.as_ref(),
-        route.deployment_policy().timeout_ms,
-        "HTTP gateway",
-    )
+    effective_request_deadline(header.deadline.as_ref(), "HTTP gateway")
 }
 
 fn effective_request_deadline(
     deadline: Option<&RuntimeAssemblyRequestDeadlineFrameHeader>,
-    deployment_timeout_ms: Option<u64>,
     request_kind: &str,
 ) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
     let wall_now = OffsetDateTime::now_utc();
@@ -775,22 +773,19 @@ fn effective_request_deadline(
         };
         candidates.push(remaining_ms);
     }
-    if let Some(timeout_ms) = deployment_timeout_ms {
-        candidates.push(timeout_ms);
-    }
     let Some(timeout_ms) = candidates.into_iter().min() else {
         return Ok(None);
     };
     let timeout_i64 = i64::try_from(timeout_ms).map_err(|_| {
         RuntimeError::Decode(format!(
-            "{request_kind} deployment deadline is not representable by the Host"
+            "{request_kind} deadline is not representable by the Host"
         ))
     })?;
     let expires_at = wall_now
         .checked_add(time::Duration::milliseconds(timeout_i64))
         .ok_or_else(|| {
             RuntimeError::Decode(format!(
-                "{request_kind} deployment deadline is not representable by the Host"
+                "{request_kind} deadline is not representable by the Host"
             ))
         })?
         .format(&Rfc3339)

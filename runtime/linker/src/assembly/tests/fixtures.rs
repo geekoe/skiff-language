@@ -14,9 +14,9 @@ use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
     CanonicalPackageLinkPlan, ContractDiagnosticText, ContractOperationId, ContractRequirement,
     DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr, ExprIr,
-    ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, GatewayAdapterArg, GatewayAdapterKind,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, ExecutableBody,
+    ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr, ExprIr, ExprRefIr,
+    FileIrRef, FileIrUnit, FunctionTypeParamIr, GatewayAdapterArg, GatewayAdapterKind,
     GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayIngressBinding,
@@ -28,11 +28,11 @@ use skiff_artifact_model::{
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
     PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
     PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, ResourceBinding,
-    ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate, ServiceCallRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding, SlotLayout,
-    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
-    TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    RuntimeAssembly, ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement,
+    ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, SyntheticInstructionSiteReason,
+    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -1099,7 +1099,6 @@ fn package(
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -1249,7 +1248,6 @@ fn deployment(
             resource_ref: format!("queue:{owner}"),
         }],
         runtime_capability_bindings: Vec::new(),
-        policy: policy(owner),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!("Cycle {owner}"),
             notes: BTreeMap::new(),
@@ -1294,7 +1292,6 @@ fn activation_template(
         deployment: reference.clone(),
         implementation_package_build_id: deployment.implementation.package_build_id.clone(),
         resource_bindings: deployment.resource_bindings.clone(),
-        policy: deployment.policy.clone(),
     }
 }
 
@@ -1441,16 +1438,5 @@ fn no_effects() -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_suspend: false,
-    }
-}
-
-fn policy(owner: &str) -> DeploymentPolicy {
-    DeploymentPolicy {
-        timeout_ms: Some(1_000),
-        resources: ResourcePolicy {
-            cpu_millis: 100,
-            memory_bytes: 1_024,
-        },
-        principal: format!("service:{owner}"),
     }
 }

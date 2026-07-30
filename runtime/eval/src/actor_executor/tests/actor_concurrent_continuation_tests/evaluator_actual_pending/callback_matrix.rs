@@ -197,7 +197,6 @@ pub(super) fn private_package(
         service_requirements: Vec::new(),
         runtime_requirements: artifact::PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -289,14 +288,6 @@ fn activation(
         package_build_id,
         ActivationOwnedBindings {
             resource_bindings: Vec::new(),
-            policy: artifact::DeploymentPolicy {
-                timeout_ms: Some(1_000),
-                resources: artifact::ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "test".to_string(),
-            },
         },
         Vec::new(),
     )

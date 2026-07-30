@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, ContractOperationId, DeploymentPolicy,
-    GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageBuildId, ResourceBinding,
-    ServiceBindingTemplate, ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirementKey, WebSocketEntryId,
+    ActivationTemplate, AssemblyIdentity, ContractOperationId, GatewayEntryIdentity,
+    GatewayEntryKey, IngressSelector, PackageBuildId, ResourceBinding, ServiceBindingTemplate,
+    ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey,
+    WebSocketEntryId,
 };
 
 use crate::capability::CallbackCapabilityTable;
@@ -59,7 +59,6 @@ impl ActivationIdentity {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActivationOwnedBindings {
     pub resource_bindings: Vec<ResourceBinding>,
-    pub policy: DeploymentPolicy,
 }
 
 /// The exact compiler-owned WebSocket entry admitted for one service activation.
@@ -283,7 +282,6 @@ impl ActivationContext {
             activation_template.implementation_package_build_id.clone(),
             ActivationOwnedBindings {
                 resource_bindings: activation_template.resource_bindings.clone(),
-                policy: activation_template.policy.clone(),
             },
             websocket_entry,
             service_bindings,

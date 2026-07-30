@@ -47,17 +47,20 @@ impl AssemblyAdmissionController {
         Ok(())
     }
 
-    pub(super) async fn resolve_started_exact_candidate<R>(
+    pub(super) async fn resolve_started_exact_candidate<R, C>(
         &self,
         generation: u64,
         reference: &RuntimeAssemblyRef,
+        config_snapshot_reference: &RuntimeConfigSnapshotRef,
         resolver: &R,
+        config_snapshot_resolver: &C,
         resolution_context: &'static str,
         service_db: Option<&AssemblyActivationServiceDb>,
         environment: &str,
     ) -> Result<PreparedAssembly, (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + ?Sized,
     {
         let identity = reference.assembly_identity.clone();
         let assembly = resolver
@@ -83,6 +86,22 @@ impl AssemblyAdmissionController {
                 return Err((AssemblyActivationRejectReason::Resolve, error.into()));
             }
         }
+        let config_snapshot = config_snapshot_resolver
+            .resolve(config_snapshot_reference)
+            .map_err(|error| {
+                let _ = self.fail_candidate(generation, &identity, AssemblyCandidateStage::Load);
+                (
+                    AssemblyActivationRejectReason::Resolve,
+                    anyhow::anyhow!("exact RuntimeConfigSnapshot resolution failed: {error}"),
+                )
+            })?;
+        if config_snapshot.snapshot_ref() != config_snapshot_reference {
+            let _ = self.fail_candidate(generation, &identity, AssemblyCandidateStage::Load);
+            return Err((
+                AssemblyActivationRejectReason::Resolve,
+                anyhow::anyhow!("resolved RuntimeConfigSnapshot content mismatches exact ref"),
+            ));
+        }
         self.build_started_candidate(
             generation,
             &identity,
@@ -90,6 +109,8 @@ impl AssemblyAdmissionController {
             resolver,
             service_db,
             Some(environment),
+            Some(config_snapshot_reference),
+            Some(&config_snapshot),
         )
         .await
         .map_err(|error| {

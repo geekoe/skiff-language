@@ -57,6 +57,7 @@ impl RuntimeHost {
             target,
             activation,
             execution_image,
+            config_views,
             db_source,
             service_protocol_identity,
         } = request;
@@ -91,6 +92,7 @@ impl RuntimeHost {
             runtime_id: self.base_runtime_id.clone(),
             activation,
             execution_image,
+            config_views,
             execution_target: header.invocation.target.clone(),
             service_protocol_identity,
             ingress_selector: None,
@@ -323,13 +325,7 @@ impl RuntimeHost {
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
-        let timeout_ms = header
-            .deadline
-            .as_ref()
-            .map(|deadline| deadline.timeout_ms)
-            .into_iter()
-            .chain(route.deployment_policy().timeout_ms)
-            .min();
+        let timeout_ms = header.deadline.as_ref().map(|deadline| deadline.timeout_ms);
         let deadline = runtime_deadline(&execution_budget, timeout_ms);
         let host = self.clone();
         tokio::spawn(async move {
@@ -904,6 +900,9 @@ impl RuntimeHost {
                 runtime_id: self.base_runtime_id.clone(),
                 activation: Arc::clone(route.activation()),
                 execution_image: Arc::clone(route.execution_image()),
+                config_views: route
+                    .config_views()
+                    .map_err(|error| RuntimeError::Decode(error.to_string()))?,
                 execution_target: route.gateway_entry_key().as_str().to_string(),
                 service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
                 ingress_selector: Some(route.selector().clone()),

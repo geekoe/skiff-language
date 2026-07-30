@@ -249,6 +249,10 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+        artifact_path.join("runtime-config"),
+    )
+    .expect("test config snapshot store should open");
     let typed = TypedEnvelope {
         envelope_type: "router.bootstrap".to_string(),
         rest: serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
@@ -262,6 +266,12 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
                     "assemblyIdentity": format!(
                         "skiff-runtime-assembly-v3:sha256:{}",
                         "a".repeat(64)
+                    )
+                },
+                "configSnapshot": {
+                    "snapshotId": format!(
+                        "skiff-runtime-config-snapshot-v1:{}",
+                        "a".repeat(32)
                     )
                 }
             },
@@ -282,6 +292,10 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
     assert_eq!(
         bootstrap.service_db.mongo_url,
         "mongodb://router-owned".to_string()
+    );
+    assert_eq!(
+        bootstrap.config_snapshot_store.root(),
+        config_snapshot_store.root()
     );
     assert_eq!(bootstrap.activation.environment, "test");
     assert_eq!(bootstrap.activation.generation, 7);
@@ -629,11 +643,16 @@ async fn duplicate_connection_bootstrap_fails_closed() {
     let (sender, _receiver) = mpsc::unbounded_channel();
     let artifact_path = std::env::temp_dir().join("skiff-runtime-bootstrap-duplicate");
     std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+        artifact_path.join("runtime-config"),
+    )
+    .expect("test config snapshot store should open");
     let mut bootstrap = Some(super::ConnectionBootstrap {
         resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
             &artifact_path,
         )
         .expect("test resolver should open"),
+        config_snapshot_store,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
@@ -653,6 +672,12 @@ async fn duplicate_connection_bootstrap_fails_closed() {
                     "assemblyIdentity": format!(
                         "skiff-runtime-assembly-v3:sha256:{}",
                         "a".repeat(64)
+                    )
+                },
+                "configSnapshot": {
+                    "snapshotId": format!(
+                        "skiff-runtime-config-snapshot-v1:{}",
+                        "a".repeat(32)
                     )
                 }
             },
@@ -684,11 +709,16 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
     let (sender, _receiver) = mpsc::unbounded_channel();
     let artifact_path = std::env::temp_dir().join("skiff-runtime-bootstrap-service-db");
     std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
+    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+        artifact_path.join("runtime-config"),
+    )
+    .expect("test config snapshot store should open");
     let mut bootstrap = Some(super::ConnectionBootstrap {
         resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
             &artifact_path,
         )
         .expect("test resolver should open"),
+        config_snapshot_store,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://bootstrap-owner".to_string(),
         },
@@ -759,6 +789,9 @@ fn assembly_activation_control(
         "candidateGeneration": 42,
         "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "configSnapshot": {
+            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "replicaId": "runtime-base"
     }))

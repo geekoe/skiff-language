@@ -9,20 +9,20 @@ use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
     ContractDiagnosticText, ContractOperationId, ContractTypeDescriptor, ContractTypeNameability,
     ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    ExecutableBody, ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr,
-    FileIrRef, FileIrUnit, GatewayEntryIdentity, GatewayEntryKey, GatewayIngressBinding,
-    IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor,
-    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement,
-    PublicationResourceRef, ResourcePolicy, RuntimeAssembly, ServiceBindingTemplate,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, SlotLayout, TypeRefIr, GATEWAY_ENTRY_IDENTITY_PREFIX,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, ExecutableBody,
+    ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr, FileIrRef, FileIrUnit,
+    GatewayEntryIdentity, GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector,
+    PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PackageTypeRef, PackageTypeRequirement, PublicationResourceRef,
+    RuntimeAssembly, ServiceBindingTemplate, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, SlotLayout, TypeRefIr,
+    GATEWAY_ENTRY_IDENTITY_PREFIX, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -371,7 +371,6 @@ impl Fixture {
             service_requirements: Vec::new(),
             runtime_requirements: PackageRuntimeRequirements {
                 config: Vec::new(),
-                state: Vec::new(),
                 resources: Vec::new(),
                 runtime_capabilities: Vec::new(),
             },
@@ -418,7 +417,6 @@ impl Fixture {
             ingress: Vec::new(),
             resource_bindings: Vec::new(),
             runtime_capability_bindings: Vec::new(),
-            policy: policy(),
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "Health deployment".to_string(),
                 notes: BTreeMap::new(),
@@ -448,7 +446,6 @@ impl Fixture {
                 deployment: deployment_ref,
                 implementation_package_build_id: package.package_build_id.clone(),
                 resource_bindings: Vec::new(),
-                policy: deployment.policy.clone(),
             }],
             gateway_ingress: Vec::new(),
         };
@@ -917,7 +914,6 @@ fn file_ir_identity_is_hashed_once_per_unique_identity_per_assembly_load() {
             deployment: second_deployment_ref.clone(),
             implementation_package_build_id: second_package.package_build_id.clone(),
             resource_bindings: Vec::new(),
-            policy: second_deployment.policy.clone(),
         });
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
 
@@ -1673,15 +1669,6 @@ fn tampered_assembly_contract_deployment_package_and_file_fail_closed() {
         .contains("contract content is invalid"));
 
     let mut resolver = fixture.resolver();
-    let policy = &mut Arc::make_mut(&mut resolver.deployment).policy;
-    policy.timeout_ms = policy.timeout_ms.map(|timeout| timeout + 1);
-    assert!(RuntimeAssemblyLoader::new(&resolver)
-        .load(fixture.assembly.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("deployment content mismatches ref"));
-
-    let mut resolver = fixture.resolver();
     Arc::make_mut(&mut resolver.package).package_version = "2.0.0".to_string();
     let error = RuntimeAssemblyLoader::new(&resolver)
         .load(fixture.assembly.clone())
@@ -2066,16 +2053,5 @@ fn no_effects() -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_suspend: false,
-    }
-}
-
-fn policy() -> DeploymentPolicy {
-    DeploymentPolicy {
-        timeout_ms: Some(1_000),
-        resources: ResourcePolicy {
-            cpu_millis: 100,
-            memory_bytes: 1_024,
-        },
-        principal: "service:health".to_string(),
     }
 }

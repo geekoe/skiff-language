@@ -166,6 +166,7 @@ where
 
 struct ConnectionBootstrap {
     resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
+    config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
     service_db: skiff_artifact_model::AssemblyActivationServiceDb,
     activation: skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader,
     max_response_bytes: usize,
@@ -181,6 +182,12 @@ fn test_bootstrap_activation(
             "assemblyIdentity": format!(
                 "skiff-runtime-assembly-v3:sha256:{}",
                 "a".repeat(64)
+            )
+        },
+        "configSnapshot": {
+            "snapshotId": format!(
+                "skiff-runtime-config-snapshot-v1:{}",
+                "a".repeat(32)
             )
         }
     }))
@@ -204,11 +211,16 @@ fn decode_connection_bootstrap(
         &header.artifacts_path,
     )
     .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::open(
+        std::path::Path::new(&header.artifacts_path).join("runtime-config"),
+    )
+    .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
     let service_db = skiff_artifact_model::AssemblyActivationServiceDb {
         mongo_url: header.service_db.mongo_url.clone(),
     };
     Ok(ConnectionBootstrap {
         resolver,
+        config_snapshot_store,
         service_db,
         activation: header.activation,
         max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
@@ -343,6 +355,10 @@ async fn dispatch_router_binary_frame(
             &artifact_path,
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
+        config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+            artifact_path.join("runtime-config"),
+        )
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
@@ -373,6 +389,10 @@ async fn dispatch_router_binary_frame_with_http_response_max(
     let mut bootstrap = Some(ConnectionBootstrap {
         resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
             &artifact_path,
+        )
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
+        config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+            artifact_path.join("runtime-config"),
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
@@ -433,7 +453,9 @@ async fn dispatch_router_binary_frame_inner(
                 &installed.activation.environment,
                 installed.activation.generation,
                 &installed.activation.assembly,
+                &installed.activation.config_snapshot,
                 &installed.resolver,
+                &installed.config_snapshot_store,
                 &installed.service_db,
             )
             .await?;
@@ -455,6 +477,7 @@ async fn dispatch_router_binary_frame_inner(
                 .apply_bootstrapped_assembly_activation_control(
                     control,
                     &bootstrap.resolver,
+                    &bootstrap.config_snapshot_store,
                     Some(&bootstrap.service_db),
                 )
                 .await

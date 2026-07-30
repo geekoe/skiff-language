@@ -497,7 +497,6 @@ fn validate_activation_templates(
             .collect::<BTreeMap<_, _>>();
         if template.implementation_package_build_id != deployment.implementation.package_build_id
             || resources != deployment_resources
-            || template.policy != deployment.policy
         {
             anyhow::bail!(
                 "activation template {:?} does not exactly match immutable deployment inputs",

@@ -336,12 +336,18 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
     };
     let assembly_a = skiff_artifact_identity::runtime_assembly_ref(&fixture_a.assembly).unwrap();
     let assembly_b = skiff_artifact_identity::runtime_assembly_ref(&fixture_b.assembly).unwrap();
+    let (config_a, config_resolver_a) =
+        crate::loader::config_snapshot::snapshot_for_assembly(&fixture_a.assembly, &resolver_a);
+    let (config_b, config_resolver_b) =
+        crate::loader::config_snapshot::snapshot_for_assembly(&fixture_b.assembly, &resolver_b);
     host.assembly_admission
         .recover_committed(
             "pinned-route",
             1,
             &assembly_a,
+            &config_a,
             &resolver_a,
+            &config_resolver_a,
             Some(&service_db),
         )
         .await
@@ -358,7 +364,9 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
             "pinned-route",
             2,
             &assembly_b,
+            &config_b,
             &resolver_b,
+            &config_resolver_b,
             Some(&service_db),
         )
         .await

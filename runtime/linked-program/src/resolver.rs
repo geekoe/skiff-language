@@ -348,7 +348,6 @@ mod tests {
                     "serviceRequirements": [],
                     "runtimeRequirements": {
                         "config": [],
-                        "state": [],
                         "resources": [],
                         "runtimeCapabilities": []
                     },

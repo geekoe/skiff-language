@@ -485,12 +485,16 @@ async fn shared_test_assembly_isolation() {
     })
     .unwrap();
     let resolver = FilesystemRuntimeAssemblyContentResolver::open(&runtime_artifacts).unwrap();
+    let (config_snapshot, config_resolver) =
+        crate::loader::config_snapshot::snapshot_for_assembly(&shared_assembly, &resolver);
     host.assembly_admission
         .recover_committed(
             "p3x-foreign-db",
             1,
             &assembly_ref,
+            &config_snapshot,
             &resolver,
+            &config_resolver,
             Some(&AssemblyActivationServiceDb {
                 mongo_url: "mongodb://p3x.invalid".to_string(),
             }),

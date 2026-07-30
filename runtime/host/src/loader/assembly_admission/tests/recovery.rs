@@ -84,13 +84,18 @@ impl RuntimeAssemblyContentResolver for EmptyRecordResolver {
     }
 }
 
-fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyActivationControl {
+fn generation_one_control(
+    kind: &str,
+    assembly: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
+) -> AssemblyActivationControl {
     let common = (
         "prod".to_string(),
         "activation-1".to_string(),
         0,
         1,
         assembly,
+        config_snapshot,
         "runtime-a".to_string(),
     );
     match (kind, common) {
@@ -102,6 +107,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             ),
         ) => AssemblyActivationControl::Prepare {
@@ -110,6 +116,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
             service_db: None,
         },
@@ -121,6 +128,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             ),
         ) => AssemblyActivationControl::Abort {
@@ -129,6 +137,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
         },
         (
@@ -139,6 +148,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             ),
         ) => AssemblyActivationControl::Commit {
@@ -147,6 +157,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
             service_db: None,
         },
@@ -158,17 +169,35 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
 async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transaction_rules() {
     let resolver = EmptyRecordResolver::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&resolver.assembly, &resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-a",
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
     );
 
     let first = controller
-        .recover_committed("prod", 0, &reference, &resolver, None)
+        .recover_committed(
+            "prod",
+            0,
+            &reference,
+            &config_snapshot,
+            &resolver,
+            &config_resolver,
+            None,
+        )
         .await
         .expect("canonical generation zero must recover");
     let second = controller
-        .recover_committed("prod", 0, &reference, &resolver, None)
+        .recover_committed(
+            "prod",
+            0,
+            &reference,
+            &config_snapshot,
+            &resolver,
+            &config_resolver,
+            None,
+        )
         .await
         .expect("every reconnect must rebuild the exact durable record");
     assert_eq!(first.generation(), 0);
@@ -179,10 +208,10 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
         .begin_online_candidate(0, reference.assembly_identity.clone())
         .is_err());
 
-    let prepare = generation_one_control("prepare", reference.clone());
+    let prepare = generation_one_control("prepare", reference.clone(), config_snapshot.clone());
     assert!(matches!(
         controller
-            .apply_activation_control(prepare.clone(), &resolver, None)
+            .apply_activation_control(prepare.clone(), &resolver, &config_resolver, None)
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Prepared { .. })
@@ -193,8 +222,9 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     ));
     controller
         .apply_activation_control(
-            generation_one_control("abort", reference.clone()),
+            generation_one_control("abort", reference.clone(), config_snapshot.clone()),
             &resolver,
+            &config_resolver,
             None,
         )
         .await
@@ -205,13 +235,13 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     ));
 
     controller
-        .apply_activation_control(prepare, &resolver, None)
+        .apply_activation_control(prepare, &resolver, &config_resolver, None)
         .await
         .unwrap();
-    let commit = generation_one_control("commit", reference.clone());
+    let commit = generation_one_control("commit", reference.clone(), config_snapshot.clone());
     assert!(matches!(
         controller
-            .apply_activation_control(commit.clone(), &resolver, None)
+            .apply_activation_control(commit.clone(), &resolver, &config_resolver, None)
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Register { generation: 1, .. })
@@ -224,12 +254,20 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
     );
     replayed
-        .recover_committed("prod", 0, &reference, &resolver, None)
+        .recover_committed(
+            "prod",
+            0,
+            &reference,
+            &config_snapshot,
+            &resolver,
+            &config_resolver,
+            None,
+        )
         .await
         .unwrap();
     assert!(matches!(
         replayed
-            .apply_activation_control(commit, &resolver, None)
+            .apply_activation_control(commit, &resolver, &config_resolver, None,)
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Register { generation: 1, .. })
@@ -237,4 +275,121 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     assert_eq!(replayed.active().unwrap().unwrap().generation(), 1);
     assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 6);
     assert_eq!(resolver.content_reads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn activation_and_recovery_pin_assembly_and_config_snapshot_as_one_exact_pair() {
+    let resolver = EmptyRecordResolver::new(empty_assembly());
+    let assembly = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
+    let (snapshot_a, resolver_a) = config_snapshot_for_assembly(&resolver.assembly, &resolver);
+    let (snapshot_b, resolver_b) = config_snapshot_for_assembly(&resolver.assembly, &resolver);
+    let controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
+
+    controller
+        .apply_activation_control(
+            generation_one_control("prepare", assembly.clone(), snapshot_a.clone()),
+            &resolver,
+            &resolver_a,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mismatched_commit = controller
+        .apply_activation_control(
+            generation_one_control("commit", assembly.clone(), snapshot_b.clone()),
+            &resolver,
+            &resolver_b,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        mismatched_commit,
+        AssemblyActivationControl::Reject {
+            reason: AssemblyActivationRejectReason::Admission,
+            ..
+        }
+    ));
+    assert!(controller.active().unwrap().is_none());
+
+    let mismatched_abort = controller
+        .apply_activation_control(
+            generation_one_control("abort", assembly.clone(), snapshot_b.clone()),
+            &resolver,
+            &resolver_b,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(mismatched_abort
+        .to_string()
+        .contains("does not match the staged"));
+
+    controller
+        .apply_activation_control(
+            generation_one_control("commit", assembly.clone(), snapshot_a.clone()),
+            &resolver,
+            &resolver_a,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        controller.active().unwrap().unwrap().config_snapshot(),
+        &snapshot_a
+    );
+
+    let recovery_error = controller
+        .recover_committed(
+            "prod",
+            1,
+            &assembly,
+            &snapshot_b,
+            &resolver,
+            &resolver_b,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(recovery_error
+        .to_string()
+        .contains("config snapshot changed without generation advance"));
+}
+
+#[tokio::test]
+async fn prepare_rejects_an_unresolvable_exact_config_snapshot_before_ack() {
+    let resolver = EmptyRecordResolver::new(empty_assembly());
+    let assembly = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
+    let (_available_snapshot, available_resolver) =
+        config_snapshot_for_assembly(&resolver.assembly, &resolver);
+    let (missing_snapshot, _missing_resolver) =
+        config_snapshot_for_assembly(&resolver.assembly, &resolver);
+    let controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
+
+    let reply = controller
+        .apply_activation_control(
+            generation_one_control("prepare", assembly, missing_snapshot),
+            &resolver,
+            &available_resolver,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        reply,
+        AssemblyActivationControl::Reject {
+            reason: AssemblyActivationRejectReason::Resolve,
+            ..
+        }
+    ));
+    assert!(controller.active().unwrap().is_none());
 }

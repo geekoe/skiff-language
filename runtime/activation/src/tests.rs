@@ -4,10 +4,10 @@ use std::sync::{
 };
 
 use skiff_artifact_model::{
-    AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentPolicy,
-    DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey, IngressProtocol, IngressSelector,
-    PackageBuildId, ResourcePolicy, ServiceContractRef, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirementKey, WebSocketEntryId,
+    AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,
+    GatewayEntryIdentity, GatewayEntryKey, IngressProtocol, IngressSelector, PackageBuildId,
+    ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey,
+    WebSocketEntryId,
 };
 
 use super::*;
@@ -34,14 +34,6 @@ fn contract(service: &str, protocol: &str) -> ServiceContractRef {
 fn empty_owned_bindings() -> ActivationOwnedBindings {
     ActivationOwnedBindings {
         resource_bindings: Vec::new(),
-        policy: DeploymentPolicy {
-            timeout_ms: Some(1_000),
-            resources: ResourcePolicy {
-                cpu_millis: 100,
-                memory_bytes: 1_024,
-            },
-            principal: "test".to_string(),
-        },
     }
 }
 

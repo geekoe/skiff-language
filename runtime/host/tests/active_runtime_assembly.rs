@@ -3,11 +3,49 @@ use std::sync::Arc;
 use skiff_artifact_model::{
     AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyIdentity,
     CanonicalPackageLinkPlan, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
-    PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_host::{DbProviderSource, RuntimeConfig, RuntimeHost};
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyRecordResolver};
+
+#[derive(Debug)]
+struct SnapshotResolveError;
+
+impl std::fmt::Display for SnapshotResolveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("snapshot ref mismatch")
+    }
+}
+
+impl std::error::Error for SnapshotResolveError {}
+
+#[derive(Clone)]
+struct EmptySnapshotResolver {
+    snapshot: skiff_runtime_config_snapshot::RuntimeConfigSnapshot,
+}
+
+impl skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver for EmptySnapshotResolver {
+    type Error = SnapshotResolveError;
+
+    fn resolve(
+        &self,
+        reference: &RuntimeConfigSnapshotRef,
+    ) -> Result<skiff_runtime_config_snapshot::RuntimeConfigSnapshot, Self::Error> {
+        (self.snapshot.snapshot_ref() == reference)
+            .then(|| self.snapshot.clone())
+            .ok_or(SnapshotResolveError)
+    }
+}
+
+fn empty_snapshot() -> (RuntimeConfigSnapshotRef, EmptySnapshotResolver) {
+    let reference = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
+    let snapshot =
+        skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(reference.clone(), Vec::new())
+            .unwrap();
+    (reference, EmptySnapshotResolver { snapshot })
+}
 
 struct EmptyAssemblyResolver {
     assembly: Arc<RuntimeAssembly>,
@@ -104,6 +142,7 @@ fn runtime_host(replica_id: &str) -> RuntimeHost {
 fn transition(
     kind: &str,
     reference: RuntimeAssemblyRef,
+    config_snapshot: RuntimeConfigSnapshotRef,
     replica_id: &str,
 ) -> AssemblyActivationControl {
     let fields = (
@@ -112,6 +151,7 @@ fn transition(
         0,
         1,
         reference,
+        config_snapshot,
         replica_id.to_string(),
     );
     match (kind, fields) {
@@ -123,6 +163,7 @@ fn transition(
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             ),
         ) => AssemblyActivationControl::Prepare {
@@ -131,6 +172,7 @@ fn transition(
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
             service_db: None,
         },
@@ -142,6 +184,7 @@ fn transition(
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             ),
         ) => AssemblyActivationControl::Commit {
@@ -150,6 +193,7 @@ fn transition(
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
             service_db: None,
         },
@@ -161,6 +205,7 @@ fn transition(
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             ),
         ) => AssemblyActivationControl::Abort {
@@ -169,6 +214,7 @@ fn transition(
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
         },
         _ => unreachable!(),
@@ -180,12 +226,19 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
     let assembly = Arc::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
     let resolver = EmptyAssemblyResolver { assembly };
+    let (config_snapshot, config_resolver) = empty_snapshot();
     let host = runtime_host("runtime-a");
 
     let prepared = host
         .apply_assembly_activation_control(
-            transition("prepare", reference.clone(), "runtime-a"),
+            transition(
+                "prepare",
+                reference.clone(),
+                config_snapshot.clone(),
+                "runtime-a",
+            ),
             &resolver,
+            &config_resolver,
         )
         .await
         .unwrap();
@@ -196,23 +249,41 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
     assert!(host.active_assembly_registration().unwrap().is_none());
 
     host.apply_assembly_activation_control(
-        transition("abort", reference.clone(), "runtime-a"),
+        transition(
+            "abort",
+            reference.clone(),
+            config_snapshot.clone(),
+            "runtime-a",
+        ),
         &resolver,
+        &config_resolver,
     )
     .await
     .unwrap();
     assert!(host.active_assembly_registration().unwrap().is_none());
 
     host.apply_assembly_activation_control(
-        transition("prepare", reference.clone(), "runtime-a"),
+        transition(
+            "prepare",
+            reference.clone(),
+            config_snapshot.clone(),
+            "runtime-a",
+        ),
         &resolver,
+        &config_resolver,
     )
     .await
     .unwrap();
     let committed = host
         .apply_assembly_activation_control(
-            transition("commit", reference.clone(), "runtime-a"),
+            transition(
+                "commit",
+                reference.clone(),
+                config_snapshot.clone(),
+                "runtime-a",
+            ),
             &resolver,
+            &config_resolver,
         )
         .await
         .unwrap()
@@ -224,8 +295,14 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
 
     let replay = host
         .apply_assembly_activation_control(
-            transition("commit", reference.clone(), "runtime-a"),
+            transition(
+                "commit",
+                reference.clone(),
+                config_snapshot.clone(),
+                "runtime-a",
+            ),
             &resolver,
+            &config_resolver,
         )
         .await
         .unwrap()
@@ -234,7 +311,11 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
 
     let restarted = runtime_host("runtime-a");
     let recovered = restarted
-        .apply_assembly_activation_control(transition("commit", reference, "runtime-a"), &resolver)
+        .apply_assembly_activation_control(
+            transition("commit", reference, config_snapshot, "runtime-a"),
+            &resolver,
+            &config_resolver,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -246,13 +327,20 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
     let assembly = Arc::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
     let resolver = EmptyAssemblyResolver { assembly };
+    let (config_snapshot, config_resolver) = empty_snapshot();
     let first = runtime_host("runtime-a");
     let second = runtime_host("runtime-b");
 
     for (host, replica) in [(&first, "runtime-a"), (&second, "runtime-b")] {
         host.apply_assembly_activation_control(
-            transition("commit", reference.clone(), replica),
+            transition(
+                "commit",
+                reference.clone(),
+                config_snapshot.clone(),
+                replica,
+            ),
             &resolver,
+            &config_resolver,
         )
         .await
         .unwrap();
@@ -267,12 +355,17 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
         expected_generation: 1,
         candidate_generation: 2,
         assembly: reference.clone(),
+        config_snapshot: config_snapshot.clone(),
         replica_id: "runtime-a".to_string(),
         service_db: None,
     };
     assert!(matches!(
         first
-            .apply_assembly_activation_control(staged_successor.clone(), &resolver)
+            .apply_assembly_activation_control(
+                staged_successor.clone(),
+                &resolver,
+                &config_resolver,
+            )
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Prepared { .. })
@@ -289,6 +382,7 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
             ..
         } => AssemblyActivationControl::Abort {
@@ -297,16 +391,17 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
             expected_generation,
             candidate_generation,
             assembly,
+            config_snapshot,
             replica_id,
         },
         _ => unreachable!(),
     };
     first
-        .apply_assembly_activation_control(abort.clone(), &resolver)
+        .apply_assembly_activation_control(abort.clone(), &resolver, &config_resolver)
         .await
         .unwrap();
     first
-        .apply_assembly_activation_control(abort, &resolver)
+        .apply_assembly_activation_control(abort, &resolver, &config_resolver)
         .await
         .expect("abort replay must be idempotent");
     assert_eq!(
@@ -328,10 +423,12 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
                 expected_generation: 1,
                 candidate_generation: 2,
                 assembly: unknown,
+                config_snapshot,
                 replica_id: "runtime-a".to_string(),
                 service_db: None,
             },
             &resolver,
+            &config_resolver,
         )
         .await
         .unwrap()

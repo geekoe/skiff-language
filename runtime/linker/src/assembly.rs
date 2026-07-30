@@ -221,7 +221,6 @@ fn validate_activation_source(
         deployment: source.deployment.clone(),
         implementation_package_build_id: deployment.implementation.package_build_id.clone(),
         resource_bindings: deployment.resource_bindings.clone(),
-        policy: deployment.policy.clone(),
     };
     if source != &expected {
         anyhow::bail!(

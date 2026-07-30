@@ -460,14 +460,6 @@ fn contract_requirement(contract: &artifact::ServiceContractRef) -> artifact::Co
 fn activation_bindings() -> ActivationOwnedBindings {
     ActivationOwnedBindings {
         resource_bindings: Vec::new(),
-        policy: artifact::DeploymentPolicy {
-            timeout_ms: Some(1_000),
-            resources: artifact::ResourcePolicy {
-                cpu_millis: 100,
-                memory_bytes: 1_048_576,
-            },
-            principal: "test".to_string(),
-        },
     }
 }
 

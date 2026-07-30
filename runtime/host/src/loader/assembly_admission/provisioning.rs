@@ -6,14 +6,16 @@ impl AssemblyAdmissionController {
     /// Prepare only constructs staged immutable state. Commit is the sole
     /// active-pointer publication point, while abort drops the complete staged
     /// candidate under the same serialized transition permit.
-    pub(crate) async fn apply_activation_control<R>(
+    pub(crate) async fn apply_activation_control<R, C>(
         &self,
         control: AssemblyActivationControl,
         resolver: &R,
+        config_snapshot_resolver: &C,
         bootstrap_service_db: Option<&AssemblyActivationServiceDb>,
     ) -> anyhow::Result<Option<AssemblyActivationControl>>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         control.validate().map_err(anyhow::Error::msg)?;
         match control {
@@ -23,6 +25,7 @@ impl AssemblyAdmissionController {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 service_db,
             } => {
@@ -38,9 +41,15 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
+                    config_snapshot,
                 };
                 let reply = match self
-                    .prepare_transition(&transition, resolver, bootstrap_service_db)
+                    .prepare_transition(
+                        &transition,
+                        resolver,
+                        config_snapshot_resolver,
+                        bootstrap_service_db,
+                    )
                     .await
                 {
                     Ok(()) => transition.prepared_control(replica_id),
@@ -63,6 +72,7 @@ impl AssemblyAdmissionController {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
                 service_db,
             } => {
@@ -78,9 +88,15 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
+                    config_snapshot,
                 };
                 let reply = match self
-                    .commit_transition(&transition, resolver, bootstrap_service_db)
+                    .commit_transition(
+                        &transition,
+                        resolver,
+                        config_snapshot_resolver,
+                        bootstrap_service_db,
+                    )
                     .await
                 {
                     Ok(()) => transition.register_control(replica_id),
@@ -103,6 +119,7 @@ impl AssemblyAdmissionController {
                 expected_generation,
                 candidate_generation,
                 assembly,
+                config_snapshot,
                 replica_id,
             } => {
                 self.ensure_replica(&replica_id)?;
@@ -112,6 +129,7 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
+                    config_snapshot,
                 })
                 .await?;
                 Ok(None)
@@ -136,18 +154,21 @@ impl AssemblyAdmissionController {
                 environment: committed.environment.clone(),
                 generation: committed.generation,
                 assembly: committed.assembly.clone(),
+                config_snapshot: committed.config_snapshot.clone(),
                 replica_id: self.runtime_replica_id.clone(),
             }))
     }
 
-    async fn prepare_transition<R>(
+    async fn prepare_transition<R, C>(
         &self,
         transition: &AssemblyTransition,
         resolver: &R,
+        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let _reload = self.reload.lock().await;
         {
@@ -195,7 +216,9 @@ impl AssemblyAdmissionController {
             .resolve_started_exact_candidate(
                 transition.candidate_generation,
                 &transition.assembly,
+                &transition.config_snapshot,
                 resolver,
+                config_snapshot_resolver,
                 "exact RuntimeAssembly record resolution failed",
                 service_db,
                 &transition.environment,
@@ -211,14 +234,16 @@ impl AssemblyAdmissionController {
         Ok(())
     }
 
-    async fn commit_transition<R>(
+    async fn commit_transition<R, C>(
         &self,
         transition: &AssemblyTransition,
         resolver: &R,
+        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let _reload = self.reload.lock().await;
         {
@@ -253,21 +278,28 @@ impl AssemblyAdmissionController {
 
         // A fresh process has no staged heap state. An exact commit replay is
         // the durable recovery signal, so rebuild it before registering.
-        self.prepare_recovery_transition(transition, resolver, service_db)
-            .await?;
+        self.prepare_recovery_transition(
+            transition,
+            resolver,
+            config_snapshot_resolver,
+            service_db,
+        )
+        .await?;
         self.commit_staged(transition)
             .map(|_| ())
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))
     }
 
-    async fn prepare_recovery_transition<R>(
+    async fn prepare_recovery_transition<R, C>(
         &self,
         transition: &AssemblyTransition,
         resolver: &R,
+        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let identity = transition.assembly.assembly_identity.clone();
         self.begin_online_candidate(transition.candidate_generation, identity)
@@ -276,7 +308,9 @@ impl AssemblyAdmissionController {
             .resolve_started_exact_candidate(
                 transition.candidate_generation,
                 &transition.assembly,
+                &transition.config_snapshot,
                 resolver,
+                config_snapshot_resolver,
                 "committed RuntimeAssembly recovery resolution failed",
                 service_db,
                 &transition.environment,
@@ -329,6 +363,9 @@ impl AssemblyAdmissionController {
         if identity != transition.assembly.assembly_identity {
             anyhow::bail!("prepared assembly identity does not match activation transition");
         }
+        if prepared.config_snapshot != transition.config_snapshot {
+            anyhow::bail!("prepared config snapshot does not match activation transition");
+        }
         let observed_at = OffsetDateTime::now_utc();
         let mut state = self
             .state
@@ -377,6 +414,7 @@ impl AssemblyAdmissionController {
             environment: transition.environment.clone(),
             generation: transition.candidate_generation,
             assembly: transition.assembly.clone(),
+            config_snapshot: transition.config_snapshot.clone(),
         };
         let active = publish_committed_locked(&mut state, staged.prepared, committed)?;
         info!(
@@ -395,6 +433,7 @@ impl AssemblyTransition {
             && self.expected_generation == other.expected_generation
             && self.candidate_generation == other.candidate_generation
             && self.assembly == other.assembly
+            && self.config_snapshot == other.config_snapshot
     }
 
     fn prepared_control(&self, replica_id: String) -> AssemblyActivationControl {
@@ -404,6 +443,7 @@ impl AssemblyTransition {
             expected_generation: self.expected_generation,
             candidate_generation: self.candidate_generation,
             assembly: self.assembly.clone(),
+            config_snapshot: self.config_snapshot.clone(),
             replica_id,
         }
     }
@@ -419,6 +459,7 @@ impl AssemblyTransition {
             expected_generation: self.expected_generation,
             candidate_generation: self.candidate_generation,
             assembly: self.assembly.clone(),
+            config_snapshot: self.config_snapshot.clone(),
             replica_id,
             reason,
         }
@@ -429,6 +470,7 @@ impl AssemblyTransition {
             environment: self.environment.clone(),
             generation: self.candidate_generation,
             assembly: self.assembly.clone(),
+            config_snapshot: self.config_snapshot.clone(),
             replica_id,
         }
     }
@@ -442,6 +484,7 @@ fn committed_matches_transition(
         committed.environment == transition.environment
             && committed.generation == transition.candidate_generation
             && committed.assembly == transition.assembly
+            && committed.config_snapshot == transition.config_snapshot
     })
 }
 

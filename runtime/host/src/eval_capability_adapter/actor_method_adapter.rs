@@ -25,6 +25,7 @@ pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) service_protocol_identity: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<AssemblyExecutionImage>,
+    pub(crate) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     pub(crate) resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
     pub(crate) db_source: concrete::DbCapabilitySource,
     pub(crate) file_source: concrete::FileCapabilitySource,
@@ -48,8 +49,7 @@ pub(crate) struct ActorMethodEvalExecution {
     execution_image: Arc<AssemblyExecutionImage>,
     resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
     activation_identity: ActivationIdentityControl,
-    config: crate::config_view::RuntimeConfigView,
-    package_configs: Vec<crate::config_view::RuntimeConfigView>,
+    config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     db_source: concrete::DbCapabilitySource,
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
@@ -72,11 +72,6 @@ impl ActorMethodEvalExecution {
         }
         let deployment = &input.activation.identity().deployment;
         let activation_identity = activation_identity_control(input.activation.as_ref());
-        let config = crate::config_view::RuntimeConfigView::empty();
-        let package_configs = super::assembly_request_adapter::package_config_views(
-            input.execution_image.as_ref(),
-            input.activation.implementation_package_build_id(),
-        )?;
         let target = "actor.method".to_string();
         let request = RequestEnvelope {
             request_id: input.invocation_id,
@@ -116,8 +111,7 @@ impl ActorMethodEvalExecution {
             execution_image: input.execution_image,
             resolver: input.resolver,
             activation_identity,
-            config,
-            package_configs,
+            config_views: input.config_views,
             db_source: input.db_source,
             file_source: input.file_source,
             http_options: input.http_options,
@@ -190,8 +184,8 @@ impl ActorMethodEvalExecution {
         Ok(ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: config_context(concrete::ConfigCapabilityContext::new(
-                &self.config,
-                &self.package_configs,
+                self.config_views.service(),
+                self.config_views.packages(),
             )),
             db,
             file,

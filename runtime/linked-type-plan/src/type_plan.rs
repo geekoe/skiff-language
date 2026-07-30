@@ -126,7 +126,6 @@ pub(crate) fn test_runtime_package(
         "serviceRequirements": [],
         "runtimeRequirements": {
             "config": [],
-            "state": [],
             "resources": [],
             "runtimeCapabilities": []
         },

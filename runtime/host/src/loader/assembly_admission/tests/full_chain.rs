@@ -147,6 +147,17 @@ impl FullChainFixture {
     }
 
     fn with_consumer_collection(root_collection: Option<&str>) -> Self {
+        Self::build(root_collection, None)
+    }
+
+    fn with_consumer_config(requirement: PackageConfigRequirement) -> Self {
+        Self::build(None, Some(requirement))
+    }
+
+    fn build(
+        root_collection: Option<&str>,
+        consumer_config: Option<PackageConfigRequirement>,
+    ) -> Self {
         let operation_contract = operation_contract();
         let (provider_contract, provider_operation_id) = service_contract(
             "example.phase-three.provider",
@@ -206,6 +217,11 @@ impl FullChainFixture {
             operation_contract,
             Some((provider_requirement, provider_call)),
         );
+        if let Some(requirement) = consumer_config {
+            consumer_package.runtime_requirements.config = vec![requirement];
+            skiff_artifact_identity::assign_package_artifact_identities(&mut consumer_package)
+                .unwrap();
+        }
         let consumer_package_ref = package_ref(&consumer_package);
 
         let provider_deployment = project_service_deployment(
@@ -224,7 +240,6 @@ impl FullChainFixture {
                 ingress: Vec::new(),
                 resource_bindings: Vec::new(),
                 runtime_capability_bindings: Vec::new(),
-                policy: policy(),
                 diagnostic_text: DeploymentDiagnosticText {
                     display_name: "Phase three provider deployment".to_string(),
                     notes: BTreeMap::new(),
@@ -259,7 +274,6 @@ impl FullChainFixture {
                 ingress: Vec::new(),
                 resource_bindings: Vec::new(),
                 runtime_capability_bindings: Vec::new(),
-                policy: policy(),
                 diagnostic_text: DeploymentDiagnosticText {
                     display_name: "Phase three consumer deployment".to_string(),
                     notes: BTreeMap::new(),
@@ -724,17 +738,89 @@ fn mapping_service_db() -> AssemblyActivationServiceDb {
     }
 }
 
+fn fixture_config_snapshot(
+    fixture: &FullChainFixture,
+    values: BTreeMap<(ServiceDeploymentRef, PackageBuildId), BTreeMap<String, serde_json::Value>>,
+) -> (
+    RuntimeConfigSnapshotRef,
+    crate::loader::config_snapshot::TestSnapshotResolver,
+) {
+    let reference = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
+    let snapshot = fixture_config_snapshot_record(fixture, reference.clone(), values);
+    (
+        reference,
+        crate::loader::config_snapshot::TestSnapshotResolver::new(snapshot),
+    )
+}
+
+fn fixture_config_snapshot_record(
+    fixture: &FullChainFixture,
+    reference: RuntimeConfigSnapshotRef,
+    values: BTreeMap<(ServiceDeploymentRef, PackageBuildId), BTreeMap<String, serde_json::Value>>,
+) -> skiff_runtime_config_snapshot::RuntimeConfigSnapshot {
+    let deployments = fixture
+        .assembly
+        .resolved_deployments
+        .iter()
+        .map(|deployment_ref| {
+            let deployment = fixture
+                .resolver
+                .resolve_deployment(deployment_ref)
+                .expect("fixture deployment should resolve");
+            let mut packages = BTreeSet::from([deployment.implementation.package_build_id.clone()]);
+            packages.extend(
+                deployment
+                    .package_bindings
+                    .iter()
+                    .map(|binding| binding.package.package_build_id.clone()),
+            );
+            skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
+                deployment_ref.clone(),
+                packages
+                    .into_iter()
+                    .map(|package_build_id| {
+                        let config = values
+                            .get(&(deployment_ref.clone(), package_build_id.clone()))
+                            .cloned()
+                            .unwrap_or_default();
+                        skiff_runtime_config_snapshot::RuntimeConfigPackage::new(
+                            package_build_id,
+                            config,
+                        )
+                        .expect("fixture Package config should be valid")
+                    })
+                    .collect(),
+            )
+            .expect("fixture deployment config should be valid")
+        })
+        .collect();
+    let snapshot =
+        skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(reference.clone(), deployments)
+            .expect("fixture config snapshot should be valid");
+    snapshot
+}
+
 #[tokio::test]
 async fn committed_recovery_nonempty_generation_survives_restart_with_exact_registration() {
     let fixture = FullChainFixture::new();
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
 
     let first = AssemblyAdmissionController::new(
         "runtime-a",
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
     );
     let first_active = first
-        .recover_committed("prod", 7, &reference, &fixture.resolver, None)
+        .recover_committed(
+            "prod",
+            7,
+            &reference,
+            &config_snapshot,
+            &fixture.resolver,
+            &config_resolver,
+            None,
+        )
         .await
         .expect("non-empty committed generation must recover");
     let first_reads = fixture.resolver.reads.load(Ordering::SeqCst);
@@ -756,7 +842,15 @@ async fn committed_recovery_nonempty_generation_survives_restart_with_exact_regi
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
     );
     let restarted_active = restarted
-        .recover_committed("prod", 7, &reference, &fixture.resolver, None)
+        .recover_committed(
+            "prod",
+            7,
+            &reference,
+            &config_snapshot,
+            &fixture.resolver,
+            &config_resolver,
+            None,
+        )
         .await
         .expect("restart must rebuild the same non-empty committed generation");
     assert_eq!(restarted_active.generation(), 7);
@@ -771,6 +865,195 @@ async fn committed_recovery_nonempty_generation_survives_restart_with_exact_regi
             ..
         }) if assembly == reference && replica_id == "runtime-a"
     ));
+}
+
+#[tokio::test]
+async fn config_snapshot_requires_exact_deployment_and_package_partitions_before_activation() {
+    let fixture = FullChainFixture::new();
+    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+
+    let missing_deployment_ref = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
+    let exact =
+        fixture_config_snapshot_record(&fixture, missing_deployment_ref.clone(), BTreeMap::new());
+    let missing_deployment = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
+        missing_deployment_ref.clone(),
+        exact
+            .deployments()
+            .iter()
+            .filter(|partition| partition.deployment() != &fixture.consumer_deployment_ref)
+            .cloned()
+            .collect(),
+    )
+    .unwrap();
+
+    let missing_package_ref = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
+    let exact =
+        fixture_config_snapshot_record(&fixture, missing_package_ref.clone(), BTreeMap::new());
+    let missing_package = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
+        missing_package_ref.clone(),
+        exact
+            .deployments()
+            .iter()
+            .map(|partition| {
+                if partition.deployment() == &fixture.consumer_deployment_ref {
+                    skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
+                        partition.deployment().clone(),
+                        Vec::new(),
+                    )
+                    .unwrap()
+                } else {
+                    partition.clone()
+                }
+            })
+            .collect(),
+    )
+    .unwrap();
+
+    let extra_package_ref = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
+    let exact =
+        fixture_config_snapshot_record(&fixture, extra_package_ref.clone(), BTreeMap::new());
+    let extra_package = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
+        extra_package_ref.clone(),
+        exact
+            .deployments()
+            .iter()
+            .map(|partition| {
+                if partition.deployment() == &fixture.consumer_deployment_ref {
+                    let mut packages = partition.packages().to_vec();
+                    packages.push(
+                        skiff_runtime_config_snapshot::RuntimeConfigPackage::new(
+                            PackageBuildId::new("build:not-in-assembly"),
+                            BTreeMap::new(),
+                        )
+                        .unwrap(),
+                    );
+                    packages.sort_by(|left, right| {
+                        left.package_build_id().cmp(right.package_build_id())
+                    });
+                    skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
+                        partition.deployment().clone(),
+                        packages,
+                    )
+                    .unwrap()
+                } else {
+                    partition.clone()
+                }
+            })
+            .collect(),
+    )
+    .unwrap();
+
+    for (reference, snapshot) in [
+        (missing_deployment_ref, missing_deployment),
+        (missing_package_ref, missing_package),
+        (extra_package_ref, extra_package),
+    ] {
+        let controller = AssemblyAdmissionController::default();
+        let error = controller
+            .recover_committed(
+                "fixture",
+                1,
+                &assembly_ref,
+                &reference,
+                &fixture.resolver,
+                &crate::loader::config_snapshot::TestSnapshotResolver::new(snapshot),
+                None,
+            )
+            .await
+            .expect_err("non-exact config snapshot must fail before activation");
+        assert!(error.to_string().contains("do not exactly match"));
+        assert!(controller.active().unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn config_snapshot_validates_required_types_and_isolates_deployment_views() {
+    let fixture = FullChainFixture::with_consumer_config(PackageConfigRequirement {
+        path: "api.key".to_string(),
+        access: PackageConfigAccess::Required {
+            value_type: "string".to_string(),
+        },
+    });
+    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+
+    for value in [None, Some(serde_json::json!({"api": {"key": 42}}))] {
+        let values = value
+            .map(|value| {
+                let serde_json::Value::Object(config) = value else {
+                    unreachable!()
+                };
+                BTreeMap::from([(
+                    (
+                        fixture.consumer_deployment_ref.clone(),
+                        fixture.consumer_package_ref.package_build_id.clone(),
+                    ),
+                    config.into_iter().collect(),
+                )])
+            })
+            .unwrap_or_default();
+        let (reference, resolver) = fixture_config_snapshot(&fixture, values);
+        let controller = AssemblyAdmissionController::default();
+        let error = controller
+            .recover_committed(
+                "fixture",
+                1,
+                &assembly_ref,
+                &reference,
+                &fixture.resolver,
+                &resolver,
+                None,
+            )
+            .await
+            .expect_err("missing or mistyped required config must fail admission");
+        assert!(
+            error.to_string().contains("required value is missing")
+                || error.to_string().contains("must be a string")
+        );
+        assert!(controller.active().unwrap().is_none());
+    }
+
+    let serde_json::Value::Object(config) = serde_json::json!({"api": {"key": "top-secret"}})
+    else {
+        unreachable!()
+    };
+    let values = BTreeMap::from([(
+        (
+            fixture.consumer_deployment_ref.clone(),
+            fixture.consumer_package_ref.package_build_id.clone(),
+        ),
+        config.into_iter().collect(),
+    )]);
+    let (reference, resolver) = fixture_config_snapshot(&fixture, values);
+    let controller = AssemblyAdmissionController::default();
+    let active = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &assembly_ref,
+            &reference,
+            &fixture.resolver,
+            &resolver,
+            None,
+        )
+        .await
+        .expect("exact typed config snapshot should activate");
+    let consumer = active
+        .contexts()
+        .config_views(&fixture.consumer_deployment_ref)
+        .unwrap();
+    let provider = active
+        .contexts()
+        .config_views(&fixture.provider_deployment_ref)
+        .unwrap();
+    assert_eq!(
+        consumer.service().resolved_config_value()["api"]["key"],
+        "top-secret"
+    );
+    assert_eq!(
+        provider.service().resolved_config_value(),
+        &serde_json::json!({})
+    );
+    assert!(!format!("{consumer:?}").contains("top-secret"));
 }
 
 #[tokio::test]
@@ -895,6 +1178,8 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
         None,
     );
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-mapping",
@@ -907,7 +1192,9 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
             "fixture",
             7,
             &reference,
+            &config_snapshot,
             &fixture.resolver,
+            &config_resolver,
             Some(&service_db),
         )
         .await
@@ -917,7 +1204,9 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
             "fixture",
             7,
             &reference,
+            &config_snapshot,
             &fixture.resolver,
+            &config_resolver,
             Some(&service_db),
         )
         .await
@@ -958,13 +1247,23 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
 async fn reachable_db_metadata_requires_router_supplied_service_db() {
     let fixture = CollectionMappingFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-missing-service-db",
         skiff_runtime_capability_context::DbProviderSource::new(CapturingDbProvider::default()),
     );
 
     let error = controller
-        .recover_committed("fixture", 7, &reference, &fixture.resolver, None)
+        .recover_committed(
+            "fixture",
+            7,
+            &reference,
+            &config_snapshot,
+            &fixture.resolver,
+            &config_resolver,
+            None,
+        )
         .await
         .expect_err("DB metadata without Router serviceDb must fail closed");
 
@@ -1000,6 +1299,8 @@ async fn identical_stateful_diamond_has_one_effective_projection_in_any_edge_ord
             }
             let reference =
                 skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+            let (config_snapshot, config_resolver) =
+                config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
             let provider = CapturingDbProvider::default();
             let controller = AssemblyAdmissionController::new(
                 format!("runtime-diamond-{label}-{reverse_links}"),
@@ -1011,7 +1312,9 @@ async fn identical_stateful_diamond_has_one_effective_projection_in_any_edge_ord
                     "fixture",
                     7,
                     &reference,
+                    &config_snapshot,
                     &fixture.resolver,
+                    &config_resolver,
                     Some(&mapping_service_db()),
                 )
                 .await
@@ -1047,6 +1350,8 @@ async fn same_build_stateful_diamond_with_different_projection_fails_closed() {
         )]),
     );
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-diamond-drift",
@@ -1058,7 +1363,9 @@ async fn same_build_stateful_diamond_with_different_projection_fails_closed() {
             "fixture",
             7,
             &reference,
+            &config_snapshot,
             &fixture.resolver,
+            &config_resolver,
             Some(&mapping_service_db()),
         )
         .await
@@ -1090,6 +1397,8 @@ async fn collection_mapping_unknown_source_and_partial_collision_fail_closed() {
     ] {
         let fixture = CollectionMappingFixture::new(mapping, None);
         let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+        let (config_snapshot, config_resolver) =
+            config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
         let provider = CapturingDbProvider::default();
         let controller = AssemblyAdmissionController::new(
             format!("runtime-{label}"),
@@ -1100,7 +1409,9 @@ async fn collection_mapping_unknown_source_and_partial_collision_fail_closed() {
                 "fixture",
                 1,
                 &reference,
+                &config_snapshot,
                 &fixture.resolver,
+                &config_resolver,
                 Some(&mapping_service_db()),
             )
             .await
@@ -1121,6 +1432,8 @@ async fn mapped_dependency_collision_with_service_collection_fails_closed() {
         Some("mapped_package_secret"),
     );
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-service-collision",
         skiff_runtime_capability_context::DbProviderSource::new(CapturingDbProvider::default()),
@@ -1131,7 +1444,9 @@ async fn mapped_dependency_collision_with_service_collection_fails_closed() {
             "fixture",
             1,
             &reference,
+            &config_snapshot,
             &fixture.resolver,
+            &config_resolver,
             Some(&mapping_service_db()),
         )
         .await
@@ -1144,6 +1459,8 @@ async fn mapped_dependency_collision_with_service_collection_fails_closed() {
 async fn mapped_targets_from_distinct_dependencies_cannot_collide() {
     let fixture = CollectionMappingFixture::with_dependency_target_collision();
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-dependency-collision",
@@ -1155,7 +1472,9 @@ async fn mapped_targets_from_distinct_dependencies_cannot_collide() {
             "fixture",
             1,
             &reference,
+            &config_snapshot,
             &fixture.resolver,
+            &config_resolver,
             Some(&mapping_service_db()),
         )
         .await
@@ -1187,6 +1506,8 @@ async fn assembly_collection_mapping_drift_fails_before_host_activation() {
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
     fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-drift",
@@ -1198,7 +1519,9 @@ async fn assembly_collection_mapping_drift_fails_before_host_activation() {
             "fixture",
             1,
             &reference,
+            &config_snapshot,
             &fixture.resolver,
+            &config_resolver,
             Some(&mapping_service_db()),
         )
         .await
@@ -1476,16 +1799,5 @@ fn no_effects() -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_suspend: false,
-    }
-}
-
-fn policy() -> DeploymentPolicy {
-    DeploymentPolicy {
-        timeout_ms: Some(1_000),
-        resources: ResourcePolicy {
-            cpu_millis: 100,
-            memory_bytes: 1_048_576,
-        },
-        principal: "service:phase-three".to_string(),
     }
 }

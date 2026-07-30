@@ -653,7 +653,6 @@ fn deployment_input(
         ingress,
         resource_bindings: Vec::new(),
         runtime_capability_bindings: Vec::new(),
-        policy: policy(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Phase four typed execution fixture".to_string(),
             notes: BTreeMap::new(),
@@ -1850,7 +1849,6 @@ fn implementation_package(
         service_requirements,
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -2003,17 +2001,6 @@ fn no_effects(may_suspend: bool) -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_suspend,
-    }
-}
-
-fn policy() -> DeploymentPolicy {
-    DeploymentPolicy {
-        timeout_ms: Some(1_000),
-        resources: ResourcePolicy {
-            cpu_millis: 100,
-            memory_bytes: 1_048_576,
-        },
-        principal: "service:phase-four-fixture".to_string(),
     }
 }
 

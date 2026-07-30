@@ -21,6 +21,8 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
 
+use super::config_snapshot::{materialize_snapshot_config, ActivationConfigViews};
+
 /// Immutable activation owners and canonical target facts published with one assembly generation.
 #[derive(Debug)]
 pub(crate) struct ActiveAssemblyContextSet {
@@ -29,6 +31,7 @@ pub(crate) struct ActiveAssemblyContextSet {
     contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
     schema_records: BTreeMap<ServiceContractRef, AdmittedPackageSchemaRecords>,
     operation_targets: BTreeMap<(ActivationId, ContractOperationId), OperationTargetRef>,
+    config_views: BTreeMap<ServiceDeploymentRef, Arc<ActivationConfigViews>>,
     db_sources: BTreeMap<ActivationId, DbCapabilitySource>,
     websocket_entries: BTreeMap<ServiceDeploymentRef, AdmittedWebSocketEntry>,
 }
@@ -41,6 +44,7 @@ impl ActiveAssemblyContextSet {
         db_provider: &DbProviderSource,
         service_db: Option<&AssemblyActivationServiceDb>,
         environment: Option<&str>,
+        config_snapshot: Option<&skiff_runtime_config_snapshot::RuntimeConfigSnapshot>,
     ) -> anyhow::Result<Self> {
         if runtime_replica_id.trim().is_empty() {
             anyhow::bail!("runtime replica id must be non-empty for activation construction");
@@ -48,6 +52,16 @@ impl ActiveAssemblyContextSet {
         let mut activations = BTreeMap::new();
         let mut activations_by_deployment = BTreeMap::new();
         let mut operation_targets = BTreeMap::new();
+        let config_views = match config_snapshot {
+            Some(snapshot) => materialize_snapshot_config(candidate, snapshot)?,
+            #[cfg(test)]
+            None => super::config_snapshot::materialize_empty_config_for_test(candidate)?,
+            #[cfg(not(test))]
+            None => anyhow::bail!("production activation requires a RuntimeConfigSnapshot"),
+        }
+        .into_iter()
+        .map(|(deployment, views)| (deployment, Arc::new(views)))
+        .collect();
         let mut db_sources = BTreeMap::new();
         let mut websocket_entries = BTreeMap::new();
         for (deployment, linked) in candidate.activations() {
@@ -193,6 +207,7 @@ impl ActiveAssemblyContextSet {
             contracts,
             schema_records,
             operation_targets,
+            config_views,
             db_sources,
             websocket_entries,
         })
@@ -207,6 +222,13 @@ impl ActiveAssemblyContextSet {
 
     pub(crate) fn db_source(&self, activation_id: &ActivationId) -> Option<DbCapabilitySource> {
         self.db_sources.get(activation_id).cloned()
+    }
+
+    pub(crate) fn config_views(
+        &self,
+        deployment: &ServiceDeploymentRef,
+    ) -> Option<Arc<ActivationConfigViews>> {
+        self.config_views.get(deployment).cloned()
     }
 
     pub(crate) fn websocket_entry(
@@ -857,12 +879,12 @@ impl RuntimeAssemblyEvalResolver for ActiveAssemblyContextSet {
 mod websocket_admission_tests {
     use super::*;
     use skiff_artifact_model::{
-        DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy, DeploymentRevision,
+        DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentRevision,
         GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryProtocolSurface,
         GatewayExternalErrorProjection, GatewayExternalSchema,
         GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
         GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
-        GatewayWebSocketShapeVersion, PackageArtifactRef, PackageLocalAbiIdentity, ResourcePolicy,
+        GatewayWebSocketShapeVersion, PackageArtifactRef, PackageLocalAbiIdentity,
         ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     };
 
@@ -967,14 +989,6 @@ mod websocket_admission_tests {
             }],
             resource_bindings: Vec::new(),
             runtime_capability_bindings: Vec::new(),
-            policy: DeploymentPolicy {
-                timeout_ms: None,
-                resources: ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1024,
-                },
-                principal: "test".to_string(),
-            },
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "WebSocket admission fixture".to_string(),
                 notes: BTreeMap::new(),

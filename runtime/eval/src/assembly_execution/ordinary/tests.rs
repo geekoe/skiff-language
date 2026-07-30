@@ -1683,7 +1683,6 @@ fn private_package(package_id: &str, file: &FileIrUnit) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -1795,14 +1794,6 @@ fn activation_context(
         package_build_id,
         ActivationOwnedBindings {
             resource_bindings: Vec::new(),
-            policy: DeploymentPolicy {
-                timeout_ms: Some(1_000),
-                resources: ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "test".to_string(),
-            },
         },
         Vec::new(),
     )

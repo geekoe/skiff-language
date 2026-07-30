@@ -5,12 +5,12 @@ use std::{
 
 use skiff_artifact_model::{
     AssemblyIdentity, BlockIr, CanonicalPackageLinkPlan, DeploymentArtifactIdentity,
-    DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr,
-    ExprRefIr, FileIrRef, FileIrUnit, MetadataValue, PackageArtifact, PackageArtifactRef,
-    PackageBuildId, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef, ResourcePolicy,
-    RuntimeAssembly, ServiceContract, ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr,
-    StmtRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef,
+    FileIrUnit, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndexRef, RuntimeAssembly, ServiceContract,
+    ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr, StmtRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_activation::{
     ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
@@ -506,7 +506,6 @@ fn private_package(file: &FileIrUnit) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
-            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },
@@ -546,14 +545,6 @@ fn activation_context(
         package_build_id,
         ActivationOwnedBindings {
             resource_bindings: Vec::new(),
-            policy: DeploymentPolicy {
-                timeout_ms: Some(1_000),
-                resources: ResourcePolicy {
-                    cpu_millis: 100,
-                    memory_bytes: 1_048_576,
-                },
-                principal: "test".to_string(),
-            },
         },
         Vec::new(),
     )

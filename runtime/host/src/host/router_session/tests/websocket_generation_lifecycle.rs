@@ -677,7 +677,6 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
         method_a.service_protocol_identity(),
         method_b.service_protocol_identity()
     );
-    assert_ne!(method_a.deployment_policy(), method_b.deployment_policy());
     assert!(!Arc::ptr_eq(method_a.activation(), method_b.activation()));
     assert!(!Arc::ptr_eq(
         method_a.execution_image(),
@@ -731,14 +730,6 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
     assert_ne!(
         resolved_a.method_route.service_protocol_identity(),
         method_b.service_protocol_identity()
-    );
-    assert_eq!(
-        resolved_a.method_route.deployment_policy(),
-        method_a.deployment_policy()
-    );
-    assert_ne!(
-        resolved_a.method_route.deployment_policy(),
-        method_b.deployment_policy()
     );
     assert_eq!(resolved_a.target.assembly_generation(), 1);
     assert_eq!(resolved_b.target.assembly_generation(), 2);

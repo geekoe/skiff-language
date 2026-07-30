@@ -8,6 +8,7 @@ pub(crate) struct RuntimeAssemblyEvalAdapterContextInput {
     pub(crate) runtime_id: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
+    pub(crate) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     pub(crate) execution_target: String,
     pub(crate) service_protocol_identity: String,
     pub(crate) ingress_selector: Option<skiff_artifact_model::IngressSelector>,
@@ -40,8 +41,7 @@ pub(super) struct RuntimeAssemblyExecutionContext {
     runtime_id: String,
     pub(super) activation: Arc<ActivationContext>,
     activation_identity: ActivationIdentityControl,
-    config: crate::config_view::RuntimeConfigView,
-    package_configs: Vec<crate::config_view::RuntimeConfigView>,
+    config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     db_source: concrete::DbCapabilitySource,
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
@@ -64,11 +64,6 @@ impl RuntimeAssemblyExecutionContext {
         input: RuntimeAssemblyEvalAdapterContextInput,
         metadata: RuntimeAssemblyRequestMetadata,
     ) -> anyhow::Result<Self> {
-        let config = crate::config_view::RuntimeConfigView::empty();
-        let package_configs = super::assembly_request_adapter::package_config_views(
-            input.execution_image.as_ref(),
-            input.activation.implementation_package_build_id(),
-        )?;
         let deployment = &input.activation.identity().deployment;
         let activation_identity = activation_identity_control(input.activation.as_ref());
         let mut extra = serde_json::Map::new();
@@ -116,8 +111,7 @@ impl RuntimeAssemblyExecutionContext {
             runtime_id: input.runtime_id,
             activation: input.activation,
             activation_identity,
-            config,
-            package_configs,
+            config_views: input.config_views,
             db_source: input.db_source,
             file_source: input.file_source,
             http_options: input.http_options,
@@ -200,8 +194,8 @@ impl RuntimeAssemblyExecutionContext {
         ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: config_context(concrete::ConfigCapabilityContext::new(
-                &self.config,
-                &self.package_configs,
+                self.config_views.service(),
+                self.config_views.packages(),
             )),
             db,
             file,

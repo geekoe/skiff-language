@@ -64,6 +64,10 @@ impl RuntimeHost {
             service_protocol_identity: transition.actor_abi_identity.as_str().to_string(),
             activation: Arc::clone(route.activation()),
             execution_image: Arc::clone(route.execution_image()),
+            config_views: match route.config_views() {
+                Ok(views) => views,
+                Err(_) => return false,
+            },
             resolver: route.resolver(),
             db_source: match route.db_source() {
                 Ok(source) => source,
@@ -252,6 +256,9 @@ impl RuntimeHost {
             service_protocol_identity: header.invoke.actor_abi_identity.as_str().to_string(),
             activation: Arc::clone(route.activation()),
             execution_image: Arc::clone(route.execution_image()),
+            config_views: route
+                .config_views()
+                .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?,
             resolver: route.resolver(),
             db_source: route
                 .db_source()

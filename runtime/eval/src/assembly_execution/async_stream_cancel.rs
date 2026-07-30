@@ -1062,8 +1062,8 @@ mod tests {
 
     use skiff_artifact_model::{
         AssemblyIdentity, BoundaryFeatureUnavailableReason, DeploymentArtifactIdentity,
-        DeploymentPolicy, DeploymentRevision, PackageBuildId, PackageSchemaCanonicalDescriptor,
-        PackageSchemaTypeId, PackageSchemaTypeRecord, ResourcePolicy, ServiceDeploymentRef,
+        DeploymentRevision, PackageBuildId, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+        PackageSchemaTypeRecord, ServiceDeploymentRef,
     };
     use skiff_runtime_activation::{
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
@@ -2086,14 +2086,6 @@ mod tests {
             PackageBuildId::new(package_build),
             ActivationOwnedBindings {
                 resource_bindings: Vec::new(),
-                policy: DeploymentPolicy {
-                    timeout_ms: Some(1_000),
-                    resources: ResourcePolicy {
-                        cpu_millis: 100,
-                        memory_bytes: 1_024,
-                    },
-                    principal: "test".to_string(),
-                },
             },
             Vec::new(),
         )

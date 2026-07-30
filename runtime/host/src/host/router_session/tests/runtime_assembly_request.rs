@@ -561,16 +561,15 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
 }
 
 #[tokio::test]
-async fn host_http_gateway_deadline_clamps_wire_expiry_and_deployment_policy() {
+async fn host_http_gateway_deadline_uses_only_router_wire_budget_and_expiry() {
     let (host, routes) = fixture::admitted_gateway_host().await;
     let route = &routes["/typed"];
     let mut header = canonical_header(route, "host-http-deadline");
 
-    let policy_only = host
+    let absent = host
         .runtime_assembly_request_deadline_from_wire_for_test(&header)
-        .unwrap()
         .unwrap();
-    assert_eq!(policy_only.timeout_ms, 1_000);
+    assert!(absent.is_none());
 
     header.deadline = Some(deadline(75, 5_000));
     let wire_shorter = host

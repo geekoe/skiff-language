@@ -30,6 +30,7 @@ sha2 = "0.10"
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-canonical-json = { path = "../../canonical-json" }
+skiff-runtime-config-snapshot = { path = "../../runtime-config-snapshot" }
 skiff-runtime-activation = { path = "../activation" }
 skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }

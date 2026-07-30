@@ -10,6 +10,9 @@ use skiff_artifact_model::{
 };
 
 use super::*;
+use crate::loader::config_snapshot::{
+    snapshot_for_assembly as config_snapshot_for_assembly, TestSnapshotResolver,
+};
 
 mod execution;
 mod full_chain;
