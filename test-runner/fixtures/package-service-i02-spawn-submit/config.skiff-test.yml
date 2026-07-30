@@ -3,5 +3,4 @@ quota:
   cpuMillis: 500
   memoryBytes: 268435456
 principal: service:test.skiff/package-service-i02-spawn-submit
-lifecycle:
-  maxConcurrency: 2
+lifecycle: {}

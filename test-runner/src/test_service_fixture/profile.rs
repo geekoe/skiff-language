@@ -47,12 +47,6 @@ pub(super) fn selected_profile_bindings(
     reject_reserved_test_ingress_binding(test_service, &config, &secrets)?;
     validate_test_service_states(test_service, state_requirements, &states)?;
     let policy = test_service_policy(test_service)?;
-    if has_http_entries(test_service) && policy.activation.max_concurrency < 2 {
-        return Err(CanonicalFixtureError::InvalidInput(format!(
-            "test service {} lifecycle.maxConcurrency must be at least 2 when http.yml declares an entry",
-            test_service.service_id
-        )));
-    }
     let runner_ingress = implementation
         .runtime_requirements
         .config
@@ -98,13 +92,6 @@ pub(super) fn selected_profile_bindings(
     })
 }
 
-fn has_http_entries(test_service: &CanonicalTestServiceProfile) -> bool {
-    test_service
-        .http
-        .as_ref()
-        .is_some_and(|document| !document.entries.is_empty())
-}
-
 fn reject_reserved_test_ingress_binding(
     test_service: &CanonicalTestServiceProfile,
     config: &BTreeMap<String, serde_json::Value>,
@@ -133,7 +120,6 @@ fn default_test_service_policy() -> SelectedProfileBindings {
                 memory_bytes: 64 * 1024 * 1024,
             },
             activation: ActivationPolicy {
-                max_concurrency: 1,
                 idle_timeout_ms: None,
             },
             principal: "test:package-runner".to_string(),
@@ -165,7 +151,6 @@ struct TestQuotaAuthoring {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestLifecycleAuthoring {
-    max_concurrency: u32,
     #[serde(default)]
     idle_timeout_ms: Option<u64>,
 }
@@ -244,7 +229,6 @@ fn test_service_policy(
             memory_bytes: quota.memory_bytes,
         },
         activation: ActivationPolicy {
-            max_concurrency: lifecycle.max_concurrency,
             idle_timeout_ms: lifecycle.idle_timeout_ms,
         },
         principal,

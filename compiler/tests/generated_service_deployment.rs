@@ -52,6 +52,10 @@ fn generates_exact_operations_and_profile_bindings() {
     assert!(deployment.ingress.is_empty());
     assert_eq!(deployment.config_literals[0].path, "registry.token");
     assert_eq!(deployment.policy.principal, "service:registry");
+    assert_eq!(
+        serde_json::to_value(&deployment.policy.activation).unwrap(),
+        json!({"idleTimeoutMs": null})
+    );
 
     let explicit_empty_http = HttpGatewayDocumentAuthoring::default();
     let explicit_empty = generate_service_deployment(GeneratedServiceDeploymentInput {
@@ -313,6 +317,34 @@ fn invalid_timeout_values_fail_closed() {
             "{label}: {message}"
         );
     }
+}
+
+#[test]
+fn retired_profile_max_concurrency_fails_closed() {
+    let (project, service_api) = compile_fixture("generated-retired-max-concurrency", "\"ok\"");
+    let mut profile = profile();
+    profile.lifecycle = json!({
+        "maxConcurrency": 4,
+        "idleTimeoutMs": 5_000
+    });
+
+    let error = generate_service_deployment(GeneratedServiceDeploymentInput {
+        service: &manifest(),
+        http: None,
+        websocket: None,
+        profile_name: "prod",
+        profile: &profile,
+        service_api: &service_api,
+        implementation: &project.package.artifact,
+        package_closure: &[],
+        package_schema_records: &project.package.resolved_package_schema_type_records,
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("lifecycle"), "{error}");
+    assert!(error.contains("maxConcurrency"), "{error}");
+    assert!(error.contains("unknown field"), "{error}");
 }
 
 #[test]
@@ -856,6 +888,6 @@ fn profile() -> ServiceConfigProfileAuthoring {
         timeout: json!(1000),
         quota: json!({"cpuMillis": 100, "memoryBytes": 1048576}),
         principal: json!("service:registry"),
-        lifecycle: json!({"maxConcurrency": 4}),
+        lifecycle: json!({}),
     }
 }

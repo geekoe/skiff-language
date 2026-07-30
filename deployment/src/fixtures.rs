@@ -45,7 +45,6 @@ pub fn deployment_policy_fixture() -> DeploymentPolicy {
             memory_bytes: 1_048_576,
         },
         activation: ActivationPolicy {
-            max_concurrency: 8,
             idle_timeout_ms: Some(30_000),
         },
         principal: "service:example.echo".to_string(),

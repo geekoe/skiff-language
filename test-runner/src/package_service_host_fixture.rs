@@ -161,7 +161,7 @@ fn prepare_service_root(
     fs::write(
         target.join(format!("config.{environment}.yml")),
         format!(
-            "{config_values}timeout: 1000\nquota:\n  cpuMillis: 100\n  memoryBytes: 1048576\nlifecycle:\n  maxConcurrency: 1\nprincipal: {principal}\n"
+            "{config_values}timeout: 1000\nquota:\n  cpuMillis: 100\n  memoryBytes: 1048576\nlifecycle: {{}}\nprincipal: {principal}\n"
         ),
     )?;
     Ok(target.to_path_buf())

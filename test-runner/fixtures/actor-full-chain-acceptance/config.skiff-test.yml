@@ -3,5 +3,4 @@ quota:
   cpuMillis: 500
   memoryBytes: 268435456
 principal: service:test.skiff/actor-full-chain-acceptance
-lifecycle:
-  maxConcurrency: 2
+lifecycle: {}

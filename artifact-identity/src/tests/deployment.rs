@@ -203,7 +203,6 @@ fn deployment_with(kind: GatewayAdapterKind) -> ServiceDeployment {
                 memory_bytes: 1,
             },
             activation: ActivationPolicy {
-                max_concurrency: 1,
                 idle_timeout_ms: None,
             },
             principal: "service:example.service".to_string(),

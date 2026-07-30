@@ -179,7 +179,6 @@ mod tests {
                         memory_bytes: 1024,
                     },
                     activation: ActivationPolicy {
-                        max_concurrency: 1,
                         idle_timeout_ms: None,
                     },
                     principal: "gateway-test".to_string(),

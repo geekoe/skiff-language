@@ -45,7 +45,7 @@ fn ordinary_test_service_loads_exact_transitive_store_closure_and_ignores_decoy_
     .unwrap();
     fs::write(
         service.join("config.skiff-test.yml"),
-        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/transitive-store\nlifecycle:\n  maxConcurrency: 1\n",
+        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/transitive-store\nlifecycle: {}\n",
     )
     .unwrap();
     fs::write(

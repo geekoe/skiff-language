@@ -3,5 +3,4 @@ quota:
   cpuMillis: 100
   memoryBytes: 1048576
 principal: service:websocket_fixture
-lifecycle:
-  maxConcurrency: 1
+lifecycle: {}

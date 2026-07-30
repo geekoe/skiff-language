@@ -567,9 +567,6 @@ fn validate_policy(policy: &DeploymentPolicy) -> Result<()> {
     if policy.resources.cpu_millis == 0 || policy.resources.memory_bytes == 0 {
         return invalid_deployment("resource policy limits must be greater than zero");
     }
-    if policy.activation.max_concurrency == 0 {
-        return invalid_deployment("activation maxConcurrency must be greater than zero");
-    }
     require_non_empty("policy.principal", &policy.principal)
 }
 

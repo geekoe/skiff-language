@@ -517,7 +517,6 @@ struct QuotaAuthoring {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LifecycleAuthoring {
-    max_concurrency: u32,
     #[serde(default)]
     idle_timeout_ms: Option<u64>,
 }
@@ -536,7 +535,6 @@ fn deployment_policy(
             memory_bytes: quota.memory_bytes,
         },
         activation: ActivationPolicy {
-            max_concurrency: lifecycle.max_concurrency,
             idle_timeout_ms: lifecycle.idle_timeout_ms,
         },
         principal,

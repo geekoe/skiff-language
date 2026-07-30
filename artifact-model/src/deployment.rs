@@ -225,7 +225,6 @@ pub struct ResourcePolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationPolicy {
-    pub max_concurrency: u32,
     pub idle_timeout_ms: Option<u64>,
 }
 
@@ -299,6 +298,20 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn activation_policy_rejects_retired_service_concurrency() {
+        let canonical = json!({"idleTimeoutMs": null});
+        let decoded = serde_json::from_value::<ActivationPolicy>(canonical.clone()).unwrap();
+        assert_eq!(decoded.idle_timeout_ms, None);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
+
+        let retired = json!({
+            "maxConcurrency": 4,
+            "idleTimeoutMs": null
+        });
+        assert!(serde_json::from_value::<ActivationPolicy>(retired).is_err());
+    }
 
     #[test]
     fn service_deployment_operation_input_requires_exact_callable_id() {
