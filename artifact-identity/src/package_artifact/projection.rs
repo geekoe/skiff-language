@@ -107,12 +107,6 @@ pub(super) fn build_projection_from_validated(
     runtime_requirements
         .config
         .sort_by(|left, right| left.path.cmp(&right.path));
-    runtime_requirements
-        .resources
-        .sort_by(|left, right| left.key.cmp(&right.key));
-    runtime_requirements
-        .runtime_capabilities
-        .sort_by(|left, right| left.capability.cmp(&right.capability));
 
     Ok(PackageArtifactBuildIdentityProjection {
         schema: PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,

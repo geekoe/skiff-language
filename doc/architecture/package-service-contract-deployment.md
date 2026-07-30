@@ -205,7 +205,8 @@ PackageArtifact
   implementation links
   package dependency requirements
   service runtime requirements
-  own typed config/runtime capability requirements
+  own typed config requirements
+  database schema metadata
   callable semantic facts
   boundary callable projections
   unresolved ServiceCallRefs

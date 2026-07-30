@@ -109,5 +109,8 @@ artifact schema填写占位值。`DeploymentPolicy`和`ResourcePolicy`不存在�
 Router operator配置的`requestTimeoutMs`平台上限约束，service配置不能覆盖。未来平台policy或resource
 配置必须由operator-owned独立配置拥有，不能塞回Package业务配置文件。
 
-这里删除的是service profile中的平台`resources` binding，不是`package.yml.resources`声明的Package静态
-资源；静态资源仍随PackageArtifact发布。
+这里删除的是未落地的deployment binding脚手架：`PackageResourceRequirement`、`ResourceBinding`、
+`PackageRuntimeCapabilityRequirement`和`RuntimeCapabilityBinding`，不是`package.yml.resources`声明的
+Package静态资源；`PackageArtifact.staticResources`、resource store/loader和`std.resource.*`继续保留。
+Runtime内部真实使用的`NativeRequiredContext`、`NativeCapabilityContexts`，以及Router向Runtime协商
+transport feature的`runtime.capabilities`也不属于这次删除范围。

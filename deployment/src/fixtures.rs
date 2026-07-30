@@ -108,8 +108,6 @@ pub fn service_deployment_input_fixture() -> skiff_artifact_model::ServiceDeploy
         }],
         secret_refs: Vec::new(),
         state_bindings: Vec::new(),
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: Vec::new(),
         policy: deployment_policy_fixture(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Echo deployment".to_string(),
@@ -137,8 +135,6 @@ pub fn service_deployment_fixture() -> Result<ServiceDeployment> {
         config_literals: input.config_literals,
         secret_refs: input.secret_refs,
         state_bindings: input.state_bindings,
-        resource_bindings: input.resource_bindings,
-        runtime_capability_bindings: input.runtime_capability_bindings,
         policy: input.policy,
         diagnostic_text: input.diagnostic_text,
     };
@@ -197,7 +193,6 @@ pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
             config_literals: deployment.config_literals.clone(),
             secret_refs: deployment.secret_refs.clone(),
             state_bindings: deployment.state_bindings.clone(),
-            resource_bindings: deployment.resource_bindings.clone(),
             policy: deployment.policy.clone(),
         }],
         gateway_ingress: Vec::new(),

@@ -3,10 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     validate_gateway_adapter_args, DeploymentGatewayEntry, DeploymentIngressBinding,
     DeploymentRevision, GatewayAdapterSource, GatewayEntryKey, GatewayProtocolSurface,
-    PackageArtifactRef, PackageBinding, ResourceBinding, RuntimeCapabilityBinding,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentRef,
-    ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageArtifactRef, PackageBinding, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentRef, ServiceSelectorBinding,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::{gateway_entry_identity, ArtifactIdentityError, Result};
@@ -45,8 +44,6 @@ pub fn validate_service_deployment_input(input: &ServiceDeploymentInput) -> Resu
         &input.service_selectors,
         &input.gateway_entries,
         &input.ingress,
-        &input.resource_bindings,
-        &input.runtime_capability_bindings,
     )
 }
 
@@ -84,26 +81,20 @@ pub fn validate_service_deployment_surface(deployment: &ServiceDeployment) -> Re
         &deployment.service_selectors,
         &deployment.gateway_entries,
         &deployment.ingress,
-        &deployment.resource_bindings,
-        &deployment.runtime_capability_bindings,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_shared_bindings(
     implementation: &PackageArtifactRef,
     package_bindings: &[PackageBinding],
     service_selectors: &[ServiceSelectorBinding],
     gateway_entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     ingress: &[DeploymentIngressBinding],
-    resource_bindings: &[ResourceBinding],
-    runtime_capability_bindings: &[RuntimeCapabilityBinding],
 ) -> Result<()> {
     let packages = validate_package_bindings(implementation, package_bindings)?;
     validate_service_selectors(service_selectors, &packages)?;
     validate_gateway_entries(gateway_entries)?;
-    validate_ingress_bindings(ingress, gateway_entries)?;
-    validate_activation_inputs(resource_bindings, runtime_capability_bindings)
+    validate_ingress_bindings(ingress, gateway_entries)
 }
 
 fn validate_package_bindings<'a>(
@@ -391,32 +382,6 @@ fn validate_gateway_entries(
                 }
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_activation_inputs(
-    resource_bindings: &[ResourceBinding],
-    runtime_capability_bindings: &[RuntimeCapabilityBinding],
-) -> Result<()> {
-    validate_unique_named(
-        resource_bindings
-            .iter()
-            .map(|binding| binding.requirement_key.as_str()),
-        "resource requirement",
-    )?;
-    for binding in resource_bindings {
-        require_non_empty("resource capability", &binding.capability)?;
-        require_non_empty("resourceRef", &binding.resource_ref)?;
-    }
-    validate_unique_named(
-        runtime_capability_bindings
-            .iter()
-            .map(|binding| binding.capability.as_str()),
-        "runtime capability",
-    )?;
-    for binding in runtime_capability_bindings {
-        require_non_empty("runtime capability version", &binding.version)?;
     }
     Ok(())
 }

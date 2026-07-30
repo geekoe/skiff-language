@@ -13,9 +13,9 @@ use skiff_artifact_model::{
     GatewayEntryKey, GatewayExternalSchema, GatewayIngressBinding, GatewayProtocolSurface,
     IngressProtocol, IngressSelector, MetadataValue, PackageArtifactRef, PackageBinding,
     PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageRequirementKey,
-    ResolvedServiceBinding, ResourceBinding, RuntimeAssembly, RuntimeCapabilityBinding,
-    SecretRefBinding, ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding,
-    StateBinding, StateBindingKind, GATEWAY_ENTRY_IDENTITY_PREFIX,
+    ResolvedServiceBinding, RuntimeAssembly, SecretRefBinding, ServiceDeployment,
+    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
+    GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use crate::fixtures::{
@@ -99,17 +99,6 @@ fn rich_deployment() -> ServiceDeployment {
         kind: StateBindingKind::Database,
         namespace: "echo-messages".to_string(),
     });
-    deployment.resource_bindings.push(ResourceBinding {
-        requirement_key: "mailer".to_string(),
-        capability: "smtp".to_string(),
-        resource_ref: "resource://mailer/default".to_string(),
-    });
-    deployment
-        .runtime_capability_bindings
-        .push(RuntimeCapabilityBinding {
-            capability: "clock".to_string(),
-            version: "1".to_string(),
-        });
     assign_service_deployment_identity(&mut deployment).expect("rich deployment identity");
     deployment
 }
@@ -203,8 +192,6 @@ fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
     reordered.config_literals.reverse();
     reordered.secret_refs.reverse();
     reordered.state_bindings.reverse();
-    reordered.resource_bindings.reverse();
-    reordered.runtime_capability_bindings.reverse();
     let entries = reordered.gateway_entries.clone();
     reordered.gateway_entries = BTreeMap::new();
     for (key, entry) in entries.into_iter().rev() {
@@ -446,14 +433,6 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
         (
             "state",
             Box::new(|value| value.state_bindings[0].namespace = "echo-next".into()),
-        ),
-        (
-            "resource",
-            Box::new(|value| value.resource_bindings[0].resource_ref = "resource://next".into()),
-        ),
-        (
-            "capability",
-            Box::new(|value| value.runtime_capability_bindings[0].version = "2".into()),
         ),
         (
             "policy",

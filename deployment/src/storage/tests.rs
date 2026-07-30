@@ -100,8 +100,6 @@ fn package_fixture() -> PackageArtifact {
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
             state: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
         },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
