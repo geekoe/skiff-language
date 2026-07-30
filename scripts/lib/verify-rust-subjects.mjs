@@ -9,6 +9,7 @@ const rustImplementationSubjects = [
       rustPackage('artifact-identity', 'skiff-artifact-identity'),
       rustPackage('deployment', 'skiff-deployment'),
       rustPackage('runtime-config-snapshot', 'skiff-runtime-config-snapshot'),
+      rustPackage('config-snapshot-tooling', 'skiff-config-snapshot-tooling'),
       rustPackage('syntax', 'skiff-syntax'),
     ],
   },
