@@ -1344,14 +1344,33 @@ async function createFixture(
   const selectedBinding = limits.binding ?? BINDING;
   const assemblyIdentity = limits.assemblyIdentity ?? ASSEMBLY;
   const generation = limits.generation ?? 7;
+  const selectedBindings = limits.bindings ?? [selectedBinding];
+  const deployments = Array.from(
+    new Map(
+      selectedBindings.map((binding) => [
+        `${binding.deployment.serviceId}\u0000${binding.deployment.contractVersion}`,
+        binding.deployment
+      ])
+    ).values()
+  );
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
-    ingress: new RuntimeAssemblyIngressIndex(
-      limits.bindings ?? [selectedBinding]
-    )
+    resolvedDeployments: deployments,
+    resolvedContracts: deployments.map((deployment) => ({
+      serviceId: deployment.serviceId,
+      contractVersion: deployment.contractVersion,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`
+    })),
+    deploymentRuntimeBindings: deployments.map((deployment) => ({
+      deployment,
+      packageBuildId:
+        `skiff-package-build-v10:sha256:${'f'.repeat(64)}`
+    })),
+    ingress: new RuntimeAssemblyIngressIndex(selectedBindings)
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();

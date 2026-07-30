@@ -759,11 +759,7 @@ export class RuntimeEndpoint
           const response = await this.dispatcher().handleSpawnSubmit(
             ws,
             header,
-            frame.payloadBytes,
-            this.options.assemblyRegistry?.actorSpawnRuntimeControlSource(
-              ws,
-              header
-            )
+            frame.payloadBytes
           );
           this.sendFrame(ws, response.header);
         }

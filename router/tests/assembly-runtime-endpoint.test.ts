@@ -226,8 +226,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     const [child, childReceipt] = await sendSpawnAndReceive(
       ws,
       'spawn-rpc-child',
-      rootValidation.envelope.requestId,
-      { buildId: null }
+      rootValidation.envelope.requestId
     );
     const childValidation =
       validateRuntimeAssemblyRequestStartFrameWireHeader(child.header);
@@ -286,6 +285,151 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     await until(
       () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
     );
+  });
+
+  it('inherits spawn authority from a pinned parent after the current registry advances', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+
+    const prepare = nextActivation(ws, 'prepare');
+    const activationPromise = fixture.coordinator.activate(
+      activationRequest('activation-parent-pin', 1, ASSEMBLY_B)
+    );
+    expect(await prepare).toEqual(
+      transition('prepare', 'activation-parent-pin', 1, ASSEMBLY_B)
+    );
+    const commit = nextActivation(ws, 'commit');
+    sendActivation(
+      ws,
+      transition('prepared', 'activation-parent-pin', 1, ASSEMBLY_B)
+    );
+    await expect(activationPromise).resolves.toMatchObject({
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } }
+    });
+    await commit;
+    sendActivation(ws, registration(2, ASSEMBLY_B));
+    await until(
+      () =>
+        fixture.assemblyRegistry.snapshot().some(
+          (replica) =>
+            replica.generation === 2 &&
+            replica.assemblyIdentity === ASSEMBLY_B &&
+            replica.state === 'healthy'
+        )
+    );
+
+    const [child, childReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-pinned-parent',
+      rootValidation.envelope.requestId
+    );
+    const childValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(child.header);
+    if (!childValidation.ok || !('invocation' in childValidation.envelope)) {
+      throw new Error('expected pinned-parent derived spawn invocation');
+    }
+    expect(childReceipt.header.type).toBe('spawn.submit.response');
+    expect(childValidation.envelope.routing).toMatchObject({
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      deployment: deploymentRef(deploymentRevision(ASSEMBLY_A))
+    });
+
+    const [grandchild, grandchildReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-pinned-parent-recursive',
+      childValidation.envelope.requestId
+    );
+    const grandchildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(grandchild.header);
+    if (
+      !grandchildValidation.ok ||
+      !('invocation' in grandchildValidation.envelope)
+    ) {
+      throw new Error('expected recursive pinned-parent spawn invocation');
+    }
+    expect(grandchildReceipt.header.type).toBe('spawn.submit.response');
+    expect(grandchildValidation.envelope.routing).toMatchObject({
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1
+    });
+
+    sendEmptyResponseEnd(ws, grandchildValidation.envelope.requestId);
+    sendEmptyResponseEnd(ws, childValidation.envelope.requestId);
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('does not require a current registry source while the authenticated parent is pending', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+
+    const registeredConnection =
+      fixture.assemblyRegistry.connectionForReplica(RUNTIME_ID);
+    if (registeredConnection === undefined) {
+      throw new Error('expected registered RuntimeAssembly connection');
+    }
+    expect(
+      fixture.assemblyRegistry.removeRuntimeConnection(registeredConnection)
+    ).toBe(RUNTIME_ID);
+    expect(fixture.assemblyRegistry.actorSpawnRuntimeControlSource(
+      registeredConnection,
+      {
+        ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+        runtimeId: RUNTIME_ID,
+        activationIdentity: activation(ASSEMBLY_A, 1),
+        serviceId: SERVICE_ID,
+        serviceVersion: SERVICE_VERSION,
+        serviceProtocolIdentity: SERVICE_PROTOCOL,
+        callerRequestId: rootValidation.envelope.requestId
+      }
+    )).toBeUndefined();
+
+    const [child, receipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-no-current-source',
+      rootValidation.envelope.requestId
+    );
+    const childValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(child.header);
+    if (!childValidation.ok || !('invocation' in childValidation.envelope)) {
+      throw new Error('expected derived spawn without current registry source');
+    }
+    expect(receipt.header.type).toBe('spawn.submit.response');
+
+    sendEmptyResponseEnd(ws, childValidation.envelope.requestId);
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
   });
 
   it('keeps an accepted spawn alive after its parent is cancelled', async () => {
@@ -590,6 +734,20 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       'spawn-rpc-owner-mismatch',
       rootValidation.envelope.requestId,
       { buildId: `skiff-package-build-v10:sha256:${'e'.repeat(64)}` }
+    );
+    await expect(
+      nextRuntimeFrame(ws, 'spawn.submit.error')
+    ).resolves.toMatchObject({
+      header: {
+        error: { code: 'SpawnSubmitRejected', status: 502 }
+      }
+    });
+
+    sendSpawnSubmit(
+      ws,
+      'spawn-rpc-missing-build',
+      rootValidation.envelope.requestId,
+      { buildId: null }
     );
     await expect(
       nextRuntimeFrame(ws, 'spawn.submit.error')

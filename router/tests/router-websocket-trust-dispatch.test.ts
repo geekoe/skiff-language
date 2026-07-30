@@ -50,7 +50,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const responsePromise = dispatcher.dispatchAssemblyWebSocketConnect(
       { header, payloadBytes: new Uint8Array() },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(header, runtime)
     );
 
     const tuple = {
@@ -104,7 +104,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const response = dispatcher.dispatchAssemblyWebSocketConnect(
       { header, payloadBytes: new Uint8Array() },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(header, runtime)
     );
 
     dispatcher.resolveRequest(runtime, {
@@ -130,7 +130,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const first = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: firstHeader, payloadBytes: new Uint8Array() },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(firstHeader, runtime)
     );
 
     await expect(
@@ -140,7 +140,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
           payloadBytes: new Uint8Array()
         },
         1_000,
-        { runtimeId: 'runtime-one', ws: runtime }
+        runtimeConnection(connectHeader('connect-capacity-overload'), runtime)
       )
     ).rejects.toThrow(/maxConcurrency 1/);
 
@@ -160,7 +160,7 @@ describe('current RuntimeAssembly WebSocket dispatcher trust', () => {
     const reused = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: reusedHeader, payloadBytes: new Uint8Array() },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(reusedHeader, runtime)
     );
     dispatcher.resolveRequest(runtime, {
       header: {
@@ -189,6 +189,24 @@ function registry(): RuntimeDispatchRegistry {
 
 function socket(): WebSocket {
   return { readyState: WebSocket.OPEN } as WebSocket;
+}
+
+function runtimeConnection(
+  header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  ws: WebSocket
+) {
+  return {
+    runtimeId: 'runtime-one',
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: header.routing.assemblyIdentity,
+      assemblyGeneration: header.routing.assemblyGeneration,
+      deployment: { ...header.routing.deployment },
+      buildId: `skiff-package-build-v10:sha256:${'f'.repeat(64)}`,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'d'.repeat(64)}`
+    },
+    ws
+  };
 }
 
 function connectHeader(

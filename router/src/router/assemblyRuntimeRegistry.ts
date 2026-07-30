@@ -49,7 +49,10 @@ interface AssemblyReplica extends RuntimeDispatchRuntimeIdentity {
 }
 
 interface AssemblyDeploymentBinding {
+  serviceId: string;
+  contractVersion: string;
   deploymentRevision: string;
+  deploymentArtifactIdentity: string;
   packageBuildId: string;
   serviceProtocolIdentity: string;
   timeoutMs?: number;
@@ -294,7 +297,7 @@ export class AssemblyRuntimeRegistry {
     if (requestError !== undefined) {
       return requestError;
     }
-    return this.pickHealthyDispatchConnection();
+    return this.pickHealthyDispatchConnection(request);
   }
 
   pickAssemblyTestDispatchConnection(
@@ -312,10 +315,12 @@ export class AssemblyRuntimeRegistry {
     if (requestError !== undefined) {
       return requestError;
     }
-    return this.pickHealthyDispatchConnection();
+    return this.pickHealthyDispatchConnection(request);
   }
 
-  private pickHealthyDispatchConnection():
+  private pickHealthyDispatchConnection(
+    request: RuntimeDispatchFrameHeader
+  ):
     | RuntimeDispatchConnection
     | ProviderUnavailableError {
     const candidates = this.dispatchCandidates().filter(
@@ -328,9 +333,45 @@ export class AssemblyRuntimeRegistry {
     }
     const replica = candidates[this.nextReplicaCursor % candidates.length];
     this.nextReplicaCursor += 1;
-    return replica === undefined
-      ? new ProviderUnavailableError()
-      : { runtimeId: replica.replicaId, ws: replica.ws };
+    if (replica === undefined) {
+      return new ProviderUnavailableError();
+    }
+    if (!isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return new ProviderUnavailableError(
+        'RuntimeAssembly dispatch authority requires canonical nested routing'
+      );
+    }
+    const binding = replica.deploymentBindingsByService.get(
+      request.routing.deployment.serviceId
+    );
+    if (
+      binding === undefined ||
+      binding.deploymentRevision !==
+        request.routing.deployment.deploymentRevision
+    ) {
+      return new ProviderUnavailableError(
+        'RuntimeAssembly dispatch authority is unavailable for the exact deployment'
+      );
+    }
+    return {
+      runtimeId: replica.replicaId,
+      runtimeAssemblyAuthority: {
+        assemblyIdentity: replica.assemblyIdentity,
+        assemblyGeneration: replica.generation,
+        deployment: {
+          serviceId: binding.serviceId,
+          contractVersion: binding.contractVersion,
+          deploymentRevision: binding.deploymentRevision,
+          deploymentArtifactIdentity: binding.deploymentArtifactIdentity
+        },
+        buildId: binding.packageBuildId,
+        serviceProtocolIdentity: binding.serviceProtocolIdentity,
+        ...(binding.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: binding.timeoutMs })
+      },
+      ws: replica.ws
+    };
   }
 
   validateDispatchRequest(
@@ -458,7 +499,10 @@ function deploymentBindingsByService(
       continue;
     }
     setDeploymentBinding(bindings, contract.serviceId, {
+      serviceId: contract.serviceId,
+      contractVersion: contract.contractVersion,
       deploymentRevision: deployment.deploymentRevision,
+      deploymentArtifactIdentity: deployment.deploymentArtifactIdentity,
       packageBuildId: runtimeBinding.packageBuildId,
       serviceProtocolIdentity: contract.serviceProtocolIdentity,
       ...(runtimeBinding.timeoutMs === undefined
@@ -478,6 +522,9 @@ function setDeploymentBinding(
   if (
     existing !== undefined &&
     (existing.deploymentRevision !== binding.deploymentRevision ||
+      existing.serviceId !== binding.serviceId ||
+      existing.contractVersion !== binding.contractVersion ||
+      existing.deploymentArtifactIdentity !== binding.deploymentArtifactIdentity ||
       existing.packageBuildId !== binding.packageBuildId ||
       existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity ||
       existing.timeoutMs !== binding.timeoutMs)

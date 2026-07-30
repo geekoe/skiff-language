@@ -96,6 +96,19 @@ export type RuntimeDispatchFrameHeader =
 export interface RuntimeDispatchConnection {
   runtimeId?: string;
   dispatchBuildId?: string;
+  runtimeAssemblyAuthority?: {
+    assemblyIdentity: string;
+    assemblyGeneration: number;
+    deployment: {
+      serviceId: string;
+      contractVersion: string;
+      deploymentRevision: string;
+      deploymentArtifactIdentity: string;
+    };
+    buildId: string;
+    serviceProtocolIdentity: string;
+    timeoutMs?: number;
+  };
   ws: WebSocket;
 }
 

@@ -57,7 +57,7 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
     const connectResponse = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: connect, payloadBytes: new Uint8Array() },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(connect, runtime)
     );
     dispatcher.resolveRequest(runtime, {
       header: {
@@ -115,7 +115,10 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
         payloadBytes: new Uint8Array()
       },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(
+        methodRequest as unknown as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        runtime
+      )
     );
 
     try {
@@ -707,7 +710,7 @@ async function acquireReceipt(
   const pending = dispatcher.dispatchAssemblyWebSocketConnect(
     { header, payloadBytes: new Uint8Array() },
     1_000,
-    { runtimeId: 'runtime-one', ws: runtime }
+    runtimeConnection(header, runtime)
   );
   dispatcher.resolveRequest(runtime, {
     header: {
@@ -778,6 +781,24 @@ function registry(): RuntimeDispatchRegistry {
 
 function socket(): WebSocket {
   return { readyState: WebSocket.OPEN } as WebSocket;
+}
+
+function runtimeConnection(
+  header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  ws: WebSocket
+) {
+  return {
+    runtimeId: 'runtime-one',
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: header.routing.assemblyIdentity,
+      assemblyGeneration: header.routing.assemblyGeneration,
+      deployment: { ...header.routing.deployment },
+      buildId: `skiff-package-build-v10:sha256:${'f'.repeat(64)}`,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`
+    },
+    ws
+  };
 }
 
 function setSocketReadyState(ws: WebSocket, readyState: number): void {

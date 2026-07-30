@@ -80,7 +80,16 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
     httpRequest: httpRequest()
   });
 
-  expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-a' });
+  expect(registry.pickDispatchConnection(request)).toMatchObject({
+    runtimeId: 'replica-a',
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      deployment: binding.deployment,
+      buildId: PACKAGE_BUILD_ID,
+      serviceProtocolIdentity: PROTOCOL
+    }
+  });
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-b' });
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-a' });
 
