@@ -3,25 +3,23 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Canonical runtime meaning of one stateful dependency edge.
 ///
 /// The exact package build remains the owner of code and DB metadata. This
-/// value contains the remaining activation-owned facts that can differ between
+/// value contains the remaining activation-owned fact that can differ between
 /// two edges selecting that build: the fully resolved source-to-target
-/// collection projection and the selected database namespace. It is a runtime
-/// comparison value, not an artifact DTO.
+/// collection projection. The database is owned by the service activation and
+/// is never selected by a package edge. This is a runtime comparison value, not
+/// an artifact DTO.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalActiveCollectionProjection {
     collection_names: BTreeMap<String, String>,
-    database_namespace: Option<String>,
 }
 
 impl CanonicalActiveCollectionProjection {
     pub fn resolve(
         source_collections: &BTreeSet<String>,
         mapping: &BTreeMap<String, String>,
-        database_namespace: Option<&str>,
     ) -> Result<Self, String> {
         Ok(Self {
             collection_names: resolve_dependency_collection_names(source_collections, mapping)?,
-            database_namespace: database_namespace.map(str::to_owned),
         })
     }
 
@@ -146,21 +144,16 @@ mod tests {
     }
 
     #[test]
-    fn active_projection_compares_resolved_mapping_and_namespace_canonically() {
+    fn active_projection_compares_only_resolved_mapping_canonically() {
         let sources = BTreeSet::from(["a".to_string(), "b".to_string()]);
-        let empty = CanonicalActiveCollectionProjection::resolve(
-            &sources,
-            &BTreeMap::new(),
-            Some("test-state"),
-        )
-        .unwrap();
+        let empty =
+            CanonicalActiveCollectionProjection::resolve(&sources, &BTreeMap::new()).unwrap();
         let explicit_identity = CanonicalActiveCollectionProjection::resolve(
             &sources,
             &BTreeMap::from([
                 ("b".to_string(), "b".to_string()),
                 ("a".to_string(), "a".to_string()),
             ]),
-            Some("test-state"),
         )
         .unwrap();
         assert_eq!(empty, explicit_identity);
@@ -168,17 +161,8 @@ mod tests {
         let remapped = CanonicalActiveCollectionProjection::resolve(
             &sources,
             &BTreeMap::from([("a".to_string(), "mapped_a".to_string())]),
-            Some("test-state"),
         )
         .unwrap();
         assert_ne!(empty, remapped);
-
-        let other_namespace = CanonicalActiveCollectionProjection::resolve(
-            &sources,
-            &BTreeMap::new(),
-            Some("other-state"),
-        )
-        .unwrap();
-        assert_ne!(empty, other_namespace);
     }
 }

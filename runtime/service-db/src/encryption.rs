@@ -24,12 +24,12 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_DB_ENCRYPTION_KEYRING_FORMAT: &str = "skiff-service-db-keyring-v1";
 
-const FIELD_KDF_SALT: &[u8] = b"skiff-service-db-encrypted-field-v1";
-const FIELD_KDF_MARKER: &[u8] = b"skiff-service-db-encrypted-field-hkdf-v1";
-const FIELD_AAD_MARKER: &[u8] = b"skiff-service-db-encrypted-field-aad-v1";
+const FIELD_KDF_SALT: &[u8] = b"skiff-service-db-encrypted-field-v2";
+const FIELD_KDF_MARKER: &[u8] = b"skiff-service-db-encrypted-field-hkdf-v2";
+const FIELD_AAD_MARKER: &[u8] = b"skiff-service-db-encrypted-field-aad-v2";
 const KEYRING_FINGERPRINT_MARKER: &[u8] = b"skiff-service-db-keyring-fingerprint-v1";
 const ENVELOPE_FIELD: &str = "_skiff_encrypted";
-const ENVELOPE_VERSION: i32 = 1;
+const ENVELOPE_VERSION: i32 = 2;
 const ROOT_KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
 const AUTH_TAG_BYTES: usize = 16;
@@ -42,6 +42,7 @@ const MAX_KEY_ID_BYTES: usize = 64;
 /// included accidentally in diagnostics.
 #[derive(Clone, Copy)]
 pub struct DbEncryptedFieldContext<'a> {
+    pub storage_environment: &'a str,
     pub storage_service_id: &'a str,
     pub collection_name: &'a str,
     pub field_name: &'a str,
@@ -399,6 +400,7 @@ fn derive_field_key(
     let info = binary_tuple(&[
         FIELD_KDF_MARKER,
         key_id.as_bytes(),
+        context.storage_environment.as_bytes(),
         context.storage_service_id.as_bytes(),
         context.collection_name.as_bytes(),
         context.field_name.as_bytes(),
@@ -418,6 +420,7 @@ fn field_aad(
     binary_tuple(&[
         FIELD_AAD_MARKER,
         key_id.as_bytes(),
+        context.storage_environment.as_bytes(),
         context.storage_service_id.as_bytes(),
         context.collection_name.as_bytes(),
         context.field_name.as_bytes(),

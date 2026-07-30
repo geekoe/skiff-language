@@ -27,6 +27,7 @@ pub struct DbCollectionMetadata {
     pub collection_name: String,
     pub key_field: String,
     pub key_ty: Option<db_boundary::DbBoundaryValuePlan>,
+    pub storage_environment: String,
     pub storage_service_id: String,
     pub encryption_cipher: Option<DbEncryptionCipher>,
     pub fields: HashMap<String, DbFieldMetadata>,
@@ -75,11 +76,12 @@ pub struct DbIndexMetadata {
 impl ServiceDbMetadata {
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_runtime_program_db(entries: &[DbProviderTargetMetadata]) -> Result<Self> {
-        Self::from_runtime_program_db_with_encryption(entries, "test.local/service", None)
+        Self::from_runtime_program_db_with_encryption(entries, "test", "test.local/service", None)
     }
 
     pub fn from_runtime_program_db_with_encryption(
         entries: &[DbProviderTargetMetadata],
+        storage_environment: &str,
         storage_service_id: &str,
         encryption_cipher: Option<DbEncryptionCipher>,
     ) -> Result<Self> {
@@ -89,6 +91,7 @@ impl ServiceDbMetadata {
             let mut binding = DbCollectionMetadata::from_ir_with_encryption(
                 &entry.metadata,
                 index,
+                storage_environment,
                 storage_service_id,
                 encryption_cipher.clone(),
             )?;
@@ -133,12 +136,13 @@ impl ServiceDbMetadata {
 impl DbCollectionMetadata {
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_ir(ir: &DbMetadataIr, index: usize) -> Result<Self> {
-        Self::from_ir_with_encryption(ir, index, "test.local/service", None)
+        Self::from_ir_with_encryption(ir, index, "test", "test.local/service", None)
     }
 
     pub fn from_ir_with_encryption(
         ir: &DbMetadataIr,
         index: usize,
+        storage_environment: &str,
         storage_service_id: &str,
         encryption_cipher: Option<DbEncryptionCipher>,
     ) -> Result<Self> {
@@ -166,6 +170,7 @@ impl DbCollectionMetadata {
             collection_name,
             key_field: key.name,
             key_ty: key.ty,
+            storage_environment: storage_environment.to_string(),
             storage_service_id: storage_service_id.to_string(),
             encryption_cipher,
             fields,

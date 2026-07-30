@@ -327,8 +327,8 @@ mod db_provider_config_tests {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DbProviderBuildInput {
+    pub environment: String,
     pub service_id: String,
-    pub state_namespace: String,
     pub config: DbProviderConfig,
     pub runtime_program_db: Vec<DbProviderTargetMetadata>,
 }

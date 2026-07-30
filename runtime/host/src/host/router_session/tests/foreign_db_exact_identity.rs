@@ -415,7 +415,7 @@ impl DbCapabilityStoreApi for ExactDbStore {
 }
 
 #[test]
-fn shared_test_assembly_keeps_case_routes_doubles_and_db_namespaces_isolated() {
+fn shared_test_assembly_keeps_case_routes_doubles_and_service_databases_isolated() {
     std::thread::Builder::new()
         .name("shared-test-assembly-isolation".to_string())
         .stack_size(32 * 1024 * 1024)
@@ -538,11 +538,9 @@ async fn shared_test_assembly_isolation() {
     assert_eq!(
         inputs
             .iter()
-            .map(|input| input.state_namespace.as_str())
-            .collect::<BTreeSet<_>>()
-            .len(),
-        2,
-        "each case deployment must own a distinct state namespace"
+            .map(|input| input.environment.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["p3x-foreign-db"])
     );
     for input in inputs.iter() {
         let mut foreign = input
@@ -730,11 +728,11 @@ async fn dispatch_test_case(
     assert!(receiver.try_recv().is_err());
 }
 
-fn write_provider(root: &Path, package_id: &str, state_key: &str) {
+fn write_provider(root: &Path, package_id: &str, _state_key: &str) {
     fs::create_dir_all(root).unwrap();
     fs::write(
         root.join("package.yml"),
-        format!("id: {package_id}\nversion: 1.0.0\nstate:\n  {state_key}:\n    kind: database\n"),
+        format!("id: {package_id}\nversion: 1.0.0\n"),
     )
     .unwrap();
     fs::write(root.join("api.yml"), "{}\n").unwrap();
@@ -784,14 +782,7 @@ packages:
     .unwrap();
     fs::write(
         root.join("config.skiff-test.yml"),
-        r#"state:
-  first-db:
-    kind: database
-    namespace: p3x-first
-  second-db:
-    kind: database
-    namespace: p3x-second
-timeout: 30000
+        r#"timeout: 30000
 quota:
   cpuMillis: 100
   memoryBytes: 67108864

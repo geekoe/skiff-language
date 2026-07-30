@@ -64,13 +64,10 @@ impl RuntimeAssemblyExecutionContext {
         input: RuntimeAssemblyEvalAdapterContextInput,
         metadata: RuntimeAssemblyRequestMetadata,
     ) -> anyhow::Result<Self> {
-        let config = crate::config_view::RuntimeConfigView::from_activation_literals(
-            &input.activation.owned_bindings().config_literals,
-        )?;
+        let config = crate::config_view::RuntimeConfigView::empty();
         let package_configs = super::assembly_request_adapter::package_config_views(
             input.execution_image.as_ref(),
             input.activation.implementation_package_build_id(),
-            &input.activation.owned_bindings().config_literals,
         )?;
         let deployment = &input.activation.identity().deployment;
         let activation_identity = activation_identity_control(input.activation.as_ref());

@@ -4,11 +4,10 @@ use std::sync::{
 };
 
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, ConfigLiteralBinding, ContractOperationId,
-    DeploymentArtifactIdentity, DeploymentPolicy, DeploymentRevision, GatewayEntryIdentity,
-    GatewayEntryKey, IngressProtocol, IngressSelector, MetadataValue, PackageBuildId,
-    ResourcePolicy, SecretRefBinding, ServiceBindingTemplate, ServiceContractRef,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey, WebSocketEntryId,
+    AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentPolicy,
+    DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey, IngressProtocol, IngressSelector,
+    PackageBuildId, ResourcePolicy, ServiceContractRef, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirementKey, WebSocketEntryId,
 };
 
 use super::*;
@@ -34,9 +33,7 @@ fn contract(service: &str, protocol: &str) -> ServiceContractRef {
 
 fn empty_owned_bindings() -> ActivationOwnedBindings {
     ActivationOwnedBindings {
-        config_literals: Vec::new(),
-        secret_refs: Vec::new(),
-        state_bindings: Vec::new(),
+        resource_bindings: Vec::new(),
         policy: DeploymentPolicy {
             timeout_ms: Some(1_000),
             resources: ResourcePolicy {
@@ -140,96 +137,6 @@ fn activation_context_isolates_same_package_build_across_deployments() {
     assert_ne!(first.activation_id(), second.activation_id());
     assert_eq!(first.callback_capabilities().active_entry_count(), 0);
     assert_eq!(second.callback_capabilities().active_entry_count(), 0);
-}
-
-#[test]
-fn activation_context_materializes_exact_resolved_secret_paths_in_memory() {
-    let owner = deployment("service-with-secret", "r1");
-    let policy = empty_owned_bindings().policy;
-    let template = ActivationTemplate {
-        deployment: owner.clone(),
-        implementation_package_build_id: PackageBuildId::new("secret-build"),
-        config_literals: vec![ConfigLiteralBinding {
-            path: "provider.baseUrl".to_string(),
-            value: MetadataValue::String("https://example.test".to_string()),
-        }],
-        secret_refs: vec![SecretRefBinding {
-            path: "provider.apiKey".to_string(),
-            secret_ref: "secret:provider-key".to_string(),
-        }],
-        state_bindings: Vec::new(),
-        policy,
-    };
-    let binding_template = ServiceBindingTemplate {
-        activation: owner,
-        bindings: Vec::new(),
-    };
-    let resolved = vec![ConfigLiteralBinding {
-        path: "provider.apiKey".to_string(),
-        value: MetadataValue::String("test-secret".to_string()),
-    }];
-    let context =
-        ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
-            AssemblyIdentity::new("assembly-with-secret"),
-            1,
-            "replica-a",
-            &template,
-            &binding_template,
-            &resolved,
-            None,
-        )
-        .expect("exact resolved secret should construct activation");
-
-    assert_eq!(context.owned_bindings().config_literals.len(), 2);
-    assert_eq!(context.owned_bindings().secret_refs, template.secret_refs);
-    let debug = format!("{context:?}");
-    assert!(debug.contains("provider.apiKey"));
-    assert!(!debug.contains("test-secret"));
-    assert!(matches!(
-        ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
-            AssemblyIdentity::new("assembly-with-secret"),
-            1,
-            "replica-a",
-            &template,
-            &binding_template,
-            &[],
-            None,
-        ),
-        Err(ActivationContextError::MissingResolvedSecret { path })
-            if path == "provider.apiKey"
-    ));
-    assert!(matches!(
-        ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
-            AssemblyIdentity::new("assembly-with-secret"),
-            1,
-            "replica-a",
-            &template,
-            &binding_template,
-            &[
-                resolved[0].clone(),
-                ConfigLiteralBinding {
-                    path: "provider.unknown".to_string(),
-                    value: MetadataValue::String("must-not-escape".to_string()),
-                },
-            ],
-            None,
-        ),
-        Err(ActivationContextError::UnexpectedResolvedSecret { path })
-            if path == "provider.unknown"
-    ));
-    assert!(matches!(
-        ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
-            AssemblyIdentity::new("assembly-with-secret"),
-            1,
-            "replica-a",
-            &template,
-            &binding_template,
-            &[resolved[0].clone(), resolved[0].clone()],
-            None,
-        ),
-        Err(ActivationContextError::DuplicateResolvedSecret { path })
-            if path == "provider.apiKey"
-    ));
 }
 
 #[test]

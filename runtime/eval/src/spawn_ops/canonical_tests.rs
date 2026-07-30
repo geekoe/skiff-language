@@ -545,9 +545,6 @@ fn activation_context(
         },
         package_build_id,
         ActivationOwnedBindings {
-            config_literals: Vec::new(),
-            secret_refs: Vec::new(),
-            state_bindings: Vec::new(),
             resource_bindings: Vec::new(),
             policy: DeploymentPolicy {
                 timeout_ms: Some(1_000),

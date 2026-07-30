@@ -836,9 +836,6 @@ fn deployment(
         service_selectors,
         gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
-        config_literals: Vec::new(),
-        secret_refs: Vec::new(),
-        state_bindings: Vec::new(),
         resource_bindings: Vec::new(),
         runtime_capability_bindings: Vec::new(),
         policy: DeploymentPolicy {

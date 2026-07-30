@@ -339,7 +339,6 @@ impl RuntimeWebSocketJsonRpcEvalAdapter for RuntimeAssemblyExecutionContext {
 pub(super) fn package_config_views(
     image: &skiff_runtime_linked_program::AssemblyExecutionImage,
     implementation_package_build_id: &skiff_artifact_model::PackageBuildId,
-    literals: &[skiff_artifact_model::ConfigLiteralBinding],
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
     let active_slots = activation_package_slots(image, implementation_package_build_id)?;
     let mut requirements_by_slot = Vec::with_capacity(image.execution_packages().len());
@@ -352,7 +351,7 @@ pub(super) fn package_config_views(
         }
         requirements_by_slot.push(package.artifact().runtime_requirements.config.as_slice());
     }
-    package_config_views_from_requirements(&requirements_by_slot, &active_slots, literals)
+    package_config_views_from_requirements(&requirements_by_slot, &active_slots)
 }
 
 fn activation_package_slots(
@@ -396,42 +395,15 @@ fn activation_package_slots(
 fn package_config_views_from_requirements(
     requirements_by_slot: &[&[skiff_artifact_model::PackageConfigRequirement]],
     active_slots: &std::collections::BTreeSet<usize>,
-    literals: &[skiff_artifact_model::ConfigLiteralBinding],
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
-    use std::collections::BTreeSet;
-
-    let mut known_paths = BTreeSet::new();
     let mut views = Vec::with_capacity(requirements_by_slot.len());
     for (slot, requirements) in requirements_by_slot.iter().enumerate() {
         if !active_slots.contains(&slot) {
-            views.push(crate::config_view::RuntimeConfigView::from_activation_literals(&[])?);
+            views.push(crate::config_view::RuntimeConfigView::empty());
             continue;
         }
-        let required_paths = requirements
-            .iter()
-            .map(|requirement| requirement.path.as_str())
-            .collect::<BTreeSet<_>>();
-        known_paths.extend(required_paths.iter().map(|path| (*path).to_string()));
-        let scoped = literals
-            .iter()
-            .filter(|literal| required_paths.contains(literal.path.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
         let shape = skiff_artifact_model::config_shape_from_package_requirements(requirements)?;
-        views.push(
-            crate::config_view::RuntimeConfigView::from_activation_literals_with_shape(
-                &scoped, shape,
-            )?,
-        );
-    }
-    if let Some(unknown) = literals
-        .iter()
-        .find(|literal| !known_paths.contains(&literal.path))
-    {
-        anyhow::bail!(
-            "activation config literal {} is not required by an exact active package slot",
-            unknown.path
-        );
+        views.push(crate::config_view::RuntimeConfigView::empty_unvalidated_with_shape(shape));
     }
     Ok(views)
 }
@@ -441,103 +413,49 @@ mod tests {
     use std::collections::BTreeSet;
 
     use serde_json::json;
-    use skiff_artifact_model::{ConfigLiteralBinding, MetadataValue, PackageConfigRequirement};
+    use skiff_artifact_model::{PackageConfigAccess, PackageConfigRequirement};
 
     use super::package_config_views_from_requirements;
 
     fn requirement(path: &str, value_type: &str, required: bool) -> PackageConfigRequirement {
         PackageConfigRequirement {
             path: path.to_string(),
-            value_type: value_type.to_string(),
-            required,
-        }
-    }
-
-    fn literal(path: &str, value: MetadataValue) -> ConfigLiteralBinding {
-        ConfigLiteralBinding {
-            path: path.to_string(),
-            value,
+            access: if required {
+                PackageConfigAccess::Required {
+                    value_type: value_type.to_string(),
+                }
+            } else {
+                PackageConfigAccess::Optional {
+                    value_type: value_type.to_string(),
+                }
+            },
         }
     }
 
     #[test]
-    fn activation_literals_are_projected_to_exact_package_slots() {
+    fn config_shapes_are_projected_to_exact_active_package_slots_without_values() {
         let own = [
             requirement("cookieName", "string", true),
             requirement("maxAgeSeconds", "number", true),
         ];
         let dependency = [requirement("dependency.token", "string", true)];
-        let views = package_config_views_from_requirements(
-            &[&own, &dependency],
-            &BTreeSet::from([0, 1]),
-            &[
-                literal("cookieName", MetadataValue::String("sid".into())),
-                literal("maxAgeSeconds", MetadataValue::Number(3600.into())),
-                literal(
-                    "dependency.token",
-                    MetadataValue::String("dependency-value".into()),
-                ),
-            ],
-        )
-        .unwrap();
+        let views =
+            package_config_views_from_requirements(&[&own, &dependency], &BTreeSet::from([0, 1]))
+                .unwrap();
 
         assert_eq!(views.len(), 2);
-        assert_eq!(
-            views[0].resolved_config_value(),
-            &json!({"cookieName": "sid", "maxAgeSeconds": 3600})
-        );
-        assert_eq!(
-            views[1].resolved_config_value(),
-            &json!({"dependency": {"token": "dependency-value"}})
-        );
-        assert!(views[0].resolved_config_value().get("dependency").is_none());
-        assert!(views[1].resolved_config_value().get("cookieName").is_none());
-    }
-
-    #[test]
-    fn package_config_projection_fails_closed() {
-        let own = [requirement("cookieName", "string", true)];
-        let active_slots = BTreeSet::from([0]);
-
-        let missing =
-            package_config_views_from_requirements(&[&own], &active_slots, &[]).unwrap_err();
-        assert!(missing
-            .to_string()
-            .contains("cookieName required value is missing"));
-
-        let wrong_type = package_config_views_from_requirements(
-            &[&own],
-            &active_slots,
-            &[literal("cookieName", MetadataValue::Number(1.into()))],
-        )
-        .unwrap_err();
-        assert!(wrong_type
-            .to_string()
-            .contains("cookieName must be a string"));
-
-        let unknown = package_config_views_from_requirements(
-            &[&own],
-            &active_slots,
-            &[
-                literal("cookieName", MetadataValue::String("sid".into())),
-                literal("retired.key", MetadataValue::String("stale".into())),
-            ],
-        )
-        .unwrap_err();
-        assert!(unknown
-            .to_string()
-            .contains("retired.key is not required by an exact active package slot"));
-
-        let duplicate = package_config_views_from_requirements(
-            &[&own],
-            &active_slots,
-            &[
-                literal("cookieName", MetadataValue::String("sid".into())),
-                literal("cookieName", MetadataValue::String("other".into())),
-            ],
-        )
-        .unwrap_err();
-        assert!(duplicate.to_string().contains("cookieName is duplicated"));
+        assert_eq!(views[0].resolved_config_value(), &json!({}));
+        assert_eq!(views[1].resolved_config_value(), &json!({}));
+        assert!(views[0]
+            .config_shape()
+            .entries
+            .iter()
+            .any(|entry| entry.path == "cookieName"));
+        assert!(views[1]
+            .config_shape()
+            .entries
+            .iter()
+            .any(|entry| entry.path == "dependency.token"));
     }
 
     #[test]
@@ -552,48 +470,22 @@ mod tests {
         let relay_views = package_config_views_from_requirements(
             &[&relay, &agine, &http_session],
             &BTreeSet::from([0]),
-            &[],
         )
-        .expect("Relay must not validate Agine's http-session config shape");
+        .expect("Relay package closure should project");
         assert_eq!(relay_views.len(), 3);
         assert_eq!(relay_views[0].resolved_config_value(), &json!({}));
         assert_eq!(relay_views[2].resolved_config_value(), &json!({}));
 
-        let missing_agine = package_config_views_from_requirements(
-            &[&relay, &agine, &http_session],
-            &BTreeSet::from([1, 2]),
-            &[],
-        )
-        .unwrap_err();
-        assert!(missing_agine
-            .to_string()
-            .contains("cookieName required value is missing"));
-
         let agine_views = package_config_views_from_requirements(
             &[&relay, &agine, &http_session],
             &BTreeSet::from([1, 2]),
-            &[
-                literal("cookieName", MetadataValue::String("agine_session".into())),
-                literal("maxAgeSeconds", MetadataValue::Number(2_592_000.into())),
-            ],
         )
-        .expect("Agine must validate its own http-session config");
-        assert_eq!(
-            agine_views[2].resolved_config_value(),
-            &json!({"cookieName": "agine_session", "maxAgeSeconds": 2_592_000})
-        );
-
-        let foreign_literal = package_config_views_from_requirements(
-            &[&relay, &agine, &http_session],
-            &BTreeSet::from([0]),
-            &[literal(
-                "cookieName",
-                MetadataValue::String("agine_session".into()),
-            )],
-        )
-        .unwrap_err();
-        assert!(foreign_literal
-            .to_string()
-            .contains("cookieName is not required by an exact active package slot"));
+        .expect("Agine package closure should project");
+        assert!(agine_views[2]
+            .config_shape()
+            .entries
+            .iter()
+            .any(|entry| entry.path == "cookieName"));
+        assert_eq!(agine_views[2].resolved_config_value(), &json!({}));
     }
 }

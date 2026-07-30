@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, ConfigLiteralBinding, ContractOperationId,
-    DeploymentPolicy, GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageBuildId,
-    SecretRefBinding, ServiceBindingTemplate, ServiceContractRef, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirementKey, StateBinding, WebSocketEntryId,
+    ActivationTemplate, AssemblyIdentity, ContractOperationId, DeploymentPolicy,
+    GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageBuildId, ResourceBinding,
+    ServiceBindingTemplate, ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity,
+    ServiceRequirementKey, WebSocketEntryId,
 };
 
 use crate::capability::CallbackCapabilityTable;
@@ -56,31 +56,10 @@ impl ActivationIdentity {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ActivationOwnedBindings {
-    pub config_literals: Vec<ConfigLiteralBinding>,
-    pub secret_refs: Vec<SecretRefBinding>,
-    pub state_bindings: Vec<StateBinding>,
+    pub resource_bindings: Vec<ResourceBinding>,
     pub policy: DeploymentPolicy,
-}
-
-impl fmt::Debug for ActivationOwnedBindings {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ActivationOwnedBindings")
-            .field(
-                "config_literal_paths",
-                &self
-                    .config_literals
-                    .iter()
-                    .map(|binding| binding.path.as_str())
-                    .collect::<Vec<_>>(),
-            )
-            .field("secret_refs", &self.secret_refs)
-            .field("state_bindings", &self.state_bindings)
-            .field("policy", &self.policy)
-            .finish()
-    }
 }
 
 /// The exact compiler-owned WebSocket entry admitted for one service activation.
@@ -245,83 +224,22 @@ impl ActivationContext {
             WebSocketEntryId,
         )>,
     ) -> Result<Arc<Self>, ActivationContextError> {
-        Self::from_assembly_templates_with_config_literals(
+        Self::from_assembly_templates_with_websocket_entry_parts(
             assembly_identity,
             assembly_generation,
             runtime_replica_id,
             activation_template,
             service_binding_template,
-            activation_template.config_literals.clone(),
             websocket_entry,
         )
     }
 
-    pub fn from_assembly_templates_with_resolved_secrets_and_websocket_entry(
+    fn from_assembly_templates_with_websocket_entry_parts(
         assembly_identity: AssemblyIdentity,
         assembly_generation: u64,
         runtime_replica_id: impl Into<String>,
         activation_template: &ActivationTemplate,
         service_binding_template: &ServiceBindingTemplate,
-        resolved_secrets: &[ConfigLiteralBinding],
-        websocket_entry: Option<(
-            IngressSelector,
-            GatewayEntryKey,
-            GatewayEntryIdentity,
-            WebSocketEntryId,
-        )>,
-    ) -> Result<Arc<Self>, ActivationContextError> {
-        if activation_template.deployment != service_binding_template.activation {
-            return Err(ActivationContextError::TemplateDeploymentMismatch {
-                activation: activation_template.deployment.clone(),
-                bindings: service_binding_template.activation.clone(),
-            });
-        }
-        let expected_secret_paths = activation_template
-            .secret_refs
-            .iter()
-            .map(|binding| binding.path.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut resolved_secret_paths = std::collections::BTreeSet::new();
-        for binding in resolved_secrets {
-            if !expected_secret_paths.contains(binding.path.as_str()) {
-                return Err(ActivationContextError::UnexpectedResolvedSecret {
-                    path: binding.path.clone(),
-                });
-            }
-            if !resolved_secret_paths.insert(binding.path.as_str()) {
-                return Err(ActivationContextError::DuplicateResolvedSecret {
-                    path: binding.path.clone(),
-                });
-            }
-        }
-        if let Some(path) = expected_secret_paths
-            .iter()
-            .find(|path| !resolved_secret_paths.contains(**path))
-        {
-            return Err(ActivationContextError::MissingResolvedSecret {
-                path: (*path).to_string(),
-            });
-        }
-        let mut config_literals = activation_template.config_literals.clone();
-        config_literals.extend_from_slice(resolved_secrets);
-        Self::from_assembly_templates_with_config_literals(
-            assembly_identity,
-            assembly_generation,
-            runtime_replica_id,
-            activation_template,
-            service_binding_template,
-            config_literals,
-            websocket_entry,
-        )
-    }
-
-    fn from_assembly_templates_with_config_literals(
-        assembly_identity: AssemblyIdentity,
-        assembly_generation: u64,
-        runtime_replica_id: impl Into<String>,
-        activation_template: &ActivationTemplate,
-        service_binding_template: &ServiceBindingTemplate,
-        config_literals: Vec<ConfigLiteralBinding>,
         websocket_entry: Option<(
             IngressSelector,
             GatewayEntryKey,
@@ -364,9 +282,7 @@ impl ActivationContext {
             identity,
             activation_template.implementation_package_build_id.clone(),
             ActivationOwnedBindings {
-                config_literals,
-                secret_refs: activation_template.secret_refs.clone(),
-                state_bindings: activation_template.state_bindings.clone(),
+                resource_bindings: activation_template.resource_bindings.clone(),
                 policy: activation_template.policy.clone(),
             },
             websocket_entry,
@@ -458,12 +374,6 @@ pub enum ActivationContextError {
         activation: ServiceDeploymentRef,
         bindings: ServiceDeploymentRef,
     },
-    #[error("activation resolved an undeclared secret path {path}")]
-    UnexpectedResolvedSecret { path: String },
-    #[error("activation resolved secret path {path} more than once")]
-    DuplicateResolvedSecret { path: String },
-    #[error("activation did not resolve required secret path {path}")]
-    MissingResolvedSecret { path: String },
     #[error("activation service binding {key:?} is duplicated")]
     DuplicateServiceBinding { key: ServiceRequirementKey },
     #[error("activation service binding {key:?} repeats a used operation")]

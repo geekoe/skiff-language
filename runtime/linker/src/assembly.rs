@@ -220,9 +220,6 @@ fn validate_activation_source(
     let expected = ActivationTemplate {
         deployment: source.deployment.clone(),
         implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-        config_literals: deployment.config_literals.clone(),
-        secret_refs: deployment.secret_refs.clone(),
-        state_bindings: deployment.state_bindings.clone(),
         resource_bindings: deployment.resource_bindings.clone(),
         policy: deployment.policy.clone(),
     };
@@ -233,33 +230,6 @@ fn validate_activation_source(
         );
     }
 
-    let mut paths = BTreeSet::new();
-    for path in source
-        .config_literals
-        .iter()
-        .map(|binding| binding.path.as_str())
-        .chain(
-            source
-                .secret_refs
-                .iter()
-                .map(|binding| binding.path.as_str()),
-        )
-    {
-        if path.is_empty() || !paths.insert(path) {
-            anyhow::bail!(
-                "activation template {:?} has a duplicate or empty config/secret path",
-                source.deployment
-            );
-        }
-    }
-    validate_unique_requirement_keys(
-        &source.deployment,
-        "state",
-        source
-            .state_bindings
-            .iter()
-            .map(|binding| binding.requirement_key.as_str()),
-    )?;
     validate_unique_requirement_keys(
         &source.deployment,
         "resource",

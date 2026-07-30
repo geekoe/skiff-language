@@ -434,8 +434,8 @@ fn mongo_provider_rejects_invalid_opaque_config() {
 
 fn provider_input(config: Value) -> DbProviderBuildInput {
     DbProviderBuildInput {
+        environment: "test".to_string(),
         service_id: service_id("provider"),
-        state_namespace: "provider_fixture".to_string(),
         config: DbProviderConfig::opaque(config),
         runtime_program_db: Vec::new(),
     }
@@ -455,7 +455,6 @@ struct PublicationIdFixture {
 #[serde(rename_all = "camelCase")]
 struct PublicationIdCase {
     canonical_id: String,
-    runtime_target_component: String,
     applies_to: Vec<String>,
 }
 
@@ -506,6 +505,7 @@ fn assert_publication_id_fixture_applies_to(fixture: &PublicationIdFixture) {
 fn object_metadata_accepts_retention_field() {
     for retention in [Value::Null, json!({ "amount": 30, "unit": "days" })] {
         ServiceDbRuntime::new(
+            test_environment(),
             "example.com/test".to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
             &provider_metadata_from_ir(object_metadata_with_retention(retention)),
@@ -515,7 +515,7 @@ fn object_metadata_accepts_retention_field() {
 }
 
 #[test]
-fn service_db_runtime_projects_service_id_to_database_name() {
+fn service_db_runtime_derives_storage_identity_from_environment_and_service_id() {
     let fixture = runtime_publication_id_fixture();
     for case in fixture
         .valid
@@ -523,46 +523,83 @@ fn service_db_runtime_projects_service_id_to_database_name() {
         .filter(|case| case.applies_to.iter().any(|system| system == "runtime"))
     {
         let runtime = ServiceDbRuntime::new(
+            test_environment(),
             case.canonical_id.clone(),
             "mongodb://127.0.0.1:27017".to_string(),
             &[],
         )
-        .expect("service DB runtime should project service id to storage-safe database name");
+        .expect("service DB runtime should derive a storage-safe database name");
 
-        assert_eq!(runtime.database_name, case.runtime_target_component);
+        assert!(runtime.database_name.starts_with("skiff_"));
+        assert_eq!(runtime.database_name.len(), 49);
     }
+
+    let exact = ServiceDbRuntime::new(
+        "dev".to_string(),
+        "example.com/service".to_string(),
+        inert_mongo_url("exact-storage-identity"),
+        &[],
+    )
+    .expect("exact service DB identity should build");
+    assert_eq!(
+        exact.database_name,
+        "skiff_bZrvSXcV9CaJIIDlqLbuQ902c3dvTWUCvrVm2ucOdEw"
+    );
 }
 
 #[test]
-fn service_db_runtime_uses_typed_state_namespace_as_database_name() {
+fn service_db_runtime_environment_isolates_the_same_service_id() {
     let config = ServiceDbConfig {
-        mongo_url: inert_mongo_url("state_namespace"),
+        mongo_url: inert_mongo_url("environment"),
         encryption_cipher: None,
     };
-    let first = ServiceDbRuntime::new_with_config_and_namespace(
-        service_id("stateful"),
-        "skiff_pt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+    let service_id = service_id("stateful");
+    let first = ServiceDbRuntime::new_with_config(
+        "dev".to_string(),
+        service_id.clone(),
         config.clone(),
         &[],
     )
-    .expect("first test-owned state namespace");
-    let second = ServiceDbRuntime::new_with_config_and_namespace(
-        service_id("stateful"),
-        "skiff_pt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-        config,
+    .expect("dev service database");
+    let second = ServiceDbRuntime::new_with_config("prod".to_string(), service_id, config, &[])
+        .expect("prod service database");
+    assert_ne!(first.database_name, second.database_name);
+}
+
+#[test]
+fn service_db_runtime_storage_identity_is_stable_within_each_mongo_endpoint_domain() {
+    let service_id = service_id("stable");
+    let first = ServiceDbRuntime::new(
+        "dev".to_string(),
+        service_id.clone(),
+        inert_mongo_url("endpoint-a"),
         &[],
     )
-    .expect("second test-owned state namespace");
+    .expect("first endpoint service database");
+    let second = ServiceDbRuntime::new(
+        "dev".to_string(),
+        service_id,
+        inert_mongo_url("endpoint-b"),
+        &[],
+    )
+    .expect("second endpoint service database");
 
-    assert_eq!(
-        first.database_name,
-        "skiff_pt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
-    assert_eq!(
-        second.database_name,
-        "skiff_pt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    );
-    assert_ne!(first.database_name, second.database_name);
+    assert_eq!(first.database_name, second.database_name);
+    assert!(!Arc::ptr_eq(&first.client, &second.client));
+}
+
+#[test]
+fn service_db_runtime_rejects_unvalidated_environment() {
+    let error = ServiceDbRuntime::new(
+        "../prod".to_string(),
+        service_id("invalid-environment"),
+        inert_mongo_url("invalid-environment"),
+        &[],
+    )
+    .err()
+    .expect("invalid environment must fail before provider construction");
+
+    assert!(error.to_string().contains("environment"));
 }
 
 #[test]
@@ -578,6 +615,7 @@ fn service_db_runtime_rejects_mongo_unsafe_database_names() {
         "config",
     ] {
         let error = ServiceDbRuntime::new(
+            test_environment(),
             service_id.to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
             &[],
@@ -595,9 +633,14 @@ fn service_db_runtime_rejects_mongo_unsafe_database_names() {
 #[tokio::test]
 async fn service_db_runtime_reuses_client_cell_for_exact_mongo_url() {
     let mongo_url = inert_mongo_url("shared_cell");
-    let first = ServiceDbRuntime::new(service_id("shared_a"), mongo_url.clone(), &[])
-        .expect("first service DB runtime should build");
-    let second = ServiceDbRuntime::new(service_id("shared_b"), mongo_url, &[])
+    let first = ServiceDbRuntime::new(
+        test_environment(),
+        service_id("shared_a"),
+        mongo_url.clone(),
+        &[],
+    )
+    .expect("first service DB runtime should build");
+    let second = ServiceDbRuntime::new(test_environment(), service_id("shared_b"), mongo_url, &[])
         .expect("second service DB runtime should build");
 
     assert!(
@@ -625,11 +668,20 @@ async fn service_db_runtime_reuses_client_cell_for_exact_mongo_url() {
 
 #[test]
 fn service_db_runtime_does_not_share_client_cell_for_different_mongo_urls() {
-    let first = ServiceDbRuntime::new(service_id("distinct_a"), inert_mongo_url("distinct_a"), &[])
-        .expect("first service DB runtime should build");
-    let second =
-        ServiceDbRuntime::new(service_id("distinct_b"), inert_mongo_url("distinct_b"), &[])
-            .expect("second service DB runtime should build");
+    let first = ServiceDbRuntime::new(
+        test_environment(),
+        service_id("distinct_a"),
+        inert_mongo_url("distinct_a"),
+        &[],
+    )
+    .expect("first service DB runtime should build");
+    let second = ServiceDbRuntime::new(
+        test_environment(),
+        service_id("distinct_b"),
+        inert_mongo_url("distinct_b"),
+        &[],
+    )
+    .expect("second service DB runtime should build");
 
     assert!(
         !Arc::ptr_eq(&first.client, &second.client),
@@ -641,10 +693,20 @@ fn service_db_runtime_does_not_share_client_cell_for_different_mongo_urls() {
 fn service_db_client_cache_drops_dead_cells_and_urls() {
     let stale_url = inert_mongo_url("drop_stale");
     let stale_cell = {
-        let first = ServiceDbRuntime::new(service_id("drop_a"), stale_url.clone(), &[])
-            .expect("first service DB runtime should build");
-        let second = ServiceDbRuntime::new(service_id("drop_b"), stale_url.clone(), &[])
-            .expect("second service DB runtime should build");
+        let first = ServiceDbRuntime::new(
+            test_environment(),
+            service_id("drop_a"),
+            stale_url.clone(),
+            &[],
+        )
+        .expect("first service DB runtime should build");
+        let second = ServiceDbRuntime::new(
+            test_environment(),
+            service_id("drop_b"),
+            stale_url.clone(),
+            &[],
+        )
+        .expect("second service DB runtime should build");
 
         assert!(
             Arc::ptr_eq(&first.client, &second.client),
@@ -658,8 +720,13 @@ fn service_db_client_cache_drops_dead_cells_and_urls() {
     );
 
     let live_url = inert_mongo_url("drop_live");
-    let live_runtime = ServiceDbRuntime::new(service_id("drop_live"), live_url.clone(), &[])
-        .expect("live service DB runtime should build");
+    let live_runtime = ServiceDbRuntime::new(
+        test_environment(),
+        service_id("drop_live"),
+        live_url.clone(),
+        &[],
+    )
+    .expect("live service DB runtime should build");
 
     let cells = SERVICE_DB_CLIENT_CELLS
         .get()
@@ -685,12 +752,14 @@ fn service_db_client_cache_drops_dead_cells_and_urls() {
 fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell_is_shared() {
     let mongo_url = inert_mongo_url("isolated_runtime");
     let account = ServiceDbRuntime::new(
+        test_environment(),
         service_id("account"),
         mongo_url.clone(),
         &provider_metadata_from_ir(object_metadata_for_type("AccountOnly")),
     )
     .expect("account service DB runtime should build");
     let registry = ServiceDbRuntime::new(
+        test_environment(),
         service_id("registry"),
         mongo_url,
         &provider_metadata_from_ir(object_metadata_for_type("RegistryOnly")),
@@ -734,10 +803,20 @@ fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell
 #[tokio::test]
 async fn service_db_client_cache_does_not_store_failed_initialization() {
     let invalid_url = "http://127.0.0.1:1".to_string();
-    let first = ServiceDbRuntime::new(service_id("invalid_a"), invalid_url.clone(), &[])
-        .expect("first service DB runtime should build before connecting");
-    let second = ServiceDbRuntime::new(service_id("invalid_b"), invalid_url, &[])
-        .expect("second service DB runtime should build before connecting");
+    let first = ServiceDbRuntime::new(
+        test_environment(),
+        service_id("invalid_a"),
+        invalid_url.clone(),
+        &[],
+    )
+    .expect("first service DB runtime should build before connecting");
+    let second = ServiceDbRuntime::new(
+        test_environment(),
+        service_id("invalid_b"),
+        invalid_url,
+        &[],
+    )
+    .expect("second service DB runtime should build before connecting");
 
     assert!(
         Arc::ptr_eq(&first.client, &second.client),
@@ -854,6 +933,7 @@ fn object_metadata_uses_final_collection_name_from_service_unit_db() {
 #[test]
 fn object_metadata_rejects_reserved_skiff_collection_name() {
     let error = ServiceDbRuntime::new(
+        test_environment(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
         &provider_metadata(json!([
@@ -926,6 +1006,7 @@ fn skiff_file_record_document_preserves_capability_record_fields() {
 #[test]
 fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     let key_error = ServiceDbRuntime::new(
+        test_environment(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
         &provider_metadata(json!([
@@ -946,6 +1027,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     assert_reserved_legacy_skiff_type_error(&key_error);
 
     let field_error = ServiceDbRuntime::new(
+        test_environment(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
         &provider_metadata(json!([
@@ -2129,6 +2211,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
         service_db_now_ms()
     );
     let runtime = ServiceDbRuntime::new(
+        test_environment(),
         service_id,
         "mongodb://127.0.0.1:27017/?directConnection=true".to_string(),
         &provider_metadata_from_ir(recoverable_provider_metadata_value()),
@@ -2775,6 +2858,7 @@ fn encrypted_binding() -> DbCollectionMetadata {
     DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", json!([]))[0],
         0,
+        "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher()),
     )
@@ -3057,6 +3141,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     assert!(DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("number", "string", json!([]))[0],
         0,
+        "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher())
     )
@@ -3064,6 +3149,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     assert!(DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "number", json!([]))[0],
         0,
+        "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher())
     )
@@ -3076,6 +3162,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     let indexed_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", indexed)[0],
         0,
+        "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher()),
     )
@@ -3094,6 +3181,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     let partial_index_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", partial_index)[0],
         0,
+        "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher()),
     )
@@ -3106,8 +3194,8 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     );
 
     let error = match MongoServiceDbProviderFactory::default().build(DbProviderBuildInput {
+        environment: "test".to_string(),
         service_id: "example.com/credential".to_string(),
-        state_namespace: "example~com~~credential".to_string(),
         config: DbProviderConfig::opaque(json!({ "mongoUrl": inert_mongo_url("encrypted") })),
         runtime_program_db: provider_metadata_from_ir(valid.clone()),
     }) {
@@ -3119,8 +3207,8 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
         .contains("no service DB encryption keyring"));
     MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
         .build(DbProviderBuildInput {
+            environment: "test".to_string(),
             service_id: "example.com/credential".to_string(),
-            state_namespace: "example~com~~credential".to_string(),
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("encrypted-ok") }),
             ),
@@ -3163,6 +3251,7 @@ fn forged_encrypted_metadata_rejects_nullable_recoverable_and_immutable_file_lan
         let error = DbCollectionMetadata::from_ir_with_encryption(
             &forged[0],
             0,
+            "test",
             "example.com/credential",
             Some(test_encryption_keyring().cipher()),
         )
@@ -3194,6 +3283,7 @@ fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
 
     let metadata_error = match ServiceDbMetadata::from_runtime_program_db_with_encryption(
         &forged,
+        "test",
         "example.com/credential",
         Some(cipher),
     ) {
@@ -3211,8 +3301,8 @@ fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
 
     let provider_error = match MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
         .build(DbProviderBuildInput {
+            environment: "test".to_string(),
             service_id: "example.com/credential".to_string(),
-            state_namespace: "example~com~~credential".to_string(),
             config: DbProviderConfig::opaque(
                 json!({ "mongoUrl": inert_mongo_url("forged-encrypted-key") }),
             ),
@@ -3266,6 +3356,10 @@ fn inert_mongo_url(label: &str) -> String {
 
 fn service_id(label: &str) -> String {
     format!("example.com/{label}_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn test_environment() -> String {
+    "test".to_string()
 }
 
 fn recoverable_envelope_metadata() -> DbCollectionMetadata {

@@ -539,7 +539,6 @@ impl AssemblyAdmissionController {
             &self.db_provider,
             service_db,
             environment,
-            resolver,
         ) {
             Ok(contexts) => Arc::new(contexts),
             Err(error) => {

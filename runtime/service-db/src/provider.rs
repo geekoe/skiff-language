@@ -23,9 +23,9 @@ impl DbProviderFactory for MongoServiceDbProviderFactory {
     fn build(&self, input: DbProviderBuildInput) -> DbCapabilityResult<DbCapabilitySource> {
         let mut config = service_db_config_from_provider_config(input.config)?;
         config.encryption_cipher = self.keyring.as_ref().map(|keyring| keyring.cipher());
-        let runtime = ServiceDbRuntime::new_with_config_and_namespace(
+        let runtime = ServiceDbRuntime::new_with_config(
+            input.environment,
             input.service_id,
-            input.state_namespace,
             config,
             &input.runtime_program_db,
         )

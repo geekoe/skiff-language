@@ -2142,6 +2142,7 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
     frame.service_db = Some(
         Arc::new(
             skiff_runtime_service_db::ServiceDbRuntime::new(
+                "test".to_string(),
                 "example.com/create-from-stream-budget".to_string(),
                 "mongodb://127.0.0.1:27017".to_string(),
                 &[],
@@ -2573,6 +2574,7 @@ async fn runtime_program_db_rejects_negative_offset_before_querying() {
     let program = program_with_thread_db_target(db_negative_offset_executable());
     let service_db = Arc::new(
         skiff_runtime_service_db::ServiceDbRuntime::new(
+            "test".to_string(),
             "example.com/svc".to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
             &thread_db_metadata(),
@@ -2600,6 +2602,7 @@ async fn runtime_program_db_rejects_after_pagination_before_querying() {
     let program = program_with_thread_db_target(db_after_executable());
     let service_db = Arc::new(
         skiff_runtime_service_db::ServiceDbRuntime::new(
+            "test".to_string(),
             "example.com/svc".to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
             &thread_db_metadata(),
@@ -2744,6 +2747,7 @@ async fn runtime_program_db_many_key_selector_is_rejected() {
     frame.service_db = Some(
         Arc::new(
             skiff_runtime_service_db::ServiceDbRuntime::new(
+                "test".to_string(),
                 "example.com/test".to_string(),
                 "mongodb://127.0.0.1:27017".to_string(),
                 &thread_db_metadata(),

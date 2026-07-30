@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use mongodb::{
     bson::{doc, Bson, Document},
     options::ClientOptions,
@@ -171,11 +172,13 @@ impl RecoverableArtifactRetentionRootStore for CollectedRecoverableRootStore {
 
 impl ServiceDbRuntime {
     pub fn new(
+        environment: String,
         service_id: String,
         mongo_url: String,
         runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
         Self::new_with_config(
+            environment,
             service_id,
             ServiceDbConfig {
                 mongo_url,
@@ -186,21 +189,12 @@ impl ServiceDbRuntime {
     }
 
     pub fn new_with_config(
+        environment: String,
         service_id: String,
         config: ServiceDbConfig,
         runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
-        let database_name = service_id_storage_database_name(&service_id)?;
-        Self::new_with_config_and_namespace(service_id, database_name, config, runtime_program_db)
-    }
-
-    pub fn new_with_config_and_namespace(
-        service_id: String,
-        state_namespace: String,
-        config: ServiceDbConfig,
-        runtime_program_db: &[DbProviderTargetMetadata],
-    ) -> Result<Self> {
-        let database_name = state_namespace;
+        let database_name = service_storage_database_name(&environment, &service_id)?;
         validate_service_database_name(&database_name)?;
         let mongo_url = config.mongo_url;
         let client = service_db_client_cell(&mongo_url);
@@ -209,6 +203,7 @@ impl ServiceDbRuntime {
             database_name,
             metadata: Arc::new(ServiceDbMetadata::from_runtime_program_db_with_encryption(
                 runtime_program_db,
+                &environment,
                 &service_id,
                 config.encryption_cipher,
             )?),
@@ -1444,9 +1439,23 @@ fn service_db_client_cell(mongo_url: &str) -> Arc<OnceCell<Client>> {
     cell
 }
 
-fn service_id_storage_database_name(service_id: &str) -> Result<String> {
+fn service_storage_database_name(environment: &str, service_id: &str) -> Result<String> {
+    skiff_artifact_model::validate_activation_environment(environment)
+        .map_err(ServiceDbError::Decode)?;
     validate_publication_id(service_id)?;
-    Ok(service_id.replace('.', "~").replace('/', "~~"))
+    let mut hasher = Sha256::new();
+    hash_framed_service_db_identity_part(&mut hasher, b"skiff-service-db-storage-identity-v1");
+    hash_framed_service_db_identity_part(&mut hasher, environment.as_bytes());
+    hash_framed_service_db_identity_part(&mut hasher, service_id.as_bytes());
+    Ok(format!(
+        "skiff_{}",
+        URL_SAFE_NO_PAD.encode(hasher.finalize())
+    ))
+}
+
+fn hash_framed_service_db_identity_part(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 fn validate_publication_id(value: &str) -> Result<()> {

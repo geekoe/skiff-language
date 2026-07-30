@@ -8,6 +8,7 @@ mod matrix;
 fn concrete_service_store() -> ServiceDbStore {
     let runtime = Arc::new(
         ServiceDbRuntime::new(
+            test_environment(),
             service_id("prepared-runtime"),
             inert_mongo_url("prepared-runtime"),
             &provider_metadata_from_ir(object_metadata_for_type("PreparedItem")),

@@ -113,6 +113,7 @@ async fn f445h_i6_file_scope_ingest_drop_removes_spilled_temp_path() {
 fn unused_store() -> ServiceDbCapabilityStore {
     let service_db = Arc::new(
         ServiceDbRuntime::new_with_config(
+            "test".to_string(),
             format!("example.com/file_{}", uuid::Uuid::new_v4().simple()),
             ServiceDbConfig {
                 mongo_url: "mongodb://127.0.0.1:1/?directConnection=true".to_string(),

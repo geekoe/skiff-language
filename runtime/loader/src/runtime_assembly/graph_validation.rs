@@ -5,7 +5,7 @@ use std::{
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, CanonicalActiveCollectionProjection, PackageBuildId,
-    RuntimeAssembly, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
+    RuntimeAssembly, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
 use super::{HydratedPackageCodeSlot, ServiceContractStore};
@@ -399,7 +399,6 @@ fn validate_activation_collection_names(
         );
     }
 
-    let database_namespace = activation_database_namespace(activation, deployment)?;
     let mut visited = BTreeSet::new();
     let mut projected_collection_builds =
         BTreeMap::<PackageBuildId, (CanonicalActiveCollectionProjection, String)>::new();
@@ -432,7 +431,6 @@ fn validate_activation_collection_names(
             let projected = CanonicalActiveCollectionProjection::resolve(
                 &sources,
                 &binding.collection_name_mapping,
-                database_namespace,
             )
             .map_err(|message| {
                 anyhow::anyhow!(
@@ -470,24 +468,6 @@ fn validate_activation_collection_names(
     Ok(())
 }
 
-fn activation_database_namespace<'a>(
-    activation: &ServiceDeploymentRef,
-    deployment: &'a ServiceDeployment,
-) -> anyhow::Result<Option<&'a str>> {
-    let namespaces = deployment
-        .state_bindings
-        .iter()
-        .filter(|binding| binding.kind == StateBindingKind::Database)
-        .map(|binding| binding.namespace.as_str())
-        .collect::<BTreeSet<_>>();
-    if namespaces.len() > 1 {
-        anyhow::bail!(
-            "activation {activation:?} has database state bindings for multiple namespaces"
-        );
-    }
-    Ok(namespaces.into_iter().next())
-}
-
 fn package_collection_names(package: &HydratedPackageCodeSlot) -> BTreeSet<String> {
     package
         .files()
@@ -505,36 +485,6 @@ fn validate_activation_templates(
         let deployment = deployments
             .get(&template.deployment)
             .expect("assembly surface validated activation deployment");
-        let config = template
-            .config_literals
-            .iter()
-            .map(|binding| (binding.path.as_str(), &binding.value))
-            .collect::<BTreeMap<_, _>>();
-        let deployment_config = deployment
-            .config_literals
-            .iter()
-            .map(|binding| (binding.path.as_str(), &binding.value))
-            .collect::<BTreeMap<_, _>>();
-        let secrets = template
-            .secret_refs
-            .iter()
-            .map(|binding| (binding.path.as_str(), binding.secret_ref.as_str()))
-            .collect::<BTreeMap<_, _>>();
-        let deployment_secrets = deployment
-            .secret_refs
-            .iter()
-            .map(|binding| (binding.path.as_str(), binding.secret_ref.as_str()))
-            .collect::<BTreeMap<_, _>>();
-        let states = template
-            .state_bindings
-            .iter()
-            .map(|binding| (binding.requirement_key.as_str(), binding))
-            .collect::<BTreeMap<_, _>>();
-        let deployment_states = deployment
-            .state_bindings
-            .iter()
-            .map(|binding| (binding.requirement_key.as_str(), binding))
-            .collect::<BTreeMap<_, _>>();
         let resources = template
             .resource_bindings
             .iter()
@@ -546,9 +496,6 @@ fn validate_activation_templates(
             .map(|binding| (binding.requirement_key.as_str(), binding))
             .collect::<BTreeMap<_, _>>();
         if template.implementation_package_build_id != deployment.implementation.package_build_id
-            || config != deployment_config
-            || secrets != deployment_secrets
-            || states != deployment_states
             || resources != deployment_resources
             || template.policy != deployment.policy
         {

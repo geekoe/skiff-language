@@ -8,6 +8,7 @@ use super::super::*;
 fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
     let recoverable_runtime = Arc::new(
         ServiceDbRuntime::new(
+            test_environment(),
             "skiff.run/preparedrecoverable".to_string(),
             inert_mongo_url("prepared-recoverable"),
             &provider_metadata_from_ir(recoverable_provider_metadata_value()),
@@ -71,6 +72,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
 
     let encrypted_runtime = Arc::new(
         ServiceDbRuntime::new_with_config(
+            test_environment(),
             "skiff.run/prepencrypted".to_string(),
             ServiceDbConfig {
                 mongo_url: inert_mongo_url("prepared-encrypted"),

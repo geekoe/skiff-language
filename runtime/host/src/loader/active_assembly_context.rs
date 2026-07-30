@@ -10,8 +10,8 @@ use skiff_artifact_model::{
     DbMetadataIndexIr, DbMetadataIr, DeploymentGatewayEntry, DeploymentIngressBinding,
     GatewayAdapterKind, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
     GatewayWebSocketRpcProfile, IngressProtocol, OperationTargetRef, PackageBuildId,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, StateBindingKind,
-    WebSocketEntryId, WEBSOCKET_GATEWAY_ENTRY_KEY,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, WebSocketEntryId,
+    WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
@@ -20,7 +20,6 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
-use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 
 /// Immutable activation owners and canonical target facts published with one assembly generation.
 #[derive(Debug)]
@@ -35,18 +34,14 @@ pub(crate) struct ActiveAssemblyContextSet {
 }
 
 impl ActiveAssemblyContextSet {
-    pub(crate) fn from_candidate<R>(
+    pub(crate) fn from_candidate(
         candidate: &AssemblyLinkedCandidate,
         generation: u64,
         runtime_replica_id: &str,
         db_provider: &DbProviderSource,
         service_db: Option<&AssemblyActivationServiceDb>,
         environment: Option<&str>,
-        resolver: &R,
-    ) -> anyhow::Result<Self>
-    where
-        R: RuntimeAssemblyContentResolver + ?Sized,
-    {
+    ) -> anyhow::Result<Self> {
         if runtime_replica_id.trim().is_empty() {
             anyhow::bail!("runtime replica id must be non-empty for activation construction");
         }
@@ -71,29 +66,12 @@ impl ActiveAssemblyContextSet {
             let activation_websocket_entry = websocket_entry
                 .as_ref()
                 .map(AdmittedWebSocketEntry::activation_parts);
-            let resolved_secrets = if linked.source().secret_refs.is_empty() {
-                Vec::new()
-            } else {
-                let environment = environment.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "activation {:?} requires an environment-scoped secret source",
-                        deployment
-                    )
-                })?;
-                resolver.resolve_activation_secrets(
-                    environment,
-                    deployment,
-                    &linked.source().secret_refs,
-                )?
-            };
-            let activation =
-                ActivationContext::from_assembly_templates_with_resolved_secrets_and_websocket_entry(
+            let activation = ActivationContext::from_assembly_templates_with_websocket_entry(
                 candidate.assembly().assembly_identity.clone(),
                 generation,
                 runtime_replica_id,
                 linked.source(),
                 binding_template,
-                &resolved_secrets,
                 activation_websocket_entry,
             )
             .with_context(|| {
@@ -102,54 +80,34 @@ impl ActiveAssemblyContextSet {
                     deployment
                 )
             })?;
-            let database_bindings = linked
-                .source()
-                .state_bindings
-                .iter()
-                .filter(|binding| binding.kind == StateBindingKind::Database)
-                .collect::<Vec<_>>();
-            let database_namespaces = database_bindings
-                .iter()
-                .map(|binding| binding.namespace.as_str())
-                .collect::<BTreeSet<_>>();
-            if database_namespaces.len() > 1 {
-                anyhow::bail!(
-                    "activation {:?} has database state bindings for multiple namespaces",
-                    deployment
-                );
-            }
-            let runtime_program_db = activation_db_metadata(
-                candidate,
-                linked.implementation_package_build_id(),
-                database_namespaces.iter().next().copied(),
-            )?;
-            let db_source = match (database_bindings.first(), runtime_program_db.is_empty()) {
-                (None, true) => DbCapabilitySource::unavailable(),
-                (None, false) => anyhow::bail!(
-                    "activation {:?} has DB metadata without a database state binding",
-                    deployment
-                ),
-                (Some(_), true) => anyhow::bail!(
-                    "activation {:?} has a database state binding without DB metadata",
-                    deployment
-                ),
-                (Some(binding), false) => {
-                    let provider = service_db.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "activation {:?} requires Router-supplied serviceDb",
-                            deployment
-                        )
-                    })?;
-                    db_provider
-                        .build(DbProviderBuildInput {
-                            service_id: deployment.service_id.clone(),
-                            state_namespace: binding.namespace.clone(),
-                            config: DbProviderConfig::mongo(provider.mongo_url.as_str())
-                                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
-                            runtime_program_db,
-                        })
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?
-                }
+            let runtime_program_db =
+                activation_db_metadata(candidate, linked.implementation_package_build_id())?;
+            let db_source = if runtime_program_db.is_empty() {
+                DbCapabilitySource::unavailable()
+            } else {
+                let environment = environment.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "activation {:?} with DB metadata requires a trusted environment",
+                        deployment
+                    )
+                })?;
+                skiff_artifact_model::validate_activation_environment(environment)
+                    .map_err(anyhow::Error::msg)?;
+                let provider = service_db.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "activation {:?} requires Router-supplied serviceDb",
+                        deployment
+                    )
+                })?;
+                db_provider
+                    .build(DbProviderBuildInput {
+                        environment: environment.to_string(),
+                        service_id: deployment.service_id.clone(),
+                        config: DbProviderConfig::mongo(provider.mongo_url.as_str())
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+                        runtime_program_db,
+                    })
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?
             };
             for (operation, linked_operation) in linked.operations() {
                 if operation_targets
@@ -640,7 +598,6 @@ fn deployment_websocket_entry<'a>(
 fn activation_db_metadata(
     candidate: &AssemblyLinkedCandidate,
     root: &PackageBuildId,
-    database_namespace: Option<&str>,
 ) -> anyhow::Result<Vec<DbProviderTargetMetadata>> {
     let image = candidate.execution_image().shared_packages();
     let mut pending = vec![(root.clone(), true, None)];
@@ -662,24 +619,17 @@ fn activation_db_metadata(
         let (owner, projection) = match edge {
             None => (
                 format!("service package {build_id}"),
-                CanonicalActiveCollectionProjection::resolve(
-                    &source_collections,
-                    &BTreeMap::new(),
-                    database_namespace,
-                )
-                .expect("empty root collection projection is canonical"),
+                CanonicalActiveCollectionProjection::resolve(&source_collections, &BTreeMap::new())
+                    .expect("empty root collection projection is canonical"),
             ),
             Some((owner, mapping)) => {
-                let projection = CanonicalActiveCollectionProjection::resolve(
-                    &source_collections,
-                    &mapping,
-                    database_namespace,
-                )
-                .map_err(|message| {
-                    anyhow::anyhow!(
+                let projection =
+                    CanonicalActiveCollectionProjection::resolve(&source_collections, &mapping)
+                        .map_err(|message| {
+                            anyhow::anyhow!(
                         "activation DB metadata {owner} has invalid collection mapping: {message}"
                     )
-                })?;
+                        })?;
                 (owner, projection)
             }
         };
@@ -1015,9 +965,6 @@ mod websocket_admission_tests {
                 selector: selector("/connect"),
                 gateway_entry_key: key,
             }],
-            config_literals: Vec::new(),
-            secret_refs: Vec::new(),
-            state_bindings: Vec::new(),
             resource_bindings: Vec::new(),
             runtime_capability_bindings: Vec::new(),
             policy: DeploymentPolicy {
