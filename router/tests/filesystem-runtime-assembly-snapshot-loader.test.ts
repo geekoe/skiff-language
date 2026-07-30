@@ -275,6 +275,22 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     ).rejects.toThrow();
   });
 
+  it.each(['configLiterals', 'secretRefs', 'stateBindings'])(
+    'rejects the removed ServiceDeployment field %s',
+    async (field) => {
+      const root = await fixtureRoot();
+      const fixture = canonicalFixture();
+      fixture.deployments[0]![field] = [];
+      await writeFixture(root, fixture);
+
+      await expect(
+        loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+      ).rejects.toThrow(
+        /RouterSnapshot\.serviceDeployments\[0\] fields must be exactly/
+      );
+    }
+  );
+
   it('accepts only PackageArtifact v9 records addressed by package build v10', async () => {
     const packageRef: PackageRefFixture = {
       packageId: 'skiff.run/echo',
@@ -849,9 +865,6 @@ function deployment(
       },
       gatewayEntryKey
     }],
-    configLiterals: [],
-    secretRefs: [],
-    stateBindings: [],
     resourceBindings: [],
     runtimeCapabilityBindings: [],
     policy: {

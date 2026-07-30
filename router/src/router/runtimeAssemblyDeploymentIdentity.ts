@@ -40,24 +40,6 @@ export function deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(
     ),
     gatewayEntries: value.gatewayEntries,
     ingress: sortedRecords(value.ingress, compareIngressBindings),
-    configLiterals: sortedRecords(
-      value.configLiterals,
-      (left, right) =>
-        compareStrings(recordString(left, 'path'), recordString(right, 'path'))
-    ),
-    secretRefs: sortedRecords(
-      value.secretRefs,
-      (left, right) =>
-        compareStrings(recordString(left, 'path'), recordString(right, 'path'))
-    ),
-    stateBindings: sortedRecords(
-      value.stateBindings,
-      (left, right) =>
-        compareStrings(
-          recordString(left, 'requirementKey'),
-          recordString(right, 'requirementKey')
-        )
-    ),
     resourceBindings: sortedRecords(
       value.resourceBindings,
       (left, right) =>

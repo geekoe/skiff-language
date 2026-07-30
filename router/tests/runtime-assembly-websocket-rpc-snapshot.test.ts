@@ -236,6 +236,18 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
     );
   });
 
+  it.each(['configLiterals', 'secretRefs', 'stateBindings'])(
+    'strictly rejects the removed ServiceDeployment field %s',
+    (field) => {
+      const fixture = currentWebSocketFixture();
+      fixture.deployment[field] = [];
+
+      expect(() => joinFixture(fixture)).toThrow(
+        /RouterSnapshot\.serviceDeployments\[0\] fields must be exactly/
+      );
+    }
+  );
+
   it('rejects DeploymentArtifact preimage drift under a current v3 prefix', () => {
     const fixture = currentWebSocketFixture();
     fixture.deployment.policy.principal = 'service:example.com/other';
@@ -411,9 +423,6 @@ function currentWebSocketFixture(): Fixture {
       { selector: physicalSelector, gatewayEntryKey: 'websocket' },
       { selector: methodSelector, gatewayEntryKey: 'status' }
     ],
-    configLiterals: [],
-    secretRefs: [],
-    stateBindings: [],
     resourceBindings: [],
     runtimeCapabilityBindings: [],
     policy: {
