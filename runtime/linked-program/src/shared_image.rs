@@ -1211,15 +1211,6 @@ fn validate_requirement_binding(
         caller_package_build_id: caller.package_build_id().clone(),
         package_requirement_alias: requirement.alias.clone(),
     };
-    if requirement.collection_name_mapping != binding.collection_name_mapping {
-        return Err(
-            SharedPackageImageError::PackageRequirementCollectionMappingMismatch {
-                key,
-                expected: requirement.collection_name_mapping.clone(),
-                actual: binding.collection_name_mapping.clone(),
-            },
-        );
-    }
     let dependency = &binding.package;
     if requirement.package_id != dependency.package_id
         || requirement.exact_version != dependency.package_version
@@ -1403,11 +1394,6 @@ pub enum SharedPackageImageError {
         key: PackageRequirementKey,
         expected: PackageBuildId,
         actual: PackageBuildId,
-    },
-    PackageRequirementCollectionMappingMismatch {
-        key: PackageRequirementKey,
-        expected: BTreeMap<String, String>,
-        actual: BTreeMap<String, String>,
     },
     PackageLinkTargetRefMismatch {
         key: PackageRequirementKey,

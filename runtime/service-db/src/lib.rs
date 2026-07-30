@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use mongodb::{
     bson::{doc, Bson, Document},
     options::ClientOptions,
@@ -40,6 +39,7 @@ mod metadata;
 mod mongo;
 mod prepared_runtime;
 mod provider;
+mod storage_identity;
 mod store;
 
 pub use capability::{
@@ -51,6 +51,8 @@ pub use encryption::{
 };
 pub use error::{Result, ServiceDbError};
 pub use provider::MongoServiceDbProviderFactory;
+pub use storage_identity::service_storage_collection_name;
+use storage_identity::{service_storage_database_name, validate_service_database_name};
 
 use cascade::{
     cascade_plan_for_change, cascade_plan_for_changed_documents,
@@ -1437,115 +1439,6 @@ fn service_db_client_cell(mongo_url: &str) -> Arc<OnceCell<Client>> {
     let cell = Arc::new(OnceCell::new());
     cells.insert(mongo_url.to_string(), Arc::downgrade(&cell));
     cell
-}
-
-fn service_storage_database_name(environment: &str, service_id: &str) -> Result<String> {
-    skiff_artifact_model::validate_activation_environment(environment)
-        .map_err(ServiceDbError::Decode)?;
-    validate_publication_id(service_id)?;
-    let mut hasher = Sha256::new();
-    hash_framed_service_db_identity_part(&mut hasher, b"skiff-service-db-storage-identity-v1");
-    hash_framed_service_db_identity_part(&mut hasher, environment.as_bytes());
-    hash_framed_service_db_identity_part(&mut hasher, service_id.as_bytes());
-    Ok(format!(
-        "skiff_{}",
-        URL_SAFE_NO_PAD.encode(hasher.finalize())
-    ))
-}
-
-fn hash_framed_service_db_identity_part(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update((value.len() as u64).to_be_bytes());
-    hasher.update(value);
-}
-
-fn validate_publication_id(value: &str) -> Result<()> {
-    if value.is_empty()
-        || value.len() > 63
-        || value == "std"
-        || value != value.trim()
-        || value.contains("://")
-        || value.starts_with('/')
-        || value.ends_with('/')
-        || value.contains("//")
-        || value.contains('~')
-        || value.bytes().any(|byte| byte.is_ascii_control())
-        || value
-            .bytes()
-            .any(|byte| !matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/'))
-    {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{value}` must be a publication id"
-        )));
-    }
-    let Some((authority, local)) = value.split_once('/') else {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{value}` must be a publication id"
-        )));
-    };
-    validate_publication_authority(value, authority)?;
-    if local.is_empty()
-        || local
-            .split('/')
-            .any(|segment| !is_valid_local_segment(segment))
-    {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{value}` must be a publication id"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_publication_authority(publication_id: &str, authority: &str) -> Result<()> {
-    let labels = authority.split('.').collect::<Vec<_>>();
-    if labels.len() < 2 || labels.iter().any(|label| !is_valid_authority_label(label)) {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{publication_id}` must be a publication id"
-        )));
-    }
-    Ok(())
-}
-
-fn is_valid_authority_label(label: &str) -> bool {
-    let bytes = label.as_bytes();
-    !bytes.is_empty()
-        && bytes[0] != b'-'
-        && bytes.last() != Some(&b'-')
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-}
-
-fn is_valid_local_segment(segment: &str) -> bool {
-    let bytes = segment.as_bytes();
-    !bytes.is_empty()
-        && bytes[0].is_ascii_lowercase()
-        && bytes.last() != Some(&b'-')
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_' || *byte == b'-'
-        })
-}
-
-fn validate_service_database_name(database_name: &str) -> Result<()> {
-    if database_name.is_empty() || database_name.len() >= 64 {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{database_name}` must project to a Mongo database name of 1-63 bytes"
-        )));
-    }
-    if matches!(database_name, "admin" | "local" | "config") {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{database_name}` projects to a reserved Mongo database name"
-        )));
-    }
-    if database_name
-        .bytes()
-        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-        || database_name.contains(['.', '/', '\\', '"', '$'])
-    {
-        return Err(ServiceDbError::Decode(format!(
-            "service id `{database_name}` projects to a character forbidden in Mongo database names"
-        )));
-    }
-    Ok(())
 }
 
 async fn service_db_client_options(mongo_url: &str) -> mongodb::error::Result<ClientOptions> {

@@ -4,8 +4,8 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CanonicalActiveCollectionProjection, PackageBuildId,
-    RuntimeAssembly, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    BoundaryCallableProjection, PackageBuildId, RuntimeAssembly, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef,
 };
 
 use super::{HydratedPackageCodeSlot, ServiceContractStore};
@@ -56,14 +56,13 @@ fn validate_package_links(
             if provider.package.package_id != requirement.package_id
                 || provider.package.package_version != requirement.exact_version
                 || provider.package.package_local_abi_identity != requirement.expected_local_abi
-                || provider.collection_name_mapping != requirement.collection_name_mapping
                 || requirement
                     .expected_package_build
                     .as_ref()
                     .is_some_and(|expected| expected != &provider.package.package_build_id)
             {
                 anyhow::bail!(
-                    "package {} requirement {} link-plan target mismatches coordinate/local ABI/collection mapping",
+                    "package {} requirement {} link-plan target mismatches coordinate/local ABI",
                     build_id,
                     requirement.alias
                 );
@@ -334,6 +333,7 @@ fn activation_package_closure(
         .collect::<BTreeMap<_, _>>();
     let mut used_bindings = BTreeSet::new();
     let mut closure = BTreeSet::new();
+    let mut builds_by_package_id = BTreeMap::new();
     let mut pending = vec![deployment.implementation.package_build_id.clone()];
     while let Some(build_id) = pending.pop() {
         if !closure.insert(build_id.clone()) {
@@ -342,6 +342,18 @@ fn activation_package_closure(
         let package = packages.get(&build_id).ok_or_else(|| {
             anyhow::anyhow!("activation {activation:?} targets missing package build {build_id}")
         })?;
+        if let Some(first_build) =
+            builds_by_package_id.insert(package.artifact.package_id.as_str(), build_id.clone())
+        {
+            if first_build != build_id {
+                anyhow::bail!(
+                    "activation {activation:?} resolves package ID {} to different builds {} and {}",
+                    package.artifact.package_id,
+                    first_build,
+                    build_id
+                );
+            }
+        }
         for requirement in &package.artifact.package_requirements {
             let key = skiff_artifact_model::PackageRequirementKey {
                 caller_package_build_id: build_id.clone(),
@@ -355,14 +367,13 @@ fn activation_package_closure(
             if provider.package.package_id != requirement.package_id
                 || provider.package.package_version != requirement.exact_version
                 || provider.package.package_local_abi_identity != requirement.expected_local_abi
-                || provider.collection_name_mapping != requirement.collection_name_mapping
                 || requirement
                     .expected_package_build
                     .as_ref()
                     .is_some_and(|expected| expected != &provider.package.package_build_id)
             {
                 anyhow::bail!(
-                    "activation {activation:?} package requirement {key:?} binding mismatches coordinate/local ABI/collection mapping"
+                    "activation {activation:?} package requirement {key:?} binding mismatches coordinate/local ABI"
                 );
             }
             used_bindings.insert(key);
@@ -372,109 +383,7 @@ fn activation_package_closure(
     if used_bindings != bindings.keys().cloned().collect::<BTreeSet<_>>() {
         anyhow::bail!("activation {activation:?} contains an unused package binding");
     }
-    validate_activation_collection_names(activation, deployment, packages, &bindings)?;
     Ok(closure)
-}
-
-fn validate_activation_collection_names(
-    activation: &ServiceDeploymentRef,
-    deployment: &ServiceDeployment,
-    packages: &BTreeMap<PackageBuildId, &HydratedPackageCodeSlot>,
-    bindings: &BTreeMap<
-        skiff_artifact_model::PackageRequirementKey,
-        &skiff_artifact_model::PackageBinding,
-    >,
-) -> anyhow::Result<()> {
-    let root = packages
-        .get(&deployment.implementation.package_build_id)
-        .expect("activation closure validated the root package");
-    let mut active_targets = BTreeMap::new();
-    for collection in package_collection_names(root) {
-        active_targets.insert(
-            collection,
-            format!(
-                "service package {}",
-                deployment.implementation.package_build_id
-            ),
-        );
-    }
-
-    let mut visited = BTreeSet::new();
-    let mut projected_collection_builds =
-        BTreeMap::<PackageBuildId, (CanonicalActiveCollectionProjection, String)>::new();
-    let mut pending = vec![deployment.implementation.package_build_id.clone()];
-    while let Some(caller_build) = pending.pop() {
-        if !visited.insert(caller_build.clone()) {
-            continue;
-        }
-        let caller = packages
-            .get(&caller_build)
-            .expect("activation closure contains only hydrated packages");
-        for requirement in &caller.artifact.package_requirements {
-            let key = skiff_artifact_model::PackageRequirementKey {
-                caller_package_build_id: caller_build.clone(),
-                package_requirement_alias: requirement.alias.clone(),
-            };
-            let binding = bindings
-                .get(&key)
-                .expect("activation closure validated every package binding");
-            let provider = packages
-                .get(&binding.package.package_build_id)
-                .expect("activation closure validated every package provider");
-            let sources = package_collection_names(provider);
-            let owner = format!(
-                "dependency {}:{} -> {}",
-                key.caller_package_build_id,
-                key.package_requirement_alias,
-                binding.package.package_build_id
-            );
-            let projected = CanonicalActiveCollectionProjection::resolve(
-                &sources,
-                &binding.collection_name_mapping,
-            )
-            .map_err(|message| {
-                anyhow::anyhow!(
-                    "activation {activation:?} package requirement {key:?} has invalid collection mapping: {message}"
-                )
-            })?;
-            if !sources.is_empty() {
-                if let Some((first_projection, first_owner)) =
-                    projected_collection_builds.get(&binding.package.package_build_id)
-                {
-                    if first_projection != &projected {
-                        anyhow::bail!(
-                            "activation {activation:?} package {} has different active collection projections from {first_owner} and {owner}",
-                            binding.package.package_build_id
-                        );
-                    }
-                    pending.push(binding.package.package_build_id.clone());
-                    continue;
-                }
-                projected_collection_builds.insert(
-                    binding.package.package_build_id.clone(),
-                    (projected.clone(), owner.clone()),
-                );
-            }
-            for target in projected.collection_names().values() {
-                if let Some(first_owner) = active_targets.insert(target.clone(), owner.clone()) {
-                    anyhow::bail!(
-                        "activation {activation:?} collection target {target:?} collides between {first_owner} and {owner}"
-                    );
-                }
-            }
-            pending.push(binding.package.package_build_id.clone());
-        }
-    }
-    Ok(())
-}
-
-fn package_collection_names(package: &HydratedPackageCodeSlot) -> BTreeSet<String> {
-    package
-        .files()
-        .iter()
-        .flat_map(|file| file.declarations.db.values())
-        .map(|declaration| declaration.collection_name.clone())
-        .collect()
 }
 
 fn validate_activation_templates(

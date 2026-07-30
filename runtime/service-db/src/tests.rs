@@ -142,14 +142,30 @@ fn provider_metadata_from_ir(entries: Vec<DbMetadataIr>) -> Vec<DbProviderTarget
 }
 
 fn test_db_target(index: usize, module_path: &str, type_name: &str) -> DbCapabilityTarget {
+    test_db_target_for_package(
+        index,
+        module_path,
+        type_name,
+        &format!("test.local/provider-{type_name}-{index}"),
+        &format!("test-build-{type_name}-{index}"),
+    )
+}
+
+fn test_db_target_for_package(
+    index: usize,
+    module_path: &str,
+    type_name: &str,
+    package_id: &str,
+    package_build_id: &str,
+) -> DbCapabilityTarget {
     DbCapabilityTarget::new(
         DbCapabilityTargetId {
             package_artifact_ref: PackageArtifactRef {
-                package_id: format!("test.local/provider-{type_name}-{index}"),
+                package_id: package_id.to_string(),
                 package_version: "1.0.0".to_string(),
-                package_build_id: PackageBuildId::new(format!("test-build-{type_name}-{index}")),
+                package_build_id: PackageBuildId::new(package_build_id),
                 package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
-                    "test-abi-{type_name}-{index}"
+                    "test-abi-{package_build_id}"
                 )),
             },
             file_ir_ref: FileIrRef::new(format!("test-file-{type_name}-{index}"), module_path),
@@ -548,6 +564,48 @@ fn service_db_runtime_derives_storage_identity_from_environment_and_service_id()
 }
 
 #[test]
+fn package_collection_storage_name_is_stable_bounded_and_mongo_safe() {
+    let first =
+        service_storage_collection_name("example.com/provider", "internal.events.TrackEvent")
+            .expect("physical collection name");
+    let repeated =
+        service_storage_collection_name("example.com/provider", "internal.events.TrackEvent")
+            .expect("physical collection name");
+
+    assert_eq!(first, repeated);
+    assert!(first.starts_with("_skiff_c1_"));
+    assert_eq!(first.len(), 53);
+    assert!(!first.contains('\0') && !first.contains('$'));
+    assert!(
+        format!("{}.{}", "d".repeat(63), first).len() < 120,
+        "system encoding should fit the strict historical Mongo namespace boundary"
+    );
+}
+
+#[test]
+fn package_collection_storage_name_isolates_packages_and_logical_collections() {
+    let first_package = service_storage_collection_name("example.com/first", "Session")
+        .expect("physical collection name");
+    let second_package = service_storage_collection_name("example.com/second", "Session")
+        .expect("physical collection name");
+    let second_collection = service_storage_collection_name("example.com/first", "Audit")
+        .expect("physical collection name");
+
+    assert_ne!(first_package, second_package);
+    assert_ne!(first_package, second_collection);
+}
+
+#[test]
+fn package_collection_storage_name_is_diamond_path_independent() {
+    let direct = service_storage_collection_name("example.com/provider", "Session")
+        .expect("direct dependency collection");
+    let transitive = service_storage_collection_name("example.com/provider", "Session")
+        .expect("transitive dependency collection");
+
+    assert_eq!(direct, transitive);
+}
+
+#[test]
 fn service_db_runtime_environment_isolates_the_same_service_id() {
     let config = ServiceDbConfig {
         mongo_url: inert_mongo_url("environment"),
@@ -902,12 +960,20 @@ fn object_metadata_uses_typed_collection_name_from_service_unit_db() {
     let track_event =
         DbCollectionMetadata::from_ir(&metadata[1], 1).expect("metadata should parse");
 
-    assert_eq!(browser_session.collection_name, "BrowserSession");
-    assert_eq!(track_event.collection_name, "TrackEvent");
+    assert_eq!(
+        browser_session.collection_name,
+        service_storage_collection_name("test.local/package", "BrowserSession")
+            .expect("physical collection name")
+    );
+    assert_eq!(
+        track_event.collection_name,
+        service_storage_collection_name("test.local/package", "TrackEvent")
+            .expect("physical collection name")
+    );
 }
 
 #[test]
-fn object_metadata_uses_final_collection_name_from_service_unit_db() {
+fn object_metadata_encodes_package_owned_logical_collection_name() {
     let metadata = ServiceDbMetadata::from_runtime_program_db(&provider_metadata(json!([
         {
             "modulePath": "httpSession.db",
@@ -926,34 +992,128 @@ fn object_metadata_uses_final_collection_name_from_service_unit_db() {
             .collection_for_target(&test_db_target(0, "httpSession.db", "Session"))
             .expect("exact Session metadata should resolve")
             .collection_name,
-        "registry_session"
+        service_storage_collection_name("test.local/provider-Session-0", "registry_session")
+            .expect("physical collection name")
     );
 }
 
 #[test]
-fn object_metadata_rejects_reserved_skiff_collection_name() {
-    let error = ServiceDbRuntime::new(
+fn object_metadata_system_encodes_skiff_prefixed_logical_collection_name() {
+    let metadata = provider_metadata(json!([
+        {
+            "kind": "object",
+            "typeName": "File",
+            "collectionName": "_skiff_file",
+            "key": { "name": "id", "type": { "kind": "builtin", "name": "string" } },
+            "fields": [],
+            "indexes": []
+        }
+    ]));
+    let runtime = ServiceDbRuntime::new(
         test_environment(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
-        &provider_metadata(json!([
-            {
-                "kind": "object",
-                "typeName": "File",
-                "collectionName": "_skiff_file",
-                "key": { "name": "id", "type": { "kind": "builtin", "name": "string" } },
-                "fields": [],
-                "indexes": []
-            }
-        ])),
+        &metadata,
     )
-    .err()
-    .expect("reserved system collection should be rejected");
+    .expect("logical names cannot collide with system physical collections");
 
+    assert_eq!(
+        runtime
+            .metadata
+            .collection_for_target(&test_db_target(0, "", "File"))
+            .expect("File metadata")
+            .collection_name,
+        service_storage_collection_name("test.local/provider-File-0", "_skiff_file")
+            .expect("physical collection name")
+    );
+}
+
+#[test]
+fn object_metadata_rejects_duplicate_logical_collection_identity_within_package() {
+    let metadata = db_metadata(json!([
+        {
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "shared",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        },
+        {
+            "kind": "object",
+            "typeName": "Audit",
+            "collectionName": "shared",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        }
+    ]));
+    let entries = metadata
+        .into_iter()
+        .enumerate()
+        .map(|(index, metadata)| DbProviderTargetMetadata {
+            target: test_db_target_for_package(
+                index,
+                &metadata.module_path,
+                &metadata.type_name,
+                "example.com/provider",
+                "provider-build",
+            ),
+            metadata,
+        })
+        .collect::<Vec<_>>();
+
+    let error = ServiceDbMetadata::from_runtime_program_db(&entries)
+        .expect_err("duplicate Package logical collection identity must fail");
     assert!(
         error
             .to_string()
-            .contains("reserved _skiff_ system namespace"),
+            .contains("repeats one Package logical collection identity"),
+        "{error}"
+    );
+}
+
+#[test]
+fn object_metadata_rejects_one_package_id_resolved_to_different_builds() {
+    let metadata = db_metadata(json!([
+        {
+            "kind": "object",
+            "typeName": "Session",
+            "collectionName": "session",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        },
+        {
+            "kind": "object",
+            "typeName": "Audit",
+            "collectionName": "audit",
+            "key": { "name": "id" },
+            "fields": [],
+            "indexes": []
+        }
+    ]));
+    let entries = metadata
+        .into_iter()
+        .enumerate()
+        .map(|(index, metadata)| DbProviderTargetMetadata {
+            target: test_db_target_for_package(
+                index,
+                &metadata.module_path,
+                &metadata.type_name,
+                "example.com/provider",
+                &format!("provider-build-{index}"),
+            ),
+            metadata,
+        })
+        .collect::<Vec<_>>();
+
+    let error = ServiceDbMetadata::from_runtime_program_db(&entries)
+        .expect_err("one Package ID cannot select different builds");
+    assert!(
+        error
+            .to_string()
+            .contains("resolves package ID example.com/provider to different exact Package builds"),
         "{error}"
     );
 }
@@ -1251,14 +1411,16 @@ fn metadata_lookup_uses_exact_target_identity_instead_of_type_name() {
             .collection_for_target(&test_db_target(0, "internal.models", "Thread"))
             .expect("exact models Thread should resolve")
             .collection_name,
-        "threads_a"
+        service_storage_collection_name("test.local/provider-Thread-0", "threads_a")
+            .expect("physical collection name")
     );
     assert_eq!(
         metadata
             .collection_for_target(&test_db_target(1, "internal.archive", "Thread"))
             .expect("exact archive Thread should resolve")
             .collection_name,
-        "threads_b"
+        service_storage_collection_name("test.local/provider-Thread-1", "threads_b")
+            .expect("physical collection name")
     );
 
     let error = metadata
@@ -1301,14 +1463,16 @@ fn metadata_keeps_identical_type_names_from_distinct_exact_targets_separate() {
             .collection_for_target(&test_db_target(0, "model", "Session"))
             .expect("first exact Session target")
             .collection_name,
-        "sessions_a"
+        service_storage_collection_name("test.local/provider-Session-0", "sessions_a")
+            .expect("physical collection name")
     );
     assert_eq!(
         metadata
             .collection_for_target(&test_db_target(1, "model", "Session"))
             .expect("second exact Session target")
             .collection_name,
-        "sessions_b"
+        service_storage_collection_name("test.local/provider-Session-1", "sessions_b")
+            .expect("physical collection name")
     );
 }
 
@@ -2858,6 +3022,7 @@ fn encrypted_binding() -> DbCollectionMetadata {
     DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", json!([]))[0],
         0,
+        "example.com/credential",
         "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher()),
@@ -3141,6 +3306,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     assert!(DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("number", "string", json!([]))[0],
         0,
+        "example.com/credential",
         "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher())
@@ -3149,6 +3315,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     assert!(DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "number", json!([]))[0],
         0,
+        "example.com/credential",
         "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher())
@@ -3162,6 +3329,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     let indexed_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", indexed)[0],
         0,
+        "example.com/credential",
         "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher()),
@@ -3181,6 +3349,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     let partial_index_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", partial_index)[0],
         0,
+        "example.com/credential",
         "test",
         "example.com/credential",
         Some(test_encryption_keyring().cipher()),
@@ -3251,6 +3420,7 @@ fn forged_encrypted_metadata_rejects_nullable_recoverable_and_immutable_file_lan
         let error = DbCollectionMetadata::from_ir_with_encryption(
             &forged[0],
             0,
+            "example.com/credential",
             "test",
             "example.com/credential",
             Some(test_encryption_keyring().cipher()),

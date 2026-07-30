@@ -12,7 +12,7 @@ use skiff_runtime_capability_context::{
     DbOrderDirection, DbOrderEntry, DbProviderTargetMetadata, FieldPath, ServiceDbChange,
 };
 
-use crate::{DbEncryptionCipher, Result, ServiceDbError};
+use crate::{service_storage_collection_name, DbEncryptionCipher, Result, ServiceDbError};
 
 #[derive(Clone)]
 pub struct ServiceDbMetadata {
@@ -87,15 +87,48 @@ impl ServiceDbMetadata {
     ) -> Result<Self> {
         let mut collections = Vec::new();
         let mut collections_by_target = HashMap::new();
+        let mut package_builds = HashMap::new();
+        let mut physical_collection_owners = HashMap::new();
         for (index, entry) in entries.iter().enumerate() {
+            let package = &entry.target.target_id.package_artifact_ref;
+            if let Some(first) = package_builds.insert(package.package_id.as_str(), package) {
+                if first != package {
+                    return Err(ServiceDbError::InvalidDbMetadata(format!(
+                        "runtime program DB metadata resolves package ID {} to different exact Package builds",
+                        package.package_id
+                    )));
+                }
+            }
             let mut binding = DbCollectionMetadata::from_ir_with_encryption(
                 &entry.metadata,
                 index,
+                &package.package_id,
                 storage_environment,
                 storage_service_id,
                 encryption_cipher.clone(),
             )?;
             binding.target_key = entry.target.lookup_key().to_string();
+            let logical_owner = (
+                package.package_id.clone(),
+                entry.metadata.collection_name.clone(),
+                binding.target_key.clone(),
+            );
+            if let Some(first) =
+                physical_collection_owners.insert(binding.collection_name.clone(), logical_owner)
+            {
+                let current = physical_collection_owners
+                    .get(&binding.collection_name)
+                    .expect("inserted collection owner");
+                let reason = if first.0 == current.0 && first.1 == current.1 {
+                    "repeats one Package logical collection identity"
+                } else {
+                    "has a system physical collection-name encoding collision"
+                };
+                return Err(ServiceDbError::InvalidDbMetadata(format!(
+                    "runtime program DB metadata {reason}: {}",
+                    binding.collection_name
+                )));
+            }
             if collections_by_target
                 .insert(entry.target.lookup_key().to_string(), collections.len())
                 .is_some()
@@ -136,12 +169,20 @@ impl ServiceDbMetadata {
 impl DbCollectionMetadata {
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_ir(ir: &DbMetadataIr, index: usize) -> Result<Self> {
-        Self::from_ir_with_encryption(ir, index, "test", "test.local/service", None)
+        Self::from_ir_with_encryption(
+            ir,
+            index,
+            "test.local/package",
+            "test",
+            "test.local/service",
+            None,
+        )
     }
 
     pub fn from_ir_with_encryption(
         ir: &DbMetadataIr,
         index: usize,
+        package_id: &str,
         storage_environment: &str,
         storage_service_id: &str,
         encryption_cipher: Option<DbEncryptionCipher>,
@@ -155,7 +196,7 @@ impl DbCollectionMetadata {
             &ir.collection_name,
             format!("runtime program db[{index}].collectionName"),
         )?;
-        validate_user_collection_name(&collection_name, index)?;
+        let collection_name = service_storage_collection_name(package_id, &collection_name)?;
         let key = parse_object_key(ir.key.as_ref(), index)?;
         let fields = parse_fields(&ir.fields, index)?;
         let leases = parse_leases(&ir.leases, index)?;
@@ -316,15 +357,6 @@ fn validate_non_empty_name(value: &str, location: String) -> Result<String> {
         .ok_or_else(|| {
             ServiceDbError::InvalidDbMetadata(format!("{location} must be a non-empty string"))
         })
-}
-
-fn validate_user_collection_name(collection_name: &str, index: usize) -> Result<()> {
-    if collection_name.starts_with("_skiff_") {
-        return Err(ServiceDbError::InvalidDbMetadata(format!(
-            "runtime program db[{index}].collectionName {collection_name:?} uses reserved _skiff_ system namespace"
-        )));
-    }
-    Ok(())
 }
 
 struct DbObjectKeyMetadata {

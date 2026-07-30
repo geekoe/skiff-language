@@ -6,12 +6,11 @@ use std::{
 use anyhow::Context;
 use skiff_artifact_identity::{gateway_entry_identity, websocket_entry_id};
 use skiff_artifact_model::{
-    AssemblyActivationServiceDb, CanonicalActiveCollectionProjection, ContractOperationId,
-    DbMetadataIndexIr, DbMetadataIr, DeploymentGatewayEntry, DeploymentIngressBinding,
-    GatewayAdapterKind, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
-    GatewayWebSocketRpcProfile, IngressProtocol, OperationTargetRef, PackageBuildId,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, WebSocketEntryId,
-    WEBSOCKET_GATEWAY_ENTRY_KEY,
+    AssemblyActivationServiceDb, ContractOperationId, DbMetadataIndexIr, DbMetadataIr,
+    DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterKind, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayProtocolSurface, GatewayWebSocketRpcProfile, IngressProtocol,
+    OperationTargetRef, PackageBuildId, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, WebSocketEntryId, WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
@@ -622,66 +621,23 @@ fn activation_db_metadata(
     root: &PackageBuildId,
 ) -> anyhow::Result<Vec<DbProviderTargetMetadata>> {
     let image = candidate.execution_image().shared_packages();
-    let mut pending = vec![(root.clone(), true, None)];
+    let mut pending = vec![(root.clone(), true)];
     let mut visited = BTreeSet::new();
-    let mut active_collection_owners = BTreeMap::new();
-    let mut projected_collection_builds =
-        BTreeMap::<PackageBuildId, (CanonicalActiveCollectionProjection, String, bool)>::new();
+    let mut builds_by_package_id = BTreeMap::new();
     let mut metadata = Vec::new();
-    while let Some((build_id, is_root, edge)) = pending.pop() {
+    while let Some((build_id, is_root)) = pending.pop() {
         let code = image.code_by_build(&build_id).ok_or_else(|| {
             anyhow::anyhow!("activation DB metadata package {build_id} is not loaded")
         })?;
-        let source_collections = code
-            .files()
-            .iter()
-            .flat_map(|file| file.declarations.db.values())
-            .map(|declaration| declaration.collection_name.clone())
-            .collect::<BTreeSet<_>>();
-        let (owner, projection) = match edge {
-            None => (
-                format!("service package {build_id}"),
-                CanonicalActiveCollectionProjection::resolve(&source_collections, &BTreeMap::new())
-                    .expect("empty root collection projection is canonical"),
-            ),
-            Some((owner, mapping)) => {
-                let projection =
-                    CanonicalActiveCollectionProjection::resolve(&source_collections, &mapping)
-                        .map_err(|message| {
-                            anyhow::anyhow!(
-                        "activation DB metadata {owner} has invalid collection mapping: {message}"
-                    )
-                        })?;
-                (owner, projection)
-            }
-        };
-        if !source_collections.is_empty() {
-            if let Some((first_projection, first_owner, first_is_root)) =
-                projected_collection_builds.get(&build_id)
-            {
-                if *first_is_root || is_root {
-                    anyhow::bail!(
-                        "activation DB collection owner collides between {first_owner} and {owner}"
-                    );
-                }
-                if first_projection != &projection {
-                    anyhow::bail!(
-                        "activation DB metadata package {build_id} has different active collection projections from {first_owner} and {owner}"
-                    );
-                }
-                continue;
-            }
-            projected_collection_builds.insert(
-                build_id.clone(),
-                (projection.clone(), owner.clone(), is_root),
-            );
-        }
-        for target in projection.collection_names().values() {
-            if let Some(first_owner) =
-                active_collection_owners.insert(target.clone(), owner.clone())
-            {
+        if let Some(first_build) =
+            builds_by_package_id.insert(code.artifact().package_id.as_str(), build_id.clone())
+        {
+            if first_build != build_id {
                 anyhow::bail!(
-                    "activation DB collection target {target:?} collides between {first_owner} and {owner}"
+                    "activation DB metadata resolves package ID {} to different builds {} and {}",
+                    code.artifact().package_id,
+                    first_build,
+                    build_id
                 );
             }
         }
@@ -769,11 +725,7 @@ fn activation_db_metadata(
                         kind: declaration.kind,
                         ty: declaration.type_ref.clone(),
                         type_name: declaration.type_name.clone(),
-                        collection_name: projection
-                            .collection_names()
-                            .get(&declaration.collection_name)
-                            .expect("declared collection was projected")
-                            .clone(),
+                        collection_name: declaration.collection_name.clone(),
                         key: Some(declaration.key.clone()),
                         fields: declaration.fields.clone(),
                         retention: declaration.retention.clone(),
@@ -794,19 +746,7 @@ fn activation_db_metadata(
         }
         for link in &candidate.assembly().package_link_plan.package_links {
             if link.key.caller_package_build_id == build_id {
-                pending.push((
-                    link.package.package_build_id.clone(),
-                    false,
-                    Some((
-                        format!(
-                            "dependency {}:{} -> {}",
-                            link.key.caller_package_build_id,
-                            link.key.package_requirement_alias,
-                            link.package.package_build_id
-                        ),
-                        link.collection_name_mapping.clone(),
-                    )),
-                ));
+                pending.push((link.package.package_build_id.clone(), false));
             }
         }
     }

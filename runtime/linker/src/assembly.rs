@@ -308,6 +308,7 @@ fn activation_package_closure(
         .collect::<BTreeMap<_, _>>();
     let mut used = BTreeSet::new();
     let mut closure = BTreeSet::new();
+    let mut builds_by_package_id = BTreeMap::new();
     let mut pending = vec![deployment.implementation.package_build_id.clone()];
     while let Some(build_id) = pending.pop() {
         if !closure.insert(build_id.clone()) {
@@ -316,6 +317,18 @@ fn activation_package_closure(
         let code = image.code_by_build(&build_id).ok_or_else(|| {
             anyhow::anyhow!("activation package closure targets missing build {build_id}")
         })?;
+        if let Some(first_build) =
+            builds_by_package_id.insert(code.artifact().package_id.as_str(), build_id.clone())
+        {
+            if first_build != build_id {
+                anyhow::bail!(
+                    "activation resolves package ID {} to different builds {} and {}",
+                    code.artifact().package_id,
+                    first_build,
+                    build_id
+                );
+            }
+        }
         for requirement in &code.artifact().package_requirements {
             let key = PackageRequirementKey {
                 caller_package_build_id: build_id.clone(),
@@ -328,7 +341,6 @@ fn activation_package_closure(
                 || provider.package.package_id != requirement.package_id
                 || provider.package.package_version != requirement.exact_version
                 || provider.package.package_local_abi_identity != requirement.expected_local_abi
-                || provider.collection_name_mapping != requirement.collection_name_mapping
                 || requirement
                     .expected_package_build
                     .as_ref()

@@ -368,12 +368,12 @@ impl FullChainFixture {
     }
 }
 
-struct CollectionMappingFixture {
+struct CollectionIdentityFixture {
     assembly: RuntimeAssembly,
     resolver: CountingResolver,
 }
 
-impl CollectionMappingFixture {
+impl CollectionIdentityFixture {
     fn new(mapping: BTreeMap<String, String>, root_collection: Option<&str>) -> Self {
         Self::build(mapping, root_collection, false, None)
     }
@@ -1195,14 +1195,8 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
 }
 
 #[tokio::test]
-async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
-    let fixture = CollectionMappingFixture::new(
-        BTreeMap::from([(
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        )]),
-        None,
-    );
+async fn logical_collection_identity_reaches_db_provider_exactly_and_survives_reload() {
+    let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
         config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
@@ -1224,7 +1218,7 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
             Some(&service_db),
         )
         .await
-        .expect("mapped collection fixture must admit");
+        .expect("Package-owned collection fixture must admit");
     controller
         .recover_committed(
             "fixture",
@@ -1236,7 +1230,7 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
             Some(&service_db),
         )
         .await
-        .expect("reload must rebuild the exact mapped metadata");
+        .expect("reload must rebuild the exact Package-owned metadata");
 
     let inputs = provider.inputs.lock().unwrap();
     assert_eq!(inputs.len(), 2);
@@ -1262,16 +1256,13 @@ async fn collection_mapping_reaches_db_provider_exactly_and_survives_reload() {
     collections.sort();
     assert_eq!(
         collections,
-        vec![
-            "mapped_package_secret".to_string(),
-            "package_audit".to_string(),
-        ]
+        vec!["package_audit".to_string(), "package_secret".to_string()]
     );
 }
 
 #[tokio::test]
 async fn reachable_db_metadata_requires_router_supplied_service_db() {
-    let fixture = CollectionMappingFixture::new(BTreeMap::new(), None);
+    let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
         config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
@@ -1301,142 +1292,29 @@ async fn reachable_db_metadata_requires_router_supplied_service_db() {
 }
 
 #[tokio::test]
-async fn identical_stateful_diamond_has_one_effective_projection_in_any_edge_order() {
-    for (label, mapping, expected_collections) in [
-        (
-            "empty",
-            BTreeMap::new(),
-            vec!["package_audit", "package_secret"],
-        ),
-        (
-            "mapped",
-            BTreeMap::from([(
-                "package_secret".to_string(),
-                "mapped_package_secret".to_string(),
-            )]),
-            vec!["mapped_package_secret", "package_audit"],
-        ),
-    ] {
-        for reverse_links in [false, true] {
-            let mut fixture =
-                CollectionMappingFixture::with_stateful_diamond(mapping.clone(), mapping.clone());
-            if reverse_links {
-                fixture.assembly.package_link_plan.package_links.reverse();
-                skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly)
-                    .unwrap();
-                fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
-            }
-            let reference =
-                skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-            let (config_snapshot, config_resolver) =
-                config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
-            let provider = CapturingDbProvider::default();
-            let controller = AssemblyAdmissionController::new(
-                format!("runtime-diamond-{label}-{reverse_links}"),
-                skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
-            );
-
-            controller
-                .recover_committed(
-                    "fixture",
-                    7,
-                    &reference,
-                    &config_snapshot,
-                    &fixture.resolver,
-                    &config_resolver,
-                    Some(&mapping_service_db()),
-                )
-                .await
-                .expect("identical stateful diamond must admit");
-
-            let inputs = provider.inputs.lock().unwrap();
-            assert_eq!(inputs.len(), 1);
-            assert_eq!(inputs[0].environment, "fixture");
-            assert_eq!(inputs[0].service_id, fixture.assembly.roots[0].service_id);
-            let mut collections = inputs[0]
-                .runtime_program_db
-                .iter()
-                .filter(|metadata| {
-                    metadata.metadata.package_id.as_deref() == Some("example.mapping-store")
-                })
-                .map(|metadata| metadata.metadata.collection_name.as_str())
-                .collect::<Vec<_>>();
-            collections.sort_unstable();
-            let mut expected = expected_collections.clone();
-            expected.sort_unstable();
-            assert_eq!(collections, expected);
+async fn identical_stateful_diamond_has_one_metadata_owner_in_any_edge_order() {
+    for reverse_links in [false, true] {
+        let mut fixture =
+            CollectionIdentityFixture::with_stateful_diamond(BTreeMap::new(), BTreeMap::new());
+        if reverse_links {
+            fixture.assembly.package_link_plan.package_links.reverse();
+            skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly)
+                .unwrap();
+            fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
         }
-    }
-}
-
-#[tokio::test]
-async fn same_build_stateful_diamond_with_different_projection_fails_closed() {
-    let fixture = CollectionMappingFixture::with_stateful_diamond(
-        BTreeMap::new(),
-        BTreeMap::from([(
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        )]),
-    );
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
-    let provider = CapturingDbProvider::default();
-    let controller = AssemblyAdmissionController::new(
-        "runtime-diamond-drift",
-        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
-    );
-
-    let error = controller
-        .recover_committed(
-            "fixture",
-            7,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&mapping_service_db()),
-        )
-        .await
-        .expect_err("same build with different resolved projection must fail closed");
-    let error = format!("{error:#}");
-    assert!(
-        error.contains("different active collection projections"),
-        "{error}"
-    );
-    assert!(provider.inputs.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn collection_mapping_unknown_source_and_partial_collision_fail_closed() {
-    for (label, mapping, expected) in [
-        (
-            "unknown",
-            BTreeMap::from([(
-                "missing_collection".to_string(),
-                "mapped_collection".to_string(),
-            )]),
-            "is not declared",
-        ),
-        (
-            "partial collision",
-            BTreeMap::from([("package_secret".to_string(), "package_audit".to_string())]),
-            "both resolve",
-        ),
-    ] {
-        let fixture = CollectionMappingFixture::new(mapping, None);
         let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
         let (config_snapshot, config_resolver) =
             config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
         let provider = CapturingDbProvider::default();
         let controller = AssemblyAdmissionController::new(
-            format!("runtime-{label}"),
+            format!("runtime-diamond-{reverse_links}"),
             skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
         );
-        let error = controller
+
+        controller
             .recover_committed(
                 "fixture",
-                1,
+                7,
                 &reference,
                 &config_snapshot,
                 &fixture.resolver,
@@ -1444,59 +1322,38 @@ async fn collection_mapping_unknown_source_and_partial_collision_fail_closed() {
                 Some(&mapping_service_db()),
             )
             .await
-            .expect_err("invalid collection mapping must fail closed");
-        let error = format!("{error:#}");
-        assert!(error.contains(expected), "{label}: {error}");
-        assert!(provider.inputs.lock().unwrap().is_empty());
+            .expect("identical stateful diamond must admit");
+
+        let inputs = provider.inputs.lock().unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].environment, "fixture");
+        assert_eq!(inputs[0].service_id, fixture.assembly.roots[0].service_id);
+        let mut collections = inputs[0]
+            .runtime_program_db
+            .iter()
+            .filter(|metadata| {
+                metadata.metadata.package_id.as_deref() == Some("example.mapping-store")
+            })
+            .map(|metadata| metadata.metadata.collection_name.as_str())
+            .collect::<Vec<_>>();
+        collections.sort_unstable();
+        assert_eq!(collections, vec!["package_audit", "package_secret"]);
     }
 }
 
 #[tokio::test]
-async fn mapped_dependency_collision_with_service_collection_fails_closed() {
-    let fixture = CollectionMappingFixture::new(
-        BTreeMap::from([(
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        )]),
-        Some("mapped_package_secret"),
-    );
+async fn equal_bare_collection_names_from_service_and_package_remain_distinct_targets() {
+    let fixture = CollectionIdentityFixture::new(BTreeMap::new(), Some("package_secret"));
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
         config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
+    let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-service-collision",
-        skiff_runtime_capability_context::DbProviderSource::new(CapturingDbProvider::default()),
-    );
-
-    let error = controller
-        .recover_committed(
-            "fixture",
-            1,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&mapping_service_db()),
-        )
-        .await
-        .expect_err("service/dependency collection collision must fail closed");
-    let error = format!("{error:#}");
-    assert!(error.contains("collides between"), "{error}");
-}
-
-#[tokio::test]
-async fn mapped_targets_from_distinct_dependencies_cannot_collide() {
-    let fixture = CollectionMappingFixture::with_dependency_target_collision();
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
-    let provider = CapturingDbProvider::default();
-    let controller = AssemblyAdmissionController::new(
-        "runtime-dependency-collision",
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
 
-    let error = controller
+    controller
         .recover_committed(
             "fixture",
             1,
@@ -1507,60 +1364,26 @@ async fn mapped_targets_from_distinct_dependencies_cannot_collide() {
             Some(&mapping_service_db()),
         )
         .await
-        .expect_err("two dependency collection targets must not collide");
-    let error = format!("{error:#}");
-    assert!(error.contains("collides between"), "{error}");
-    assert!(
-        error.contains("store") && error.contains("cache"),
-        "{error}"
-    );
-    assert!(provider.inputs.lock().unwrap().is_empty());
-}
+        .expect("Package identity, not the bare name, owns physical collection storage");
 
-#[tokio::test]
-async fn assembly_collection_mapping_drift_fails_before_host_activation() {
-    let mut fixture = CollectionMappingFixture::new(
-        BTreeMap::from([(
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        )]),
-        None,
+    let inputs = provider.inputs.lock().unwrap();
+    let same_bare_name = inputs[0]
+        .runtime_program_db
+        .iter()
+        .filter(|entry| entry.metadata.collection_name == "package_secret")
+        .map(|entry| {
+            entry
+                .target
+                .target_id
+                .package_artifact_ref
+                .package_id
+                .as_str()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        same_bare_name,
+        BTreeSet::from(["example.phase-three-consumer", "example.mapping-store"])
     );
-    fixture.assembly.package_link_plan.package_links[0]
-        .collection_name_mapping
-        .insert(
-            "package_secret".to_string(),
-            "drifted_package_secret".to_string(),
-        );
-    skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
-    fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly(&fixture.assembly, &fixture.resolver);
-    let provider = CapturingDbProvider::default();
-    let controller = AssemblyAdmissionController::new(
-        "runtime-drift",
-        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
-    );
-
-    let error = controller
-        .recover_committed(
-            "fixture",
-            1,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&mapping_service_db()),
-        )
-        .await
-        .expect_err("deployment/assembly mapping drift must fail closed");
-    let error = format!("{error:#}");
-    assert!(
-        error.contains("collection mapping") || error.contains("canonical link plan"),
-        "{error}"
-    );
-    assert!(provider.inputs.lock().unwrap().is_empty());
 }
 
 fn service_contract(
