@@ -228,11 +228,9 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
             facts.activation.activation_id().as_str(),
             &self.input.request.request_id,
         );
-        let config = config_context(concrete::ConfigCapabilityContext::new(
-            config_views.service(),
-            config_views.packages(),
-        ))
-        .owned();
+        let config = capability_contract::ConfigCapabilityContext::owned(&config_context(
+            concrete::ConfigCapabilityContext::new(config_views.service(), config_views.packages()),
+        ));
         let websocket = websocket_from_runtime_request(
             deployment.service_id.as_str(),
             facts
