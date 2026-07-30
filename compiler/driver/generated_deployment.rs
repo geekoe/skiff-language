@@ -5,10 +5,9 @@ use skiff_artifact_identity::{service_contract_ref, ValidatedPackageArtifact};
 use skiff_artifact_model::{
     DeploymentDiagnosticText, DeploymentRevision, HttpGatewayDocumentAuthoring, PackageArtifact,
     PackageBinding, PackageRequirementKey, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
-    ServiceDeploymentOperationInput, ServiceManifestAuthoring, ServiceRequirementKey,
-    ServiceSelectorBinding, WebSocketGatewayDocumentAuthoring,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
+    ServiceManifestAuthoring, ServiceRequirementKey, ServiceSelectorBinding,
+    WebSocketGatewayDocumentAuthoring, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{
@@ -119,8 +118,6 @@ pub fn generate_service_deployment_with_validated_packages(
         service_selectors: service_selectors(&input),
         gateway_entries,
         ingress,
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: runtime_capability_bindings(&input),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!(
                 "{}@{}",
@@ -386,29 +383,6 @@ fn service_selectors(input: &GeneratedServiceDeploymentInput<'_>) -> Vec<Service
                     .expected_protocol_identity
                     .clone(),
             },
-        })
-        .collect()
-}
-
-fn runtime_capability_bindings(
-    input: &GeneratedServiceDeploymentInput<'_>,
-) -> Vec<RuntimeCapabilityBinding> {
-    input
-        .package_closure
-        .iter()
-        .chain(std::iter::once(input.implementation))
-        .flat_map(|package| &package.runtime_requirements.runtime_capabilities)
-        .map(|requirement| {
-            (
-                requirement.capability.clone(),
-                requirement.required_version.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .map(|(capability, version)| RuntimeCapabilityBinding {
-            capability,
-            version,
         })
         .collect()
 }

@@ -7,10 +7,9 @@ use skiff_artifact_model::{
     ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
     PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
-    PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
-    PackageSymbolRef, PackageTypeRef, ParamIr, ServiceCallRef, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceSymbolRef, SlotLayout, TypeDeclIr, TypeDeclarationIr,
-    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+    PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ParamIr, ServiceCallRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, SlotLayout, TypeDeclIr,
+    TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -36,12 +35,8 @@ pub(super) enum SignatureSet {
 
 pub(super) fn project_fixture(
     signature_set: SignatureSet,
-    runtime_capability: &str,
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
-    project_fixture_with_runtime_requirements(
-        signature_set,
-        runtime_requirements(runtime_capability),
-    )
+    project_fixture_with_runtime_requirements(signature_set, runtime_requirements())
 }
 
 pub(super) fn project_fixture_with_runtime_requirements(
@@ -496,21 +491,13 @@ fn no_effects() -> CallableMayEffects {
     }
 }
 
-pub(super) fn runtime_requirements(capability: &str) -> PackageRuntimeRequirements {
+pub(super) fn runtime_requirements() -> PackageRuntimeRequirements {
     PackageRuntimeRequirements {
         config: vec![skiff_artifact_model::PackageConfigRequirement {
             path: "app.token".to_string(),
             access: skiff_artifact_model::PackageConfigAccess::Required {
                 value_type: "string".to_string(),
             },
-        }],
-        resources: vec![PackageResourceRequirement {
-            key: "database".to_string(),
-            capability: "mongodb".to_string(),
-        }],
-        runtime_capabilities: vec![PackageRuntimeCapabilityRequirement {
-            capability: capability.to_string(),
-            required_version: "1".to_string(),
         }],
     }
 }

@@ -4650,11 +4650,7 @@ fn exact_signature_dependency_artifact() -> PackageArtifact {
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
-        runtime_requirements: PackageRuntimeRequirements {
-            config: Vec::new(),
-            resources: Vec::new(),
-            runtime_capabilities: Vec::new(),
-        },
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),

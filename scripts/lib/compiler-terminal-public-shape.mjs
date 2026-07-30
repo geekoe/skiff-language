@@ -47,14 +47,8 @@ export const terminalPublicShapeRegistry = [
     root: 'compiler/projection-input/src',
     publicItems: {
       struct: [
-        'ConfigRequirementDependencyStepProjection',
         'ConfigRequirementProjection',
-        'ConfigRequirementProvenanceProjection',
-        'ConfigRequirementPublicationProjection',
         'ConfigRequirementSetProjection',
-        'ConfigRequirementsSeed',
-        'ConfigSourcePositionProjection',
-        'ConfigSourceSpanProjection',
         'DuplicateProjectionPackageCallableSignature',
         'EntryFunctionSignature',
         'EntryParamSpec',
@@ -98,7 +92,6 @@ export const terminalPublicShapeRegistry = [
       ],
       enum: [
         'ConfigRequirementAccessProjection',
-        'ConfigRequirementScopeProjection',
         'ProjectionSourceDeclarationKind',
         'ProjectionSyntheticEntrypointExecutableKind',
         'PublicCallableKindProjection',
@@ -130,7 +123,6 @@ export const terminalPublicShapeRegistry = [
         'resources',
         'source',
         'source_metadata',
-        'state_requirements',
       ],
     },
     handoffs: [],
@@ -368,8 +360,8 @@ export async function runTerminalPublicShapeSelfTest(tools) {
     'projection input gains an unregistered field',
     terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
       text.replace(
-        '    state_requirements: (),\n}',
-        '    state_requirements: (),\n    deployment_hint: (),\n}',
+        '    source_metadata: (),\n}',
+        '    source_metadata: (),\n    deployment_hint: (),\n}',
       ),
     ),
     /frozen ProjectionInput fields/,
@@ -421,14 +413,6 @@ export async function runTerminalPublicShapeSelfTest(tools) {
     tools,
   );
   await expectTerminalPublicShapeSelfTestFailure(
-    'projection input loses state requirements',
-    terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
-      text.replace('    state_requirements: (),\n', ''),
-    ),
-    /frozen ProjectionInput fields/,
-    tools,
-  );
-  await expectTerminalPublicShapeSelfTestFailure(
     'migrated ABI DTOs return to projection-input',
     [
       ...canonicalFiles,
@@ -450,7 +434,7 @@ pub enum PackageAbiTypeDescriptor { Fixture }
     tools,
   );
 
-  console.log('Compiler boundary terminal public-shape self-test passed (15 cases).');
+  console.log('Compiler boundary terminal public-shape self-test passed (14 cases).');
 }
 
 function assertTerminalPublicShapeRegistry() {

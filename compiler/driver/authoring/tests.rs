@@ -273,9 +273,7 @@ fn package(
         "contractRequirements": [],
         "serviceRequirements": [],
         "runtimeRequirements": {
-            "config": [],
-            "resources": [],
-            "runtimeCapabilities": []
+            "config": []
         },
         "callableSemanticFacts": {},
         "boundaryProjections": {},

@@ -32,9 +32,5 @@ pub(super) fn project_runtime_requirements(
             message: format!("package {package_id} config requirements are invalid: {error}"),
         }
     })?;
-    Ok(PackageRuntimeRequirements {
-        config,
-        resources: Vec::new(),
-        runtime_capabilities: Vec::new(),
-    })
+    Ok(PackageRuntimeRequirements { config })
 }

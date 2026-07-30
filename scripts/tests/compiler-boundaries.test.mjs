@@ -14,7 +14,7 @@ const checker = join(repoRoot, 'scripts', 'check-compiler-boundaries.mjs');
 test('terminal public-shape registry self-test rejects renamed aggregate and adapter shapes', async () => {
   const result = await runChecker(['--self-test']);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /terminal public-shape self-test passed \(15 cases\)/);
+  assert.match(result.stdout, /terminal public-shape self-test passed \(14 cases\)/);
 });
 
 test('terminal package and code-free contract producers remain permitted', async () => {
@@ -290,7 +290,6 @@ function projectionInputFixture(contents) {
     resources: (),
     source: (),
     source_metadata: (),
-    state_requirements: (),
 }
 
 ${declarations.join('\n')}

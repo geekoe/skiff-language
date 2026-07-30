@@ -220,12 +220,4 @@ fn normalize_artifact_lists(artifact: &mut PackageArtifact) {
         .runtime_requirements
         .config
         .sort_by(|left, right| left.path.cmp(&right.path));
-    artifact
-        .runtime_requirements
-        .resources
-        .sort_by(|left, right| left.key.cmp(&right.key));
-    artifact
-        .runtime_requirements
-        .runtime_capabilities
-        .sort_by(|left, right| left.capability.cmp(&right.capability));
 }

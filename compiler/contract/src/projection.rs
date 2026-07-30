@@ -546,8 +546,8 @@ mod tests {
                         implementation_requirements:
                             skiff_artifact_model::BoundaryImplementationRequirements {
                                 config: Vec::new(),
+                                state: Vec::new(),
                                 native_capabilities: Vec::new(),
-                                runtime_capabilities: Vec::new(),
                                 complete_may_effects: skiff_artifact_model::CallableMayEffects {
                                     writes_caller_reachable: false,
                                     returns_caller_alias: false,
@@ -580,8 +580,8 @@ mod tests {
                 implementation_requirements:
                     skiff_artifact_model::BoundaryImplementationRequirements {
                         config: Vec::new(),
+                        state: Vec::new(),
                         native_capabilities: Vec::new(),
-                        runtime_capabilities: Vec::new(),
                         complete_may_effects: skiff_artifact_model::CallableMayEffects {
                             writes_caller_reachable: false,
                             returns_caller_alias: false,
@@ -638,11 +638,7 @@ mod tests {
             package_requirements: Vec::new(),
             contract_requirements: Vec::new(),
             service_requirements: Vec::new(),
-            runtime_requirements: PackageRuntimeRequirements {
-                config: Vec::new(),
-                resources: Vec::new(),
-                runtime_capabilities: Vec::new(),
-            },
+            runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections,
             service_call_refs: Vec::new(),

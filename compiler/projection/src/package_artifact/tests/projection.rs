@@ -19,7 +19,7 @@ use super::fixtures::{
 
 #[test]
 fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
-    let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let artifact = project_fixture(SignatureSet::Complete).unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
     assert_eq!(artifact.schema_version, "skiff-package-artifact-v9");
@@ -67,8 +67,6 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         config_shape_from_package_requirements(&artifact.runtime_requirements.config).unwrap();
     assert_eq!(config_shape.entries.len(), 1);
     assert_eq!(config_shape.entries[0].path, "app.token");
-    assert_eq!(artifact.runtime_requirements.resources.len(), 1);
-    assert_eq!(artifact.runtime_requirements.runtime_capabilities.len(), 1);
 
     let PackageLocalAbiSymbol::PublicInstance { methods, .. } =
         &artifact.package_local_abi.public_symbols["worker"]
@@ -124,7 +122,7 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
 
 #[test]
 fn package_implementation_projection_includes_exact_impl_method_callable() {
-    let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let artifact = project_fixture(SignatureSet::Complete).unwrap();
     let PackageLocalAbiSymbol::Callable {
         callable_id,
         signature,
@@ -163,10 +161,10 @@ fn package_implementation_projection_includes_exact_impl_method_callable() {
 
 #[test]
 fn ordinary_and_service_package_projection_share_artifact_and_local_abi() {
-    let ordinary_package = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let ordinary_package = project_fixture(SignatureSet::Complete).unwrap();
     // A service root uses this exact same Package producer. There is no
     // service-manifest or source-role input at this projection boundary.
-    let service_package = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let service_package = project_fixture(SignatureSet::Complete).unwrap();
     assert_eq!(service_package, ordinary_package);
     assert_eq!(
         service_package.package_local_abi.local_abi_identity,
@@ -176,7 +174,7 @@ fn ordinary_and_service_package_projection_share_artifact_and_local_abi() {
 
 #[test]
 fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimmed() {
-    let artifact = project_fixture(SignatureSet::ExactTyped, "async").unwrap();
+    let artifact = project_fixture(SignatureSet::ExactTyped).unwrap();
     assert!(artifact
         .package_local_abi
         .local_abi_identity
@@ -204,7 +202,7 @@ fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimme
 
 #[test]
 fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
-    let base = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let base = project_fixture(SignatureSet::Complete).unwrap();
 
     let mut stale_schema = base.clone();
     stale_schema.schema_version = "skiff-package-artifact-v8".to_string();
@@ -237,7 +235,7 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
 
 #[test]
 fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
-    let mut invalid_type = runtime_requirements("async");
+    let mut invalid_type = runtime_requirements();
     invalid_type.config[0].access = skiff_artifact_model::PackageConfigAccess::Required {
         value_type: "bytes".to_string(),
     };
@@ -250,7 +248,7 @@ fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
     );
     assert!(error.contains("app.token"), "unexpected error: {error}");
 
-    let mut duplicate = runtime_requirements("async");
+    let mut duplicate = runtime_requirements();
     duplicate.config.push(duplicate.config[0].clone());
     let error = project_fixture_with_runtime_requirements(SignatureSet::Complete, duplicate)
         .unwrap_err()
@@ -263,7 +261,7 @@ fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
 
 #[test]
 fn missing_signature_is_not_reconstructed_from_executable_ir() {
-    let missing = project_fixture(SignatureSet::Missing, "async")
+    let missing = project_fixture(SignatureSet::Missing)
         .unwrap_err()
         .to_string();
     assert!(missing.contains("missing="), "unexpected error: {missing}");
@@ -272,13 +270,13 @@ fn missing_signature_is_not_reconstructed_from_executable_ir() {
 
 #[test]
 fn canonical_signature_set_rejects_extra_and_target_mismatched_entries() {
-    let extra = project_fixture(SignatureSet::Extra, "async")
+    let extra = project_fixture(SignatureSet::Extra)
         .unwrap_err()
         .to_string();
     assert!(extra.contains("extra="), "unexpected error: {extra}");
     assert!(extra.contains("internal"), "unexpected error: {extra}");
 
-    let target_mismatch = project_fixture(SignatureSet::TargetMismatch, "async")
+    let target_mismatch = project_fixture(SignatureSet::TargetMismatch)
         .unwrap_err()
         .to_string();
     assert!(
@@ -289,8 +287,12 @@ fn canonical_signature_set_rejects_extra_and_target_mismatched_entries() {
 
 #[test]
 fn implementation_requirements_change_build_not_local_abi_or_operation_contract() {
-    let first = project_fixture(SignatureSet::Complete, "async").unwrap();
-    let second = project_fixture(SignatureSet::Complete, "async-v2").unwrap();
+    let first = project_fixture(SignatureSet::Complete).unwrap();
+    let mut changed_requirements = runtime_requirements();
+    changed_requirements.config[0].path = "app.changed-token".to_string();
+    let second =
+        project_fixture_with_runtime_requirements(SignatureSet::Complete, changed_requirements)
+            .unwrap();
     assert_eq!(
         first.package_local_abi.local_abi_identity,
         second.package_local_abi.local_abi_identity
@@ -318,7 +320,7 @@ fn implementation_requirements_change_build_not_local_abi_or_operation_contract(
 
 #[test]
 fn implementation_throw_facts_change_build_but_not_local_abi_or_service_protocol() {
-    let base = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let base = project_fixture(SignatureSet::Complete).unwrap();
     let callable_id = callable_id(&base, "run");
     let BoundaryCallableProjection::Available {
         operation_contract, ..
@@ -389,7 +391,7 @@ fn implementation_throw_facts_change_build_but_not_local_abi_or_service_protocol
 
 #[test]
 fn caller_projection_path_changes_build_identity_but_not_local_abi() {
-    let base = project_fixture(SignatureSet::Complete, "async").unwrap();
+    let base = project_fixture(SignatureSet::Complete).unwrap();
     let base_local = package_artifact_local_abi_identity(&base).unwrap();
     let base_build = package_artifact_build_identity(&base).unwrap();
 

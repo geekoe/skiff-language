@@ -41,9 +41,7 @@
         "key": "registry-store",
         "kind": "database"
       }
-    ],
-    "resources": [],
-    "runtimeCapabilities": []
+    ]
   }
 }
 ```

@@ -1141,9 +1141,7 @@ mod resolved_package_schema_tests {
             "contractRequirements": [],
             "serviceRequirements": [],
             "runtimeRequirements": {
-                "config": [],
-                "resources": [],
-                "runtimeCapabilities": []
+                "config": []
             },
             "callableSemanticFacts": {},
             "boundaryProjections": {},
