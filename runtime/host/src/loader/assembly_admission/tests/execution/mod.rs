@@ -1,3 +1,4 @@
+mod activation_owner_rebinding;
 mod artifacts;
 mod async_stream_cancel;
 mod callback_native;

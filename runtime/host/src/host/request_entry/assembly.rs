@@ -57,6 +57,7 @@ impl RuntimeHost {
             target,
             activation,
             execution_image,
+            contexts,
             config_views,
             db_source,
             service_protocol_identity,
@@ -92,6 +93,7 @@ impl RuntimeHost {
             runtime_id: self.base_runtime_id.clone(),
             activation,
             execution_image,
+            contexts,
             config_views,
             execution_target: header.invocation.target.clone(),
             service_protocol_identity,
@@ -900,6 +902,7 @@ impl RuntimeHost {
                 runtime_id: self.base_runtime_id.clone(),
                 activation: Arc::clone(route.activation()),
                 execution_image: Arc::clone(route.execution_image()),
+                contexts: Arc::clone(route.context_set()),
                 config_views: route
                     .config_views()
                     .map_err(|error| RuntimeError::Decode(error.to_string()))?,

@@ -17,7 +17,7 @@ async fn typed_execution_ordinary() {
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
 
     let mut service_heap = context.request_heap();
     let service_result = interpreter

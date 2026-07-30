@@ -35,7 +35,7 @@ async fn typed_execution_callback_native_uses_production_service_materialization
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let owner_error = interpreter
@@ -77,7 +77,7 @@ async fn typed_execution_callback_native_rejects_wrong_mapping_before_provider_o
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let mapping_error = interpreter

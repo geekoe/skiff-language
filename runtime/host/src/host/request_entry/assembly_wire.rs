@@ -57,6 +57,7 @@ pub(super) struct AdmittedSpawnRequest {
     pub(super) target: RuntimeAssemblySpawnTarget,
     pub(super) activation: Arc<ActivationContext>,
     pub(super) execution_image: Arc<AssemblyExecutionImage>,
+    pub(super) contexts: Arc<crate::loader::active_assembly_context::ActiveAssemblyContextSet>,
     pub(super) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     pub(super) db_source: DbCapabilitySource,
     pub(super) service_protocol_identity: String,
@@ -348,6 +349,7 @@ impl RuntimeHost {
             target,
             activation,
             execution_image,
+            contexts: Arc::clone(active.contexts()),
             config_views,
             db_source,
             service_protocol_identity: linked_activation

@@ -8,6 +8,7 @@ pub(crate) struct RuntimeAssemblyEvalAdapterContextInput {
     pub(crate) runtime_id: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
+    pub(crate) contexts: Arc<crate::loader::active_assembly_context::ActiveAssemblyContextSet>,
     pub(crate) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     pub(crate) execution_target: String,
     pub(crate) service_protocol_identity: String,
@@ -40,6 +41,8 @@ pub(super) struct RuntimeAssemblyRequestMetadata {
 pub(super) struct RuntimeAssemblyExecutionContext {
     runtime_id: String,
     pub(super) activation: Arc<ActivationContext>,
+    execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
+    contexts: Arc<crate::loader::active_assembly_context::ActiveAssemblyContextSet>,
     activation_identity: ActivationIdentityControl,
     config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     db_source: concrete::DbCapabilitySource,
@@ -110,6 +113,8 @@ impl RuntimeAssemblyExecutionContext {
         Ok(Self {
             runtime_id: input.runtime_id,
             activation: input.activation,
+            execution_image: input.execution_image,
+            contexts: input.contexts,
             activation_identity,
             config_views: input.config_views,
             db_source: input.db_source,
@@ -191,7 +196,7 @@ impl RuntimeAssemblyExecutionContext {
         );
         let stream_runtime = interpreter.stream_runtime.clone();
         let test_effect_doubles = interpreter.test_effect_double_context();
-        ProgramExecutionContext::new(ProgramExecutionInput {
+        let context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: config_context(concrete::ConfigCapabilityContext::new(
                 self.config_views.service(),
@@ -216,16 +221,35 @@ impl RuntimeAssemblyExecutionContext {
             spawn: actor,
             request_heap_limits,
         })
-        .with_websocket_capability_rebinder(websocket_rebinder_for_runtime_request(
-            self.router_sender.as_ref(),
-            Arc::clone(&self.connection_requests),
-            self.router_session.clone(),
-        ))
-        .with_runtime_assembly_target(eval_target.clone())
+        .with_runtime_assembly_target(eval_target.clone());
+        let rebinder =
+            activation_execution_context_rebinder(RuntimeActivationExecutionContextRebinderInput {
+                contexts: Arc::clone(&self.contexts),
+                execution_image: Arc::clone(&self.execution_image),
+                runtime_id: self.runtime_id.clone(),
+                request: self.request.clone(),
+                file_source: self.file_source.clone(),
+                http_options: self.http_options.clone(),
+                eval_http_options: interpreter.http_options.clone(),
+                outbound_requests: Arc::clone(&self.outbound_requests),
+                actor_method_outbound: Arc::clone(&self.actor_method_outbound),
+                telemetry_context: self.telemetry_context.clone(),
+                router_sender: self.router_sender.clone(),
+                connection_requests: Arc::clone(&self.connection_requests),
+                router_session: self.router_session.clone(),
+                http_response_max_bytes: self.http_response_max_bytes,
+                test_http_entries: self.test_http_entries.clone(),
+                stream_runtime: context.stream_runtime(),
+                test_effect_doubles: context.test_effect_double_context(),
+                cancellation: context.execution().cancellation_token(),
+            });
+        context.with_activation_execution_context_rebinder(rebinder)
     }
 }
 
-fn activation_identity_control(activation: &ActivationContext) -> ActivationIdentityControl {
+pub(super) fn activation_identity_control(
+    activation: &ActivationContext,
+) -> ActivationIdentityControl {
     let identity = activation.identity();
     ActivationIdentityControl {
         assembly_identity: identity.assembly_identity.clone(),

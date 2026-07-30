@@ -64,11 +64,11 @@ impl RuntimeHost {
             service_protocol_identity: transition.actor_abi_identity.as_str().to_string(),
             activation: Arc::clone(route.activation()),
             execution_image: Arc::clone(route.execution_image()),
+            contexts: Arc::clone(route.context_set()),
             config_views: match route.config_views() {
                 Ok(views) => views,
                 Err(_) => return false,
             },
-            resolver: route.resolver(),
             db_source: match route.db_source() {
                 Ok(source) => source,
                 Err(_) => return false,
@@ -79,10 +79,18 @@ impl RuntimeHost {
             actor_method_outbound: Arc::clone(&self.actor_method_outbound),
             telemetry_context: None,
             router_sender: Some(sender.clone()),
+            connection_requests: Arc::clone(&self.connection_requests),
+            router_session: match skiff_runtime_capability_context::ConnectionRequestSession::new(
+                router_session_id.to_string(),
+            ) {
+                Ok(session) => session,
+                Err(_) => return false,
+            },
             http_response_max_bytes: self.default_http_response_max_bytes,
             cancellation,
             execution_budget: budget,
             request_heap_limits: self.request_heap_limits(),
+            test_http_entries: self.test_http_entries.clone(),
         }) else {
             return false;
         };
@@ -256,10 +264,10 @@ impl RuntimeHost {
             service_protocol_identity: header.invoke.actor_abi_identity.as_str().to_string(),
             activation: Arc::clone(route.activation()),
             execution_image: Arc::clone(route.execution_image()),
+            contexts: Arc::clone(route.context_set()),
             config_views: route
                 .config_views()
                 .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?,
-            resolver: route.resolver(),
             db_source: route
                 .db_source()
                 .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?,
@@ -269,10 +277,16 @@ impl RuntimeHost {
             actor_method_outbound: Arc::clone(&self.actor_method_outbound),
             telemetry_context: None,
             router_sender: Some(sender.clone()),
+            connection_requests: Arc::clone(&self.connection_requests),
+            router_session: skiff_runtime_capability_context::ConnectionRequestSession::new(
+                router_session_id.to_string(),
+            )
+            .map_err(ActorOwnerExecutionFailure::new)?,
             http_response_max_bytes: self.default_http_response_max_bytes,
             cancellation,
             execution_budget: budget,
             request_heap_limits: self.request_heap_limits(),
+            test_http_entries: self.test_http_entries.clone(),
         })
         .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?;
         let context = execution

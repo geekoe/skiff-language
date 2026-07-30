@@ -27,6 +27,7 @@ use super::config_snapshot::{materialize_snapshot_config, ActivationConfigViews}
 pub(crate) struct ActiveAssemblyContextSet {
     activations: BTreeMap<ActivationId, Arc<ActivationContext>>,
     activations_by_deployment: BTreeMap<ServiceDeploymentRef, Arc<ActivationContext>>,
+    contracts_by_deployment: BTreeMap<ServiceDeploymentRef, ServiceContractRef>,
     contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
     schema_records: BTreeMap<ServiceContractRef, AdmittedPackageSchemaRecords>,
     operation_targets: BTreeMap<(ActivationId, ContractOperationId), OperationTargetRef>,
@@ -50,6 +51,7 @@ impl ActiveAssemblyContextSet {
         }
         let mut activations = BTreeMap::new();
         let mut activations_by_deployment = BTreeMap::new();
+        let mut contracts_by_deployment = BTreeMap::new();
         let mut operation_targets = BTreeMap::new();
         let config_views = match config_snapshot {
             Some(snapshot) => materialize_snapshot_config(candidate, snapshot)?,
@@ -167,6 +169,15 @@ impl ActiveAssemblyContextSet {
                     deployment
                 );
             }
+            if contracts_by_deployment
+                .insert(deployment.clone(), linked.contract().clone())
+                .is_some()
+            {
+                anyhow::bail!(
+                    "deployment {:?} has duplicate contract owner facts",
+                    deployment
+                );
+            }
         }
         if activations.len() != candidate.activations().len() {
             anyhow::bail!("activation context set does not exactly match linked activations");
@@ -203,6 +214,7 @@ impl ActiveAssemblyContextSet {
         Ok(Self {
             activations,
             activations_by_deployment,
+            contracts_by_deployment,
             contracts,
             schema_records,
             operation_targets,
@@ -217,6 +229,13 @@ impl ActiveAssemblyContextSet {
         deployment: &ServiceDeploymentRef,
     ) -> Option<Arc<ActivationContext>> {
         self.activations_by_deployment.get(deployment).cloned()
+    }
+
+    pub(crate) fn contract_for_deployment(
+        &self,
+        deployment: &ServiceDeploymentRef,
+    ) -> Option<&ServiceContractRef> {
+        self.contracts_by_deployment.get(deployment)
     }
 
     pub(crate) fn db_source(&self, activation_id: &ActivationId) -> Option<DbCapabilitySource> {

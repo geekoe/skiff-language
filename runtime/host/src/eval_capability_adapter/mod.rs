@@ -38,6 +38,7 @@ use skiff_runtime_request::{
     RuntimeOperation,
 };
 
+mod activation_execution_rebinder;
 mod actor;
 mod actor_method_adapter;
 mod assembly_execution_context;
@@ -56,6 +57,11 @@ mod request_contexts;
 mod websocket;
 
 use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
+#[cfg(test)]
+pub(crate) use activation_execution_rebinder::provider_execution_facts_for_test;
+pub(crate) use activation_execution_rebinder::{
+    activation_execution_context_rebinder, RuntimeActivationExecutionContextRebinderInput,
+};
 use actor::{actor, RuntimeOwnedActorParts};
 pub(crate) use actor_method_adapter::{ActorMethodEvalExecution, ActorMethodEvalExecutionInput};
 use config::RuntimeConfigCapabilityContext;
@@ -90,8 +96,7 @@ pub(crate) use factory::actor_from_request;
 pub use factory::TestActorCapabilityFactory;
 pub use factory::{
     config_context, db_context, effects, execution_control, file_source, runtime_factory,
-    websocket, websocket_from_request, websocket_from_runtime_request, websocket_rebinder,
-    websocket_rebinder_for_runtime_request,
+    websocket, websocket_from_request, websocket_from_runtime_request,
 };
 pub use request_contexts::effect_dispatch_context_from_request;
 pub use websocket::RuntimeOwnedWebsocketParts;

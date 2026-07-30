@@ -17,6 +17,7 @@ use crate::{
     config_view::RuntimeConfigView,
     eval_capability_adapter,
     host::file_runtime::FileRuntime,
+    loader::assembly_admission::ActiveAssembly,
 };
 
 pub(super) struct TypedExecutionRuntime {
@@ -33,6 +34,10 @@ pub(super) struct TypedExecutionRuntime {
     heap_limits: RequestHeapLimits,
     outbound_requests: Arc<OutboundRequestRegistry>,
     actor_factory: eval_capability_adapter::TestActorCapabilityFactory,
+    actor_method_outbound:
+        Arc<crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry>,
+    connection_requests: Arc<skiff_runtime_capability_context::ConnectionRequestRegistry>,
+    test_http_entries: crate::capability_context::TestHttpEntryRegistry,
 }
 
 impl TypedExecutionRuntime {
@@ -90,6 +95,13 @@ impl TypedExecutionRuntime {
             heap_limits: RequestHeapLimits::default(),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
             actor_factory: eval_capability_adapter::TestActorCapabilityFactory::default(),
+            actor_method_outbound: Arc::new(
+                crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry::default(),
+            ),
+            connection_requests: Arc::new(
+                skiff_runtime_capability_context::ConnectionRequestRegistry::new(4),
+            ),
+            test_http_entries: crate::capability_context::TestHttpEntryRegistry::default(),
         }
     }
 
@@ -113,6 +125,7 @@ impl TypedExecutionRuntime {
         &'a self,
         interpreter: &Interpreter,
         target: &RuntimeAssemblyEvalTarget,
+        active: &Arc<ActiveAssembly>,
     ) -> ProgramExecutionContext<'a> {
         let stream_runtime = interpreter.stream_runtime.clone();
         let concrete_execution = ExecutionControl::new(self.cancellation.clone(), &self.budget);
@@ -146,7 +159,7 @@ impl TypedExecutionRuntime {
             &self.outbound_requests,
             execution.cancellation_token(),
         );
-        ProgramExecutionContext::new(ProgramExecutionInput {
+        let context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: eval_capability_adapter::config_context(
                 crate::capability_context::ConfigCapabilityContext::new(
@@ -177,7 +190,32 @@ impl TypedExecutionRuntime {
             spawn: actor,
             request_heap_limits: self.heap_limits.clone(),
         })
-        .with_websocket_capability_rebinder(eval_capability_adapter::websocket_rebinder(None))
-        .with_runtime_assembly_target(target.clone())
+        .with_runtime_assembly_target(target.clone());
+        let rebinder = eval_capability_adapter::activation_execution_context_rebinder(
+            eval_capability_adapter::RuntimeActivationExecutionContextRebinderInput {
+                contexts: Arc::clone(active.contexts()),
+                execution_image: Arc::clone(active.candidate().execution_image()),
+                runtime_id: "typed-execution-replica".to_string(),
+                request: self.request.clone(),
+                file_source: FileCapabilitySource::new(Arc::clone(&self.file_runtime)),
+                http_options: skiff_runtime_capability_context::HttpRuntimeOptions::from_env(),
+                eval_http_options: interpreter.http_options.clone(),
+                outbound_requests: Arc::clone(&self.outbound_requests),
+                actor_method_outbound: Arc::clone(&self.actor_method_outbound),
+                telemetry_context: None,
+                router_sender: None,
+                connection_requests: Arc::clone(&self.connection_requests),
+                router_session: skiff_runtime_capability_context::ConnectionRequestSession::new(
+                    "typed-execution-session",
+                )
+                .expect("test router session"),
+                http_response_max_bytes: 1_048_576,
+                test_http_entries: self.test_http_entries.clone(),
+                stream_runtime: context.stream_runtime(),
+                test_effect_doubles: context.test_effect_double_context(),
+                cancellation: context.execution().cancellation_token(),
+            },
+        );
+        context.with_activation_execution_context_rebinder(rebinder)
     }
 }

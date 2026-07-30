@@ -119,7 +119,7 @@ impl TypedExecutionFixture {
                 .service_id,
         );
         let interpreter = runtime.interpreter();
-        let context = runtime.context(&interpreter, &self.eval_target);
+        let context = runtime.context(&interpreter, &self.eval_target, &self._active);
 
         let mut service_heap = context.request_heap();
         let service_result = interpreter

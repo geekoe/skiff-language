@@ -103,8 +103,8 @@ impl ActiveActorExecutionRoute {
         self.active.candidate.execution_image()
     }
 
-    pub(crate) fn resolver(&self) -> Arc<dyn RuntimeAssemblyEvalResolver> {
-        Arc::clone(&self.active.contexts) as _
+    pub(crate) fn context_set(&self) -> &Arc<ActiveAssemblyContextSet> {
+        &self.active.contexts
     }
 
     pub(crate) fn db_source(

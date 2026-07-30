@@ -44,7 +44,7 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let generation = context
         .runtime_assembly_target()
         .unwrap()
@@ -104,7 +104,7 @@ async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fi
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let error = interpreter
@@ -177,7 +177,7 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
                 .service_id,
         );
         let interpreter = runtime.interpreter();
-        let context = runtime.context(&interpreter, &fixture.eval_target);
+        let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
         let mut heap = context.request_heap();
 
         let result = interpreter
@@ -244,7 +244,7 @@ async fn typed_execution_service_stream_preserves_two_items_and_generic_substitu
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let result = interpreter
@@ -274,7 +274,7 @@ async fn typed_execution_package_direct_stream_installs_exact_producer_context_f
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let result = interpreter
@@ -304,7 +304,7 @@ async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let error = interpreter
@@ -366,8 +366,11 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
             .service_id,
     );
     let cancelled_interpreter = cancelled_runtime.interpreter();
-    let cancelled_context =
-        cancelled_runtime.context(&cancelled_interpreter, &cancelled_fixture.eval_target);
+    let cancelled_context = cancelled_runtime.context(
+        &cancelled_interpreter,
+        &cancelled_fixture.eval_target,
+        &cancelled_fixture._active,
+    );
     let mut cancelled_heap = cancelled_context.request_heap();
     let stream = cancelled_interpreter
         .execute_runtime_assembly_addr(
@@ -390,7 +393,11 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
             .deployment
             .service_id,
     );
-    let peer_context = peer_runtime.context(&cancelled_interpreter, &peer_fixture.eval_target);
+    let peer_context = peer_runtime.context(
+        &cancelled_interpreter,
+        &peer_fixture.eval_target,
+        &peer_fixture._active,
+    );
     let mut peer_heap = peer_context.request_heap();
     let peer_result = cancelled_interpreter
         .execute_runtime_assembly_addr(
@@ -430,7 +437,7 @@ async fn typed_execution_service_stream_deadline_releases_provider_task_and_leas
     )
     .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(250));
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let stream = interpreter
@@ -525,7 +532,7 @@ async fn typed_execution_async_stream_cancel_projects_callback_item_before_json_
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let result = interpreter
@@ -572,7 +579,7 @@ async fn typed_execution_async_stream_cancel_expires_callback_item_on_early_brea
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let result = interpreter
@@ -620,7 +627,7 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_mapping
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let error = interpreter
@@ -667,7 +674,7 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_tuple_b
             .service_id,
     );
     let interpreter = runtime.interpreter();
-    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
     let mut heap = context.request_heap();
 
     let error = interpreter

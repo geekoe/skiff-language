@@ -138,6 +138,7 @@ struct FullChainFixture {
     provider_operation_id: ContractOperationId,
     provider_callable_id: PackageCallableId,
     provider_deployment_ref: ServiceDeploymentRef,
+    provider_package_ref: PackageArtifactRef,
     consumer_deployment_ref: ServiceDeploymentRef,
     consumer_package_ref: PackageArtifactRef,
     consumer_file_ir_identity: String,
@@ -346,7 +347,7 @@ impl FullChainFixture {
                     Arc::new(consumer_file),
                 ),
                 (
-                    provider_package_ref,
+                    provider_package_ref.clone(),
                     provider_file_ref,
                     Arc::new(provider_file),
                 ),
@@ -361,6 +362,7 @@ impl FullChainFixture {
             provider_operation_id,
             provider_callable_id,
             provider_deployment_ref,
+            provider_package_ref,
             consumer_deployment_ref,
             consumer_package_ref,
             consumer_file_ir_identity,
@@ -1070,6 +1072,102 @@ async fn config_snapshot_validates_required_types_and_isolates_deployment_views(
         &serde_json::json!({})
     );
     assert!(!format!("{consumer:?}").contains("top-secret"));
+}
+
+#[tokio::test]
+async fn provider_owner_rebinding_selects_provider_config_instead_of_caller_config() {
+    let fixture = FullChainFixture::with_consumer_config(PackageConfigRequirement {
+        path: "api.key".to_string(),
+        access: PackageConfigAccess::Required {
+            value_type: "string".to_string(),
+        },
+    });
+    let values = BTreeMap::from([
+        (
+            (
+                fixture.consumer_deployment_ref.clone(),
+                fixture.consumer_package_ref.package_build_id.clone(),
+            ),
+            BTreeMap::from([("api".to_string(), serde_json::json!({"key": "caller-key"}))]),
+        ),
+        (
+            (
+                fixture.provider_deployment_ref.clone(),
+                fixture.provider_package_ref.package_build_id.clone(),
+            ),
+            BTreeMap::from([(
+                "api".to_string(),
+                serde_json::json!({"key": "provider-key"}),
+            )]),
+        ),
+    ]);
+    let (reference, resolver) = fixture_config_snapshot(&fixture, values);
+    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let controller = AssemblyAdmissionController::default();
+    let active = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &assembly_ref,
+            &reference,
+            &fixture.resolver,
+            &resolver,
+            None,
+        )
+        .await
+        .expect("two-owner config snapshot should activate");
+    let caller = active
+        .contexts()
+        .activation_for_deployment(&fixture.consumer_deployment_ref)
+        .expect("caller activation");
+    let caller_request = RequestActivationContext::begin(caller).expect("request generation");
+    let eval = skiff_runtime_eval::RuntimeAssemblyEvalTarget::new(
+        Arc::clone(active.candidate().execution_image()),
+        caller_request,
+        Arc::clone(active.contexts()) as Arc<dyn RuntimeAssemblyEvalResolver>,
+    )
+    .expect("caller eval target");
+    let linked_call = active
+        .candidate()
+        .shared_image()
+        .resolve_activation_relative_service_call(
+            &fixture.consumer_package_ref.package_build_id,
+            &fixture.consumer_file_ir_identity,
+            ServiceCallRefIndex::new(0),
+        )
+        .expect("linked service call");
+    let provider = eval
+        .resolve_service_call(&linked_call)
+        .expect("provider target");
+    let provider_eval = eval
+        .with_request_activation(provider.provider_request().clone())
+        .expect("provider eval target");
+    crate::eval_capability_adapter::provider_execution_facts_for_test(
+        active.contexts(),
+        active.candidate().execution_image(),
+        &provider_eval,
+        skiff_runtime_eval::program_execution::ActivationExecutionOperation::ServiceCall {
+            operation_id: fixture.provider_operation_id.clone(),
+        },
+    )
+    .expect("provider owner facts");
+
+    let caller_config = active
+        .contexts()
+        .config_views(&fixture.consumer_deployment_ref)
+        .expect("caller config");
+    let provider_config = active
+        .contexts()
+        .config_views(&fixture.provider_deployment_ref)
+        .expect("provider config");
+    assert_eq!(
+        caller_config.service().resolved_config_value()["api"]["key"],
+        "caller-key"
+    );
+    assert_eq!(
+        provider_config.service().resolved_config_value()["api"]["key"],
+        "provider-key"
+    );
 }
 
 #[tokio::test]

@@ -18,7 +18,7 @@ use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistr
 
 /// All host-owned state needed to execute an Actor method against one committed
 /// assembly activation. Callers must obtain `activation`, `execution_image`, and
-/// `resolver` from the same immutable `ActiveAssembly` snapshot.
+/// `contexts` from the same immutable `ActiveAssembly` snapshot.
 pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) runtime_id: String,
     pub(crate) invocation_id: String,
@@ -26,7 +26,7 @@ pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<AssemblyExecutionImage>,
     pub(crate) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
-    pub(crate) resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
+    pub(crate) contexts: Arc<crate::loader::active_assembly_context::ActiveAssemblyContextSet>,
     pub(crate) db_source: concrete::DbCapabilitySource,
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
@@ -34,10 +34,13 @@ pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     pub(crate) telemetry_context: Option<RequestTelemetryContext>,
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
+    pub(crate) router_session: ConnectionRequestSession,
     pub(crate) http_response_max_bytes: usize,
     pub(crate) cancellation: CancellationToken,
     pub(crate) execution_budget: Arc<ExecutionBudget>,
     pub(crate) request_heap_limits: RequestHeapLimits,
+    pub(crate) test_http_entries: concrete::TestHttpEntryRegistry,
 }
 
 /// Owned backing for the borrowed eval context consumed by
@@ -47,7 +50,7 @@ pub(crate) struct ActorMethodEvalExecution {
     runtime_id: String,
     activation: Arc<ActivationContext>,
     execution_image: Arc<AssemblyExecutionImage>,
-    resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
+    contexts: Arc<crate::loader::active_assembly_context::ActiveAssemblyContextSet>,
     activation_identity: ActivationIdentityControl,
     config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     db_source: concrete::DbCapabilitySource,
@@ -57,10 +60,13 @@ pub(crate) struct ActorMethodEvalExecution {
     actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+    connection_requests: Arc<ConnectionRequestRegistry>,
+    router_session: ConnectionRequestSession,
     http_response_max_bytes: usize,
     cancellation: CancellationToken,
     execution_budget: Arc<ExecutionBudget>,
     request_heap_limits: RequestHeapLimits,
+    test_http_entries: concrete::TestHttpEntryRegistry,
     request: RequestEnvelope,
     operation: RuntimeOperation,
 }
@@ -71,7 +77,9 @@ impl ActorMethodEvalExecution {
             anyhow::bail!("Actor method invocation id must be non-empty");
         }
         let deployment = &input.activation.identity().deployment;
-        let activation_identity = activation_identity_control(input.activation.as_ref());
+        let activation_identity = super::assembly_execution_context::activation_identity_control(
+            input.activation.as_ref(),
+        );
         let target = "actor.method".to_string();
         let request = RequestEnvelope {
             request_id: input.invocation_id,
@@ -109,7 +117,7 @@ impl ActorMethodEvalExecution {
             runtime_id: input.runtime_id,
             activation: input.activation,
             execution_image: input.execution_image,
-            resolver: input.resolver,
+            contexts: input.contexts,
             activation_identity,
             config_views: input.config_views,
             db_source: input.db_source,
@@ -119,10 +127,13 @@ impl ActorMethodEvalExecution {
             actor_method_outbound: input.actor_method_outbound,
             telemetry_context: input.telemetry_context,
             router_sender: input.router_sender,
+            connection_requests: input.connection_requests,
+            router_session: input.router_session,
             http_response_max_bytes: input.http_response_max_bytes,
             cancellation: input.cancellation,
             execution_budget: input.execution_budget,
             request_heap_limits: input.request_heap_limits,
+            test_http_entries: input.test_http_entries,
             request,
             operation,
         })
@@ -134,10 +145,11 @@ impl ActorMethodEvalExecution {
 
     pub(crate) fn context(&self) -> anyhow::Result<ProgramExecutionContext<'_>> {
         let request_activation = RequestActivationContext::begin(Arc::clone(&self.activation))?;
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(&self.contexts) as _;
         let target = RuntimeAssemblyEvalTarget::new(
             Arc::clone(&self.execution_image),
             request_activation,
-            Arc::clone(&self.resolver),
+            resolver,
         )?;
         let concrete_execution = skiff_runtime_request::ExecutionControl::new(
             self.cancellation.clone(),
@@ -161,8 +173,13 @@ impl ActorMethodEvalExecution {
             .activation
             .websocket_entry_id()
             .map(|entry| entry.as_str());
-        let websocket =
-            websocket_from_request(service_id, websocket_entry_id, self.router_sender.as_ref());
+        let websocket = websocket_from_runtime_request(
+            service_id,
+            websocket_entry_id,
+            self.router_sender.as_ref(),
+            Arc::clone(&self.connection_requests),
+            self.router_session.clone(),
+        );
         let actor = actor_from_request(
             self.runtime_id.as_str(),
             service_id,
@@ -181,7 +198,7 @@ impl ActorMethodEvalExecution {
         );
         let stream_runtime = self.interpreter.stream_runtime.clone();
         let test_effect_doubles = self.interpreter.test_effect_double_context();
-        Ok(ProgramExecutionContext::new(ProgramExecutionInput {
+        let context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: config_context(concrete::ConfigCapabilityContext::new(
                 self.config_views.service(),
@@ -206,17 +223,28 @@ impl ActorMethodEvalExecution {
             spawn: actor,
             request_heap_limits: self.request_heap_limits.clone(),
         })
-        .with_websocket_capability_rebinder(websocket_rebinder(self.router_sender.as_ref()))
-        .with_runtime_assembly_target(target))
-    }
-}
-
-fn activation_identity_control(activation: &ActivationContext) -> ActivationIdentityControl {
-    let identity = activation.identity();
-    ActivationIdentityControl {
-        assembly_identity: identity.assembly_identity.clone(),
-        generation: identity.assembly_generation,
-        runtime_replica_id: identity.runtime_replica_id.clone(),
-        deployment_revision: identity.deployment.deployment_revision.clone(),
+        .with_runtime_assembly_target(target);
+        let rebinder =
+            activation_execution_context_rebinder(RuntimeActivationExecutionContextRebinderInput {
+                contexts: Arc::clone(&self.contexts),
+                execution_image: Arc::clone(&self.execution_image),
+                runtime_id: self.runtime_id.clone(),
+                request: self.request.clone(),
+                file_source: self.file_source.clone(),
+                http_options: self.http_options.clone(),
+                eval_http_options: self.interpreter.http_options.clone(),
+                outbound_requests: Arc::clone(&self.outbound_requests),
+                actor_method_outbound: Arc::clone(&self.actor_method_outbound),
+                telemetry_context: self.telemetry_context.clone(),
+                router_sender: self.router_sender.clone(),
+                connection_requests: Arc::clone(&self.connection_requests),
+                router_session: self.router_session.clone(),
+                http_response_max_bytes: self.http_response_max_bytes,
+                test_http_entries: self.test_http_entries.clone(),
+                stream_runtime: context.stream_runtime(),
+                test_effect_doubles: context.test_effect_double_context(),
+                cancellation: context.execution().cancellation_token(),
+            });
+        Ok(context.with_activation_execution_context_rebinder(rebinder))
     }
 }
