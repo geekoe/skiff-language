@@ -249,6 +249,18 @@ pub struct TestEffectCaseContext {
     registry: test_effect_registry::RuntimeTestEffectRegistry,
 }
 
+impl TestEffectCaseContext {
+    /// Finalizes this case's shared inline-effect registry.
+    ///
+    /// Runtime orchestration must call this exactly once, after the root body
+    /// has ended and every admitted derived request has released its case
+    /// lease.
+    #[doc(hidden)]
+    pub fn finalize(&self) -> Result<()> {
+        self.registry.finalize()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct InterpreterHttpOptions {
     allow_unsafe_targets: bool,
