@@ -27,6 +27,10 @@ describe('RuntimeAssembly Actor method catalog', () => {
       environment: 'test',
       generation: 1,
       assembly: { assemblyIdentity: identity('skiff-runtime-assembly-v3:sha256', 'd') },
+      configSnapshot: {
+        snapshotId:
+          'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      },
       ingress: new RuntimeAssemblyIngressIndex([]),
       actorMethods: [method],
     });
@@ -37,6 +41,10 @@ describe('RuntimeAssembly Actor method catalog', () => {
       environment: 'test',
       generation: 2,
       assembly: { assemblyIdentity: identity('skiff-runtime-assembly-v3:sha256', 'f') },
+      configSnapshot: {
+        snapshotId:
+          'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      },
       ingress: new RuntimeAssemblyIngressIndex([]),
       actorMethods: [],
     });

@@ -52,7 +52,6 @@ export interface RuntimeAssemblyDeploymentRef {
 export interface RuntimeAssemblyDeploymentRuntimeBinding {
   deployment: RuntimeAssemblyDeploymentRef;
   packageBuildId: string;
-  timeoutMs?: number;
 }
 
 export interface RuntimeAssemblyContractRef {
@@ -72,7 +71,6 @@ export interface RuntimeAssemblyIngressBinding {
   websocketEntryId?: string;
   websocketRpcProfiles?: readonly RuntimeAssemblyWebSocketRpcProfile[];
   websocketMethods?: RuntimeAssemblyWebSocketMethodTable;
-  timeoutMs?: number;
 }
 
 export interface LoadedRuntimeAssembly {

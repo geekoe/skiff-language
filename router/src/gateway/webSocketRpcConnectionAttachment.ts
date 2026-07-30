@@ -43,7 +43,6 @@ export interface WebSocketRpcIngressCapture {
     RuntimeAssemblyWebSocketMethodBinding
   >;
   readonly requiresRuntimePin: boolean;
-  readonly deploymentTimeoutMs?: number;
 }
 
 export function captureWebSocketRpcIngress(input: {
@@ -78,10 +77,7 @@ export function captureWebSocketRpcIngress(input: {
     profile: binding.websocketRpcProfiles[0],
     methodTable,
     requiresRuntimePin:
-      binding.handler !== undefined || methodTable.size > 0,
-    ...(binding.timeoutMs === undefined
-      ? {}
-      : { deploymentTimeoutMs: binding.timeoutMs })
+      binding.handler !== undefined || methodTable.size > 0
   };
 }
 
@@ -121,9 +117,6 @@ export function attachWebSocketRpcConnection(input: {
       : { businessIdentity: input.businessIdentity }),
     writer: input.writer,
     routerRequestTimeoutMs: input.routerRequestTimeoutMs,
-    ...(capture.deploymentTimeoutMs === undefined
-      ? {}
-      : { deploymentTimeoutMs: capture.deploymentTimeoutMs }),
     ...(input.runtimeReceipt === undefined
       ? {}
       : { runtimeReceipt: input.runtimeReceipt }),

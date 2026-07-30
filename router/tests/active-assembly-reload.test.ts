@@ -131,6 +131,62 @@ describe('active RuntimeAssembly activation transaction', () => {
     ]);
   });
 
+  it('rejects registration and ACKs that match the assembly but not its config snapshot', async () => {
+    const fixture = await coordinatorFixture();
+    const runtime = fakeSocket();
+    expect(() =>
+      fixture.registry.register(runtime, {
+        type: 'register',
+        environment: 'test',
+        generation: 1,
+        assembly: { assemblyIdentity: ASSEMBLY_A },
+        configSnapshot: configSnapshot(ASSEMBLY_B),
+        replicaId: 'replica-a'
+      })
+    ).toThrow(/does not match committed generation/);
+
+    register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
+    const activation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v2',
+      environment: 'test',
+      activationId: 'activation-config-pair',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_B },
+      configSnapshot: configSnapshot(ASSEMBLY_B)
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 1);
+    fixture.coordinator.handleRuntimeControl(runtime, {
+      ...responseControl(
+        'prepared',
+        'replica-a',
+        ASSEMBLY_B,
+        1,
+        'activation-config-pair'
+      ),
+      configSnapshot: configSnapshot(ASSEMBLY_C)
+    });
+    await until(() => vi.mocked(runtime.close).mock.calls.length === 1);
+    expect(fixture.coordinator.activationState().pending).not.toBeNull();
+
+    fixture.coordinator.handleRuntimeControl(
+      runtime,
+      responseControl(
+        'prepared',
+        'replica-a',
+        ASSEMBLY_B,
+        1,
+        'activation-config-pair'
+      )
+    );
+    await expect(activation).resolves.toMatchObject({
+      committed: {
+        generation: 2,
+        assembly: { assemblyIdentity: ASSEMBLY_B },
+        configSnapshot: configSnapshot(ASSEMBLY_B)
+      }
+    });
+  });
+
   it('aborts reject and disconnect without moving the committed tuple', async () => {
     const fixture = await coordinatorFixture();
     const runtimeA = fakeSocket();

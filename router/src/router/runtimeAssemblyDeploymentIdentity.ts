@@ -59,8 +59,7 @@ export function deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(
           recordString(left, 'version'),
           recordString(right, 'version')
         )
-    ),
-    policy: value.policy
+    )
   };
   return `skiff-deployment-artifact-v4:sha256:${createHash('sha256')
     .update(stableStringify(projection))

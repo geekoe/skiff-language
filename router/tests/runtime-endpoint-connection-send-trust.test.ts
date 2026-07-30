@@ -350,6 +350,10 @@ async function createFixture(
     environment: 'test',
     generation: 7,
     assembly: { assemblyIdentity: ASSEMBLY },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     ingress: new RuntimeAssemblyIngressIndex([])
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
@@ -363,7 +367,11 @@ async function createFixture(
       activation: {
         environment: 'test',
         generation: 7,
-        assembly: { assemblyIdentity: ASSEMBLY }
+        assembly: { assemblyIdentity: ASSEMBLY },
+        configSnapshot: {
+          snapshotId:
+            'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        }
       }
     },
     observeConnectionSend: (observation) => observations.push(observation)
@@ -389,6 +397,10 @@ async function createFixture(
     environment: 'test',
     generation: 7,
     assembly: { assemblyIdentity: ASSEMBLY },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     replicaId: RUNTIME_ID
   }));
   await until(() => assemblyRegistry.healthyParticipantReplicaIds().includes(RUNTIME_ID));

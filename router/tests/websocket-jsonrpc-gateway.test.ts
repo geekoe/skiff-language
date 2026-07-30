@@ -615,16 +615,18 @@ function snapshot(input: {
             ? OLD_METHOD_GATEWAY_ID
             : NEW_METHOD_GATEWAY_ID,
         handler: `package-callable-${method}`,
-        websocketEntryId: ENTRY_ID,
-        timeoutMs: 1_500
+        websocketEntryId: ENTRY_ID
       }))
-    ),
-    timeoutMs: 1_800
+    )
   };
   return {
     environment: 'test',
     generation: input.generation,
     assembly: { assemblyIdentity: input.assemblyIdentity },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     resolvedDeployments: [deployment],
     ingress: new RuntimeAssemblyIngressIndex([binding])
   };

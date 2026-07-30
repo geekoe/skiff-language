@@ -700,6 +700,9 @@ function snapshot(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: {
+      snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     resolvedDeployments: [binding.deployment],
     ingress: new RuntimeAssemblyIngressIndex([binding])
   };

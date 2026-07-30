@@ -25,7 +25,6 @@ export interface RuntimeAssemblyWebSocketMethodBinding {
   readonly gatewayEntryIdentity: string;
   readonly handler: string;
   readonly websocketEntryId: string;
-  readonly timeoutMs?: number;
 }
 
 export class RuntimeAssemblyWebSocketMethodTable {
@@ -631,8 +630,7 @@ function freezeMethodBinding(
     gatewayEntryKey: binding.gatewayEntryKey,
     gatewayEntryIdentity: binding.gatewayEntryIdentity,
     handler: binding.handler,
-    websocketEntryId: binding.websocketEntryId,
-    ...(binding.timeoutMs === undefined ? {} : { timeoutMs: binding.timeoutMs })
+    websocketEntryId: binding.websocketEntryId
   });
 }
 
@@ -680,7 +678,6 @@ export function methodBindingFromDecoded(input: {
   deployment: RuntimeAssemblyDeploymentRef;
   gatewayEntryKey: string;
   websocketEntryId: string;
-  timeoutMs?: number;
 }): RuntimeAssemblyWebSocketMethodBinding {
   if (input.methodSelector.method === null) {
     throw new Error('WebSocket JSON-RPC method binding requires a method selector');
@@ -692,7 +689,6 @@ export function methodBindingFromDecoded(input: {
     gatewayEntryKey: input.gatewayEntryKey,
     gatewayEntryIdentity: input.entry.gatewayEntryIdentity,
     handler: input.entry.handler,
-    websocketEntryId: input.websocketEntryId,
-    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs })
+    websocketEntryId: input.websocketEntryId
   };
 }

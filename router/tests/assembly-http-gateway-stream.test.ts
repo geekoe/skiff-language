@@ -562,6 +562,10 @@ async function createFixture(
     environment: 'test',
     generation: active.generation,
     assembly: { assemblyIdentity: active.assemblyIdentity },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     resolvedDeployments: [active.binding.deployment],
     resolvedContracts: [{
       serviceId: active.binding.deployment.serviceId,
@@ -587,7 +591,11 @@ async function createFixture(
       activation: {
         environment: 'test',
         generation: active.generation,
-        assembly: { assemblyIdentity: active.assemblyIdentity }
+        assembly: { assemblyIdentity: active.assemblyIdentity },
+        configSnapshot: {
+          snapshotId:
+            'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        }
       }
     }
   });
@@ -617,6 +625,10 @@ async function createFixture(
     environment: 'test',
     generation: active.generation,
     assembly: { assemblyIdentity: active.assemblyIdentity },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     replicaId: RUNTIME_ID
   }));
   await until(() =>

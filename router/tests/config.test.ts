@@ -182,6 +182,10 @@ describe('router config', () => {
       assembly: {
         assemblyIdentity:
           `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+      },
+      configSnapshot: {
+        snapshotId:
+          'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       }
     };
     expect(runtimeBootstrapForRouterConfig(config, activation)).toEqual({

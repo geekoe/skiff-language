@@ -30,7 +30,7 @@ type ActivationStateDocument = Readonly<{
 
 export type ActivationAuditDocument = Readonly<{
   _id: string;
-  schemaVersion: 'skiff-router-activation-audit-v1';
+  schemaVersion: 'skiff-router-activation-audit-v2';
   environment: string;
   activationId: string;
   transition: 'prepare' | 'commit' | 'abort';
@@ -220,7 +220,7 @@ export class MongoAssemblyActivationStateStore implements AssemblyActivationStat
               transition.audit.activationId,
               transition.audit.transition
             ),
-            schemaVersion: 'skiff-router-activation-audit-v1',
+            schemaVersion: 'skiff-router-activation-audit-v2',
             environment,
             ...transition.audit,
             beforeGeneration: current.committed.generation,

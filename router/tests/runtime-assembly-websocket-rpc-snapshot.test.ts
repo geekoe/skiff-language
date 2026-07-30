@@ -229,10 +229,13 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
 
   it('strictly rejects the removed deployment activation policy', () => {
     const fixture = currentWebSocketFixture();
-    fixture.deployment.policy.activation = { idleTimeoutMs: null };
+    fixture.deployment.policy = {
+      resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
+      principal: 'service:example.com/chat'
+    };
 
     expect(() => joinFixture(fixture)).toThrow(
-      /policy fields must contain principal,resources and only optional timeoutMs/
+      /fields must be exactly/
     );
   });
 
@@ -250,7 +253,8 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
 
   it('rejects DeploymentArtifact preimage drift under a current v3 prefix', () => {
     const fixture = currentWebSocketFixture();
-    fixture.deployment.policy.principal = 'service:example.com/other';
+    fixture.deployment.implementation.packageBuildId =
+      `skiff-package-build-v10:sha256:${'f'.repeat(64)}`;
 
     expect(() => joinFixture(fixture)).toThrow(/current preimage/);
   });
@@ -267,6 +271,9 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
       assembly: {
         assemblyIdentity: firstFixture.assembly.assemblyIdentity
       },
+      configSnapshot: {
+        snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      },
       ingress: new RuntimeAssemblyIngressIndex(firstLoaded.gatewayIngress)
     });
 
@@ -278,6 +285,9 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
       generation: 2,
       assembly: {
         assemblyIdentity: secondFixture.assembly.assemblyIdentity
+      },
+      configSnapshot: {
+        snapshotId: 'skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
       },
       ingress: new RuntimeAssemblyIngressIndex(secondLoaded.gatewayIngress)
     });
@@ -425,11 +435,6 @@ function currentWebSocketFixture(): Fixture {
     ],
     resourceBindings: [],
     runtimeCapabilityBindings: [],
-    policy: {
-      timeoutMs: 5_000,
-      resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
-      principal: 'service:example.com/chat'
-    },
     diagnosticText: { displayName: 'chat-current', notes: {} }
   };
   const currentDeploymentIdentity =

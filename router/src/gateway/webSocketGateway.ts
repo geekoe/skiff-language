@@ -418,14 +418,11 @@ export class AssemblyWebSocketGateway {
             connectionId: connection.id,
             request,
             url,
-            timeoutMs: effectiveWebSocketTimeoutMs(
-              this.requestTimeoutMs,
-              binding.timeoutMs
-            )
+            timeoutMs: effectiveWebSocketTimeoutMs(this.requestTimeoutMs)
           }),
           payloadBytes: new Uint8Array()
         },
-        effectiveWebSocketTimeoutMs(this.requestTimeoutMs, binding.timeoutMs),
+        effectiveWebSocketTimeoutMs(this.requestTimeoutMs),
         { signal }
       );
     const accepted = decodeWebSocketConnectResponse(response);
@@ -913,24 +910,20 @@ function currentWebSocketBinding(
 }
 
 function effectiveWebSocketTimeoutMs(
-  platformTimeoutMs: number,
-  deploymentTimeoutMs: number | undefined
+  platformTimeoutMs: number
 ): number {
-  for (const value of [platformTimeoutMs, deploymentTimeoutMs]) {
-    if (
-      value !== undefined &&
-      (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647)
-    ) {
-      throw new GatewayError(
-        500,
-        'InvalidWebSocketTimeout',
-        'WebSocket connect timeout must be a positive bounded integer'
-      );
-    }
+  if (
+    !Number.isSafeInteger(platformTimeoutMs) ||
+    platformTimeoutMs <= 0 ||
+    platformTimeoutMs > 2_147_483_647
+  ) {
+    throw new GatewayError(
+      500,
+      'InvalidWebSocketTimeout',
+      'WebSocket connect timeout must be a positive bounded integer'
+    );
   }
-  return deploymentTimeoutMs === undefined
-    ? platformTimeoutMs
-    : Math.min(platformTimeoutMs, deploymentTimeoutMs);
+  return platformTimeoutMs;
 }
 
 function connectionDownlinkMessage(

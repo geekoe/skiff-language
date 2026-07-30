@@ -232,6 +232,9 @@ function snapshot(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: {
+      snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     resolvedDeployments: [ingressBinding.deployment],
     resolvedContracts: [{
       serviceId: ingressBinding.deployment.serviceId,
@@ -240,8 +243,7 @@ function snapshot(
     }],
     deploymentRuntimeBindings: [{
       deployment: ingressBinding.deployment,
-      packageBuildId: PACKAGE_BUILD_ID,
-      timeoutMs: 1000
+      packageBuildId: PACKAGE_BUILD_ID
     }],
     ingress: new RuntimeAssemblyIngressIndex([ingressBinding])
   };
@@ -288,6 +290,9 @@ function register(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: {
+      snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     replicaId
   });
 }

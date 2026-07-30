@@ -53,11 +53,15 @@ describe('MongoAssemblyActivationStateStore', () => {
     expect(mongo.documents('router_assembly_activation_audit')).toHaveLength(2);
     expect(mongo.documents('router_assembly_activation_audit')).toMatchObject([
       {
+        schemaVersion: 'skiff-router-activation-audit-v2',
         transition: 'prepare',
+        configSnapshotId: CONFIG_SNAPSHOT.snapshotId,
         participantReplicaIds: ['replica-a', 'replica-b']
       },
       {
+        schemaVersion: 'skiff-router-activation-audit-v2',
         transition: 'commit',
+        configSnapshotId: CONFIG_SNAPSHOT.snapshotId,
         participantReplicaIds: ['replica-a', 'replica-b'],
         connectedReplicaIds: ['replica-a', 'replica-b'],
         preparedReplicaIds: ['replica-a', 'replica-b']

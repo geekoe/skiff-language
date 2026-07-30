@@ -306,7 +306,6 @@ describe('WebSocketRpcBridge inbound peer leg', () => {
       methodTable,
       businessIdentity: 'trusted-business',
       routerRequestTimeoutMs: 900,
-      deploymentTimeoutMs: 300
     });
     const fromRuntimePayload = vi.spyOn(
       harness.profile,
@@ -321,7 +320,7 @@ describe('WebSocketRpcBridge inbound peer leg', () => {
 
     expect(harness.dispatches).toHaveLength(1);
     const dispatch = harness.dispatches[0]!;
-    expect(dispatch.timeoutMs).toBe(300);
+    expect(dispatch.timeoutMs).toBe(900);
     expect(dispatch.request.header).toMatchObject({
       mode: 'unary',
       caller: { kind: 'gateway' },
@@ -335,7 +334,7 @@ describe('WebSocketRpcBridge inbound peer leg', () => {
           path: '/v1/chat'
         }
       },
-      deadline: { timeoutMs: 300 },
+      deadline: { timeoutMs: 900 },
       websocketJsonRpc: {
         profile: 'jsonrpc-2.0-text',
         connectionId: 'connection-a',
@@ -603,8 +602,7 @@ describe('WebSocketRpcBridge lifecycle and cleanup', () => {
   });
 
   it.each([
-    ['routerRequestTimeoutMs', { routerRequestTimeoutMs: 0 }],
-    ['deploymentTimeoutMs', { deploymentTimeoutMs: Number.NaN }]
+    ['routerRequestTimeoutMs', { routerRequestTimeoutMs: 0 }]
   ])('rejects a non-canonical %s at attach', (_label, override) => {
     expect(() => createHarness(override)).toThrow(
       'must be a positive safe integer'
@@ -616,7 +614,6 @@ interface HarnessOptions {
   readonly methodTable?: Map<string, RuntimeAssemblyWebSocketMethodBinding>;
   readonly businessIdentity?: string;
   readonly routerRequestTimeoutMs?: number;
-  readonly deploymentTimeoutMs?: number;
   readonly runtimeReceipt?: RuntimeDispatchConnectionReceipt | null;
   readonly runtimeReplicaId?: string | null;
   readonly writeText?: (frame: string) => void | Promise<void>;
@@ -705,9 +702,6 @@ function createHarness(options: HarnessOptions = {}) {
       }
     },
     routerRequestTimeoutMs: options.routerRequestTimeoutMs ?? 1_000,
-    ...(options.deploymentTimeoutMs === undefined
-      ? {}
-      : { deploymentTimeoutMs: options.deploymentTimeoutMs }),
     ...(receipt === undefined ? {} : { runtimeReceipt: receipt }),
     ...(options.runtimeReplicaId === null || receipt === undefined
       ? {}
@@ -880,8 +874,7 @@ function methodBinding(
     gatewayEntryKey: `websocket.jsonRpc.${method}`,
     gatewayEntryIdentity: METHOD_GATEWAY_ENTRY_ID,
     handler: `example.chat.${method}`,
-    websocketEntryId: WEBSOCKET_ENTRY_ID,
-    timeoutMs: 300
+    websocketEntryId: WEBSOCKET_ENTRY_ID
   };
 }
 

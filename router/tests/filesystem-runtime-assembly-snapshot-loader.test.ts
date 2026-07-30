@@ -70,8 +70,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
           gatewayEntryKey: 'rawStream',
           gatewayEntryIdentity: GATEWAY_IDENTITIES[1],
           adapterKind: 'rawHttp',
-          operationMode: 'serverStream',
-          timeoutMs: 2_500
+          operationMode: 'serverStream'
         },
         {
           gatewayEntryKey: 'typedUnary',
@@ -561,24 +560,15 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
       }
     },
     {
-      name: 'zero timeout',
+      name: 'retired deployment policy',
       mutate: (fixture: Fixture) => {
-        fixture.deployments[1]!.policy.timeoutMs = 0;
-      }
-    },
-    {
-      name: 'null timeout',
-      mutate: (fixture: Fixture) => {
-        fixture.deployments[1]!.policy.timeoutMs = null;
-      }
-    },
-    {
-      name: 'legacy activation policy',
-      mutate: (fixture: Fixture) => {
-        fixture.deployments[1]!.policy.activation = { idleTimeoutMs: null };
+        fixture.deployments[1]!.policy = {
+          resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
+          principal: 'service:skiff.run/echo'
+        };
       }
     }
-  ])('rejects invalid deployment mode or policy: $name', async ({ mutate }) => {
+  ])('rejects invalid deployment mode or retired policy: $name', async ({ mutate }) => {
     const root = await fixtureRoot();
     const fixture = canonicalFixture();
     mutate(fixture);
@@ -605,8 +595,7 @@ function canonicalFixture(): Fixture {
     deployment('raw-stream', 'rawStream', GATEWAY_IDENTITIES[1], {
       adapterKind: 'rawHttp',
       operationMode: 'serverStream',
-      path: '/stream',
-      timeoutMs: 2_500
+      path: '/stream'
     }),
     deployment('typed-unary', 'typedUnary', GATEWAY_IDENTITIES[2], {
       adapterKind: 'typedJson',
@@ -790,7 +779,6 @@ function deployment(
     adapterKind: 'rawHttp' | 'typedJson';
     operationMode: 'unary' | 'serverStream';
     path: string;
-    timeoutMs?: number;
   }
 ): Record<string, any> {
   const typed = options.adapterKind === 'typedJson';
@@ -867,11 +855,6 @@ function deployment(
     }],
     resourceBindings: [],
     runtimeCapabilityBindings: [],
-    policy: {
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
-      principal: 'service:skiff.run/echo'
-    },
     diagnosticText: { displayName: gatewayEntryKey, notes: {} }
   };
   record.deploymentArtifactIdentity =

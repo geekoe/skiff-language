@@ -228,6 +228,10 @@ function snapshotsForScenario(): RouterActiveAssemblySnapshotStore {
     environment: 'test',
     generation: 345,
     assembly: { assemblyIdentity: ASSEMBLY },
+    configSnapshot: {
+      snapshotId:
+        'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     ingress: new RuntimeAssemblyIngressIndex(bindings)
   });
   return snapshots;

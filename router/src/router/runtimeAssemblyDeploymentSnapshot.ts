@@ -44,7 +44,6 @@ interface DecodedServiceDeployment {
   packageBuildId: string;
   gatewayEntries: ReadonlyMap<string, DecodedDeploymentGatewayEntry>;
   ingress: readonly DecodedDeploymentIngressBinding[];
-  timeoutMs?: number;
 }
 
 interface DecodedHttpDeploymentGatewayEntry {
@@ -159,10 +158,7 @@ export function joinRuntimeAssemblyDeployments(
     resolvedContracts: record.resolvedContracts,
     deploymentRuntimeBindings: decodedDeployments.map((deployment) => ({
       deployment: deployment.ref,
-      packageBuildId: deployment.packageBuildId,
-      ...(deployment.timeoutMs === undefined
-        ? {}
-        : { timeoutMs: deployment.timeoutMs })
+      packageBuildId: deployment.packageBuildId
     })),
     gatewayIngress
   };
@@ -206,10 +202,7 @@ function buildDeploymentIngressExpectations(
         gatewayEntryKey: binding.gatewayEntryKey,
         gatewayEntryIdentity: entry.gatewayEntryIdentity,
         adapterKind: entry.adapterKind,
-        operationMode: entry.operationMode,
-        ...(deployment.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: deployment.timeoutMs })
+        operationMode: entry.operationMode
       };
       expected.push(expectedIngress(binding, deployment.ref, entry, attachBinding));
       continue;
@@ -301,10 +294,7 @@ function buildDeploymentIngressExpectations(
       entry,
       deployment: deployment.ref,
       gatewayEntryKey: binding.gatewayEntryKey,
-      websocketEntryId: physicalBinding.entry.websocketEntryId,
-      ...(deployment.timeoutMs === undefined
-        ? {}
-        : { timeoutMs: deployment.timeoutMs })
+      websocketEntryId: physicalBinding.entry.websocketEntryId
     });
   });
   const methodTable = new RuntimeAssemblyWebSocketMethodTable(methodBindings);
@@ -326,10 +316,7 @@ function buildDeploymentIngressExpectations(
     websocketRpcProfiles: Object.freeze([
       ...physicalBinding.entry.rpcProfiles
     ]),
-    websocketMethods: methodTable,
-    ...(deployment.timeoutMs === undefined
-      ? {}
-      : { timeoutMs: deployment.timeoutMs })
+    websocketMethods: methodTable
   };
   expected.push(
     expectedIngress(
@@ -382,7 +369,6 @@ function decodeServiceDeployment(
     'ingress',
     'resourceBindings',
     'runtimeCapabilityBindings',
-    'policy',
     'diagnosticText'
   ], label);
   if (value.schemaVersion !== 'skiff-service-deployment-v4') {
@@ -439,7 +425,6 @@ function decodeServiceDeployment(
     decodeDeploymentIngressBinding(entry, `${label}.ingress[${index}]`)
   );
   assertUniqueSelectors(ingress, `${label}.ingress`);
-  const timeoutMs = decodeDeploymentPolicy(value.policy, `${label}.policy`);
   const computedDeploymentIdentity =
     deriveCurrentRuntimeAssemblyServiceDeploymentIdentity(value);
   if (deploymentArtifactIdentity !== computedDeploymentIdentity) {
@@ -451,8 +436,7 @@ function decodeServiceDeployment(
     ref: expected,
     packageBuildId: implementation.packageBuildId,
     gatewayEntries,
-    ingress,
-    ...(timeoutMs === undefined ? {} : { timeoutMs })
+    ingress
   };
 }
 
@@ -641,28 +625,6 @@ function decodeDeploymentIngressBinding(
   };
 }
 
-function decodeDeploymentPolicy(
-  input: unknown,
-  label: string
-): number | undefined {
-  const value = exactObject(input, label);
-  exactFieldsWithOptional(
-    value,
-    ['resources', 'principal'],
-    ['timeoutMs'],
-    label
-  );
-  requiredString(value, 'principal');
-  const resources = exactObject(value.resources, `${label}.resources`);
-  exactFields(resources, ['cpuMillis', 'memoryBytes'], `${label}.resources`);
-  positiveSafeInteger(resources.cpuMillis, `${label}.resources.cpuMillis`);
-  positiveSafeInteger(resources.memoryBytes, `${label}.resources.memoryBytes`);
-  if (!Object.hasOwn(value, 'timeoutMs')) {
-    return undefined;
-  }
-  return positiveSafeInteger(value.timeoutMs, `${label}.timeoutMs`);
-}
-
 function decodeImplementation(
   input: unknown,
   label: string
@@ -783,24 +745,6 @@ function exactFields(
     actual.some((field, index) => field !== canonical[index])
   ) {
     throw new Error(`${label} fields must be exactly ${canonical.join(',')}`);
-  }
-}
-
-function exactFieldsWithOptional(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[],
-  label: string
-): void {
-  const actual = Object.keys(value);
-  const allowed = new Set([...required, ...optional]);
-  if (
-    required.some((field) => !Object.hasOwn(value, field)) ||
-    actual.some((field) => !allowed.has(field))
-  ) {
-    throw new Error(
-      `${label} fields must contain ${[...required].sort().join(',')} and only optional ${[...optional].sort().join(',')}`
-    );
   }
 }
 

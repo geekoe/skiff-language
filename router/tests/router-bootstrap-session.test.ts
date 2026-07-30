@@ -94,6 +94,10 @@ describe('Router runtime bootstrap session', () => {
           assembly: {
             assemblyIdentity:
               `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+          },
+          configSnapshot: {
+            snapshotId:
+              'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
           }
         }
       }
@@ -127,6 +131,10 @@ describe('Router runtime bootstrap session', () => {
           assembly: {
             assemblyIdentity:
               `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`
+          },
+          configSnapshot: {
+            snapshotId:
+              'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
           }
         }
       }
@@ -169,6 +177,10 @@ describe('Router runtime bootstrap session', () => {
           assembly: {
             assemblyIdentity:
               `skiff-runtime-assembly-v3:sha256:${(generation === 7 ? 'a' : 'b').repeat(64)}`
+          },
+          configSnapshot: {
+            snapshotId:
+              `skiff-runtime-config-snapshot-v1:${(generation === 7 ? 'a' : 'b').repeat(32)}`
           }
         }
       })

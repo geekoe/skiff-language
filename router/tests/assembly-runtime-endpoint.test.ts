@@ -60,6 +60,9 @@ const SECOND_TEST_GATEWAY_ENTRY_IDENTITY =
 const TEST_HOST = 'case-0.package-test.skiff.localhost';
 const TEST_PATH = '/__skiff/package-test/0';
 const SECOND_TEST_PATH = '/__skiff/package-test/1';
+const CONFIG_SNAPSHOT = {
+  snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+};
 const fixtures: CompositeEndpointFixture[] = [];
 
 describe('unified RuntimeEndpoint assembly bootstrap', () => {
@@ -86,7 +89,11 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     sendActivation(ws, transition('prepared', 'activation-b', 1, ASSEMBLY_B));
     const commitB = await commitBFrame;
     await expect(activationB).resolves.toMatchObject({
-      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } }
+      committed: {
+        generation: 2,
+        assembly: { assemblyIdentity: ASSEMBLY_B },
+        configSnapshot: CONFIG_SNAPSHOT
+      }
     });
     expect(commitB).toEqual(transition('commit', 'activation-b', 1, ASSEMBLY_B));
 
@@ -129,10 +136,18 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     const health = await fetch(`${fixture.controlUrl}/__router/health`).then(async (response) => {
       expect(response.ok).toBe(true);
       return await response.json() as {
+        activeAssembly: {
+          configSnapshotId: string;
+        };
         capabilityConnections: unknown[];
         replicas: unknown[];
       };
     });
+    expect(health.activeAssembly.configSnapshotId).toBe(
+      CONFIG_SNAPSHOT.snapshotId
+    );
+    expect(JSON.stringify(health)).not.toContain('resolvedConfig');
+    expect(JSON.stringify(health)).not.toContain('configSnapshotPath');
     expect(health.capabilityConnections).toEqual([
       expect.objectContaining({ runtimeId: RUNTIME_ID, connected: true })
     ]);
@@ -141,6 +156,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
         replicaId: RUNTIME_ID,
         generation: 2,
         assemblyIdentity: ASSEMBLY_B,
+        configSnapshotId: CONFIG_SNAPSHOT.snapshotId,
         state: 'healthy',
         connected: true,
         connectionReleaseAckCount: 1
@@ -325,7 +341,11 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       transition('prepared', 'activation-parent-pin', 1, ASSEMBLY_B)
     );
     await expect(activationPromise).resolves.toMatchObject({
-      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } }
+      committed: {
+        generation: 2,
+        assembly: { assemblyIdentity: ASSEMBLY_B },
+        configSnapshot: CONFIG_SNAPSHOT
+      }
     });
     await commit;
     sendActivation(ws, registration(2, ASSEMBLY_B));
@@ -484,12 +504,11 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     await expect(rootResponse).resolves.toMatchObject({ status: 503 });
   });
 
-  it('times out and cleans up a detached spawn independently of its parent', async () => {
+  it('bounds a detached spawn by the parent platform deadline and cleans up', async () => {
     const fixture = await createFixture({
       generation: 1,
       assemblyIdentity: ASSEMBLY_A,
-      testGateway: true,
-      timeoutMs: 25
+      testGateway: true
     });
     const ws = await openSocket(fixture.url);
     sendCapabilities(ws, RUNTIME_ID);
@@ -498,7 +517,9 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
 
     const rootResponse = postControlJson(
       `${fixture.controlUrl}/__skiff/test-dispatch`,
-      testDispatchBody()
+      mutateTestDispatchBody((body) => {
+        body.timeoutMs = 25;
+      })
     );
     const root = await nextRuntimeFrame(ws, 'request.start');
     const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
@@ -516,16 +537,20 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     }
     expect(childReceipt.header.type).toBe('spawn.submit.response');
     const cancel = await nextRuntimeFrame(ws, 'request.cancel');
-    expect(cancel.header).toMatchObject({
-      requestId: childValidation.envelope.requestId,
-      reason: 'timeout'
-    });
-    await until(
-      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 1
-    );
-
-    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
-    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+    expect(cancel.header.reason).toBe('timeout');
+    expect([
+      rootValidation.envelope.requestId,
+      childValidation.envelope.requestId
+    ]).toContain(cancel.header.requestId);
+    if (cancel.header.requestId === childValidation.envelope.requestId) {
+      await until(
+        () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 1
+      );
+      sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+      await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+    } else {
+      await expect(rootResponse).resolves.toMatchObject({ status: 504 });
+    }
     await until(
       () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
     );
@@ -814,6 +839,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       environment: 'test',
       generation: 1,
       assembly: { assemblyIdentity: ASSEMBLY_A },
+      configSnapshot: CONFIG_SNAPSHOT,
       replicaId: 'runtime-other'
     });
     await until(
@@ -1153,6 +1179,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       environment: 'test',
       generation: 2,
       assembly: { assemblyIdentity: ASSEMBLY_B },
+      configSnapshot: CONFIG_SNAPSHOT,
       ingress: new RuntimeAssemblyIngressIndex(assembly(ASSEMBLY_B).gatewayIngress)
     });
     fixture.assemblyRegistry.activate(fixture.snapshots.get());
@@ -1217,7 +1244,11 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     const firstCommit = nextActivation(ws, 'commit');
     sendActivation(ws, transition('prepared', 'activation-first', 0, ASSEMBLY_A));
     await expect(firstActivation).resolves.toMatchObject({
-      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A } }
+      committed: {
+        generation: 1,
+        assembly: { assemblyIdentity: ASSEMBLY_A },
+        configSnapshot: CONFIG_SNAPSHOT
+      }
     });
     await firstCommit;
     expect(fixture.assemblyRegistry.snapshot()).toEqual([
@@ -1238,7 +1269,11 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     const secondCommit = nextActivation(ws, 'commit');
     sendActivation(ws, transition('prepared', 'activation-second', 1, ASSEMBLY_B));
     await expect(secondActivation).resolves.toMatchObject({
-      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } }
+      committed: {
+        generation: 2,
+        assembly: { assemblyIdentity: ASSEMBLY_B },
+        configSnapshot: CONFIG_SNAPSHOT
+      }
     });
     await secondCommit;
     expect(ws.readyState).toBe(WebSocket.OPEN);
@@ -1482,7 +1517,6 @@ async function createFixture(
     testGateway?: boolean;
     sharedTestDeployments?: boolean;
     maxConcurrency?: number;
-    timeoutMs?: number;
   } = { generation: 1, assemblyIdentity: ASSEMBLY_A }
 ): Promise<CompositeEndpointFixture> {
   const testGateway = initial.testGateway ?? false;
@@ -1499,7 +1533,8 @@ async function createFixture(
       activation: {
         environment: 'test',
         generation: initial.generation,
-        assembly: { assemblyIdentity: initial.assemblyIdentity }
+        assembly: { assemblyIdentity: initial.assemblyIdentity },
+        configSnapshot: CONFIG_SNAPSHOT
       }
     }
   });
@@ -1515,19 +1550,16 @@ async function createFixture(
       assembly(
         ASSEMBLY_A,
         testGateway,
-        initial.timeoutMs,
         initial.sharedTestDeployments
       ),
       assembly(
         ASSEMBLY_B,
         testGateway,
-        initial.timeoutMs,
         initial.sharedTestDeployments
       ),
       assembly(
         ASSEMBLY_C,
         testGateway,
-        initial.timeoutMs,
         initial.sharedTestDeployments
       )
     ]),
@@ -1585,6 +1617,7 @@ function registration(generation: number, assemblyIdentity: string): AssemblyAct
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: CONFIG_SNAPSHOT,
     replicaId: RUNTIME_ID
   };
 }
@@ -1595,7 +1628,8 @@ function activationRequest(activationId: string, expectedGeneration: number, ass
     environment: 'test',
     activationId,
     expectedGeneration,
-    assembly: { assemblyIdentity }
+    assembly: { assemblyIdentity },
+    configSnapshot: CONFIG_SNAPSHOT
   };
 }
 
@@ -1611,6 +1645,7 @@ function transition(
     expectedGeneration,
     candidateGeneration: expectedGeneration + 1,
     assembly: { assemblyIdentity },
+    configSnapshot: CONFIG_SNAPSHOT,
     replicaId: RUNTIME_ID
   };
   return type === 'reject'
@@ -1621,7 +1656,6 @@ function transition(
 function assembly(
   assemblyIdentity: string,
   includeTestGateway = false,
-  timeoutMs = 1_000,
   includeSecondTestDeployment = false
 ): LoadedRuntimeAssembly {
   const revision = deploymentRevision(assemblyIdentity);
@@ -1659,8 +1693,7 @@ function assembly(
         ? []
         : deployments.map((current) => ({
             deployment: current,
-            packageBuildId: PACKAGE_BUILD_ID,
-            timeoutMs
+            packageBuildId: PACKAGE_BUILD_ID
           })),
     gatewayIngress:
       assemblyIdentity === EMPTY_ASSEMBLY || !includeTestGateway

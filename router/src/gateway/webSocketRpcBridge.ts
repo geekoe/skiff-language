@@ -90,7 +90,6 @@ export interface CapturedWebSocketRpcConnection {
   readonly businessIdentity?: string;
   readonly writer: CapturedPeerWriter;
   readonly routerRequestTimeoutMs: number;
-  readonly deploymentTimeoutMs?: number;
   readonly runtimeReceipt?: RuntimeDispatchConnectionReceipt;
   readonly runtimeReplicaId?: string;
   readonly runtimeOwner: (
@@ -638,10 +637,7 @@ function captureConnection(input: CapturedWebSocketRpcConnection): {
       !sameDeployment(binding.deployment, input.deployment) ||
       !isCanonicalBoundedString(binding.gatewayEntryIdentity, 1024) ||
       !isCanonicalBoundedString(binding.gatewayEntryKey, 1024) ||
-      !isCanonicalBoundedString(binding.handler, 1024) ||
-      (binding.timeoutMs !== undefined &&
-        (!Number.isSafeInteger(binding.timeoutMs) ||
-          binding.timeoutMs <= 0))
+      !isCanonicalBoundedString(binding.handler, 1024)
     ) {
       throw new Error(
         'captured WebSocket RPC method does not match its physical connection'
@@ -662,13 +658,7 @@ function captureConnection(input: CapturedWebSocketRpcConnection): {
       'captured runtime receipt and replica owner must be present together'
     );
   }
-  const inboundTimeoutMs =
-    input.deploymentTimeoutMs === undefined
-      ? input.routerRequestTimeoutMs
-      : Math.min(
-          input.routerRequestTimeoutMs,
-          input.deploymentTimeoutMs
-        );
+  const inboundTimeoutMs = input.routerRequestTimeoutMs;
   const context = Object.freeze({
     ...input,
     deployment: Object.freeze({ ...input.deployment }),
@@ -733,8 +723,7 @@ function validateCapturedConnection(
     throw new Error('captured WebSocket business identity is not canonical');
   }
   for (const [label, value] of [
-    ['routerRequestTimeoutMs', input.routerRequestTimeoutMs],
-    ['deploymentTimeoutMs', input.deploymentTimeoutMs]
+    ['routerRequestTimeoutMs', input.routerRequestTimeoutMs]
   ] as const) {
     if (
       value !== undefined &&

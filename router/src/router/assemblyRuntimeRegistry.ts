@@ -57,7 +57,6 @@ interface AssemblyDeploymentBinding {
   deploymentArtifactIdentity: string;
   packageBuildId: string;
   serviceProtocolIdentity: string;
-  timeoutMs?: number;
 }
 
 export interface AssemblyReplicaSnapshot {
@@ -239,7 +238,6 @@ export class AssemblyRuntimeRegistry {
       serviceId,
       buildId: binding.packageBuildId,
       serviceProtocolIdentity: binding.serviceProtocolIdentity,
-      ...(binding.timeoutMs === undefined ? {} : { timeoutMs: binding.timeoutMs }),
       activationIdentity: { ...header.activationIdentity }
     };
   }
@@ -370,10 +368,7 @@ export class AssemblyRuntimeRegistry {
           deploymentArtifactIdentity: binding.deploymentArtifactIdentity
         },
         buildId: binding.packageBuildId,
-        serviceProtocolIdentity: binding.serviceProtocolIdentity,
-        ...(binding.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: binding.timeoutMs })
+        serviceProtocolIdentity: binding.serviceProtocolIdentity
       },
       ws: replica.ws
     };
@@ -509,10 +504,7 @@ function deploymentBindingsByService(
       deploymentRevision: deployment.deploymentRevision,
       deploymentArtifactIdentity: deployment.deploymentArtifactIdentity,
       packageBuildId: runtimeBinding.packageBuildId,
-      serviceProtocolIdentity: contract.serviceProtocolIdentity,
-      ...(runtimeBinding.timeoutMs === undefined
-        ? {}
-        : { timeoutMs: runtimeBinding.timeoutMs })
+      serviceProtocolIdentity: contract.serviceProtocolIdentity
     });
   }
   return bindings;
@@ -531,8 +523,7 @@ function setDeploymentBinding(
       existing.contractVersion !== binding.contractVersion ||
       existing.deploymentArtifactIdentity !== binding.deploymentArtifactIdentity ||
       existing.packageBuildId !== binding.packageBuildId ||
-      existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity ||
-      existing.timeoutMs !== binding.timeoutMs)
+      existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity)
   ) {
     throw new Error(
       `RuntimeAssembly has conflicting deployment bindings for ${serviceId}`

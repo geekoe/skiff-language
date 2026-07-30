@@ -122,7 +122,6 @@ interface RuntimeSpawnParentAuthority {
   readonly runtimeId: string;
   readonly buildId: string;
   readonly serviceProtocolIdentity: string;
-  readonly timeoutMs?: number;
   readonly assemblyIdentity: string;
   readonly assemblyGeneration: number;
   readonly deployment: Readonly<{
@@ -352,7 +351,7 @@ export class RuntimeDispatcher {
       const authority = parent.spawnAuthority;
       const requestId = `spawn-request-${randomUUID()}`;
       const spawnId = submit.spawnId ?? `spawn-${randomUUID()}`;
-      const timeoutMs = authority.timeoutMs ?? DEFAULT_DERIVED_SPAWN_TIMEOUT_MS;
+      const timeoutMs = derivedSpawnTimeoutMs(parent.request);
       const request = derivedSpawnRequest(parent.request, submit.target, requestId, timeoutMs);
       await this.dispatchDerivedSpawn(
         ws,
@@ -1891,11 +1890,30 @@ function captureRuntimeSpawnParentAuthority(
     runtimeId: connection.runtimeId,
     buildId: selected.buildId,
     serviceProtocolIdentity: selected.serviceProtocolIdentity,
-    ...(selected.timeoutMs === undefined ? {} : { timeoutMs: selected.timeoutMs }),
     assemblyIdentity: selected.assemblyIdentity,
     assemblyGeneration: selected.assemblyGeneration,
     deployment: Object.freeze({ ...selected.deployment })
   });
+}
+
+function derivedSpawnTimeoutMs(
+  parent:
+    | RuntimeDispatchFrameHeader
+    | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
+    | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
+): number {
+  if (!('deadline' in parent) || parent.deadline === undefined) {
+    return DEFAULT_DERIVED_SPAWN_TIMEOUT_MS;
+  }
+  const remainingMs = Date.parse(parent.deadline.expiresAt) - Date.now();
+  return Math.max(
+    1,
+    Math.min(
+      DEFAULT_DERIVED_SPAWN_TIMEOUT_MS,
+      parent.deadline.timeoutMs,
+      remainingMs
+    )
+  );
 }
 
 function spawnSubmitError(error: unknown): {

@@ -589,9 +589,6 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(() => effectiveHttpRequestTimeoutMs(2_147_483_648)).toThrow(
       /deadline and timer/
     );
-    expect(() => effectiveHttpRequestTimeoutMs(100, 0)).toThrow(
-      /positive safe integer/
-    );
   });
 
   it('rejects oversized requests before Runtime dispatch', async () => {
@@ -1358,6 +1355,9 @@ async function createFixture(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: {
+      snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    },
     resolvedDeployments: deployments,
     resolvedContracts: deployments.map((deployment) => ({
       serviceId: deployment.serviceId,
@@ -1384,7 +1384,11 @@ async function createFixture(
       activation: {
         environment: 'test',
         generation,
-        assembly: { assemblyIdentity }
+        assembly: { assemblyIdentity },
+        configSnapshot: {
+          snapshotId:
+            'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        }
       }
     }
   });

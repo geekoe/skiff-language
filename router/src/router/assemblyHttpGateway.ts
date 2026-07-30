@@ -121,8 +121,7 @@ export class AssemblyHttpGateway {
     const snapshot = this.options.snapshots.get();
     const selection = selectHttpIngress(snapshot, request);
     const timeoutMs = effectiveHttpRequestTimeoutMs(
-      this.options.requestTimeoutMs ?? DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
-      selection.binding.timeoutMs
+      this.options.requestTimeoutMs ?? DEFAULT_HTTP_REQUEST_TIMEOUT_MS
     );
     const body = await readRequestBody(request, this.options.maxRequestBytes);
     const requestId = randomUUID();
@@ -392,15 +391,10 @@ function sameDeployment(
 }
 
 export function effectiveHttpRequestTimeoutMs(
-  platformCapMs: number,
-  deploymentTimeoutMs?: number
+  platformCapMs: number
 ): number {
   assertValidHttpTimeout(platformCapMs, 'platform HTTP timeout cap');
-  if (deploymentTimeoutMs === undefined) {
-    return platformCapMs;
-  }
-  assertValidHttpTimeout(deploymentTimeoutMs, 'deployment HTTP timeout override');
-  return Math.min(platformCapMs, deploymentTimeoutMs);
+  return platformCapMs;
 }
 
 function assertValidHttpTimeout(value: number, owner: string): void {
