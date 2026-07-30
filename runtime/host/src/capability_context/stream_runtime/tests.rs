@@ -555,6 +555,34 @@ async fn stream_runtime_request_scope_drop_cancels_producer_clone_while_root_sta
 }
 
 #[tokio::test]
+async fn nested_owners_of_the_same_request_scope_do_not_close_each_others_streams() {
+    let runtime = StreamRuntime::default();
+    let request_generation = 42;
+    runtime.open_scope(request_generation);
+    runtime.open_scope(request_generation);
+    let (stream, sink) = runtime.channel_stream_in_scope(request_generation);
+    sink.send(json!("still-open")).await.unwrap();
+
+    runtime.close_scope(request_generation);
+
+    assert_eq!(runtime.active_stream_count_in_scope(request_generation), 1);
+    assert!(matches!(
+        runtime.next(&stream).await.unwrap(),
+        StreamPoll::Item(value) if value == json!("still-open")
+    ));
+
+    runtime.close_scope(request_generation);
+
+    assert_eq!(runtime.active_stream_count_in_scope(request_generation), 0);
+    assert!(runtime
+        .next(&stream)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("unknown Stream value"));
+}
+
+#[tokio::test]
 async fn stream_runtime_removes_entry_on_source_drop() {
     let runtime = StreamRuntime::default();
     let (stream, sink) = runtime.channel_stream();

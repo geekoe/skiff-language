@@ -3,13 +3,11 @@ use std::time::{Duration, Instant};
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata, CancellationToken,
-    ExecutionScope, OutboundControlMessage, OutboundResponse, RouterWriterMessage,
-    SpawnSubmitControlRequest,
+    ExecutionScope, OutboundControlMessage, RouterWriterMessage, SpawnSubmitControlRequest,
 };
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, ActorFindResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-    RuntimeErrorFramePayload, SpawnClaimResponseFrameHeader, SpawnSubmitResponseFrameHeader,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeErrorFramePayload, SpawnSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::{sync::mpsc, time::timeout};
 
@@ -100,7 +98,7 @@ async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
             envelope_type: "spawn.submit.response".to_string(),
             rpc_id: rpc_id.clone(),
             spawn_id: "spawn-7".to_string(),
-            item_id: "spawn-item-11".to_string(),
+            request_id: "spawn-request-11".to_string(),
             status: "submitted".to_string(),
         },
         &[],
@@ -114,7 +112,7 @@ async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
         .expect("spawn submit response must reach its caller");
     assert_eq!(response.rpc_id, rpc_id);
     assert_eq!(response.spawn_id, "spawn-7");
-    assert_eq!(response.item_id, "spawn-item-11");
+    assert_eq!(response.request_id, "spawn-request-11");
     assert_eq!(host.outbound_requests.pending_count(), 0);
     assert_eq!(host.outbound_requests.active_lease_count(), 0);
     assert_eq!(
@@ -176,48 +174,6 @@ async fn scoped_actor_error_dispatch_reaches_the_caller() {
         router_receiver.try_recv().is_err(),
         "winning error must not emit request.cancel"
     );
-}
-
-#[tokio::test]
-async fn spawn_claim_dispatch_commits_terminal_before_delivery() {
-    let host = test_host();
-    let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let lease = host
-        .outbound_requests
-        .insert_with_lease(
-            "claim-rpc".to_string(),
-            response_sender,
-            None,
-            "caller_cancel",
-        )
-        .expect("pending spawn claim");
-    let terminal = lease.terminal_signal();
-    let frame = encode_binary_frame(
-        &SpawnClaimResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "spawn.claim.response".to_string(),
-            rpc_id: "claim-rpc".to_string(),
-            claimed: false,
-            item: None,
-        },
-        &[],
-    )
-    .expect("spawn claim response frame");
-
-    dispatch_frame(&host, &frame).await;
-
-    timeout(Duration::from_millis(100), terminal.wait_terminal())
-        .await
-        .expect("spawn claim dispatcher must commit the terminal signal");
-    assert!(matches!(
-        response_receiver.recv().await,
-        Some(OutboundResponse::End { payload })
-            if serde_json::from_slice::<serde_json::Value>(&payload)
-                .is_ok_and(|value| value["header"]["rpcId"] == "claim-rpc")
-    ));
-    assert_eq!(host.outbound_requests.pending_count(), 0);
-    drop(lease);
-    assert_eq!(host.outbound_requests.active_lease_count(), 0);
 }
 
 async fn dispatch_frame(host: &crate::host::RuntimeHost, frame: &[u8]) {

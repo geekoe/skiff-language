@@ -150,7 +150,11 @@ const coordinator = new AssemblyActivationCoordinator({
 runtimeEndpoint.setCoordinator(coordinator);
 await coordinator.initialize();
 
-const dispatcher = new RuntimeDispatcher({ registry, frameSender: runtimeEndpoint });
+const dispatcher = new RuntimeDispatcher({
+  registry,
+  frameSender: runtimeEndpoint,
+  maxConcurrency: config.runtimeMaxConcurrency
+});
 runtimeEndpoint.setDispatcher(dispatcher);
 const webSocketRpcBridge = new WebSocketRpcBridge({
   endpoint: runtimeEndpoint,

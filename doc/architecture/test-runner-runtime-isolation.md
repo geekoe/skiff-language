@@ -42,9 +42,18 @@ closure 内依次执行全部 entry。每个 entry 都调用 production `skiff-t
 `--deny-skips` 和 `--require-tests`，且不得传 `--live` 或 `--allow-network`。entry 不能自行创建
 runtime，也不能指向 stable developer instance 或固定 `4000` / `4001` 端口。
 
-复用边界只包含 router / runtime 进程和其隔离 workspace。每个 case 仍使用 fresh synthetic
-service identity，并由 test-runner 清理精确的临时 artifact、activation、double registry、
-config 和数据库状态；一个 registry entry 的可变测试状态不得泄漏到下一个 entry。
+复用边界包含router/runtime进程、其隔离workspace，以及单个普通`kind: test` service execution的
+共享assembly activation。对同一个test service，runner必须只执行一次Package compile、resolved
+config构造和dependency graph解析；所有selected cases各自生成fresh synthetic
+`ServiceDeployment`、对应`ServiceContract`和gateway entry/ingress binding，再作为多个root链接进一个
+`RuntimeAssembly`。runner发布该multi-root assembly后只提交一次activation transaction，所有case
+使用同一个assembly identity和activation generation；单个case不拥有另一份assembly或generation。
+
+共享assembly严格不等于共享deployment或state。每个case仍拥有独立synthetic service identity、
+deployment/contract/gateway entry/ingress selector、state namespace、heap、inline-effect registry和
+execution nonce。case finalization精确清理这些逐case资源；共享Package artifact、assembly artifact
+和activation由该test service execution统一清理。一个case或registry entry的可变测试状态不得泄漏
+到另一个case或entry。
 
 隔离stack同时向runner提供动态business HTTP ingress URL。runner把它作为保留resolved config
 `skiff.test.ingressUrl`注入test service，并拒绝authored同名binding；它不写secret文件，也不允许
@@ -52,16 +61,23 @@ config 和数据库状态；一个 registry entry 的可变测试状态不得泄
 来源。测试源码只传普通绝对HTTP URL；测试执行适配在URL origin精确命中该动态ingress时自动加入现有
 service/version selector，用户headers不能覆盖selector、Host、body framing或hop-by-hop headers。
 
-Router对此不增加test route、token、session header或控制面旁路，只按普通business HTTP路径分发。
-Runtime在隔离单runtime内按精确case deployment与activation generation把该子请求附着到仍active的
-父test execution：共享inline-effect registry，子请求不finalize，父case结束时唯一finalize。首版每个
-case只允许一个active self-ingress；stream在EOF、失败或consumer drop/break后才释放active slot，并
-沿普通HTTP disconnect/backpressure链收束。
+Router对此不增加test route、session header或business控制面旁路，只按普通business HTTP路径分发。
+每次root test dispatch由Router新建一个不透明`testCaseCapability`；同一shared assembly中的不同root
+必须获得不同capability。Runtime在隔离单runtime内按共享assembly identity/generation、精确case
+deployment和该capability把self-ingress子请求附着到仍active的父test execution：共享inline-effect
+registry，子请求不finalize，父case结束时唯一finalize。assembly/generation不能充当case identity。
+
+root发起的direct spawn必须继承父root的同一`testCaseCapability`，recursive spawn继续从其父请求
+继承完全相同的值；派生请求不得新建capability，也不得从另一个root借用。继承链同时保持
+父root固定的assembly/deployment authority，因此shared assembly不会扩大effect registry或
+execution nonce的可见范围。首版每个case只允许一个active self-ingress；stream在EOF、失败或
+consumer drop/break后才释放active slot，并沿普通HTTP disconnect/backpressure链收束。
 
 Node host 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
 `SKIFF_DEV_HOME`，并向Rust runner显式传入当前隔离stack的business ingress URL。live 与非 live
 runtime path 都在任何 health/reload 网络请求前验证 reload URL 和 artifact root 同时存在；需要
-self-ingress的non-live path还必须在case activation前验证business ingress URL。CLI options高于
+self-ingress的non-live path还必须在共享test service assembly activation前验证business ingress
+URL。CLI options高于
 环境变量，缺任一都 fail closed。两种模式都
 不能 fallback 到 `127.0.0.1:4001`，也不能从 health 返回值推断可写 artifact root。reload
 target 只接受带显式端口的 IPv4/DNS `http://` URL，以及空 path、`/` 或精确

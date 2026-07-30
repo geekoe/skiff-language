@@ -741,11 +741,6 @@ export class RuntimeEndpoint
       case 'actor.replace.request':
       case 'actor.find.request':
       case 'actor.remove.request':
-      case 'spawn.submit.request':
-      case 'spawn.claim.request':
-      case 'spawn.renew.request':
-      case 'spawn.complete.request':
-      case 'spawn.fail.request':
         {
           const response = await this.options.registry.handleActorSpawnRuntimeControlFrame(
             ws,
@@ -757,6 +752,16 @@ export class RuntimeEndpoint
             )
           );
           this.sendFrame(ws, response.header, response.payloadBytes);
+        }
+        return;
+      case 'spawn.submit.request':
+        {
+          const response = await this.dispatcher().handleSpawnSubmit(
+            ws,
+            header,
+            frame.payloadBytes
+          );
+          this.sendFrame(ws, response.header);
         }
         return;
       case 'request.start':

@@ -25,6 +25,26 @@ const FILE_ID: &str =
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[test]
+fn assembly_spawn_routes_are_exact_and_unknown_targets_do_not_fallback() {
+    let addr = ExecutableAddr {
+        unit: UnitAddr::Package(0),
+        file: FileAddr::LoadedFileIndex(0),
+        executable: 0,
+    };
+    let image = admit(Vec::new(), Vec::new())
+        .unwrap()
+        .with_spawn_routes(BTreeMap::from([(
+            "function:model.entry".to_string(),
+            addr.clone(),
+        )]))
+        .unwrap();
+
+    assert_eq!(image.spawn_route("function:model.entry"), Some(&addr));
+    assert_eq!(image.spawn_route("model.entry"), None);
+    assert_eq!(image.spawn_route("function:model.missing"), None);
+}
+
+#[test]
 fn runtime_execution_package_binds_exact_artifact_files_and_resources() {
     let source = artifact_file();
     let artifact = Arc::new(package_artifact(&source));

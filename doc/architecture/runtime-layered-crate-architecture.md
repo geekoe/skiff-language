@@ -573,7 +573,7 @@ RuntimeHost
 - artifact roots / pointer reload 的 orchestration。
 - artifact graph loader、linker、activation 和 cache instances 的 composition。
 - route registry mutation。
-- loaded build lifecycle、idle release、spawn worker lifecycle。
+- loaded build lifecycle、idle release。
 - service DB client、blob store、telemetry producer/exporter 的 host-level construction。
 - request supervisor 的 top-level ownership。
 
@@ -581,7 +581,7 @@ RuntimeHost
 
 - `RuntimeHost` 是 facade，不是所有状态的 owner of record。
 - route index 归 `RouteRegistry`。
-- loaded build、spawn worker、idle release 归 `BuildRegistry`。
+- loaded build、idle release 归 `BuildRegistry`。
 - artifact pointer -> `ArtifactGraphLoader` -> linked image -> activation orchestration 归
   `ActivationManager`。
 - `ActivationManager` 拥有本机 cache instance 和 eviction policy；cache 类型归各自层：
@@ -590,6 +590,31 @@ RuntimeHost
 - reload config 和 runtime register frame construction 归 `ControlPlane`。
 - request cancellation / active request / outbound request registry 归 `RequestSupervisor`。
 - host 可以组合各层，但不能让下层拿 `&RuntimeHost`。
+
+### Spawn derived request
+
+`spawn` 不拥有独立 worker/queue 子系统。它沿普通 request 分层创建一个 direct derived request：
+
+```text
+current Eval request
+  -> Runtime sends spawn.submit with runtime-owned callerRequestId
+  -> Router authenticates caller against the active request on the same WebSocket
+  -> Router pins the exact service/version/build/activation/replica
+  -> Router sends ordinary request.start with an internal spawn invocation branch
+  -> HostRequestEntry validates target and admits an independent RequestSupervisor scope
+  -> Eval decodes recoverable args against the exact target plan and executes
+  -> ordinary response.end / response.error terminal tracking and telemetry
+```
+
+Router owns parent authentication and derived dispatch；Host request layer owns admission and terminal；
+Eval owns target execution。`spawn` submit receipt只等待Router建立普通pending owner并把
+`request.start`交给选定连接，不等待terminal。父request的cancellation/deadline不得传播到已经
+提交的derived request。不得新增spawn专用start/accepted frame；若将来所有request都需要显式
+admission ack，应扩展通用request lifecycle。
+
+测试运行可以在内部start frame附带Router签发的opaque case capability。Host用它借用同一case的
+inline-effect registry并维护root-closing/derived引用；该token不进入artifact、配置、args或业务API。
+普通production request没有签发入口，Runtime上行frame也不能自授予该能力。
 
 ### `skiff-runtime-package-test`
 

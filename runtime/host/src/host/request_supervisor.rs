@@ -16,7 +16,9 @@ use skiff_runtime_request::{
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
     ResponseError,
 };
-use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
+use skiff_runtime_transport::runtime_assembly_request::{
+    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+};
 use tokio::sync::Mutex;
 
 use crate::telemetry::RequestTelemetryContext;
@@ -41,14 +43,6 @@ pub(crate) struct SupervisedRequest {
 pub(crate) struct CompletionTrace {
     include_duration: bool,
     include_budget_attrs: bool,
-    cancel_priority: CancelTracePriority,
-}
-
-#[derive(Clone, Copy)]
-enum CancelTracePriority {
-    None,
-    RequestCancelOnly,
-    AnyError,
 }
 
 enum CompletionClaim {
@@ -61,19 +55,6 @@ impl CompletionTrace {
     pub(crate) const RUNTIME: Self = Self {
         include_duration: true,
         include_budget_attrs: true,
-        cancel_priority: CancelTracePriority::RequestCancelOnly,
-    };
-
-    pub(crate) const SPAWN: Self = Self {
-        include_duration: false,
-        include_budget_attrs: false,
-        cancel_priority: CancelTracePriority::AnyError,
-    };
-
-    pub(crate) const SPAWN_RENEW_ERROR: Self = Self {
-        include_duration: false,
-        include_budget_attrs: false,
-        cancel_priority: CancelTracePriority::None,
     };
 }
 
@@ -123,6 +104,41 @@ impl RequestSupervisor {
             start_event,
         )
         .await
+    }
+
+    pub(crate) async fn begin_spawn(
+        &self,
+        header: &RuntimeAssemblySpawnRequestStartFrameHeader,
+        telemetry: RequestTelemetryContext,
+        start_event: &'static str,
+    ) -> Option<SupervisedRequest> {
+        let mut extra = Map::new();
+        if let Some(deadline) = &header.deadline {
+            extra.insert(
+                "deadline".to_string(),
+                serde_json::to_value(deadline).expect("typed spawn deadline remains serializable"),
+            );
+        }
+        let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(&extra));
+        let cancellation = CancellationToken::new();
+        let active = ActiveRequest {
+            cancellation,
+            execution_budget,
+            telemetry,
+            started_at: Instant::now(),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_event_emitted: Arc::new(AtomicBool::new(false)),
+        };
+        let mut requests = self.active.lock().await;
+        if requests.contains_key(&header.request_id) {
+            return None;
+        }
+        active.telemetry.emit_trace(start_event, None, None, None);
+        requests.insert(header.request_id.clone(), active.clone());
+        Some(SupervisedRequest {
+            request_id: header.request_id.clone(),
+            active,
+        })
     }
 
     async fn begin_with_budget(
@@ -192,27 +208,13 @@ impl RequestSupervisor {
             CompletionClaim::Ordinary => {}
         }
         request.active.execution_budget.finish(Instant::now());
-        match trace.cancel_priority {
-            CancelTracePriority::None => {}
-            CancelTracePriority::RequestCancelOnly if event_name == "request.cancel" => {
-                if request
-                    .active
-                    .cancel_event_emitted
-                    .swap(true, Ordering::SeqCst)
-                {
-                    return false;
-                }
-            }
-            CancelTracePriority::RequestCancelOnly => {}
-            CancelTracePriority::AnyError => {
-                if request
-                    .active
-                    .cancel_event_emitted
-                    .swap(true, Ordering::SeqCst)
-                {
-                    return false;
-                }
-            }
+        if event_name == "request.cancel"
+            && request
+                .active
+                .cancel_event_emitted
+                .swap(true, Ordering::SeqCst)
+        {
+            return false;
         }
 
         let duration_ms = request.duration_ms();

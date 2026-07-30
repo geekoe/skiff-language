@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{
     decode_runtime_assembly_request_start_frame,
@@ -101,6 +101,77 @@ struct ConnectWireMutation {
     #[serde(default)]
     value: Value,
     payload_hex: Option<String>,
+}
+
+fn canonical_spawn_header(test_effects_enabled: bool) -> Value {
+    let mut header = json!({
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "request.start",
+        "requestId": "spawn-request-1",
+        "mode": "unary",
+        "caller": {"kind": "service"},
+        "routing": {
+            "kind": "runtimeAssembly",
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "assemblyGeneration": 7,
+            "deployment": {
+                "serviceId": "example.com/worker",
+                "contractVersion": "1.0.0",
+                "deploymentRevision": "deployment-1",
+                "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+        },
+        "invocation": {
+            "kind": "spawn",
+            "targetKind": "function",
+            "target": "function:worker.run"
+        },
+        "trace": {
+            "traceId": "trace-spawn",
+            "spanId": "span-spawn",
+            "sampled": true
+        },
+        "testEffectsEnabled": test_effects_enabled
+    });
+    if test_effects_enabled {
+        header["testCaseCapability"] = json!("test-case-capability-1");
+    }
+    header
+}
+
+#[test]
+fn runtime_assembly_spawn_request_decodes_production_and_test_authority() {
+    for test_effects_enabled in [false, true] {
+        let frame =
+            encode_binary_frame(&canonical_spawn_header(test_effects_enabled), &[0x81]).unwrap();
+        let (header, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
+        let RuntimeAssemblyRequestStartFrameWireHeader::Spawn(header) = header else {
+            panic!("spawn invocation must select the closed spawn union branch")
+        };
+        assert_eq!(header.invocation.target, "function:worker.run");
+        assert_eq!(header.test_effects_enabled, test_effects_enabled);
+        assert_eq!(header.test_case_capability.is_some(), test_effects_enabled);
+        assert_eq!(payload, vec![0x81]);
+    }
+}
+
+#[test]
+fn runtime_assembly_spawn_request_rejects_authority_mismatch_and_empty_payload() {
+    let mut missing_capability = canonical_spawn_header(true);
+    missing_capability
+        .as_object_mut()
+        .unwrap()
+        .remove("testCaseCapability");
+    let frame = encode_binary_frame(&missing_capability, &[0x81]).unwrap();
+    assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
+
+    let mut production_with_capability = canonical_spawn_header(false);
+    production_with_capability["testCaseCapability"] = json!("test-case-capability-1");
+    let frame = encode_binary_frame(&production_with_capability, &[0x81]).unwrap();
+    assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
+
+    let frame = encode_binary_frame(&canonical_spawn_header(false), &[]).unwrap();
+    assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
 }
 
 #[test]

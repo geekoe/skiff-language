@@ -363,7 +363,11 @@ async function createFixture(
     },
     observeConnectionSend: (observation) => observations.push(observation)
   });
-  const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
+  const dispatcher = new RuntimeDispatcher({
+    registry: assemblyRegistry,
+    frameSender: endpoint,
+    maxConcurrency: 64
+  });
   endpoint.setDispatcher(dispatcher);
   const listen = await endpoint.listen({ port: 0 });
   const runtime = new WebSocket(listen.url);

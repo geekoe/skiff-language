@@ -3,5 +3,3 @@ quota:
   cpuMillis: 1000
   memoryBytes: 268435456
 principal: service:test.skiff/http-entry-happy
-lifecycle:
-  maxConcurrency: 2

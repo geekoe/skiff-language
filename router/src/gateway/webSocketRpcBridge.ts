@@ -575,6 +575,7 @@ export class WebSocketRpcBridge {
       validateRuntimeAssemblyRequestStartFrameWireHeader(candidate);
     if (
       !validation.ok ||
+      !('websocketJsonRpc' in validation.envelope) ||
       validation.envelope.routing.ingress.protocol !== 'webSocket' ||
       validation.envelope.routing.ingress.method === null ||
       !('websocketJsonRpc' in validation.envelope)

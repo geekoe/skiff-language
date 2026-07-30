@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -70,7 +70,7 @@ enum ChannelTerminalSlot {
 #[derive(Debug, Default)]
 pub(super) struct StreamRegistry {
     streams: HashMap<String, Arc<StreamState>>,
-    active_scopes: HashSet<u64>,
+    active_scopes: HashMap<u64, usize>,
     owner_closed: bool,
 }
 
@@ -78,7 +78,7 @@ impl StreamRegistry {
     pub(super) fn register(&mut self, id: String, state: Arc<StreamState>) -> bool {
         let scope_active = state
             .scope
-            .map(|scope| self.active_scopes.contains(&scope))
+            .map(|scope| self.active_scopes.contains_key(&scope))
             .unwrap_or(true);
         if self.owner_closed || !scope_active {
             return false;
@@ -112,11 +112,18 @@ impl StreamRegistry {
 
     pub(super) fn open_scope(&mut self, scope: u64) {
         if !self.owner_closed {
-            self.active_scopes.insert(scope);
+            *self.active_scopes.entry(scope).or_default() += 1;
         }
     }
 
     pub(super) fn close_scope(&mut self, scope: u64) -> Vec<Arc<StreamState>> {
+        let Some(open_count) = self.active_scopes.get_mut(&scope) else {
+            return Vec::new();
+        };
+        if *open_count > 1 {
+            *open_count -= 1;
+            return Vec::new();
+        }
         self.active_scopes.remove(&scope);
         let ids = self
             .streams

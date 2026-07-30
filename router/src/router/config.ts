@@ -35,6 +35,7 @@ export interface RouterConfig {
   rewrite: RouterRewriteRule[];
   runtimePath: string;
   runtimePort: number;
+  runtimeMaxConcurrency: number;
   fileBackend?: FileBackendControlConfig;
   serviceDb: RuntimeServiceDbConfigInput;
   telemetry?: TelemetryControlConfig;
@@ -92,6 +93,7 @@ interface RawRouterConfig {
   requestTimeoutMs?: unknown;
   rewrite?: unknown;
   runtime?: {
+    maxConcurrency?: unknown;
     path?: unknown;
     port?: unknown;
   };
@@ -177,6 +179,10 @@ export async function loadRouterConfig(
       overrides.runtimePath ?? raw.runtimePath ?? raw.runtime?.path,
       'runtime.path',
       '/runtime'
+    ),
+    runtimeMaxConcurrency: readRequiredPositiveConfigInteger(
+      raw.runtime?.maxConcurrency,
+      'runtime.maxConcurrency'
     ),
     runtimePort: readPort(
       overrides.runtimePort ?? raw.runtimePort ?? raw.runtime?.port,
@@ -551,6 +557,13 @@ function readRequiredPositiveInteger(value: unknown, name: string): number {
     throw new Error(`router config ${name} must be a positive integer`);
   }
   return Number(numberValue);
+}
+
+function readRequiredPositiveConfigInteger(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`router config ${name} must be a positive integer`);
+  }
+  return value;
 }
 
 function readActivationPrepareTimeout(

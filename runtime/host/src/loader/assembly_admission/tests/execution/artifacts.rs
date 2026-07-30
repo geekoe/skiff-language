@@ -2016,10 +2016,6 @@ fn policy() -> DeploymentPolicy {
             cpu_millis: 100,
             memory_bytes: 1_048_576,
         },
-        activation: ActivationPolicy {
-            max_concurrency: 4,
-            idle_timeout_ms: None,
-        },
         principal: "service:phase-four-fixture".to_string(),
     }
 }

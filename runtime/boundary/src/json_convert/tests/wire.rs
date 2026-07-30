@@ -385,6 +385,28 @@ fn union_decode_fails_closed_when_multiple_exact_branches_match() {
 }
 
 #[test]
+fn union_decode_probe_cost_does_not_scale_with_preexisting_heap() {
+    let expected = union(vec![named("string"), named("number")]);
+    let mut heap = RequestHeap::default();
+    for _ in 0..100_000 {
+        heap.alloc_array(Vec::new()).expect("preexisting heap node");
+    }
+    let initial_len = heap.len();
+    let started = std::time::Instant::now();
+
+    for _ in 0..1_000 {
+        from_wire(&json!("matched"), &expected, &mut heap).expect("union decode");
+    }
+
+    assert_eq!(heap.len(), initial_len);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "union probing copied work proportional to the preexisting request heap: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn tagged_union_decode_rejects_unknown_or_mismatched_object() {
     let success = record(
         "Success",

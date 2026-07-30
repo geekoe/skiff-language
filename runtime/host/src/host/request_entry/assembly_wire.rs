@@ -1,16 +1,23 @@
+use std::sync::Arc;
+
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
     IngressProtocol, IngressSelector, ServiceIngressKey,
 };
-use skiff_runtime_capability_context::ExecutionBudgetReason;
+use skiff_runtime_activation::ActivationContext;
+use skiff_runtime_capability_context::{DbCapabilitySource, ExecutionBudgetReason};
+use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
+use skiff_runtime_linked_program::AssemblyExecutionImage;
 use skiff_runtime_request::{
     BinaryHttpRequestMetadata, HttpNameValue, RequestError, RouterWriterMessage,
-    RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest, RuntimeWebSocketConnectIngress,
+    RuntimeAssemblySpawnTarget, RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest,
+    RuntimeSpawnRequest, RuntimeWebSocketConnectIngress,
 };
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
+    RuntimeAssemblySpawnRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectRequestStartFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
     RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
@@ -44,6 +51,16 @@ pub(super) struct AdmittedWebSocketJsonRpcRequest {
     pub(super) params: Vec<u8>,
 }
 
+pub(super) struct AdmittedSpawnRequest {
+    pub(super) header: RuntimeAssemblySpawnRequestStartFrameHeader,
+    pub(super) request: RuntimeSpawnRequest,
+    pub(super) target: RuntimeAssemblySpawnTarget,
+    pub(super) activation: Arc<ActivationContext>,
+    pub(super) execution_image: Arc<AssemblyExecutionImage>,
+    pub(super) db_source: DbCapabilitySource,
+    pub(super) service_protocol_identity: String,
+}
+
 impl RuntimeHost {
     pub(crate) async fn spawn_runtime_assembly_request(
         &self,
@@ -61,6 +78,7 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 header.request_id.clone()
             }
+            RuntimeAssemblyRequestStartFrameWireHeader::Spawn(header) => header.request_id.clone(),
         };
         let result = match header {
             RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => self
@@ -72,6 +90,9 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
                 .websocket_jsonrpc_request_from_wire(router_session_id, header, body)
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc),
+            RuntimeAssemblyRequestStartFrameWireHeader::Spawn(header) => self
+                .spawn_request_from_wire(header, body)
+                .map(AdmittedRuntimeAssemblyRequest::Spawn),
         };
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
@@ -94,6 +115,15 @@ impl RuntimeHost {
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(request)) => {
                 self.spawn_websocket_jsonrpc_on_pinned_route(
+                    router_session_id.to_string(),
+                    request,
+                    http_response_max_bytes,
+                    sender,
+                )
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::Spawn(request)) => {
+                self.spawn_direct_request_on_active_assembly(
                     router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
@@ -213,13 +243,115 @@ impl RuntimeHost {
         validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
         header.deadline = effective_request_deadline(
             header.deadline.as_ref(),
-            &resolved.method_route,
+            resolved.method_route.deployment_policy().timeout_ms,
             "WebSocket JSON-RPC",
         )?;
         Ok(AdmittedWebSocketJsonRpcRequest {
             resolved,
             header,
             params,
+        })
+    }
+
+    fn spawn_request_from_wire(
+        &self,
+        mut header: RuntimeAssemblySpawnRequestStartFrameHeader,
+        payload: Vec<u8>,
+    ) -> Result<AdmittedSpawnRequest> {
+        validate_spawn_header(&header, &payload)?;
+        let active = self
+            .active_runtime_assembly()
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Unsupported("no active runtime assembly".to_string()))?;
+        if active.identity() != &header.routing.assembly_identity
+            || active.generation() != header.routing.assembly_generation
+        {
+            return Err(RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: "spawn routing does not match the exact active assembly generation"
+                    .to_string(),
+            });
+        }
+        let linked_activation = active
+            .activation(&header.routing.deployment)
+            .ok_or_else(|| RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: "spawn routing deployment is not active in the pinned assembly"
+                    .to_string(),
+            })?;
+        let activation = active
+            .contexts()
+            .activation_for_deployment(&header.routing.deployment)
+            .ok_or_else(|| RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: "spawn routing deployment has no admitted activation".to_string(),
+            })?;
+        let activation_identity = activation.identity();
+        if activation_identity.assembly_identity != header.routing.assembly_identity
+            || activation_identity.assembly_generation != header.routing.assembly_generation
+            || activation_identity.deployment != header.routing.deployment
+            || linked_activation.deployment_ref() != &header.routing.deployment
+            || activation.implementation_package_build_id()
+                != linked_activation.implementation_package_build_id()
+        {
+            return Err(RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: "spawn routing does not match the admitted activation owner".to_string(),
+            });
+        }
+        let execution_image = Arc::clone(active.candidate().execution_image());
+        let request_activation =
+            skiff_runtime_activation::RequestActivationContext::begin(Arc::clone(&activation))
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(active.contexts()) as _;
+        let eval = RuntimeAssemblyEvalTarget::new(
+            Arc::clone(&execution_image),
+            request_activation,
+            resolver,
+        )
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        let target = RuntimeAssemblySpawnTarget::new(eval, header.invocation.target.clone())
+            .map_err(|error| RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: error.to_string(),
+            })?;
+        let db_source = active
+            .contexts()
+            .db_source(activation.activation_id())
+            .ok_or_else(|| RuntimeError::Protocol {
+                target: header.invocation.target.clone(),
+                message: "spawn activation has no DB capability source".to_string(),
+            })?;
+        let policy = linked_activation.deployment().policy.clone();
+        header.deadline =
+            effective_request_deadline(header.deadline.as_ref(), policy.timeout_ms, "spawn")?;
+        if header
+            .deadline
+            .as_ref()
+            .is_some_and(|deadline| deadline.timeout_ms == 0)
+        {
+            return Err(deadline_exceeded());
+        }
+        let request = RuntimeSpawnRequest {
+            request_id: header.request_id.clone(),
+            target: header.invocation.target.clone(),
+            payload,
+            test_effects_enabled: header.test_effects_enabled,
+            test_case_capability: header.test_case_capability.clone(),
+        };
+        Ok(AdmittedSpawnRequest {
+            header,
+            request,
+            target,
+            activation,
+            execution_image,
+            db_source,
+            service_protocol_identity: linked_activation
+                .deployment()
+                .contract
+                .service_protocol_identity
+                .as_str()
+                .to_string(),
         })
     }
 
@@ -244,6 +376,7 @@ enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
+    Spawn(AdmittedSpawnRequest),
 }
 
 fn gateway_ingress_pin(
@@ -350,6 +483,12 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
                 .to_string(),
         ));
     }
+    if header.test_effects_enabled != header.test_case_capability.is_some() {
+        return Err(RuntimeError::Decode(
+            "canonical HTTP testEffectsEnabled must be true exactly when testCaseCapability is present"
+                .to_string(),
+        ));
+    }
     let ingress = &header.routing.ingress;
     let request = &header.http_request;
     if request.method != ingress.method || request.path != ingress.path {
@@ -442,6 +581,36 @@ fn validate_websocket_jsonrpc_header(
     if header.websocket_json_rpc.gateway_entry_identity != header.routing.gateway_entry_identity {
         return Err(RuntimeError::Decode(
             "websocketJsonRpc gateway identity does not match routing".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_spawn_header(
+    header: &RuntimeAssemblySpawnRequestStartFrameHeader,
+    payload: &[u8],
+) -> Result<()> {
+    if header.request_id.is_empty()
+        || header.mode != "unary"
+        || header.caller.kind != "service"
+        || header.invocation.kind != "spawn"
+        || header.invocation.target_kind != "function"
+        || header.invocation.target.is_empty()
+    {
+        return Err(RuntimeError::Decode(
+            "canonical spawn requires a non-empty requestId, unary mode, service caller and function target"
+                .to_string(),
+        ));
+    }
+    if payload.is_empty() {
+        return Err(RuntimeError::Decode(
+            "canonical spawn recoverable args payload must be present".to_string(),
+        ));
+    }
+    if header.test_effects_enabled != header.test_case_capability.is_some() {
+        return Err(RuntimeError::Decode(
+            "canonical spawn testEffectsEnabled must be true exactly when testCaseCapability is present"
+                .to_string(),
         ));
     }
     Ok(())
@@ -578,12 +747,16 @@ fn effective_deadline(
     header: &RuntimeAssemblyRequestStartFrameHeader,
     route: &ActiveAssemblyRoute,
 ) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
-    effective_request_deadline(header.deadline.as_ref(), route, "HTTP gateway")
+    effective_request_deadline(
+        header.deadline.as_ref(),
+        route.deployment_policy().timeout_ms,
+        "HTTP gateway",
+    )
 }
 
 fn effective_request_deadline(
     deadline: Option<&RuntimeAssemblyRequestDeadlineFrameHeader>,
-    route: &ActiveAssemblyRoute,
+    deployment_timeout_ms: Option<u64>,
     request_kind: &str,
 ) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
     let wall_now = OffsetDateTime::now_utc();
@@ -602,7 +775,7 @@ fn effective_request_deadline(
         };
         candidates.push(remaining_ms);
     }
-    if let Some(timeout_ms) = route.deployment_policy().timeout_ms {
+    if let Some(timeout_ms) = deployment_timeout_ms {
         candidates.push(timeout_ms);
     }
     let Some(timeout_ms) = candidates.into_iter().min() else {

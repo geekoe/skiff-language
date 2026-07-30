@@ -1,6 +1,34 @@
 import std
 
-function acceptSubmittedReceipt(receipt: string) -> void {}
+type SpawnStreamFailure { message: string }
+
+function submittedReceiptSource(receipt: string) -> Stream<string> {
+  emit(receipt)
+  return null
+}
+
+function nestedSubmittedReceipt(input: Stream<string>) -> Stream<string> {
+  for receipt in input {
+    emit(receipt.concat(":nested"))
+  }
+  return null
+}
+
+function firstSubmittedReceipt(input: Stream<string>) -> string {
+  for receipt in input {
+    return receipt
+  }
+  return "missing"
+}
+
+function acceptSubmittedReceipt(receipt: string) -> void {
+  const observed = firstSubmittedReceipt(
+    nestedSubmittedReceipt(submittedReceiptSource(receipt))
+  )
+  if observed != receipt.concat(":nested") {
+    throw SpawnStreamFailure { message: "derived spawn lost its nested request stream" }
+  }
+}
 
 function submitSpawnReceipt() -> string {
   spawn acceptSubmittedReceipt("P5-F45E-SPAWN-SUBMIT")

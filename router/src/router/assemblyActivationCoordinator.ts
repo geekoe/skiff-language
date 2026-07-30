@@ -482,6 +482,9 @@ async function snapshotFromRequestActivation(
     ...(assembly.resolvedContracts === undefined
       ? {}
       : { resolvedContracts: assembly.resolvedContracts }),
+    ...(assembly.deploymentRuntimeBindings === undefined
+      ? {}
+      : { deploymentRuntimeBindings: assembly.deploymentRuntimeBindings }),
     ingress: new RuntimeAssemblyIngressIndex(assembly.gatewayIngress),
     ...(assembly.actorMethods === undefined
       ? {}

@@ -66,6 +66,7 @@ async fn f445h_e4r_combined_r4_stream_observes_child_scope_and_cleans_non_end() 
         stream_value,
         None,
         &[],
+        None,
     ));
 
     assert!(

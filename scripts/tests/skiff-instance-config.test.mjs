@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { captureCheckedCommand } from '../lib/command-execution.mjs';
+import { isolatedTestInstanceConfigText } from '../lib/isolated-test-runtime-instance.mjs';
 import {
   defaultInstanceConfig,
   defaultInstanceConfigText,
@@ -69,12 +70,44 @@ test('instance init writes the configured environment and root into router/runti
     assert.match(routerConfig, /^  maxRequestBytes: 67108864$/m);
     assert.match(routerConfig, /^  maxResponseBytes: 8388608$/m);
     assert.match(routerConfig, /^activation:\n  prepareTimeoutMs: 120000$/m);
+    assert.match(
+      routerConfig,
+      /^runtime:\n  port: \d+\n  path: \/runtime\n  maxConcurrency: 128$/m,
+    );
+    assert.doesNotMatch(routerConfig, /idleTimeoutMs/);
     assert.doesNotMatch(routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(routerConfig, /^artifactRoots?:/m);
     const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
     assert.match(runtimeConfig, /^environment: "f04-host-test"$/m);
     assert.doesNotMatch(runtimeConfig, /^artifactRoots?:/m);
     assert.doesNotMatch(runtimeConfig, /mongoUrl/);
+    assert.doesNotMatch(runtimeConfig, /maxConcurrency|idleTimeoutMs/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('isolated test instance writes explicit runtime concurrency to router.yml', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-isolated-instance-concurrency-'));
+  const configPath = join(root, 'config.yml');
+  const devHome = join(root, 'dev-home');
+  try {
+    await writeFile(configPath, isolatedTestInstanceConfigText({
+      devHome,
+      cargoTarget: join(root, 'cargo-target'),
+      basePort: 46100,
+      mongoPort: 46103,
+    }));
+    await captureCheckedCommand(process.execPath, [instanceScript, 'init', configPath], {
+      cwd: skiffRoot,
+    });
+
+    const routerConfig = await readFile(join(devHome, 'router.yml'), 'utf8');
+    assert.match(
+      routerConfig,
+      /^runtime:\n  port: 46101\n  path: \/runtime\n  maxConcurrency: 128$/m,
+    );
+    assert.doesNotMatch(routerConfig, /idleTimeoutMs/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

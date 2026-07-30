@@ -204,7 +204,11 @@ function dispatcherHarness(): DispatcherHarness {
     sendFrame: () => undefined
   };
   return {
-    dispatcher: new RuntimeDispatcher({ registry, frameSender }),
+    dispatcher: new RuntimeDispatcher({
+      registry,
+      frameSender,
+      maxConcurrency: 64
+    }),
     socket
   };
 }

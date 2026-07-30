@@ -48,13 +48,15 @@ export interface RuntimeRouter {
 }
 
 export function createRuntimeRouter(
-  dependencies: RuntimeRegistryDependencies = {}
+  dependencies: RuntimeRegistryDependencies = {},
+  maxConcurrency = 64
 ): RuntimeRouter {
   const registry = new RuntimeRegistry(dependencies);
   const endpoint = new RuntimeEndpoint({ registry });
   const dispatcher = new RuntimeDispatcher({
     registry,
-    frameSender: endpoint
+    frameSender: endpoint,
+    maxConcurrency
   });
   endpoint.setDispatcher(dispatcher);
   return {

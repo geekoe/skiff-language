@@ -1,5 +1,7 @@
 import { isAbsolute } from 'node:path';
 
+export const DEFAULT_GENERATED_ROUTER_RUNTIME_MAX_CONCURRENCY = 128;
+
 export function renderRouterConfig({
   profile,
   host,
@@ -15,6 +17,7 @@ export function renderRouterConfig({
   httpMaxResponseBytes,
   runtimePort,
   runtimePath = '/runtime',
+  runtimeMaxConcurrency = DEFAULT_GENERATED_ROUTER_RUNTIME_MAX_CONCURRENCY,
   serviceDbMongoUrl,
   telemetryEndpoint,
   rewrite = [],
@@ -41,6 +44,10 @@ export function renderRouterConfig({
     activationPrepareTimeoutMs,
     'router activation.prepareTimeoutMs',
   );
+  requirePositiveSafeInteger(
+    runtimeMaxConcurrency,
+    'router runtime.maxConcurrency',
+  );
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
@@ -65,6 +72,7 @@ export function renderRouterConfig({
     'runtime:',
     `  port: ${runtimePort}`,
     `  path: ${runtimePath}`,
+    `  maxConcurrency: ${runtimeMaxConcurrency}`,
   );
   lines.push(
     '',

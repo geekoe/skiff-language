@@ -50,13 +50,14 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
     dispatchRegistry.pickDispatchConnection = pickDispatchConnection;
     const dispatcher = new RuntimeDispatcher({
       registry: dispatchRegistry,
-      frameSender
+      frameSender,
+      maxConcurrency: 64
     });
     const connect = connectHeader('connect-receipt');
     const connectResponse = dispatcher.dispatchAssemblyWebSocketConnect(
       { header: connect, payloadBytes: new Uint8Array() },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(connect, runtime)
     );
     dispatcher.resolveRequest(runtime, {
       header: {
@@ -104,7 +105,8 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
     const runtime = socket();
     const dispatcher = new RuntimeDispatcher({
       registry: registry(),
-      frameSender: { sendFrame: vi.fn() }
+      frameSender: { sendFrame: vi.fn() },
+      maxConcurrency: 64
     });
     const methodRequest = jsonRpcHeader('rpc-connect-classification');
     const pending = dispatcher.dispatchAssemblyWebSocketConnect(
@@ -113,7 +115,10 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
         payloadBytes: new Uint8Array()
       },
       1_000,
-      { runtimeId: 'runtime-one', ws: runtime }
+      runtimeConnection(
+        methodRequest as unknown as RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        runtime
+      )
     );
 
     try {
@@ -375,6 +380,61 @@ describe('RuntimeDispatcher runtimeAssembly websocketJsonRpc sibling', () => {
     expect(harness.dispatcher.pendingLifecycleCounters().pendingUnary).toBe(0);
   });
 
+  it('rejects saturated pinned JSON-RPC and releases capacity on response.error', async () => {
+    const runtime = socket();
+    const harness = createHarness(undefined, 1);
+    const receipt = await acquireReceipt(
+      harness.dispatcher,
+      runtime,
+      'connect-capacity'
+    );
+    const first = dispatchJsonRpc(
+      harness.dispatcher,
+      receipt,
+      'rpc-capacity-first'
+    );
+
+    expect(() =>
+      dispatchJsonRpc(
+        harness.dispatcher,
+        receipt,
+        'rpc-capacity-overload'
+      )
+    ).toThrow(/maxConcurrency 1/);
+
+    const responseError = validateResponseErrorFrame(
+      {
+        schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+        type: 'response.error',
+        requestId: 'rpc-capacity-first',
+        errorKind: 'control',
+        error: {
+          code: 'CapacityRelease',
+          message: 'release the pinned JSON-RPC slot'
+        }
+      },
+      new Uint8Array()
+    );
+    if (!responseError.ok) {
+      throw new Error(responseError.error);
+    }
+    harness.dispatcher.rejectRequest(runtime, responseError.envelope);
+    await expect(first).rejects.toThrow('release the pinned JSON-RPC slot');
+
+    const reused = dispatchJsonRpc(
+      harness.dispatcher,
+      receipt,
+      'rpc-capacity-reused'
+    );
+    harness.dispatcher.resolveRequest(runtime, {
+      header: jsonRpcResponseHeader('rpc-capacity-reused', 'success'),
+      payloadBytes: Buffer.from('null', 'utf8')
+    });
+    await expect(reused).resolves.toMatchObject({
+      header: { requestId: 'rpc-capacity-reused' }
+    });
+  });
+
   it('correlates concurrent requests that complete out of order', async () => {
     const runtime = socket();
     const harness = createHarness();
@@ -617,7 +677,8 @@ interface DispatcherHarness {
 }
 
 function createHarness(
-  onFrame?: (frame: RecordedFrame, dispatcher: RuntimeDispatcher) => void
+  onFrame?: (frame: RecordedFrame, dispatcher: RuntimeDispatcher) => void,
+  maxConcurrency = 64
 ): DispatcherHarness {
   const frames: RecordedFrame[] = [];
   let dispatcher: RuntimeDispatcher;
@@ -634,7 +695,8 @@ function createHarness(
   };
   dispatcher = new RuntimeDispatcher({
     registry: registry(),
-    frameSender
+    frameSender,
+    maxConcurrency
   });
   return { dispatcher, frames };
 }
@@ -648,7 +710,7 @@ async function acquireReceipt(
   const pending = dispatcher.dispatchAssemblyWebSocketConnect(
     { header, payloadBytes: new Uint8Array() },
     1_000,
-    { runtimeId: 'runtime-one', ws: runtime }
+    runtimeConnection(header, runtime)
   );
   dispatcher.resolveRequest(runtime, {
     header: {
@@ -719,6 +781,24 @@ function registry(): RuntimeDispatchRegistry {
 
 function socket(): WebSocket {
   return { readyState: WebSocket.OPEN } as WebSocket;
+}
+
+function runtimeConnection(
+  header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+  ws: WebSocket
+) {
+  return {
+    runtimeId: 'runtime-one',
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: header.routing.assemblyIdentity,
+      assemblyGeneration: header.routing.assemblyGeneration,
+      deployment: { ...header.routing.deployment },
+      buildId: `skiff-package-build-v10:sha256:${'f'.repeat(64)}`,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`
+    },
+    ws
+  };
 }
 
 function setSocketReadyState(ws: WebSocket, readyState: number): void {

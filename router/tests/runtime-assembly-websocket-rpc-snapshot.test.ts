@@ -227,6 +227,15 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
     expect(() => joinFixture(fixture)).toThrow();
   });
 
+  it('strictly rejects the removed deployment activation policy', () => {
+    const fixture = currentWebSocketFixture();
+    fixture.deployment.policy.activation = { idleTimeoutMs: null };
+
+    expect(() => joinFixture(fixture)).toThrow(
+      /policy fields must contain principal,resources and only optional timeoutMs/
+    );
+  });
+
   it('rejects DeploymentArtifact preimage drift under a current v3 prefix', () => {
     const fixture = currentWebSocketFixture();
     fixture.deployment.policy.principal = 'service:example.com/other';
@@ -410,7 +419,6 @@ function currentWebSocketFixture(): Fixture {
     policy: {
       timeoutMs: 5_000,
       resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
-      activation: { maxConcurrency: 8, idleTimeoutMs: null },
       principal: 'service:example.com/chat'
     },
     diagnosticText: { displayName: 'chat-current', notes: {} }

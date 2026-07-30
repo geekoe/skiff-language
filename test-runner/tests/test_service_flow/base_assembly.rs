@@ -45,7 +45,7 @@ fn ordinary_test_service_loads_exact_transitive_store_closure_and_ignores_decoy_
     .unwrap();
     fs::write(
         service.join("config.skiff-test.yml"),
-        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/transitive-store\nlifecycle:\n  maxConcurrency: 1\n",
+        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/transitive-store\n",
     )
     .unwrap();
     fs::write(
@@ -76,20 +76,18 @@ fn ordinary_test_service_loads_exact_transitive_store_closure_and_ignores_decoy_
         discover_test_service_cases(&service, &service, false).expect("discover ordinary case");
     let fixture = assemble_test_service_fixture(&project, &cases, CanonicalBaseAssembly::default())
         .expect("assemble exact transitive package graph");
-    let [case] = fixture.cases.as_slice() else {
-        panic!("one discovered case must produce one fixture")
-    };
+    assert_eq!(fixture.cases.len(), 1);
     let leaf = project
         .dependency_packages
         .iter()
         .find(|package| package.package_id == "example.com/leaf")
         .expect("transitive leaf package");
-    assert!(case
+    assert!(fixture
         .records
         .assembly
         .resolved_packages
         .contains(&package_artifact_ref(leaf).expect("leaf package ref")));
-    assert!(case
+    assert!(fixture
         .records
         .assembly
         .package_link_plan
@@ -222,10 +220,8 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
 
     let fixture = assemble_test_service_fixture(&project, std::slice::from_ref(&first_case), base)
         .expect("assemble the ordinary test service with its base closure");
-    let [case] = fixture.cases.as_slice() else {
-        panic!("one selected case must produce one ordinary service fixture")
-    };
-    let [deployment] = case.records.deployments.as_slice() else {
+    assert_eq!(fixture.cases.len(), 1);
+    let [deployment] = fixture.records.deployments.as_slice() else {
         panic!("one selected case must produce one ordinary deployment")
     };
     let subject_ref = package_artifact_ref(subject).expect("subject package ref");
@@ -249,7 +245,7 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
             && binding.key.package_requirement_alias == helper_requirement.alias
             && binding.package == receipt.helper_package
     }));
-    assert!(case
+    assert!(fixture
         .records
         .assembly
         .package_link_plan
@@ -265,7 +261,7 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
             && selector.key.service_requirement_slot == payments_requirement.service_binding_slot
             && selector.contract == receipt.payments_contract
     }));
-    assert!(case
+    assert!(fixture
         .records
         .assembly
         .service_binding_templates
@@ -276,6 +272,17 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
                 && binding.contract == receipt.payments_contract
                 && binding.provider == receipt.provider_deployment
         }));
+    assert_eq!(
+        fixture
+            .records
+            .assembly
+            .resolved_deployments
+            .iter()
+            .filter(|deployment| *deployment == &receipt.provider_deployment)
+            .count(),
+        1,
+        "the shared assembly must resolve the base provider once"
+    );
 
     let source_before_publish = snapshot_tree(&artifacts);
     fixture
@@ -301,7 +308,7 @@ fn ordinary_test_service_uses_exact_base_closure_and_publishes_only_to_runtime_r
         .expect("base assembly copied to runtime root");
     runtime_store
         .read_runtime_assembly(&skiff_artifact_model::RuntimeAssemblyRef {
-            assembly_identity: case.records.assembly.assembly_identity.clone(),
+            assembly_identity: fixture.records.assembly.assembly_identity.clone(),
         })
         .expect("projected test assembly written to runtime root");
 }

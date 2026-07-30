@@ -5,8 +5,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
-    ActivationPolicy, ActivationTemplate, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr,
-    ActorFieldIr, ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr,
+    ActivationTemplate, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr,
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryEffectGuarantee,
     BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryOperationDescriptor,
     BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
@@ -1467,10 +1467,6 @@ fn policy(owner: &str) -> DeploymentPolicy {
         resources: ResourcePolicy {
             cpu_millis: 100,
             memory_bytes: 1_024,
-        },
-        activation: ActivationPolicy {
-            max_concurrency: 1,
-            idle_timeout_ms: None,
         },
         principal: format!("service:{owner}"),
     }

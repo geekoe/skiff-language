@@ -7,8 +7,13 @@ import type {
   ActorSpawnRuntimeRequestFrameHeader,
   RuntimeHealthCounters
 } from '../protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
-import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import type {
+  RuntimeAssemblyRequestStartFrameHeader,
+  RuntimeAssemblyRequestStartFrameWireHeader
+} from '../protocol/runtimeAssemblyRequest.js';
+import {
+  validateRuntimeAssemblyRequestStartFrameWireHeader
+} from '../protocol/runtimeProtocol.js';
 import { ProviderUnavailableError, ServiceProtocolBoundaryError } from './errors.js';
 import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import type {
@@ -44,8 +49,13 @@ interface AssemblyReplica extends RuntimeDispatchRuntimeIdentity {
 }
 
 interface AssemblyDeploymentBinding {
+  serviceId: string;
+  contractVersion: string;
   deploymentRevision: string;
+  deploymentArtifactIdentity: string;
+  packageBuildId: string;
   serviceProtocolIdentity: string;
+  timeoutMs?: number;
 }
 
 export interface AssemblyReplicaSnapshot {
@@ -223,10 +233,9 @@ export class AssemblyRuntimeRegistry {
     return {
       runtimeId: replica.replicaId,
       serviceId,
-      buildId: actorSpawnBuildId(header, binding.deploymentRevision),
+      buildId: binding.packageBuildId,
       serviceProtocolIdentity: binding.serviceProtocolIdentity,
-      targets: actorSpawnTargets(header),
-      inFlightCount: this.countInFlight(replica),
+      ...(binding.timeoutMs === undefined ? {} : { timeoutMs: binding.timeoutMs }),
       activationIdentity: { ...header.activationIdentity }
     };
   }
@@ -288,7 +297,7 @@ export class AssemblyRuntimeRegistry {
     if (requestError !== undefined) {
       return requestError;
     }
-    return this.pickHealthyDispatchConnection();
+    return this.pickHealthyDispatchConnection(request);
   }
 
   pickAssemblyTestDispatchConnection(
@@ -306,13 +315,17 @@ export class AssemblyRuntimeRegistry {
     if (requestError !== undefined) {
       return requestError;
     }
-    return this.pickHealthyDispatchConnection();
+    return this.pickHealthyDispatchConnection(request);
   }
 
-  private pickHealthyDispatchConnection():
+  private pickHealthyDispatchConnection(
+    request: RuntimeDispatchFrameHeader
+  ):
     | RuntimeDispatchConnection
     | ProviderUnavailableError {
-    const candidates = this.dispatchCandidates();
+    const candidates = this.dispatchCandidates().filter(
+      (replica) => this.inFlightCounter?.hasCapacity(replica) ?? true
+    );
     if (candidates.length === 0) {
       return new ProviderUnavailableError(
         'No healthy replica matches the committed RuntimeAssembly generation'
@@ -320,9 +333,45 @@ export class AssemblyRuntimeRegistry {
     }
     const replica = candidates[this.nextReplicaCursor % candidates.length];
     this.nextReplicaCursor += 1;
-    return replica === undefined
-      ? new ProviderUnavailableError()
-      : { runtimeId: replica.replicaId, ws: replica.ws };
+    if (replica === undefined) {
+      return new ProviderUnavailableError();
+    }
+    if (!isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return new ProviderUnavailableError(
+        'RuntimeAssembly dispatch authority requires canonical nested routing'
+      );
+    }
+    const binding = replica.deploymentBindingsByService.get(
+      request.routing.deployment.serviceId
+    );
+    if (
+      binding === undefined ||
+      binding.deploymentRevision !==
+        request.routing.deployment.deploymentRevision
+    ) {
+      return new ProviderUnavailableError(
+        'RuntimeAssembly dispatch authority is unavailable for the exact deployment'
+      );
+    }
+    return {
+      runtimeId: replica.replicaId,
+      runtimeAssemblyAuthority: {
+        assemblyIdentity: replica.assemblyIdentity,
+        assemblyGeneration: replica.generation,
+        deployment: {
+          serviceId: binding.serviceId,
+          contractVersion: binding.contractVersion,
+          deploymentRevision: binding.deploymentRevision,
+          deploymentArtifactIdentity: binding.deploymentArtifactIdentity
+        },
+        buildId: binding.packageBuildId,
+        serviceProtocolIdentity: binding.serviceProtocolIdentity,
+        ...(binding.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: binding.timeoutMs })
+      },
+      ws: replica.ws
+    };
   }
 
   validateDispatchRequest(
@@ -406,40 +455,7 @@ function actorSpawnServiceId(
     case 'actor.remove.request':
       return header.actorKey.serviceId;
     case 'spawn.submit.request':
-    case 'spawn.claim.request':
       return header.serviceId;
-    case 'spawn.renew.request':
-    case 'spawn.complete.request':
-    case 'spawn.fail.request':
-      return deploymentRevisionServiceSentinel(
-        header.activationIdentity.deploymentRevision
-      );
-  }
-}
-
-function actorSpawnTargets(
-  header: ActorSpawnRuntimeRequestFrameHeader
-): ReadonlySet<string> {
-  switch (header.type) {
-    case 'spawn.submit.request':
-      return new Set([header.target]);
-    case 'spawn.claim.request':
-      return new Set(header.supportedTargets);
-    default:
-      return new Set();
-  }
-}
-
-function actorSpawnBuildId(
-  header: ActorSpawnRuntimeRequestFrameHeader,
-  deploymentRevision: string
-): string {
-  switch (header.type) {
-    case 'spawn.submit.request':
-    case 'spawn.claim.request':
-      return header.buildId ?? deploymentRevision;
-    default:
-      return deploymentRevision;
   }
 }
 
@@ -447,12 +463,9 @@ function isSpawnControl(
   header: ActorSpawnRuntimeRequestFrameHeader
 ): header is Extract<
   ActorSpawnRuntimeRequestFrameHeader,
-  { type: 'spawn.submit.request' | 'spawn.claim.request' }
+  { type: 'spawn.submit.request' }
 > {
-  return (
-    header.type === 'spawn.submit.request' ||
-    header.type === 'spawn.claim.request'
-  );
+  return header.type === 'spawn.submit.request';
 }
 
 function deploymentRevisionServiceSentinel(deploymentRevision: string): string {
@@ -469,16 +482,32 @@ function deploymentBindingsByService(
       contract
     ])
   );
+  const runtimeBindings = new Map(
+    (snapshot.deploymentRuntimeBindings ?? []).map((binding) => [
+      `${binding.deployment.serviceId}\u0000${binding.deployment.contractVersion}\u0000${binding.deployment.deploymentRevision}`,
+      binding
+    ])
+  );
   for (const deployment of snapshot.resolvedDeployments ?? []) {
     const contract = contracts.get(
       `${deployment.serviceId}\u0000${deployment.contractVersion}`
     );
-    if (contract === undefined) {
+    const runtimeBinding = runtimeBindings.get(
+      `${deployment.serviceId}\u0000${deployment.contractVersion}\u0000${deployment.deploymentRevision}`
+    );
+    if (contract === undefined || runtimeBinding === undefined) {
       continue;
     }
     setDeploymentBinding(bindings, contract.serviceId, {
+      serviceId: contract.serviceId,
+      contractVersion: contract.contractVersion,
       deploymentRevision: deployment.deploymentRevision,
-      serviceProtocolIdentity: contract.serviceProtocolIdentity
+      deploymentArtifactIdentity: deployment.deploymentArtifactIdentity,
+      packageBuildId: runtimeBinding.packageBuildId,
+      serviceProtocolIdentity: contract.serviceProtocolIdentity,
+      ...(runtimeBinding.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: runtimeBinding.timeoutMs })
     });
   }
   return bindings;
@@ -493,7 +522,12 @@ function setDeploymentBinding(
   if (
     existing !== undefined &&
     (existing.deploymentRevision !== binding.deploymentRevision ||
-      existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity)
+      existing.serviceId !== binding.serviceId ||
+      existing.contractVersion !== binding.contractVersion ||
+      existing.deploymentArtifactIdentity !== binding.deploymentArtifactIdentity ||
+      existing.packageBuildId !== binding.packageBuildId ||
+      existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity ||
+      existing.timeoutMs !== binding.timeoutMs)
   ) {
     throw new Error(
       `RuntimeAssembly has conflicting deployment bindings for ${serviceId}`
@@ -524,14 +558,19 @@ function matchesActiveSnapshot(
 }
 
 function validateAssemblyRequest(
-  candidate: RuntimeAssemblyRequestStartFrameHeader,
+  candidate: RuntimeAssemblyRequestStartFrameWireHeader,
   active: RouterActiveAssemblySnapshot
 ): ServiceProtocolBoundaryError | undefined {
-  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  const validation = validateRuntimeAssemblyRequestStartFrameWireHeader(candidate);
   if (!validation.ok) {
     return new ServiceProtocolBoundaryError(validation.error);
   }
   const request = validation.envelope;
+  if (!('httpRequest' in request)) {
+    return new ServiceProtocolBoundaryError(
+      'active RuntimeAssembly dispatch does not accept internally derived spawn requests'
+    );
+  }
   if (request.testEffectsEnabled !== false) {
     return new ServiceProtocolBoundaryError(
       'active RuntimeAssembly dispatch rejects test effect controls'
@@ -541,14 +580,19 @@ function validateAssemblyRequest(
 }
 
 function validateAssemblyTestRequest(
-  candidate: RuntimeAssemblyRequestStartFrameHeader,
+  candidate: RuntimeAssemblyRequestStartFrameWireHeader,
   active: RouterActiveAssemblySnapshot
 ): ServiceProtocolBoundaryError | undefined {
-  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  const validation = validateRuntimeAssemblyRequestStartFrameWireHeader(candidate);
   if (!validation.ok) {
     return new ServiceProtocolBoundaryError(validation.error);
   }
   const request = validation.envelope;
+  if (!('httpRequest' in request)) {
+    return new ServiceProtocolBoundaryError(
+      'test RuntimeAssembly root dispatch requires gateway HTTP routing'
+    );
+  }
   if (request.testEffectsEnabled !== true) {
     return new ServiceProtocolBoundaryError(
       'test RuntimeAssembly dispatch requires test effects enabled'

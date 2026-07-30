@@ -110,6 +110,7 @@ export class AssemblyControlPlane {
     const body = decodeRuntimeAssemblyTestDispatch(await readBody(request));
     const snapshot = this.options.snapshots.get();
     const binding = exactTestDispatchBinding(body, snapshot);
+    const testCaseCapability = randomUUID();
     const header = assemblyTestHttpRequestHeader({
       snapshot,
       binding,
@@ -117,7 +118,8 @@ export class AssemblyControlPlane {
       timeoutMs: body.timeoutMs,
       routing: body.routing,
       mode: body.mode,
-      httpRequest: body.httpRequest
+      httpRequest: body.httpRequest,
+      testCaseCapability
     });
     const runtimeResponse = await this.options.dispatcher.dispatchAssemblyTestBinary(
       {
@@ -200,7 +202,8 @@ function decodeRuntimeAssemblyTestDispatch(
       spanId: '__skiff.test-control-decode'
     },
     httpRequest: body.httpRequest,
-    testEffectsEnabled: true
+    testEffectsEnabled: true,
+    testCaseCapability: '__skiff.test-control-decode'
   });
   if (!headerValidation.ok) {
     throw new Error(

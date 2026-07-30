@@ -237,8 +237,8 @@ fn start_provider_stream(
         context.env,
         &call.type_args,
     )?;
-    let provider_stream_runtime_owner = provider_context.take_stream_runtime_owner();
     let owned_provider = Arc::new(OwnedProgramExecutionContext::capture(&provider_context));
+    let provider_stream_runtime_owner = provider_context.take_stream_runtime_owner();
     let stream_runtime = context.context.stream_runtime();
     let (stream_value, concrete_sink) = stream_runtime.channel_stream_with_lifetime(
         StreamLifetimeGuard::new(ProviderStreamLifetime { _lease: lease }),
@@ -1061,10 +1061,9 @@ mod tests {
     };
 
     use skiff_artifact_model::{
-        ActivationPolicy, AssemblyIdentity, BoundaryFeatureUnavailableReason,
-        DeploymentArtifactIdentity, DeploymentPolicy, DeploymentRevision, PackageBuildId,
-        PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
-        ResourcePolicy, ServiceDeploymentRef,
+        AssemblyIdentity, BoundaryFeatureUnavailableReason, DeploymentArtifactIdentity,
+        DeploymentPolicy, DeploymentRevision, PackageBuildId, PackageSchemaCanonicalDescriptor,
+        PackageSchemaTypeId, PackageSchemaTypeRecord, ResourcePolicy, ServiceDeploymentRef,
     };
     use skiff_runtime_activation::{
         ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
@@ -2095,10 +2094,6 @@ mod tests {
                     resources: ResourcePolicy {
                         cpu_millis: 100,
                         memory_bytes: 1_024,
-                    },
-                    activation: ActivationPolicy {
-                        max_concurrency: 1,
-                        idle_timeout_ms: None,
                     },
                     principal: "test".to_string(),
                 },

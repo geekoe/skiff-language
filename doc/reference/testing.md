@@ -50,8 +50,12 @@ kind: test
 - artifact、linker、loader 和 Runtime 使用普通格式与执行路径；
 - test service 的 config profile固定为`skiff-test`，来自`config.skiff-test.yml`；
 - 本机或部署时的私密覆盖使用同profile的`config.skiff-test.secret.yml`，该文件不得提交；
-- 同一个 test service 的 cases 共享配置和 dependency graph，但每个 case 仍有独立 state
-  namespace、heap、effect registry 和 execution nonce；
+- 同一个test service在一次runner execution中只编译一次`PackageArtifact`，所有selected cases共享
+  resolved config和dependency graph，并作为多个root进入一个`RuntimeAssembly`；runner只提交一次
+  assembly activation transaction，所有root观察同一个activation generation；
+- 每个case仍有独立synthetic `ServiceDeployment`、`ServiceContract`、gateway entry/ingress binding、
+  state namespace、heap、effect registry和execution nonce。共享assembly不等于共享deployment或
+  mutable state；
 - 需要不同配置时使用另一个test service，不提供per-case config override，也不允许调用方切换
   test service config profile。
 
@@ -167,12 +171,22 @@ test-only source file 输入：
 - 普通 `skiff test <path>` 为整个命令创建一套隔离 router / runtime，并在其中运行全部 case。
 - 仓库 canonical Skiff 源码套件为整个 registry plan 创建一套隔离 router / runtime，并在所有
   registry entry 之间复用该进程。
+- runner对同一个普通`kind: test` service只执行一次package compile、config resolve和dependency
+  graph resolve；全部selected cases的独立synthetic deployments作为roots一次链接成一个
+  multi-root `RuntimeAssembly`，并由一次activation transaction提交。assembly identity和activation
+  generation属于test service execution scope，单个case不另有assembly或generation。
 - 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
-- runner 负责构造临时 service activation / request frame；package 测试由 runner 自动生成
-  临时 test service / activation。
+- runner负责构造逐case synthetic deployment、contract、gateway entry/ingress binding和root request
+  frame；package测试由runner自动生成临时test service及其共享multi-root assembly activation。
 - config 由 runner 注入 resolved config；package 不读取 ambient environment。
-- runtime 进程复用不扩大可变状态生命周期。每个 case 的 double registry、临时 artifact、
-  service activation 和测试状态仍按 runner isolation contract 清理。
+- runtime进程和assembly activation复用不扩大可变状态生命周期。每个case的state namespace、
+  heap、effect registry、execution nonce和synthetic deployment资源仍按runner isolation contract
+  独立finalize；共享assembly artifacts和activation只由该test service execution统一清理。
+
+每次root test dispatch都新建一个不透明`testCaseCapability`。它只标识该case execution的effect与
+生命周期authority，不替代deployment selector，也不从assembly generation派生。root发起的direct
+spawn继承同一个capability；任何后续recursive spawn继续继承该值。spawn不得新建capability，也不得
+借用其它root的capability。另一个case的root dispatch即使属于同一assembly，也必须获得不同值。
 
 ### 5.1 HTTP entry tests
 
@@ -205,6 +219,8 @@ ingress URL时，该调用是self-ingress：
 - 测试执行适配自动使用当前case唯一service id和contract version，测试代码不能提供或覆盖selector；
 - Router按普通HTTP ingress规则路由，Host不参与选择；
 - entry内部的outbound effects继续使用父case同一个inline-effect registry；
+- self-ingress及其direct/recursive spawn继续携带父root的`testCaseCapability`，不得因共享assembly
+  或activation generation附着到另一个case；
 - 同一case第一版禁止两个active self-ingress请求。stream EOF、失败或consumer drop/break才释放
   active状态。
 
@@ -330,6 +346,9 @@ event 表使用 effect DSL 的 `[item, ...]`，不是 Skiff 通用 array literal
 - runner 对一个 case 只创建一次执行上下文，并在其中依次执行 setup 和 test body；setup
   产生的 response、error 和 stream event 必须立即按 linked target type plan
   materialize 到该 case 的 effect registry，不能把 heap value 作为跨执行共享对象保存；
+- root dispatch为该执行上下文新建`testCaseCapability`；direct spawn和任意深度的recursive spawn
+  必须继承父请求的同一capability，因此共享该case的registry与finalization owner，但不与同一
+  assembly内其它root共享；
 - setup 成功后才执行 test body；setup 失败时 body 不执行；
 - case finalization 是 runtime-owned teardown phase。无论 body 成功、assert 失败、throw、
   timeout 或 cancel，都必须检查未消费 double、销毁 registry 并释放 case 资源；

@@ -19,10 +19,11 @@ impl EvalContext<'_> {
                 instruction.operation_id().clone(),
                 instruction.expected_protocol_identity().clone(),
             );
+            let stream_runtime = self.context.stream_runtime();
             if let Some(result) = self.interpreter.runtime_test_effects.dispatch_service(
                 &effect_target,
                 &values,
-                Some(&self.interpreter.stream_runtime),
+                Some(&stream_runtime),
                 self.heap,
             ) {
                 return match result? {

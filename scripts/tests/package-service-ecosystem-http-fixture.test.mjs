@@ -96,7 +96,11 @@ kind: test
 `,
       `${name} HTTP authoring`,
     );
-    assert.match(config, /^  maxConcurrency: 2$/m, `${name} test-service concurrency`);
+    assert.doesNotMatch(
+      config,
+      /^\s*maxConcurrency:/m,
+      `${name} must not carry Router-owned concurrency in service config`,
+    );
     assert.equal(
       websocket,
       `path: /socket

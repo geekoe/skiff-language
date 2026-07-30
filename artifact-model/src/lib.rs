@@ -111,7 +111,7 @@ pub use contract_types::{
     PackageSchemaTypeRecordRef, PackageSchemaTypeRef, PackageTypeRef, PackageTypeRequirement,
 };
 pub use deployment::{
-    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentGatewayEntry,
     DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, GatewayAdapterPlan,
     IngressProtocol, IngressSelector, PackageArtifactRef, PackageBinding, PackageRequirementKey,
     ResourceBinding, ResourcePolicy, RuntimeCapabilityBinding, SecretRefBinding,

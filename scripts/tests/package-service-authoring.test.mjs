@@ -295,8 +295,6 @@ test('service package build returns one stable API receipt with operation identi
     '  cpuMillis: 100',
     '  memoryBytes: 1048576',
     'principal: service:ping',
-    'lifecycle:',
-    '  maxConcurrency: 1',
     '',
   ].join('\n'));
   const result = await runCompilerAuthoring({

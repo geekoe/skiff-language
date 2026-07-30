@@ -54,18 +54,6 @@ const runtimeFrameHeaderTypes = [
   'spawn.submit.request',
   'spawn.submit.response',
   'spawn.submit.error',
-  'spawn.claim.request',
-  'spawn.claim.response',
-  'spawn.claim.error',
-  'spawn.renew.request',
-  'spawn.renew.response',
-  'spawn.renew.error',
-  'spawn.complete.request',
-  'spawn.complete.response',
-  'spawn.complete.error',
-  'spawn.fail.request',
-  'spawn.fail.response',
-  'spawn.fail.error',
   'request.start',
   'package-test.start',
   'router.bootstrap',
@@ -91,10 +79,6 @@ const runtimeToRouterFrameHeaderTypes = [
   'actor.find.request',
   'actor.remove.request',
   'spawn.submit.request',
-  'spawn.claim.request',
-  'spawn.renew.request',
-  'spawn.complete.request',
-  'spawn.fail.request',
   'request.start',
   'response.start',
   'response.end',
@@ -120,14 +104,6 @@ const routerToRuntimeFrameHeaderTypes = [
   'actor.remove.error',
   'spawn.submit.response',
   'spawn.submit.error',
-  'spawn.claim.response',
-  'spawn.claim.error',
-  'spawn.renew.response',
-  'spawn.renew.error',
-  'spawn.complete.response',
-  'spawn.complete.error',
-  'spawn.fail.response',
-  'spawn.fail.error',
   'request.start',
   'package-test.start',
   'request.cancel',
@@ -386,11 +362,11 @@ const observabilityFixture = JSON.parse(
 };
 
 describe('runtime protocol fixtures and schemas', () => {
-  it('registers disjoint legacy, HTTP, websocketConnect, and websocketJsonRpc request.start schema branches', () => {
+  it('registers disjoint legacy, HTTP, websocketConnect, websocketJsonRpc, and spawn request.start branches', () => {
     const schema = runtimeFrameHeaderSchemas['request.start'];
     expect('oneOf' in schema).toBe(true);
     if (!('oneOf' in schema)) throw new Error('request.start schema must be oneOf');
-    expect(schema.oneOf).toHaveLength(4);
+    expect(schema.oneOf).toHaveLength(5);
     expect(runtimeAssemblyRequestCorpus.requestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeAssemblyRequestCorpus.legacyRequestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeWebSocketConnectWireCorpus.requestCases).toHaveLength(3);
@@ -401,9 +377,11 @@ describe('runtime protocol fixtures and schemas', () => {
       );
     }
     for (const testCase of runtimeWebSocketConnectWireCorpus.requestCases) {
-      expect(matchesProtocolEnvelopeSchema(schema, testCase.header), testCase.name).toBe(
-        true
-      );
+      const staleTestFlag = testCase.header.testEffectsEnabled === true;
+      expect(
+        matchesProtocolEnvelopeSchema(schema, testCase.header),
+        testCase.name
+      ).toBe(!staleTestFlag);
     }
     const websocketJsonRpc = {
       schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -447,6 +425,103 @@ describe('runtime protocol fixtures and schemas', () => {
       testEffectsEnabled: false
     };
     expect(matchesProtocolEnvelopeSchema(schema, websocketJsonRpc)).toBe(true);
+    expect(
+      matchesProtocolEnvelopeSchema(schema, {
+        ...websocketJsonRpc,
+        testEffectsEnabled: true
+      })
+    ).toBe(false);
+    expect(
+      validateRouterToRuntimeFrameHeader({
+        ...websocketJsonRpc,
+        testEffectsEnabled: true
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid request.start runtimeAssembly envelope: websocketJsonRpc testEffectsEnabled must be false'
+    });
+    expect(
+      validateRouterToRuntimeFrameHeader({
+        ...websocketJsonRpc,
+        testCaseCapability: 'forbidden-websocket-capability'
+      })
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('testCaseCapability is not supported')
+    });
+    const spawn = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'request.start',
+      requestId: 'request-derived-spawn-schema',
+      mode: 'unary',
+      caller: { kind: 'service' },
+      routing: {
+        kind: 'runtimeAssembly',
+        assemblyIdentity:
+          'skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        assemblyGeneration: 11,
+        deployment: {
+          serviceId: 'example.com/chat',
+          contractVersion: '1.0.0',
+          deploymentRevision: 'chat-current',
+          deploymentArtifactIdentity:
+            'skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+        }
+      },
+      invocation: {
+        kind: 'spawn',
+        targetKind: 'function',
+        target: 'package.chat.run'
+      },
+      trace: {
+        traceId: 'trace-derived-spawn',
+        spanId: 'span-derived-spawn'
+      },
+      testEffectsEnabled: true,
+      testCaseCapability: 'opaque-test-case-capability'
+    };
+    expect(matchesProtocolEnvelopeSchema(schema, spawn)).toBe(true);
+    expect(validateRouterToRuntimeFrameHeader(spawn)).toMatchObject({ ok: true });
+    expect(
+      validateRouterToRuntimeFrameHeader({
+        ...spawn,
+        testEffectsEnabled: false
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid request.start runtimeAssembly envelope: testCaseCapability requires testEffectsEnabled true'
+    });
+    const { testCaseCapability: _omittedCapability, ...spawnWithoutCapability } =
+      spawn;
+    expect(
+      validateRouterToRuntimeFrameHeader(spawnWithoutCapability)
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid request.start runtimeAssembly envelope: testEffectsEnabled true requires testCaseCapability'
+    });
+
+    const productionHttp =
+      runtimeAssemblyRequestCorpus.requestStartHeaders[1]!;
+    expect(
+      validateRouterToRuntimeFrameHeader({
+        ...productionHttp,
+        testEffectsEnabled: true
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid request.start runtimeAssembly envelope: testEffectsEnabled true requires testCaseCapability'
+    });
+    expect(
+      validateRouterToRuntimeFrameHeader({
+        ...productionHttp,
+        testEffectsEnabled: true,
+        testCaseCapability: 'http-test-capability'
+      })
+    ).toMatchObject({ ok: true });
 
     const staleHttpRouting = structuredClone(
       runtimeAssemblyRequestCorpus.requestStartHeaders[0]!
@@ -782,7 +857,7 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(validateRuntimeToRouterFrameHeader({ type: 'not.real' })).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, connection.request, connection.request.cancel, response.start, response.chunk, response.end, response.error'
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, request.start, request.cancel, connection.send, connection.request, connection.request.cancel, response.start, response.chunk, response.end, response.error'
     });
   });
 
@@ -976,7 +1051,7 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('requires current ServiceProtocolIdentity v5 on spawn submit, claim, and claimed items', () => {
+  it('requires current ServiceProtocolIdentity v5 on spawn submit', () => {
     const legacyV1 =
       'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
     const legacyV3 =
@@ -993,21 +1068,6 @@ describe('runtime protocol fixtures and schemas', () => {
         validateRuntimeToRouterFrameHeader({
           ...runtimeFrameHeaderFixtures['spawn.submit.request'],
           serviceProtocolIdentity
-        })
-      ).toMatchObject({ ok: false });
-      expect(
-        validateRuntimeToRouterFrameHeader({
-          ...runtimeFrameHeaderFixtures['spawn.claim.request'],
-          serviceProtocolIdentity
-        })
-      ).toMatchObject({ ok: false });
-      expect(
-        validateRouterToRuntimeFrameHeader({
-          ...runtimeFrameHeaderFixtures['spawn.claim.response'],
-          item: {
-            ...runtimeFrameHeaderFixtures['spawn.claim.response'].item,
-            serviceProtocolIdentity
-          }
         })
       ).toMatchObject({ ok: false });
     }
@@ -1636,11 +1696,7 @@ describe('runtime binary frame foundations', () => {
       'actor.replace.request',
       'actor.find.request',
       'actor.remove.request',
-      'spawn.submit.request',
-      'spawn.claim.request',
-      'spawn.renew.request',
-      'spawn.complete.request',
-      'spawn.fail.request'
+      'spawn.submit.request'
     ] as const;
 
     for (const type of requestTypes) {
@@ -1696,23 +1752,6 @@ describe('runtime binary frame foundations', () => {
       expect(decoded.header).toEqual(header);
     }
 
-    const claimResponse = runtimeFrameHeaderFixtures['spawn.claim.response'];
-    expect(validateRouterToRuntimeFrameHeader(claimResponse)).toEqual({
-      ok: true,
-      envelope: claimResponse
-    });
-    for (const invalid of actorControlActivationIdentityCorpus.invalid) {
-      expect(
-        validateRouterToRuntimeFrameHeader({
-          ...claimResponse,
-          item: {
-            ...claimResponse.item,
-            activationIdentity: invalid.value
-          }
-        }),
-        `spawn claim descriptor accepted ${invalid.label}`
-      ).toMatchObject({ ok: false });
-    }
   });
 
   it('accepts request.start serviceId for runtime lazy artifact loading', () => {

@@ -176,7 +176,7 @@ fn write_test_service(root: &Path, service_id: &str, api: &str, production: &str
     fs::write(
         root.join("config.skiff-test.yml"),
         format!(
-            "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:{service_id}\nlifecycle:\n  maxConcurrency: 1\n"
+            "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:{service_id}\n"
         ),
     )
     .expect("write config.skiff-test.yml");

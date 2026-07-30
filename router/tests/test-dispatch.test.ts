@@ -699,6 +699,60 @@ describe('router test dispatch control endpoint', () => {
     expect(frame.header).not.toHaveProperty('target');
   });
 
+  it('gates package-test roots with the same runtime connection capacity', async () => {
+    const manifest = loadRawHttpManifest();
+    const runtimeRouter = trackResource(createRuntimeRouter({}, 1));
+    const { dispatcher, endpoint, registry } = runtimeRouter;
+    const controlPlane = new RouterControlPlane({
+      controlBroadcaster: endpoint,
+      dispatcher,
+      registry,
+      snapshotStore: new RouterActiveSnapshotStore({
+        activationByServiceOperation: new ActivationLookup(),
+        manifest
+      })
+    });
+    const listen = await endpoint.listen({ port: 0, controlPlane });
+    const runtime = await MockRuntime.capabilities(listen.url, {
+      type: 'runtime.capabilities',
+      runtimeId: 'runtime-package-test-capacity',
+      capabilities: { packageTestDispatch: true }
+    });
+    const controlUrl = listen.url.replace('ws://', 'http://').replace('/runtime', '');
+    const sendTest = () =>
+      requestHttp({
+        url: `${controlUrl}/__skiff/test-dispatch`,
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(PACKAGE_TEST_BODY)
+      });
+
+    const firstFramePromise = collectPackageTestFrame(
+      runtime,
+      'first capacity package test'
+    );
+    const first = sendTest();
+    const firstFrame = await firstFramePromise;
+
+    const overloaded = await sendTest();
+    expect(overloaded.status).toBe(503);
+    expect(JSON.parse(overloaded.body)).toMatchObject({
+      error: { code: 'std.service.ProviderUnavailableError' }
+    });
+
+    runtime.sendBinaryResponse(firstFrame.header.requestId, 'first');
+    await expect(first).resolves.toMatchObject({ status: 200 });
+
+    const reusedFramePromise = collectPackageTestFrame(
+      runtime,
+      'reused capacity package test'
+    );
+    const reused = sendTest();
+    const reusedFrame = await reusedFramePromise;
+    runtime.sendBinaryResponse(reusedFrame.header.requestId, 'reused');
+    await expect(reused).resolves.toMatchObject({ status: 200 });
+  });
+
   it('dispatches package tests to runtime-level capability registrations without service routes', async () => {
     const manifest = loadRawHttpManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());

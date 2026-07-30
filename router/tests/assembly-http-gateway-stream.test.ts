@@ -562,6 +562,18 @@ async function createFixture(
     environment: 'test',
     generation: active.generation,
     assembly: { assemblyIdentity: active.assemblyIdentity },
+    resolvedDeployments: [active.binding.deployment],
+    resolvedContracts: [{
+      serviceId: active.binding.deployment.serviceId,
+      contractVersion: active.binding.deployment.contractVersion,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`
+    }],
+    deploymentRuntimeBindings: [{
+      deployment: active.binding.deployment,
+      packageBuildId:
+        `skiff-package-build-v10:sha256:${'f'.repeat(64)}`
+    }],
     ingress: new RuntimeAssemblyIngressIndex([active.binding])
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
@@ -576,7 +588,8 @@ async function createFixture(
   });
   const dispatcher = new RuntimeDispatcher({
     registry: assemblyRegistry,
-    frameSender: endpoint
+    frameSender: endpoint,
+    maxConcurrency: 64
   });
   endpoint.setDispatcher(dispatcher);
   const endpointAddress = await endpoint.listen({ port: 0 });

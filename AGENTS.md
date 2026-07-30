@@ -199,6 +199,7 @@ http:
 runtime:
   port: 4001
   path: /runtime
+  maxConcurrency: 256
 ```
 
 ```yaml

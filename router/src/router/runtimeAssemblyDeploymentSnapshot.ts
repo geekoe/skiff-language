@@ -41,6 +41,7 @@ const PACKAGE_LOCAL_ABI_IDENTITY_PATTERN =
 
 interface DecodedServiceDeployment {
   ref: RuntimeAssemblyDeploymentRef;
+  packageBuildId: string;
   gatewayEntries: ReadonlyMap<string, DecodedDeploymentGatewayEntry>;
   ingress: readonly DecodedDeploymentIngressBinding[];
   timeoutMs?: number;
@@ -87,6 +88,7 @@ export function joinRuntimeAssemblyDeployments(
     ])
   );
   const expectedBySelector = new Map<string, ExpectedRuntimeAssemblyIngress>();
+  const decodedDeployments: DecodedServiceDeployment[] = [];
   for (const [index, reference] of record.resolvedDeployments.entries()) {
     const expectedContract = contractByCoordinate.get(
       contractCoordinate(reference.serviceId, reference.contractVersion)
@@ -102,6 +104,7 @@ export function joinRuntimeAssemblyDeployments(
       expectedContract,
       `RouterSnapshot.serviceDeployments[${index}]`
     );
+    decodedDeployments.push(deployment);
     for (const expected of buildDeploymentIngressExpectations(deployment)) {
       const selectorKey = scopedSelectorKey(
         expected.deployment,
@@ -154,6 +157,13 @@ export function joinRuntimeAssemblyDeployments(
     assemblyIdentity: record.assemblyIdentity,
     resolvedDeployments: record.resolvedDeployments,
     resolvedContracts: record.resolvedContracts,
+    deploymentRuntimeBindings: decodedDeployments.map((deployment) => ({
+      deployment: deployment.ref,
+      packageBuildId: deployment.packageBuildId,
+      ...(deployment.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: deployment.timeoutMs })
+    })),
     gatewayIngress
   };
 }
@@ -400,7 +410,7 @@ function decodeServiceDeployment(
   if (!DEPLOYMENT_ARTIFACT_IDENTITY_PATTERN.test(deploymentArtifactIdentity)) {
     throw new Error(`${label}.deploymentArtifactIdentity is invalid`);
   }
-  const implementationPackageId = decodeImplementationPackageId(
+  const implementation = decodeImplementation(
     value.implementation,
     `${label}.implementation`
   );
@@ -420,7 +430,7 @@ function decodeServiceDeployment(
         entry,
         `${label}.gatewayEntries.${canonicalKey}`,
         contract.serviceId,
-        implementationPackageId,
+        implementation.packageId,
         canonicalKey
       )
     );
@@ -442,6 +452,7 @@ function decodeServiceDeployment(
   }
   return {
     ref: expected,
+    packageBuildId: implementation.packageBuildId,
     gatewayEntries,
     ingress,
     ...(timeoutMs === undefined ? {} : { timeoutMs })
@@ -633,11 +644,14 @@ function decodeDeploymentIngressBinding(
   };
 }
 
-function decodeDeploymentPolicy(input: unknown, label: string): number | undefined {
+function decodeDeploymentPolicy(
+  input: unknown,
+  label: string
+): number | undefined {
   const value = exactObject(input, label);
   exactFieldsWithOptional(
     value,
-    ['resources', 'activation', 'principal'],
+    ['resources', 'principal'],
     ['timeoutMs'],
     label
   );
@@ -646,29 +660,16 @@ function decodeDeploymentPolicy(input: unknown, label: string): number | undefin
   exactFields(resources, ['cpuMillis', 'memoryBytes'], `${label}.resources`);
   positiveSafeInteger(resources.cpuMillis, `${label}.resources.cpuMillis`);
   positiveSafeInteger(resources.memoryBytes, `${label}.resources.memoryBytes`);
-  const activation = exactObject(value.activation, `${label}.activation`);
-  exactFields(
-    activation,
-    ['maxConcurrency', 'idleTimeoutMs'],
-    `${label}.activation`
-  );
-  positiveSafeInteger(
-    activation.maxConcurrency,
-    `${label}.activation.maxConcurrency`
-  );
-  if (activation.idleTimeoutMs !== null) {
-    positiveSafeInteger(
-      activation.idleTimeoutMs,
-      `${label}.activation.idleTimeoutMs`
-    );
-  }
   if (!Object.hasOwn(value, 'timeoutMs')) {
     return undefined;
   }
   return positiveSafeInteger(value.timeoutMs, `${label}.timeoutMs`);
 }
 
-function decodeImplementationPackageId(input: unknown, label: string): string {
+function decodeImplementation(
+  input: unknown,
+  label: string
+): { packageId: string; packageBuildId: string } {
   const value = exactObject(input, label);
   exactFields(
     value,
@@ -693,7 +694,7 @@ function decodeImplementationPackageId(input: unknown, label: string): string {
   if (!PACKAGE_LOCAL_ABI_IDENTITY_PATTERN.test(packageLocalAbiIdentity)) {
     throw new Error(`${label}.packageLocalAbiIdentity is invalid`);
   }
-  return packageId;
+  return { packageId, packageBuildId };
 }
 
 function decodeContractRef(input: unknown, label: string): RuntimeAssemblyContractRef {

@@ -64,6 +64,7 @@ function validateRuntimeAssemblyRequestPayload(
   header: RuntimeAssemblyRequestStartFrameTransportWireHeader,
   payloadBytes: Uint8Array,
 ): void {
+  if ("invocation" in header) return;
   if (header.routing.ingress.protocol !== "webSocket") return;
   if (header.routing.ingress.method === null) {
     if (payloadBytes.byteLength !== 0) {

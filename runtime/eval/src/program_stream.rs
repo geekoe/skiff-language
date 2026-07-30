@@ -24,7 +24,10 @@ use skiff_runtime_model::{
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink, TypedStreamSink},
+    capabilities::{
+        StreamCancelSignal, StreamPoll, StreamRuntime, StreamRuntimeOwner, StreamSink,
+        TypedStreamSink,
+    },
     env::{Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
@@ -71,9 +74,11 @@ impl Interpreter {
         stream_value: Value,
         item_type: Option<RuntimeTypePlan>,
         cancel_signals: &[StreamCancelSignal],
+        prepared_supervision: Option<SupervisedStreamConsumptionChild>,
     ) -> Result<Flow> {
         let stream_runtime = context.stream_runtime();
-        let supervision = env.stream_consumer_supervision_for(&stream_value);
+        let supervision =
+            prepared_supervision.or_else(|| env.stream_consumer_supervision_for(&stream_value));
         let mut cleanup = match &supervision {
             Some(supervision) => supervision.consumer_cleanup(&stream_value),
             None => StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value),
@@ -181,6 +186,7 @@ impl Interpreter {
                 stream_value.clone(),
                 Some(item_type),
                 std::slice::from_ref(&cancel_signal),
+                None,
             )
             .await;
         consumer_result
@@ -280,6 +286,7 @@ impl Interpreter {
         producer_env.current_stream_item_type = Some(item_type.clone());
         let prepared = StreamProducerExecution {
             stream_runtime,
+            _stream_runtime_owner: None,
             stream_value,
             cancel_signal,
             item_type,
@@ -312,30 +319,33 @@ impl Interpreter {
     /// runs it concurrently with `consumer`, mirroring how
     /// `exec_program_stream_producer_for_in` co-drives an inline producer. When
     /// no producer is parked for the stream this simply awaits the consumer.
-    pub async fn drive_deferred_stream_producer<'fut, T, Fut>(
+    pub async fn drive_deferred_stream_producer<T, Factory, Fut>(
         &self,
         context: ProgramExecutionContext<'_>,
         addr: &ExecutableAddr,
         stream_value: &Value,
-        consumer: Fut,
+        consumer: Factory,
     ) -> Result<T>
     where
-        Fut: std::future::Future<Output = Result<T>> + 'fut,
+        Factory: FnOnce(Option<SupervisedStreamConsumptionChild>) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
     {
         let Some(prepared) =
             stream_id(stream_value).and_then(|id| self.deferred_stream_producers.take(id))
         else {
-            return consumer.await;
+            return consumer(None).await;
         };
         // The producer now runs on its own spawned task rather than being
         // co-driven with the consumer, so the consumer future no longer compounds
         // producer-stack frames and the previous `Box::pin` mitigation is no
         // longer required.
+        let prepared = PreparedNativeStreamProducer::new(prepared);
+        let supervision = prepared.consumption_child();
         self.exec_prepared_native_stream_producer_arg(
             context,
             addr,
-            PreparedNativeStreamProducer::new(prepared),
-            consumer,
+            prepared,
+            consumer(Some(supervision)),
         )
         .await
     }
@@ -592,6 +602,7 @@ impl Interpreter {
         producer_env.current_stream_item_type = Some(producer.item_type.clone());
         Ok(StreamProducerExecution {
             stream_runtime,
+            _stream_runtime_owner: None,
             stream_value,
             cancel_signal,
             item_type: producer.item_type,
@@ -878,6 +889,7 @@ impl PreparedNativeStreamProducer {
 
 pub struct StreamProducerExecution {
     stream_runtime: StreamRuntime,
+    _stream_runtime_owner: Option<StreamRuntimeOwner>,
     stream_value: Value,
     cancel_signal: StreamCancelSignal,
     item_type: RuntimeTypePlan,
@@ -895,6 +907,12 @@ pub struct StreamProducerExecution {
 impl StreamProducerExecution {
     fn cancel(&self) {
         self.stream_runtime.cancel(&self.stream_value);
+    }
+
+    fn retain_request_scope(&mut self) {
+        if self._stream_runtime_owner.is_none() {
+            self._stream_runtime_owner = self.stream_runtime.retain_request_scope();
+        }
     }
 }
 
@@ -1014,8 +1032,9 @@ fn spawn_stream_producer(
     interpreter: &Interpreter,
     owned_context: Arc<OwnedProgramExecutionContext>,
     caller_addr: ExecutableAddr,
-    producer: StreamProducerExecution,
+    mut producer: StreamProducerExecution,
 ) {
+    producer.retain_request_scope();
     let interpreter = interpreter.clone_for_stream_producer();
     tokio::spawn(async move {
         run_stream_producer_task(&interpreter, &owned_context, &caller_addr, producer).await;
@@ -1034,6 +1053,7 @@ async fn run_stream_producer_task(
     producer: StreamProducerExecution,
 ) {
     let StreamProducerExecution {
+        _stream_runtime_owner,
         arg_producers,
         mut producer_heap,
         producer_env,

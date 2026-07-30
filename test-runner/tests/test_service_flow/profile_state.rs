@@ -32,9 +32,15 @@ fn fixed_profile_projects_config_secret_policy_and_typed_isolated_state() {
 
     let mut first_namespaces = BTreeSet::new();
     for case in &first.cases {
-        let [deployment] = case.records.deployments.as_slice() else {
-            panic!("each case must own one deployment")
-        };
+        let deployment = first
+            .records
+            .deployments
+            .iter()
+            .find(|deployment| {
+                skiff_artifact_identity::service_deployment_ref(deployment)
+                    == case.entrypoint.deployment
+            })
+            .expect("each case entrypoint must map to one deployment");
         assert_eq!(
             deployment.config_literals,
             vec![skiff_artifact_model::ConfigLiteralBinding {
@@ -52,8 +58,6 @@ fn fixed_profile_projects_config_secret_policy_and_typed_isolated_state() {
         assert_eq!(deployment.policy.timeout_ms, Some(25_000));
         assert_eq!(deployment.policy.resources.cpu_millis, 250);
         assert_eq!(deployment.policy.resources.memory_bytes, 134_217_728);
-        assert_eq!(deployment.policy.activation.max_concurrency, 3);
-        assert_eq!(deployment.policy.activation.idle_timeout_ms, Some(5_000));
         assert_eq!(
             deployment.policy.principal,
             "service:test.skiff/profile-state"
@@ -91,9 +95,10 @@ fn fixed_profile_projects_config_secret_policy_and_typed_isolated_state() {
     );
 
     let second_namespaces = second
-        .cases
+        .records
+        .deployments
         .iter()
-        .flat_map(|case| &case.records.deployments[0].state_bindings)
+        .flat_map(|deployment| &deployment.state_bindings)
         .map(|binding| binding.namespace.as_str())
         .collect::<BTreeSet<_>>();
     assert!(
@@ -137,9 +142,6 @@ quota:
   cpuMillis: 250
   memoryBytes: 134217728
 principal: service:test.skiff/profile-state
-lifecycle:
-  maxConcurrency: 3
-  idleTimeoutMs: 5000
 "#,
     );
     let project = compile_package_project_for_test(&platform_sources(), &service, &artifacts)
@@ -155,21 +157,21 @@ lifecycle:
 }
 
 #[test]
-fn http_profile_rejects_single_concurrency_and_reserved_ingress_override() {
+fn http_profile_rejects_retired_lifecycle_and_reserved_ingress_override() {
     let root = TestRoot::new("http-profile-negative");
     let artifacts = root.path().join("artifacts");
     let service = root.path().join("service");
     CanonicalArtifactStore::create(&artifacts).unwrap();
     write_http_test_service(&service);
 
-    write_http_profile(&service, 1, BTreeMap::new());
+    write_http_profile(&service, true, BTreeMap::new());
     let error = assemble_service(&service, &artifacts).unwrap_err();
-    assert!(error.contains("maxConcurrency"), "{error}");
-    assert!(error.contains("at least 2"), "{error}");
+    assert!(error.contains("lifecycle"), "{error}");
+    assert!(error.contains("unknown field"), "{error}");
 
     write_http_profile(
         &service,
-        2,
+        false,
         BTreeMap::from([("skiff.test.ingressUrl", "http://authored.invalid")]),
     );
     let error = assemble_service(&service, &artifacts).unwrap_err();
@@ -248,9 +250,6 @@ quota:
   cpuMillis: 250
   memoryBytes: 134217728
 principal: service:test.skiff/profile-state
-lifecycle:
-  maxConcurrency: 3
-  idleTimeoutMs: 5000
 "#,
     );
 }
@@ -293,7 +292,7 @@ fn write_http_test_service(root: &Path) {
     .unwrap();
 }
 
-fn write_http_profile(root: &Path, max_concurrency: u32, config: BTreeMap<&str, &str>) {
+fn write_http_profile(root: &Path, retired_lifecycle: bool, config: BTreeMap<&str, &str>) {
     let config = if config.is_empty() {
         " {}".to_string()
     } else {
@@ -306,10 +305,13 @@ fn write_http_profile(root: &Path, max_concurrency: u32, config: BTreeMap<&str, 
                 .join("\n")
         )
     };
+    let lifecycle = retired_lifecycle
+        .then_some("lifecycle: {}\n")
+        .unwrap_or_default();
     write_profile(
         root,
         &format!(
-            "config:{config}\ntimeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/http-profile\nlifecycle:\n  maxConcurrency: {max_concurrency}\n"
+            "config:{config}\ntimeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/http-profile\n{lifecycle}"
         ),
     );
 }

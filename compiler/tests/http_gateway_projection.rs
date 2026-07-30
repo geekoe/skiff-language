@@ -1114,7 +1114,6 @@ fn profile() -> ServiceConfigProfileAuthoring {
         timeout: json!(1000),
         quota: json!({"cpuMillis": 100, "memoryBytes": 1048576}),
         principal: json!("service:http-gateway"),
-        lifecycle: json!({"maxConcurrency": 4}),
     }
 }
 

@@ -365,6 +365,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       'ordinary-production'
     );
     expect(productionHeader.testEffectsEnabled).toBe(false);
+    expect(productionHeader).not.toHaveProperty('testCaseCapability');
 
     const testHeader = assemblyTestHttpRequestHeader({
       snapshot: fixture.snapshot,
@@ -373,13 +374,15 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       timeoutMs: 1_000,
       routing: productionHeader.routing,
       mode: productionHeader.mode,
-      httpRequest: productionHeader.httpRequest
+      httpRequest: productionHeader.httpRequest,
+      testCaseCapability: 'isolated-test-capability'
     });
     expect(testHeader).toMatchObject({
       routing: productionHeader.routing,
       mode: productionHeader.mode,
       httpRequest: productionHeader.httpRequest,
-      testEffectsEnabled: true
+      testEffectsEnabled: true,
+      testCaseCapability: 'isolated-test-capability'
     });
 
     await expect(
@@ -1341,14 +1344,33 @@ async function createFixture(
   const selectedBinding = limits.binding ?? BINDING;
   const assemblyIdentity = limits.assemblyIdentity ?? ASSEMBLY;
   const generation = limits.generation ?? 7;
+  const selectedBindings = limits.bindings ?? [selectedBinding];
+  const deployments = Array.from(
+    new Map(
+      selectedBindings.map((binding) => [
+        `${binding.deployment.serviceId}\u0000${binding.deployment.contractVersion}`,
+        binding.deployment
+      ])
+    ).values()
+  );
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
-    ingress: new RuntimeAssemblyIngressIndex(
-      limits.bindings ?? [selectedBinding]
-    )
+    resolvedDeployments: deployments,
+    resolvedContracts: deployments.map((deployment) => ({
+      serviceId: deployment.serviceId,
+      contractVersion: deployment.contractVersion,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`
+    })),
+    deploymentRuntimeBindings: deployments.map((deployment) => ({
+      deployment,
+      packageBuildId:
+        `skiff-package-build-v10:sha256:${'f'.repeat(64)}`
+    })),
+    ingress: new RuntimeAssemblyIngressIndex(selectedBindings)
   });
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();
@@ -1361,7 +1383,11 @@ async function createFixture(
       http: { maxResponseBytes: 67108864 }
     }
   });
-  const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
+  const dispatcher = new RuntimeDispatcher({
+    registry: assemblyRegistry,
+    frameSender: endpoint,
+    maxConcurrency: 64
+  });
   endpoint.setDispatcher(dispatcher);
   const runtimeListen = await endpoint.listen({ port: 0 });
   const gateway = new AssemblyHttpGateway({

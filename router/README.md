@@ -47,6 +47,7 @@ http:
 runtime:
   port: 4001
   path: /runtime
+  maxConcurrency: 256
 ```
 
 `environment`, `artifactsPath`, and `serviceDb.mongoUrl` are required for

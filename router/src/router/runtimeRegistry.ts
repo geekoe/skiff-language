@@ -11,7 +11,9 @@ import {
   type RuntimeHealthEnvelope,
   type RuntimeRegisterEnvelope
 } from '../protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import type {
+  RuntimeAssemblyRequestStartFrameWireHeader
+} from '../protocol/runtimeAssemblyRequest.js';
 import {
   ActorSpawnRuntimeControl,
   type ActorSpawnRuntimeControlOptions,
@@ -85,7 +87,7 @@ export interface RuntimeLoopRiskHealthSnapshot {
 
 export type RuntimeUnaryDispatchFrameHeader =
   | RequestStartFrameHeader
-  | RuntimeAssemblyRequestStartFrameHeader;
+  | RuntimeAssemblyRequestStartFrameWireHeader;
 
 export type RuntimeDispatchFrameHeader =
   | RuntimeUnaryDispatchFrameHeader
@@ -94,6 +96,19 @@ export type RuntimeDispatchFrameHeader =
 export interface RuntimeDispatchConnection {
   runtimeId?: string;
   dispatchBuildId?: string;
+  runtimeAssemblyAuthority?: {
+    assemblyIdentity: string;
+    assemblyGeneration: number;
+    deployment: {
+      serviceId: string;
+      contractVersion: string;
+      deploymentRevision: string;
+      deploymentArtifactIdentity: string;
+    };
+    buildId: string;
+    serviceProtocolIdentity: string;
+    timeoutMs?: number;
+  };
   ws: WebSocket;
 }
 
@@ -135,6 +150,7 @@ export interface RuntimeConnectionFence {
 
 export interface RuntimeInFlightCounter {
   countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number;
+  hasCapacity(runtime: RuntimeDispatchRuntimeIdentity): boolean;
 }
 
 export interface RuntimeConnectionProvider {
@@ -731,7 +747,8 @@ export class RuntimeRegistry {
       if (
         runtime.ws.readyState === WebSocket.OPEN &&
         runtime.revisionState !== 'retired' &&
-        runtimeSupportsPackageTestDispatch(runtime)
+        runtimeSupportsPackageTestDispatch(runtime) &&
+        this.connectionHasCapacity(runtime)
       ) {
         candidates.push({
           runtimeId: runtime.runtimeId,
@@ -745,7 +762,8 @@ export class RuntimeRegistry {
       if (
         runtime.ws.readyState === WebSocket.OPEN &&
         !candidateConnections.has(runtime.ws) &&
-        runtimeSupportsPackageTestDispatch(runtime)
+        runtimeSupportsPackageTestDispatch(runtime) &&
+        this.connectionHasCapacity(runtime)
       ) {
         candidates.push({
           runtimeId: runtime.runtimeId,
@@ -808,7 +826,8 @@ export class RuntimeRegistry {
       if (
         runtime.ws.readyState !== WebSocket.OPEN ||
         runtime.revisionState === 'retired' ||
-        !runtime.targets.has(input.request.target)
+        !runtime.targets.has(input.request.target) ||
+        !this.connectionHasCapacity(runtime)
       ) {
         return false;
       }
@@ -939,6 +958,7 @@ export class RuntimeRegistry {
     const clients = this.registeredAndLazyClients().filter(
       (ws) =>
         ws.readyState === WebSocket.OPEN &&
+        this.connectionHasCapacity({ runtimeId: '', ws }) &&
         !this.hasRegisteredTargetBuildOnConnection(
           ws,
           request,
@@ -1014,6 +1034,10 @@ export class RuntimeRegistry {
 
     runtime.revisionState =
       this.countInFlight(runtime) > 0 ? 'draining' : 'retained';
+  }
+
+  private connectionHasCapacity(runtime: RuntimeDispatchRuntimeIdentity): boolean {
+    return this.inFlightCounter?.hasCapacity(runtime) ?? true;
   }
 
   private hasActiveTarget(runtime: RegisteredRuntime): boolean {
@@ -1171,7 +1195,7 @@ export class RuntimeRegistry {
 
 export function isRuntimeAssemblyRequestDispatchHeader(
   header: RuntimeDispatchFrameHeader
-): header is RuntimeAssemblyRequestStartFrameHeader {
+): header is RuntimeAssemblyRequestStartFrameWireHeader {
   return header.type === 'request.start' && 'routing' in header;
 }
 
@@ -1265,12 +1289,7 @@ function actorSpawnRuntimeControlErrorType(
   | 'actor.getOrCreate.error'
   | 'actor.replace.error'
   | 'actor.find.error'
-  | 'actor.remove.error'
-  | 'spawn.submit.error'
-  | 'spawn.claim.error'
-  | 'spawn.renew.error'
-  | 'spawn.complete.error'
-  | 'spawn.fail.error' {
+  | 'actor.remove.error' {
   switch (requestType) {
     case 'actor.getOrCreate.request':
       return 'actor.getOrCreate.error';
@@ -1280,15 +1299,5 @@ function actorSpawnRuntimeControlErrorType(
       return 'actor.find.error';
     case 'actor.remove.request':
       return 'actor.remove.error';
-    case 'spawn.submit.request':
-      return 'spawn.submit.error';
-    case 'spawn.claim.request':
-      return 'spawn.claim.error';
-    case 'spawn.renew.request':
-      return 'spawn.renew.error';
-    case 'spawn.complete.request':
-      return 'spawn.complete.error';
-    case 'spawn.fail.request':
-      return 'spawn.fail.error';
   }
 }

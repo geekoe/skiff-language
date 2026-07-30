@@ -15,7 +15,6 @@ pub(super) struct RuntimeOwnedActorParts {
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(super) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
-    pub(super) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(super) cancellation: CancellationToken,
 }
 
@@ -149,9 +148,8 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
-        Box::pin(submit_spawn_and_wake(
+        Box::pin(submit_spawn(
             self.context.clone(),
-            self.owned.spawn_workers.clone(),
             request,
             args_payload,
             execution_control,
@@ -309,9 +307,8 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
-        Box::pin(submit_spawn_and_wake(
+        Box::pin(submit_spawn(
             concrete_actor_context_from_owned(&self.0),
-            self.0.spawn_workers.clone(),
             request,
             args_payload,
             execution_control,
@@ -557,25 +554,20 @@ fn actor_method_wire_timeout_ms(
     primitive_timeout_ms.min(remaining_ms)
 }
 
-async fn submit_spawn_and_wake(
+async fn submit_spawn(
     context: concrete::ActorCapabilityContext<'_>,
-    spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     request: SpawnSubmitControlRequest,
     args_payload: Vec<u8>,
     execution_control: capability_contract::OwnedExecutionControl,
 ) -> capability_contract::CapabilityResult<()> {
     let scope = actor_execution_scope(&execution_control)?;
-    let build_id = request.build_id.clone();
     root_result_into_capability(
         concrete::ActorClient::new(context)
             .submit_spawn_in_scope(request, args_payload, scope)
             .await,
     )
-    .await?;
-    if let Some(build_id) = build_id {
-        spawn_workers.wake_build(&build_id);
-    }
-    Ok(())
+    .await
+    .map(|_| ())
 }
 
 fn actor_execution_scope(
@@ -593,8 +585,7 @@ fn actor_execution_scope(
 mod tests {
     use super::*;
     use skiff_artifact_model::{
-        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
-        DeploymentRevision,
+        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity,
     };
     use skiff_runtime_capability_context::{
         ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationDeclarationOwner,
@@ -604,9 +595,7 @@ mod tests {
     use skiff_runtime_transport::actor_method::{
         decode_actor_method_frame, ActorMethodCancelReason, ActorMethodFrame,
     };
-    use skiff_runtime_transport::protocol::{
-        SpawnSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
-    };
+    use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
     use tokio::time::{timeout, Duration};
 
     const BUILD_ID: &str =
@@ -849,228 +838,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn f445h_i6_actor_scope_spawn_valid_receipt_wakes_the_target_build() {
-        let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
-        let outbound_requests = Arc::new(OutboundRequestRegistry::default());
-        let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
-        let registration = spawn_workers.registration_for_test();
-        let wake = spawn_workers
-            .wake_signal_for_test(&registration, BUILD_ID)
-            .expect("test registration should exist");
-        let activation_identity = spawn_submit_request().activation_identity;
-        let context = concrete::ActorClientContext::from_parts(
-            "runtime-test",
-            "service-test",
-            "v1",
-            "request-test",
-            "program.test",
-            BUILD_ID,
-            "protocol-test",
-            Some("protocol-test"),
-            Some(&activation_identity),
-            None,
-            Some(&router_sender),
-            outbound_requests.as_ref(),
-            CancellationToken::new(),
-        );
-        let submit = submit_spawn_and_wake(
-            context,
-            spawn_workers,
-            spawn_submit_request(),
-            Vec::new(),
-            test_execution_control(),
-        );
-        tokio::pin!(submit);
-
-        let rpc_id = tokio::select! {
-            result = &mut submit => panic!("spawn submit completed before its response: {result:?}"),
-            message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
-                concrete::RouterWriterMessage::Control(
-                    capability_contract::OutboundControlMessage::SpawnSubmit { request, .. }
-                ) => request.rpc_id,
-                other => panic!("unexpected router message: {other:?}"),
-            }
-        };
-        let response = SpawnSubmitResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "spawn.submit.response".to_string(),
-            rpc_id: rpc_id.clone(),
-            spawn_id: "spawn-test".to_string(),
-            item_id: "item-test".to_string(),
-            status: "submitted".to_string(),
-        };
-        outbound_requests
-            .take_terminal_sender(&rpc_id)
-            .expect("spawn submit response should be pending")
-            .send(skiff_runtime_request::OutboundResponse::End {
-                payload: serde_json::to_vec(&response).expect("response should serialize"),
-            })
-            .expect("spawn submit response should be delivered");
-
-        submit.await.expect("spawn submit should succeed");
-        timeout(Duration::from_millis(50), wake.notified())
-            .await
-            .expect("successful submit should preserve a build wake permit");
-    }
-
-    #[tokio::test]
-    async fn f445h_i6_actor_scope_spawn_rejected_receipt_does_not_wake_target_build() {
-        let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
-        let outbound_requests = Arc::new(OutboundRequestRegistry::default());
-        let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
-        let registration = spawn_workers.registration_for_test();
-        let wake = spawn_workers
-            .wake_signal_for_test(&registration, BUILD_ID)
-            .expect("test registration should exist");
-        let activation_identity = spawn_submit_request().activation_identity;
-        let context = concrete::ActorClientContext::from_parts(
-            "runtime-test",
-            "service-test",
-            "v1",
-            "request-test",
-            "program.test",
-            BUILD_ID,
-            "protocol-test",
-            Some("protocol-test"),
-            Some(&activation_identity),
-            None,
-            Some(&router_sender),
-            outbound_requests.as_ref(),
-            CancellationToken::new(),
-        );
-        let submit = submit_spawn_and_wake(
-            context,
-            spawn_workers,
-            spawn_submit_request(),
-            Vec::new(),
-            test_execution_control(),
-        );
-        tokio::pin!(submit);
-
-        let rpc_id = tokio::select! {
-            result = &mut submit => panic!("spawn submit completed before its response: {result:?}"),
-            message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
-                concrete::RouterWriterMessage::Control(
-                    capability_contract::OutboundControlMessage::SpawnSubmit { request, .. }
-                ) => request.rpc_id,
-                other => panic!("unexpected router message: {other:?}"),
-            }
-        };
-        let response = SpawnSubmitResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "spawn.submit.response".to_string(),
-            rpc_id: rpc_id.clone(),
-            spawn_id: "spawn-test".to_string(),
-            item_id: "item-test".to_string(),
-            status: "queued".to_string(),
-        };
-        outbound_requests
-            .take_terminal_sender(&rpc_id)
-            .expect("spawn submit response should be pending")
-            .send(skiff_runtime_request::OutboundResponse::End {
-                payload: serde_json::to_vec(&response).expect("response should serialize"),
-            })
-            .expect("spawn submit response should be delivered");
-
-        submit
-            .await
-            .expect_err("non-submitted receipt must fail through the adapter");
-        assert!(
-            timeout(Duration::from_millis(20), wake.notified())
-                .await
-                .is_err(),
-            "failed submit receipt must not wake a spawn worker"
-        );
-    }
-
-    #[tokio::test]
-    async fn f445h_i6_actor_scope_spawn_deadline_fences_late_receipt_and_worker_wake() {
-        let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
-        let outbound_requests = Arc::new(OutboundRequestRegistry::default());
-        let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
-        let registration = spawn_workers.registration_for_test();
-        let wake = spawn_workers
-            .wake_signal_for_test(&registration, BUILD_ID)
-            .expect("test registration should exist");
-        let activation_identity = spawn_submit_request().activation_identity;
-        let context = concrete::ActorClientContext::from_parts(
-            "runtime-test",
-            "service-test",
-            "v1",
-            "request-test",
-            "program.test",
-            BUILD_ID,
-            "protocol-test",
-            Some("protocol-test"),
-            Some(&activation_identity),
-            None,
-            Some(&router_sender),
-            outbound_requests.as_ref(),
-            CancellationToken::new(),
-        );
-        let (execution, _ancestor, scope) =
-            scoped_test_execution_control(Duration::from_millis(50));
-        let lifecycle = scope.clone();
-        let submit = submit_spawn_and_wake(
-            context,
-            spawn_workers,
-            spawn_submit_request(),
-            Vec::new(),
-            execution,
-        );
-        tokio::pin!(submit);
-
-        let rpc_id = tokio::select! {
-            result = &mut submit => panic!("spawn submit completed before its request: {result:?}"),
-            message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
-                concrete::RouterWriterMessage::Control(
-                    capability_contract::OutboundControlMessage::SpawnSubmit { request, .. }
-                ) => request.rpc_id,
-                other => panic!("unexpected router message: {other:?}"),
-            }
-        };
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        let cancel = tokio::select! {
-            result = &mut submit => {
-                panic!("scope-terminal spawn must remain pending, got {result:?}")
-            }
-            message = router_receiver.recv() => {
-                message.expect("router writer should remain open")
-            }
-        };
-        let concrete::RouterWriterMessage::Control(
-            capability_contract::OutboundControlMessage::RequestCancel { request },
-        ) = cancel
-        else {
-            panic!("scope deadline must emit request.cancel")
-        };
-        assert_eq!(request.request_id, rpc_id);
-        assert_eq!(request.reason, "deadline_exceeded");
-        assert_eq!(outbound_requests.pending_count(), 0);
-        assert_eq!(outbound_requests.active_lease_count(), 0);
-        assert_eq!(
-            lifecycle.lifecycle_snapshot(),
-            capability_contract::ExecutionScopeLifecycleSnapshot::default()
-        );
-        assert!(
-            outbound_requests.take_terminal_sender(&rpc_id).is_none(),
-            "late spawn receipt must be fenced after scope terminal"
-        );
-        assert!(
-            timeout(Duration::from_millis(1), wake.notified())
-                .await
-                .is_err(),
-            "scope-terminal spawn must not wake a worker"
-        );
-        assert!(
-            timeout(Duration::from_millis(1), &mut submit)
-                .await
-                .is_err(),
-            "scope terminal must remain on the internal control lane"
-        );
-    }
-
     fn actor_invocation_fixture(
         timeout_ms: u64,
         cancellation: CancellationToken,
@@ -1101,7 +868,6 @@ mod tests {
             router_sender: Some(router_sender),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
             actor_method_outbound: actor_method_outbound.clone(),
-            spawn_workers: Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default()),
             cancellation,
         };
         let request = ActorInvocationRequest {
@@ -1220,32 +986,6 @@ mod tests {
             panic!("expected actor method cancel frame")
         };
         assert_eq!(cancel.reason, expected_reason);
-    }
-
-    fn spawn_submit_request() -> SpawnSubmitControlRequest {
-        SpawnSubmitControlRequest {
-            rpc_id: String::new(),
-            runtime_id: String::new(),
-            target_kind: "function".to_string(),
-            service_id: "service-test".to_string(),
-            service_version: "v1".to_string(),
-            service_protocol_identity: "protocol-test".to_string(),
-            target: "function:program.test".to_string(),
-            spawn_id: None,
-            build_id: Some(BUILD_ID.to_string()),
-            activation_identity: ActivationIdentityControl {
-                assembly_identity: AssemblyIdentity::new(
-                    "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-                generation: 7,
-                runtime_replica_id: "runtime-replica-7".to_string(),
-                deployment_revision: DeploymentRevision::new("deployment-revision-7"),
-            },
-            caller_request_id: Some("request-test".to_string()),
-            trace_id: None,
-            caller_target: Some("program.test".to_string()),
-            max_queue_wait_ms: None,
-        }
     }
 
     fn test_execution_control() -> capability_contract::OwnedExecutionControl {

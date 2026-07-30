@@ -884,9 +884,9 @@ impl RuntimeAssemblyEvalResolver for ActiveAssemblyContextSet {
 mod websocket_admission_tests {
     use super::*;
     use skiff_artifact_model::{
-        ActivationPolicy, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy,
-        DeploymentRevision, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
-        GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayExternalSchema,
+        DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentPolicy, DeploymentRevision,
+        GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryProtocolSurface,
+        GatewayExternalErrorProjection, GatewayExternalSchema,
         GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
         GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
         GatewayWebSocketShapeVersion, PackageArtifactRef, PackageLocalAbiIdentity, ResourcePolicy,
@@ -1002,10 +1002,6 @@ mod websocket_admission_tests {
                 resources: ResourcePolicy {
                     cpu_millis: 100,
                     memory_bytes: 1024,
-                },
-                activation: ActivationPolicy {
-                    max_concurrency: 1,
-                    idle_timeout_ms: None,
                 },
                 principal: "test".to_string(),
             },

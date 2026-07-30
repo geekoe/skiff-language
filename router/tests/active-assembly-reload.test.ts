@@ -115,7 +115,9 @@ describe('active RuntimeAssembly activation transaction', () => {
     });
     expect(fixture.snapshots.get()).toMatchObject({
       generation: 2,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B },
+      deploymentRuntimeBindings:
+        assembly(ASSEMBLY_B).deploymentRuntimeBindings
     });
     expect(controlsOfType(fixture.controls, 'commit')).toHaveLength(2);
     fixture.coordinator.handleRuntimeControl(
@@ -428,9 +430,29 @@ function fakeSocket(): WebSocket {
 }
 
 function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
+  const deployment = {
+    serviceId: 'example.com/runtime',
+    contractVersion: '1.0.0',
+    deploymentRevision:
+      assemblyIdentity === ASSEMBLY_A ? 'revision-a' : 'revision-b',
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v4:sha256:${'d'.repeat(64)}`
+  };
   return {
     schemaVersion: 'skiff-runtime-assembly-v3',
     assemblyIdentity,
+    resolvedDeployments: [deployment],
+    resolvedContracts: [{
+      serviceId: deployment.serviceId,
+      contractVersion: deployment.contractVersion,
+      serviceProtocolIdentity:
+        `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`
+    }],
+    deploymentRuntimeBindings: [{
+      deployment,
+      packageBuildId:
+        `skiff-package-build-v10:sha256:${'f'.repeat(64)}`
+    }],
     gatewayIngress: []
   };
 }

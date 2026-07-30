@@ -25,15 +25,12 @@ use skiff_runtime_transport::{
     },
     connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
-    control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
         decode_router_bootstrap_frame_header, decode_typed_binary_frame,
         ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
         ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
         ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
         RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
-        SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
-        SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
         SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
@@ -656,49 +653,6 @@ async fn dispatch_router_binary_frame_inner(
                 "spawn.submit.response",
             )?;
         }
-        "spawn.claim.response" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<SpawnClaimResponseFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            let rpc_id = header.rpc_id.clone();
-            dispatch_spawn_claim_response(host, &rpc_id, header, payload)?;
-        }
-        "spawn.renew.response" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<SpawnRenewResponseFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_response(
-                host,
-                &header.rpc_id,
-                &header,
-                payload,
-                "spawn.renew.response",
-            )?;
-        }
-        "spawn.complete.response" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<SpawnCompleteResponseFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_response(
-                host,
-                &header.rpc_id,
-                &header,
-                payload,
-                "spawn.complete.response",
-            )?;
-        }
-        "spawn.fail.response" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<SpawnFailResponseFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_response(
-                host,
-                &header.rpc_id,
-                &header,
-                payload,
-                "spawn.fail.response",
-            )?;
-        }
         "actor.getOrCreate.error" => {
             let (header, payload) =
                 decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
@@ -757,54 +711,6 @@ async fn dispatch_router_binary_frame_inner(
                 payload,
                 header.error,
                 "spawn.submit.error",
-            )?;
-        }
-        "spawn.claim.error" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_error(
-                host,
-                &header.rpc_id,
-                payload,
-                header.error,
-                "spawn.claim.error",
-            )?;
-        }
-        "spawn.renew.error" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_error(
-                host,
-                &header.rpc_id,
-                payload,
-                header.error,
-                "spawn.renew.error",
-            )?;
-        }
-        "spawn.complete.error" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_error(
-                host,
-                &header.rpc_id,
-                payload,
-                header.error,
-                "spawn.complete.error",
-            )?;
-        }
-        "spawn.fail.error" => {
-            let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
-                    .map_err(super::transport_error_into_runtime_error)?;
-            dispatch_control_error(
-                host,
-                &header.rpc_id,
-                payload,
-                header.error,
-                "spawn.fail.error",
             )?;
         }
         other => {
@@ -946,26 +852,6 @@ fn dispatch_actor_owner_control(
             let _ = sender.send(super::RouterWriterMessage::Binary(frame));
         }
     });
-    Ok(())
-}
-
-fn dispatch_spawn_claim_response(
-    host: &super::RuntimeHost,
-    rpc_id: &str,
-    header: SpawnClaimResponseFrameHeader,
-    payload: Vec<u8>,
-) -> Result<()> {
-    let payload = spawn_claim_response_control_payload(header, &payload)
-        .map_err(super::transport_error_into_runtime_error)?;
-    if let Some(sender) = host.outbound_requests.take_terminal_sender(rpc_id) {
-        let _ = sender.send(OutboundResponse::End { payload });
-    } else {
-        warn!(
-            event = "runtime.unmatched_outbound_control_response",
-            envelope_type = "spawn.claim.response",
-            rpc_id = %rpc_id
-        );
-    }
     Ok(())
 }
 

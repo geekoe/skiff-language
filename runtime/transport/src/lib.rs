@@ -6,7 +6,6 @@ pub mod connection_protocol;
 #[cfg(test)]
 mod connection_protocol_tests;
 pub mod control_mapper;
-pub mod control_response_mapper;
 mod error;
 pub mod ingress_selector;
 pub mod protocol;

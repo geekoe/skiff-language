@@ -139,6 +139,17 @@ is unrelated to project `skiff.yml`, `skiff.local.yml`, or package store
 resolution, and `.skiff-instance/` is ignored local state. The generated
 instance uses ports `4100` for service HTTP, `4101` for router control/runtime,
 and `4102` for telemetry, leaving the main worktree service instance untouched.
+Its generated `router.yml` always contains the required connection-wide request limit:
+
+```yaml
+runtime:
+  port: 4101
+  path: /runtime
+  maxConcurrency: 128
+```
+
+`128` is the shared config-generator default; the final Router config never
+relies on a Router-side fallback.
 
 Use the instance CLI as the source of truth for instance paths:
 
@@ -203,6 +214,9 @@ node deploy-runtime-stack.mjs \
 `deploy-runtime-stack.mjs` reads that build manifest by default, publishes the router, runtime, and telemetry process, then writes config, installs router/telemetry dependencies, and reloads the selected components. It does not deploy the compiler. The legacy `--runtime-binary` flag is still accepted, but the build manifest is preferred. Telemetry is a separate Node process that listens on `127.0.0.1:4002`, receives runtime telemetry at `ws://127.0.0.1:4002/telemetry`, and persists events to Mongo. The deploy script writes telemetry settings to `${remoteSkiff}/config/telemetry.yml`.
 
 Deployment targets are intentionally explicit. Pass `--remote <user@host>` or set `SKIFF_DEPLOY_REMOTE`; optional defaults can be overridden with `--remote-home`, `--remote-skiff`, `--node-bin`, or the matching `SKIFF_DEPLOY_REMOTE_HOME`, `SKIFF_DEPLOY_REMOTE_SKIFF`, and `SKIFF_DEPLOY_NODE_BIN` environment variables. The generated Router config owns the absolute shared `artifactsPath` (`${remoteSkiff}/artifacts`) and the required `serviceDb.mongoUrl`; Runtime receives both through its Router bootstrap and neither value is written to `runtime.yml`.
+The same generator writes `runtime.maxConcurrency: 128` explicitly into the
+deployed `router.yml`; this connection-wide limit is not copied into
+`runtime.yml`, service config, deployment artifacts, or bootstrap data.
 
 Every deployment must provide positive safe integers through
 `--http-max-request-bytes` and `--http-max-response-bytes`, or the matching

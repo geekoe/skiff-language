@@ -67,11 +67,21 @@ describe('runtimeAssembly current request wire', () => {
     (testCase) => {
       const validation =
         validateRuntimeAssemblyRequestStartFrameWireHeader(testCase.header);
+      if (
+        testCase.kind === 'websocketConnect' &&
+        testCase.header.testEffectsEnabled === true
+      ) {
+        expect(validation, testCase.name).toMatchObject({ ok: false });
+        return;
+      }
       expect(validation, testCase.name).toMatchObject({ ok: true });
       const decoded = decodeRuntimeAssemblyRequestStartFrame(
         encodeBinaryFrame(testCase.header, Buffer.from(testCase.payloadHex, 'hex'))
       );
       expect(JSON.stringify(decoded.header)).toBe(testCase.canonicalJson);
+      if (!('ingress' in decoded.header.routing)) {
+        throw new Error('gateway corpus decoded as an internal spawn request');
+      }
       expect(decoded.header.routing.ingress.protocol).toBe(
         testCase.kind === 'http' ? 'http' : 'webSocket'
       );

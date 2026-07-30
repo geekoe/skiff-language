@@ -199,19 +199,22 @@ impl Interpreter {
             item_plan.clone(),
             context.stream_runtime().request_scope_generation(),
         )?;
-        let consumer = self.consume_in_process_binary_http_response_stream(
-            &context,
-            &stream_value,
-            &item_plan,
-            &[],
-            &mut on_event,
-        );
+        let consumer_stream_value = stream_value.clone();
         self.drive_deferred_stream_producer(
             context.clone(),
             handler.addr,
             &stream_value,
-            async move {
-                consumer.await.map_err(|error| match error {
+            |supervision| async move {
+                self.consume_in_process_binary_http_response_stream(
+                    &context,
+                    &consumer_stream_value,
+                    &item_plan,
+                    &[],
+                    supervision,
+                    &mut on_event,
+                )
+                .await
+                .map_err(|error| match error {
                     EvalStreamExecutionError::Eval(error)
                     | EvalStreamExecutionError::Callback(error) => error,
                 })

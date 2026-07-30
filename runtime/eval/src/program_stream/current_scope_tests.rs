@@ -521,6 +521,7 @@ fn f445h_e4r_stream_for_in_materializes_current_local_deadline_owner_before_wait
         stream_value,
         None,
         &[],
+        None,
     );
     let mut future = Box::pin(future);
     let waker = Waker::from(Arc::new(NoopWake));
@@ -571,6 +572,7 @@ async fn f445h_e4r_stream_for_in_natural_end_is_the_only_disarmed_terminal() {
             json!({"$stream": "natural-end"}),
             None,
             &[],
+            None,
         )
         .await
         .expect("natural End succeeds");
@@ -604,6 +606,7 @@ async fn f445h_e4r_stream_for_in_break_initiates_local_cleanup_once() {
             json!({"$stream": "break"}),
             None,
             &[],
+            None,
         )
         .await
         .expect("break exits the consumer");
@@ -632,6 +635,7 @@ async fn f445h_e4r_stream_for_in_return_initiates_local_cleanup_once() {
             json!({"$stream": "return"}),
             None,
             &[],
+            None,
         )
         .await
         .expect("return exits the consumer");
@@ -665,6 +669,7 @@ async fn f445h_e4r_stream_for_in_ordinary_error_initiates_local_cleanup_once() {
             json!({"$stream": "ordinary-error"}),
             None,
             &[],
+            None,
         )
         .await
         .expect_err("invalid body expression is an ordinary evaluator error");
@@ -696,6 +701,7 @@ fn f445h_e4r_stream_for_in_future_drop_initiates_cleanup_without_remote_ack() {
         json!({"$stream": "future-drop"}),
         None,
         &[],
+        None,
     );
     let mut future = Box::pin(future);
     let waker = Waker::from(Arc::new(NoopWake));
@@ -739,6 +745,7 @@ fn f445h_e4r_stream_for_in_future_drop_initiates_cleanup_without_remote_ack() {
         json!({"$stream": "future-drop-late-error"}),
         None,
         &[],
+        None,
     );
     let mut future = Box::pin(future);
     assert!(future.as_mut().poll(&mut poll_context).is_pending());
@@ -782,6 +789,7 @@ fn f445h_e4r_stream_for_in_ancestor_cancel_wins_equal_expired_deadline() {
         json!({"$stream": "cancel-deadline-race"}),
         None,
         &[],
+        None,
     );
     let mut future = Box::pin(future);
     let waker = Waker::from(Arc::new(NoopWake));
@@ -824,6 +832,7 @@ async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
             json!({"$stream": "actor-buffered-ready"}),
             None,
             &[],
+            None,
         )
         .await
         .expect("buffered stream item and break complete synchronously");
@@ -869,6 +878,7 @@ fn f445h_e4r_stream_for_in_buffered_ready_then_pending_observes_lease_child_scop
         json!({"$stream": "ready-then-pending"}),
         None,
         &[],
+        None,
     );
     let mut future = Box::pin(future);
     let waker = Waker::from(Arc::new(NoopWake));

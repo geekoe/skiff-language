@@ -532,7 +532,15 @@ fn rewrite_interface_instantiation_ref(
     if let Ok(mut interface_identity) =
         serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
     {
-        if rewrite_type_ref(index, module_path, &mut interface_identity) {
+        let mut identity_changed = rewrite_type_ref(index, module_path, &mut interface_identity);
+        if let TypeRefIr::LocalType { type_index } = &interface_identity {
+            interface_identity = TypeRefIr::PublicationType {
+                module_path: module_path.to_string(),
+                type_index: *type_index,
+            };
+            identity_changed = true;
+        }
+        if identity_changed {
             interface.interface_abi_id = type_ref_abi_key(&interface_identity);
             changed = true;
         }
@@ -860,6 +868,48 @@ mod tests {
         assert_eq!(
             symbol.abi_expectation.as_deref(),
             Some("local-abi:interfaces")
+        );
+    }
+
+    #[test]
+    fn local_interface_identity_uses_one_publication_coordinate_in_every_file() {
+        let index = PublicationLocalRefIndex {
+            current_package_id: Some("example.com/consumer".to_string()),
+            package_dependency_abi_expectations: BTreeMap::new(),
+            package_dependency_abi_expectations_by_package_id: BTreeMap::new(),
+            types_by_module_symbol: BTreeMap::new(),
+            type_resolution: None,
+            alias_expansion_error: RefCell::new(None),
+        };
+        let mut owner = InterfaceInstantiationRef {
+            interface_abi_id: type_ref_abi_key(&TypeRefIr::LocalType { type_index: 17 }),
+            canonical_type_args: Vec::new(),
+        };
+        let mut sibling = InterfaceInstantiationRef {
+            interface_abi_id: type_ref_abi_key(&TypeRefIr::PublicationType {
+                module_path: "internal.drain".to_string(),
+                type_index: 17,
+            }),
+            canonical_type_args: Vec::new(),
+        };
+
+        assert!(rewrite_interface_instantiation_ref(
+            &index,
+            "internal.drain",
+            &mut owner
+        ));
+        assert!(!rewrite_interface_instantiation_ref(
+            &index,
+            "internal.worker",
+            &mut sibling
+        ));
+        assert_eq!(owner.interface_abi_id, sibling.interface_abi_id);
+        assert_eq!(
+            serde_json::from_str::<TypeRefIr>(&owner.interface_abi_id).unwrap(),
+            TypeRefIr::PublicationType {
+                module_path: "internal.drain".to_string(),
+                type_index: 17,
+            }
         );
     }
 

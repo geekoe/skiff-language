@@ -102,12 +102,12 @@ fn invalid_assembly<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use serde_json::json;
     use skiff_artifact_model::{
-        ActivationPolicy, ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan,
-        DeploymentArtifactIdentity, DeploymentPolicy, DeploymentRevision, GatewayEntryIdentity,
-        GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector,
-        PackageArtifactRef, PackageBuildId, PackageCodeSlot, PackageLocalAbiIdentity,
-        ResourcePolicy, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
-        ServiceDeploymentRef, GATEWAY_ENTRY_IDENTITY_PREFIX, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+        ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity,
+        DeploymentPolicy, DeploymentRevision, GatewayEntryIdentity, GatewayEntryKey,
+        GatewayIngressBinding, IngressProtocol, IngressSelector, PackageArtifactRef,
+        PackageBuildId, PackageCodeSlot, PackageLocalAbiIdentity, ResourcePolicy, RuntimeAssembly,
+        RuntimeAssemblyRef, ServiceBindingTemplate, ServiceDeploymentRef,
+        GATEWAY_ENTRY_IDENTITY_PREFIX, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -177,10 +177,6 @@ mod tests {
                     resources: ResourcePolicy {
                         cpu_millis: 100,
                         memory_bytes: 1024,
-                    },
-                    activation: ActivationPolicy {
-                        max_concurrency: 1,
-                        idle_timeout_ms: None,
                     },
                     principal: "gateway-test".to_string(),
                 },

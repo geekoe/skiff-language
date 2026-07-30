@@ -1,6 +1,9 @@
 import type { ConfigShape } from '../config/index.js';
 import type { RequestCancelReason } from './cancelReason.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from './runtimeAssemblyRequest.js';
+import type {
+  RuntimeAssemblyRequestStartFrameHeader,
+  RuntimeAssemblyRequestStartFrameWireHeader
+} from './runtimeAssemblyRequest.js';
 
 export type { RequestCancelReason } from './cancelReason.js';
 
@@ -84,18 +87,6 @@ export type RuntimeFrameHeaderName =
   | 'spawn.submit.request'
   | 'spawn.submit.response'
   | 'spawn.submit.error'
-  | 'spawn.claim.request'
-  | 'spawn.claim.response'
-  | 'spawn.claim.error'
-  | 'spawn.renew.request'
-  | 'spawn.renew.response'
-  | 'spawn.renew.error'
-  | 'spawn.complete.request'
-  | 'spawn.complete.response'
-  | 'spawn.complete.error'
-  | 'spawn.fail.request'
-  | 'spawn.fail.response'
-  | 'spawn.fail.error'
   | 'request.start'
   | 'package-test.start'
   | 'request.cancel'
@@ -768,96 +759,16 @@ export interface SpawnSubmitRequestFrameHeader
   target: string;
   spawnId?: string;
   buildId?: string;
-  callerRequestId?: string;
+  callerRequestId: string;
   traceId?: string;
   callerTarget?: string;
-  maxQueueWaitMs?: number;
 }
 
 export interface SpawnSubmitResponseFrameHeader
   extends RuntimeRpcFrameHeaderBase<'spawn.submit.response'> {
   spawnId: string;
-  itemId: string;
+  requestId: string;
   status: 'submitted';
-}
-
-export interface SpawnClaimRequestFrameHeader
-  extends RuntimeControlRequestFrameHeaderBase<'spawn.claim.request'> {
-  workerId: string;
-  serviceId: string;
-  serviceVersion: string;
-  serviceProtocolIdentity: string;
-  supportedTargets: string[];
-  supportedSpawnCompatibilityKeys: string[];
-  buildId?: string;
-  maxExecutionMs?: number;
-  maxConcurrency?: number;
-}
-
-export interface SpawnClaimDescriptorFrameMetadata {
-  itemId: string;
-  leaseId: string;
-  spawnExecutionId: string;
-  runtimeRequestId: string;
-  spawnId: string;
-  targetKind: SpawnSubmitTargetKind;
-  target: string;
-  serviceId: string;
-  serviceVersion: string;
-  serviceProtocolIdentity: string;
-  buildId: string;
-  activationIdentity: ActivationIdentityFrameMetadata;
-  payloadSchemaIdentity?: string;
-  leaseExpiresAt?: string;
-}
-
-export interface SpawnClaimResponseFrameHeader
-  extends RuntimeRpcFrameHeaderBase<'spawn.claim.response'> {
-  claimed: boolean;
-  item?: SpawnClaimDescriptorFrameMetadata;
-}
-
-export interface SpawnRenewRequestFrameHeader
-  extends RuntimeControlRequestFrameHeaderBase<'spawn.renew.request'> {
-  itemId: string;
-  leaseId: string;
-  workerId: string;
-}
-
-export interface SpawnRenewResponseFrameHeader
-  extends RuntimeRpcFrameHeaderBase<'spawn.renew.response'> {
-  itemId: string;
-  renewed: boolean;
-  leaseExpiresAt?: string;
-}
-
-export interface SpawnCompleteRequestFrameHeader
-  extends RuntimeControlRequestFrameHeaderBase<'spawn.complete.request'> {
-  itemId: string;
-  leaseId: string;
-  diagnostics?: Record<string, unknown>;
-}
-
-export interface SpawnCompleteResponseFrameHeader
-  extends RuntimeRpcFrameHeaderBase<'spawn.complete.response'> {
-  itemId: string;
-  status: 'completed';
-}
-
-export type SpawnFailReason = 'failed' | 'cancelled' | 'timed_out';
-
-export interface SpawnFailRequestFrameHeader
-  extends RuntimeControlRequestFrameHeaderBase<'spawn.fail.request'> {
-  itemId: string;
-  leaseId: string;
-  reason: SpawnFailReason;
-  diagnostics?: Record<string, unknown>;
-}
-
-export interface SpawnFailResponseFrameHeader
-  extends RuntimeRpcFrameHeaderBase<'spawn.fail.response'> {
-  itemId: string;
-  status: SpawnFailReason;
 }
 
 export type ActorSpawnRuntimeRequestFrameHeader =
@@ -865,33 +776,21 @@ export type ActorSpawnRuntimeRequestFrameHeader =
   | ActorReplaceRequestFrameHeader
   | ActorFindRequestFrameHeader
   | ActorRemoveRequestFrameHeader
-  | SpawnSubmitRequestFrameHeader
-  | SpawnClaimRequestFrameHeader
-  | SpawnRenewRequestFrameHeader
-  | SpawnCompleteRequestFrameHeader
-  | SpawnFailRequestFrameHeader;
+  | SpawnSubmitRequestFrameHeader;
 
 export type ActorSpawnRuntimeResponseFrameHeader =
   | ActorGetOrCreateResponseFrameHeader
   | ActorReplaceResponseFrameHeader
   | ActorFindResponseFrameHeader
   | ActorRemoveResponseFrameHeader
-  | SpawnSubmitResponseFrameHeader
-  | SpawnClaimResponseFrameHeader
-  | SpawnRenewResponseFrameHeader
-  | SpawnCompleteResponseFrameHeader
-  | SpawnFailResponseFrameHeader;
+  | SpawnSubmitResponseFrameHeader;
 
 export type ActorSpawnRuntimeErrorFrameHeaderName =
   | 'actor.getOrCreate.error'
   | 'actor.replace.error'
   | 'actor.find.error'
   | 'actor.remove.error'
-  | 'spawn.submit.error'
-  | 'spawn.claim.error'
-  | 'spawn.renew.error'
-  | 'spawn.complete.error'
-  | 'spawn.fail.error';
+  | 'spawn.submit.error';
 
 export type ActorSpawnRuntimeErrorFrameHeader = {
   [Type in ActorSpawnRuntimeErrorFrameHeaderName]: RuntimeRpcFrameHeaderBase<Type> & {
@@ -906,7 +805,7 @@ export type RouterToRuntimeFrameHeader =
   | ActorSpawnRuntimeResponseFrameHeader
   | ActorSpawnRuntimeErrorFrameHeader
   | RequestStartFrameHeader
-  | RuntimeAssemblyRequestStartFrameHeader
+  | RuntimeAssemblyRequestStartFrameWireHeader
   | PackageTestStartFrameHeader
   | RequestCancelFrameHeader
   | ConnectionResponseFrameHeader

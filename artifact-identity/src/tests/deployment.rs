@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    ActivationPolicy, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
     DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, GatewayAdapterArg,
     GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
@@ -201,10 +201,6 @@ fn deployment_with(kind: GatewayAdapterKind) -> ServiceDeployment {
             resources: ResourcePolicy {
                 cpu_millis: 1,
                 memory_bytes: 1,
-            },
-            activation: ActivationPolicy {
-                max_concurrency: 1,
-                idle_timeout_ms: None,
             },
             principal: "service:example.service".to_string(),
         },

@@ -450,7 +450,6 @@ ServiceDeployment
   config/secrets bindings
   state/DB/actor/queue ownership
   external request timeout/resource policy
-  activation lifecycle bindings
 ```
 
 operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
@@ -1177,7 +1176,14 @@ Service source的`config.*.yml`选择或提供：
 
 - 提供config/secrets；
 - 选择DB、Redis、actor、queue等外部state namespace；
-- 定义timeout、quota、principal与lifecycle policy。
+- 定义timeout、quota与principal。
+
+Service profile没有`lifecycle`配置面；旧`maxConcurrency`和`idleTimeoutMs`均删除，出现`lifecycle`
+必须fail closed。`DeploymentPolicy`不包含`activation`，ServiceDeployment、DeploymentArtifact、
+RuntimeAssembly和artifact identity都不得复制并发或空闲超时。初期唯一并发配置是`router.yml`现有
+`runtime`段的required正安全整数`maxConcurrency`，Router按每条Runtime WebSocket连接统一限制所有普通
+pending request；Actor/control frame不计。该门禁不做动态CPU、内存或数据库资源估算，满载立即overload
+且不排队。
 
 `timeout`是可选的deployment override。profile缺省或显式`null`都表示不覆盖平台/外层request
 deadline；生成的`DeploymentPolicy`不包含`timeoutMs`。只有显式的正整数毫秒值才生成
@@ -1198,7 +1204,7 @@ Package静态资源随PackageArtifact发布，并按当前执行callable的packa
 没有用户代码资源；deployment-only证书、secret和环境文件属于activation输入，不进入code artifact。
 
 同一个PackageArtifact被两个service使用时，代码和静态资源可共享，ActivationContext、config、state
-owner和lifecycle必须分开。
+owner必须分开；Router连接级并发门禁不随service复制。
 
 ## 12. RuntimeAssembly 与扩容
 

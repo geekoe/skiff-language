@@ -163,7 +163,7 @@ async fn spawn_submit_accepts_correlated_receipt_and_preserves_activation_identi
             "type": "spawn.submit.response",
             "rpcId": rpc_id,
             "spawnId": "spawn-7",
-            "itemId": "spawn-item-11",
+            "requestId": "spawn-request-11",
             "status": "submitted"
         }))
     })
@@ -171,7 +171,7 @@ async fn spawn_submit_accepts_correlated_receipt_and_preserves_activation_identi
 
     let response = result.expect("canonical submitted receipt should succeed");
     assert_eq!(response.spawn_id, "spawn-7");
-    assert_eq!(response.item_id, "spawn-item-11");
+    assert_eq!(response.request_id, "spawn-request-11");
     assert_eq!(sent_request.rpc_id, response.rpc_id);
     assert_eq!(sent_request.runtime_id, "runtime-test");
     assert_eq!(sent_request.activation_identity, expected_activation);
@@ -264,9 +264,9 @@ async fn spawn_submit_rejects_uncorrelated_status_and_identity_receipts() {
         InvalidReceipt::MissingSpawnId,
         InvalidReceipt::EmptySpawnId,
         InvalidReceipt::InvalidSpawnId,
-        InvalidReceipt::MissingItemId,
-        InvalidReceipt::EmptyItemId,
-        InvalidReceipt::InvalidItemId,
+        InvalidReceipt::MissingRequestId,
+        InvalidReceipt::EmptyRequestId,
+        InvalidReceipt::InvalidRequestId,
     ];
 
     for case in cases {
@@ -451,9 +451,9 @@ enum InvalidReceipt {
     MissingSpawnId,
     EmptySpawnId,
     InvalidSpawnId,
-    MissingItemId,
-    EmptyItemId,
-    InvalidItemId,
+    MissingRequestId,
+    EmptyRequestId,
+    InvalidRequestId,
 }
 
 impl InvalidReceipt {
@@ -463,7 +463,7 @@ impl InvalidReceipt {
             "type": "spawn.submit.response",
             "rpcId": rpc_id,
             "spawnId": "spawn-7",
-            "itemId": "spawn-item-11",
+            "requestId": "spawn-request-11",
             "status": "submitted"
         });
         match self {
@@ -477,14 +477,14 @@ impl InvalidReceipt {
             }
             Self::EmptySpawnId => response["spawnId"] = json!(""),
             Self::InvalidSpawnId => response["spawnId"] = json!("spawn id"),
-            Self::MissingItemId => {
+            Self::MissingRequestId => {
                 response
                     .as_object_mut()
                     .expect("response object")
-                    .remove("itemId");
+                    .remove("requestId");
             }
-            Self::EmptyItemId => response["itemId"] = json!(""),
-            Self::InvalidItemId => response["itemId"] = json!("item\u{7f}id"),
+            Self::EmptyRequestId => response["requestId"] = json!(""),
+            Self::InvalidRequestId => response["requestId"] = json!("request\u{7f}id"),
         }
         response
     }
@@ -496,9 +496,9 @@ impl InvalidReceipt {
             Self::MissingSpawnId => "missing spawnId",
             Self::EmptySpawnId => "empty spawnId",
             Self::InvalidSpawnId => "invalid spawnId",
-            Self::MissingItemId => "missing itemId",
-            Self::EmptyItemId => "empty itemId",
-            Self::InvalidItemId => "invalid itemId",
+            Self::MissingRequestId => "missing requestId",
+            Self::EmptyRequestId => "empty requestId",
+            Self::InvalidRequestId => "invalid requestId",
         }
     }
 
@@ -508,8 +508,10 @@ impl InvalidReceipt {
             Self::BadStatus => "status must be submitted",
             Self::MissingSpawnId => "missing field `spawnId`",
             Self::EmptySpawnId | Self::InvalidSpawnId => "spawnId must be an ASCII visible token",
-            Self::MissingItemId => "missing field `itemId`",
-            Self::EmptyItemId | Self::InvalidItemId => "itemId must be an ASCII visible token",
+            Self::MissingRequestId => "missing field `requestId`",
+            Self::EmptyRequestId | Self::InvalidRequestId => {
+                "requestId must be an ASCII visible token"
+            }
         }
     }
 }

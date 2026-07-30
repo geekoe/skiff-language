@@ -289,6 +289,41 @@ async fn inline_effect_stream_is_consumed_in_buffered_event_order() {
 }
 
 #[tokio::test]
+async fn inline_package_effect_stream_uses_the_current_context_runtime() {
+    let fixture = package_direct_fixture_with_caller(CallerFixtureKind::EffectStream);
+    let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
+        Default::default(),
+        test_runtime::runtime_factory(),
+    );
+    let context_stream_runtime = test_runtime::runtime_factory().stream_runtime();
+    let context = execution_context_with_actor_and_stream_runtime(
+        &interpreter,
+        fixture.eval_target,
+        test_runtime::actor_context(),
+        context_stream_runtime,
+    );
+    let mut heap = RequestHeap::default();
+    let input = heap
+        .alloc_array(vec![RuntimeValue::String("request".to_string())])
+        .expect("request array should allocate");
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.caller_addr,
+            vec![RuntimeValue::Heap(input)],
+        )
+        .await
+        .expect("context runtime should own and consume the package effect stream");
+
+    assert_eq!(result, RuntimeValue::String("second".to_string()));
+    interpreter
+        .finalize_test_case()
+        .expect("stream outcome should be consumed");
+}
+
+#[tokio::test]
 async fn inline_effect_response_is_materialized_in_spawned_stream_producer_heap() {
     let fixture = package_direct_fixture_with_caller(CallerFixtureKind::EffectProducerHeap);
     let interpreter = Interpreter::for_runtime_assembly_with_test_effect_double_sequences(
@@ -1769,10 +1804,6 @@ fn activation_context(
                     cpu_millis: 100,
                     memory_bytes: 1_048_576,
                 },
-                activation: ActivationPolicy {
-                    max_concurrency: 1,
-                    idle_timeout_ms: None,
-                },
                 principal: "test".to_string(),
             },
         },
@@ -1839,6 +1870,20 @@ fn execution_context_with_actor<'a>(
     target: RuntimeAssemblyEvalTarget,
     actor: skiff_runtime_capability_context::ActorCapabilityContext<'static>,
 ) -> ProgramExecutionContext<'a> {
+    execution_context_with_actor_and_stream_runtime(
+        interpreter,
+        target,
+        actor,
+        interpreter.stream_runtime.clone(),
+    )
+}
+
+fn execution_context_with_actor_and_stream_runtime<'a>(
+    interpreter: &Interpreter,
+    target: RuntimeAssemblyEvalTarget,
+    actor: skiff_runtime_capability_context::ActorCapabilityContext<'static>,
+    stream_runtime: skiff_runtime_capability_context::StreamRuntime,
+) -> ProgramExecutionContext<'a> {
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
     ProgramExecutionContext::new(ProgramExecutionInput {
@@ -1846,15 +1891,13 @@ fn execution_context_with_actor<'a>(
         config: test_runtime::config_context(),
         db: skiff_runtime_capability_context::DbCapabilityContext::unavailable(),
         file: test_runtime::file_context(),
-        file_source_stream: test_runtime::file_source_stream_context(
-            interpreter.stream_runtime.clone(),
-        ),
+        file_source_stream: test_runtime::file_source_stream_context(stream_runtime.clone()),
         time: TimeCapabilityContext::new(execution),
         websocket: test_runtime::websocket_context(),
         effects: effects.clone(),
         http_client: effects.http_client_context(
             interpreter.http_options.clone(),
-            interpreter.stream_runtime.clone(),
+            stream_runtime,
             interpreter.test_effect_double_context(),
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),

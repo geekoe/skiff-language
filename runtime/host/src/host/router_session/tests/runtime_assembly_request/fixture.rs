@@ -41,6 +41,7 @@ static PINNED_ROUTE_FIXTURE_A: OnceLock<CompiledGatewayFixture> = OnceLock::new(
 static PINNED_ROUTE_FIXTURE_B: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PACKAGE_DIRECT_STREAM_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 static STREAM_ARGUMENT_FIXTURE: OnceLock<StreamArgumentCompiledFixture> = OnceLock::new();
+static SPAWN_SUBMIT_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 
 pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
@@ -118,6 +119,72 @@ pub(super) async fn admitted_package_direct_stream_gateway_host(
         })
         .collect();
     (host, routes)
+}
+
+pub(super) async fn admitted_spawn_submit_host() -> (RuntimeHost, ActiveAssemblyRoute) {
+    let fixture = SPAWN_SUBMIT_FIXTURE.get_or_init(compile_spawn_submit_fixture_with_stack);
+    let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        .expect("spawn-submit filesystem resolver");
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("spawn-submit assembly should admit");
+    let binding = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .find(|binding| binding.selector.path == "/probe")
+        .expect("spawn-submit probe ingress");
+    let route = host
+        .lookup_active_assembly_request_route(&binding.service_ingress_key())
+        .expect("spawn-submit probe route");
+    (host, route)
+}
+
+fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
+    let temp = TempFixture::new("host-direct-spawn-submit");
+    let source_artifacts = temp.child("source-artifacts");
+    let runtime_artifacts = temp.child("runtime-artifacts");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/host must live below the Skiff root")
+        .to_path_buf();
+    let fixture_root = repository.join("test-runner/fixtures/package-service-i02-spawn-submit");
+    let platform = CompilerPlatformSources::new(&repository).expect("repository platform sources");
+    seed_canonical_std(&platform, &source_artifacts).expect("canonical std seed");
+    let project = compile_package_project_for_test(&platform, &fixture_root, &source_artifacts)
+        .expect("spawn-submit test service production package");
+    let cases = discover_test_service_cases(&fixture_root, &fixture_root, false)
+        .expect("spawn-submit test discovery");
+    assert_eq!(cases.len(), 1);
+    let test_fixture = assemble_test_service_fixture_for_run(
+        &project,
+        &cases,
+        CanonicalBaseAssembly::default(),
+        "host-direct-spawn-submit",
+    )
+    .expect("spawn-submit test-service assembly");
+    test_fixture
+        .publish(&source_artifacts, &runtime_artifacts)
+        .expect("spawn-submit runtime records");
+    let assembly = Arc::new(test_fixture.records.assembly.clone());
+    CurrentScopeCompiledFixture {
+        assembly,
+        artifact_root: runtime_artifacts,
+        _temp: temp,
+    }
+}
+
+fn compile_spawn_submit_fixture_with_stack() -> CurrentScopeCompiledFixture {
+    std::thread::Builder::new()
+        .name("host-direct-spawn-submit-fixture".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(compile_spawn_submit_fixture)
+        .expect("spawn-submit fixture compiler thread")
+        .join()
+        .expect("spawn-submit fixture compiler thread should not panic")
 }
 
 pub(super) async fn admitted_stream_argument_gateway_host(
@@ -473,7 +540,7 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
         .expect("exact current-scope RuntimeAssembly");
     assert_eq!(
         receipt.base_assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:f42948a37913c0d8df6ecac416a8e04328b8a7d960854d3d0fa828cfa578a279"
+        "skiff-runtime-assembly-v3:sha256:91d6b18aaa34d8ebe35c78e28dbfaa98cae0e6075aceedfe4cc2bbda03f4ceb3"
     );
     assert_eq!(
         receipt.consumer_package.package_build_id.as_str(),
@@ -484,7 +551,7 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
             .consumer_deployment
             .deployment_artifact_identity
             .as_str(),
-        "skiff-deployment-artifact-v4:sha256:f653875d8978c9eec31dcd05a090dee7135a7f8351a91026849b5f0c3edf31b2"
+        "skiff-deployment-artifact-v4:sha256:7bc876f2bf851045bad8079fd9ce0977aeecbb3886f69de9bef28529fa6e501a"
     );
     CurrentScopeCompiledFixture {
         assembly,
@@ -563,13 +630,14 @@ fn compile_stream_argument_fixture() -> StreamArgumentCompiledFixture {
     test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
         .expect("stream-argument runtime records");
+    let assembly = Arc::new(test_fixture.records.assembly.clone());
     let first_case = test_fixture
         .cases
         .into_iter()
         .next()
         .expect("stream-argument fixture has six cases");
     StreamArgumentCompiledFixture {
-        assembly: Arc::new(first_case.records.assembly),
+        assembly,
         artifact_root: runtime_artifacts,
         entrypoint: first_case.entrypoint,
         _temp: temp,
@@ -825,13 +893,13 @@ jsonRpc:
     fs::write(root.join("websocket.yml"), websocket).expect("gateway WebSocket manifest");
     let config = match (with_database, replacement) {
         (true, true) => {
-            "state:\n  database:\n    kind: database\n    namespace: pinned-route-b\ntimeout: 2200\nquota: { cpuMillis: 200, memoryBytes: 2097152 }\nprincipal: service:pinned-route-b\nlifecycle: { maxConcurrency: 2 }\n"
+            "state:\n  database:\n    kind: database\n    namespace: pinned-route-b\ntimeout: 2200\nquota: { cpuMillis: 200, memoryBytes: 2097152 }\nprincipal: service:pinned-route-b\n"
         }
         (true, false) => {
-            "state:\n  database:\n    kind: database\n    namespace: pinned-route-a\ntimeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n"
+            "state:\n  database:\n    kind: database\n    namespace: pinned-route-a\ntimeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\n"
         }
         (false, _) => {
-            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n"
+            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\n"
         }
     };
     fs::write(root.join("config.dev.yml"), config).expect("gateway config");

@@ -36,8 +36,10 @@ serviceCalls:
 - `id`必填，是稳定service id；version仍来自`package.yml`。
 - `serviceCalls`可省略或为空，只能列`api.yml`已有public function或public instance root。
 - dependency、public symbol、handler、route、JSON schema、artifact binding和平台limit不在本文件声明。
-- timeout、quota、state/resource binding等deployment policy/value由所选`config.<profile>.yml`提供；
-  例如`timeout: 30000`投影为可选`DeploymentPolicy.timeoutMs`，不在`service.yml`声明。
+- timeout、quota及state/resource binding由所选`config.<profile>.yml`提供；例如
+  `timeout: 30000`投影为可选`DeploymentPolicy.timeoutMs`，不在`service.yml`声明。
+  Service profile没有`lifecycle`配置面；该key及其旧`maxConcurrency`、`idleTimeoutMs`字段均非法。
+  并发只属于Router的Runtime连接级平台门禁，不进入ServiceDeployment。
 - `kind: test`的profile按testing reference固定为`skiff-test`，使用`config.skiff-test.yml`及可选的
   ignored `config.skiff-test.secret.yml`；live target environment不改变该profile。
 

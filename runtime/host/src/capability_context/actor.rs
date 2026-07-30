@@ -649,7 +649,7 @@ fn validate_spawn_submit_response(
         });
     }
     validate_spawn_submit_identity("spawnId", &response.spawn_id)?;
-    validate_spawn_submit_identity("itemId", &response.item_id)
+    validate_spawn_submit_identity("requestId", &response.request_id)
 }
 
 fn validate_spawn_submit_identity(label: &str, value: &str) -> Result<()> {

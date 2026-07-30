@@ -26,7 +26,9 @@ use tokio::{sync::mpsc, time::Duration};
 use tracing::error;
 
 use super::{
-    assembly_wire::{AdmittedHttpGatewayRequest, AdmittedWebSocketConnectRequest},
+    assembly_wire::{
+        AdmittedHttpGatewayRequest, AdmittedSpawnRequest, AdmittedWebSocketConnectRequest,
+    },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
 };
@@ -42,6 +44,199 @@ use crate::{
 };
 
 impl RuntimeHost {
+    pub(super) async fn spawn_direct_request_on_active_assembly(
+        &self,
+        router_session_id: String,
+        request: AdmittedSpawnRequest,
+        http_response_max_bytes: usize,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let AdmittedSpawnRequest {
+            header,
+            request,
+            target,
+            activation,
+            execution_image,
+            db_source,
+            service_protocol_identity,
+        } = request;
+        let mut telemetry = RequestTelemetryContext::new(self.telemetry.clone());
+        telemetry.service_id = Some(activation.identity().deployment.service_id.clone());
+        telemetry.build_id = Some(
+            activation
+                .implementation_package_build_id()
+                .as_str()
+                .to_string(),
+        );
+        telemetry.activation_identity = Some(activation.activation_id().as_str().to_string());
+        telemetry.runtime_id = Some(self.base_runtime_id.clone());
+        telemetry.request_id = Some(header.request_id.clone());
+        telemetry.target = Some(header.invocation.target.clone());
+        telemetry.trace_id = Some(header.trace.trace_id.clone());
+        telemetry.span_id = Some(header.trace.span_id.clone());
+        telemetry.parent_span_id = header.trace.parent_span_id.clone();
+        let Some(supervised_request) = self
+            .request_supervisor
+            .begin_spawn(&header, telemetry.clone(), "request.start")
+            .await
+        else {
+            self.send_http_gateway_admission_error(
+                &header.request_id,
+                "duplicate active spawn requestId",
+                &sender,
+            );
+            return;
+        };
+        let context = crate::eval_capability_adapter::RuntimeAssemblyEvalAdapterContextInput {
+            runtime_id: self.base_runtime_id.clone(),
+            activation,
+            execution_image,
+            execution_target: header.invocation.target.clone(),
+            service_protocol_identity,
+            ingress_selector: None,
+            db_source,
+            file_source: crate::capability_context::FileCapabilitySource::new(self.file_runtime()),
+            http_options: self.http_runtime_options.clone(),
+            outbound_requests: Arc::clone(&self.outbound_requests),
+            actor_method_outbound: Arc::clone(&self.actor_method_outbound),
+            telemetry_context: Some(telemetry),
+            router_sender: Some(sender.clone()),
+            connection_requests: Arc::clone(&self.connection_requests),
+            router_session: match ConnectionRequestSession::new(router_session_id) {
+                Ok(session) => session,
+                Err(error) => {
+                    self.finish_direct_spawn_error(
+                        &supervised_request,
+                        header.request_id,
+                        RequestError::Decode(error),
+                        &sender,
+                    )
+                    .await;
+                    return;
+                }
+            },
+            http_response_max_bytes,
+            test_http_entries: self.test_http_entries.clone(),
+        };
+        let eval_adapter = match crate::eval_capability_adapter::spawn_eval_adapter(
+            crate::eval_capability_adapter::RuntimeSpawnEvalAdapterInput {
+                context,
+                header: header.clone(),
+            },
+        ) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                self.finish_direct_spawn_error(
+                    &supervised_request,
+                    header.request_id,
+                    RequestError::Decode(error.to_string()),
+                    &sender,
+                )
+                .await;
+                return;
+            }
+        };
+        // Acquire the derived test-case owner before returning to the Router read loop. Otherwise
+        // the root request could finalize the capability before this task is first polled.
+        let test_effect_execution = match eval_adapter.begin_test_effect_execution() {
+            Ok(execution) => execution,
+            Err(error) => {
+                self.finish_direct_spawn_error(
+                    &supervised_request,
+                    header.request_id,
+                    error,
+                    &sender,
+                )
+                .await;
+                return;
+            }
+        };
+        let cancelled = supervised_request.cancelled();
+        let cancellation = supervised_request.cancellation_token();
+        let execution_budget = supervised_request.execution_budget();
+        let deadline = runtime_deadline(
+            &execution_budget,
+            header.deadline.as_ref().map(|deadline| deadline.timeout_ms),
+        );
+        let handles = request_runner::RuntimeSpawnExecutionHandles {
+            request_heap_limits: self.request_heap_limits(),
+            eval_adapter,
+        };
+        let host = self.clone();
+        tokio::spawn(async move {
+            let request_id = header.request_id;
+            let execution = request_runner::execute_runtime_spawn_request(
+                request_runner::RuntimeSpawnExecutionInput {
+                    target,
+                    request,
+                    cancelled,
+                    cancellation: cancellation.clone(),
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                    test_effect_execution,
+                },
+            );
+            tokio::pin!(execution);
+            let cancel_wait = cancellation.clone();
+            let result = match deadline {
+                Some(deadline) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                            cancellation.cancel();
+                            execution_budget.record_deadline_exceeded();
+                            Err(deadline_exceeded_error())
+                        },
+                        result = &mut execution => {
+                            prefer_cancel_then_deadline(
+                                result,
+                                deadline,
+                                &cancellation,
+                                &execution_budget,
+                            )
+                        },
+                    }
+                }
+                None => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel_wait.wait_cancelled() => Err(RequestError::Cancelled),
+                        result = &mut execution => result,
+                    }
+                }
+            };
+            match result {
+                Ok(response) => {
+                    if !host
+                        .request_supervisor
+                        .complete_success(
+                            &supervised_request,
+                            "request.end",
+                            CompletionTrace::RUNTIME,
+                        )
+                        .await
+                    {
+                        return;
+                    }
+                    match response_into_transport_message(request_id, response) {
+                        Ok(Some(message)) => {
+                            let _ = sender.send(message);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            error!(event = "runtime.response_encode_error", error = %error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    host.finish_direct_spawn_error(&supervised_request, request_id, error, &sender)
+                        .await;
+                }
+            }
+        });
+    }
+
     pub(super) async fn spawn_websocket_connect_on_active_assembly_route(
         &self,
         router_session_id: String,
@@ -600,6 +795,74 @@ impl RuntimeHost {
         }
     }
 
+    async fn finish_direct_spawn_error(
+        &self,
+        supervised_request: &SupervisedRequest,
+        request_id: String,
+        request_error: RequestError,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        if request_error.is_cancellation_terminal() {
+            self.request_supervisor
+                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .await;
+            return;
+        }
+        if let Some(failure) = request_error.fixed_service_response_failure() {
+            error!(
+                event = "runtime.assembly_spawn_fixed_service_failure",
+                request_id,
+                trace_id = %failure.error().envelope().trace_id(),
+                error_id = %failure.error().envelope().error_id(),
+            );
+            if !self
+                .request_supervisor
+                .complete_fixed_service_failure(
+                    supervised_request,
+                    "request.error",
+                    failure.error(),
+                    CompletionTrace::RUNTIME,
+                )
+                .await
+            {
+                return;
+            }
+            if let Ok(message) = response_event_into_transport_message(
+                request_id,
+                OrdinaryResponseEvent::FixedServiceFailure(failure),
+            ) {
+                let _ = sender.send(message);
+            }
+            return;
+        }
+        let response_event = OrdinaryResponseEvent::try_error(&request_error)
+            .expect("cancellation was split before ordinary response mapping");
+        let response_error = request_error
+            .ordinary_response_error()
+            .expect("cancellation was split before ordinary response mapping");
+        let runtime_error = request_error_into_runtime_error(request_error);
+        error!(
+            event = "runtime.assembly_spawn_request_error",
+            request_id,
+            error = %runtime_error
+        );
+        if !self
+            .request_supervisor
+            .complete_error(
+                supervised_request,
+                "request.error",
+                &response_error,
+                CompletionTrace::RUNTIME,
+            )
+            .await
+        {
+            return;
+        }
+        if let Ok(message) = response_event_into_transport_message(request_id, response_event) {
+            let _ = sender.send(message);
+        }
+    }
+
     fn websocket_connect_execution_handles(
         &self,
         route: &ActiveAssemblyRoute,
@@ -641,9 +904,9 @@ impl RuntimeHost {
                 runtime_id: self.base_runtime_id.clone(),
                 activation: Arc::clone(route.activation()),
                 execution_image: Arc::clone(route.execution_image()),
-                gateway_entry_key: route.gateway_entry_key().as_str().to_string(),
+                execution_target: route.gateway_entry_key().as_str().to_string(),
                 service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
-                ingress_selector: route.selector().clone(),
+                ingress_selector: Some(route.selector().clone()),
                 db_source: route
                     .db_source()
                     .map_err(|error| RuntimeError::Decode(error.to_string()))?,
@@ -653,7 +916,6 @@ impl RuntimeHost {
                 http_options: self.http_runtime_options.clone(),
                 outbound_requests: Arc::clone(&self.outbound_requests),
                 actor_method_outbound: Arc::clone(&self.actor_method_outbound),
-                spawn_workers: Arc::clone(&self.spawn_workers),
                 telemetry_context: Some(telemetry),
                 router_sender: Some(sender.clone()),
                 connection_requests: Arc::clone(&self.connection_requests),

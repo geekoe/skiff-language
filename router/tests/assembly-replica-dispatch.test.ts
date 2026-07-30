@@ -21,6 +21,7 @@ import {
 const ASSEMBLY_A = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v3:sha256:${'b'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
+const PACKAGE_BUILD_ID = `skiff-package-build-v10:sha256:${'f'.repeat(64)}`;
 const CURRENT_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
@@ -79,7 +80,16 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
     httpRequest: httpRequest()
   });
 
-  expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-a' });
+  expect(registry.pickDispatchConnection(request)).toMatchObject({
+    runtimeId: 'replica-a',
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      deployment: binding.deployment,
+      buildId: PACKAGE_BUILD_ID,
+      serviceProtocolIdentity: PROTOCOL
+    }
+  });
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-b' });
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-a' });
 
@@ -121,6 +131,41 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   expect(registry.snapshot()[0]).not.toHaveProperty('target');
 });
 
+it('skips saturated assembly replicas without hiding them from actor control', () => {
+  const snapshots = new RouterActiveAssemblySnapshotStore();
+  snapshots.replace(snapshot(1, ASSEMBLY_A));
+  const registry = new AssemblyRuntimeRegistry(snapshots);
+  const socketA = fakeSocket();
+  const socketB = fakeSocket();
+  register(registry, socketA, 'replica-a', 1, ASSEMBLY_A);
+  register(registry, socketB, 'replica-b', 1, ASSEMBLY_A);
+  const saturated = new Set<WebSocket>([socketA]);
+  registry.setInFlightCounter({
+    countInFlight: ({ ws }) => saturated.has(ws) ? 1 : 0,
+    hasCapacity: ({ ws }) => !saturated.has(ws)
+  });
+  const request = assemblyHttpRequestHeader({
+    snapshot: snapshots.get(),
+    binding,
+    requestId: 'request-capacity',
+    timeoutMs: 1000,
+    httpRequest: httpRequest()
+  });
+
+  expect(registry.pickDispatchConnection(request)).toMatchObject({
+    runtimeId: 'replica-b'
+  });
+  expect(registry.actorRuntimeCandidates('example/models')).toEqual([
+    { runtimeId: 'replica-a', ws: socketA },
+    { runtimeId: 'replica-b', ws: socketB }
+  ]);
+
+  saturated.add(socketB);
+  expect(registry.pickDispatchConnection(request)).toBeInstanceOf(
+    ProviderUnavailableError
+  );
+});
+
 function httpRequest() {
   return {
     method: 'GET',
@@ -141,6 +186,11 @@ function snapshot(generation: number, assemblyIdentity: string): RouterActiveAss
       serviceId: binding.deployment.serviceId,
       contractVersion: binding.deployment.contractVersion,
       serviceProtocolIdentity: PROTOCOL
+    }],
+    deploymentRuntimeBindings: [{
+      deployment: binding.deployment,
+      packageBuildId: PACKAGE_BUILD_ID,
+      timeoutMs: 1000
     }],
     ingress: new RuntimeAssemblyIngressIndex([binding])
   };
