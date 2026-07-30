@@ -26,6 +26,13 @@ import {
   HttpStreamResponseWriter,
   type HttpStreamLifecycleCounters
 } from './httpStreamResponseWriter.js';
+import {
+  hasCorsOriginHeader,
+  isCorsPreflightRequest,
+  isCorsResponseHeader,
+  writeAutomaticCorsHeaders,
+  writeAutomaticCorsPreflightResponse
+} from './httpCors.js';
 import { readOriginFormUrlForGatewayMetadata } from './bind.js';
 import {
   canonicalHttpHost,
@@ -119,6 +126,19 @@ export class AssemblyHttpGateway {
     response: ServerResponse
   ): Promise<void> {
     const snapshot = this.options.snapshots.get();
+    const serviceManagesCors = hasExplicitOptionsIngress(snapshot, request);
+    if (!serviceManagesCors) {
+      writeAutomaticCorsHeaders(request, response);
+      if (isCorsPreflightRequest(request)) {
+        assertHttpIngressPathExists(
+          snapshot,
+          readHttpIngressTarget(request),
+          request
+        );
+        writeAutomaticCorsPreflightResponse(request, response);
+        return;
+      }
+    }
     const selection = selectHttpIngress(snapshot, request);
     const timeoutMs = effectiveHttpRequestTimeoutMs(
       this.options.requestTimeoutMs ?? DEFAULT_HTTP_REQUEST_TIMEOUT_MS
@@ -327,10 +347,12 @@ function sameAssemblyRouting(
   );
 }
 
-function selectHttpIngress(
-  snapshot: RouterActiveAssemblySnapshot,
-  request: IncomingMessage
-): { binding: RuntimeAssemblyIngressBinding; url: URL } {
+interface HttpIngressTarget {
+  deployment: ReturnType<typeof readServiceDeploymentSelector>;
+  url: URL;
+}
+
+function readHttpIngressTarget(request: IncomingMessage): HttpIngressTarget {
   const deployment = readServiceDeploymentSelector(request);
   const rawHost = request.headers.host;
   if (typeof rawHost !== 'string' || rawHost.length === 0 || rawHost.includes(',')) {
@@ -353,16 +375,24 @@ function selectHttpIngress(
       error
     );
   }
-  const binding = snapshot.ingress.get(deployment, {
+  return { deployment, url };
+}
+
+function selectHttpIngress(
+  snapshot: RouterActiveAssemblySnapshot,
+  request: IncomingMessage
+): { binding: RuntimeAssemblyIngressBinding; url: URL } {
+  const target = readHttpIngressTarget(request);
+  const binding = snapshot.ingress.get(target.deployment, {
     protocol: 'http',
     method: (request.method ?? 'GET').toUpperCase(),
-    path: url.pathname
+    path: target.url.pathname
   });
   if (binding === undefined) {
     throw new GatewayError(
       404,
       'AssemblyIngressNotFound',
-      `No committed RuntimeAssembly ingress matches ${deployment.serviceId}@${deployment.contractVersion} ${request.method ?? 'GET'} ${url.pathname}`
+      `No committed RuntimeAssembly ingress matches ${target.deployment.serviceId}@${target.deployment.contractVersion} ${request.method ?? 'GET'} ${target.url.pathname}`
     );
   }
   if (
@@ -375,7 +405,49 @@ function selectHttpIngress(
       'only rawHttp bindings may use serverStream mode'
     );
   }
-  return { binding, url };
+  return { binding, url: target.url };
+}
+
+function hasExplicitOptionsIngress(
+  snapshot: RouterActiveAssemblySnapshot,
+  request: IncomingMessage
+): boolean {
+  if (!hasCorsOriginHeader(request)) {
+    return false;
+  }
+  try {
+    const target = readHttpIngressTarget(request);
+    return snapshot.ingress.get(target.deployment, {
+      protocol: 'http',
+      method: 'OPTIONS',
+      path: target.url.pathname
+    }) !== undefined;
+  } catch (error) {
+    if (error instanceof GatewayError) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function assertHttpIngressPathExists(
+  snapshot: RouterActiveAssemblySnapshot,
+  target: HttpIngressTarget,
+  request: IncomingMessage
+): void {
+  const exists = snapshot.ingress.values().some((binding) =>
+    binding.selector.protocol === 'http' &&
+    binding.selector.path === target.url.pathname &&
+    binding.deployment.serviceId === target.deployment.serviceId &&
+    binding.deployment.contractVersion === target.deployment.contractVersion
+  );
+  if (!exists) {
+    throw new GatewayError(
+      404,
+      'AssemblyIngressNotFound',
+      `No committed RuntimeAssembly ingress matches ${target.deployment.serviceId}@${target.deployment.contractVersion} ${request.method ?? 'GET'} ${target.url.pathname}`
+    );
+  }
 }
 
 function sameDeployment(
@@ -454,6 +526,9 @@ function writeResponseHeaders(
   for (const header of headers) {
     if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header.name)) {
       throw new GatewayError(502, 'InvalidRuntimeResponse', 'runtime response header is invalid');
+    }
+    if (isCorsResponseHeader(header.name) && response.hasHeader(header.name)) {
+      continue;
     }
     response.appendHeader(header.name, header.value);
   }
