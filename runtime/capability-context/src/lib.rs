@@ -83,9 +83,8 @@ pub use outbound_control::{
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
     OutboundControlMessage, RequestCancelControl, RouterWriterMessage, RuntimeClientSessionControl,
-    RuntimeDeadlineControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
-    SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,
-    WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
+    RuntimeDeadlineControl, SpawnSubmitControlRequest, WebSocketConnectionPolicyControl,
+    WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{
     OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,

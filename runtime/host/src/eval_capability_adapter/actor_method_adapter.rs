@@ -31,7 +31,6 @@ pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) http_options: concrete::HttpRuntimeOptions,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
-    pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(crate) telemetry_context: Option<RequestTelemetryContext>,
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(crate) http_response_max_bytes: usize,
@@ -56,7 +55,6 @@ pub(crate) struct ActorMethodEvalExecution {
     http_options: concrete::HttpRuntimeOptions,
     outbound_requests: Arc<OutboundRequestRegistry>,
     actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
-    spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     http_response_max_bytes: usize,
@@ -127,7 +125,6 @@ impl ActorMethodEvalExecution {
             http_options: input.http_options,
             outbound_requests: input.outbound_requests,
             actor_method_outbound: input.actor_method_outbound,
-            spawn_workers: input.spawn_workers,
             telemetry_context: input.telemetry_context,
             router_sender: input.router_sender,
             http_response_max_bytes: input.http_response_max_bytes,
@@ -188,7 +185,6 @@ impl ActorMethodEvalExecution {
             self.router_sender.as_ref(),
             &self.outbound_requests,
             &self.actor_method_outbound,
-            &self.spawn_workers,
             self.cancellation.clone(),
         );
         let stream_runtime = self.interpreter.stream_runtime.clone();

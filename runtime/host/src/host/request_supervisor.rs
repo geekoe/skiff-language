@@ -43,14 +43,6 @@ pub(crate) struct SupervisedRequest {
 pub(crate) struct CompletionTrace {
     include_duration: bool,
     include_budget_attrs: bool,
-    cancel_priority: CancelTracePriority,
-}
-
-#[derive(Clone, Copy)]
-enum CancelTracePriority {
-    None,
-    RequestCancelOnly,
-    AnyError,
 }
 
 enum CompletionClaim {
@@ -63,19 +55,6 @@ impl CompletionTrace {
     pub(crate) const RUNTIME: Self = Self {
         include_duration: true,
         include_budget_attrs: true,
-        cancel_priority: CancelTracePriority::RequestCancelOnly,
-    };
-
-    pub(crate) const SPAWN: Self = Self {
-        include_duration: false,
-        include_budget_attrs: false,
-        cancel_priority: CancelTracePriority::AnyError,
-    };
-
-    pub(crate) const SPAWN_RENEW_ERROR: Self = Self {
-        include_duration: false,
-        include_budget_attrs: false,
-        cancel_priority: CancelTracePriority::None,
     };
 }
 
@@ -229,27 +208,13 @@ impl RequestSupervisor {
             CompletionClaim::Ordinary => {}
         }
         request.active.execution_budget.finish(Instant::now());
-        match trace.cancel_priority {
-            CancelTracePriority::None => {}
-            CancelTracePriority::RequestCancelOnly if event_name == "request.cancel" => {
-                if request
-                    .active
-                    .cancel_event_emitted
-                    .swap(true, Ordering::SeqCst)
-                {
-                    return false;
-                }
-            }
-            CancelTracePriority::RequestCancelOnly => {}
-            CancelTracePriority::AnyError => {
-                if request
-                    .active
-                    .cancel_event_emitted
-                    .swap(true, Ordering::SeqCst)
-                {
-                    return false;
-                }
-            }
+        if event_name == "request.cancel"
+            && request
+                .active
+                .cancel_event_emitted
+                .swap(true, Ordering::SeqCst)
+        {
+            return false;
         }
 
         let duration_ms = request.duration_ms();

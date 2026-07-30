@@ -13,7 +13,6 @@ mod request_entry;
 mod request_supervisor;
 pub(crate) mod router_session;
 mod runtime_host;
-pub(crate) mod spawn_worker;
 pub mod telemetry;
 mod websocket_generation;
 

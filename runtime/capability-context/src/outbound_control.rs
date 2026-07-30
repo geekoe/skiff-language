@@ -1,7 +1,6 @@
 use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,53 +117,6 @@ pub struct SpawnSubmitControlRequest {
     pub trace_id: Option<String>,
     pub caller_target: Option<String>,
     pub max_queue_wait_ms: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpawnClaimControlRequest {
-    pub rpc_id: String,
-    pub runtime_id: String,
-    pub activation_identity: ActivationIdentityControl,
-    pub worker_id: String,
-    pub service_id: String,
-    pub service_version: String,
-    pub service_protocol_identity: String,
-    pub supported_targets: Vec<String>,
-    pub supported_spawn_compatibility_keys: Vec<String>,
-    pub build_id: Option<String>,
-    pub max_execution_ms: Option<f64>,
-    pub max_concurrency: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpawnRenewControlRequest {
-    pub rpc_id: String,
-    pub runtime_id: String,
-    pub activation_identity: ActivationIdentityControl,
-    pub item_id: String,
-    pub lease_id: String,
-    pub worker_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpawnCompleteControlRequest {
-    pub rpc_id: String,
-    pub runtime_id: String,
-    pub activation_identity: ActivationIdentityControl,
-    pub item_id: String,
-    pub lease_id: String,
-    pub diagnostics: Option<serde_json::Map<String, Value>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpawnFailControlRequest {
-    pub rpc_id: String,
-    pub runtime_id: String,
-    pub activation_identity: ActivationIdentityControl,
-    pub item_id: String,
-    pub lease_id: String,
-    pub reason: String,
-    pub diagnostics: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
