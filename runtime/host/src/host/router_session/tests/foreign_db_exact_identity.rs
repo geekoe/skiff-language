@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -16,7 +16,7 @@ use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
 };
-use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_deployment::{assembly::resolve_runtime_assembly, storage::CanonicalArtifactStore};
 use skiff_runtime_capability_context::{
     DbCapabilityContext, DbCapabilityContextApi, DbCapabilityError, DbCapabilityFactory,
     DbCapabilityFuture, DbCapabilityLeaseHandle, DbCapabilityLeaseHold, DbCapabilityResult,
@@ -414,8 +414,24 @@ impl DbCapabilityStoreApi for ExactDbStore {
     }
 }
 
-#[tokio::test]
-async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores() {
+#[test]
+fn shared_test_assembly_keeps_case_routes_doubles_and_db_namespaces_isolated() {
+    std::thread::Builder::new()
+        .name("shared-test-assembly-isolation".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("shared test assembly runtime")
+                .block_on(shared_test_assembly_isolation())
+        })
+        .expect("shared test assembly thread")
+        .join()
+        .expect("shared test assembly thread should not panic");
+}
+
+async fn shared_test_assembly_isolation() {
     let fixture = TempFixture::new("foreign-db-exact-identity");
     let source_artifacts = fixture.child("source-artifacts");
     let runtime_artifacts = fixture.child("runtime-artifacts");
@@ -433,7 +449,7 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
 
     let project = compile_package_project_for_test(&platform, &tests, &source_artifacts).unwrap();
     let cases = discover_test_service_cases(&tests, &tests, false).unwrap();
-    assert_eq!(cases.len(), 1);
+    assert_eq!(cases.len(), 2);
     let test_fixture = assemble_test_service_fixture_for_run(
         &project,
         &cases,
@@ -444,14 +460,45 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
     test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
         .unwrap();
-    let [case_fixture] = test_fixture.cases.as_slice() else {
-        panic!("one compiled test case must produce one case fixture")
-    };
 
     let store = CanonicalArtifactStore::open(&runtime_artifacts).unwrap();
-    let assembly_ref =
-        skiff_artifact_identity::runtime_assembly_ref(&case_fixture.records.assembly).unwrap();
+    let roots = test_fixture
+        .cases
+        .iter()
+        .map(|case| case.entrypoint.deployment.clone())
+        .collect::<Vec<_>>();
+    let deployments = test_fixture
+        .cases
+        .iter()
+        .flat_map(|case| case.records.deployments.iter().cloned())
+        .collect::<Vec<_>>();
+    let contracts = test_fixture
+        .cases
+        .iter()
+        .flat_map(|case| case.records.contracts.iter().cloned())
+        .collect::<Vec<_>>();
+    let package_refs = test_fixture
+        .cases
+        .iter()
+        .flat_map(|case| case.records.assembly.resolved_packages.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let packages = package_refs
+        .iter()
+        .map(|reference| {
+            store
+                .read_package_artifact(reference)
+                .unwrap()
+                .as_ref()
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let shared_assembly =
+        resolve_runtime_assembly(&roots, &deployments, &contracts, &packages).unwrap();
+    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&shared_assembly).unwrap();
+    store.write_runtime_assembly(&shared_assembly).unwrap();
     store.read_runtime_assembly(&assembly_ref).unwrap();
+    assert_eq!(shared_assembly.roots, roots);
+    assert_eq!(shared_assembly.gateway_ingress.len(), 2);
     let provider = ExactDbProvider::default();
     let host = RuntimeHost::new(RuntimeConfig {
         db_provider: DbProviderSource::new(provider.clone()),
@@ -477,19 +524,168 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
         .await
         .unwrap();
 
-    let entrypoint = &case_fixture.entrypoint;
-    let route = host
-        .lookup_active_assembly_request_route(&ServiceIngressKey {
-            deployment: entrypoint.deployment.clone(),
-            selector: entrypoint.selector.clone(),
+    let routes = test_fixture
+        .cases
+        .iter()
+        .map(|case| {
+            host.lookup_active_assembly_request_route(&ServiceIngressKey {
+                deployment: case.entrypoint.deployment.clone(),
+                selector: case.entrypoint.selector.clone(),
+            })
+            .unwrap()
         })
+        .collect::<Vec<_>>();
+    assert_eq!(routes.len(), 2);
+    assert_eq!(routes[0].assembly_identity(), routes[1].assembly_identity());
+    assert_eq!(routes[0].generation(), routes[1].generation());
+    assert_ne!(routes[0].deployment(), routes[1].deployment());
+
+    for (index, route) in routes.iter().enumerate() {
+        let header = test_case_header(
+            route,
+            &format!("p3x-shared-case-{index}"),
+            &format!("test-case-capability-p3x-{index}"),
+        );
+        dispatch_test_case(&host, &provider, &header).await;
+    }
+
+    let inputs = provider.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(
+        inputs
+            .iter()
+            .map(|input| input.service_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        roots
+            .iter()
+            .map(|deployment| deployment.service_id.as_str())
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        inputs
+            .iter()
+            .map(|input| input.state_namespace.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2,
+        "each case deployment must own a distinct state namespace"
+    );
+    for input in inputs.iter() {
+        let mut foreign = input
+            .runtime_program_db
+            .iter()
+            .filter(|entry| entry.metadata.type_name == "Session")
+            .collect::<Vec<_>>();
+        foreign.sort_by(|left, right| {
+            left.metadata
+                .collection_name
+                .cmp(&right.metadata.collection_name)
+        });
+        assert_eq!(foreign.len(), 2);
+        assert_eq!(
+            foreign
+                .iter()
+                .map(|entry| entry.metadata.collection_name.as_str())
+                .collect::<Vec<_>>(),
+            ["first_sessions", "second_sessions"]
+        );
+        assert_ne!(
+            foreign[0].target.target_id.package_artifact_ref,
+            foreign[1].target.target_id.package_artifact_ref
+        );
+        assert_ne!(
+            foreign[0].target.target_id.file_ir_ref,
+            foreign[1].target.target_id.file_ir_ref
+        );
+        assert_eq!(foreign[0].target.target_id.type_index, 0);
+        assert_eq!(foreign[1].target.target_id.type_index, 0);
+        assert_ne!(
+            foreign[0].target.lookup_key(),
+            foreign[1].target.lookup_key()
+        );
+    }
+
+    let mut events = provider.events.lock().unwrap().clone();
+    events.sort_by(|left, right| {
+        (&left.collection, left.operation).cmp(&(&right.collection, right.operation))
+    });
+    assert_eq!(
+        events,
+        vec![
+            DbEvent {
+                operation: "read.exists",
+                collection: "first_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "read.exists",
+                collection: "first_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "write.delete",
+                collection: "first_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "write.delete",
+                collection: "first_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "read.exists",
+                collection: "second_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "read.exists",
+                collection: "second_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "write.delete",
+                collection: "second_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+            DbEvent {
+                operation: "write.delete",
+                collection: "second_sessions".to_string(),
+                type_name: "Session".to_string(),
+            },
+        ]
+    );
+
+    let mut crossed = test_case_header(
+        &routes[1],
+        "p3x-crossed-entrypoint",
+        "test-case-capability-p3x-crossed",
+    );
+    crossed.routing.deployment = routes[0].deployment().clone();
+    let frame = encode_binary_frame(&crossed, b"null").unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel::<RouterWriterMessage>();
+    super::dispatch_router_binary_frame_with_http_response_max(&host, &frame, &sender, 1024)
+        .await
         .unwrap();
+    let RouterWriterMessage::Binary(frame) = receiver.recv().await.unwrap() else {
+        panic!("crossed deployment and gateway entry must return a binary error")
+    };
+    let (error, _): (ResponseErrorFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&frame).unwrap();
+    assert_eq!(error.request_id(), crossed.request_id);
+    assert!(receiver.try_recv().is_err());
+}
+
+fn test_case_header(
+    route: &crate::loader::assembly_admission::ActiveAssemblyRoute,
+    request_id: &str,
+    capability: &str,
+) -> RuntimeAssemblyRequestStartFrameHeader {
     let selector = route.selector();
     let method = selector.method.clone().unwrap();
-    let header = RuntimeAssemblyRequestStartFrameHeader {
+    RuntimeAssemblyRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
-        request_id: "p3x-foreign-db-request".to_string(),
+        request_id: request_id.to_string(),
         mode: "unary".to_string(),
         caller: RuntimeAssemblyRequestCallerFrameHeader {
             kind: "gateway".to_string(),
@@ -509,8 +705,8 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
         client_session: None,
         deadline: None,
         trace: RuntimeAssemblyRequestTraceFrameHeader {
-            trace_id: "trace-p3x-foreign-db".to_string(),
-            span_id: "span-p3x-foreign-db".to_string(),
+            trace_id: format!("trace-{request_id}"),
+            span_id: format!("span-{request_id}"),
             parent_span_id: None,
             sampled: None,
         },
@@ -522,11 +718,18 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
             headers: Vec::new(),
         },
         test_effects_enabled: true,
-        test_case_capability: Some("test-case-capability-p3x".to_string()),
-    };
-    let frame = encode_binary_frame(&header, b"null").unwrap();
+        test_case_capability: Some(capability.to_string()),
+    }
+}
+
+async fn dispatch_test_case(
+    host: &RuntimeHost,
+    provider: &ExactDbProvider,
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+) {
+    let frame = encode_binary_frame(header, b"null").unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel::<RouterWriterMessage>();
-    super::dispatch_router_binary_frame_with_http_response_max(&host, &frame, &sender, 1024)
+    super::dispatch_router_binary_frame_with_http_response_max(host, &frame, &sender, 1024)
         .await
         .unwrap();
     let terminal = receiver.recv().await.expect("one test-service terminal");
@@ -550,71 +753,6 @@ async fn compiled_test_service_foreign_db_targets_reach_exact_host_eval_stores()
         }
         other => panic!("unexpected test-service terminal {other:?}"),
     }
-
-    let inputs = provider.inputs.lock().unwrap();
-    assert_eq!(inputs.len(), 1);
-    let mut foreign = inputs[0]
-        .runtime_program_db
-        .iter()
-        .filter(|entry| entry.metadata.type_name == "Session")
-        .collect::<Vec<_>>();
-    foreign.sort_by(|left, right| {
-        left.metadata
-            .collection_name
-            .cmp(&right.metadata.collection_name)
-    });
-    assert_eq!(foreign.len(), 2);
-    assert_eq!(
-        foreign
-            .iter()
-            .map(|entry| entry.metadata.collection_name.as_str())
-            .collect::<Vec<_>>(),
-        ["first_sessions", "second_sessions"]
-    );
-    assert_ne!(
-        foreign[0].target.target_id.package_artifact_ref,
-        foreign[1].target.target_id.package_artifact_ref
-    );
-    assert_ne!(
-        foreign[0].target.target_id.file_ir_ref,
-        foreign[1].target.target_id.file_ir_ref
-    );
-    assert_eq!(foreign[0].target.target_id.type_index, 0);
-    assert_eq!(foreign[1].target.target_id.type_index, 0);
-    assert_ne!(
-        foreign[0].target.lookup_key(),
-        foreign[1].target.lookup_key()
-    );
-
-    let mut events = provider.events.lock().unwrap().clone();
-    events.sort_by(|left, right| {
-        (&left.collection, left.operation).cmp(&(&right.collection, right.operation))
-    });
-    assert_eq!(
-        events,
-        vec![
-            DbEvent {
-                operation: "read.exists",
-                collection: "first_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "write.delete",
-                collection: "first_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "read.exists",
-                collection: "second_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-            DbEvent {
-                operation: "write.delete",
-                collection: "second_sessions".to_string(),
-                type_name: "Session".to_string(),
-            },
-        ]
-    );
     assert!(receiver.try_recv().is_err());
 }
 
@@ -689,18 +827,68 @@ principal: service:example.com/foreign-db-tests
     .unwrap();
     fs::write(
         root.join("main.test.skiff"),
-        r#"import firstImpl
+        r#"import std
+import firstImpl
 import secondImpl
 
-test "foreign DB exact identity reaches distinct stores" {
+function sharedDoubleRequest() -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "GET",
+    url: "https://case-isolation.test/shared",
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: null,
+    timeoutMs: null,
+  }
+}
+
+test "case one keeps foreign DB identity and inline double local" effects {
+  std/http.request {
+    expect: {
+      method: "GET",
+      url: "https://case-isolation.test/shared",
+    },
+    respond: std.http.HttpClientResponse {
+      status: 200,
+      headers: Array.empty<std.http.HttpHeader>(),
+      body: bytes.fromUtf8("case-one"),
+    },
+  }
+} {
   const firstExists = db exists firstImpl/model.Session("first")
   const firstDeleted = db delete firstImpl/model.Session("first")
   const secondExists = db exists secondImpl/model.Session("second")
   const secondDeleted = db delete secondImpl/model.Session("second")
+  const doubled = std.http.request(sharedDoubleRequest())
   assert firstExists
   assert firstDeleted
   assert secondExists
   assert secondDeleted
+  assert doubled.body.toUtf8String() == "case-one"
+}
+
+test "case two gets a fresh heap and inline double sequence" effects {
+  std/http.request {
+    expect: {
+      method: "GET",
+      url: "https://case-isolation.test/shared",
+    },
+    respond: std.http.HttpClientResponse {
+      status: 200,
+      headers: Array.empty<std.http.HttpHeader>(),
+      body: bytes.fromUtf8("case-two"),
+    },
+  }
+} {
+  const firstExists = db exists firstImpl/model.Session("first")
+  const firstDeleted = db delete firstImpl/model.Session("first")
+  const secondExists = db exists secondImpl/model.Session("second")
+  const secondDeleted = db delete secondImpl/model.Session("second")
+  const doubled = std.http.request(sharedDoubleRequest())
+  assert firstExists
+  assert firstDeleted
+  assert secondExists
+  assert secondDeleted
+  assert doubled.body.toUtf8String() == "case-two"
 }
 "#,
     )

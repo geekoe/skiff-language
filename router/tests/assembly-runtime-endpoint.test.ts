@@ -44,16 +44,22 @@ const EMPTY_ASSEMBLY =
   'skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f';
 const RUNTIME_ID = 'runtime-assembly-a';
 const SERVICE_ID = 'example.com/actors';
+const SECOND_SERVICE_ID = 'example.com/actors-case-two';
 const SERVICE_VERSION = '1.0.0';
 const SERVICE_PROTOCOL =
   `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
+const SECOND_SERVICE_PROTOCOL =
+  `skiff-service-protocol-v5:sha256:${'b'.repeat(64)}`;
 const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
 const PACKAGE_BUILD_ID = `skiff-package-build-v10:sha256:${'d'.repeat(64)}`;
 const TARGET = 'function:service.example~actors.ActorApi.spawn';
 const CURRENT_TEST_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'9'.repeat(64)}`;
+const SECOND_TEST_GATEWAY_ENTRY_IDENTITY =
+  `skiff-gateway-entry-v2:sha256:${'8'.repeat(64)}`;
 const TEST_HOST = 'case-0.package-test.skiff.localhost';
 const TEST_PATH = '/__skiff/package-test/0';
+const SECOND_TEST_PATH = '/__skiff/package-test/1';
 const fixtures: CompositeEndpointFixture[] = [];
 
 describe('unified RuntimeEndpoint assembly bootstrap', () => {
@@ -622,6 +628,149 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       secondValidation.envelope.testCaseCapability
     );
 
+    sendEmptyResponseEnd(ws, firstChildValidation.envelope.requestId);
+    sendEmptyResponseEnd(ws, secondChildValidation.envelope.requestId);
+    sendRootResponseEnd(ws, firstValidation.envelope.requestId);
+    sendRootResponseEnd(ws, secondValidation.envelope.requestId);
+    await Promise.all([firstResponse, secondResponse]);
+  });
+
+  it('isolates test capabilities and recursive spawn routing across deployments in one assembly generation', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true,
+      sharedTestDeployments: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const firstBody = testDispatchBody();
+    const secondBody = secondTestDispatchBody();
+    const firstResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      firstBody
+    );
+    const firstRoot = await nextRuntimeFrame(ws, 'request.start');
+    const secondResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      secondBody
+    );
+    const secondRoot = await nextRuntimeFrame(ws, 'request.start');
+    const firstValidation =
+      validateRuntimeAssemblyRequestStartFrameHeader(firstRoot.header);
+    const secondValidation =
+      validateRuntimeAssemblyRequestStartFrameHeader(secondRoot.header);
+    if (!firstValidation.ok || !secondValidation.ok) {
+      throw new Error('expected two valid shared-assembly test roots');
+    }
+
+    expect(firstValidation.envelope.routing).toEqual(firstBody.routing);
+    expect(secondValidation.envelope.routing).toEqual(secondBody.routing);
+    expect(firstValidation.envelope.routing.deployment).toEqual(
+      deploymentRef(deploymentRevision(ASSEMBLY_A))
+    );
+    expect(secondValidation.envelope.routing.deployment).toEqual(
+      secondDeploymentRef(ASSEMBLY_A)
+    );
+    expect(firstValidation.envelope.testCaseCapability).toEqual(expect.any(String));
+    expect(secondValidation.envelope.testCaseCapability).toEqual(expect.any(String));
+    expect(firstValidation.envelope.testCaseCapability).not.toBe(
+      secondValidation.envelope.testCaseCapability
+    );
+
+    const [firstChild, firstChildReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-shared-case-1',
+      firstValidation.envelope.requestId
+    );
+    expect(firstChildReceipt.header.type).toBe('spawn.submit.response');
+    const [secondChild, secondChildReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-shared-case-2',
+      secondValidation.envelope.requestId,
+      {
+        activationIdentity: activationForDeployment(
+          ASSEMBLY_A,
+          1,
+          secondDeploymentRef(ASSEMBLY_A).deploymentRevision
+        ),
+        serviceId: SECOND_SERVICE_ID,
+        serviceProtocolIdentity: SECOND_SERVICE_PROTOCOL
+      }
+    );
+    expect(secondChildReceipt.header.type).toBe('spawn.submit.response');
+    const firstChildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(firstChild.header);
+    const secondChildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(secondChild.header);
+    if (
+      !firstChildValidation.ok ||
+      !secondChildValidation.ok ||
+      !('invocation' in firstChildValidation.envelope) ||
+      !('invocation' in secondChildValidation.envelope)
+    ) {
+      throw new Error('expected exact derived spawn requests for both deployments');
+    }
+    expect(firstChildValidation.envelope.routing.deployment).toEqual(
+      firstValidation.envelope.routing.deployment
+    );
+    expect(secondChildValidation.envelope.routing.deployment).toEqual(
+      secondValidation.envelope.routing.deployment
+    );
+    expect(firstChildValidation.envelope.testCaseCapability).toBe(
+      firstValidation.envelope.testCaseCapability
+    );
+    expect(secondChildValidation.envelope.testCaseCapability).toBe(
+      secondValidation.envelope.testCaseCapability
+    );
+
+    const [secondGrandchild, secondGrandchildReceipt] =
+      await sendSpawnAndReceive(
+        ws,
+        'spawn-rpc-shared-case-2-recursive',
+        secondChildValidation.envelope.requestId,
+        {
+          activationIdentity: activationForDeployment(
+            ASSEMBLY_A,
+            1,
+            secondDeploymentRef(ASSEMBLY_A).deploymentRevision
+          ),
+          serviceId: SECOND_SERVICE_ID,
+          serviceProtocolIdentity: SECOND_SERVICE_PROTOCOL
+        }
+      );
+    expect(secondGrandchildReceipt.header.type).toBe('spawn.submit.response');
+    const secondGrandchildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(secondGrandchild.header);
+    if (
+      !secondGrandchildValidation.ok ||
+      !('invocation' in secondGrandchildValidation.envelope)
+    ) {
+      throw new Error('expected recursive spawn for the second deployment');
+    }
+    expect(secondGrandchildValidation.envelope.routing.deployment).toEqual(
+      secondValidation.envelope.routing.deployment
+    );
+    expect(secondGrandchildValidation.envelope.testCaseCapability).toBe(
+      secondValidation.envelope.testCaseCapability
+    );
+
+    const crossedEntrypoint = structuredClone(secondBody);
+    crossedEntrypoint.routing.gatewayEntryIdentity =
+      CURRENT_TEST_GATEWAY_ENTRY_IDENTITY;
+    const rejected = await postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      crossedEntrypoint
+    );
+    expect(rejected.status).toBe(409);
+
+    sendEmptyResponseEnd(
+      ws,
+      secondGrandchildValidation.envelope.requestId
+    );
     sendEmptyResponseEnd(ws, firstChildValidation.envelope.requestId);
     sendEmptyResponseEnd(ws, secondChildValidation.envelope.requestId);
     sendRootResponseEnd(ws, firstValidation.envelope.requestId);
@@ -1331,6 +1480,7 @@ async function createFixture(
     generation: number;
     assemblyIdentity: string;
     testGateway?: boolean;
+    sharedTestDeployments?: boolean;
     maxConcurrency?: number;
     timeoutMs?: number;
   } = { generation: 1, assemblyIdentity: ASSEMBLY_A }
@@ -1360,17 +1510,20 @@ async function createFixture(
       assembly(
         ASSEMBLY_A,
         testGateway,
-        initial.timeoutMs
+        initial.timeoutMs,
+        initial.sharedTestDeployments
       ),
       assembly(
         ASSEMBLY_B,
         testGateway,
-        initial.timeoutMs
+        initial.timeoutMs,
+        initial.sharedTestDeployments
       ),
       assembly(
         ASSEMBLY_C,
         testGateway,
-        initial.timeoutMs
+        initial.timeoutMs,
+        initial.sharedTestDeployments
       )
     ]),
     snapshots,
@@ -1463,48 +1616,78 @@ function transition(
 function assembly(
   assemblyIdentity: string,
   includeTestGateway = false,
-  timeoutMs = 1_000
+  timeoutMs = 1_000,
+  includeSecondTestDeployment = false
 ): LoadedRuntimeAssembly {
   const revision = deploymentRevision(assemblyIdentity);
   const deployment = deploymentRef(revision);
+  const secondDeployment = secondDeploymentRef(assemblyIdentity);
+  const deployments = includeSecondTestDeployment
+    ? [deployment, secondDeployment]
+    : [deployment];
   return {
     schemaVersion: 'skiff-runtime-assembly-v3',
     assemblyIdentity,
     resolvedDeployments:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
-        : [deployment],
+        : deployments,
     resolvedContracts:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
-        : [{
-          serviceId: SERVICE_ID,
-          contractVersion: SERVICE_VERSION,
-          serviceProtocolIdentity: SERVICE_PROTOCOL
-        }],
+        : [
+            {
+              serviceId: SERVICE_ID,
+              contractVersion: SERVICE_VERSION,
+              serviceProtocolIdentity: SERVICE_PROTOCOL
+            },
+            ...(includeSecondTestDeployment
+              ? [{
+                  serviceId: SECOND_SERVICE_ID,
+                  contractVersion: SERVICE_VERSION,
+                  serviceProtocolIdentity: SECOND_SERVICE_PROTOCOL
+                }]
+              : [])
+          ],
     deploymentRuntimeBindings:
       assemblyIdentity === EMPTY_ASSEMBLY
         ? []
-        : [{
-            deployment,
+        : deployments.map((current) => ({
+            deployment: current,
             packageBuildId: PACKAGE_BUILD_ID,
             timeoutMs
-          }],
+          })),
     gatewayIngress:
       assemblyIdentity === EMPTY_ASSEMBLY || !includeTestGateway
         ? []
-        : [{
-            selector: {
-              protocol: 'http',
-              method: 'POST',
-              path: TEST_PATH
+        : [
+            {
+              selector: {
+                protocol: 'http',
+                method: 'POST',
+                path: TEST_PATH
+              },
+              deployment,
+              gatewayEntryKey: 'run',
+              gatewayEntryIdentity: CURRENT_TEST_GATEWAY_ENTRY_IDENTITY,
+              adapterKind: 'typedJson',
+              operationMode: 'unary'
             },
-            deployment,
-            gatewayEntryKey: 'run',
-            gatewayEntryIdentity: CURRENT_TEST_GATEWAY_ENTRY_IDENTITY,
-            adapterKind: 'typedJson',
-            operationMode: 'unary'
-          }]
+            ...(includeSecondTestDeployment
+              ? [{
+                  selector: {
+                    protocol: 'http' as const,
+                    method: 'POST',
+                    path: SECOND_TEST_PATH
+                  },
+                  deployment: secondDeployment,
+                  gatewayEntryKey: 'run',
+                  gatewayEntryIdentity: SECOND_TEST_GATEWAY_ENTRY_IDENTITY,
+                  adapterKind: 'typedJson' as const,
+                  operationMode: 'unary' as const
+                }]
+              : [])
+          ]
   };
 }
 
@@ -1518,6 +1701,16 @@ function deploymentRef(deploymentRevision: string) {
   };
 }
 
+function secondDeploymentRef(assemblyIdentity: string) {
+  return {
+    serviceId: SECOND_SERVICE_ID,
+    contractVersion: SERVICE_VERSION,
+    deploymentRevision: `case-two-${deploymentRevision(assemblyIdentity)}`,
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v4:sha256:${'f'.repeat(64)}`
+  };
+}
+
 function deploymentRevision(assemblyIdentity: string): string {
   return assemblyIdentity === ASSEMBLY_A ? 'revision-a' : 'revision-b';
 }
@@ -1526,11 +1719,23 @@ function activation(
   assemblyIdentity: string,
   generation: number
 ) {
+  return activationForDeployment(
+    assemblyIdentity,
+    generation,
+    deploymentRevision(assemblyIdentity)
+  );
+}
+
+function activationForDeployment(
+  assemblyIdentity: string,
+  generation: number,
+  revision: string
+) {
   return {
     assemblyIdentity,
     generation,
     runtimeReplicaId: RUNTIME_ID,
-    deploymentRevision: deploymentRevision(assemblyIdentity)
+    deploymentRevision: revision
   };
 }
 
@@ -1652,6 +1857,39 @@ function testDispatchBody() {
       method: 'POST',
       url: `http://${TEST_HOST}${TEST_PATH}`,
       path: TEST_PATH,
+      query: [],
+      headers: [
+        {
+          name: 'content-type',
+          value: 'application/json'
+        }
+      ]
+    },
+    payloadBase64: Buffer.from('null', 'utf8').toString('base64'),
+    timeoutMs: 1_000
+  };
+}
+
+function secondTestDispatchBody() {
+  return {
+    kind: 'test',
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+      deployment: secondDeploymentRef(ASSEMBLY_A),
+      gatewayEntryIdentity: SECOND_TEST_GATEWAY_ENTRY_IDENTITY,
+      ingress: {
+        protocol: 'http',
+        method: 'POST',
+        path: SECOND_TEST_PATH
+      }
+    },
+    mode: 'unary',
+    httpRequest: {
+      method: 'POST',
+      url: `http://${TEST_HOST}${SECOND_TEST_PATH}`,
+      path: SECOND_TEST_PATH,
       query: [],
       headers: [
         {
