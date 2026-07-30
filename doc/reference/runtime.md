@@ -109,8 +109,9 @@ package-test root和direct-spawn derived request都计入同一个pending计数�
 新的pending。多条Runtime连接分别应用同一个配置值，各自独立计数。
 
 Service源码、`service.yml`、`config.<profile>.yml`、ServiceDeployment和RuntimeAssembly都不能声明、
-复制或覆盖并发上限。特别是`lifecycle.maxConcurrency`非法；并发门禁不属于service ABI、artifact identity
-或Runtime bootstrap wire。
+复制或覆盖并发上限。Service profile的整个`lifecycle`配置面非法；旧`maxConcurrency`和
+`idleTimeoutMs`都已删除，ServiceDeployment不再包含`activation` policy。并发门禁不属于service ABI、
+artifact identity或Runtime bootstrap wire。
 
 ## 4. Runtime identities
 

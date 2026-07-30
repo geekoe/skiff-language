@@ -63,4 +63,5 @@ spawn-worker lifecycle 都应删除，而不是迁移到 RuntimeAssembly。
 `runtime.maxConcurrency`只存在于Router实例配置，不进入Runtime bootstrap。HTTP unary/stream、
 WebSocket connect/JSON-RPC、service call、package-test root和direct-spawn derived request共享每条
 Runtime WebSocket连接的同一pending上限；Actor/control frame暂不计。Service profile中的
-`lifecycle.maxConcurrency`必须删除，不能用spawn专用固定池代替。
+整个`lifecycle`配置面、旧`maxConcurrency`与`idleTimeoutMs`以及ServiceDeployment的`activation`
+policy必须删除，不能用spawn专用固定池或新的Runtime idle policy代替。
