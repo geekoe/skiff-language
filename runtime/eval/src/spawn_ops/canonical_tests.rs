@@ -13,8 +13,7 @@ use skiff_artifact_model::{
     PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_activation::{
-    ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-    RequestActivationContext,
+    ActivationContext, ActivationId, ActivationIdentity, RequestActivationContext,
 };
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
@@ -543,9 +542,6 @@ fn activation_context(
             },
         },
         package_build_id,
-        ActivationOwnedBindings {
-            resource_bindings: Vec::new(),
-        },
         Vec::new(),
     )
     .expect("canonical spawn activation should build")

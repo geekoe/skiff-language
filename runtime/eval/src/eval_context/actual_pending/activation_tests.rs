@@ -191,8 +191,8 @@ mod server_stream_fixture {
 
     use skiff_artifact_model as artifact;
     use skiff_runtime_activation::{
-        ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-        ActivationServiceBinding, RequestActivationContext,
+        ActivationContext, ActivationId, ActivationIdentity, ActivationServiceBinding,
+        RequestActivationContext,
     };
     use skiff_runtime_capability_context::DbCapabilityContext;
     use skiff_runtime_linked_program::{ExecutableAddr, FileAddr, ServiceMeta, UnitAddr};
@@ -365,7 +365,6 @@ mod server_stream_fixture {
                 "activation-stream-provider-r1",
             ),
             provider_ref.package_build_id.clone(),
-            activation_bindings(),
             Vec::new(),
         )
         .expect("activation stream provider activation");
@@ -386,7 +385,6 @@ mod server_stream_fixture {
                 "activation-stream-caller-r1",
             ),
             caller_ref.package_build_id.clone(),
-            activation_bindings(),
             vec![binding],
         )
         .expect("activation stream caller activation");
@@ -711,12 +709,6 @@ mod server_stream_fixture {
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
             service_call_refs: Vec::new(),
-        }
-    }
-
-    fn activation_bindings() -> ActivationOwnedBindings {
-        ActivationOwnedBindings {
-            resource_bindings: Vec::new(),
         }
     }
 

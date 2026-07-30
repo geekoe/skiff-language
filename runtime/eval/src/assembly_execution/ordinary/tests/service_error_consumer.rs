@@ -6,8 +6,8 @@ use std::{
 use serde_json::Value;
 use skiff_artifact_model::*;
 use skiff_runtime_activation::{
-    ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-    ActivationServiceBinding, RequestActivationContext,
+    ActivationContext, ActivationId, ActivationIdentity, ActivationServiceBinding,
+    RequestActivationContext,
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, HydratedPackageCode, PublicationResourceTable, UnitAddr,
@@ -165,7 +165,6 @@ impl ServiceErrorConsumerFixture {
         let terminal_activation = ActivationContext::new(
             terminal_identity,
             provider.reference.package_build_id.clone(),
-            activation_owned_bindings(),
             Vec::new(),
         )
         .expect("terminal activation");
@@ -183,7 +182,6 @@ impl ServiceErrorConsumerFixture {
         let relay_activation = ActivationContext::new(
             relay_identity,
             provider.reference.package_build_id.clone(),
-            activation_owned_bindings(),
             vec![relay_binding],
         )
         .expect("relay activation");
@@ -206,7 +204,6 @@ impl ServiceErrorConsumerFixture {
         let caller_activation = ActivationContext::new(
             caller_identity,
             caller.reference.package_build_id.clone(),
-            activation_owned_bindings(),
             vec![caller_binding],
         )
         .expect("caller activation");
@@ -1847,12 +1844,6 @@ fn activation_identity(
                 "deployment:ordinary-error:{label}"
             )),
         },
-    }
-}
-
-fn activation_owned_bindings() -> ActivationOwnedBindings {
-    ActivationOwnedBindings {
-        resource_bindings: Vec::new(),
     }
 }
 

@@ -220,7 +220,6 @@ fn validate_activation_source(
     let expected = ActivationTemplate {
         deployment: source.deployment.clone(),
         implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-        resource_bindings: deployment.resource_bindings.clone(),
     };
     if source != &expected {
         anyhow::bail!(
@@ -229,29 +228,6 @@ fn validate_activation_source(
         );
     }
 
-    validate_unique_requirement_keys(
-        &source.deployment,
-        "resource",
-        source
-            .resource_bindings
-            .iter()
-            .map(|binding| binding.requirement_key.as_str()),
-    )
-}
-
-fn validate_unique_requirement_keys<'a>(
-    activation: &ServiceDeploymentRef,
-    kind: &str,
-    keys: impl IntoIterator<Item = &'a str>,
-) -> anyhow::Result<()> {
-    let mut unique = BTreeSet::new();
-    for key in keys {
-        if key.is_empty() || !unique.insert(key) {
-            anyhow::bail!(
-                "activation template {activation:?} has a duplicate or empty {kind} requirement key"
-            );
-        }
-    }
     Ok(())
 }
 

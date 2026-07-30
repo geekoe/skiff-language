@@ -651,8 +651,6 @@ fn deployment_input(
         service_selectors,
         gateway_entries,
         ingress,
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: Vec::new(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "Phase four typed execution fixture".to_string(),
             notes: BTreeMap::new(),

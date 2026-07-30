@@ -10,7 +10,7 @@ pub use capability::{
 };
 pub use context::{
     ActivationContext, ActivationContextError, ActivationId, ActivationIdentity,
-    ActivationOwnedBindings, ActivationServiceBinding,
+    ActivationServiceBinding,
 };
 pub use request_context::{CallbackLifetime, RequestActivationContext, RequestStreamLease};
 

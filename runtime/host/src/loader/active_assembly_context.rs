@@ -987,8 +987,6 @@ mod websocket_admission_tests {
                 selector: selector("/connect"),
                 gateway_entry_key: key,
             }],
-            resource_bindings: Vec::new(),
-            runtime_capability_bindings: Vec::new(),
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "WebSocket admission fixture".to_string(),
                 notes: BTreeMap::new(),

@@ -415,8 +415,6 @@ impl Fixture {
             service_selectors: Vec::new(),
             gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
-            resource_bindings: Vec::new(),
-            runtime_capability_bindings: Vec::new(),
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "Health deployment".to_string(),
                 notes: BTreeMap::new(),
@@ -445,7 +443,6 @@ impl Fixture {
             activation_templates: vec![ActivationTemplate {
                 deployment: deployment_ref,
                 implementation_package_build_id: package.package_build_id.clone(),
-                resource_bindings: Vec::new(),
             }],
             gateway_ingress: Vec::new(),
         };
@@ -913,7 +910,6 @@ fn file_ir_identity_is_hashed_once_per_unique_identity_per_assembly_load() {
         .push(ActivationTemplate {
             deployment: second_deployment_ref.clone(),
             implementation_package_build_id: second_package.package_build_id.clone(),
-            resource_bindings: Vec::new(),
         });
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
 

@@ -485,19 +485,7 @@ fn validate_activation_templates(
         let deployment = deployments
             .get(&template.deployment)
             .expect("assembly surface validated activation deployment");
-        let resources = template
-            .resource_bindings
-            .iter()
-            .map(|binding| (binding.requirement_key.as_str(), binding))
-            .collect::<BTreeMap<_, _>>();
-        let deployment_resources = deployment
-            .resource_bindings
-            .iter()
-            .map(|binding| (binding.requirement_key.as_str(), binding))
-            .collect::<BTreeMap<_, _>>();
-        if template.implementation_package_build_id != deployment.implementation.package_build_id
-            || resources != deployment_resources
-        {
+        if template.implementation_package_build_id != deployment.implementation.package_build_id {
             anyhow::bail!(
                 "activation template {:?} does not exactly match immutable deployment inputs",
                 template.deployment

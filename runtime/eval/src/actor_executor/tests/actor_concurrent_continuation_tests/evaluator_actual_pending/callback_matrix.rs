@@ -2,8 +2,7 @@ use super::*;
 
 use skiff_artifact_model as artifact;
 use skiff_runtime_activation::{
-    ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings, CallbackLifetime,
-    RequestActivationContext,
+    ActivationContext, ActivationId, ActivationIdentity, CallbackLifetime, RequestActivationContext,
 };
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_model::runtime_value::{
@@ -286,9 +285,6 @@ fn activation(
             },
         },
         package_build_id,
-        ActivationOwnedBindings {
-            resource_bindings: Vec::new(),
-        },
         Vec::new(),
     )
     .expect("callback activation")

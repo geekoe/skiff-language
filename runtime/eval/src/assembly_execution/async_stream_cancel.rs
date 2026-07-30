@@ -1066,7 +1066,7 @@ mod tests {
         PackageSchemaTypeRecord, ServiceDeploymentRef,
     };
     use skiff_runtime_activation::{
-        ActivationContext, ActivationIdentity, ActivationOwnedBindings, RequestActivationContext,
+        ActivationContext, ActivationIdentity, RequestActivationContext,
     };
     use skiff_runtime_boundary::service_linkable::FailClosedServiceLinkableCapabilityHooks;
     use skiff_runtime_capability_context::{
@@ -2084,9 +2084,6 @@ mod tests {
                 },
             },
             PackageBuildId::new(package_build),
-            ActivationOwnedBindings {
-                resource_bindings: Vec::new(),
-            },
             Vec::new(),
         )
         .unwrap()

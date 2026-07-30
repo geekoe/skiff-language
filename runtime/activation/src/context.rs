@@ -2,9 +2,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, ContractOperationId, GatewayEntryIdentity,
-    GatewayEntryKey, IngressSelector, PackageBuildId, ResourceBinding, ServiceBindingTemplate,
-    ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey,
-    WebSocketEntryId,
+    GatewayEntryKey, IngressSelector, PackageBuildId, ServiceBindingTemplate, ServiceContractRef,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey, WebSocketEntryId,
 };
 
 use crate::capability::CallbackCapabilityTable;
@@ -54,11 +53,6 @@ impl ActivationIdentity {
     pub fn activation_id(&self) -> ActivationId {
         ActivationId::from_identity(self)
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ActivationOwnedBindings {
-    pub resource_bindings: Vec<ResourceBinding>,
 }
 
 /// The exact compiler-owned WebSocket entry admitted for one service activation.
@@ -127,7 +121,6 @@ pub struct ActivationContext {
     identity: ActivationIdentity,
     activation_id: ActivationId,
     implementation_package_build_id: PackageBuildId,
-    owned_bindings: ActivationOwnedBindings,
     websocket_entry: Option<ActivationWebSocketEntry>,
     service_bindings: BTreeMap<ServiceRequirementKey, ActivationServiceBinding>,
     callback_capabilities: CallbackCapabilityTable,
@@ -137,13 +130,11 @@ impl ActivationContext {
     pub fn new(
         identity: ActivationIdentity,
         implementation_package_build_id: PackageBuildId,
-        owned_bindings: ActivationOwnedBindings,
         service_bindings: Vec<ActivationServiceBinding>,
     ) -> Result<Arc<Self>, ActivationContextError> {
         Self::new_with_websocket_entry(
             identity,
             implementation_package_build_id,
-            owned_bindings,
             None,
             service_bindings,
         )
@@ -152,7 +143,6 @@ impl ActivationContext {
     pub fn new_with_websocket_entry(
         identity: ActivationIdentity,
         implementation_package_build_id: PackageBuildId,
-        owned_bindings: ActivationOwnedBindings,
         websocket_entry: Option<(
             IngressSelector,
             GatewayEntryKey,
@@ -177,7 +167,6 @@ impl ActivationContext {
             identity,
             activation_id,
             implementation_package_build_id,
-            owned_bindings,
             websocket_entry: websocket_entry.map(
                 |(selector, gateway_entry_key, gateway_entry_identity, websocket_entry_id)| {
                     ActivationWebSocketEntry {
@@ -280,9 +269,6 @@ impl ActivationContext {
         Self::new_with_websocket_entry(
             identity,
             activation_template.implementation_package_build_id.clone(),
-            ActivationOwnedBindings {
-                resource_bindings: activation_template.resource_bindings.clone(),
-            },
             websocket_entry,
             service_bindings,
         )
@@ -298,10 +284,6 @@ impl ActivationContext {
 
     pub fn implementation_package_build_id(&self) -> &PackageBuildId {
         &self.implementation_package_build_id
-    }
-
-    pub fn owned_bindings(&self) -> &ActivationOwnedBindings {
-        &self.owned_bindings
     }
 
     pub fn websocket_entry_id(&self) -> Option<&WebSocketEntryId> {

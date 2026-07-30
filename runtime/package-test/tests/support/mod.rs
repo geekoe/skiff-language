@@ -835,8 +835,6 @@ fn deployment(
         service_selectors,
         gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),
-        resource_bindings: Vec::new(),
-        runtime_capability_bindings: Vec::new(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: contract.service_id.clone(),
             notes: BTreeMap::new(),

@@ -194,11 +194,6 @@ fn candidate_keeps_code_shared_and_service_bindings_activation_relative() {
         activation_a.implementation_package_build_id(),
         &fixture.shared_build
     );
-    assert_ne!(
-        activation_a.source().resource_bindings,
-        activation_b.source().resource_bindings
-    );
-
     let direct_call = candidate
         .shared_image()
         .resolve_package_direct_call_by_alias(
@@ -461,8 +456,8 @@ fn assembly_candidate_retains_internal_operation_and_exact_linked_gateway_entry(
 #[test]
 fn tampered_activation_template_fails_before_a_partial_candidate_exists() {
     let mut fixture = CycleFixture::new();
-    fixture.assembly.activation_templates[0].resource_bindings[0].resource_ref =
-        "queue:tampered".to_string();
+    fixture.assembly.activation_templates[0].implementation_package_build_id =
+        PackageBuildId::new("tampered");
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut fixture.assembly).unwrap();
 
     let error = RuntimeAssemblyLoader::new(&fixture.resolver)

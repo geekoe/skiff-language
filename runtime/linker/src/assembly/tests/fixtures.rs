@@ -27,13 +27,13 @@ use skiff_artifact_model::{
     PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
     PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, ResourceBinding,
-    RuntimeAssembly, ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement,
-    ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, SyntheticInstructionSiteReason,
-    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
+    ServiceSelectorBinding, SlotLayout, SyntheticInstructionSiteReason, TypeDeclIr,
+    TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 
@@ -1242,12 +1242,6 @@ fn deployment(
         }],
         gateway_entries,
         ingress,
-        resource_bindings: vec![ResourceBinding {
-            requirement_key: "queue".to_string(),
-            capability: "queue".to_string(),
-            resource_ref: format!("queue:{owner}"),
-        }],
-        runtime_capability_bindings: Vec::new(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: format!("Cycle {owner}"),
             notes: BTreeMap::new(),
@@ -1291,7 +1285,6 @@ fn activation_template(
     ActivationTemplate {
         deployment: reference.clone(),
         implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-        resource_bindings: deployment.resource_bindings.clone(),
     }
 }
 

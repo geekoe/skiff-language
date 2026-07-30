@@ -9,8 +9,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::*;
 use skiff_runtime_activation::{
-    ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-    RequestActivationContext,
+    ActivationContext, ActivationId, ActivationIdentity, RequestActivationContext,
 };
 use skiff_runtime_linked_program::LinkedCallTarget;
 use skiff_runtime_model::{
@@ -1792,9 +1791,6 @@ fn activation_context(
             },
         },
         package_build_id,
-        ActivationOwnedBindings {
-            resource_bindings: Vec::new(),
-        },
         Vec::new(),
     )
     .expect("test activation should build")

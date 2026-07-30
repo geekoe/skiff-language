@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, fmt, sync::atomic::AtomicU64};
 
 use skiff_artifact_model as artifact;
 use skiff_runtime_activation::{
-    ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
-    ActivationServiceBinding, RequestActivationContext,
+    ActivationContext, ActivationId, ActivationIdentity, ActivationServiceBinding,
+    RequestActivationContext,
 };
 use skiff_runtime_capability_context::StreamCancelSignalApi;
 
@@ -457,12 +457,6 @@ fn contract_requirement(contract: &artifact::ServiceContractRef) -> artifact::Co
     }
 }
 
-fn activation_bindings() -> ActivationOwnedBindings {
-    ActivationOwnedBindings {
-        resource_bindings: Vec::new(),
-    }
-}
-
 fn activation_identity(
     assembly_identity: artifact::AssemblyIdentity,
     service_id: &str,
@@ -613,7 +607,6 @@ fn fixture(items: usize) -> ServiceFixture {
             "canonical-emit-provider-r1",
         ),
         provider_ref.package_build_id.clone(),
-        activation_bindings(),
         Vec::new(),
     )
     .expect("canonical Emit provider activation");
@@ -634,7 +627,6 @@ fn fixture(items: usize) -> ServiceFixture {
             "canonical-emit-caller-r1",
         ),
         caller_ref.package_build_id.clone(),
-        activation_bindings(),
         vec![binding],
     )
     .expect("canonical Emit caller activation");

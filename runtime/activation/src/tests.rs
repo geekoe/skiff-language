@@ -31,12 +31,6 @@ fn contract(service: &str, protocol: &str) -> ServiceContractRef {
     }
 }
 
-fn empty_owned_bindings() -> ActivationOwnedBindings {
-    ActivationOwnedBindings {
-        resource_bindings: Vec::new(),
-    }
-}
-
 fn activation(
     service: &str,
     revision: &str,
@@ -54,7 +48,6 @@ fn activation(
             deployment: deployment(service, revision),
         },
         PackageBuildId::new(package_build),
-        empty_owned_bindings(),
         bindings,
     )
     .expect("activation fixture should build")
@@ -279,7 +272,6 @@ fn activation_context_websocket_entry_is_typed_optional_and_matches_all_exact_fa
     let context = ActivationContext::new_with_websocket_entry(
         identity,
         PackageBuildId::new("websocket-build"),
-        empty_owned_bindings(),
         Some((
             selector.clone(),
             key.clone(),
