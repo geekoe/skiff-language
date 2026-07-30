@@ -56,14 +56,19 @@ alias、transitive dependency或production service获得内部DB访问。旧`acc
 service database上的词法执行边界，本身没有target；其中每个DB operation仍独立按上述规则解析。
 
 两个dependency即使声明相同module path与type name也不会混淆：dependency alias选择精确package
-artifact。运行时仍写入当前test service拥有的database namespace；跨package target不是跨service
-database访问。若两个dependency的物理collection投影冲突，仍必须通过现有dependency collection
-mapping消除或在activation时失败。
+artifact。运行时仍写入当前test service拥有的唯一database；跨package target不是跨service
+database访问。该数据库由平台按`(testRunId, generatedTestServiceId)`派生，不由测试配置命名。两个
+dependency的logical collection分别由stable`(packageId, declared collection identity)`系统编码；作者不
+提供physical mapping。
 
-同一stateful package可因direct与transitive依赖形成菱形。若两条edge解析到同一精确build，且完整
-source→target collection mapping与owner-relevant facts canonical相同，activation将其合并为一个
-metadata owner；同build不同mapping、不同build指向同一physical target、或dependency与root
-collection冲突都必须失败。test state namespace只由`config.skiff-test.yml`中的对应binding提供。
+同一含DB metadata的Package可因direct与transitive依赖形成菱形。若两条edge解析到同一精确build且
+owner-relevant facts相同，activation将其合并为一个metadata owner；同一Package ID解析到不同build、
+logical collection identity缺失/重复或system physical-name encoding collision都必须失败。
+
+普通service同样只有一个由trusted platform按`(platform, environment, serviceId)`派生的数据库。开发者
+不能通过`package.yml`或配置文件选择database/namespace；同一service中的所有Package共享该数据库，
+同时每个DB target继续使用精确PackageArtifact/File IR/type identity。不同Package可以使用相同裸
+collection名字而不共享storage；跨service数据库访问禁止。
 
 ## 2. Field Paths And Contextual Keywords
 

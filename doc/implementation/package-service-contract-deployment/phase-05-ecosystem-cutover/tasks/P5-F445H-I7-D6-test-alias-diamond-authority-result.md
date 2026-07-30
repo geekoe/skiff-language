@@ -1,5 +1,8 @@
 # P5-F445H-I7-D6 Test alias and stateful diamond authority result
 
+> 2026-07-30 historical note：alias结论仍有效；下文collection mapping、state binding与namespace结论已被
+> F446 unified config/service DB hard cut取代，不得作为当前实现输入。
+
 状态：
 
 ```text

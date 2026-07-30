@@ -38,8 +38,9 @@ Router不得成为canonical identity owner；Rust也不得复制一套Router has
 - PackageArtifact、PackageLocalAbi、PackageSchema record/index；
 - ServiceContract、ContractOperation与Package type requirements；
 - gateway entry、adapter source/plan与GatewayEntryIdentity；
-- ServiceDeployment、operation/gateway/dependency/config/state bindings；
+- ServiceDeployment、operation/gateway/dependency bindings；
 - RuntimeAssembly、activation templates与global ingress bindings；
+- RuntimeConfigSnapshot/Ref与activation generation的并列assembly/snapshot refs；
 - 共享type refs、callable signatures、value plans、error carrier metadata和runtime requirements。
 
 规则：
@@ -77,10 +78,10 @@ CompiledPackage
   -> typed gateway entry projections
 ```
 
-随后deployment projection消费精确typed artifacts和所选profile：
+随后deployment projection只消费精确typed code artifacts：
 
 ```text
-PackageArtifact + ServiceContract + gateway projections + config bindings
+PackageArtifact + ServiceContract + gateway projections
   -> ServiceDeployment
 ```
 
@@ -90,6 +91,16 @@ Assembly projection消费操作面选择的精确root deployments及闭包：
 ServiceDeployments + exact contracts/packages
   -> RuntimeAssembly
 ```
+
+配置tooling独立消费同一个service closure和三层配置文件：
+
+```text
+config.yml + config.<profile>.yml + config.<profile>.secret.yml
+  + exact ServiceDeployment/package closure
+  -> RuntimeConfigSnapshot
+```
+
+配置值、`configLiterals`、`SecretRef`和state binding不进入四类代码artifact或其identity。
 
 这些roots在dev来自watch registry或显式service roots生成的deployment receipts，在production来自平台部署
 状态。源码仓库不author `assembly.yml`；项目间关系仍由各自`package.yml`拥有。RuntimeAssembly是projection
@@ -134,12 +145,12 @@ Consumer compiler只读该contract及精确PackageSchema records，不读provide
 
 ### ServiceDeployment
 
-ServiceDeployment绑定实现与环境：
+ServiceDeployment绑定实现与external execution routing：
 
 - ContractOperationId -> PackageCallableId；
 - gateway entry key -> GatewayEntryIdentity、exact handler/pre/guard和typed execution plan；
 - external selector -> gateway entry key；
-- dependency、config、state/resource和activation policy；
+- dependency bindings；
 - 精确PackageArtifact与expected ServiceProtocolIdentity。
 
 GatewayEntryIdentity只覆盖external protocol；具体callable/build/plan由deployment revision固定。
@@ -156,6 +167,10 @@ RuntimeAssembly固定一个可执行闭包：
 - assembly identity与generation所需事实。
 
 Runtime不得在load时读取latest pointer或按service/package display name补provider。
+
+RuntimeAssembly不包含业务配置值、secret ref、database namespace或platform resource policy。
+`CommittedActivationGeneration`并列钉住`RuntimeAssemblyRef`和独立`RuntimeConfigSnapshotRef`；
+snapshot按`ServiceDeploymentRef`隔离并向每个精确Package build提供局部`ConfigView`。
 
 ## Runtime Linked Overlay
 
@@ -198,6 +213,7 @@ closure-only identity或shape equality恢复service wire type。
 Router只消费执行routing所需的strict view：
 
 - RuntimeAssembly/deployment/ingress identity与generation；
+- opaque RuntimeConfigSnapshotRef及其generation pin；
 - IngressSelector、gateway entry key与GatewayEntryIdentity；
 - service protocol expectation和opaque request/response bytes；
 - deadline、cancel、stream sequencing、WebSocket connection pin与telemetry metadata。

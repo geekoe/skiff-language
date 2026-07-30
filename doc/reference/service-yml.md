@@ -7,17 +7,22 @@ Service首先是Package，因此root仍必须包含`package.yml`与`api.yml`。S
 - `service.yml`：service identity与service-to-service callable选择；
 - 可选`http.yml`：HTTP external ingress；
 - 可选`websocket.yml`：唯一WebSocket connection entry、connect与declared JSON-RPC methods；
-- 零个或多个`config.<profile>.yml`：已声明requirement的deployment binding与deployment policy。
+- 可选`config.yml`、`config.<profile>.yml`与ignored `config.<profile>.secret.yml`：同一service
+  activation的三层Package业务配置。
 
 `http.yml`或`websocket.yml`只能在同root存在合法`service.yml`时出现。三个authoring文件都不参与
 `root.*` namespace，不能被Skiff源码import。`service.yml`中的`http`/`websocket`字段非法；Skiff尚未发布，
 不读取旧内联格式。
 
+三种`config*`文件同样只属于service root；普通Package不能自带一份环境配置。dependency Package的值写在
+宿主service同一文件中，以该Package的canonical ID为key。完整shape与snapshot语义见
+[`config.md`](config.md)。
+
 Skiff没有developer-authored `assembly.yml`。Package和service之间的依赖关系只来自各项目自己的
 `package.yml`；源码仓库不通过一个顶层清单重新声明这些关系，也不因为同仓库存在多个项目而成为一个
 集中编排单元。开发态由watch registry或命令显式给出的service roots选择本次参与的项目，生产态由平台部署
-状态选择精确deployment。Tooling据此生成RuntimeAssembly；RuntimeAssembly是artifact，不是source
-authoring文件。
+状态选择精确deployment。Tooling据此生成RuntimeAssembly；配置tooling另行生成
+`RuntimeConfigSnapshot`。二者都不是source authoring文件，且互不引用。
 
 ## 2. service.yml
 
@@ -36,15 +41,17 @@ serviceCalls:
 - `id`必填，是稳定service id；version仍来自`package.yml`。
 - `serviceCalls`可省略或为空，只能列`api.yml`已有public function或public instance root。
 - dependency、public symbol、handler、route、JSON schema、artifact binding和平台limit不在本文件声明。
-- timeout、quota及state/resource binding由所选`config.<profile>.yml`提供；例如
-  `timeout: 30000`投影为可选`DeploymentPolicy.timeoutMs`，不在`service.yml`声明。
-  Service profile没有`lifecycle`配置面；该key及其旧`maxConcurrency`、`idleTimeoutMs`字段均非法。
-  并发只属于Router的Runtime连接级平台门禁，不进入ServiceDeployment。
+- `config*`文件只包含以canonical Package ID分区的业务配置；`timeout`、`quota`、`principal`、
+  `resources`、`state`、数据库名及连接都不是service profile字段，也不投影进ServiceDeployment。
+- Service没有`lifecycle`配置面；旧`maxConcurrency`、`idleTimeoutMs`与deployment `timeout`字段均非法。
+  并发只属于Router的Runtime连接级平台门禁。未来平台policy/resource必须由operator-owned独立配置拥有。
 - `kind: test`的profile按testing reference固定为`skiff-test`，使用`config.skiff-test.yml`及可选的
   ignored `config.skiff-test.secret.yml`；live target environment不改变该profile。
 
 只改变`serviceCalls`会改变ServiceContract/ServiceProtocolIdentity，但不改变PackageArtifact。HTTP或
-WebSocket文件变化不改变ServiceContract。
+WebSocket文件变化不改变ServiceContract。配置文件变化只创建新的`RuntimeConfigSnapshot`与activation
+generation，不改变PackageArtifact、ServiceDeployment或RuntimeAssembly。配置文件精确schema见
+[`config.md`](config.md)。
 
 ## 3. http.yml
 

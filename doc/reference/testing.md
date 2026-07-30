@@ -51,11 +51,12 @@ kind: test
 - test service 的 config profile固定为`skiff-test`，来自`config.skiff-test.yml`；
 - 本机或部署时的私密覆盖使用同profile的`config.skiff-test.secret.yml`，该文件不得提交；
 - 同一个test service在一次runner execution中只编译一次`PackageArtifact`，所有selected cases共享
-  resolved config和dependency graph，并作为多个root进入一个`RuntimeAssembly`；runner只提交一次
-  assembly activation transaction，所有root观察同一个activation generation；
+  authored config layers和dependency graph，并作为多个root进入一个`RuntimeAssembly`；runner为每个
+  generated deployment构造隔离的snapshot分区，只提交一次activation transaction，所有root观察同一个
+  generation钉住的assembly ref与config snapshot ref；
 - 每个case仍有独立synthetic `ServiceDeployment`、`ServiceContract`、gateway entry/ingress binding、
-  state namespace、heap、effect registry和execution nonce。共享assembly不等于共享deployment或
-  mutable state；
+  系统派生service数据库、heap、effect registry和execution nonce。共享assembly/snapshot record不等于
+  共享deployment、ConfigView或mutable state；
 - 需要不同配置时使用另一个test service，不提供per-case config override，也不允许调用方切换
   test service config profile。
 
@@ -125,18 +126,16 @@ aihub-tests -> aihub -> llm-providers
 访问`llm-providers`的顶层符号，必须在自己的manifest中再声明一条指向`llm-providers`的direct
 dependency，并在该entry设置`topLevelAlias`。
 
-这会形成direct与transitive两条真实dependency edge。对于带state的package，activation把每条edge的
-source collection按其`collection_name_mapping`投影到当前test service的physical target。这里“一条
-active projection”只表示一个最终生效的collection映射与metadata owner，不表示创建一份额外数据库：
+这会形成direct与transitive两条真实dependency edge。对于声明DB metadata的Package，activation把精确
+provider metadata链接到当前test service由系统派生的唯一数据库。这里“一条active projection”只表示
+一个最终生效的Package/schema/collection metadata owner，不表示创建额外数据库：
 
-- 两条edge解析到同一精确`PackageBuild`，且完整resolved collection projection
-  （source→target mappings及owner-relevant facts）canonical相同时，合并为一个active projection；
-- 同一build但resolved mapping不同，拒绝；
-- 不同build映射到同一physical target，拒绝；
-- dependency target与test service root自己的collection冲突，拒绝。
+- 两条edge解析到同一精确`PackageBuild`且owner facts相同时，合并为一个active projection；
+- 同一Package ID解析到不同build，拒绝；
+- logical collection identity缺失/重复或system physical-name encoding collision，拒绝。
 
-`config.skiff-test.yml`是test activation state binding的唯一来源；direct/transitive edge相同不会创建
-第二份配置或第二个state owner。
+`config.skiff-test.yml`根部按canonical Package ID分区；direct/transitive edge相同不会创建第二份
+ConfigView、数据库或metadata owner。
 
 ## 4. Test Discovery
 
@@ -171,15 +170,18 @@ test-only source file 输入：
 - 普通 `skiff test <path>` 为整个命令创建一套隔离 router / runtime，并在其中运行全部 case。
 - 仓库 canonical Skiff 源码套件为整个 registry plan 创建一套隔离 router / runtime，并在所有
   registry entry 之间复用该进程。
-- runner对同一个普通`kind: test` service只执行一次package compile、config resolve和dependency
+- runner对同一个普通`kind: test` service只执行一次package compile、config layer读取和dependency
   graph resolve；全部selected cases的独立synthetic deployments作为roots一次链接成一个
-  multi-root `RuntimeAssembly`，并由一次activation transaction提交。assembly identity和activation
-  generation属于test service execution scope，单个case不另有assembly或generation。
+  multi-root `RuntimeAssembly`，并把所有generated deployment的隔离配置分区写入一个
+  `RuntimeConfigSnapshot`，再由一次activation transaction并列提交两个ref。assembly identity和
+  activation generation属于test service execution scope，单个case不另有assembly或generation。
 - 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
 - runner负责构造逐case synthetic deployment、contract、gateway entry/ingress binding和root request
   frame；package测试由runner自动生成临时test service及其共享multi-root assembly activation。
-- config 由 runner 注入 resolved config；package 不读取 ambient environment。
-- runtime进程和assembly activation复用不扩大可变状态生命周期。每个case的state namespace、
+- runner在对应generated deployment的snapshot分区中增加
+  `skiff.test.ingressUrl`动态只读overlay；Package不读取ambient environment，authored文件不能覆盖它。
+- runtime进程和assembly activation复用不扩大可变状态生命周期。每个case的数据库identity由
+  `(testRunId, generatedTestServiceId)`系统派生，其ConfigView、
   heap、effect registry、execution nonce和synthetic deployment资源仍按runner isolation contract
   独立finalize；共享assembly artifacts和activation只由该test service execution统一清理。
 
@@ -252,7 +254,7 @@ package 测试由归属该 package 仓库的 test service 承载。test service 
 规则：
 
 - test helper 只进入 test service artifact，不进入被测 package production artifact；
-- 测试通过普通 config、dependency、contract、deployment 和 assembly 机制运行；
+- 测试通过普通config snapshot、dependency、contract、deployment和assembly机制运行；
 - package 内部测试使用top-level alias调用被测实现，不使用overlay `root.*`；
 - Package 仍不是远程 service；本机 Package call 不得伪装成 service-to-service RPC；
 - public API、implementation top-level、manifest 或 shared helper 变化时运行对应 test

@@ -14,7 +14,8 @@ prelude 类型和基础 receiver API 默认加载，不需要 `import`。它们�
 
 根级语言内建（`bytes`、`Json`、`JsonObject`、`Stream<T>`、`config`）是例外：它们直接在 `std` root（或如 `config` 作为内建 value root），不进二级模块、不加前缀。
 
-`config` 是内建 value root，不是 package，也不是 `std.config`。它暴露当前 service request frame 的只读 typed config view。
+`config`是内建value root，不是package，也不是`std.config`。它暴露当前精确Package slot的只读typed
+local config view；源码path相对当前Package分区。
 
 `root` 是当前 source set 的内建访问 root，用于当前 package / service 内跨文件访问；它不是标准库 API。
 
@@ -157,9 +158,11 @@ config path 是 dotted path，例如 `openai.apiKey`。每个 segment 必须匹�
 
 path 必须是 string literal 或 compile-time const-foldable string。普通动态字符串调用不进入 publisher 的 config shape 收集。
 
-`config.require<T>(path)` 表示 required path；缺失或 `null` 应导致 service activation 失败，运行时 shape 不匹配抛 `config.DecodeError`。
+`config.require<T>(path)`表示required path；overlay后缺失应导致service activation失败，运行时shape
+不匹配抛`config.DecodeError`。Authoring中的`null`是删除path的tombstone，不是可读取值。
 
-`config.optional<T>(path)` 表示 optional path；缺失或 `null` 返回 `null`，存在时必须匹配 `T`。空字符串是合法 string，不等价于缺失。
+`config.optional<T>(path)`表示optional path；overlay后缺失返回`null`，存在时必须匹配`T`。空字符串是
+合法string，不等价于缺失。
 
 `require<T?>` 和 `optional<T?>` 非法；required / optional 由函数名表达，不由 nullable type argument 表达。
 
@@ -167,9 +170,11 @@ path 必须是 string literal 或 compile-time const-foldable string。普通动
 
 当前 config 可解码基础目标包括非 nullable `string`、`number`、`bool`、`Json` 和 `JsonObject`。未来 record decode 需要补 schema closure 规则。
 
-config read 只读取当前 request frame 使用的配置视图，不表示外部 I/O，不产生 external effect，也不改变 service identity。
+config read只读取当前Package slot由activation snapshot注入的配置视图，不表示外部I/O，不产生external
+effect，也不改变package/deployment/assembly identity。
 
-package 代码读取 config 仍是当前 service config；package 不拥有自己的 secret namespace 或 per-service instance。
+每个Package只读取自己canonical Package ID分区中的local path；它不读取宿主service或dependency Package
+分区。同一Package build在不同ServiceDeployment中获得彼此隔离的ConfigView。
 
 目标 surface 不提供读取整个 config object 的通用 accessor。旧 `values.object()` 不进入目标 surface。
 

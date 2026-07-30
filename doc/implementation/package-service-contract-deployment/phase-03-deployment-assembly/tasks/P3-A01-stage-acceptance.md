@@ -1,5 +1,8 @@
 # P3-A01：Independent Stage Acceptance
 
+> 历史验收任务，不得用来验收2026-07-30之后的config/service DB语义。新的Phase 05 hard-cut acceptance必须
+> 证明业务配置与state字段已从deployment/assembly/identity删除，并验证独立snapshot与平台派生service DB。
+
 ## 角色与输入
 
 未参与 Phase 03开发和 integration的独立只读验收 Agent。不得修改文件、创建 commit或替开发 Agent解释实现。
@@ -18,12 +21,13 @@ surface、依赖、checker、fixture、配置或 gate环境变化都按影响面
 3. package binding以 caller build + alias选择 exact build/version/local ABI；service requirement不携带 provider
    build/revision/route，assembly内恰好一个本地 provider。
 4. A↔B service cycle和package closure真实闭合；零/多 provider、remote-only、ABI/protocol mismatch失败。
-5. shared PackageBuildId只共享 immutable code/image；service/config/state/resource/callback mutable owner按
-   activation分离，service slot key包含 caller build。
+5. shared PackageBuildId只共享immutable code/image；service binding、ConfigView、service DB handle与
+   callback mutable owner按activation分离，service slot key包含caller build。
 6. service call仍走 activation-relative `InProcessBoundary` plan，不被 linker patch为 package direct call或
    provider executable；Phase 04 execution尚未被偷做。
-7. RuntimeAssembly canonical link plan/templates/global ingress/empty assembly及 identity inclusion/exclusion符合设计；
-   secret material、path/display/replica state不进入 identity。
+7. RuntimeAssembly canonical link plan/service templates/global ingress/empty assembly及identity
+   inclusion/exclusion符合设计；任何业务配置值、secret、database namespace、path/display/replica state都
+   不进入identity。
 8. loader/linker/admission在请求前验证 exact refs、File IR/resource/link plan/template tamper；raw JSON/source/
    display无法成为 semantic owner。
 9. admitted active assembly保留 immutable canonical ServiceContract store；ref + operation ID可取得 descriptor/value

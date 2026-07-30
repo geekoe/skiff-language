@@ -16,9 +16,14 @@ PackageBinding → provider File IR DB declaration链；P3实现必须让所有D
 使用`DbObjectTargetId`，不得扩大普通dependency权限或复制provider metadata。
 
 2026-07-28修正：AIHub测试既要使用subject公开API又要访问精确implementation顶层，旧
-`access: topLevel`互斥模式表达错误；测试对transitive `llm-providers`的直接顶层访问还形成合法stateful
-diamond。D6硬切为同一entry的`alias` + test-only `topLevelAlias`，并规定same-build、
-canonical-same-mapping合并为一个active projection；其余collection冲突继续失败。
+`access: topLevel`互斥模式表达错误；测试对transitive `llm-providers`的直接顶层访问还形成合法Package
+diamond。D6硬切为同一entry的`alias` + test-only `topLevelAlias`；2026-07-30后same-build且owner facts相同
+只保留一个metadata owner，数据库由generated test service identity派生，其余collection冲突继续失败。
+
+2026-07-30修正：Phase 03/05把业务配置值、SecretRef和database state binding错误地装入
+ServiceDeployment/RuntimeAssembly。F446按最新canonical架构硬切：一个service仍只有三层配置文件，文件根
+直接按Package ID分区；配置进入独立RuntimeConfigSnapshot，activation generation并列钉assembly/snapshot
+refs；一个service一个平台派生数据库，删除全部author-authored state/namespace与无效policy字段。
 
 ## 输入
 

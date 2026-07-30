@@ -3,6 +3,9 @@
 状态：**Phase 03 COMPLETE；T09R affected-gate rebuild 与 P3-A01 独立复验均 PASS。最终 production
 candidate 为 `bedcd032` / tree `a79017c8`。**
 
+> 2026-07-30 note：这是历史验收记录。它对当时config/secret/state/deployment-policy schema的PASS不再构成
+> 当前语义证据；这些surface已由Phase 05 unified config/service DB hard cut明确退役。
+
 P3-A01 初次验收确认旧 gate ledger可复现，但在候选 `34b6a863` 上发现两项阻塞：full-chain fixture缺少真实
 consumer/service edge（A01-12）；runtime artifact boundary checker漏扫真实 `request_entry.rs`（A01-11）。两项均为
 局部 evidence/structure-gate缺口，不涉及产品语义。F04、F05已分别修复；T09R在精确 clean HEAD `bedcd032` 上

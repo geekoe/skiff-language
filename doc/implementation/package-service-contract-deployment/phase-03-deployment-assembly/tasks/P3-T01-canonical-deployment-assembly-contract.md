@@ -1,5 +1,8 @@
 # P3-T01：Canonical Deployment / Assembly Contract Checkpoint
 
+> 已完成的历史任务；2026-07-30后不得重发。下文config/secret/state/resource/policy DTO与identity条款已被
+> 当前canonical架构§11取代，删除工作归Phase 05 unified config/service DB hard cut。
+
 ## 权威输入、风险与证据状态
 
 - 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2、§5、§10、§11、§12、§14。
@@ -43,12 +46,11 @@ runtime loading 或 execution。
 - `PackageArtifactRef(packageId, packageVersion, packageBuildId, packageLocalAbiIdentity)`；
 - `ServiceContractRef(serviceId, contractVersion, serviceProtocolIdentity)`；
 - `ServiceDeploymentRef(serviceId, contractVersion, deploymentRevision, deploymentArtifactIdentity)`；
-- `ServiceDeploymentInput`、`ServiceDeployment`、operation/package/service/ingress/config/secret/state/resource/
-  capability/policy binding；
+- `ServiceDeploymentInput`、`ServiceDeployment`与operation/package/service/ingress/capability binding；
 - `(callerPackageBuildId, packageRequirementAlias)` 与
   `(callerPackageBuildId, serviceRequirementSlot)` 的 typed key；
-- `RuntimeAssembly`、resolved deployment/contract/package refs、canonical package link plan、activation-relative
-  service/config/state/resource templates、global ingress table；
+- `RuntimeAssembly`、resolved deployment/contract/package refs、canonical package link plan、
+  activation-relative service templates、global ingress table；
 - schema version constants、opaque `DeploymentRevision`、distinct deployment/assembly identity newtypes。
 
 `ServiceContract` 仍独占 descriptor/schema；deployment/assembly 只保存 exact refs/operation IDs。
@@ -61,8 +63,8 @@ empty assembly 是合法 canonical value。
    collision、unknown field和 declared identity tamper。
 2. canonical normalization 与 insertion order 无关；display/diagnostic/path、resolved secret bytes、replica state
    不进入 identity。
-3. implementation build、operation/dependency/ingress/config literal/secret ref/state/resource/policy、resolved graph、
-   link plan或template变化会改变对应 identity。
+3. implementation build、operation/dependency/ingress、resolved graph、link plan或service template变化会改变
+   对应identity；业务配置变化不得改变deployment/assembly identity。
 4. canonical empty assembly assign/validate/serde round-trip稳定。
 5. checker能识别新对象嵌入 legacy aggregate、第二 identity owner、字段改名/移动/重复 owner；self-test通过。
 

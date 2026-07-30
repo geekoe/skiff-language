@@ -1,6 +1,6 @@
-# P5-F445H-I7-D6 Test alias and stateful diamond authority
+# P5-F445H-I7-D6 Test Alias And Package Diamond Authority
 
-状态：`READY_FOR_IMPLEMENTATION`。
+状态：alias部分已实现；DB/state部分由2026-07-30 F446 hard cut取代，不得按旧mapping/state合同重发。
 
 ## 1. Parent chain and purpose
 
@@ -9,8 +9,7 @@ I7 M已经把测试迁移为ordinary `kind: test` service。AIHub隔离执行同
 1. 旧`access: topLevel`把dependency公开面与implementation顶层访问做成互斥模式，测试无法在同一条
    dependency上清晰使用两者；
 2. test service为直接访问`llm-providers`顶层符号声明direct dependency后，与subject的transitive
-   dependency形成stateful diamond。F415留下的“一stateful build多active edge一律拒绝”规则把同build、
-   同mapping的合法菱形误判为歧义。
+   dependency形成Package diamond。F415留下的“同build多active edge一律拒绝”规则把合法菱形误判为歧义。
 
 本节点只冻结authoring、resolution与activation合同，不修改production或tests。
 
@@ -43,19 +42,19 @@ I7 M已经把测试迁移为ordinary `kind: test` service。AIHub隔离执行同
 5. top-level权限不传递。Subject public ABI可以闭合dependency public types，但test不能因此直接访问
    transitive dependency top-level；需要时必须声明指向该provider的direct dependency，并为该entry设置
    `topLevelAlias`。
-6. direct与transitive dependency可以形成stateful diamond。同exact `PackageBuild`且完整resolved
-   collection projection（source→target mappings与owner-relevant facts）canonical相同时，合并为一个
-   active projection和一个metadata owner；同build不同mapping拒绝，不同build落到同一physical target拒绝，
-   dependency/root collision拒绝。
-7. `config.skiff-test.yml`提供test activation唯一state binding。edge合并不能创建第二份config、
-   namespace或state owner。
-8. 本次hard cut不升级artifact、identity或runtime wire schema；若实现发现现有schema无法表达同一edge的
+6. direct与transitive dependency可以形成Package diamond。同exact `PackageBuild`且owner-relevant facts
+   相同时，合并为一个active projection和metadata owner；同一Package ID解析到不同build、logical
+   collection identity缺失/重复或system encoding collision都拒绝。
+7. test数据库由平台按`(testRunId, generatedTestServiceId)`派生；edge合并不能创建第二份ConfigView、
+   数据库或metadata owner。`config.skiff-test.yml`只提供Package-ID scoped业务配置。
+8. alias hard cut本身不升级artifact、identity或runtime wire schema；F446会为独立config snapshot与state字段
+   删除执行新的schema hard cut。若alias实现发现现有schema无法表达同一edge的
    两个authoring alias或canonical projection equality，必须停止并上报，不能擅自升代。
 
 ## 4. Documentation scope
 
 本节点只修改authority/reference/Phase I7文档及本task/result。不修改production、tests、fixtures、历史
-F415/P3D/M2 result或其它repo。历史F415 result保留当时实现事实，但其中“一stateful build多edge一律拒绝”
+F415/P3D/M2 result或其它repo。历史F415 result保留当时实现事实，但其中“同一build多edge一律拒绝”
 不再是当前规则，以本D6合同为准。
 
 ## 5. Completion

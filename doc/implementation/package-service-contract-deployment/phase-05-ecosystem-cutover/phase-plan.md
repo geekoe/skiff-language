@@ -95,7 +95,8 @@ consumer并做聚焦验收。
 冻结规则：
 
 - `requestTimeoutMs`只属于external business request的平台cap；
-- deployment `policy.timeoutMs`只进一步收紧单个external request的effective deadline；
+- service profile不拥有deployment request timeout；external business request只受operator-owned平台cap和
+  源码`timeout(...)`约束；
 - assembly activation prepare是控制面事务，只使用operator配置
   `activation.prepareTimeoutMs`，默认`120000`，且必须是正safe integer；
 - 只有prepare budget到期时coordinator才以timeout原因abort pending并返回504；
@@ -140,11 +141,11 @@ P3D
 | P3D | [Test-only foreign DB target authority](tasks/P5-F445H-I7-P3D-test-only-foreign-db-target-authority.md) | P3只读preflight + I7 M checkpoint | docs-only；只解除P3实现 |
 | P3D result | [Test-only foreign DB target authority result](tasks/P5-F445H-I7-P3D-test-only-foreign-db-target-authority-result.md) | P3D exact candidate | PASS后P3可执行 |
 
-### 2026-07-28 test alias and stateful diamond correction
+### 2026-07-28 test alias and Package diamond correction
 
 I7 M2后的AIHub真实activation证明测试需要同时表达subject公开API与精确implementation顶层访问；旧
 `access: topLevel`把两者错误地做成互斥解析面。`aihub-tests`为直接访问`llm-providers`顶层符号声明的
-direct dependency又与`aihub -> llm-providers`形成stateful diamond，现有loader把同build、同mapping也
+direct dependency又与`aihub -> llm-providers`形成Package diamond，历史loader把same build也
 一律拒绝。
 
 D6冻结：
@@ -154,18 +155,51 @@ D6冻结：
 - 两套alias没有fallback/precedence，仍是同一edge/requirement/binding；top-level ref lowering时
   canonicalize回primary alias并绑定`expectedPackageBuild`；
 - 顶层权限不传递；直接使用transitive provider顶层时必须声明direct dependency及其`topLevelAlias`；
-- direct/transitive两条真实edge若exact build及完整resolved collection projection canonical相同，合并为
-  一个active projection与metadata owner；
-- 同build不同mapping、不同build同physical target、dependency/root collision全部拒绝；
-- `config.skiff-test.yml`是test activation唯一state binding；
+- direct/transitive两条真实edge若exact build及owner facts相同，合并为一个active projection与metadata
+  owner；
+- 同一Package ID不同build、logical collection identity缺失/重复或system encoding collision全部拒绝；
+- test数据库由平台按`(testRunId, generatedTestServiceId)`派生，不从配置绑定state；
 - 不升级artifact/wire schema。
 
-本规则取代F415 result中“一stateful build经多个active edge到达一律拒绝”的过度约束；历史result不改写。
+本规则取代F415 result中“同一build经多个active edge到达一律拒绝”的过度约束；历史result不改写。
 
 | 节点 | Task / result | 输入 | 结论 |
 | --- | --- | --- | --- |
-| D6 | [Test alias and stateful diamond authority](tasks/P5-F445H-I7-D6-test-alias-diamond-authority.md) | I7 M2 blocker + P3D/F415 current facts | docs-only；解除manifest/resolver/loader实现 |
-| D6 result | [Test alias and stateful diamond authority result](tasks/P5-F445H-I7-D6-test-alias-diamond-authority-result.md) | D6 exact candidate | PASS后实现与M复验可执行 |
+| D6 | [Test alias and Package diamond authority](tasks/P5-F445H-I7-D6-test-alias-diamond-authority.md) | I7 M2 blocker + P3D/F415 current facts | docs-only；解除manifest/resolver/loader实现 |
+| D6 result | [Test alias and Package diamond authority result](tasks/P5-F445H-I7-D6-test-alias-diamond-authority-result.md) | D6 exact candidate | PASS后实现与M复验可执行 |
+
+### 2026-07-30 unified config snapshot and service DB correction
+
+Phase 05当前实现把普通config literal编进ServiceDeployment，把secret建模成SecretRef，又要求Package在
+`package.yml`声明database state并由profile重复绑定namespace。这三条都被撤销。新的唯一语义是：
+
+- 每个service root只有`config.yml`、`config.<profile>.yml`、`config.<profile>.secret.yml`三层文件，根部
+  直接以canonical Package ID为key；service自身也是普通Package ID，没有保留`config/service/packages/secrets`
+  key或每Package文件；
+- 三层递归overlay：map合并，scalar/sequence替换，null tombstone；secret与普通文件同schema，ignored且
+  `0600`；
+- PackageArtifact只保存own typed config requirements；所有业务值从ServiceDeployment、RuntimeAssembly及
+  identity删除，SecretRef整体删除；
+- activation generation并列钉`RuntimeAssemblyRef`与随机opaque immutable
+  `RuntimeConfigSnapshotRef`；snapshot内部按ServiceDeploymentRef和exact Package build隔离；
+- database由trusted `(platform, environment, serviceId)`派生，一个service一个DB；删除manifest state、
+  PackageRuntimeRequirements.state、StateBinding/Kind与deployment state bindings；
+- test-runner按generated deployment分隔snapshot，注入`skiff.test.ingressUrl`runner overlay，并按
+  `(testRunId, generatedTestServiceId)`派生DB；foreign DB test target仍落当前test service DB；
+- `timeout/quota/principal/resources`不是业务配置，当前无效、自报profile字段删除；未来operator policy
+  另设owner。
+
+该hard cut不兼容旧artifact、profile或secret ref。历史Phase 03与Phase 05 result只记录当时事实，不得作为
+当前config/state schema证据。
+
+| 节点 | Task | 依赖 | Owner / 输出 |
+| --- | --- | --- | --- |
+| F446 | [Unified config snapshot and service DB hard cut](tasks/P5-F446-unified-config-service-db-hard-cut.md) | 本权威修正 | umbrella DAG与共同验收矩阵 |
+| F446A | [Artifact/compiler state removal checkpoint](tasks/P5-F446A-artifact-compiler-state-removal.md) | F446 | shared schema/identity/compiler checkpoint |
+| F446B | [Config snapshot tooling checkpoint](tasks/P5-F446B-config-snapshot-tooling.md) | F446A schema | config parser/overlay/snapshot store/tooling |
+| F446C | [Activation/runtime service DB cutover](tasks/P5-F446C-activation-runtime-service-db.md) | F446A + F446B | Router/Runtime generation、ConfigView、DB owner |
+| F446D | [Test runner and ecosystem migration](tasks/P5-F446D-test-runner-ecosystem-migration.md) | F446B + F446C DTO checkpoint | runner、official/internals authoring与stable inputs |
+| R446 | [Unified config/service DB acceptance](tasks/P5-R446-unified-config-service-db-acceptance.md) | F446A–D integrated | 独立验收与反向搜索 |
 
 ## 1. 基线与已关闭的实现决策
 
@@ -173,22 +207,25 @@ D6冻结：
 - `skiff-packages`基线：`5defc94161cee14def1a6bbb340308004e65b741`。
 - `internals`基线：`4b04e744f430f49f1ed9c76dfebfeb2a1ed5d7d2`。
 - source authoring一次性收敛为：`package.yml` + `api.yml` + `.skiff` 只属于Package；
-  Service在此基础上使用`service.yml`、按需存在的`http.yml`/`websocket.yml`与`config.*.yml`。
+  Service在此基础上使用`service.yml`、按需存在的`http.yml`/`websocket.yml`，并可用`config.yml`、
+  `config.<profile>.yml`与ignored `config.<profile>.secret.yml`构造独立snapshot。
   ServiceContract、ServiceDeployment和RuntimeAssembly均由tooling生成；不存在developer-owned
   `contract.yml`、`deployment.yml`或`assembly.yml`。旧authoring格式不兼容读取。
 - `package.yml` 用顶层 `contracts` 声明contract compile coordinate/alias；编译时从已发布
   ServiceContract得到exact protocol identity并写入PackageArtifact。provider package也用contract-owned
   types，不用package-local nominal type伪装contract type。
 - 本地activation使用独立的strict `EnvironmentActivationState` operational record；它不是artifact或第五个
-  domain object。record包含唯一`committed { generation, assemblyRef }`与至多一个
-  `pending { activationId, expectedGeneration, candidateGeneration, assemblyRef, participantReplicaIds }`。
+  domain object。record包含唯一`committed { generation, assemblyRef, configSnapshotRef }`与至多一个
+  `pending { activationId, expectedGeneration, candidateGeneration, assemblyRef, configSnapshotRef,
+  participantReplicaIds }`。
   prepare CAS只创建pending且不移动committed；runtime全部resolve/load/link/admit到staged context并返回exact
   ACK后，router coordinator才CAS commit。prepare/reject/disconnect时按activationId abort，committed tuple不变；
   commit前再次确认非空participant set全部连接且staged；commit后旧replicas只drain in-flight，新请求等待/使用
   与committed tuple一致的registration。通知可幂等重放，controller/runtime重启按exact record向前收敛，
   不猜latest、不把新请求送回旧generation。
 - router control wire只有`prepare/prepared|reject/commit/abort/register`，携带environment、activation id、
-  expected/candidate generation、exact assembly ref与replica id；runtime只在committed generation激活并注册。
+  expected/candidate generation、exact assembly/config snapshot refs与replica id；runtime只在committed
+  generation激活并注册。
   新请求在同一committed assembly的healthy replicas间调度，不按service/build/target分开注册。
 - external ingress按Host等平台规则注入可信`x-skiff-service`/`x-skiff-version`；Router严格解析后先选择
   唯一精确deployment，再在该deployment内使用`(protocol, method?, path)`。HTTP Host、query、
@@ -198,8 +235,8 @@ D6冻结：
   RuntimeAssembly v3与runtime frame v2作为同一canonical checkpoint实现，不兼容读取旧Host route或裸
   全局ingress。
 - Router的external request、activation prepare与WebSocket generation release预算互相独立。
-  `requestTimeoutMs`和deployment `policy.timeoutMs`都不能触发assembly activation abort；
-  prepare只使用operator-owned `activation.prepareTimeoutMs`。
+  `requestTimeoutMs`不能触发assembly activation abort；service profile没有deployment timeout；
+  prepare只使用operator-owned`activation.prepareTimeoutMs`。
 - publish只是四种typed artifact的immutable write + typed pointer CAS操作；不产生Publication、
   common artifact kind或archive shim。历史本地/registry数据不兼容读取，也不在本阶段破坏性删除。
 - Package/service authoring入口生成PackageArtifact、ServiceContract和ServiceDeployment。Assembly

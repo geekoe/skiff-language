@@ -1,5 +1,10 @@
 # Phase 03：Deployment And Assembly Plane 实现计划
 
+> 2026-07-30 correction：本计划已经执行完成；其中config literal、SecretRef、state/resource binding和
+> deployment policy属于历史checkpoint，不得作为新任务输入。当前hard cut由canonical架构§11与Phase 05
+> 后续任务拥有：配置进入独立RuntimeConfigSnapshot，ServiceDeployment/RuntimeAssembly删除上述字段，
+> service DB由平台派生。
+
 状态：complete；F04/F05 已关闭初验 blocker，T09R 与 P3-A01 复验均 PASS
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§5、§9、§10、§12、
@@ -34,15 +39,14 @@ registry 或执行语义。
   deployment。
 - `DeploymentRevision` 是显式 opaque coordinate；`DeploymentArtifactIdentity` 与 `AssemblyIdentity` 是
   canonical content identity。identity preimage 排除 declared identity、path、diagnostic/display、resolved
-  secret bytes 与 replica/host state；包含 revision、exact refs、operation/dependency/ingress/config/secret-ref/
-  state/resource/policy、resolved graph、link plan 和 templates。
+  secret bytes与replica/host state；当前identity包含revision、exact refs、operation/dependency/ingress、
+  resolved graph、link plan和service templates，不包含业务配置或state/policy。
 - package binding key 是 `(callerPackageBuildId, requirementAlias)`，value 是 exact `PackageArtifactRef`。
   同一 caller build 的 direct-link edge 在所有 activation 中必须相同；不同 build 可各自选择依赖。
 - service selector key 是 `(callerPackageBuildId, serviceRequirementSlot)`，selector 只含 requirement 已有的
   `serviceId + contractVersion + expectedProtocolIdentity`。`RuntimeAssembly` 在当前 root/candidate set 中解析
   exact provider，并把结果放入 activation-relative template；consumer deployment 不钉 provider revision。
-- secret 只保存 opaque binding reference。普通 config literal 与 secret ref 进入 deployment identity；secret
-  backend 在同一 ref 后的内容轮换不进入 artifact/identity。
+- 业务config与secret都不进入deployment/assembly；独立RuntimeConfigSnapshot由Phase 05构造。
 - canonical empty assembly 合法：空 roots/closure/link plan/templates/ingress，稳定 AssemblyIdentity；runtime
   admission 成功但任何 lookup 都 fail closed。
 - artifact 保存 deterministic link plan；runtime `linked-program` hydrate 成含 `Arc`、loaded File IR/resource
@@ -71,15 +75,14 @@ ServiceDeployment
   package bindings: (caller PackageBuildId, requirement alias) -> exact PackageArtifactRef
   service selectors: (caller PackageBuildId, service slot) -> exact contract selector
   ingress: typed external selector -> ContractOperationId
-  config literals / secret refs / state / resource / runtime capability bindings
-  timeout / activation policy
+  runtime capability bindings
   deployment revision / artifact identity
 
 RuntimeAssembly
   roots / resolved deployment refs / resolved contract refs / resolved package refs
   canonical package link plan
   service binding templates by activation
-  activation config/state/resource templates
+  activation service templates
   global ingress bindings
   assembly identity
 ```
@@ -166,17 +169,18 @@ worker释放后立即启动第四个；不会为填槽位制造 T02→T03依赖�
 ### Deployment checkpoint
 
 - missing/duplicate/extra operation、unknown public path、Unavailable callable、descriptor/effect/ContractTypeId
-  mismatch 与缺失 config/state/resource/runtime-capability binding 全部失败。
+  mismatch与缺失runtime-capability binding全部失败。
 - human public path 只在 projection trust boundary 解析；artifact 只保存 `PackageCallableId`。
-- 修改 implementation build、operation/dependency/ingress/config/secret-ref/state/resource/policy 必变 deployment
-  identity；改 map insertion order、path、diagnostic/display 不变。
+- 修改implementation build、operation/dependency/ingress必须改变deployment identity；业务配置变化不得改变
+  deployment/assembly identity；map insertion order、path、diagnostic/display不影响identity。
 - production dependency graph中没有 compiler source/lowering/AST 或 legacy runtime DTO。
 
 ### Assembly checkpoint
 
 - A↔B service cycle闭合；同 requirement 零/多 provider、protocol mismatch、remote-only closure失败。
 - `(callerBuildId, packageAlias)` exact build/version/local ABI 唯一；同 caller edge 冲突失败。
-- 两个 activation 共享同一 package build，只产生一个 code slot，但 service/config/state templates独立。
+- 两个activation共享同一package build，只产生一个code slot，但service binding templates独立；
+  ConfigView/service DB handle由activation snapshot另行隔离。
 - 两个不同 package 的 slot 0 不冲突；每条 template key 必须含 activation与caller build。
 - empty assembly identity/round-trip/admission稳定，所有业务 lookup失败；global ingress collision失败。
 

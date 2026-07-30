@@ -44,19 +44,22 @@ runtime，也不能指向 stable developer instance 或固定 `4000` / `4001` �
 
 复用边界包含router/runtime进程、其隔离workspace，以及单个普通`kind: test` service execution的
 共享assembly activation。对同一个test service，runner必须只执行一次Package compile、resolved
-config构造和dependency graph解析；所有selected cases各自生成fresh synthetic
+config layer读取和dependency graph解析；所有selected cases各自生成fresh synthetic
 `ServiceDeployment`、对应`ServiceContract`和gateway entry/ingress binding，再作为多个root链接进一个
-`RuntimeAssembly`。runner发布该multi-root assembly后只提交一次activation transaction，所有case
-使用同一个assembly identity和activation generation；单个case不拥有另一份assembly或generation。
+`RuntimeAssembly`。runner同时为每个generated deployment构造独立snapshot分区，汇入一个
+`RuntimeConfigSnapshot`。随后只提交一次activation transaction，并列钉住assembly ref与snapshot ref；
+所有case使用同一个activation generation，单个case不拥有另一份assembly、snapshot或generation。
 
-共享assembly严格不等于共享deployment或state。每个case仍拥有独立synthetic service identity、
-deployment/contract/gateway entry/ingress selector、state namespace、heap、inline-effect registry和
-execution nonce。case finalization精确清理这些逐case资源；共享Package artifact、assembly artifact
-和activation由该test service execution统一清理。一个case或registry entry的可变测试状态不得泄漏
-到另一个case或entry。
+共享assembly/snapshot record严格不等于共享deployment、ConfigView或mutable state。每个case仍拥有独立
+synthetic service identity、deployment/contract/gateway entry/ingress selector、snapshot分区、由
+`(testRunId, generatedTestServiceId)`系统派生的数据库、heap、inline-effect registry和execution nonce。
+case finalization精确清理这些逐case资源；共享Package artifact、assembly artifact、snapshot record和
+activation由该test service execution统一清理。一个case或registry entry的可变测试状态不得泄漏到另一个
+case或entry。
 
-隔离stack同时向runner提供动态business HTTP ingress URL。runner把它作为保留resolved config
-`skiff.test.ingressUrl`注入test service，并拒绝authored同名binding；它不写secret文件，也不允许
+隔离stack同时向runner提供动态business HTTP ingress URL。runner把它作为保留的runner overlay
+`skiff.test.ingressUrl`写入对应generated deployment的Package-scoped snapshot分区，并拒绝authored
+同名path；它不写secret文件，也不允许
 固定端口fallback。每个case的synthetic service id和contract version是self-ingress selector的唯一
 来源。测试源码只传普通绝对HTTP URL；测试执行适配在URL origin精确命中该动态ingress时自动加入现有
 service/version selector，用户headers不能覆盖selector、Host、body framing或hop-by-hop headers。

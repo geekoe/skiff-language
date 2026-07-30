@@ -1,5 +1,8 @@
 # P3-T02：Source-free ServiceDeployment Projection
 
+> 已完成的历史任务；2026-07-30后不得重发。当前projection不再消费config profile，也不绑定
+> config/SecretRef/state/resource/policy；独立snapshot projection由Phase 05新任务拥有。
+
 ## 权威输入、风险与证据状态
 
 - 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2 列表 1–5、§5、§9、§10、§11、§14。
@@ -39,8 +42,8 @@ ServiceDeploymentInput + exact ServiceContract + implementation PackageArtifact 
 2. contract 每个 operation 恰好映射一次；missing/duplicate/extra、unknown operation/callable 全失败。
 3. selected callable 必须 `BoundaryCallableProjection::Available`，其 operation contract、ContractTypeId/value
    plan、effect guarantee与 ServiceContract descriptor 精确相符。
-4. implementation requirements 的 config/state/resource/runtime capability 全部唯一绑定；普通 config literal 与
-   secret ref 区分，secret value 不得进入输入或输出。
+4. implementation runtime callable/capability requirements唯一闭合；业务配置由独立snapshot projection验证，
+   不进入本输入或输出。
 5. implementation package及所有 package direct requirements 用 exact version/local ABI/build ref闭合；binding key
    是 `(callerBuildId, alias)`，同 key 不得产生两个 target。
 6. service dependency只保存 contract selector与 caller-relative slot，不选 deployment revision/provider executable。
@@ -52,7 +55,7 @@ ServiceDeploymentInput + exact ServiceContract + implementation PackageArtifact 
 
 - 同一 callable 可显式映射两个 contract operations；同名函数不自动绑定。
 - structurally equal package-local nominal type不能冒充 ContractTypeId。
-- missing required config/resource/capability、Unavailable callable、protocol mismatch都给稳定结构化错误。
+- missing required capability、Unavailable callable、protocol mismatch都给稳定结构化错误。
 - 改 public path拼写但解析到同一 callable不改变 artifact identity；改 exact target或 binding会改变 identity。
 
 ## 唯一验证 ownership

@@ -40,9 +40,13 @@ CompiledPackage + PackageArtifact + typed http.yml/websocket.yml ingress
   -> GatewayEntryProjection
   -> typed gateway entries
 
-PackageArtifact + ServiceContract + typed gateway entries + selected config profile
+PackageArtifact + ServiceContract + typed gateway entries
   -> ServiceDeploymentProjection
   -> ServiceDeployment
+
+selected three-layer config + exact deployment/package closure
+  -> RuntimeConfigSnapshotProjection
+  -> RuntimeConfigSnapshot
 ```
 
 每个阶段只消费前一阶段显式提供的 typed facts。下游若需要源码、AST、配置原文或 path/string
@@ -135,7 +139,7 @@ collection projection。旧`access: topLevel`输入严格拒绝，不增加compa
   requirement/conformance facts；
 - package/service dependency resolution；
 - callable effect、provenance、escape、write、alias 与 same-heap identity facts；
-- config/state/resource/runtime requirement 使用事实；
+- own typed config/runtime capability requirement使用事实与DB metadata；
 - `service.yml.serviceCalls` public-path选择，以及`http.yml`/`websocket.yml` handler selector的typed
   resolution intent。
 
@@ -276,16 +280,17 @@ artifact-identity owner计算；各consumer不得自行重算另一套identity�
 
 ## ServiceDeployment Projection
 
-Deployment projection消费 typed artifacts 与所选 config profile，不拥有 AST、source text、
+Deployment projection只消费typed code artifacts，不消费config profile，也不拥有AST、source text、
 type/effect inference 或 lowering helper。它负责：
 
 - 验证 ServiceContract operations 与 Package callable bindings一一对应；
 - 验证 gateway entries、external selectors 与 exact implementation facts；
 - 闭合 package/service dependency bindings；
-- 绑定 config/secrets/state/resource/activation policy；
 - 生成 immutable ServiceDeployment 与 revision identity。
 
-Profile 只能绑定已声明 requirements，不能增加/删除 Package dependency 或 service dependency。
+独立config snapshot projection消费三层配置文件、exact ServiceDeployment refs与Package closure，验证每个
+Package自己的typed requirements，并生成`RuntimeConfigSnapshot`。业务配置值、SecretRef、state/resource
+binding和platform policy不进入ServiceDeployment。
 
 ## Emission Boundary
 
@@ -313,7 +318,7 @@ Profile 只能绑定已声明 requirements，不能增加/删除 Package depende
 - service root仍通过唯一Package compile入口；
 - `http.yml`/`websocket.yml` external ingress不会进入Package API graph或ServiceContract；
 - `service.yml`不接受HTTP/WebSocket内联字段；
-- config profile值只在deployment/activation边界读取；
+- config profile值只由独立snapshot projection读取，不进入deployment/assembly；
 - SourceModel之后不重建name/type/conformance；
 - lowering不读取manifest或重新推断expression type；
 - projection不读取AST、调用lowering helper或解析raw artifact JSON；

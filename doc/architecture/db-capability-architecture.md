@@ -11,7 +11,10 @@ DB 架构目标：
 - DB query / projection 是 compiler 可分析的语言结构，不是 Mongo JSON。
 - runtime 接收已经规范化的普通 type descriptor，不理解 `ReadRecord`。
 - Mongo 只存在于 service DB adapter 内，不进入 Skiff source、File IR result type 或 service API schema。
-- service DB 连接能力由 router / platform activation 注入，业务源码不能选择 database 或读取连接串。
+- service DB连接能力由router/platform activation注入，database identity由trusted
+  `(platform, environment, serviceId)`派生；业务源码和service配置不能选择database、namespace或连接串。
+- 一个service只有一个数据库；同一service中的Package共享它，但每个DB target仍保留精确
+  PackageArtifact/File IR/type identity。
 
 ## Stage Boundaries
 
@@ -125,18 +128,20 @@ PackageArtifact and linked executable must not duplicate those facts.
 
 Two dependencies may contain the same module path and type name. Their exact
 PackageArtifactRef keeps their DB target identities distinct; name collision is
-not a link error. Physical collection projection remains service-owned and is
-validated separately through each dependency edge's collection-name mapping.
+not a link error. Physical collection ownership is validated by exact
+stable `(packageId, declared collection identity)` and system encoding;
+authoring does not provide collection-name or database-namespace mappings.
 
-A test can directly depend on a stateful provider that is also reachable through
+A test can directly depend on a DB-metadata provider that is also reachable through
 the subject package. These are two real graph edges, not two spellings of one
 entry. Runtime admission merges them into one active collection projection and
 one metadata owner only when they select the exact same PackageBuild and their
-fully resolved source-to-target mappings and owner-relevant facts are
-canonically equal. The same build with different mappings, different builds
-targeting one physical collection, and dependency/root collection collisions
-all fail closed. `config.skiff-test.yml` remains the sole test-activation state
-binding owner.
+owner-relevant facts are canonically equal. One Package ID resolving to
+different builds, missing/duplicate logical collection identity, and a system
+physical-name encoding collision all fail closed. Different packages may use
+the same bare collection name without sharing storage. The
+test database remains the current generated test service database; test-only
+foreign target authority never opens the provider service database.
 
 ### Linked DB Target Identity
 
@@ -190,6 +195,11 @@ Skiff runtime above the store talks in service DB commands and business JSON, no
 
 Router / platform activation injects `serviceDb.mongoUrl`. Source files and service config do not contain the real DB URL.
 
+`package.yml state`、`PackageRuntimeRequirements.state`、`StateBinding`和deployment state binding都不是DB
+capability的一部分。Runtime仅在精确activation闭包含DB metadata时按需创建service DB handle；没有DB
+metadata的service不需要创建空数据库。跨service DB访问禁止。未来Redis、queue或第三方数据库必须定义
+独立capability，不能复用一个通用state namespace配置面。
+
 Local dev examples and service-level live tests should discover DB configuration from dev `router.yml` through the same path as runtime activation. Low-level runtime crate tests may stay opt-in through an environment variable when they are testing adapter internals, but user-facing examples should not teach direct env-only DB setup.
 
 ## Testing Boundary
@@ -205,7 +215,8 @@ Tests belong at the lowest layer that can prove the contract:
 - Runtime target tests: all DB operations, `DbQuery`, lease claim/read/guard use
   `DbObjectTargetId` and provider metadata without consumer copies.
 - Service DB adapter tests: Mongo mapping, projection document, transaction and BSON coercion.
-- Test-runner / service tests: end-to-end DB behavior using dev router config or explicit test config.
+- Test-runner / service tests: end-to-end DB behavior using dev router transport config and a database identity derived
+  from `(testRunId, generatedTestServiceId)`.
 
 Core runtime tests should not depend on a user service example. User service examples should not be the only coverage for compiler/runtime DB contracts.
 

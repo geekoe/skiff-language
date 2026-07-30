@@ -16,18 +16,29 @@ developer-authored repository-level `assembly.yml`。每个runtime replica加载
 - Package code在replica内只链接一次；
 - service binding全部解析为`InProcessBoundary`；
 - 每个service拥有独立ActivationContext；
-- 每个ActivationContext拥有自己的service/config/state binding vector，共享Package executable不共享这些
-  bindings；
-- replica内共享的是只读code/type/link image；activation-owned config view、state handle、callback table与
-  mutable runtime state不得因PackageBuildId相同而共享；
+- 每个ActivationContext拥有自己的service binding、Package-scoped ConfigView与service DB handle；
+- replica内共享的是只读code/type/link image；activation-owned ConfigView、DB handle、callback table与
+  mutable runtime state不得因PackageBuildId相同而跨ServiceDeployment共享；
 - replica之间heap、CPU调度、request lifecycle与failure独立；
-- MongoDB、Redis等外部数据层按deployment配置共享。
+- service DB由平台按environment与service identity派生，并由同一service的replica共享。
 
 该模型可以整体增加CPU、内存和副本可用性，但不能单独隔离或扩缩某个service；一个service的CPU/memory故障
 可能影响同replica内其它service。第一版接受该限制，并要求assembly admission、health、drain与atomic reload
 可观测。
 
 ## Activation 与 Generation
+
+每个committed generation的持久记录并列包含：
+
+```text
+runtimeAssemblyRef
+runtimeConfigSnapshotRef
+```
+
+二者互不引用。Runtime在prepare时必须同时解析精确assembly和snapshot，snapshot内部按
+`ServiceDeploymentRef`隔离同一Package build跨service配置；任一ref缺失、tampered、指向错误environment
+或不闭合都拒绝prepare。配置变化通过新snapshot和新generation生效，不重建assembly。冷恢复重读同一
+generation的两个ref，不能读取最新配置文件或ambient environment。
 
 Canonical runtime connection上的actor、spawn及其它跨request control frame必须显式携带当前
 ActivationIdentity，至少包含assembly identity、generation、runtime replica与deployment revision。Runtime
@@ -62,18 +73,18 @@ Router与Runtime通过共享artifact filesystem装载immutable records，不依�
 - Runtime读取选定RuntimeAssembly及其精确PackageArtifact/ServiceDeployment闭包，完成link与加载；
 - immutable record先完整写入并校验identity，再原子更新pointer；reload不接受半写入record。
 
-Runtime loader保留真实dependency graph，但activation中的stateful package metadata按resolved projection
-去重。同一精确`PackageBuild`经direct/transitive多条edge到达，且每条edge的完整source→target collection
-mapping与owner-relevant facts canonical相同时，只建立一个active projection与一个metadata owner。相同
-build但mapping不同、不同build落到同一physical target、或dependency target与service root collection冲突
-均拒绝activation。该合并不创建或推断state binding；test service的binding仍只来自
-`config.skiff-test.yml`。
+Runtime loader保留真实dependency graph，但同一精确`PackageBuild`经direct/transitive多条edge到达时，
+只建立一个code slot、Package-scoped ConfigView和DB metadata owner。同一Package ID解析到不同build、
+logical collection identity缺失/重复或system physical-name encoding collision均拒绝activation。
+Package alias和edge path不参与config或DB identity；physical collection name由stable
+`(packageId, declared collection identity)`系统编码。
 
 `artifactsPath`和`serviceDb.mongoUrl`是部署拓扑配置，不进入PackageArtifact、ServiceContract、
 ServiceDeployment或RuntimeAssembly identity。Runtime不为二者另设文件配置、环境变量或默认值。
 
-Runtime持有bootstrap DB transport binding不表示所有activation获得DB。只有声明并由deployment绑定DB
-requirement的ActivationContext才能得到`std.db` capability；service代码看不到provider URL。
+Runtime持有bootstrap DB transport binding不表示所有activation获得DB。只有exact Package闭包含DB
+metadata的service才按需得到`std.db` capability；数据库identity由trusted
+`(platform, environment, serviceId)`派生，service代码看不到provider URL或database name。
 
 ## Activation Prepare Budget
 
@@ -92,14 +103,14 @@ activation:
 `POST /__skiff/activate-assembly`返回504。普通reject、disconnect、CAS冲突或admission失败仍使用各自
 已有的fail-closed结果，不能伪装成prepare timeout。
 
-`requestTimeoutMs`只限制external business request；deployment `policy.timeoutMs`只会进一步收紧该
-request的effective deadline。两者都不参与assembly activation。Test-runner或其它activation client必须
+`requestTimeoutMs`只限制external business request，不参与assembly activation。Test-runner或其它
+activation client必须
 拥有独立deadline，并严格大于Router的prepare budget；默认prepare budget下建议使用`150000`毫秒。这样
 client不会在Router仍合法等待participant时先断开，也不会反过来延长Router事务预算。
 
 WebSocket generation release使用独立release timeout，不继承business request或activation prepare预算。
-当前契约不要求公开该release timeout为operator配置，但禁止从`requestTimeoutMs`或deployment
-`policy.timeoutMs`派生。旧的跨域timeout binding直接删除，不兼容读取。
+当前契约不要求公开该release timeout为operator配置，但禁止从`requestTimeoutMs`派生。旧的跨域timeout
+binding直接删除，不兼容读取。
 
 ## Service-scoped External Ingress
 

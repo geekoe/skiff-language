@@ -350,16 +350,17 @@ struct NativeCallPlan {
 `skiff-runtime-activation` 拥有：
 
 ```text
-LinkedProgramImage + runtime config -> RuntimeActivation
+LinkedProgramImage + RuntimeConfigSnapshot partition -> RuntimeActivation
 ```
 
 职责：
 
 - service runtime identity 和 activation identity。
-- package config vector materialization。
+- exact Package-scoped ConfigView materialization。
 - service dependency activation view。
-- DB / actor / gateway / timeout / route binding activation view。
-- activation-level validation：本机 config 是否满足 linked image 的 runtime requirements。
+- service DB / actor / gateway / route binding activation view。
+- activation-level validation：snapshot partition是否满足linked image中各Package自己的typed config
+  requirements。
 - activation cache key 定义。
 
 规则：
@@ -726,14 +727,14 @@ skiff-runtime-package-test
 
 ### `RuntimeActivation`
 
-表示某个 linked image 在某个 runtime config 下可被本机激活的只读视图。
+表示某个linked image在某个精确snapshot deployment partition下可被本机激活的只读视图。
 
 拥有：
 
 - service/version/build identity projection。
-- package config materialization。
+- Package-scoped ConfigView materialization。
 - service dependency activation view。
-- DB / actor / gateway / timeout / operation route binding facts。
+- service DB / actor / gateway / operation route binding facts。
 
 不拥有：
 

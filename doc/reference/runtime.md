@@ -81,11 +81,21 @@ Skiff不提供公开的“取消请求”能力。Runtime内部仍有停止信�
 
 默认不自动 retry。只有 effect metadata 和 operation schema 明确声明幂等、可比较 target / conflict-key，并由平台策略允许时，router 才能重试。
 
-Runtime activation对stateful package diamond保留每条真实dependency edge，但不会因为同一精确build沿
-direct与transitive路径到达就创建两份数据库状态。若完整resolved collection mapping及owner facts
-canonical相同，只激活一个collection projection和metadata owner；同build不同mapping、不同build映射到
-同一physical target、或dependency/root collection冲突都fail closed。Test service的state binding只取自
-`config.skiff-test.yml`，不能从dependency path数量推导。
+Runtime activation对Package diamond保留每条真实dependency edge，但同一精确build沿direct与transitive
+路径到达时只建立一个code slot、一份Package-scoped `ConfigView`和一个DB metadata owner。Package alias
+不参与这些identity。同一Package ID解析到不同build、logical collection identity缺失/重复或system
+physical-name encoding collision都fail closed。
+
+每个service只获得一个由trusted platform按`(platform, environment, serviceId)`派生的数据库。Package不
+声明database state requirement，service/profile也不配置namespace；只有activation闭包含DB metadata时
+Runtime才按需提供service DB handle。同一service的Package共享该数据库，但每次DB operation仍以精确
+PackageArtifact/File IR/type identity选择schema和collection。跨service DB访问禁止。
+Physical collection由stable`(packageId, declared collection identity)`系统编码；不同Package使用相同裸
+collection名字不会共享storage，作者不能提供mapping。
+
+每个committed activation generation并列钉住`RuntimeAssemblyRef`与`RuntimeConfigSnapshotRef`。Runtime
+按`ServiceDeploymentRef`隔离snapshot，再按精确Package build向slot注入只读配置；cold recovery必须读取
+generation固定的两个ref，不能读取ambient或latest配置。
 
 ### Runtime连接并发门禁
 
@@ -108,7 +118,7 @@ package-test root和direct-spawn derived request都计入同一个pending计数�
 容量而迁移。目标连接已满且没有其他合法选择时，Router立即返回overload，不排队、不重试，也不创建
 新的pending。多条Runtime连接分别应用同一个配置值，各自独立计数。
 
-Service源码、`service.yml`、`config.<profile>.yml`、ServiceDeployment和RuntimeAssembly都不能声明、
+Service源码、`service.yml`、任何`config*`文件、ServiceDeployment和RuntimeAssembly都不能声明、
 复制或覆盖并发上限。Service profile的整个`lifecycle`配置面非法；旧`maxConcurrency`和
 `idleTimeoutMs`都已删除，ServiceDeployment不再包含`activation` policy。并发门禁不属于service ABI、
 artifact identity或Runtime bootstrap wire。
@@ -227,13 +237,13 @@ Ingress decode在进入external handler前失败时，业务代码尚未运行�
 一次远程调用或host operation的可见deadline，是调用点current execution deadline与该operation已有的
 primitive operation timeout中最先到达者；current execution deadline已经包含caller request deadline
 和外层`timeout(...)`的收紧。第一版service call不另外定义consumer dependency timeout或callee
-operation timeout；需要更短调用预算时由caller显式使用`timeout(...)`。Deployment
-`policy.timeoutMs`只属于external ingress/request policy，不作为内部service call的callee默认值。
+operation timeout；需要更短调用预算时由caller显式使用`timeout(...)`。Service业务配置不拥有
+deployment timeout。
 
 Router `requestTimeoutMs`是external business request的平台上限，不是所有Router工作的通用timeout。
 RuntimeAssembly activation prepare/commit/abort是控制面事务，使用独立的operator prepare budget；
 WebSocket generation release也使用自己的release budget。二者都不能继承或覆盖
-`requestTimeoutMs`、deployment `policy.timeoutMs`或用户代码`timeout(...)`。反过来，控制面预算也不能
+`requestTimeoutMs`或用户代码`timeout(...)`。反过来，控制面预算也不能
 改变普通dispatch deadline。
 
 Runtime 使用单调时钟计算内部 absolute deadline。该 absolute deadline 不暴露给用户代码；用户可见的是 `TimeoutError` 的 budget / source 语义。
@@ -315,9 +325,8 @@ service/version header选择exact deployment，再在该deployment内按method/p
 dispatch；wrapper 在 service runtime 内执行 `http.pre`、JSON body decode、handler 调用和 HTTP 200 JSON encode。`typedJson` handler不能返回任意`Stream<T>`；需要保留原始request bytes/headers做签名校验、控制status/response headers、转发binary body或按到达顺序转发body chunk时必须声明`rawHttp`。越过 wrapper 的 `std.http.HttpError`、decode error 或平台错误通过 runtime `response.error` 映射为非 2xx platform error response。该 HTTP response body 固定为 JSON `{ "message": string, "detail": Json? }`，不暴露 internal `code` 或业务指定 status；平台策略选择 status，例如 body/schema decode 为 400、handler / `http.pre` 未捕获异常为 500、timeout 为 504、runtime/dependency unavailable 为 503。
 
 HTTP status code本身不是throw；业务代码必须检查status。HTTP entry的可观测target id是gateway entry
-target。Router作为external connection owner生成request deadline；其budget是平台HTTP request上限与
-deployment `policy.timeoutMs` override中更早者。Host按已admit activation的deployment policy再次收紧并
-执行deadline，wire缺失、放宽或伪造不能绕过该上限。Method/path/handler mapping变化是
+target。Router作为external connection owner按operator-owned平台HTTP request上限生成request deadline；
+service配置不能收紧、放宽或伪造该上限。Method/path/handler mapping变化是
 deployment/ingress配置变化，不改变service protocol identity；HTTP Host映射属于Router外部ingress，
 不进入service route或deployment identity。
 
@@ -361,7 +370,7 @@ request/response不能跨connection或generation恢复。第一版不接受peer 
 peer disconnect表示该socket上没有response consumer，runtime内部停止仍在执行的inbound handler并失败
 outbound pending。既有socket继续绑定旧generation，直到
 drain或断开。Generation release的等待预算属于Router lifecycle owner，不能被external request
-`requestTimeoutMs`或deployment `policy.timeoutMs`覆盖。
+`requestTimeoutMs`覆盖。
 
 ## 12. Effect metadata at runtime
 
@@ -378,7 +387,10 @@ best-effort收束。
 只有metadata显式声明concurrency safe并提供可比较conflict-key时，runtime才能允许更宽松并发。
 需要顺序执行多个冲突effect时，源码应把它们放到同一个`serial { ... }` lane或普通顺序代码中。
 
-`config.require` / `config.optional` 读取当前 request frame 注入的 config view，是本地只读访问，不是外部 I/O。Array、Map、scalar receiver 方法只产生 local read/write effect，并按 mutable root provenance 参与并发检查。`std.json.encode` / `std.json.decode` 是 boundary codec helper，不访问外部系统。
+`config.require` / `config.optional`读取当前精确Package slot从activation snapshot取得的局部config
+view，是本地只读访问，不是外部I/O。源码path相对当前Package分区，不能越过Package ID边界。Array、
+Map、scalar receiver方法只产生local read/write effect，并按mutable root provenance参与并发检查。
+`std.json.encode` / `std.json.decode`是boundary codec helper，不访问外部系统。
 
 `std.http.request`、`std.http.stream`、`std.http.sse`、service call、telemetry emit、WebSocket send 和
 WebSocket request是host operation或跨runtime operation，必须有effect metadata。

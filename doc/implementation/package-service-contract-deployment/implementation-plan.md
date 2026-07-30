@@ -9,7 +9,7 @@
 
 ## 1. 最终结果
 
-最终生产数据流只有四个一等对象：
+最终代码发布数据流只有四个一等artifact；activation另有独立配置snapshot输入：
 
 ```text
 ServiceContractDefinition ───────────────► ServiceContract
@@ -20,15 +20,20 @@ ServiceContract + PackageArtifact closure ─────► ServiceDeployment
                                                 │
 ServiceDeployments + PackageArtifact closure ──► RuntimeAssembly
                                                 │
+selected three-layer config + exact closure ───► RuntimeConfigSnapshot
+                                                │
                                                 ▼
                                          runtime replica
 ```
 
 - 用户代码只由 package compiler 编译并归 `PackageArtifact` 所有。
 - `ServiceContract` 无代码、可先于实现发布，是 consumer compile 的唯一 service 协议输入。
-- `ServiceDeployment` 无源码，只把 contract operation 绑定到 typed package callable 和运行配置。
+- `ServiceDeployment`无源码，只把contract operation与external gateway绑定到typed package callable；
+  不包含业务配置值或数据库/state binding。
 - `RuntimeAssembly` 解析完整 deployment/package 闭包；第一版所有 service edge 都是
   `InProcessBoundary`。
+- `RuntimeConfigSnapshot`是activation operational input，不是第五种代码artifact；committed generation
+  并列钉住assembly/snapshot refs。
 - `Publication` 不是领域对象或 compiler pipeline；`publish` 只保留为 registry 操作。
 - package direct call 使用 Local ABI，可共享 heap、alias 和 mutation；service call 始终执行 boundary
   materialization 与 ActivationContext owner 切换。
@@ -118,11 +123,15 @@ publication/package/service 共同 source pipeline，也不产出任何旧 runti
 阶段已完成并通过独立验收。先完成无源码 `ServiceDeployment` 的 schema、identity、reference、projection 与
 fail-closed validation，形成
 高风险实现检查点；再从 root deployments 解析唯一 provider、完整 package/service closure、AssemblyIdentity、
-package link image 和 per-ActivationContext binding/config/state templates；最后让 runtime loader/linker 只消费
+package link image和per-ActivationContext service binding templates；最后让runtime loader/linker只消费
 `RuntimeAssembly` 并完成 admission。schema/validator checkpoint 后，三个写入域可使用 canonical typed
 fixtures 并行开发；集成与验收仍按真实 producer/consumer 顺序。阶段完成后 runtime production path 不读取
 `ServiceUnit`、`PackageUnit`、`serviceAssembly` 或 adapter shape，但还不执行 service boundary。最终证据见
 `phase-03-deployment-assembly/phase-result.md`。
+
+2026-07-30 current-semantics correction：Phase 03当时的config/secret/state templates是历史实现，不再是终态。
+Phase 05 F446删除这些字段；RuntimeAssembly只保留service binding template，配置由独立snapshot提供，service
+DB由平台identity派生。
 
 ### Phase 04：In-process execution plane
 
@@ -138,6 +147,10 @@ CLI/watch/dev sync、router/runtime reload、test-runner 与 fixtures；本仓 c
 `skiff-packages`、`internals` consumer 与实际 services。所有 consumer 直接读写四对象，不通过旧 artifact
 adapter；最后删除跨仓 production legacy 路径，完成完整非 live verify、必要 live/chat smoke 与多 replica
 验收。阶段只建立一次最终稳定候选、昂贵 gate 和独立验收。
+
+F446在Phase 05内增加独立`RuntimeConfigSnapshot` operational path：三层service配置按Package ID分区，
+generation并列钉assembly/snapshot refs；同时删除SecretRef、manifest/deployment state binding和无效
+profile policy，并把数据库改为每service一个平台派生identity。它不增加代码artifact种类。
 
 ## 5. Worktree 与提交协议
 

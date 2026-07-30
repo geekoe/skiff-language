@@ -9,14 +9,18 @@ compiler pipeline保留兼容层。
 
 ## 1. 核心结论
 
-目标模型只有四个发布/运行记录：
+目标模型只有四个代码发布/运行artifact：
 
 ```text
 PackageArtifact     package源码的不可变编译产物
 ServiceContract     service package公开API的code-free boundary projection
-ServiceDeployment   工具由service package与config profile生成的不可变运行记录
+ServiceDeployment   工具由service package生成的不可变运行记录
 RuntimeAssembly     一组deployment及其完整依赖闭包的可执行装配
 ```
+
+业务配置另有不可变`RuntimeConfigSnapshot`，它是activation operational input，不是第五种代码artifact。
+每个committed activation generation并列引用一个`RuntimeAssemblyRef`和一个
+`RuntimeConfigSnapshotRef`；二者互不引用。
 
 `Publication`不是领域对象、共同父类型、artifact kind或compiler pipeline。`publish`只允许作为
 registry/release写入不可变artifact与更新pointer的动作名称。
@@ -26,9 +30,10 @@ registry/release写入不可变artifact与更新pointer的动作名称。
 - PackageArtifact：有哪些代码，如何在同一linked program内调用。
 - ServiceContract：`service.yml`从同一个package公开API中选择哪些callable作为service调用，以及跨boundary
   的语言语义。
-- ServiceDeployment：工具把哪个service package build、config profile和生成的routing/resource binding
-  装配为一次不可变运行revision。
+- ServiceDeployment：工具把哪个service package build及生成的operation/gateway routing装配为一次不可变
+  运行revision。
 - RuntimeAssembly：哪些deployment放在一起运行，它们的package/service依赖如何闭合。
+- RuntimeConfigSnapshot：该activation generation中每个精确deployment及Package build看到哪些业务配置值。
 
 `PackageSchemaTypeRecord`与`PackageSchemaIndex`是PackageArtifact拥有并按内容寻址的schema子记录，用于
 逐类型去重、精确引用和枚举本build的schema surface；它们没有独立authoring、release pointer、version
@@ -56,9 +61,8 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
    PackageSchema closure确定性投影；
    consumer只依赖发布后的code-free projection，不读取provider实现源码或外部ingress。
 5. ServiceDeployment不解析AST、不重新做type/effect分析；它由工具消费typed PackageArtifact、
-   ServiceContract、compiler已经形成的typed ingress projection、`service.yml`、可选
-   `http.yml`/`websocket.yml`和所选
-   `config.*.yml`生成。
+   ServiceContract、compiler已经形成的typed ingress projection、`service.yml`及可选
+   `http.yml`/`websocket.yml`生成。配置文件不参与ServiceDeployment或RuntimeAssembly projection。
 6. package call与service call是不同语义；物理同进程不允许把service call退化成普通package call。
 7. 第一版service binding全部是`InProcessBoundary`；缺少本地provider时assembly失败，不经router
    fallback。
@@ -111,8 +115,8 @@ function或public-instance root；它不是source function映射。三个service
 version、dependency、service-call API signature/type映射、与handler类型重复的业务JSON schema、
 实现artifact binding或平台组织角色。Request/response大小等平台limit不由源码manifest配置。
 External schema和runtime codec plan由compiler从精确linked handler signature、adapter kind与参数来源
-确定性生成。`config.*.yml`只绑定已经声明的
-config/secret/state/resource requirement，不改变package/service dependency graph。
+确定性生成。`config.yml`、`config.<profile>.yml`和`config.<profile>.secret.yml`只构造独立runtime配置
+快照，不改变package/service dependency graph或任何代码artifact identity。
 
 三个authoring文件的层次为：
 
@@ -201,7 +205,7 @@ PackageArtifact
   implementation links
   package dependency requirements
   service runtime requirements
-  config/resource/runtime capability requirements
+  own typed config/runtime capability requirements
   callable semantic facts
   boundary callable projections
   unresolved ServiceCallRefs
@@ -351,10 +355,10 @@ caller停止等待后provider是否、何时观察internal stop hint是runtime/d
 
 第一版不另外定义consumer dependency timeout或callee operation timeout。Service call的可见deadline
 就是调用点current execution deadline，已经包含caller request deadline和外层`timeout(...)`的收紧；
-需要更短调用预算时由caller显式使用`timeout(...)`。Deployment `policy.timeoutMs`只属于external
-ingress/request policy，不复用为内部service call的callee默认值。
+需要更短调用预算时由caller显式使用`timeout(...)`。Service业务配置与ServiceDeployment都不拥有
+request timeout override。
 
-具体config/state/native capability requirement和完整may-effect（包括concrete suspension summary）属于
+具体config/native capability requirement和完整may-effect（包括concrete suspension summary）属于
 `BoundaryImplementationRequirements`或由deployment从PackageArtifact形成的implementation metadata，
 不能泄漏进ServiceProtocolIdentity。External gateway的deadline与consumer-disconnect处理归gateway
 entry/deployment owner，不能复用ServiceContract operation字段或从callable summary推导。
@@ -447,9 +451,6 @@ ServiceDeployment
     external protocol metadata
   }
   ingress: serviceLocalIngressSelector -> gatewayEntryKey
-  config/secrets bindings
-  state/DB/actor/queue ownership
-  external request timeout/resource policy
 ```
 
 operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
@@ -574,10 +575,11 @@ deployment validation必须保证：
 - gateway entry protocol identity与deployment binding/revision分别覆盖各自规定的全部事实，互不吞并；
 - 第一版不生成用户语义adapter、字段兼容或fallback；
 - implementation package及其依赖闭包可解析；
-- config、state与runtime capability requirements全部得到唯一binding。
+- service/package dependency与runtime callable requirements全部得到唯一binding。
 
-ServiceDeployment可以换package build、config或resource policy而保持同一service id/version label；
-前提是service API identity完全不变。变化由deployment revision表达。
+ServiceDeployment可以换package build而保持同一service id/version label；前提是service API identity完全
+不变。变化由deployment revision表达。业务配置变化只生成新的`RuntimeConfigSnapshot`和activation
+generation，不改变deployment revision。
 
 ## 6. 两类调用与三层契约
 
@@ -1141,22 +1143,21 @@ Linker必须核验type export、provider type declaration与DB attachment指向�
 运行时身份是`DbObjectTargetId(PackageArtifactRef, FileIrRef, typeIndex)`；`typeName`只用于诊断，禁止按名字、
 module suffix或发现顺序lookup。Provider File IR独占collection、key、field、retention、lease、index与
 recoverable metadata；consumer、PackageArtifact和linked executable不得复制这些事实。两个dependency即使
-拥有相同module/type也因PackageArtifactRef不同而保持无冲突；物理collection映射仍由各自
-PackageRequirement/PackageBinding edge单独投影和校验。
+拥有相同module/type也因PackageArtifactRef不同而保持无冲突。Logical collection identity由stable
+`(packageId, declared collection identity)`定界；Package build/version、dependency alias和edge path不参与
+持久storage identity。Storage adapter把该logical identity确定性编码为当前service DB内的physical
+collection name，开发者不提供mapping。
 
 同一stateful `PackageBuild`可因direct与transitive dependency形成多条真实edge。Assembly/loader先解析每条
 edge，再按以下规则形成activation中的active collection projection与metadata owner：
 
-- exact `PackageBuild`相同，且resolved source→target collection mappings与所有owner-relevant facts的
-  canonical表示相同：合并成一个active projection与一个metadata owner；
-- exact build相同但resolved mapping不同：拒绝；
-- build不同但指向同一physical target：拒绝；
-- dependency projection与service root collection冲突：拒绝。
+- exact `PackageBuild`相同且所有owner-relevant facts相同：合并成一个active projection与metadata owner；
+- 同一Package ID解析到不同build：拒绝；
+- logical collection identity缺失、重复声明或system encoding collision：拒绝。
 
-“active projection”是一次activation内最终生效的collection mapping/metadata owner，不是另一份数据库或
+“active projection”是一次activation内最终生效的collection metadata owner，不是另一份数据库或
 另一条package binding。合并不改变原始dependency graph，也不抹去用于诊断和identity的edge事实。
-`config.skiff-test.yml`仍是test activation state binding的唯一来源；direct/transitive菱形不能生成第二份
-config、namespace或state owner。
+direct/transitive菱形不能生成第二份ConfigView、数据库或metadata owner。
 
 该身份覆盖所有DB operation target、`DbQuery`、lease claim、lease state read和claim write guard。
 Transaction本身只是当前service DB上的执行边界，没有独立target；内部operation各自携带目标。缺失link/type/
@@ -1165,27 +1166,44 @@ DB declaration、ABI或build不匹配、cross-artifact substitution都必须在l
 这是当前未发布artifact模型内的同代hard cut，不改变File IR v9、PackageArtifact v9、Package local ABI v7
 或ServiceContract v5代际；不增加兼容reader、fallback或旧target双读。
 
-## 11. Config、State 与 Resource Owner
+## 11. Config Snapshot、Service DB 与 Platform Policy
 
-Package可以声明运行所需config path、外部resource capability、DB/schema或native adapter requirement，
-但不拥有环境中的实际值和state namespace。普通package可以在`package.yml.services`声明service
-dependency；这使其可复用业务编排在最终宿主service的ActivationContext中解析provider，不把具体provider
-写入PackageArtifact。
+Package可以声明自己读取的typed local config path、DB schema和native adapter requirement，但不拥有环境
+配置值、数据库名字或平台policy。`PackageArtifact`只保存当前Package自己的typed config requirements；
+它不复制dependency Package requirements。
 
-Service source的`config.*.yml`选择或提供：
+一个service activation读取同root的`config.yml`、`config.<profile>.yml`和
+`config.<profile>.secret.yml`。三份文件根部直接以canonical Package ID为key；没有
+`config`、`service`、`packages`或`secrets`包装key。service自身也使用自己的Package ID。三层按base、
+profile、secret顺序递归overlay：mapping递归合并，scalar/sequence整体替换，`null`作为删除path的
+tombstone。unknown Package ID、required path缺失或类型不符都fail closed。
 
-- 提供config/secrets；
-- 选择DB、Redis、actor、queue等外部state namespace；
-- 定义timeout、quota与principal。
+普通与secret文件使用相同schema。secret文件保存ignored、`0600`明文值，不使用`SecretRef`。所有业务配置
+值都不得进入PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly、上述artifact
+identity、receipt、control frame或日志。tooling把overlay结果与exact dependency closure解析成随机opaque
+ID的immutable `RuntimeConfigSnapshot`。snapshot内部先按`ServiceDeploymentRef`隔离，再按exact Package
+build提供只读`ConfigView`；alias和diamond到达路径不参与identity。同build在同deployment内只有一份view，
+同build跨deployment仍严格隔离。
 
-SecretRef在ServiceDeployment和RuntimeAssembly中始终只是opaque binding，secret值不得进入immutable
-artifact、activation state、control frame或日志。filesystem runtime在environment prepare/recovery时，
-从artifact root的
-`configs/services/<service storage id>/config.<environment>.secret.yml`读取当前service的`service`
-subtree，只解析该activation声明的精确binding path，并把值作为transient in-memory config view交给
-ActivationContext；package代码继续共享当前宿主service的config view，不增加package secret namespace。
-secret source缺失、YAML非法、binding path缺失或值为`null`都必须使该activation fail closed，不能跳过、
-猜值或回退到ambient environment。
+Committed activation generation并列钉住`RuntimeAssemblyRef`和`RuntimeConfigSnapshotRef`，两者互不
+引用。配置变化只创建新snapshot和新generation；cold recovery必须精确恢复两个ref，不能读取latest或
+ambient配置。第一版snapshot store可保存明文；未来整快照加密属于独立store能力，本契约不定义KMS wire，
+也不允许它重新引入字段级SecretRef。
+
+一个service只有一个由trusted platform按`(platform, environment, serviceId)`派生的数据库identity。
+开发者不能在`package.yml`、service profile或源码中配置database/namespace；service version、package
+version、deployment revision和runtime replica都不改变数据库identity。只有activation闭包含DB metadata时
+才按需提供service DB handle。同一service中的Package共享数据库，但保留各自精确
+Package/schema/collection identity；跨service DB访问禁止。service重命名产生新数据库identity，数据迁移
+必须显式执行。physical database name的编码属于platform内部实现，但必须对该tuple确定、无碰撞、满足
+存储后端命名限制并避免把任意service字符串直接当作未校验名称。
+
+同理，physical collection name由stable`(packageId, declared collection identity)`系统编码。不同Package
+可以使用相同的裸collection名字而不会共享storage；Package ID或collection identity重命名需要显式迁移。
+
+测试数据库按`(testRunId, generatedTestServiceId)`派生。Test-only foreign DB target gate只允许测试源码
+引用dependency的精确DB metadata，实际读写仍落当前generated test service的数据库，不能打开provider
+service数据库。Redis、queue或其它外部系统将来使用独立capability，不保留通用`state`枚举占位。
 
 Service profile没有`lifecycle`配置面；旧`maxConcurrency`和`idleTimeoutMs`均删除，出现`lifecycle`
 必须fail closed。`DeploymentPolicy`不包含`activation`，ServiceDeployment、DeploymentArtifact、
@@ -1194,26 +1212,24 @@ RuntimeAssembly和artifact identity都不得复制并发或空闲超时。初期
 pending request；Actor/control frame不计。该门禁不做动态CPU、内存或数据库资源估算，满载立即overload
 且不排队。
 
-`timeout`是可选的deployment override。profile缺省或显式`null`都表示不覆盖平台/外层request
-deadline；生成的`DeploymentPolicy`不包含`timeoutMs`。只有显式的正整数毫秒值才生成
-`timeoutMs`，零、负数、小数、字符串或对象都必须fail closed。tooling不得为了通过artifact校验而
-填入虚假的默认timeout。External HTTP中，Router以平台HTTP request上限和该override的较小值生成
-request deadline；Host从已admit activation读取同一policy并再次收紧、执行。Deployment override只能
-缩短平台/外层deadline，不能放宽，也不能因wire遗漏或伪造而失效。
+业务配置文件不拥有`state`、`principal`、`quota`、`resources`或deployment `timeout`。当前没有生效平台
+消费者的这些profile字段全部删除；不能为了满足schema填占位值。未来CPU、memory、quota或principal等
+operator policy必须由operator-owned独立配置设计，不得塞回Package业务配置或ServiceDeployment。
 
-Router实例的`requestTimeoutMs`同样只定义external business request的平台上限。它和deployment
-`policy.timeoutMs`都不得参与RuntimeAssembly resolve/load/link/admit、participant prepare ACK、
+Router实例的`requestTimeoutMs`只定义external business request的平台上限。它不得参与
+RuntimeAssembly resolve/load/link/admit、participant prepare ACK、
 activation commit/abort或WebSocket generation release。Assembly activation是控制面事务，不是一个
 service request；把业务request deadline复用为activation deadline会让部署耗时被service policy意外改变。
 
-tooling把所选profile与精确PackageArtifact、生成的ServiceContract及闭合dependency resolution投影为
-ServiceDeployment。profile不得增加/删除`package.yml`中的package或service dependency。
+tooling从精确PackageArtifact、生成的ServiceContract及闭合dependency resolution投影
+ServiceDeployment；另从所选profile三层文件和同一exact closure构造RuntimeConfigSnapshot。profile不得
+增加/删除`package.yml`中的package或service dependency。
 
-Package静态资源随PackageArtifact发布，并按当前执行callable的package owner读取。ServiceDeployment
-没有用户代码资源；deployment-only证书、secret和环境文件属于activation输入，不进入code artifact。
+Package静态资源随PackageArtifact发布，并按当前执行callable的package owner读取。ServiceDeployment没有
+用户代码资源；deployment-only证书与环境文件属于operator输入，不进入code artifact。
 
-同一个PackageArtifact被两个service使用时，代码和静态资源可共享，ActivationContext、config、state
-owner必须分开；Router连接级并发门禁不随service复制。
+同一个PackageArtifact被两个service使用时，代码和静态资源可共享，ActivationContext、ConfigView与
+service DB handle必须分开；Router连接级并发门禁不随service复制。
 
 ## 12. RuntimeAssembly 与扩容
 
@@ -1288,19 +1304,17 @@ Router和Runtime不知道registry service，也不通过它读取artifact。正�
 实现registry到共享路径的生产发布流程。
 
 `skiff.run/registry`以Platform DB作为四类immutable record及typed release pointer current/history的唯一
-production durable source of truth。它和其它需要数据库的service一样声明DB/state requirement，并只通过
+production durable source of truth。它和其它包含DB metadata的service一样只通过
 普通`std.db` capability访问数据库。Mongo URL的唯一配置owner是Router的`serviceDb.mongoUrl`；该值不进入
 service/package/compiler/deployment artifact，也不由runtime文件配置、环境变量或默认值提供。Router在
 连接级bootstrap中把DB transport binding与`artifactsPath`一并下发给Runtime；Runtime只为当前activation中
-已经声明并绑定的DB requirement建立activation-scoped capability，service代码看不到provider URL。文件型
+含DB metadata的service建立activation-scoped capability，service代码看不到provider URL。文件型
 `CanonicalArtifactStore`只作为
 local/dev/CLI backend，不参与production registry，也不与Platform DB dual-write。
 
-State requirement由package代码owner在`package.yml`中以`state.<requirement-key>.kind`声明，并进入
-`PackageArtifact.runtimeRequirements.state`；database requirement必须与同一次package lowering产生的
-DB schema事实精确对应。物理`namespace`不属于package声明，只能由`config.<environment>.yml`中同key、同kind
-的deployment binding提供。Compiler、deployment或Runtime都不得从package/service名称、固定key或namespace
-反推state requirement。
+`package.yml state`、`PackageRuntimeRequirements.state`、`StateBinding`、`StateBindingKind`与
+`ServiceDeployment.stateBindings`全部删除。Compiler从Package自己的DB schema metadata知道它使用service
+DB；Runtime从trusted platform/environment/service identity派生数据库，不从authoring配置反推。
 
 Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
 自己配置的MongoDB连接持久化activation state；状态CAS与Platform audit在同一事务中追加。不得为了复用其它
@@ -1316,7 +1330,7 @@ DeploymentPolicy、RuntimeAssembly或artifact identity。
 
 调用activation control endpoint的test-runner/client必须使用独立client deadline，且严格大于Router
 prepare budget；默认prepare budget下建议使用`150000`毫秒client deadline。WebSocket旧generation release
-另有自己的release timeout；它也不得读取`requestTimeoutMs`或deployment `policy.timeoutMs`。是否公开
+另有自己的release timeout；它也不得读取`requestTimeoutMs`。是否公开
 release timeout配置不由本契约决定，但该预算必须与business request和activation prepare三者解耦。
 
 这是未发布系统的hard cut：删除把`requestTimeoutMs`或deployment timeout绑定到activation/release的旧

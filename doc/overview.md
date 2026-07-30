@@ -20,7 +20,8 @@ Skiff 不是通用编程语言，也不是某个 Web 框架外面套一层新语
 ## 你写的是什么
 
 一个Skiff Package由`.skiff`源码、`package.yml`和必需的`api.yml`组成。Service首先是
-Package：同一个 root 额外放置 `service.yml`，并可按环境提供 `config.*.yml`。
+Package：同一个root额外放置`service.yml`，并可提供`config.yml`、按环境选择的
+`config.<profile>.yml`和ignored `config.<profile>.secret.yml`。
 
 `.skiff` 文件里写业务类型、函数、接口实现、测试、数据库对象和对平台能力的调用。源码以文件为模块，当前服务或包内的跨文件访问走 `root.*` 内部绝对路径，外部包通过配置里的 alias 引入。
 
@@ -30,8 +31,9 @@ service-to-service API 的唯一公开符号入口。
 
 `package.yml` 拥有 Package id/version以及package、service dependency。`service.yml`增加service id、
 `serviceCalls` public-path选择和HTTP/WebSocket等外部入口，包括route、handler与协议适配信息；
-`serviceCalls`只引用`api.yml`中的公开名字，不重复source path、签名或类型。
-`config.*.yml`为已经声明的配置、state与resource requirement提供部署绑定。
+`serviceCalls`只引用`api.yml`中的公开名字，不重复source path、签名或类型。一个service的三层配置文件
+都以canonical Package ID为根key，同时容纳service自身和dependency Package的业务配置；它们不配置
+数据库名、state binding或平台resource policy。
 
 Skiff 从 `api.yml` 与已类型检查的 Package API 确定性生成 ServiceContract。跨服务调用按该contract和
 deployment binding调用目标服务，而不是靠运行时字符串、临时service locator或“差不多兼容”的猜测。
@@ -59,7 +61,8 @@ Skiff 区分 package 和 service。
 
 Package 是唯一源码编译单元，也是复用单元。它适合放通用类型、工具函数、SDK wrapper、业务共享逻辑和
 可测试的能力封装。调用 Package 是同一 linked program 内的本地调用，不经过 service boundary；Package
-声明运行需求，但不拥有某个部署环境中的实际配置值、state namespace或外部入口。
+只声明自己读取的typed local config path和代码能力，不拥有某个部署环境中的实际配置值、数据库或外部
+入口。
 
 Service 是 Package 的运行角色和 activation/resource owner。它可以从 Package API生成service-to-service
 contract，并通过`service.yml`拥有HTTP/WebSocket入口。跨service调用即使第一版在同一runtime进程内执行，
@@ -80,9 +83,14 @@ Skiff 把常见后端能力做成语言能理解的平台入口，而不是让�
 
 `std` 是内建平台标准库 root，不是普通 package。源码可以直接访问 `std.http.*`、`std.json.*`、`std.crypto.*`、`std.log.*`、`std.websocket.*` 等能力；`import std` 只是保留的显式写法，不是使用 `std.*` 的前提。
 
-`config` 是当前服务的只读配置视图。服务代码和在该服务里执行的 package 代码看到同一个配置视图，业务代码不直接读取部署环境里的 secret 或连接串。
+`config`是当前Package的只读局部配置视图。源码以`config.require<T>("local.path")`或
+`config.optional<T>("local.path")`读取自己的分区，不能读取另一个Package的配置。不同Package的值写在
+同一份service配置文件中，但由canonical Package ID分区；配置变化形成独立runtime配置快照，不改变代码、
+deployment或assembly identity。详见`reference/config.md`。
 
-`db object` 面向服务自己的数据库。业务代码描述对象 schema、查询和显式写入操作，而不是直接暴露 collection 字符串、Mongo filter 或 update operator。
+`db object`面向宿主service唯一、由平台按environment与service identity派生的数据库。开发者不选择
+数据库名；同一service中的所有Package共享该数据库，同时保留各自精确Package/schema/collection identity。
+业务代码描述对象schema、查询和显式写入操作，而不是暴露连接串、Mongo filter或update operator。
 
 actor 是内存面的可寻址常驻对象，目标态契约见 `architecture/actor-model.md`；后台提交见 `reference/spawn.md`。长时间业务事实必须落到数据库、队列、timer 或业务自己的持久状态；数据面的单写者用 `db object` 的 lease 表达，见 `reference/db.md`。
 
