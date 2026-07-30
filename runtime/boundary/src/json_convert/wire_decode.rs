@@ -152,18 +152,16 @@ fn from_union_wire(
 ) -> Result<RuntimeValueCarrier> {
     let mut errors = Vec::new();
     let mut matching = Vec::new();
-    for ty in types {
-        let mut candidate_heap = heap.clone();
-        match from_wire_carrier_with_stream_scope(json, ty, &mut candidate_heap, stream_scope) {
-            Ok(value) => matching.push((value, candidate_heap)),
+    let checkpoint = heap.checkpoint();
+    for (index, ty) in types.iter().enumerate() {
+        match from_wire_carrier_with_stream_scope(json, ty, heap, stream_scope) {
+            Ok(_) => matching.push(index),
             Err(error) => errors.push(error.to_string()),
         }
+        heap.rollback_to_checkpoint(checkpoint);
     }
-    match matching.as_mut_slice() {
-        [(value, candidate_heap)] => {
-            *heap = candidate_heap.clone();
-            Ok(value.clone())
-        }
+    match matching.as_slice() {
+        [index] => from_wire_carrier_with_stream_scope(json, &types[*index], heap, stream_scope),
         [] => Err(RuntimeError::Decode(format!(
             "union value did not match any branch: {}",
             errors.join("; ")
