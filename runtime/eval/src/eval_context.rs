@@ -1181,10 +1181,11 @@ impl<'a> EvalContext<'a> {
                         target.dependency_package_build_id().clone(),
                         target.package_callable_id().clone(),
                     );
+                    let stream_runtime = self.context.stream_runtime();
                     if let Some(result) = self.interpreter.runtime_test_effects.dispatch_package(
                         &effect_target,
                         &values,
-                        Some(&self.interpreter.stream_runtime),
+                        Some(&stream_runtime),
                         self.heap,
                         &self.context,
                         &call.site,
