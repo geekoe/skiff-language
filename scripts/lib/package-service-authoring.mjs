@@ -12,6 +12,8 @@ const activationEnvironmentPattern = /^[A-Za-z0-9._-]{1,200}$/;
 const activationTokenPattern = /^[\x21-\x7e]{1,200}$/;
 const runtimeAssemblyIdentityPattern =
   /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
+const runtimeConfigSnapshotIdPattern =
+  /^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/;
 
 export async function runAuthoringObjectCommand(kind, rawArgs, {
   skiffRoot,
@@ -52,6 +54,7 @@ export async function runAuthoringObjectCommand(kind, rawArgs, {
       expectedGeneration: parsed.expectedGeneration,
       environment,
       assembly,
+      configSnapshot: parsed.configSnapshot,
     });
     result = {
       ...receipt,
@@ -112,6 +115,7 @@ export async function requestAssemblyActivation({
   expectedGeneration,
   environment,
   assembly,
+  configSnapshot,
   signal,
 }) {
   if (
@@ -144,12 +148,21 @@ export async function requestAssemblyActivation({
   ) {
     throw new Error('assembly activation requires an exact RuntimeAssembly reference');
   }
+  if (
+    !isPlainObject(configSnapshot)
+    || Object.keys(configSnapshot).length !== 1
+    || typeof configSnapshot.snapshotId !== 'string'
+    || !runtimeConfigSnapshotIdPattern.test(configSnapshot.snapshotId)
+  ) {
+    throw new Error('assembly activation requires an exact RuntimeConfigSnapshot reference');
+  }
   const request = {
-    schemaVersion: 'skiff-assembly-activation-request-v1',
+    schemaVersion: 'skiff-assembly-activation-request-v2',
     environment,
     activationId,
     expectedGeneration,
     assembly,
+    configSnapshot,
   };
   const response = await postActivation(fetchImpl, activationUrl, request, signal);
   return { request, response };
@@ -193,6 +206,78 @@ export async function runCompilerAuthoring({
   } catch (error) {
     throw new Error(`${kind} ${action} returned invalid JSON: ${error.message}`);
   }
+}
+
+export async function runConfigSnapshotAuthoring({
+  skiffRoot,
+  artifactRoot,
+  profile,
+  assemblyRecord,
+  sources,
+}) {
+  if (!isAbsolute(skiffRoot) || !isAbsolute(artifactRoot)) {
+    throw new Error('config snapshot authoring requires absolute skiffRoot and artifactRoot');
+  }
+  if (typeof profile !== 'string' || profile.length === 0) {
+    throw new Error('config snapshot authoring requires an explicit profile');
+  }
+  if (typeof assemblyRecord !== 'string' || assemblyRecord.length === 0) {
+    throw new Error('config snapshot authoring requires the RuntimeAssembly record path');
+  }
+  if (!Array.isArray(sources) || sources.length === 0) {
+    throw new Error('config snapshot authoring requires at least one service config source');
+  }
+  const args = [
+    'run',
+    '--quiet',
+    '--manifest-path',
+    resolve(skiffRoot, 'config-snapshot-tooling', 'Cargo.toml'),
+    '--',
+    '--artifact-root',
+    artifactRoot,
+    '--assembly-record',
+    assemblyRecord,
+    '--profile',
+    profile,
+  ];
+  for (const source of sources) {
+    if (
+      !isPlainObject(source)
+      || !isAbsolute(source.root)
+      || !isPlainObject(source.deployment)
+    ) {
+      throw new Error('config snapshot source requires an absolute root and exact deployment');
+    }
+    args.push('--source', JSON.stringify(source));
+  }
+  const outcome = await captureAttachedCommand('cargo', args, {
+    cwd: skiffRoot,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: cargoTargetDir(skiffRoot),
+    },
+  });
+  if (outcome.error !== null || outcome.signal !== null || outcome.code !== 0) {
+    const detail = outcome.stderr.trim() || outcome.stdout.trim()
+      || outcome.error?.message || `cargo exited ${outcome.signal ?? outcome.code}`;
+    throw new Error(`config snapshot production failed: ${detail}`);
+  }
+  let result;
+  try {
+    result = JSON.parse(outcome.stdout);
+  } catch (error) {
+    throw new Error(`config snapshot production returned invalid JSON: ${error.message}`);
+  }
+  const reference = result?.runtimeConfigSnapshotReceipt?.snapshot;
+  if (
+    !isPlainObject(reference)
+    || Object.keys(reference).length !== 1
+    || typeof reference.snapshotId !== 'string'
+    || !runtimeConfigSnapshotIdPattern.test(reference.snapshotId)
+  ) {
+    throw new Error('config snapshot production did not return an exact snapshot reference');
+  }
+  return result;
 }
 
 export function compilerAuthoringInvocation({
@@ -257,6 +342,7 @@ export function parseObjectArgs(kind, action, rawArgs) {
     optionsWithValues.add('--activation-url');
     optionsWithValues.add('--activation-id');
     optionsWithValues.add('--expected-generation');
+    optionsWithValues.add('--config-snapshot');
   }
   for (let index = 0; index < rawArgs.length; index += 1) {
     const argument = rawArgs[index];
@@ -279,6 +365,8 @@ export function parseObjectArgs(kind, action, rawArgs) {
       }
       if (option === '--root-deployment') {
         rootDeployments.push(parseRootDeployment(value));
+      } else if (option === '--config-snapshot') {
+        options.set(option, parseConfigSnapshotRef(value));
       } else {
         options.set(option, value);
       }
@@ -333,6 +421,9 @@ export function parseObjectArgs(kind, action, rawArgs) {
     if (activationId !== undefined && !activationTokenPattern.test(activationId)) {
       throw new Error('--activation-id must be an ASCII visible token between 1 and 200 bytes');
     }
+    if (options.get('--config-snapshot') === undefined) {
+      throw new Error('skiff assembly activate requires --config-snapshot');
+    }
   }
   return {
     root,
@@ -341,6 +432,7 @@ export function parseObjectArgs(kind, action, rawArgs) {
     environment: options.get('--environment') ?? 'dev',
     activationUrl: options.get('--activation-url') ?? defaultAssemblyActivationUrl,
     activationId: options.get('--activation-id'),
+    configSnapshot: options.get('--config-snapshot'),
     expectedGeneration,
     json: flags.has('--json'),
   };
@@ -353,7 +445,7 @@ export function objectUsage(kind) {
   }
   return [
     "usage: skiff assembly <build|publish> --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... [--json]",
-    "       skiff assembly activate --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]",
+    "       skiff assembly activate --artifact-root <dir> --environment <name> --root-deployment '<exact ServiceDeploymentRef JSON>'... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]",
   ].join('\n');
 }
 
@@ -365,6 +457,24 @@ function parseRootDeployment(source) {
     throw new Error(`--root-deployment requires exact ServiceDeploymentRef JSON: ${error.message}`);
   }
   return normalizeRootDeployment(value, '--root-deployment');
+}
+
+function parseConfigSnapshotRef(source) {
+  let value;
+  try {
+    value = JSON.parse(source);
+  } catch (error) {
+    throw new Error(`--config-snapshot requires exact RuntimeConfigSnapshotRef JSON: ${error.message}`);
+  }
+  if (
+    !isPlainObject(value)
+    || Object.keys(value).length !== 1
+    || typeof value.snapshotId !== 'string'
+    || !runtimeConfigSnapshotIdPattern.test(value.snapshotId)
+  ) {
+    throw new Error('--config-snapshot must be an exact RuntimeConfigSnapshotRef object');
+  }
+  return { snapshotId: value.snapshotId };
 }
 
 function normalizeRootDeployments(values) {

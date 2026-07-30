@@ -237,7 +237,8 @@ mod tests {
     };
 
     use super::{
-        project_runtime_config_snapshot, ConfigSnapshotDeploymentInput, ConfigSnapshotPackageInput,
+        project_runtime_config_snapshot, project_runtime_config_snapshot_with_base,
+        ConfigSnapshotDeploymentInput, ConfigSnapshotPackageInput,
     };
 
     #[test]
@@ -316,6 +317,46 @@ mod tests {
                 .to_string()
                 .contains("Package build appears more than once")
         );
+
+        let mut conflicting_builds = input("service-a", json!({"required": "left"}));
+        conflicting_builds
+            .packages
+            .push(ConfigSnapshotPackageInput {
+                package_id: "example.com/shared".to_string(),
+                package_build_id: PackageBuildId::new("other-build"),
+                requirements: Vec::new(),
+            });
+        assert!(
+            project_runtime_config_snapshot(snapshot_ref(), vec![conflicting_builds])
+                .unwrap_err()
+                .to_string()
+                .contains("Package ID appears more than once")
+        );
+    }
+
+    #[test]
+    fn combined_projection_preserves_base_deployments_and_rejects_overlap() {
+        let base_snapshot = project_runtime_config_snapshot(
+            snapshot_ref(),
+            vec![input("service-a", json!({"required": "base"}))],
+        )
+        .unwrap();
+        let base = base_snapshot.deployments().to_vec();
+        let combined = project_runtime_config_snapshot_with_base(
+            snapshot_ref(),
+            base.clone(),
+            vec![input("service-b", json!({"required": "test"}))],
+        )
+        .unwrap();
+        assert_eq!(combined.deployments().len(), 2);
+        assert!(project_runtime_config_snapshot_with_base(
+            snapshot_ref(),
+            base,
+            vec![input("service-a", json!({"required": "overlap"}))],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("deployment appears more than once"));
     }
 
     fn input(service_id: &str, config: Value) -> ConfigSnapshotDeploymentInput {

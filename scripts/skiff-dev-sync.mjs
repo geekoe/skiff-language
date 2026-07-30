@@ -10,6 +10,7 @@ import {
   defaultAssemblyActivationUrl,
   maxExpectedAssemblyGeneration,
   requestAssemblyActivation,
+  runConfigSnapshotAuthoring,
   runCompilerAuthoring,
 } from './lib/package-service-authoring.mjs';
 
@@ -20,6 +21,7 @@ const defaultRegistryPath = join(defaultDevHome, 'watch.json');
 const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
 const registrySchemaVersion = 'skiff-package-service-dev-registry-v1';
 const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);
+const devBuildStates = new WeakMap();
 
 const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--expected-generation <n>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
@@ -51,6 +53,7 @@ export async function main(rawArgs, dependencies = {}) {
     skiffRoot: dependencies.skiffRoot ?? skiffRoot,
     fetchImpl: dependencies.fetchImpl ?? fetch,
     compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+    configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
   });
 
   if (!options.watch) {
@@ -60,8 +63,9 @@ export async function main(rawArgs, dependencies = {}) {
   }
 
   let expectedGeneration = options.expectedGeneration;
-  let fingerprint = await rootsFingerprint(roots);
-  let initial = await runDevSyncOnce({
+  const fingerprint = await rootsFingerprint(roots);
+  let successfulCodeFingerprint = await rootsCodeFingerprint(roots);
+  const initial = await runDevSyncOnce({
     roots,
     environment,
     artifactRoot: options.artifactRoot,
@@ -72,16 +76,20 @@ export async function main(rawArgs, dependencies = {}) {
     skiffRoot: dependencies.skiffRoot ?? skiffRoot,
     fetchImpl: dependencies.fetchImpl ?? fetch,
     compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+    configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
   });
+  let buildState = reusableDevBuildState(initial);
   expectedGeneration = nextExpectedGeneration(initial, expectedGeneration);
   printResult(initial, options.json);
 
   await watchAuthoringRootChanges({
     roots,
     initialFingerprint: fingerprint,
+    initialCodeFingerprint: successfulCodeFingerprint,
     pollIntervalMs: options.pollIntervalMs,
-    onChange: async () => {
+    onChange: async ({ codeFingerprint: currentCodeFingerprint }) => {
       try {
+        const configOnly = currentCodeFingerprint === successfulCodeFingerprint;
         const result = await runDevSyncOnce({
           roots,
           environment,
@@ -93,7 +101,11 @@ export async function main(rawArgs, dependencies = {}) {
           skiffRoot: dependencies.skiffRoot ?? skiffRoot,
           fetchImpl: dependencies.fetchImpl ?? fetch,
           compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+          configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
+          buildState: configOnly ? buildState : undefined,
         });
+        buildState = reusableDevBuildState(result);
+        successfulCodeFingerprint = currentCodeFingerprint;
         expectedGeneration = nextExpectedGeneration(result, expectedGeneration);
         printResult(result, options.json);
       } catch (error) {
@@ -114,6 +126,8 @@ export async function runDevSyncOnce({
   skiffRoot: compilerRoot = skiffRoot,
   fetchImpl = fetch,
   compilerRunner = runCompilerAuthoring,
+  configSnapshotRunner = runConfigSnapshotAuthoring,
+  buildState,
 }) {
   assertEnvironment(environment);
   if (
@@ -131,12 +145,87 @@ export async function runDevSyncOnce({
   }
   const classified = await normalizedRoots(roots);
   await mkdir(artifactRoot, { recursive: true });
+  const build = buildState ?? await buildDevAssembly({
+    classified,
+    environment,
+    artifactRoot,
+    compilerRoot,
+    compilerRunner,
+  });
+  validateReusableBuildState(build, { environment, artifactRoot });
+  const {
+    serviceContractReceipts,
+    packageArtifactReceipts,
+    serviceDeploymentReceipts,
+    serviceConfigSources,
+    assemblyReceipt,
+  } = build;
+  if (!isPlainObject(assemblyReceipt?.assembly)) {
+    throw new Error('assembly build did not return an exact RuntimeAssembly reference');
+  }
+  if (typeof assemblyReceipt.recordPath !== 'string' || assemblyReceipt.recordPath.length === 0) {
+    throw new Error('assembly build did not return a RuntimeAssembly record path');
+  }
+  const snapshotResult = await configSnapshotRunner({
+    skiffRoot: compilerRoot,
+    artifactRoot,
+    profile: environment,
+    assemblyRecord: assemblyReceipt.recordPath,
+    sources: serviceConfigSources,
+  });
+  const configSnapshotReceipt = snapshotResult?.runtimeConfigSnapshotReceipt;
+  if (!isPlainObject(configSnapshotReceipt?.snapshot)) {
+    throw new Error('config snapshot production did not return an exact snapshot reference');
+  }
 
+  const result = {
+    serviceContractReceipts,
+    packageArtifactReceipts,
+    serviceDeploymentReceipts,
+    runtimeAssemblyReceipt: assemblyReceipt,
+    runtimeConfigSnapshotReceipt: configSnapshotReceipt,
+  };
+  devBuildStates.set(result, build);
+  if (buildOnly) {
+    return result;
+  }
+  const activation = await requestAssemblyActivation({
+    fetchImpl,
+    activationUrl,
+    activationId,
+    expectedGeneration,
+    environment,
+    assembly: assemblyReceipt.assembly,
+    configSnapshot: configSnapshotReceipt.snapshot,
+  });
+  const activated = {
+    ...result,
+    assemblyActivationReceipt: activation,
+  };
+  devBuildStates.set(activated, build);
+  return activated;
+}
+
+export function reusableDevBuildState(result) {
+  const state = devBuildStates.get(result);
+  if (state === undefined) {
+    throw new Error('dev sync result does not own reusable build state');
+  }
+  return state;
+}
+
+async function buildDevAssembly({
+  classified,
+  environment,
+  artifactRoot,
+  compilerRoot,
+  compilerRunner,
+}) {
   const serviceContractReceipts = [];
   const packageArtifactReceipts = [];
   const serviceDeploymentReceipts = [];
+  const serviceConfigSources = [];
   const coordinateOwners = new Map();
-
   const buildPackage = async (entry) => compilerRunner({
     skiffRoot: compilerRoot,
     kind: 'package',
@@ -162,12 +251,15 @@ export async function runDevSyncOnce({
     }
     if (receipt.serviceDeploymentReceipt !== undefined) {
       serviceDeploymentReceipts.push(receipt.serviceDeploymentReceipt);
+      serviceConfigSources.push({
+        root: entry.root,
+        deployment: receipt.serviceDeploymentReceipt?.deployment,
+      });
     }
   }
   if (serviceDeploymentReceipts.length === 0) {
     throw new Error('dev sync requires at least one service package root to form RuntimeAssembly roots');
   }
-
   const rootDeployments = serviceDeploymentReceipts.map((receipt) => receipt?.deployment);
   if (rootDeployments.some((reference) => !isPlainObject(reference))) {
     throw new Error('deployment publish did not return an exact ServiceDeployment reference');
@@ -180,32 +272,30 @@ export async function runDevSyncOnce({
     artifactRoot,
     environment,
   });
-  const assemblyReceipt = assemblyResult.runtimeAssemblyReceipt;
-  if (!isPlainObject(assemblyReceipt?.assembly)) {
-    throw new Error('assembly build did not return an exact RuntimeAssembly reference');
-  }
-
-  const result = {
+  return {
+    environment,
+    artifactRoot,
     serviceContractReceipts,
     packageArtifactReceipts,
     serviceDeploymentReceipts,
-    runtimeAssemblyReceipt: assemblyReceipt,
+    serviceConfigSources,
+    assemblyReceipt: assemblyResult.runtimeAssemblyReceipt,
   };
-  if (buildOnly) {
-    return result;
+}
+
+function validateReusableBuildState(state, { environment, artifactRoot }) {
+  if (
+    !isPlainObject(state)
+    || state.environment !== environment
+    || state.artifactRoot !== artifactRoot
+    || !Array.isArray(state.serviceContractReceipts)
+    || !Array.isArray(state.packageArtifactReceipts)
+    || !Array.isArray(state.serviceDeploymentReceipts)
+    || !Array.isArray(state.serviceConfigSources)
+    || !isPlainObject(state.assemblyReceipt)
+  ) {
+    throw new Error('dev sync reusable build state does not match this environment and artifact root');
   }
-  const activation = await requestAssemblyActivation({
-    fetchImpl,
-    activationUrl,
-    activationId,
-    expectedGeneration,
-    environment,
-    assembly: assemblyReceipt.assembly,
-  });
-  return {
-    ...result,
-    assemblyActivationReceipt: activation,
-  };
 }
 
 async function buildDependencyOrdered(entries, build) {
@@ -288,6 +378,7 @@ export async function writeDevRegistry(path, registry) {
 
 export async function classifyAuthoringRoot(root) {
   const absolute = resolve(root);
+  const rootEntries = await readdir(absolute, { withFileTypes: true });
   const present = [];
   for (const file of [
     'package.yml',
@@ -318,6 +409,15 @@ export async function classifyAuthoringRoot(root) {
   }
   if (!present.includes('package.yml')) {
     throw new Error(`${absolute} must contain package.yml`);
+  }
+  const configFiles = rootEntries
+    .filter((entry) => entry.isFile() && isServiceConfigFileName(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  if (configFiles.length > 0 && !present.includes('service.yml')) {
+    throw new Error(
+      `${absolute} contains service config file(s) ${configFiles.join(', ')}; environment config belongs only to a Package with service.yml`,
+    );
   }
   const legacy = present.filter(
     (file) => file === 'contract.yml' || file === 'deployment.yml',
@@ -443,14 +543,25 @@ async function rootsFingerprint(roots) {
   return hash.digest('hex');
 }
 
+async function rootsCodeFingerprint(roots) {
+  const hash = createHash('sha256');
+  for (const { kind, root } of roots) {
+    hash.update(`${kind}\0${root}\0`);
+    await hashTree(root, root, hash, { skipRootConfig: true });
+  }
+  return hash.digest('hex');
+}
+
 export async function watchAuthoringRootChanges({
   roots,
   initialFingerprint,
+  initialCodeFingerprint,
   pollIntervalMs,
   onChange,
   wait = delay,
 }) {
   let fingerprint = initialFingerprint ?? await rootsFingerprint(roots);
+  let codeFingerprint = initialCodeFingerprint ?? await rootsCodeFingerprint(roots);
   for (;;) {
     await wait(pollIntervalMs);
     const next = await rootsFingerprint(roots);
@@ -458,11 +569,14 @@ export async function watchAuthoringRootChanges({
       continue;
     }
     fingerprint = next;
-    await onChange();
+    const nextCodeFingerprint = await rootsCodeFingerprint(roots);
+    const kind = nextCodeFingerprint === codeFingerprint ? 'config' : 'code';
+    codeFingerprint = nextCodeFingerprint;
+    await onChange({ kind, codeFingerprint });
   }
 }
 
-async function hashTree(root, current, hash) {
+async function hashTree(root, current, hash, { skipRootConfig = false } = {}) {
   const entries = await readdir(current, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
@@ -471,12 +585,24 @@ async function hashTree(root, current, hash) {
     }
     const path = join(current, entry.name);
     if (entry.isDirectory()) {
-      await hashTree(root, path, hash);
+      await hashTree(root, path, hash, { skipRootConfig });
     } else if (entry.isFile()) {
+      if (
+        skipRootConfig
+        && current === root
+        && isServiceConfigFileName(entry.name)
+      ) {
+        continue;
+      }
       hash.update(path.slice(root.length));
       hash.update(await readFile(path));
     }
   }
+}
+
+function isServiceConfigFileName(name) {
+  return name === 'config.yml'
+    || (name.startsWith('config.') && name.endsWith('.yml'));
 }
 
 function coordinate(reference, fields) {

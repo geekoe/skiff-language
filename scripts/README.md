@@ -29,12 +29,17 @@ lifecycle is owned by `skiff instance up/down/restart/status/doctor/repair`.
 ```
 
 From a service directory, `skiff service dev sync` and `skiff service dev watch`
-use the current service root and `service.yml`/`service.<profile>.yml`, then
-write artifacts to the selected dev home. For the main worktree instance that is
-`.skiff-instance/dev-home/artifacts`. `skiff check <root>` runs the same compile
-validation without syncing local instance artifacts or reloading the router.
-`service.<profile>.yml` is a service definition / build / dev overlay; it is not
-a secret source. The local control endpoint is
+compile the Package and service control files, build the exact RuntimeAssembly,
+and independently publish a RuntimeConfigSnapshot from `config.yml`,
+`config.<profile>.yml`, and ignored `config.<profile>.secret.yml`. The three
+config files have canonical Package IDs at their root; they are not copied into
+code artifacts or deployment identity. A config-only watch change reuses the
+exact code assembly, publishes a new opaque snapshot, and commits a new
+activation generation carrying both references. For the main worktree instance
+the artifact root is `.skiff-instance/dev-home/artifacts`, and snapshots are
+stored securely below its `runtime-config/` directory. `skiff check <root>` runs
+compile validation without syncing local instance artifacts or reloading the
+router. The local control endpoint is
 `http://127.0.0.1:4001/__skiff/reload-artifacts`; override with
 `--artifact-root`, `--reload-url`, `SKIFF_ARTIFACT_ROOT`, or
 `SKIFF_DEV_RELOAD_URL` only for explicit non-standard service-dev environments.
@@ -84,7 +89,12 @@ selectors.
 
 Per-service build output (the intermediate `service-assembly.json`, `router-manifest.json`, and generated `artifacts/`) is written under the selected dev home, for example `.skiff-instance/dev-home/build/<storage-projected-service-id>/`, with a sibling `<storage-projected-service-id>.lock` build lock. This keeps the service source tree clean — build output is no longer written into a `build/` directory under the project root. `skiff service dev clean` removes the current service's build dir and lock under the dev home, and also clears any legacy in-tree `build/` and `build.lock/` left by older builds.
 
-Dev sync also copies service-root runtime config sources into the local artifact root under `configs/services/<storage-projected-service-id>/`: `config.yml`, `config.<profile>.yml`, and `config.<profile>.secret.yml` when present. That copy is local runtime state for activation. `config.<profile>.secret.yml` should be ignored by default, should not be committed, and must not be treated as something that can enter a production source snapshot or code publish artifact.
+Dev sync reads service-root config sources in place and publishes only the merged,
+validated immutable snapshot. It never copies the source YAML into the artifact
+root. `config.<profile>.secret.yml` must be untracked and covered by the
+repository ignore rules; tooling rejects a secret file whose ignored status
+cannot be proven. Snapshot receipts and logs contain only the opaque reference,
+record path, and counts, never configuration values.
 
 Package sources are configured by the nearest ancestor `skiff.yml`:
 

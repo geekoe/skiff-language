@@ -210,6 +210,53 @@ test('assembly authoring rejects empty, duplicate, malformed, and retired root i
   );
 });
 
+test('assembly activation requires and parses an exact config snapshot reference', () => {
+  const snapshot = {
+    snapshotId: `skiff-runtime-config-snapshot-v1:${'7'.repeat(32)}`,
+  };
+  const parsed = parseObjectArgs('assembly', 'activate', [
+    '--artifact-root',
+    '/tmp/artifacts',
+    '--environment',
+    'dev',
+    '--root-deployment',
+    JSON.stringify(rootDeployment),
+    '--config-snapshot',
+    JSON.stringify(snapshot),
+    '--expected-generation',
+    '4',
+  ]);
+  assert.deepEqual(parsed.configSnapshot, snapshot);
+  assert.throws(
+    () => parseObjectArgs('assembly', 'activate', [
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--environment',
+      'dev',
+      '--root-deployment',
+      JSON.stringify(rootDeployment),
+      '--expected-generation',
+      '4',
+    ]),
+    /requires --config-snapshot/,
+  );
+  assert.throws(
+    () => parseObjectArgs('assembly', 'activate', [
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--environment',
+      'dev',
+      '--root-deployment',
+      JSON.stringify(rootDeployment),
+      '--config-snapshot',
+      JSON.stringify({ snapshotId: 'content-hash-is-not-opaque' }),
+      '--expected-generation',
+      '4',
+    ]),
+    /exact RuntimeConfigSnapshotRef/,
+  );
+});
+
 test('human service API output renders the exact compiler projection', () => {
   const result = {
     serviceApiReceipt: {
@@ -390,6 +437,9 @@ test('activation request construction rejects values outside the frozen T01 wire
     assembly: {
       assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
     },
+    configSnapshot: {
+      snapshotId: `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`,
+    },
   };
   let requests = 0;
   const fetchImpl = async () => {
@@ -402,6 +452,7 @@ test('activation request construction rejects values outside the frozen T01 wire
     { activationId: 'not visible ascii space' },
     { environment: 'x'.repeat(201) },
     { assembly: { ...base.assembly, buildId: 'legacy' } },
+    { configSnapshot: { ...base.configSnapshot, latest: true } },
     {
       assembly: {
         assemblyIdentity:
@@ -427,6 +478,9 @@ test('activation request transports its AbortSignal and preserves the abort reas
     environment: 'dev',
     assembly: {
       assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
+    },
+    configSnapshot: {
+      snapshotId: `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`,
     },
     signal: controller.signal,
     fetchImpl: async (_url, options) => {

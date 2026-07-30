@@ -115,6 +115,9 @@ fn read_optional_layer(
     }
     let source =
         fs::read_to_string(path).map_err(|source| io_error("read config", path, source))?;
+    if source.trim().is_empty() {
+        return Ok(Some(BTreeMap::new()));
+    }
     let yaml = serde_yaml::from_str::<serde_yaml::Value>(&source).map_err(|source| {
         crate::ConfigSnapshotToolingError::Yaml {
             path: path.to_path_buf(),
@@ -405,6 +408,23 @@ mod tests {
         .unwrap();
         let error = load_service_config(repository.path(), "dev").unwrap_err();
         assert!(error.to_string().contains("canonical Package ID"));
+    }
+
+    #[test]
+    fn loader_rejects_duplicate_author_keys_in_one_layer() {
+        let repository = git_repository();
+        fs::write(
+            repository.path().join("config.yml"),
+            r#"
+"example.com/service":
+  value: first
+"example.com/service":
+  value: second
+"#,
+        )
+        .unwrap();
+        let error = load_service_config(repository.path(), "dev").unwrap_err();
+        assert!(error.to_string().contains("duplicate"));
     }
 
     fn git_repository() -> TempDir {

@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   classifyAuthoringRoot,
   readDevRegistry,
+  reusableDevBuildState,
   runDevSyncOnce,
   watchAuthoringRootChanges,
   writeDevRegistry,
@@ -32,6 +33,16 @@ test('missing package manifest and retired authoring files fail closed', async (
   await writePackageRoot(temp);
   await writeFile(join(temp, 'deployment.yml'), '{}\n');
   await assert.rejects(classifyAuthoringRoot(temp), /retired independent authoring file.*deployment\.yml/);
+});
+
+test('ordinary package roots cannot own service environment config files', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-package-config-'));
+  await writePackageRoot(temp);
+  await writeFile(join(temp, 'config.dev.yml'), '"example.com/package": {}\n');
+  await assert.rejects(
+    classifyAuthoringRoot(temp),
+    /environment config belongs only to a Package with service\.yml/,
+  );
 });
 
 test('external service control files require a service role in package roots', async () => {
@@ -100,6 +111,39 @@ test('watch fingerprint schedules exactly one rebuild for external file bytes, d
   assert.equal(rebuilds, 3);
 });
 
+test('watch classifies root config changes separately from code and external manifests', async () => {
+  const fixture = await rootsFixture('config-watch');
+  const serviceRoot = fixture.roots.find(({ root }) => basename(root) === 'service').root;
+  const configPath = join(serviceRoot, 'config.dev.yml');
+  const httpPath = join(serviceRoot, 'http.yml');
+  const roots = [await classifyAuthoringRoot(serviceRoot)];
+  const kinds = [];
+  let polls = 0;
+  await assert.rejects(
+    watchAuthoringRootChanges({
+      roots,
+      pollIntervalMs: 1,
+      wait: async () => {
+        polls += 1;
+        if (polls === 1) {
+          await writeFile(configPath, '"example.com/provider":\\n  value: one\\n');
+        } else if (polls === 3) {
+          await writeFile(configPath, '"example.com/provider":\\n  value: two\\n');
+        } else if (polls === 5) {
+          await writeFile(httpPath, '{}\n');
+        } else if (polls === 7) {
+          throw new Error('config watch mutation sequence complete');
+        }
+      },
+      onChange: async ({ kind }) => {
+        kinds.push(kind);
+      },
+    }),
+    /config watch mutation sequence complete/,
+  );
+  assert.deepEqual(kinds, ['config', 'config', 'code']);
+});
+
 test('a failing package batch never sends activation prepare', async () => {
   const fixture = await rootsFixture('batch-failure');
   let requests = 0;
@@ -142,6 +186,14 @@ test('dev sync has one package phase and consumes generated service receipts bef
         : `${input.kind}:${basename(input.root)}:${input.environment}`);
       return compilerReceipt(input);
     },
+    configSnapshotRunner: async (input) => {
+      events.push(`snapshot:${input.profile}`);
+      assert.deepEqual(input.sources, [{
+        root: fixture.roots.find(({ root }) => basename(root) === 'service').root,
+        deployment: dummyDeploymentRef,
+      }]);
+      return snapshotReceipt;
+    },
     fetchImpl: async () => {
       events.push('prepare');
       return jsonResponse({ committed: { generation: 8, assembly: { assemblyIdentity } } });
@@ -151,6 +203,7 @@ test('dev sync has one package phase and consumes generated service receipts bef
     'package:ordinary:dev',
     'package:service:dev',
     'assembly:dev',
+    'snapshot:dev',
     'prepare',
   ]);
   assert.equal(result.packageArtifactReceipts.length, 2);
@@ -184,8 +237,65 @@ test('dev sync defers roots until exact package/service pointers are available',
       if (name === 'service') providerPublished = true;
       return compilerReceipt(input);
     },
+    configSnapshotRunner: async () => snapshotReceipt,
   });
   assert.deepEqual(attempts, ['ordinary', 'service', 'ordinary']);
+});
+
+test('config-only sync publishes and activates a fresh snapshot without rebuilding code artifacts', async () => {
+  const fixture = await rootsFixture('config-only');
+  const serviceRoot = fixture.roots.find(({ root }) => basename(root) === 'service').root;
+  let compilerCalls = 0;
+  const first = await runDevSyncOnce({
+    roots: fixture.roots,
+    environment: 'dev',
+    artifactRoot: fixture.artifactRoot,
+    expectedGeneration: 0,
+    compilerRunner: async (input) => {
+      compilerCalls += 1;
+      return compilerReceipt(input);
+    },
+    configSnapshotRunner: async () => snapshotReceiptFor('4'),
+    fetchImpl: async (_url, { body }) => {
+      const request = JSON.parse(body);
+      assert.equal(request.schemaVersion, 'skiff-assembly-activation-request-v2');
+      assert.equal(request.configSnapshot.snapshotId, configSnapshotId);
+      return jsonResponse({ committed: { generation: 1 } });
+    },
+  });
+  assert.equal(compilerCalls, 3);
+
+  await writeFile(
+    join(serviceRoot, 'config.dev.yml'),
+    '"example.com/provider":\n  enabled: true\n',
+  );
+  const secondSnapshotId = `skiff-runtime-config-snapshot-v1:${'6'.repeat(32)}`;
+  const second = await runDevSyncOnce({
+    roots: fixture.roots,
+    environment: 'dev',
+    artifactRoot: fixture.artifactRoot,
+    expectedGeneration: 1,
+    buildState: reusableDevBuildState(first),
+    compilerRunner: async () => {
+      throw new Error('config-only sync must not invoke compiler');
+    },
+    configSnapshotRunner: async ({ sources }) => {
+      assert.equal(sources[0].root, serviceRoot);
+      return snapshotReceiptFor('6');
+    },
+    fetchImpl: async (_url, { body }) => {
+      const request = JSON.parse(body);
+      assert.deepEqual(request.assembly, { assemblyIdentity });
+      assert.deepEqual(request.configSnapshot, { snapshotId: secondSnapshotId });
+      return jsonResponse({ committed: { generation: 2 } });
+    },
+  });
+  assert.deepEqual(second.runtimeAssemblyReceipt, first.runtimeAssemblyReceipt);
+  assert.notDeepEqual(
+    second.runtimeConfigSnapshotReceipt,
+    first.runtimeConfigSnapshotReceipt,
+  );
+  assert.equal(compilerCalls, 3);
 });
 
 async function rootsFixture(name) {
@@ -245,6 +355,21 @@ function jsonResponse(body, status = 200) {
 }
 
 const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'3'.repeat(64)}`;
+const configSnapshotId = `skiff-runtime-config-snapshot-v1:${'4'.repeat(32)}`;
+const snapshotReceipt = snapshotReceiptFor('4');
+
+function snapshotReceiptFor(digit) {
+  return {
+    runtimeConfigSnapshotReceipt: {
+      snapshot: {
+        snapshotId: `skiff-runtime-config-snapshot-v1:${digit.repeat(32)}`,
+      },
+      recordPath: `runtime-config/snapshots/${digit.repeat(32)}.json`,
+      deploymentCount: 1,
+      packageCount: 2,
+    },
+  };
+}
 const dummyContractRef = {
   serviceId: 'example.com/health',
   contractVersion: '1.0.0',
