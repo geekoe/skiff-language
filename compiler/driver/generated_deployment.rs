@@ -514,7 +514,7 @@ struct QuotaAuthoring {
     memory_bytes: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LifecycleAuthoring {
     #[serde(default)]
@@ -526,7 +526,11 @@ fn deployment_policy(
 ) -> Result<DeploymentPolicy, GeneratedServiceDeploymentError> {
     let timeout_ms: Option<u64> = optional_profile_field("timeout", &profile.timeout)?;
     let quota: QuotaAuthoring = profile_field("quota", &profile.quota)?;
-    let lifecycle: LifecycleAuthoring = profile_field("lifecycle", &profile.lifecycle)?;
+    let lifecycle = if profile.lifecycle.is_null() {
+        LifecycleAuthoring::default()
+    } else {
+        profile_field("lifecycle", &profile.lifecycle)?
+    };
     let principal: String = profile_field("principal", &profile.principal)?;
     Ok(DeploymentPolicy {
         timeout_ms,

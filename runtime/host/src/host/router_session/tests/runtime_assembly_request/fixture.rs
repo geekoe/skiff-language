@@ -544,7 +544,7 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
         .expect("exact current-scope RuntimeAssembly");
     assert_eq!(
         receipt.base_assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:f42948a37913c0d8df6ecac416a8e04328b8a7d960854d3d0fa828cfa578a279"
+        "skiff-runtime-assembly-v3:sha256:a06e9806093074f986212d0feb1646be6a77ba69fb0fb42ae9067924e2d6b9ee"
     );
     assert_eq!(
         receipt.consumer_package.package_build_id.as_str(),
@@ -555,7 +555,7 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
             .consumer_deployment
             .deployment_artifact_identity
             .as_str(),
-        "skiff-deployment-artifact-v4:sha256:f653875d8978c9eec31dcd05a090dee7135a7f8351a91026849b5f0c3edf31b2"
+        "skiff-deployment-artifact-v4:sha256:5507d8173d99e3bfd6fbf4e6c6a82be178ffcad59ed0fde27475f87d5bf99b02"
     );
     CurrentScopeCompiledFixture {
         assembly,
@@ -896,13 +896,13 @@ jsonRpc:
     fs::write(root.join("websocket.yml"), websocket).expect("gateway WebSocket manifest");
     let config = match (with_database, replacement) {
         (true, true) => {
-            "state:\n  database:\n    kind: database\n    namespace: pinned-route-b\ntimeout: 2200\nquota: { cpuMillis: 200, memoryBytes: 2097152 }\nprincipal: service:pinned-route-b\nlifecycle: { maxConcurrency: 2 }\n"
+            "state:\n  database:\n    kind: database\n    namespace: pinned-route-b\ntimeout: 2200\nquota: { cpuMillis: 200, memoryBytes: 2097152 }\nprincipal: service:pinned-route-b\n"
         }
         (true, false) => {
-            "state:\n  database:\n    kind: database\n    namespace: pinned-route-a\ntimeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n"
+            "state:\n  database:\n    kind: database\n    namespace: pinned-route-a\ntimeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\n"
         }
         (false, _) => {
-            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\nlifecycle: { maxConcurrency: 1 }\n"
+            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:host-http-gateway\n"
         }
     };
     fs::write(root.join("config.dev.yml"), config).expect("gateway config");

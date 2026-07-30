@@ -3,4 +3,3 @@ quota:
   cpuMillis: 500
   memoryBytes: 268435456
 principal: service:test.skiff/package-service-websocket-smoke
-lifecycle: {}

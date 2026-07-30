@@ -684,8 +684,6 @@ quota:
   cpuMillis: 100
   memoryBytes: 67108864
 principal: service:example.com/foreign-db-tests
-lifecycle:
-  maxConcurrency: 1
 "#,
     )
     .unwrap();

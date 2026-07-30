@@ -5,4 +5,3 @@ quota:
   cpuMillis: 500
   memoryBytes: 268435456
 principal: service:test.skiff/package-service-host-consumer-tests
-lifecycle: {}

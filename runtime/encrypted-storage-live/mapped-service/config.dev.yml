@@ -10,5 +10,3 @@ quota:
   cpuMillis: 500
   memoryBytes: 268435456
 principal: service:example.com/encrypted-live-mapped
-lifecycle:
-  maxConcurrency: 1

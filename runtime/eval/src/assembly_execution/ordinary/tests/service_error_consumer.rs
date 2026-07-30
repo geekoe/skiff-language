@@ -1863,7 +1863,6 @@ fn activation_owned_bindings() -> ActivationOwnedBindings {
                 memory_bytes: 1_048_576,
             },
             activation: ActivationPolicy {
-                max_concurrency: 1,
                 idle_timeout_ms: None,
             },
             principal: "test".to_string(),

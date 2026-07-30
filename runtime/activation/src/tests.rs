@@ -44,7 +44,6 @@ fn empty_owned_bindings() -> ActivationOwnedBindings {
                 memory_bytes: 1_024,
             },
             activation: ActivationPolicy {
-                max_concurrency: 4,
                 idle_timeout_ms: Some(1_000),
             },
             principal: "test".to_string(),

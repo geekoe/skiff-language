@@ -1553,8 +1553,6 @@ quota:
   cpuMillis: 100
   memoryBytes: 67108864
 principal: test:runtime-eval
-lifecycle:
-  maxConcurrency: 1
 "#,
     )
     .expect("test service profile");

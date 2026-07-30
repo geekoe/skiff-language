@@ -751,7 +751,7 @@ stream:
     .expect("gateway HTTP manifest");
     fs::write(
         root.join("config.dev.yml"),
-        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:runtime-http-gateway\nlifecycle: { maxConcurrency: 1 }\n",
+        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:runtime-http-gateway\n",
     )
     .expect("gateway config");
     fs::write(

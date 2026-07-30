@@ -926,7 +926,7 @@ fn write_service_fixture(root: &Path, websocket_source: &str, handler_source: &s
     fs::write(root.join("websocket.yml"), websocket_source).expect("JSON-RPC WebSocket manifest");
     fs::write(
             root.join("config.dev.yml"),
-            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:runtime-websocket-jsonrpc\nlifecycle: { maxConcurrency: 1 }\n",
+            "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:runtime-websocket-jsonrpc\n",
         )
         .expect("JSON-RPC config");
     fs::write(root.join("main.skiff"), handler_source).expect("JSON-RPC source");

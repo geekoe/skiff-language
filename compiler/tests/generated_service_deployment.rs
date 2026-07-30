@@ -75,6 +75,37 @@ fn generates_exact_operations_and_profile_bindings() {
 }
 
 #[test]
+fn omitted_and_explicit_empty_lifecycle_project_the_same_activation_policy() {
+    let (project, service_api) = compile_fixture("generated-optional-lifecycle", "\"ok\"");
+    let service = manifest();
+    let generate = |lifecycle| {
+        let mut profile = profile();
+        profile.lifecycle = lifecycle;
+        generate_service_deployment(GeneratedServiceDeploymentInput {
+            service: &service,
+            http: None,
+            websocket: None,
+            profile_name: "prod",
+            profile: &profile,
+            service_api: &service_api,
+            implementation: &project.package.artifact,
+            package_closure: &[],
+            package_schema_records: &project.package.resolved_package_schema_type_records,
+        })
+        .unwrap()
+    };
+
+    let omitted = generate(serde_json::Value::Null);
+    let explicit_empty = generate(json!({}));
+
+    assert_eq!(omitted.policy.activation, explicit_empty.policy.activation);
+    assert_eq!(
+        serde_json::to_value(&omitted.policy.activation).unwrap(),
+        json!({"idleTimeoutMs": null})
+    );
+}
+
+#[test]
 fn validated_package_admission_cannot_be_reused_for_different_input() {
     let (project, service_api) = compile_fixture("generated-validated-package-mismatch", "\"ok\"");
     let admitted =

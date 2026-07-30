@@ -3,4 +3,3 @@ quota:
   cpuMillis: 1000
   memoryBytes: 268435456
 principal: service:test.skiff/package-direct-http-stream-argument-tests
-lifecycle: {}

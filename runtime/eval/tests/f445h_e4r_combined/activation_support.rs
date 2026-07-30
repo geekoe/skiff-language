@@ -204,7 +204,7 @@ fn write_service_source(
     .expect("combined service manifest");
     fs::write(
         root.join("config.dev.yml"),
-        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:f445h-e4r\nlifecycle: { maxConcurrency: 1 }\n",
+        "timeout: 1000\nquota: { cpuMillis: 100, memoryBytes: 1048576 }\nprincipal: service:f445h-e4r\n",
     )
     .expect("combined service config");
     fs::write(root.join("main.skiff"), source).expect("combined Skiff source");

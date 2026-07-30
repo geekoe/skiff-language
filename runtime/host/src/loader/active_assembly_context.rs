@@ -1004,7 +1004,6 @@ mod websocket_admission_tests {
                     memory_bytes: 1024,
                 },
                 activation: ActivationPolicy {
-                    max_concurrency: 1,
                     idle_timeout_ms: None,
                 },
                 principal: "test".to_string(),

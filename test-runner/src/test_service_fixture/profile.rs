@@ -148,7 +148,7 @@ struct TestQuotaAuthoring {
     memory_bytes: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestLifecycleAuthoring {
     #[serde(default)]
@@ -215,7 +215,11 @@ fn test_service_policy(
     test_service: &CanonicalTestServiceProfile,
 ) -> Result<DeploymentPolicy, CanonicalFixtureError> {
     let quota = profile_value::<TestQuotaAuthoring>(test_service, "quota")?;
-    let lifecycle = profile_value::<TestLifecycleAuthoring>(test_service, "lifecycle")?;
+    let lifecycle = if test_service.authoring.lifecycle.is_null() {
+        TestLifecycleAuthoring::default()
+    } else {
+        profile_value::<TestLifecycleAuthoring>(test_service, "lifecycle")?
+    };
     let principal = profile_value::<String>(test_service, "principal")?;
     let timeout_ms = if test_service.authoring.timeout.is_null() {
         None

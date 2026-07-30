@@ -12,5 +12,3 @@ quota:
   cpuMillis: 500
   memoryBytes: 268435456
 principal: service:skiff.run/runtime-live
-lifecycle:
-  maxConcurrency: 1

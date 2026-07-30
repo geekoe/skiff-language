@@ -1469,7 +1469,6 @@ fn policy(owner: &str) -> DeploymentPolicy {
             memory_bytes: 1_024,
         },
         activation: ActivationPolicy {
-            max_concurrency: 1,
             idle_timeout_ms: None,
         },
         principal: format!("service:{owner}"),

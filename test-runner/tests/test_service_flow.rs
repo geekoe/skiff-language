@@ -150,7 +150,7 @@ fn multiple_cases_receive_separate_deployments_and_assemblies() {
     .unwrap();
     fs::write(
         service.join("config.skiff-test.yml"),
-        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/case-isolation\nlifecycle: {}\n",
+        "timeout: 30000\nquota:\n  cpuMillis: 100\n  memoryBytes: 67108864\nprincipal: service:test.skiff/case-isolation\n",
     )
     .unwrap();
     fs::write(

@@ -299,7 +299,6 @@ fn activation(
                     memory_bytes: 1_048_576,
                 },
                 activation: artifact::ActivationPolicy {
-                    max_concurrency: 1,
                     idle_timeout_ms: None,
                 },
                 principal: "test".to_string(),
