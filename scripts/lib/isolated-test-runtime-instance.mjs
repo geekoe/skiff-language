@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
+import { buildIsolatedActivationState } from './isolated-test-activation-seed.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 
 const START_TIMEOUT_MS = 120_000;
@@ -102,6 +103,7 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
   const environment = bootstrapReceipt?.environment;
   const generation = bootstrap?.generation;
   const assemblyIdentity = bootstrap?.assembly?.assemblyIdentity;
+  const configSnapshotId = bootstrap?.configSnapshot?.snapshotId;
   const active = health?.activeAssembly;
   if (
     bootstrap === undefined
@@ -111,9 +113,12 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
     || generation < 0
     || typeof assemblyIdentity !== 'string'
     || assemblyIdentity.length === 0
+    || typeof configSnapshotId !== 'string'
+    || configSnapshotId.length === 0
     || active?.environment !== environment
     || active?.generation !== generation
     || active?.assemblyIdentity !== assemblyIdentity
+    || active?.configSnapshotId !== configSnapshotId
   ) {
     return false;
   }
@@ -129,6 +134,7 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
       && replica?.environment === environment
       && replica?.generation === generation
       && replica?.assemblyIdentity === assemblyIdentity
+      && replica?.configSnapshotId === configSnapshotId
       && capabilityConnections.some((connection) => (
         connection?.connected === true
         && connection?.runtimeId === replica.replicaId
@@ -261,34 +267,27 @@ async function waitForIsolatedRuntime({
   );
 }
 
-async function initializeRouterActivationState({ mongoPort, bootstrap, signal }) {
-  const environment = bootstrap?.environment;
-  const assembly = bootstrap?.bootstrap?.assembly;
-  const generation = bootstrap?.bootstrap?.generation;
-  if (
-    typeof environment !== 'string'
-    || typeof assembly?.assemblyIdentity !== 'string'
-    || !Number.isSafeInteger(generation)
-  ) {
-    throw new Error('isolated bootstrap cannot initialize Router activation state');
-  }
-  const state = {
-    schemaVersion: 'skiff-environment-activation-state-v1',
+async function initializeRouterActivationState({
+  mongoPort,
+  artifactRoot,
+  environment,
+  bootstrap,
+  signal,
+}) {
+  const state = await buildIsolatedActivationState({
+    artifactRoot,
     environment,
-    committed: { generation, assembly },
-    pending: null,
-  };
+    bootstrap,
+  });
   const document = {
-    _id: environment,
+    _id: state.environment,
     revision: 0,
     state,
   };
   const script = [
-    'db.router_assembly_activation_states.updateOne(',
-    JSON.stringify({ _id: environment }),
-    ', {$setOnInsert:',
+    'db.router_assembly_activation_states.insertOne(',
     JSON.stringify(document),
-    '}, {upsert:true});',
+    ');',
   ].join('');
   await captureCheckedCommand(
     'mongosh',

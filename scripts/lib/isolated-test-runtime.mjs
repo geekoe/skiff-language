@@ -195,7 +195,13 @@ async function startIsolatedTestRuntime({
         signal,
       });
       validateBootstrapReceipt?.(receipt);
-      await ops.seedActivationState({ mongoPort, bootstrap: receipt, signal });
+      await ops.seedActivationState({
+        mongoPort,
+        artifactRoot,
+        environment,
+        bootstrap: receipt,
+        signal,
+      });
       await ops.releaseStartupGate(startupGate, ownershipReceipt);
       return receipt;
     });

@@ -4,7 +4,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v4';
 const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v2';
-const ENVIRONMENT_STATE_SCHEMA_VERSION = 'skiff-environment-activation-state-v1';
 const PACKAGE_POINTER_SCHEMA_VERSION = 'skiff-package-artifact-pointer-v1';
 const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v2';
 

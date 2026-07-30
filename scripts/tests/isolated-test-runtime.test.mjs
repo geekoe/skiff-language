@@ -183,16 +183,23 @@ test('default config creation is exclusive and preserves a foreign destination',
 });
 
 test('readiness requires one exact connected replica and its own capability handshake', () => {
-  const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`;
+  const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`;
+  const configSnapshotId =
+    `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`;
   const bootstrap = {
     environment: 'skiff-test',
-    bootstrap: { generation: 0, assembly: { assemblyIdentity } },
+    bootstrap: {
+      generation: 0,
+      assembly: { assemblyIdentity },
+      configSnapshot: { snapshotId: configSnapshotId },
+    },
   };
   const readyHealth = {
     activeAssembly: {
       environment: 'skiff-test',
       generation: 0,
       assemblyIdentity,
+      configSnapshotId,
     },
     capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
     replicas: [{
@@ -202,6 +209,7 @@ test('readiness requires one exact connected replica and its own capability hand
       state: 'healthy',
       generation: 0,
       assemblyIdentity,
+      configSnapshotId,
     }],
   };
   assert.equal(
@@ -221,6 +229,8 @@ test('readiness requires one exact connected replica and its own capability hand
     ['active generation is missing', (health) => { delete health.activeAssembly.generation; }],
     ['active assembly differs', (health) => { health.activeAssembly.assemblyIdentity = 'other'; }],
     ['active assembly is missing', (health) => { delete health.activeAssembly.assemblyIdentity; }],
+    ['active config snapshot differs', (health) => { health.activeAssembly.configSnapshotId = 'other'; }],
+    ['active config snapshot is missing', (health) => { delete health.activeAssembly.configSnapshotId; }],
     ['replica id differs', (health) => { health.replicas[0].replicaId = 'runtime-2'; }],
     ['replica id is missing', (health) => { delete health.replicas[0].replicaId; }],
     ['replica environment differs', (health) => { health.replicas[0].environment = 'other'; }],
@@ -233,6 +243,8 @@ test('readiness requires one exact connected replica and its own capability hand
     ['replica generation is missing', (health) => { delete health.replicas[0].generation; }],
     ['replica assembly differs', (health) => { health.replicas[0].assemblyIdentity = 'other'; }],
     ['replica assembly is missing', (health) => { delete health.replicas[0].assemblyIdentity; }],
+    ['replica config snapshot differs', (health) => { health.replicas[0].configSnapshotId = 'other'; }],
+    ['replica config snapshot is missing', (health) => { delete health.replicas[0].configSnapshotId; }],
     ['capability runtime differs', (health) => { health.capabilityConnections[0].runtimeId = 'runtime-2'; }],
     ['capability runtime is missing', (health) => { delete health.capabilityConnections[0].runtimeId; }],
     ['capability connected is false', (health) => { health.capabilityConnections[0].connected = false; }],
@@ -261,6 +273,7 @@ test('readiness requires one exact connected replica and its own capability hand
     ['bootstrap environment is missing', (receipt) => { delete receipt.environment; }],
     ['bootstrap generation is missing', (receipt) => { delete receipt.bootstrap.generation; }],
     ['bootstrap assembly is missing', (receipt) => { delete receipt.bootstrap.assembly; }],
+    ['bootstrap config snapshot is missing', (receipt) => { delete receipt.bootstrap.configSnapshot; }],
   ];
   for (const [scenario, mutate] of receiptMutations) {
     const receipt = structuredClone(bootstrap);
@@ -281,6 +294,9 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
       observed.bootstrap = input;
       observed.bootstrapReceipt = { environment: 'skiff-test', bootstrap: {} };
       return observed.bootstrapReceipt;
+    },
+    seedActivationState: async (input) => {
+      observed.activationState = input;
     },
     spawnSupervisor: (input) => {
       observed.supervisor = input;
@@ -316,6 +332,15 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
   assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
   assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);
   assert.strictEqual(observed.validatedBootstrapReceipt, observed.bootstrapReceipt);
+  assert.equal(
+    observed.activationState.artifactRoot,
+    '/tmp/isolated-runtime-double/instance/dev-home/artifacts',
+  );
+  assert.equal(observed.activationState.environment, 'skiff-test');
+  assert.strictEqual(
+    observed.activationState.bootstrap,
+    observed.bootstrapReceipt,
+  );
   assert.equal(observed.supervisor.skiffRoot, expectedSkiffRoot);
   assert.strictEqual(observed.supervisor.env, observed.bootstrap.env);
   assert.strictEqual(observed.runnerEnv, observed.bootstrap.env);
