@@ -17,4 +17,6 @@ ready queue、验收证据或恢复点继续维护。
 - Phase 5当前状态：
   [`../phase-overview.md`](../phase-overview.md)
 
+Secret source权限已在当前F446 authority中关闭决策；本文不保留或恢复旧权限语义。
+
 历史提交、结果文档只描述当时事实。若与上述父任务、当前reference或architecture冲突，以当前authority为准。

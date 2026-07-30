@@ -17,7 +17,9 @@
 - `collection_name_mapping`在production authoring/schema/compiler/artifact/runtime/fixture中为零；logical
   collection identity只由provider DB declaration拥有，physical name由系统编码；
 - runtime frame当前代际只有v3，旧v2 reader/writer/fixture均无兼容路径；
-- secret文件未提交，mode正确，验收输出不泄漏内容；
+- POSIX secret source未提交、是普通非symlink文件、mode精确`0600`且读取前检查；复制/暂存文件在使用前
+  已是`0600`，snapshot store目录/文件为`0700`/`0600`，验收输出不泄漏内容；
+- 无POSIX mode平台要么有明确可验证的owner-only/link-substitution等价边界，要么fail closed；
 - full non-live、stable cold activation和Agine chat smoke证据属于同一最终候选。
 
 第一行输出`PASS`或`FAIL`。FAIL必须指出唯一owner、代码证据、失效gate与最小修复边界；不得在验收worktree

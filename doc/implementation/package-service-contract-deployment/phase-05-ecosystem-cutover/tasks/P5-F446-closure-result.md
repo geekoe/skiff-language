@@ -70,11 +70,17 @@ combined gate、跨仓库证据或R446。
 
 主线程已经按上述四个实现owner派发代码任务。它们完成、合流及重验前，本文件不得改为`PASS`。
 
-## Open Decision Kept Outside This Closure
+## Closed Secret Source Decision
 
-当前authority仍要求ignored `config.<profile>.secret.yml` source为`0600`，tooling-owned snapshot目录/文件为
-`0700`/`0600`。用户尚未决定是否调整**source secret file**的permission policy；因此本次收口不改变现有
-要求。若以后决定修改，应先更新`config.md`和F446B，再改实现与验收矩阵。
+secret source permission决策已经关闭：
+
+- POSIX source必须是普通非symlink文件且mode精确为`0600`，读取内容前检查并fail closed；
+- tooling任何必要明文复制/暂存写完后，必须先chmod到`0600`并重新确认，再允许使用或publish；
+- 无POSIX mode平台必须明确并验证等价owner-only ACL、普通文件及link/reparse substitution防护；没有等价
+  实现时fail closed；
+- snapshot store目录/文件仍为`0700`/`0600`。
+
+该规则已进入`config.md`、F446B/D与R446验收矩阵，不再是开放决策。
 
 ## Documentation Evidence
 

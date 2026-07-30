@@ -21,7 +21,12 @@ config.yml
 - snapshot顶层required `targetEnvironment`只来自调用方提供的受信operator/activation坐标；不能从YAML、
   service ID、profile名、路径或ambient environment推断；
 - 使用随机opaque immutable ID，原子写入受信snapshot store；第一版允许明文，日志/receipt不输出值；
-- secret source必须ignored；tooling复制/写入使用`0600`，目录`0700`，stale snapshot不作为latest fallback；
+- secret source必须ignored；POSIX平台读取前要求普通非symlink文件且mode精确`0600`，否则fail closed；
+- tooling任何必要明文复制/暂存写完后必须先chmod到`0600`并重新确认，才可读取、overlay或publish；
+  snapshot store目录/文件保持`0700`/`0600`；
+- 无POSIX mode平台必须明确使用可验证的等价owner-only ACL、普通文件及link/reparse substitution防护；
+  没有等价实现时fail closed；
+- stale snapshot不作为latest fallback；
 - dev/watch/publish/activation client传递snapshot ref，不把值重新塞回deployment或assembly。
 
 本任务不设计KMS wire。可以预留独立snapshot store接口，但不得实现字段SecretRef、value-level envelope或
@@ -33,5 +38,5 @@ config.yml
 missing required、optional missing、diamond、cross-deployment隔离、target environment写入与missing/
 substitution负例、permissions、atomic failure和cold read。
 
-`config.<profile>.secret.yml` source必须ignored且`0600`这一要求仍是当前authority。是否调整source文件
-permission policy是尚未决定的独立问题；在用户明确修改前，本任务不得弱化或删除现有要求。
+secret source permission决策已经关闭；实现与验收必须使用上述strict规则，不得降级为warning、
+best-effort chmod或“读取后再检查”。

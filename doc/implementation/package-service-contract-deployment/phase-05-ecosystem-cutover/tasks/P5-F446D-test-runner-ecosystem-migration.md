@@ -19,7 +19,8 @@ Skiff test-runner：
   `package.yml.resources`静态资源不在删除范围；
 - 删除生态authoring、fixture、helper与checker中的dependency collection mapping；Package只在`db object`
   declaration中拥有logical collection identity；
-- secret明文文件内容不得输出或提交，只迁移key层级并保持ignored/`0600`；
+- secret明文文件内容不得输出或提交；POSIX source迁移后必须保持ignored、普通非symlink及精确`0600`，
+  读取前fail closed；任何必要明文复制/暂存写完并chmod `0600`后才可使用；
 - stable dev/watch使用snapshot构造链，不复制旧deployment config binding；
 - 删除旧fixture/helper/checker和无消费者的兼容代码。
 

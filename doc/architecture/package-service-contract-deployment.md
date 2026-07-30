@@ -1179,10 +1179,13 @@ Package可以声明自己读取的typed local config path、DB schema和native a
 profile、secret顺序递归overlay：mapping递归合并，scalar/sequence整体替换，`null`作为删除path的
 tombstone。unknown Package ID、required path缺失或类型不符都fail closed。
 
-普通与secret文件使用相同schema。secret文件保存ignored、`0600`明文值，不使用`SecretRef`。所有业务配置
-值都不得进入PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly、上述artifact
-identity、receipt、control frame或日志。tooling把overlay结果与exact dependency closure解析成随机opaque
-ID的immutable `RuntimeConfigSnapshot`。snapshot顶层携带producer从受信operator输入写入的
+普通与secret文件使用相同schema。secret文件保存ignored明文值，不使用`SecretRef`。POSIX平台读取前必须
+验证source是普通非symlink文件且mode精确为`0600`；必要的明文复制/暂存必须在写完并设为`0600`后才可使用
+或publish。无POSIX mode的平台必须使用明确、可验证的等价owner-only与link-substitution防护，否则
+fail closed。snapshot store目录/文件保持`0700`/`0600`。所有业务配置值都不得进入PackageArtifact、
+ServiceContract、ServiceDeployment、RuntimeAssembly、上述artifact identity、receipt、control frame或
+日志。tooling把overlay结果与exact dependency closure解析成随机opaque ID的immutable
+`RuntimeConfigSnapshot`。snapshot顶层携带producer从受信operator输入写入的
 `targetEnvironment`；该字段不从source YAML或ambient environment推断。snapshot内部先按
 `ServiceDeploymentRef`隔离，再按exact Package build提供只读`ConfigView`；alias和diamond到达路径不参与
 identity。同build在同deployment内只有一份view，同build跨deployment仍严格隔离。

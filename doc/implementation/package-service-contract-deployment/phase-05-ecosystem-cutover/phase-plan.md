@@ -176,8 +176,10 @@ Phase 05当前实现把普通config literal编进ServiceDeployment，把secret�
 - 每个service root只有`config.yml`、`config.<profile>.yml`、`config.<profile>.secret.yml`三层文件，根部
   直接以canonical Package ID为key；service自身也是普通Package ID，没有保留`config/service/packages/secrets`
   key或每Package文件；
-- 三层递归overlay：map合并，scalar/sequence替换，null tombstone；secret与普通文件同schema，ignored且
-  `0600`；
+- 三层递归overlay：map合并，scalar/sequence替换，null tombstone；secret与普通文件同schema且ignored；
+  POSIX source必须普通、非symlink且精确`0600`，读取前fail closed；tooling明文复制/暂存写完并设为
+  `0600`后才可使用或publish；无POSIX mode平台必须有可验证的等价边界；snapshot store保持
+  `0700`/`0600`；
 - PackageArtifact只保存own typed config requirements；所有业务值从ServiceDeployment、RuntimeAssembly及
   identity删除，SecretRef整体删除；
 - activation generation并列钉`RuntimeAssemblyRef`与随机opaque immutable

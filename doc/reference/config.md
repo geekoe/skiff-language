@@ -71,12 +71,15 @@ config.yml
     apiKey: local-development-value
 ```
 
-私密文件必须被版本控制忽略。在POSIX平台，tooling在读取任何
-`config.<profile>.secret.yml`之前必须确认它是非symlink普通文件且权限精确为`0600`；否则fail closed并提示
-执行`chmod 600`。tooling创建或仍有必要复制它时，必须在发布或使用副本前显式设置`0600`，包含它的目录应为
-`0700`。没有POSIX mode bit的平台不伪造等价权限检查，但仍必须执行非symlink普通文件和版本控制忽略检查。
-明文不得写入PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly、这些对象的identity、
-receipt、control frame或日志。
+私密文件必须被版本控制忽略。在提供POSIX file mode与symlink语义的平台上，secret source必须是普通文件、
+不得是symlink，且mode必须精确为`0600`；tooling必须在读取内容前检查并fail closed。任何tooling所需的
+明文复制或暂存文件，写完后必须先设为`0600`并重新确认，再允许读取、overlay或publish。受信snapshot store
+目录保持`0700`、snapshot文件保持`0600`。
+
+不提供POSIX mode的平台不能伪造同一检查结果；对应tooling/backend必须明确声明该边界，并使用平台等价的
+owner-only ACL、拒绝link/reparse substitution及普通文件检查。没有已实现且可验证的等价安全边界时，secret
+source读取必须fail closed。明文不得写入PackageArtifact、ServiceContract、ServiceDeployment、
+RuntimeAssembly、这些对象的identity、receipt、control frame或日志。
 
 第一版配置快照可以由受信runtime storage以明文保存。未来加密应作为独立snapshot store的整份envelope
 能力加入；它不能重新引入字段级`SecretRef`，也不能改变本文件的authoring schema。本版本不定义KMS wire、
