@@ -18,7 +18,7 @@ db object Prompt {
   storage secret using encrypted
   retention 180 days
   index byFeed(promptId desc, id desc)
-  unique index byExternalId(externalId) where externalId != null
+  unique index byExternalId(externalId)
 }
 "#,
     );

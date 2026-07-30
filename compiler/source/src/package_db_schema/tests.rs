@@ -67,7 +67,7 @@ fn production_package_compile_preserves_valid_logical_db_schema_facts() {
                 db object Thread {
                   primary key(id)
                   index byOwner(owner.id)
-                  unique index byActiveOwner(owner.active, owner.id) where owner.active == true
+                  unique index byActiveOwner(owner.active, owner.id)
                 }
             "#,
         ),
@@ -138,13 +138,25 @@ fn production_package_compile_rejects_reserved_id_and_invalid_indexes() {
             "type Thread { id: string } db object Thread { primary key(id) index empty() }",
             "index empty must declare at least one field",
         ),
+        (
+            "type Thread { id: string } db object Thread { primary key(id) index _id_(id) }",
+            "index name _id_ is reserved for the primary key",
+        ),
+        (
+            "type Thread { id: string, owner: string } db object Thread { primary key(id) index byOwner(owner, owner desc) }",
+            "index byOwner declares field path owner more than once",
+        ),
+        (
+            "type Thread { id: string, owner: string } db object Thread { primary key(id) index byOwner(owner) unique index ownerUnique(owner) }",
+            "indexes byOwner and ownerUnique declare the same ordered key specification",
+        ),
     ] {
         assert_compile_error(source, expected);
     }
 }
 
 #[test]
-fn production_package_compile_rejects_invalid_index_and_where_field_paths() {
+fn production_package_compile_rejects_partial_indexes_and_invalid_index_paths() {
     for (source, expected) in [
         (
             "type Thread { id: string } db object Thread { primary key(id) index byMissing(missing) }",
@@ -160,7 +172,66 @@ fn production_package_compile_rejects_invalid_index_and_where_field_paths() {
         ),
         (
             "type Owner { id: string } type Thread { id: string, owner: Owner } db object Thread { primary key(id) index byOwner(owner.id) where owner.missing != null }",
-            "index byOwner where owner.missing on Thread references unknown field missing",
+            "index byOwner uses unsupported partial index authoring; remove the where clause",
+        ),
+    ] {
+        assert_compile_error(source, expected);
+    }
+}
+
+#[test]
+fn production_package_compile_accepts_only_scalar_index_keys() {
+    compile(
+        r#"
+            type UserId = string
+            alias OptionalDate = Date?
+            type Nested { label: string }
+            type Thread {
+              id: UserId
+              label: string?
+              count: integer
+              active: bool
+              at: OptionalDate
+              data: bytes
+              nested: Nested?
+            }
+            db object Thread {
+              primary key(id)
+              index byLabel(label)
+              index byCount(count)
+              index byActive(active)
+              index byAt(at)
+              index byData(data)
+              index byNestedLabel(nested.label)
+            }
+        "#,
+    )
+    .expect("scalar, nullable scalar, representation, alias, and nested scalar paths are valid");
+
+    for (source, expected) in [
+        (
+            "type Thread { id: string, values: Array<string> } db object Thread { primary key(id) index byValues(values) }",
+            "index byValues field values must be an indexable scalar or nullable scalar",
+        ),
+        (
+            "type Thread { id: string, values: Map<string, string> } db object Thread { primary key(id) index byValues(values) }",
+            "index byValues field values must be an indexable scalar or nullable scalar",
+        ),
+        (
+            "type Nested { label: string } type Thread { id: string, nested: Nested } db object Thread { primary key(id) index byNested(nested) }",
+            "index byNested field nested must be an indexable scalar or nullable scalar",
+        ),
+        (
+            "type Thread { id: string, payload: Json } db object Thread { primary key(id) index byPayload(payload) }",
+            "index byPayload field payload must be an indexable scalar or nullable scalar",
+        ),
+        (
+            "type Thread { id: Array<string> } db object Thread { primary key(id) }",
+            "primary key field id must be a non-null indexable scalar",
+        ),
+        (
+            "type Thread { id: string? } db object Thread { primary key(id) }",
+            "primary key field id must be a non-null indexable scalar",
         ),
     ] {
         assert_compile_error(source, expected);
@@ -208,7 +279,7 @@ fn production_package_compile_keeps_encrypted_storage_schema_rules() {
         ),
         (
             "type Credential { id: string, owner: string, secret: string } db object Credential { primary key(id) storage secret using encrypted index byOwner(owner) where secret != null }",
-            "encrypted storage field `secret` cannot be used by partial index `byOwner` where",
+            "index byOwner uses unsupported partial index authoring; remove the where clause",
         ),
     ] {
         assert_compile_error(source, expected);

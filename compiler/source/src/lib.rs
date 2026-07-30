@@ -153,6 +153,7 @@ fn build_from_linked(
     for alias in dependency_analysis.package_aliases() {
         package_aliases.entry(alias.to_string()).or_default();
     }
+    package_db_schema::reject_partial_db_indexes(&linked.parsed_sources)?;
     let root_ref_policy = root_refs::RootRefValidationPolicy::parsed_publication_sources();
     root_refs::validate_source_root_refs(
         linked.diagnostic_root,

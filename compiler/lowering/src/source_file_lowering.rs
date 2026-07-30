@@ -1145,7 +1145,7 @@ mod tests {
               }
             "#,
         );
-        assert_eq!(unit.schema_version, "skiff-file-ir-v10");
+        assert_eq!(unit.schema_version, "skiff-file-ir-v11");
         assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
         assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
@@ -1696,7 +1696,7 @@ mod tests {
                 type Thread { id: string, owner: Owner }
                 db object Thread {
                   primary key(id)
-                  unique index byOwner(owner.id desc) where owner.id != ""
+                  unique index byOwner(owner.id desc)
                 }
             "#,
         );
@@ -1720,7 +1720,6 @@ mod tests {
             db.indexes[0].fields[0].direction,
             skiff_artifact_model::DbIndexDirectionIr::Desc
         );
-        assert!(db.indexes[0].where_expr.is_some());
     }
 
     fn lowered_units(sources: Vec<(&str, &str, &str)>) -> Vec<FileIrUnit> {
@@ -3028,7 +3027,7 @@ mod tests {
         assert!(!wire.contains("operationAbiId"));
         assert!(unit
             .file_ir_identity
-            .starts_with("skiff-file-ir-v10:sha256:"));
+            .starts_with("skiff-file-ir-v11:sha256:"));
     }
 
     #[test]

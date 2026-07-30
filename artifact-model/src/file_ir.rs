@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     compile_requirements::ServiceCallRef,
@@ -20,9 +19,14 @@ use crate::{
     ActorDeclarationIr,
 };
 
+mod db_indexes;
 mod package_calls;
 mod service_calls;
 
+pub use db_indexes::{
+    is_db_indexable_scalar_builtin, validate_file_ir_db_indexes, FileIrDbIndexValidationError,
+    DB_INDEXABLE_SCALAR_BUILTINS,
+};
 pub use package_calls::{
     file_ir_package_call_sites, validate_file_ir_package_calls,
     validated_file_ir_package_callable_refs, FileIrPackageCallOwner, FileIrPackageCallSite,
@@ -299,14 +303,12 @@ pub struct FieldPathIr {
     pub segments: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DbIndexIr {
     pub name: String,
     pub unique: bool,
     pub fields: Vec<DbIndexFieldIr>,
-    #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
-    pub where_expr: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

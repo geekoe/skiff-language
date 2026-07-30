@@ -157,6 +157,5 @@ fn db_metadata_index(index: &DbIndexIr) -> DbMetadataIndexIr {
         name: index.name.clone(),
         unique: index.unique,
         fields: index.fields.clone(),
-        where_expr: index.where_expr.clone(),
     }
 }

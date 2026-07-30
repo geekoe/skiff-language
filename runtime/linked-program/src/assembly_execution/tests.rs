@@ -21,7 +21,7 @@ const FORGED_PACKAGE_BUILD: &str =
 const PACKAGE_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FILE_ID: &str =
-    "skiff-file-ir-v10:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    "skiff-file-ir-v11:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[test]

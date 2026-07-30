@@ -81,6 +81,8 @@ pub enum ArtifactIdentityError {
     InvalidFileIrServiceCalls(#[from] skiff_artifact_model::FileIrServiceCallValidationError),
     #[error("File IR package call refs are invalid: {0}")]
     InvalidFileIrPackageCalls(#[from] skiff_artifact_model::FileIrPackageCallValidationError),
+    #[error("File IR DB indexes are invalid: {0}")]
+    InvalidFileIrDbIndexes(#[from] skiff_artifact_model::FileIrDbIndexValidationError),
     #[error("File IR unit declared fileIrIdentity {declared} but content identity is {computed}")]
     FileIrIdentityMismatch { declared: String, computed: String },
     #[error("artifact path {path} for {label} must be relative and stay inside artifacts root")]

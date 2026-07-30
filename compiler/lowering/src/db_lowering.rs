@@ -458,12 +458,6 @@ pub(super) fn lower_db_declarations(
                             },
                         })
                         .collect(),
-                    where_expr: index
-                        .where_expr
-                        .as_ref()
-                        .map(serde_json::to_value)
-                        .transpose()
-                        .expect("Expr serializes"),
                 })
             })
             .collect::<Result<Vec<_>>>()?;

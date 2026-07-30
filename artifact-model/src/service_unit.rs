@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
 // Runtime/projection consumers still share these canonical executable-target
 // leaves; this module no longer defines a service aggregate.
 pub use crate::executable_target::{
@@ -52,18 +50,15 @@ pub struct DbMetadataIr {
 
 /// Service-unit db index entry.
 ///
-/// Distinct from [`crate::file_ir::DbIndexIr`]: the runtime projection always emits
-/// the `where` key (null when absent) rather than omitting it. `where_expr` carries a
-/// serialized `skiff` expression AST; strong-typing it is tracked separately because
-/// the expression AST is a large recursive structure with externally-tagged serde.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Distinct from [`crate::file_ir::DbIndexIr`] only because this DTO belongs to the
+/// activation-time runtime metadata projection. Both shapes carry the same closed
+/// ordinary/unique index contract; partial-index predicates are not artifact data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DbMetadataIndexIr {
     pub name: String,
     pub unique: bool,
     pub fields: Vec<DbIndexFieldIr>,
-    #[serde(rename = "where")]
-    pub where_expr: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

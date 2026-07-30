@@ -7,13 +7,15 @@ use crate::{builtin_receiver_op_by_name, BuiltinReceiverOp};
 use crate::{DbFieldStorageIr, DbObjectFieldIr};
 
 use crate::{
-    BlockIr, BoxSourceIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr, ExecutableKind,
-    ExecutableLinkTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrRef, FileIrUnit,
-    FunctionTypeParamIr, GatewayRoute, InterfaceInstantiationRef, InterfaceMethodSignature,
-    InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
-    InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef, NamedUnionBranchIr,
-    OperationAbiRef, OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
-    PackageCallableId, PackageCallableRef, PackageOperationTarget, PackageRefIr, PackageSymbolRef,
+    validate_file_ir_db_indexes, BlockIr, BoxSourceIr, CallTargetIr, ConstIr, DbDeclarationIr,
+    DbIndexDirectionIr, DbIndexFieldIr, DbIndexIr, DbMetadataIndexIr, DbObjectKeyIr,
+    DbObjectKindIr, ExecutableBody, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, ExprIr,
+    ExprRefIr, ExternalRefTable, FieldPathIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
+    GatewayRoute, InterfaceInstantiationRef, InterfaceMethodSignature, InterfaceMethodSlotPlanIr,
+    InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
+    LiteralIr, LocalReceiverExecutableRef, NamedUnionBranchIr, OperationAbiRef,
+    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef, PackageCallableId,
+    PackageCallableRef, PackageOperationTarget, PackageRefIr, PackageSymbolRef,
     PublicationOperationKind, ReceiverCallAbi, RecoverableAdapterSchemaCompatibility,
     RecoverableArtifactMetadata, RecoverableCustomRestorePlan, RecoverableExpectedTypePlan,
     RecoverableExpectedTypeRoot, RecoverableFieldIdentityRef,
@@ -486,6 +488,138 @@ where
 }
 
 #[test]
+fn db_index_artifacts_reject_retired_partial_where_payloads() {
+    let canonical = json!({
+        "name": "byOwner",
+        "unique": false,
+        "fields": []
+    });
+    serde_json::from_value::<DbIndexIr>(canonical.clone())
+        .expect("ordinary File IR index must decode");
+    serde_json::from_value::<DbMetadataIndexIr>(canonical.clone())
+        .expect("ordinary runtime metadata index must decode");
+
+    let mut retired = canonical;
+    retired["where"] = json!({"kind": "identifier", "name": "active"});
+    assert_unknown_field_rejected::<DbIndexIr>(retired.clone());
+    assert_unknown_field_rejected::<DbMetadataIndexIr>(retired);
+}
+
+#[test]
+fn file_ir_db_indexes_require_unique_names_fields_and_ordered_specs() {
+    let mut unit = FileIrUnit::empty("main", "source");
+    let field = |name: &str, direction| DbIndexFieldIr {
+        field: FieldPathIr {
+            text: name.to_string(),
+            segments: name.split('.').map(str::to_string).collect(),
+        },
+        direction,
+    };
+    unit.declarations.db.insert(
+        "Thread".to_string(),
+        DbDeclarationIr {
+            type_ref: TypeRefIr::builtin("Thread"),
+            type_name: "Thread".to_string(),
+            collection_name: "thread".to_string(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: vec![DbObjectFieldIr {
+                name: "owner".to_string(),
+                ty: TypeRefIr::builtin("string"),
+                storage: DbFieldStorageIr::Identity,
+            }],
+            retention: None,
+            leases: Vec::new(),
+            indexes: vec![
+                DbIndexIr {
+                    name: "byOwner".to_string(),
+                    unique: false,
+                    fields: vec![field("owner", DbIndexDirectionIr::Asc)],
+                },
+                DbIndexIr {
+                    name: "ownerUnique".to_string(),
+                    unique: true,
+                    fields: vec![field("owner", DbIndexDirectionIr::Asc)],
+                },
+            ],
+            source_span: None,
+        },
+    );
+
+    let error = validate_file_ir_db_indexes(&unit)
+        .expect_err("same ordered key under another logical name must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("declare the same ordered key specification"),
+        "unexpected error: {error}"
+    );
+
+    unit.declarations
+        .db
+        .get_mut("Thread")
+        .expect("fixture DB")
+        .indexes[1]
+        .fields[0]
+        .direction = DbIndexDirectionIr::Desc;
+    validate_file_ir_db_indexes(&unit).expect("direction is part of the ordered key");
+
+    let owner = &mut unit
+        .declarations
+        .db
+        .get_mut("Thread")
+        .expect("fixture DB")
+        .fields[0];
+    owner.ty = TypeRefIr::Builtin {
+        name: "Array".to_string(),
+        args: vec![TypeRefIr::builtin("string")],
+    };
+    let error = validate_file_ir_db_indexes(&unit)
+        .expect_err("container-valued index fields must fail artifact admission");
+    assert!(
+        error.to_string().contains("indexable scalar"),
+        "unexpected error: {error}"
+    );
+    let owner = &mut unit
+        .declarations
+        .db
+        .get_mut("Thread")
+        .expect("fixture DB")
+        .fields[0];
+    owner.ty = TypeRefIr::builtin("string");
+    owner.storage = DbFieldStorageIr::Encrypted;
+    let error = validate_file_ir_db_indexes(&unit)
+        .expect_err("encrypted index fields must fail artifact admission");
+    assert!(
+        error.to_string().contains("encrypted storage field"),
+        "unexpected error: {error}"
+    );
+    unit.declarations
+        .db
+        .get_mut("Thread")
+        .expect("fixture DB")
+        .fields[0]
+        .storage = DbFieldStorageIr::Identity;
+
+    unit.declarations
+        .db
+        .get_mut("Thread")
+        .expect("fixture DB")
+        .indexes[1]
+        .fields
+        .push(field("owner", DbIndexDirectionIr::Asc));
+    let error = validate_file_ir_db_indexes(&unit)
+        .expect_err("one compound index cannot repeat a logical path");
+    assert!(
+        error.to_string().contains("declared more than once"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn file_ir_ref_requires_module_path() {
     let error = serde_json::from_value::<FileIrRef>(json!({
         "fileIrIdentity": "file:main",
@@ -565,7 +699,7 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v10");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v11");
     assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);

@@ -1,4 +1,4 @@
-pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v10";
+pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v11";
 pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v7";
 pub const FILE_IR_OPCODE_TABLE_VERSION: &str = "skiff-opcode-table-v2";
 pub const PACKAGE_ARTIFACT_SCHEMA_VERSION: &str = "skiff-package-artifact-v9";
@@ -14,7 +14,7 @@ mod tests {
 
     #[test]
     fn suspension_schema_generations_are_atomic_and_unrelated_domains_remain_stable() {
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v10");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v11");
         assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         assert_eq!(PACKAGE_ARTIFACT_SCHEMA_VERSION, "skiff-package-artifact-v9");

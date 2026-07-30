@@ -8,7 +8,7 @@ mod semantic;
 
 #[test]
 fn current_identity_generations_are_atomic() {
-    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v10:sha256");
+    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v11:sha256");
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
         "skiff-package-artifact-build-identity-v8"

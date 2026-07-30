@@ -28,7 +28,7 @@ const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
 const CURRENT_CONSTRAINT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:839e01e4a6bf20be055d48fde8fa4e518099f3345e9c9321f05020b85a8f5f68";
 const CURRENT_DB_FILE_IR: &str =
-    "skiff-file-ir-v10:sha256:f0c9c20a5e5e484aab1f05ead028349ca2db03e1f9417c7182dbfdd6128baa56";
+    "skiff-file-ir-v11:sha256:88c7421a53bea8a67796d100aa7e7d43181e8cd0db021b9929264b9f125d9b7c";
 
 #[test]
 fn declared_source_aliases_emit_only_canonical_file_ir_builtin_names() {

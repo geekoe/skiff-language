@@ -59,7 +59,6 @@ pub(super) fn validate_encrypted_index_path(
     index_name: &str,
     path: &[String],
     encrypted_fields: &BTreeSet<&str>,
-    partial: bool,
     violations: &mut Vec<String>,
 ) {
     let Some(field) = path.first() else {
@@ -67,10 +66,8 @@ pub(super) fn validate_encrypted_index_path(
     };
     if encrypted_fields.contains(field.as_str()) {
         violations.push(format!(
-            "db object {} encrypted storage field `{field}` cannot be used by {}index `{index_name}`{}",
-            db.name,
-            if partial { "partial " } else { "" },
-            if partial { " where" } else { "" }
+            "db object {} encrypted storage field `{field}` cannot be used by index `{index_name}`",
+            db.name
         ));
     }
 }

@@ -4,11 +4,12 @@ use super::*;
 use serde_json::json;
 use skiff_artifact_model::{
     ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, CallIr, CallTargetIr,
-    ContractOperationId, DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
-    DbObjectKindIr, ExecutableBody, ExprIr, ExprRefIr, FileIrPackageCallValidationError,
-    FileIrUnit, LiteralIr, NominalTypeRefBaseIr, PackageCallableId, PackageCallableRef,
-    PackageRefIr, ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity, SourceMapSource,
-    TypeDeclIr, TypeDescriptorIr, TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1,
+    ContractOperationId, DbDeclarationIr, DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr,
+    DbIndexIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, ExecutableBody, ExprIr, ExprRefIr,
+    FieldPathIr, FileIrPackageCallValidationError, FileIrUnit, LiteralIr, NominalTypeRefBaseIr,
+    PackageCallableId, PackageCallableRef, PackageRefIr, ServiceCallRef, ServiceCallRefIndex,
+    ServiceProtocolIdentity, SourceMapSource, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 
 #[test]
@@ -359,6 +360,52 @@ fn encrypted_db_field_storage_participates_in_file_ir_identity() {
 }
 
 #[test]
+fn file_ir_identity_rejects_noncanonical_duplicate_index_specs() {
+    let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
+    unit.declarations.db.insert(
+        "Thread".to_string(),
+        DbDeclarationIr {
+            type_ref: TypeRefIr::builtin("Thread"),
+            type_name: "Thread".to_string(),
+            collection_name: "thread".to_string(),
+            kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: vec![DbObjectFieldIr {
+                name: "owner".to_string(),
+                ty: TypeRefIr::builtin("string"),
+                storage: DbFieldStorageIr::Identity,
+            }],
+            retention: None,
+            leases: Vec::new(),
+            indexes: ["byOwner", "ownerUnique"]
+                .into_iter()
+                .enumerate()
+                .map(|(position, name)| DbIndexIr {
+                    name: name.to_string(),
+                    unique: position == 1,
+                    fields: vec![DbIndexFieldIr {
+                        field: FieldPathIr {
+                            text: "owner".to_string(),
+                            segments: vec!["owner".to_string()],
+                        },
+                        direction: DbIndexDirectionIr::Asc,
+                    }],
+                })
+                .collect(),
+            source_span: None,
+        },
+    );
+
+    assert!(matches!(
+        file_ir_identity(&unit),
+        Err(ArtifactIdentityError::InvalidFileIrDbIndexes(_))
+    ));
+}
+
+#[test]
 fn actor_declaration_abi_participates_in_file_ir_identity() {
     let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     let abi = ActorAbiInput {
@@ -401,7 +448,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v10:sha256:2b4976d2076ed634327e3058bc3aecd8e9ab1b698c3f34731b6a2497be14b3fe"
+        "skiff-file-ir-v11:sha256:2b4976d2076ed634327e3058bc3aecd8e9ab1b698c3f34731b6a2497be14b3fe"
     );
 
     let mut changed_ref = base.clone();
