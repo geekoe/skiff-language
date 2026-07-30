@@ -3,9 +3,8 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, ConfigLiteralBinding, ContractOperationId,
     DeploymentPolicy, GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageBuildId,
-    ResourceBinding, SecretRefBinding, ServiceBindingTemplate, ServiceContractRef,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey, StateBinding,
-    WebSocketEntryId,
+    SecretRefBinding, ServiceBindingTemplate, ServiceContractRef, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirementKey, StateBinding, WebSocketEntryId,
 };
 
 use crate::capability::CallbackCapabilityTable;
@@ -62,7 +61,6 @@ pub struct ActivationOwnedBindings {
     pub config_literals: Vec<ConfigLiteralBinding>,
     pub secret_refs: Vec<SecretRefBinding>,
     pub state_bindings: Vec<StateBinding>,
-    pub resource_bindings: Vec<ResourceBinding>,
     pub policy: DeploymentPolicy,
 }
 
@@ -80,7 +78,6 @@ impl fmt::Debug for ActivationOwnedBindings {
             )
             .field("secret_refs", &self.secret_refs)
             .field("state_bindings", &self.state_bindings)
-            .field("resource_bindings", &self.resource_bindings)
             .field("policy", &self.policy)
             .finish()
     }
@@ -370,7 +367,6 @@ impl ActivationContext {
                 config_literals,
                 secret_refs: activation_template.secret_refs.clone(),
                 state_bindings: activation_template.state_bindings.clone(),
-                resource_bindings: activation_template.resource_bindings.clone(),
                 policy: activation_template.policy.clone(),
             },
             websocket_entry,

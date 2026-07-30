@@ -87,8 +87,8 @@ PackageCompileInput
 
 职责固定为：
 
-- `package.yml`：Package id/version、package dependencies、service dependencies，以及
-  config/state/resource/runtime capability requirements 的声明入口。每个package dependency的`alias`
+- `package.yml`：Package id/version、package dependencies、service dependencies、typed config
+  requirements的声明入口，以及Package静态资源文件列表。每个package dependency的`alias`
   永远表示`api.yml` public paths；仅`kind: test` service可在同一entry增加唯一
   `topLevelAlias`，用于精确implementation source top-level；
 - `api.yml`：Package public source graph；
@@ -139,7 +139,7 @@ collection projection。旧`access: topLevel`输入严格拒绝，不增加compa
   requirement/conformance facts；
 - package/service dependency resolution；
 - callable effect、provenance、escape、write、alias 与 same-heap identity facts；
-- own typed config/runtime capability requirement使用事实与DB metadata；
+- own typed config requirement使用事实与DB metadata；
 - `service.yml.serviceCalls` public-path选择，以及`http.yml`/`websocket.yml` handler selector的typed
   resolution intent。
 

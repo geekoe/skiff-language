@@ -88,8 +88,6 @@ fn project_service_deployment_after_package_validation(
         config_literals: input.config_literals,
         secret_refs: input.secret_refs,
         state_bindings: input.state_bindings,
-        resource_bindings: input.resource_bindings,
-        runtime_capability_bindings: input.runtime_capability_bindings,
         policy: input.policy,
         diagnostic_text: input.diagnostic_text,
     };
@@ -212,16 +210,6 @@ fn normalize_deployment(deployment: &mut ServiceDeployment) {
     deployment
         .state_bindings
         .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
-    deployment
-        .resource_bindings
-        .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
-    deployment
-        .runtime_capability_bindings
-        .sort_by(|left, right| {
-            left.capability
-                .cmp(&right.capability)
-                .then_with(|| left.version.cmp(&right.version))
-        });
 }
 
 #[cfg(test)]

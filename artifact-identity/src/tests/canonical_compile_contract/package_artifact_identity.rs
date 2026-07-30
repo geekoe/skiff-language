@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryValueLifetime, BoundaryValuePlan, CallableEffectSummary,
-    PackageLocalAbiSymbol, PackageRuntimeCapabilityRequirement,
+    PackageLocalAbiSymbol,
 };
 
 use super::*;
@@ -82,30 +82,6 @@ fn available_operation_contract_and_implementation_requirements_are_build_only()
         package_artifact_build_identity(&changed_contract).unwrap(),
         baseline_build
     );
-
-    let mut changed_requirements = base.clone();
-    let BoundaryCallableProjection::Available {
-        implementation_requirements,
-        ..
-    } = changed_requirements
-        .boundary_projections
-        .values_mut()
-        .next()
-        .unwrap()
-    else {
-        panic!("fixture available")
-    };
-    implementation_requirements
-        .runtime_capabilities
-        .push("stream".to_string());
-    assert_eq!(
-        package_artifact_local_abi_identity(&changed_requirements).unwrap(),
-        baseline_local
-    );
-    assert_ne!(
-        package_artifact_build_identity(&changed_requirements).unwrap(),
-        baseline_build
-    );
 }
 
 #[test]
@@ -157,14 +133,6 @@ fn build_identity_includes_every_canonical_package_artifact_fact() {
                 .unwrap()
                 .target
                 .executable_index = 7
-        },
-        |artifact| {
-            artifact.runtime_requirements.runtime_capabilities.push(
-                PackageRuntimeCapabilityRequirement {
-                    capability: "stream".to_string(),
-                    required_version: "1".to_string(),
-                },
-            )
         },
         |artifact| {
             let facts = artifact

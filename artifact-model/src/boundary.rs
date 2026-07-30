@@ -309,7 +309,6 @@ mod tests {
             config: Vec::new(),
             state: Vec::new(),
             native_capabilities: Vec::new(),
-            runtime_capabilities: Vec::new(),
             complete_may_effects: CallableMayEffects {
                 writes_caller_reachable: false,
                 returns_caller_alias: false,

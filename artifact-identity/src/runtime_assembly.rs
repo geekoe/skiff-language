@@ -167,7 +167,6 @@ mod tests {
             activation_templates: vec![ActivationTemplate {
                 deployment: deployment.clone(),
                 implementation_package_build_id: PackageBuildId::new("package-build"),
-                resource_bindings: Vec::new(),
             }],
             gateway_ingress: vec![binding("/users"), binding("/users/alias")],
         };
