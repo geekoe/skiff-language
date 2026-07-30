@@ -2652,16 +2652,18 @@ mod tests {
         };
         let interface_ty = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
             .expect("interface ABI id should decode");
-        let TypeRefIr::LocalType { type_index } = interface_ty else {
-            panic!("local interface selector should use direct local type identity");
-        };
+        let provider_type_index = unit
+            .declarations
+            .types
+            .get("Provider")
+            .expect("Provider declaration should exist")
+            .type_index;
         assert_eq!(
-            type_index,
-            unit.declarations
-                .types
-                .get("Provider")
-                .expect("Provider declaration should exist")
-                .type_index
+            interface_ty,
+            TypeRefIr::PublicationType {
+                module_path: MODULE.to_string(),
+                type_index: provider_type_index,
+            }
         );
         assert!(interface.canonical_type_args.is_empty());
     }
