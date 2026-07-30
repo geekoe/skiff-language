@@ -174,8 +174,11 @@ fn assemble_test_service_fixture_inner(
         &base.packages,
     )?;
     let package_identity_admission_count = validated_all_packages.len();
-    let validated_implementation = &validated_deployment_packages[0];
-    let validated_dependency_packages = &validated_deployment_packages[1..];
+    let generated_deployment_admissions = skiff_compiler::GeneratedServicePackageAdmissions::admit(
+        &project.package.artifact,
+        &project.dependency_packages,
+    )
+    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let mut case_entries = Vec::with_capacity(cases.len());
     let mut contracts = Vec::with_capacity(cases.len());
     let mut deployments = Vec::with_capacity(cases.len());
@@ -188,12 +191,7 @@ fn assemble_test_service_fixture_inner(
         let contract = specialize_test_service_contract(&service_api.contract, service_id)?;
         let contract_ref = service_contract_ref(&contract)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        let generated = http_entry::project(
-            project,
-            &contract,
-            validated_implementation,
-            validated_dependency_packages,
-        )?;
+        let generated = http_entry::project(project, &contract, &generated_deployment_admissions)?;
         let operation_bindings = generated
             .operation_bindings
             .into_iter()

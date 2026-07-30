@@ -1,4 +1,8 @@
-use mongodb::{bson::doc, collation::Collation, index::options::IndexOptions, IndexModel};
+use mongodb::{
+    bson::doc,
+    options::{Collation, IndexOptions},
+    IndexModel,
+};
 
 use super::{
     canonical_managed_index_model, classify_existing_indexes, managed_index_name,
@@ -103,7 +107,7 @@ fn exact_managed_and_unmanaged_indexes_pass() {
         .keys(doc! { "legacy": 1 })
         .options(
             IndexOptions::builder()
-                .name("operator_owned")
+                .name("operator_owned".to_string())
                 .unique(false)
                 .build(),
         )
@@ -218,7 +222,11 @@ async fn mongo_live_reconciles_missing_exact_unmanaged_and_concurrent_indexes() 
         .create_index(
             IndexModel::builder()
                 .keys(doc! { "operator": 1 })
-                .options(IndexOptions::builder().name("operator_owned").build())
+                .options(
+                    IndexOptions::builder()
+                        .name("operator_owned".to_string())
+                        .build(),
+                )
                 .build(),
         )
         .await

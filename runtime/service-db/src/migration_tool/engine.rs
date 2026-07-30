@@ -8,6 +8,7 @@ use mongodb::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::{index::canonical_managed_index_matches, mongo::is_mongo_duplicate_key_error};
 use crate::{DbMigrationCrypto, MigrationSemanticCommitment};
 
 use super::{
@@ -107,16 +108,6 @@ pub(super) async fn inventory(
 ) -> Result<Vec<CollectionInventory>, MigrationToolError> {
     let mut inventory = Vec::with_capacity(plan.mappings.len());
     for mapping in &plan.mappings {
-        let source_names = client
-            .database(&mapping.source.database)
-            .list_collection_names()
-            .await
-            .map_err(|_| MigrationToolError::Mongo)?;
-        if !source_names.contains(&mapping.source.physical_collection) {
-            return Err(MigrationToolError::MissingSource(
-                mapping.mapping_id.clone(),
-            ));
-        }
         let target_names = client
             .database(&mapping.target.database)
             .list_collection_names()
@@ -149,12 +140,17 @@ pub(super) async fn inventory(
             }
         }
         let source = scan_v1_collection(client, crypto, mapping).await?;
+        if source.count != mapping.expected_source_count {
+            return Err(MigrationToolError::Verification(mapping.mapping_id.clone()));
+        }
         inventory.push(CollectionInventory {
             mapping_id: mapping.mapping_id.clone(),
             source_count: source.count,
             source_semantic_hash: source.semantic_hash,
             source_index_hash: source.index_hash,
             source_index_count: source.index_count,
+            target_index_hash: index_hash(&mapping.target_indexes)?,
+            target_index_count: mapping.target_indexes.len() as u64,
         });
     }
     Ok(inventory)
@@ -189,11 +185,19 @@ async fn stage_collection(
             .create_collection(&receipt.staging_collection)
             .await
             .map_err(|_| MigrationToolError::Mongo)?;
-        copy_indexes(client, mapping, &receipt.staging_collection).await?;
+        create_target_indexes(client, mapping, &receipt.staging_collection).await?;
     }
 
     let source = source_collection(client, mapping);
     let staging = database.collection::<Document>(&receipt.staging_collection);
+    validate_target_indexes(
+        &list_indexes(&staging).await?,
+        &mapping.target_indexes,
+        &mapping.mapping_id,
+    )?;
+    if !mapping.source_exists {
+        return Ok(false);
+    }
     let mut cursor = source
         .find(doc! {})
         .sort(doc! { "_id": 1 })
@@ -208,13 +212,21 @@ async fn stage_collection(
             .get("_id")
             .cloned()
             .ok_or_else(|| MigrationToolError::InvalidSource(mapping.mapping_id.clone()))?;
-        let migrated = crypto
+        let mut migrated = crypto
             .migrate_v1_document(
                 &mapping.source.service_id,
                 &mapping.source.physical_collection,
                 mapping.target_context(),
                 &mapping.encrypted_fields,
                 document,
+            )
+            .map_err(|_| MigrationToolError::Crypto)?;
+        mapping.sanitize(&mut migrated.document)?;
+        let intended_commitment = crypto
+            .verify_v2_document(
+                mapping.target_context(),
+                &mapping.encrypted_fields,
+                &migrated.document,
             )
             .map_err(|_| MigrationToolError::Crypto)?;
         if let Some(existing) = staging
@@ -232,14 +244,20 @@ async fn stage_collection(
             ensure_resume_commitment(
                 &mapping.mapping_id,
                 existing_commitment.as_bytes(),
-                migrated.commitment.as_bytes(),
+                intended_commitment.as_bytes(),
             )?;
             continue;
         }
         staging
             .insert_one(migrated.document)
             .await
-            .map_err(|_| MigrationToolError::DuplicateId(mapping.mapping_id.clone()))?;
+            .map_err(|error| {
+                if is_mongo_duplicate_key_error(&error) {
+                    MigrationToolError::UniqueConstraint(mapping.mapping_id.clone())
+                } else {
+                    MigrationToolError::Mongo
+                }
+            })?;
     }
     Ok(false)
 }
@@ -311,6 +329,27 @@ async fn scan_v1_collection(
     crypto: &DbMigrationCrypto,
     mapping: &ValidatedCollectionMapping,
 ) -> Result<CollectionScan, MigrationToolError> {
+    let source_names = client
+        .database(&mapping.source.database)
+        .list_collection_names()
+        .await
+        .map_err(|_| MigrationToolError::Mongo)?;
+    let source_exists = source_names.contains(&mapping.source.physical_collection);
+    if source_exists != mapping.source_exists {
+        return Err(if mapping.source_exists {
+            MigrationToolError::MissingSource(mapping.mapping_id.clone())
+        } else {
+            MigrationToolError::InvalidSource(mapping.mapping_id.clone())
+        });
+    }
+    if !source_exists {
+        return Ok(CollectionScan {
+            count: 0,
+            semantic_hash: SemanticAccumulator::new().finish(),
+            index_hash: index_hash(&[])?,
+            index_count: 0,
+        });
+    }
     let collection = source_collection(client, mapping);
     let indexes = list_indexes(&collection).await?;
     let mut accumulator = SemanticAccumulator::new();
@@ -324,7 +363,7 @@ async fn scan_v1_collection(
         .await
         .map_err(|_| MigrationToolError::Mongo)?
     {
-        let migrated = crypto
+        let mut migrated = crypto
             .migrate_v1_document(
                 &mapping.source.service_id,
                 &mapping.source.physical_collection,
@@ -333,7 +372,15 @@ async fn scan_v1_collection(
                 document,
             )
             .map_err(|_| MigrationToolError::Crypto)?;
-        accumulator.push(migrated.commitment);
+        mapping.sanitize(&mut migrated.document)?;
+        let commitment = crypto
+            .verify_v2_document(
+                mapping.target_context(),
+                &mapping.encrypted_fields,
+                &migrated.document,
+            )
+            .map_err(|_| MigrationToolError::Crypto)?;
+        accumulator.push(commitment);
     }
     Ok(CollectionScan {
         count: accumulator.count,
@@ -353,6 +400,7 @@ async fn scan_v2_collection(
         .database(&mapping.target.database)
         .collection::<Document>(collection_name);
     let indexes = list_indexes(&collection).await?;
+    validate_target_indexes(&indexes, &mapping.target_indexes, &mapping.mapping_id)?;
     let mut accumulator = SemanticAccumulator::new();
     let mut cursor = collection
         .find(doc! {})
@@ -376,33 +424,61 @@ async fn scan_v2_collection(
     Ok(CollectionScan {
         count: accumulator.count,
         semantic_hash: accumulator.finish(),
-        index_hash: index_hash(&indexes)?,
-        index_count: indexes.len() as u64,
+        index_hash: index_hash(&mapping.target_indexes)?,
+        index_count: mapping.target_indexes.len() as u64,
     })
 }
 
-async fn copy_indexes(
+async fn create_target_indexes(
     client: &Client,
     mapping: &ValidatedCollectionMapping,
     staging_collection: &str,
 ) -> Result<(), MigrationToolError> {
-    let source = source_collection(client, mapping);
-    let indexes = list_indexes(&source).await?;
-    let non_primary = indexes.into_iter().filter(|index| {
-        index
-            .options
-            .as_ref()
-            .and_then(|options| options.name.as_deref())
-            != Some("_id_")
-    });
+    if mapping.target_indexes.is_empty() {
+        return Ok(());
+    }
     let target = client
         .database(&mapping.target.database)
         .collection::<Document>(staging_collection);
-    for index in non_primary {
-        target
-            .create_index(index)
-            .await
-            .map_err(|_| MigrationToolError::Mongo)?;
+    target
+        .create_indexes(mapping.target_indexes.clone())
+        .await
+        .map_err(|error| {
+            if is_mongo_duplicate_key_error(&error) {
+                MigrationToolError::UniqueConstraint(mapping.mapping_id.clone())
+            } else {
+                MigrationToolError::Mongo
+            }
+        })?;
+    Ok(())
+}
+
+fn validate_target_indexes(
+    actual: &[IndexModel],
+    expected: &[IndexModel],
+    mapping_id: &str,
+) -> Result<(), MigrationToolError> {
+    let mut actual_by_name = std::collections::BTreeMap::new();
+    for model in actual {
+        let name = index_name(model);
+        if name == "_id_" {
+            continue;
+        }
+        if name.is_empty() || actual_by_name.insert(name.to_owned(), model).is_some() {
+            return Err(MigrationToolError::Verification(mapping_id.to_owned()));
+        }
+    }
+    if actual_by_name.len() != expected.len() {
+        return Err(MigrationToolError::Verification(mapping_id.to_owned()));
+    }
+    for expected_model in expected {
+        let name = index_name(expected_model);
+        let Some(actual_model) = actual_by_name.get(name) else {
+            return Err(MigrationToolError::Verification(mapping_id.to_owned()));
+        };
+        if !canonical_managed_index_matches(actual_model, expected_model) {
+            return Err(MigrationToolError::Verification(mapping_id.to_owned()));
+        }
     }
     Ok(())
 }
@@ -509,11 +585,20 @@ pub(super) struct CollectionInventory {
     #[serde(skip_serializing)]
     pub(super) source_index_hash: String,
     pub(super) source_index_count: u64,
+    pub(super) target_index_hash: String,
+    pub(super) target_index_count: u64,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_resume_commitment;
+    use mongodb::{
+        bson::doc,
+        options::{Collation, IndexOptions},
+        IndexModel,
+    };
+
+    use super::{ensure_resume_commitment, validate_target_indexes};
+    use crate::index::canonical_managed_index_model;
     use crate::migration_tool::MigrationToolError;
 
     #[test]
@@ -524,5 +609,48 @@ mod tests {
         let error = ensure_resume_commitment(mapping_id, b"existing", b"different")
             .expect_err("same _id with different content must fail closed");
         assert!(matches!(error, MigrationToolError::DuplicateId(id) if id == mapping_id));
+    }
+
+    #[test]
+    fn staging_catalog_must_exactly_match_the_final_declared_indexes() {
+        let expected = canonical_managed_index_model(
+            "example.test/package",
+            "Item",
+            "byOwner",
+            vec![("ownerId".to_owned(), 1), ("createdAt".to_owned(), -1)],
+            true,
+        )
+        .expect("canonical index");
+        let primary = IndexModel::builder()
+            .keys(doc! { "_id": 1 })
+            .options(IndexOptions::builder().name("_id_".to_owned()).build())
+            .build();
+        validate_target_indexes(
+            &[primary.clone(), expected.clone()],
+            std::slice::from_ref(&expected),
+            "mapping",
+        )
+        .expect("exact final indexes");
+
+        let mut drift = expected.clone();
+        drift.options.as_mut().expect("options").collation =
+            Some(Collation::builder().locale("en").build());
+        assert!(validate_target_indexes(
+            &[primary.clone(), drift],
+            std::slice::from_ref(&expected),
+            "mapping"
+        )
+        .is_err());
+
+        let unmanaged = IndexModel::builder()
+            .keys(doc! { "operator": 1 })
+            .options(IndexOptions::builder().name("operator".to_owned()).build())
+            .build();
+        assert!(validate_target_indexes(
+            &[primary, expected.clone(), unmanaged],
+            &[expected],
+            "mapping"
+        )
+        .is_err());
     }
 }

@@ -632,35 +632,40 @@ cargo run -p skiff-runtime-service-db \
   --features migration-tool \
   --bin skiff-service-db-migrate -- \
   inventory \
-  --plan /secure/service-db-mapping-receipt.json \
+  --allowlist /secure/filtered-allowlist-receipt.json \
+  --sanitization /secure/filtered-sanitization-receipt.json \
   --runtime-config /etc/skiff/runtime.yml \
   --router-config /etc/skiff/router.yml \
   --receipt /secure/service-db-execution-receipt.json
 ```
 
 实际迁移把 `inventory` 换成 `migrate`，并额外传
-`--confirm-writers-stopped`。mapping receipt 本身还必须声明 `offline: true`；二者缺一时不写
-Mongo。receipt 对每个 collection 显式列出 source/target 的 environment、service ID、database、
-Package ID、logical collection、physical collection 和 encrypted fields。工具拒绝 glob、宽泛 database
-目标、重复 source/target，以及任何不等于系统从 `environment + serviceId` 和
-`packageId + logicalCollection` 推导结果的 target。
-每个 `mappingId` 必须是 `m-` 加 32 个小写十六进制字符的 opaque ID，不能放业务名字或 secret。
+`--confirm-writers-stopped`；缺少显式停写确认时不写 Mongo。工具只消费已经审计的 filtered retain
+allowlist 与配套 sanitization receipt，不接受宽泛 mapping 文件或未列入 allowlist 的 collection。
+environment 从 Runtime config 读取；receipt 对每个 collection 精确列出 source/target database、
+service ID、Package ID、logical/physical collection、encrypted fields 和最终 declared indexes。
+工具拒绝 glob、重复 source/target、partial index，以及任何不等于系统从
+`environment + serviceId` 和 `packageId + logicalCollection` 推导结果的 target。`mappingId` 由这些
+精确坐标确定性生成，为 `m-` 加 32 个小写十六进制字符，不包含业务值或 secret。
 
 工具先对全部 collection 做只读 inventory 和目标碰撞检查，再复制到 target database 内的确定性临时
 collection。普通 BSON 原样复制；version 1 encrypted field 只在迁移进程内解密，立即用 version 2 的
 `environment + serviceId + finalPhysicalCollection + field + recordId` 上下文重加密。旧解密器只由
 `migration-tool` feature 和测试编译，正常 Runtime build 不含 version 1 fallback。
 
-每个临时 collection 复制原索引，并通过 count、索引摘要和 keyring-bound semantic commitment
-验证。相同 `_id` 只有在 staged 内容语义完全相同时才视为 crash resume；不同内容、非空 target 或
-已有空 target 都 fail closed。所有 collection staged 后，用 Mongo atomic rename 逐个发布；`0600`
+每个临时 collection 在复制任何记录前，先用与 Runtime reconciler 相同的纯计划构造器创建最终普通
+索引和唯一索引；唯一重复立即 fail closed，旧 source 索引不会被复制。source 数据摘要与 target
+最终索引摘要分别记录并验证，空且原本不存在的 source 会生成带最终索引的空 target。
+sanitization receipt 指定的 `ToolProvider` 连接态在写入 staging 前精确清理，其余字段不变。相同
+`_id` 只有在 staged 内容语义完全相同时才视为 crash resume；不同内容、非空 target 或已有空 target
+都 fail closed。所有 collection staged 后，用 Mongo atomic rename 逐个发布；`0600`
 execution receipt 记录 resume 状态。崩溃后必须使用完全相同的 plan 和 keyring fingerprint
 继续。工具不删除旧 database/collection，运行完成后也由操作者另行保留和核对。
 
-Runtime config 是 keyring 路径的唯一来源，Router config 是 Mongo URL 的唯一来源；mapping/execution
-receipt 都不保存连接凭据，工具也不接受命令行 root key。stdout、receipt 和错误只包含
-opaque migration/mapping ID、状态与数量，不包含 plaintext、Mongo document、key material 或 keyring
-路径。
+Runtime config 是 environment 与 keyring 路径的唯一来源，Router config 是 Mongo URL 的唯一来源；
+allowlist、sanitization 和 execution receipt 都不保存连接凭据，工具也不接受命令行 root key。
+inventory stdout 会给出精确 source/target namespace、最终索引计划、opaque migration/mapping ID
+和数量，但不包含 plaintext、Mongo document、key material、连接字符串或 keyring 路径。
 
 ### 10.8 当前非目标
 

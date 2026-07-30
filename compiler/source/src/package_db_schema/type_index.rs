@@ -77,7 +77,8 @@ impl<'a> PackageDbTypeIndex<'a> {
         ty: &TypeRef,
     ) -> Option<&PackageDbTypeRecord<'a>> {
         let expanded = expand_transparent_aliases(&ty.name, owner.alias_targets)?;
-        let named = unwrap_nullable_named_type(&TypeExpr::parse(&expanded))?;
+        let parsed = TypeExpr::parse(&expanded);
+        let named = unwrap_nullable_named_type(&parsed)?;
         let record = self.resolve_from_module(owner.module_path, named)?;
         record.representation.is_none().then_some(record)
     }

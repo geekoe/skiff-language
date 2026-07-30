@@ -1,7 +1,7 @@
-use skiff_artifact_identity::ValidatedPackageArtifact;
 use skiff_artifact_model::{ServiceContract, ServiceDeployment};
 use skiff_compiler::{
     generate_service_deployment_with_validated_packages, GeneratedServiceDeploymentInput,
+    GeneratedServicePackageAdmissions,
 };
 
 use crate::{canonical_fixture::CanonicalFixtureError, canonical_package::CanonicalPackageProject};
@@ -9,8 +9,7 @@ use crate::{canonical_fixture::CanonicalFixtureError, canonical_package::Canonic
 pub(super) fn project(
     project: &CanonicalPackageProject,
     contract: &ServiceContract,
-    implementation: &ValidatedPackageArtifact,
-    package_closure: &[ValidatedPackageArtifact],
+    admissions: &GeneratedServicePackageAdmissions,
 ) -> Result<ServiceDeployment, CanonicalFixtureError> {
     let Some(test_service) = &project.test_service_profile else {
         return Err(CanonicalFixtureError::InvalidInput(
@@ -35,8 +34,7 @@ pub(super) fn project(
             package_closure: &project.dependency_packages,
             package_schema_records: &project.package.resolved_package_schema_type_records,
         },
-        implementation,
-        package_closure,
+        admissions,
     )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     Ok(generated)

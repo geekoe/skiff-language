@@ -266,8 +266,6 @@ pub struct DbIndexIr {
     pub name: String,
     pub unique: bool,
     pub fields: Vec<DbIndexFieldIr>,
-    #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
-    pub where_expr: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

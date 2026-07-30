@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde_json::Value;
 use skiff_artifact_model::{
     DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr, DbLeaseIr, DbMetadataIndexIr,
     DbMetadataIr, DbObjectFieldIr, DbObjectKeyIr, FieldPathIr, PackageRefIr, TypeRefIr,
@@ -603,11 +602,6 @@ fn parse_indexes(entries: &[DbMetadataIndexIr], index: usize) -> Result<Vec<DbIn
         if !names.insert(name.clone()) {
             return Err(ServiceDbError::InvalidDbMetadata(format!(
                 "runtime program db[{index}] repeats index name {name:?}"
-            )));
-        }
-        if entry.where_expr.is_some() {
-            return Err(ServiceDbError::InvalidDbMetadata(format!(
-                "runtime program db[{index}].indexes[{index_index}] uses unsupported partial-index metadata"
             )));
         }
         indexes.push(DbIndexMetadata {

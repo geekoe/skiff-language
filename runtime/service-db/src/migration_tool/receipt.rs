@@ -40,6 +40,8 @@ pub(crate) struct CollectionReceipt {
     source_semantic_hash: Option<String>,
     source_index_hash: Option<String>,
     source_index_count: Option<u64>,
+    target_index_hash: Option<String>,
+    target_index_count: Option<u64>,
 }
 
 impl MigrationReceipt {
@@ -63,6 +65,8 @@ impl MigrationReceipt {
                     source_semantic_hash: None,
                     source_index_hash: None,
                     source_index_count: None,
+                    target_index_hash: None,
+                    target_index_count: None,
                 })
                 .collect(),
         }
@@ -123,14 +127,33 @@ impl CollectionReceipt {
             inventory.source_semantic_hash.as_str(),
             inventory.source_index_hash.as_str(),
             inventory.source_index_count,
+            inventory.target_index_hash.as_str(),
+            inventory.target_index_count,
         );
-        if let (Some(count), Some(semantic), Some(index), Some(index_count)) = (
+        if let (
+            Some(count),
+            Some(semantic),
+            Some(source_index),
+            Some(source_index_count),
+            Some(target_index),
+            Some(target_index_count),
+        ) = (
             self.source_count,
             self.source_semantic_hash.as_deref(),
             self.source_index_hash.as_deref(),
             self.source_index_count,
+            self.target_index_hash.as_deref(),
+            self.target_index_count,
         ) {
-            if (count, semantic, index, index_count) != incoming {
+            if (
+                count,
+                semantic,
+                source_index,
+                source_index_count,
+                target_index,
+                target_index_count,
+            ) != incoming
+            {
                 return Err(MigrationToolError::Verification(self.mapping_id.clone()));
             }
             return Ok(());
@@ -139,6 +162,8 @@ impl CollectionReceipt {
             || self.source_semantic_hash.is_some()
             || self.source_index_hash.is_some()
             || self.source_index_count.is_some()
+            || self.target_index_hash.is_some()
+            || self.target_index_count.is_some()
         {
             return Err(MigrationToolError::Receipt);
         }
@@ -146,6 +171,8 @@ impl CollectionReceipt {
         self.source_semantic_hash = Some(inventory.source_semantic_hash.clone());
         self.source_index_hash = Some(inventory.source_index_hash.clone());
         self.source_index_count = Some(inventory.source_index_count);
+        self.target_index_hash = Some(inventory.target_index_hash.clone());
+        self.target_index_count = Some(inventory.target_index_count);
         Ok(())
     }
 
@@ -153,18 +180,21 @@ impl CollectionReceipt {
         &self,
         scan: &CollectionScan,
     ) -> Result<(), MigrationToolError> {
-        self.assert_matches(scan)
-    }
-
-    pub(crate) fn assert_verified(&self, scan: &CollectionScan) -> Result<(), MigrationToolError> {
-        self.assert_matches(scan)
-    }
-
-    fn assert_matches(&self, scan: &CollectionScan) -> Result<(), MigrationToolError> {
         if self.source_count != Some(scan.count)
             || self.source_semantic_hash.as_deref() != Some(scan.semantic_hash.as_str())
             || self.source_index_hash.as_deref() != Some(scan.index_hash.as_str())
             || self.source_index_count != Some(scan.index_count)
+        {
+            return Err(MigrationToolError::Verification(self.mapping_id.clone()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn assert_verified(&self, scan: &CollectionScan) -> Result<(), MigrationToolError> {
+        if self.source_count != Some(scan.count)
+            || self.source_semantic_hash.as_deref() != Some(scan.semantic_hash.as_str())
+            || self.target_index_hash.as_deref() != Some(scan.index_hash.as_str())
+            || self.target_index_count != Some(scan.index_count)
         {
             return Err(MigrationToolError::Verification(self.mapping_id.clone()));
         }
@@ -263,7 +293,10 @@ fn validate_secure_file(file: &File) -> Result<(), MigrationToolError> {
 #[cfg(test)]
 mod tests {
     use super::{MigrationReceipt, MigrationStatus};
-    use crate::migration_tool::model::{StorageEndpoint, ValidatedCollectionMapping};
+    use crate::migration_tool::engine::{CollectionInventory, CollectionScan};
+    use crate::migration_tool::model::{
+        DocumentSanitizer, StorageEndpoint, ValidatedCollectionMapping,
+    };
 
     #[test]
     fn execution_receipt_resumes_only_the_exact_plan_and_mapping() {
@@ -271,7 +304,11 @@ mod tests {
             mapping_id: "m-00000000000000000000000000000000".to_string(),
             source: endpoint("old", "providers"),
             target: endpoint("new", "_skiff_c1_target"),
+            source_exists: true,
+            expected_source_count: 1,
             encrypted_fields: vec!["apiKey".to_string()],
+            target_indexes: Vec::new(),
+            sanitizer: DocumentSanitizer::None,
         }];
         let mut receipt = MigrationReceipt::new("receipt-v1", "plan-a", "keyring-a", &mappings);
         receipt
@@ -287,6 +324,51 @@ mod tests {
         assert!(receipt
             .validate_resume("receipt-v1", "plan-a", "keyring-b", &mappings)
             .is_err());
+    }
+
+    #[test]
+    fn source_and_final_target_index_receipts_are_verified_separately() {
+        let mappings = vec![ValidatedCollectionMapping {
+            mapping_id: "m-00000000000000000000000000000000".to_string(),
+            source: endpoint("old", "providers"),
+            target: endpoint("new", "_skiff_c1_target"),
+            source_exists: true,
+            expected_source_count: 1,
+            encrypted_fields: Vec::new(),
+            target_indexes: Vec::new(),
+            sanitizer: DocumentSanitizer::None,
+        }];
+        let mut receipt = MigrationReceipt::new("receipt-v2", "plan", "keyring", &mappings);
+        receipt
+            .entry_mut(&mappings[0].mapping_id)
+            .expect("entry")
+            .bind_inventory(&CollectionInventory {
+                mapping_id: mappings[0].mapping_id.clone(),
+                source_count: 1,
+                source_semantic_hash: "semantic".to_owned(),
+                source_index_hash: "old-indexes".to_owned(),
+                source_index_count: 1,
+                target_index_hash: "final-indexes".to_owned(),
+                target_index_count: 2,
+            })
+            .expect("bind inventory");
+        let entry = receipt.entry(&mappings[0].mapping_id).expect("entry");
+        entry
+            .assert_source_unchanged(&CollectionScan {
+                count: 1,
+                semantic_hash: "semantic".to_owned(),
+                index_hash: "old-indexes".to_owned(),
+                index_count: 1,
+            })
+            .expect("source receipt");
+        entry
+            .assert_verified(&CollectionScan {
+                count: 1,
+                semantic_hash: "semantic".to_owned(),
+                index_hash: "final-indexes".to_owned(),
+                index_count: 2,
+            })
+            .expect("target receipt");
     }
 
     fn endpoint(database: &str, physical_collection: &str) -> StorageEndpoint {

@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use futures_util::StreamExt;
 use mongodb::{
     bson::{Bson, Document},
-    collation::Collation,
-    index::options::IndexOptions,
+    options::{Collation, IndexOptions},
     Collection, IndexModel,
 };
 use sha2::{Digest, Sha256};
@@ -44,6 +43,7 @@ impl ManagedIndexSpec {
 ///
 /// Migration and reconciliation must share this builder so staging cannot produce an index
 /// identity or option set that activation would later reject.
+#[cfg(any(feature = "migration-tool", test))]
 pub(crate) fn canonical_managed_index_model(
     package_id: &str,
     logical_collection: &str,
@@ -53,6 +53,38 @@ pub(crate) fn canonical_managed_index_model(
 ) -> Result<IndexModel> {
     canonical_managed_index_spec(package_id, logical_collection, logical_index, keys, unique)
         .map(|spec| spec.mongo_model())
+}
+
+#[cfg(any(feature = "migration-tool", test))]
+pub(crate) fn canonical_managed_index_matches(actual: &IndexModel, expected: &IndexModel) -> bool {
+    let Some(expected_name) = expected
+        .options
+        .as_ref()
+        .and_then(|options| options.name.clone())
+    else {
+        return false;
+    };
+    if actual
+        .options
+        .as_ref()
+        .and_then(|options| options.name.as_deref())
+        != Some(expected_name.as_str())
+    {
+        return false;
+    }
+    let Some(keys) = index_keys(&expected.keys) else {
+        return false;
+    };
+    let spec = ManagedIndexSpec {
+        name: expected_name,
+        keys,
+        unique: expected
+            .options
+            .as_ref()
+            .and_then(|options| options.unique)
+            .unwrap_or(false),
+    };
+    mongo_index_matches(actual, &spec)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,17 +304,7 @@ fn classify_existing_indexes(
 }
 
 fn mongo_index_matches(model: &IndexModel, expected: &ManagedIndexSpec) -> bool {
-    let keys = model
-        .keys
-        .iter()
-        .map(|(field, direction)| match direction {
-            Bson::Int32(direction) => Some((field.clone(), *direction)),
-            Bson::Int64(direction) => i32::try_from(*direction)
-                .ok()
-                .map(|direction| (field.clone(), direction)),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>();
+    let keys = index_keys(&model.keys);
     if keys.as_deref() != Some(expected.keys.as_slice()) {
         return false;
     }
@@ -295,6 +317,18 @@ fn mongo_index_matches(model: &IndexModel, expected: &ManagedIndexSpec) -> bool 
         .and_then(|options| options.collation.as_ref())
         .map_or(true, |collation| collation.locale == "simple");
     simple_collation && !has_noncanonical_managed_options(options)
+}
+
+fn index_keys(keys: &Document) -> Option<Vec<(String, i32)>> {
+    keys.iter()
+        .map(|(field, direction)| match direction {
+            Bson::Int32(direction) => Some((field.clone(), *direction)),
+            Bson::Int64(direction) => i32::try_from(*direction)
+                .ok()
+                .map(|direction| (field.clone(), direction)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn has_noncanonical_managed_options(options: Option<&IndexOptions>) -> bool {

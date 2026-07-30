@@ -7,7 +7,8 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::{
     generate_service_deployment, generate_service_deployment_with_validated_packages,
-    GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput, ServiceApiProjection,
+    GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
+    GeneratedServicePackageAdmissions, ServiceApiProjection,
 };
 use skiff_compiler_core::id::PublicationId;
 use skiff_deployment::assembly::resolve_runtime_assembly;
@@ -65,9 +66,8 @@ fn generates_exact_operations_without_runtime_config_values() {
 #[test]
 fn validated_package_admission_cannot_be_reused_for_different_input() {
     let (project, service_api) = compile_fixture("generated-validated-package-mismatch", "\"ok\"");
-    let admitted =
-        skiff_artifact_identity::ValidatedPackageArtifact::admit_clone(&project.package.artifact)
-            .unwrap();
+    let admissions =
+        GeneratedServicePackageAdmissions::admit(&project.package.artifact, &[]).unwrap();
     let mut different = project.package.artifact.clone();
     different.package_id = "example.com/different-package".to_string();
     let service = manifest();
@@ -82,8 +82,7 @@ fn validated_package_admission_cannot_be_reused_for_different_input() {
             package_closure: &[],
             package_schema_records: &project.package.resolved_package_schema_type_records,
         },
-        &admitted,
-        &[],
+        &admissions,
     )
     .unwrap_err();
 

@@ -379,18 +379,18 @@ struct CollectionIdentityFixture {
 
 impl CollectionIdentityFixture {
     fn new(mapping: BTreeMap<String, String>, root_collection: Option<&str>) -> Self {
-        Self::build(mapping, root_collection, false, None)
+        Self::build_collection_identity(mapping, root_collection, false, None)
     }
 
     fn with_stateful_diamond(
         direct_mapping: BTreeMap<String, String>,
         transitive_mapping: BTreeMap<String, String>,
     ) -> Self {
-        Self::build(direct_mapping, None, false, Some(transitive_mapping))
+        Self::build_collection_identity(direct_mapping, None, false, Some(transitive_mapping))
     }
 
     fn with_dependency_target_collision() -> Self {
-        Self::build(
+        Self::build_collection_identity(
             BTreeMap::from([(
                 "package_secret".to_string(),
                 "mapped_package_secret".to_string(),
@@ -401,7 +401,7 @@ impl CollectionIdentityFixture {
         )
     }
 
-    fn build(
+    fn build_collection_identity(
         _mapping: BTreeMap<String, String>,
         root_collection: Option<&str>,
         include_colliding_dependency: bool,

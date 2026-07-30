@@ -187,12 +187,12 @@ fn production_package_compile_accepts_only_scalar_index_keys() {
             alias OptionalDate = Date?
             type Nested { label: string }
             type Thread {
-              id: UserId
-              label: string?
-              count: integer
-              active: bool
-              at: OptionalDate
-              data: bytes
+              id: UserId,
+              label: string?,
+              count: integer,
+              active: bool,
+              at: OptionalDate,
+              data: bytes,
               nested: Nested?
             }
             db object Thread {

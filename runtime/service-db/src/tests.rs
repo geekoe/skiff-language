@@ -246,7 +246,6 @@ fn normalize_db_indexes(object: &mut Map<String, Value>) {
         if let Some(index) = index.as_object_mut() {
             index.entry("unique").or_insert(Value::Bool(false));
             index.entry("fields").or_insert_with(|| json!([]));
-            index.entry("where").or_insert(Value::Null);
         }
     }
 }
@@ -1062,8 +1061,7 @@ fn index_plan_maps_business_key_to_id_and_preserves_nested_order() {
                     "field": { "text": "profile.email", "segments": ["profile", "email"] },
                     "direction": "desc"
                 }
-            ],
-            "where": null
+            ]
         }]
     }]));
     let binding =
@@ -2825,24 +2823,6 @@ fn recoverable_envelope_field_rejects_indexes() {
     )
     .expect_err("nested index on envelope field should be rejected");
     assert_recoverable_opaque_db_error(&error, "index");
-
-    let error = DbCollectionMetadata::from_ir(
-        &recoverable_envelope_metadata_value(json!([
-            {
-                "name": "settings_filter",
-                "fields": [
-                    {
-                        "field": { "text": "title", "segments": ["title"] },
-                        "direction": "asc"
-                    }
-                ],
-                "where": { "settings.mode": "dark" }
-            }
-        ]))[0],
-        0,
-    )
-    .expect_err("index predicate on envelope field should be rejected");
-    assert_recoverable_opaque_db_error(&error, "predicate");
 }
 
 #[test]
@@ -3430,8 +3410,7 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
     .is_err());
     let indexed = json!([{
         "name": "byApiKey", "unique": false,
-        "fields": [{ "field": { "text": "apiKey", "segments": ["apiKey"] }, "direction": "asc" }],
-        "where": null
+        "fields": [{ "field": { "text": "apiKey", "segments": ["apiKey"] }, "direction": "asc" }]
     }]);
     let indexed_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", indexed)[0],
@@ -3448,27 +3427,6 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
             .contains("encrypted DB field apiKey cannot be used for index"),
         "{indexed_error}"
     );
-    let partial_index = json!([{
-        "name": "byLabelWhenApiKeyExists", "unique": false,
-        "fields": [{ "field": { "text": "label", "segments": ["label"] }, "direction": "asc" }],
-        "where": { "apiKey": "forbidden" }
-    }]);
-    let partial_index_error = DbCollectionMetadata::from_ir_with_encryption(
-        &encrypted_metadata("string", "string", partial_index)[0],
-        0,
-        "example.com/credential",
-        "test",
-        "example.com/credential",
-        Some(test_encryption_keyring().cipher()),
-    )
-    .expect_err("runtime-forged encrypted partial-index predicate must fail");
-    assert!(
-        partial_index_error
-            .to_string()
-            .contains("encrypted DB field apiKey cannot be used for predicate"),
-        "{partial_index_error}"
-    );
-
     let error = match MongoServiceDbProviderFactory::default().build(DbProviderBuildInput {
         environment: "test".to_string(),
         service_id: "example.com/credential".to_string(),

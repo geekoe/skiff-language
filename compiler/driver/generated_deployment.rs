@@ -35,6 +35,33 @@ pub struct GeneratedServiceDeploymentInput<'a> {
     pub package_schema_records: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 }
 
+/// Compiler-owned proof that one implementation and its package closure passed exact artifact
+/// admission. The proof is opaque so clients can reuse admission without exposing the
+/// artifact-identity crate through the compiler's public API.
+pub struct GeneratedServicePackageAdmissions {
+    implementation: ValidatedPackageArtifact,
+    package_closure: Vec<ValidatedPackageArtifact>,
+}
+
+impl GeneratedServicePackageAdmissions {
+    pub fn admit(
+        implementation: &PackageArtifact,
+        package_closure: &[PackageArtifact],
+    ) -> Result<Self, GeneratedServiceDeploymentError> {
+        let implementation =
+            ValidatedPackageArtifact::admit_clone(implementation).map_err(identity_error)?;
+        let package_closure = package_closure
+            .iter()
+            .map(ValidatedPackageArtifact::admit_clone)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(identity_error)?;
+        Ok(Self {
+            implementation,
+            package_closure,
+        })
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum GeneratedServiceDeploymentError {
     #[error("generated deployment input is inconsistent: {0}")]
@@ -57,22 +84,17 @@ pub enum GeneratedServiceDeploymentError {
 pub fn generate_service_deployment(
     input: GeneratedServiceDeploymentInput<'_>,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
-    let implementation =
-        ValidatedPackageArtifact::admit_clone(input.implementation).map_err(identity_error)?;
-    let package_closure = input
-        .package_closure
-        .iter()
-        .map(ValidatedPackageArtifact::admit_clone)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(identity_error)?;
-    generate_service_deployment_with_validated_packages(input, &implementation, &package_closure)
+    let admissions =
+        GeneratedServicePackageAdmissions::admit(input.implementation, input.package_closure)?;
+    generate_service_deployment_with_validated_packages(input, &admissions)
 }
 
 pub fn generate_service_deployment_with_validated_packages(
     input: GeneratedServiceDeploymentInput<'_>,
-    implementation: &ValidatedPackageArtifact,
-    package_closure: &[ValidatedPackageArtifact],
+    admissions: &GeneratedServicePackageAdmissions,
 ) -> Result<ServiceDeployment, GeneratedServiceDeploymentError> {
+    let implementation = &admissions.implementation;
+    let package_closure = admissions.package_closure.as_slice();
     validate_exact_package_admissions(&input, implementation, package_closure)?;
     validate_exact_api(&input)?;
     if input.http.is_some() || input.websocket.is_some() {

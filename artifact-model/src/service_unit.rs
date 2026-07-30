@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 // Runtime/projection consumers still share these canonical executable-target
 // leaves; this module no longer defines a service aggregate.
 pub use crate::executable_target::{

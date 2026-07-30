@@ -125,9 +125,7 @@ pub(crate) fn test_runtime_package(
         "contractRequirements": [],
         "serviceRequirements": [],
         "runtimeRequirements": {
-            "config": [],
-            "resources": [],
-            "runtimeCapabilities": []
+            "config": []
         },
         "callableSemanticFacts": {},
         "boundaryProjections": {},

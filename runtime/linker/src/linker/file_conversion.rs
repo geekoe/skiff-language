@@ -487,7 +487,6 @@ fn linked_db_declaration(declaration: &artifact::DbDeclarationIr) -> DbDeclarati
                         direction: linked_db_index_direction(field.direction),
                     })
                     .collect(),
-                where_expr: index.where_expr.clone(),
             })
             .collect(),
         source_span: declaration.source_span.clone(),

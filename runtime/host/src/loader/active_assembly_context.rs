@@ -840,7 +840,6 @@ fn activation_db_metadata(
                                 name: index.name.clone(),
                                 unique: index.unique,
                                 fields: index.fields.clone(),
-                                where_expr: index.where_expr.clone(),
                             })
                             .collect(),
                     },

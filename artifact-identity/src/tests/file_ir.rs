@@ -448,7 +448,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v11:sha256:2b4976d2076ed634327e3058bc3aecd8e9ab1b698c3f34731b6a2497be14b3fe"
+        "skiff-file-ir-v11:sha256:3e8588ce2ea42dffc3a3881a023a1341a2d0474845fc439d382cb7e41eab5250"
     );
 
     let mut changed_ref = base.clone();

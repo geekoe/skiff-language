@@ -124,7 +124,7 @@ impl<'a> PackageClosure<'a> {
                 pending.push_back(target.package_build_id.clone());
             }
 
-            for key in bindings.keys().filter(|key| {
+            if let Some(key) = bindings.keys().find(|key| {
                 key.caller_package_build_id == caller_build_id
                     && !expected_aliases.contains(key.package_requirement_alias.as_str())
             }) {
@@ -135,13 +135,14 @@ impl<'a> PackageClosure<'a> {
             }
         }
 
-        for key in bindings.keys() {
-            if !reachable.contains(&key.caller_package_build_id) {
-                return Err(ProjectionError::ExtraRequirementBinding {
-                    kind: "package",
-                    key: package_key(key),
-                });
-            }
+        if let Some(key) = bindings
+            .keys()
+            .find(|key| !reachable.contains(&key.caller_package_build_id))
+        {
+            return Err(ProjectionError::ExtraRequirementBinding {
+                kind: "package",
+                key: package_key(key),
+            });
         }
         for build_id in by_build.keys() {
             if !reachable.contains(build_id) {

@@ -122,7 +122,7 @@ async fn whole_candidate_db_provisioning_completes_before_prepared_ack() {
 }
 
 #[tokio::test]
-async fn index_reconciliation_failures_reject_prepare_and_keep_old_generation_routable() {
+async fn index_reconciliation_failures_reject_prepare_and_keep_old_generation_active() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
@@ -145,13 +145,7 @@ async fn index_reconciliation_failures_reject_prepare_and_keep_old_generation_ro
         .await
         .expect("initial committed generation should recover");
     let active = controller.active().unwrap().unwrap();
-    let ingress = fixture
-        .assembly
-        .gateway_ingress
-        .first()
-        .expect("fixture ingress")
-        .service_ingress_key();
-    assert_eq!(controller.route(&ingress).unwrap().unwrap().generation(), 1);
+    assert_eq!(active.generation(), 1);
 
     for (case, failure) in [
         ("unique-duplicate", "unique index duplicate data"),
@@ -190,7 +184,7 @@ async fn index_reconciliation_failures_reject_prepare_and_keep_old_generation_ro
             "capability sources must not build after provisioning fails"
         );
         assert!(Arc::ptr_eq(&active, &controller.active().unwrap().unwrap()));
-        assert_eq!(controller.route(&ingress).unwrap().unwrap().generation(), 1);
+        assert_eq!(controller.active().unwrap().unwrap().generation(), 1);
     }
 }
 
