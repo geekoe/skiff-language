@@ -10,7 +10,6 @@ export * from './protocol/runtimeAssemblyRequest.js';
 export * from './protocol/runtimeAssemblyRequestFrame.js';
 export * from './protocol/webSocketGenerationLifecycle.js';
 export * from './protocol/jsonRpc20TextProfile.js';
-export * from './queue/index.js';
 export * from './router/bind.js';
 export * from './router/errors.js';
 export * from './router/httpGateway.js';

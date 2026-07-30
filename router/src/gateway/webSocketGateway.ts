@@ -728,6 +728,7 @@ export function assemblyWebSocketConnectRequestHeader(input: {
   const validation = validateRuntimeAssemblyRequestStartFrameWireHeader(candidate);
   if (
     !validation.ok ||
+    !('websocketConnect' in validation.envelope) ||
     validation.envelope.routing.ingress.protocol !== 'webSocket'
   ) {
     throw new Error(

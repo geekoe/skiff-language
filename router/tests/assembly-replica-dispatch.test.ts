@@ -21,6 +21,7 @@ import {
 const ASSEMBLY_A = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const ASSEMBLY_B = `skiff-runtime-assembly-v3:sha256:${'b'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
+const PACKAGE_BUILD_ID = `skiff-package-build-v10:sha256:${'f'.repeat(64)}`;
 const CURRENT_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'e'.repeat(64)}`;
 const binding: RuntimeAssemblyIngressBinding = {
@@ -141,6 +142,12 @@ function snapshot(generation: number, assemblyIdentity: string): RouterActiveAss
       serviceId: binding.deployment.serviceId,
       contractVersion: binding.deployment.contractVersion,
       serviceProtocolIdentity: PROTOCOL
+    }],
+    deploymentRuntimeBindings: [{
+      deployment: binding.deployment,
+      packageBuildId: PACKAGE_BUILD_ID,
+      maxConcurrency: 8,
+      timeoutMs: 1000
     }],
     ingress: new RuntimeAssemblyIngressIndex([binding])
   };

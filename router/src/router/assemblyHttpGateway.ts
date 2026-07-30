@@ -280,6 +280,7 @@ export function assemblyTestHttpRequestHeader(input: {
   routing: RuntimeAssemblyRequestRoutingFrameHeader;
   mode: RuntimeAssemblyRequestStartFrameHeader['mode'];
   httpRequest: HttpRequestFrameMetadata;
+  testCaseCapability: string;
 }): RuntimeAssemblyRequestStartFrameHeader {
   const productionHeader = assemblyHttpRequestHeader({
     snapshot: input.snapshot,
@@ -301,7 +302,8 @@ export function assemblyTestHttpRequestHeader(input: {
     mode: input.mode,
     routing: input.routing,
     httpRequest: input.httpRequest,
-    testEffectsEnabled: true
+    testEffectsEnabled: true,
+    testCaseCapability: input.testCaseCapability
   };
   const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
   if (!validation.ok) {

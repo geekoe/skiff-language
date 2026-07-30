@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import WebSocket from 'ws';
 
 import {
@@ -11,11 +13,14 @@ import {
   type ResponseErrorFrameHeader,
   type ResponseStartFrameHeader,
   type RouterToRuntimeFrameHeader,
+  type SpawnSubmitRequestFrameHeader,
+  type SpawnSubmitResponseFrameHeader,
   type RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestStartFrameHeader,
   RuntimeAssemblyRequestStartFrameWireHeader,
+  RuntimeAssemblySpawnRequestStartFrameHeader,
   RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
   RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
 } from '../protocol/runtimeAssemblyRequest.js';
@@ -46,6 +51,7 @@ import type {
   RuntimeUnaryDispatchFrameHeader
 } from './runtimeRegistry.js';
 import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
+import type { RuntimeControlSource } from './actorSpawnRuntimeControl.js';
 import {
   FixedServiceResponseError,
   GatewayError,
@@ -54,6 +60,8 @@ import {
   RuntimeTimeoutError,
   ServiceProtocolBoundaryError
 } from './errors.js';
+
+const DEFAULT_DERIVED_SPAWN_TIMEOUT_MS = 120_000;
 
 export type RuntimeFrameSendCallback = (error?: Error) => void;
 
@@ -100,6 +108,7 @@ interface RuntimeInvocationBase<
     | RuntimeDispatchFrameHeader
     | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
     | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
+    | RuntimeAssemblySpawnRequestStartFrameHeader
 > {
   request: TRequest;
   runtimeId?: string;
@@ -130,6 +139,13 @@ interface RuntimeAssemblyWebSocketJsonRpcInvocation
   resolve(response: RuntimeAssemblyWebSocketJsonRpcDispatchResponse): void;
 }
 
+interface RuntimeDerivedSpawnInvocation
+  extends RuntimeInvocationBase<RuntimeAssemblySpawnRequestStartFrameHeader> {
+  kind: 'derivedSpawn';
+  admissionSettled: boolean;
+  resolveAdmission(): void;
+}
+
 export interface RuntimeStreamInvocation
   extends RuntimeInvocationBase<RuntimeUnaryDispatchFrameHeader> {
   kind: 'stream';
@@ -147,6 +163,7 @@ export type RuntimeInvocation =
   | RuntimeUnaryInvocation
   | RuntimeUnaryFrameInvocation
   | RuntimeAssemblyWebSocketJsonRpcInvocation
+  | RuntimeDerivedSpawnInvocation
   | RuntimeStreamInvocation;
 
 export interface RuntimeBinaryDispatchResponse {
@@ -235,6 +252,21 @@ export interface RuntimeDispatcherOptions {
   registry: RuntimeDispatchRegistry;
 }
 
+export type RuntimeSpawnSubmitResult =
+  | { header: SpawnSubmitResponseFrameHeader }
+  | {
+      header: {
+        schemaVersion: typeof RUNTIME_FRAME_SCHEMA_VERSION;
+        type: 'spawn.submit.error';
+        rpcId: string;
+        error: {
+          code: string;
+          message: string;
+          status: number;
+        };
+      };
+    };
+
 export type RuntimeDispatchRegistry = Pick<
   RuntimeRegistry,
   | 'setInFlightCounter'
@@ -266,7 +298,9 @@ export class RuntimeDispatcher {
 
   constructor(private readonly options: RuntimeDispatcherOptions) {
     this.options.registry.setInFlightCounter({
-      countInFlight: (runtime) => this.countInFlight(runtime)
+      countInFlight: (runtime) => this.countInFlight(runtime),
+      countDeploymentInFlight: (runtime, serviceId, deploymentRevision) =>
+        this.countDeploymentInFlight(runtime, serviceId, deploymentRevision)
     });
   }
 
@@ -280,6 +314,190 @@ export class RuntimeDispatcher {
           'text JSON request.start is not supported; use typed binary runtime frames'
       })
     );
+  }
+
+  async handleSpawnSubmit(
+    ws: WebSocket,
+    submit: SpawnSubmitRequestFrameHeader,
+    payloadBytes: Uint8Array,
+    source: RuntimeControlSource | undefined
+  ): Promise<RuntimeSpawnSubmitResult> {
+    try {
+      const parent = this.requireSpawnParent(ws, submit, source);
+      if (source === undefined) {
+        throw new ServiceProtocolBoundaryError(
+          'spawn submit source disappeared after parent authentication'
+        );
+      }
+      const requestId = `spawn-request-${randomUUID()}`;
+      const spawnId = submit.spawnId ?? `spawn-${randomUUID()}`;
+      const timeoutMs = source.timeoutMs ?? DEFAULT_DERIVED_SPAWN_TIMEOUT_MS;
+      if (source.inFlightCount >= source.maxConcurrency) {
+        throw new ProviderUnavailableError(
+          'Runtime activation has reached its request concurrency capacity'
+        );
+      }
+      const request = derivedSpawnRequest(parent.request, submit.target, requestId, timeoutMs);
+      await this.dispatchDerivedSpawn(
+        ws,
+        request,
+        payloadBytes,
+        timeoutMs,
+        source.runtimeId
+      );
+      return {
+        header: {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'spawn.submit.response',
+          rpcId: submit.rpcId,
+          spawnId,
+          requestId,
+          status: 'submitted'
+        }
+      };
+    } catch (error) {
+      return {
+        header: {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'spawn.submit.error',
+          rpcId: submit.rpcId,
+          error: spawnSubmitError(error)
+        }
+      };
+    }
+  }
+
+  private requireSpawnParent(
+    ws: WebSocket,
+    submit: SpawnSubmitRequestFrameHeader,
+    source: RuntimeControlSource | undefined
+  ): RuntimeInvocation & {
+    request: RuntimeAssemblyRequestStartFrameWireHeader;
+  } {
+    const pending = this.pending.get(submit.callerRequestId);
+    if (
+      pending === undefined ||
+      pending.ws !== ws ||
+      !isRuntimeAssemblyRequestDispatchHeader(pending.request)
+    ) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn callerRequestId must identify an active request on the same runtime connection'
+      );
+    }
+    if (source === undefined) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn submit requires an exact active or pinned-draining assembly registration'
+      );
+    }
+    const deployment = pending.request.routing.deployment;
+    const activation = submit.activationIdentity;
+    if (
+      submit.runtimeId !== source.runtimeId ||
+      submit.runtimeId !== activation.runtimeReplicaId ||
+      pending.runtimeId !== undefined && pending.runtimeId !== source.runtimeId ||
+      submit.serviceId !== deployment.serviceId ||
+      submit.serviceVersion !== deployment.contractVersion ||
+      (submit.buildId !== undefined && submit.buildId !== source.buildId) ||
+      submit.serviceProtocolIdentity !== source.serviceProtocolIdentity ||
+      source.serviceId !== deployment.serviceId ||
+      activation.assemblyIdentity !== pending.request.routing.assemblyIdentity ||
+      activation.generation !== pending.request.routing.assemblyGeneration ||
+      activation.deploymentRevision !== deployment.deploymentRevision
+    ) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn submit owner facts must exactly match its authenticated parent request'
+      );
+    }
+    return pending as RuntimeInvocation & {
+      request: RuntimeAssemblyRequestStartFrameWireHeader;
+    };
+  }
+
+  private dispatchDerivedSpawn(
+    ws: WebSocket,
+    request: RuntimeAssemblySpawnRequestStartFrameHeader,
+    payloadBytes: Uint8Array,
+    timeoutMs: number,
+    runtimeId: string | undefined
+  ): Promise<void> {
+    if (ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new ProviderUnavailableError('Pinned runtime disconnected'));
+    }
+    if (this.pending.has(request.requestId)) {
+      return Promise.reject(
+        new ServiceProtocolBoundaryError(
+          `runtime dispatch requestId ${request.requestId} is already pending`
+        )
+      );
+    }
+    return new Promise<void>((resolve, rejectPromise) => {
+      const settle = {
+        done: false,
+        resolve: () => {
+          if (settle.done) return;
+          settle.done = true;
+          resolve();
+        },
+        reject: (error: unknown) => {
+          if (settle.done) return;
+          settle.done = true;
+          rejectPromise(error);
+        }
+      };
+      const timeout = setTimeout(() => {
+        const pending = this.pending.get(request.requestId);
+        this.finishPending(request.requestId, pending, {
+          source: 'timeout',
+          kind: 'cancelled',
+          reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
+        });
+        settle.reject(new RuntimeTimeoutError(timeoutMs));
+      }, timeoutMs);
+      const pending: RuntimeDerivedSpawnInvocation = {
+        kind: 'derivedSpawn',
+        request,
+        ...(runtimeId === undefined ? {} : { runtimeId }),
+        timeout,
+        ws,
+        admissionSettled: false,
+        resolveAdmission: () => {
+          pending.admissionSettled = true;
+          settle.resolve();
+        },
+        reject: (error) => {
+          pending.admissionSettled = true;
+          settle.reject(error);
+        }
+      };
+      this.pending.set(request.requestId, pending);
+      try {
+        this.options.frameSender.sendFrame(ws, request, payloadBytes, (error) => {
+          if (error != null) {
+            const current = this.pending.get(request.requestId);
+            const providerError = new ProviderUnavailableError(error.message);
+            this.finishPending(request.requestId, current, {
+              source: 'callback_error',
+              kind: 'failed',
+              error: providerError
+            });
+            pending.reject(providerError);
+            return;
+          }
+          pending.resolveAdmission();
+        });
+      } catch (error) {
+        const current = this.pending.get(request.requestId);
+        const providerError = new ProviderUnavailableError(
+          runtimeProtocolValidationMessage(error)
+        );
+        this.finishPending(request.requestId, current, {
+          source: 'callback_error',
+          kind: 'failed',
+          error: providerError
+        });
+        pending.reject(providerError);
+      }
+    });
   }
 
   dispatchBinary(
@@ -335,9 +553,9 @@ export class RuntimeDispatcher {
     );
     if (
       !validation.ok ||
+      !('websocketConnect' in validation.envelope) ||
       validation.envelope.routing.ingress.protocol !== 'webSocket' ||
-      validation.envelope.routing.ingress.method !== null ||
-      !('websocketConnect' in validation.envelope)
+      validation.envelope.routing.ingress.method !== null
     ) {
       return Promise.reject(
         new ServiceProtocolBoundaryError(
@@ -375,9 +593,9 @@ export class RuntimeDispatcher {
         request.payloadBytes
       );
       if (
+        !('websocketJsonRpc' in validated) ||
         validated.routing.ingress.protocol !== 'webSocket' ||
-        validated.routing.ingress.method === null ||
-        !('websocketJsonRpc' in validated)
+        validated.routing.ingress.method === null
       ) {
         return Promise.reject(
           new ServiceProtocolBoundaryError(
@@ -778,6 +996,26 @@ export class RuntimeDispatcher {
     return count;
   }
 
+  private countDeploymentInFlight(
+    runtime: RuntimeDispatchRuntimeIdentity,
+    serviceId: string,
+    deploymentRevision: string
+  ): number {
+    let count = 0;
+    for (const pending of this.pending.values()) {
+      if (
+        this.pendingBelongsToRuntime(pending, runtime) &&
+        hasRuntimeAssemblyRouting(pending.request) &&
+        pending.request.routing.deployment.serviceId === serviceId &&
+        pending.request.routing.deployment.deploymentRevision ===
+          deploymentRevision
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   pendingLifecycleCounters(): RuntimeDispatcherPendingCounters {
     const counters: RuntimeDispatcherPendingCounters = {
       pendingUnary: 0,
@@ -897,6 +1135,27 @@ export class RuntimeDispatcher {
     if (!this.isPendingRuntimeSocket(ws, pending)) {
       return;
     }
+    if (pending.kind === 'derivedSpawn') {
+      if (
+        response.header.payloadPresent ||
+        response.payloadBytes.byteLength !== 0 ||
+        response.header.httpResponse !== undefined ||
+        response.header.websocketConnect !== undefined ||
+        response.header.websocketJsonRpc !== undefined
+      ) {
+        this.rejectPendingRuntimeError(ws, requestId, {
+          code: 'SpawnResponseProtocolError',
+          message: 'derived spawn response.end must be empty'
+        });
+        return;
+      }
+      this.finishPending(requestId, pending, {
+        source: 'runtime_response_end',
+        kind: 'completed'
+      });
+      pending.resolveAdmission();
+      return;
+    }
     if (pending.kind === 'websocketJsonRpc') {
       let header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader;
       try {
@@ -992,6 +1251,15 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
+      return;
+    }
+    if (pending.kind === 'derivedSpawn') {
+      this.finishPending(response.header.requestId, pending, {
+        source: 'runtime_response_error',
+        kind: 'failed',
+        error: response.header
+      });
+      pending.resolveAdmission();
       return;
     }
     if (pending.kind === 'unaryFrame') {
@@ -1379,6 +1647,11 @@ function validateCanonicalAssemblyUnaryResponse(
   if (!hasRuntimeAssemblyRouting(request)) {
     return undefined;
   }
+  if ('invocation' in request) {
+    return response.header.payloadPresent || response.payloadBytes.byteLength !== 0
+      ? 'derived spawn response.end must be empty'
+      : undefined;
+  }
   if (request.routing.ingress.protocol === 'webSocket') {
     if (response.payloadBytes.byteLength !== 0) {
       return 'RuntimeAssembly WebSocket connect response payload must be empty';
@@ -1451,6 +1724,7 @@ function isWebSocketConnectRequest(
 ): header is RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
   return (
     hasRuntimeAssemblyRouting(header) &&
+    'ingress' in header.routing &&
     header.routing.ingress.protocol === 'webSocket' &&
     header.routing.ingress.method === null &&
     'websocketConnect' in header
@@ -1461,4 +1735,65 @@ function runtimeProtocolValidationMessage(error: unknown): string {
   return error instanceof Error
     ? error.message
     : 'RuntimeAssembly WebSocket JSON-RPC protocol validation failed';
+}
+
+function derivedSpawnRequest(
+  parent: RuntimeAssemblyRequestStartFrameWireHeader,
+  target: string,
+  requestId: string,
+  timeoutMs: number
+): RuntimeAssemblySpawnRequestStartFrameHeader {
+  const testCaseCapability =
+    'testCaseCapability' in parent ? parent.testCaseCapability : undefined;
+  return {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'request.start',
+    requestId,
+    mode: 'unary',
+    caller: { kind: 'service' },
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: parent.routing.assemblyIdentity,
+      assemblyGeneration: parent.routing.assemblyGeneration,
+      deployment: { ...parent.routing.deployment }
+    },
+    invocation: {
+      kind: 'spawn',
+      targetKind: 'function',
+      target
+    },
+    deadline: {
+      timeoutMs,
+      expiresAt: new Date(Date.now() + timeoutMs).toISOString()
+    },
+    trace: {
+      traceId: parent.trace.traceId,
+      spanId: randomUUID(),
+      parentSpanId: parent.trace.spanId,
+      ...(parent.trace.sampled === undefined
+        ? {}
+        : { sampled: parent.trace.sampled })
+    },
+    testEffectsEnabled: testCaseCapability !== undefined,
+    ...(testCaseCapability === undefined ? {} : { testCaseCapability })
+  };
+}
+
+function spawnSubmitError(error: unknown): {
+  code: string;
+  message: string;
+  status: number;
+} {
+  if (error instanceof GatewayError) {
+    return {
+      code: 'SpawnSubmitRejected',
+      message: error.message,
+      status: error.statusCode
+    };
+  }
+  return {
+    code: 'SpawnSubmitRejected',
+    message: error instanceof Error ? error.message : String(error),
+    status: 500
+  };
 }

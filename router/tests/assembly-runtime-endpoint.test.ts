@@ -17,7 +17,8 @@ import {
 } from '../src/protocol/envelope.js';
 import {
   runtimeFrameHeaderFixtures,
-  validateRuntimeAssemblyRequestStartFrameHeader
+  validateRuntimeAssemblyRequestStartFrameHeader,
+  validateRuntimeAssemblyRequestStartFrameWireHeader
 } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyActivationCoordinator } from '../src/router/assemblyActivationCoordinator.js';
 import {
@@ -47,8 +48,8 @@ const SERVICE_VERSION = '1.0.0';
 const SERVICE_PROTOCOL =
   `skiff-service-protocol-v5:sha256:${'c'.repeat(64)}`;
 const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
+const PACKAGE_BUILD_ID = `skiff-package-build-v10:sha256:${'d'.repeat(64)}`;
 const TARGET = 'function:service.example~actors.ActorApi.spawn';
-const SPAWN_COMPATIBILITY = `${SERVICE_VERSION}:${SERVICE_PROTOCOL}:${TARGET}`;
 const CURRENT_TEST_GATEWAY_ENTRY_IDENTITY =
   `skiff-gateway-entry-v2:sha256:${'9'.repeat(64)}`;
 const TEST_HOST = 'case-0.package-test.skiff.localhost';
@@ -199,6 +200,421 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       header: responseHeader,
       payloadBase64: Buffer.from('null', 'utf8').toString('base64')
     });
+  });
+
+  it('dispatches recursive spawn as detached requests and inherits one test case capability', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+    const capability = rootValidation.envelope.testCaseCapability;
+    expect(capability).toEqual(expect.any(String));
+
+    const [child, childReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-child',
+      rootValidation.envelope.requestId,
+      { buildId: null }
+    );
+    const childValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(child.header);
+    if (!childValidation.ok || !('invocation' in childValidation.envelope)) {
+      throw new Error(
+        childValidation.ok ? 'expected derived spawn invocation' : childValidation.error
+      );
+    }
+    expect(childValidation.envelope).toMatchObject({
+      caller: { kind: 'service' },
+      routing: {
+        assemblyIdentity: ASSEMBLY_A,
+        assemblyGeneration: 1,
+        deployment: deploymentRef(deploymentRevision(ASSEMBLY_A))
+      },
+      invocation: {
+        kind: 'spawn',
+        targetKind: 'function',
+        target: TARGET
+      },
+      testEffectsEnabled: true,
+      testCaseCapability: capability
+    });
+    expect([...child.payloadBytes]).toEqual([7, 8]);
+    expect(childReceipt.header).toMatchObject({
+      type: 'spawn.submit.response',
+      rpcId: 'spawn-rpc-child',
+      requestId: childValidation.envelope.requestId,
+      status: 'submitted'
+    });
+
+    const [grandchild, grandchildReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-grandchild',
+      childValidation.envelope.requestId
+    );
+    const grandchildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(grandchild.header);
+    if (
+      !grandchildValidation.ok ||
+      !('invocation' in grandchildValidation.envelope)
+    ) {
+      throw new Error(
+        grandchildValidation.ok
+          ? 'expected recursive derived spawn invocation'
+          : grandchildValidation.error
+      );
+    }
+    expect(grandchildValidation.envelope.testCaseCapability).toBe(capability);
+    expect(grandchildReceipt.header.type).toBe('spawn.submit.response');
+
+    sendEmptyResponseEnd(ws, grandchildValidation.envelope.requestId);
+    sendEmptyResponseEnd(ws, childValidation.envelope.requestId);
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
+    );
+  });
+
+  it('keeps an accepted spawn alive after its parent is cancelled', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+    const [child, childReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-detached',
+      rootValidation.envelope.requestId
+    );
+    const childValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(child.header);
+    if (!childValidation.ok || !('invocation' in childValidation.envelope)) {
+      throw new Error('expected derived spawn invocation');
+    }
+    expect(childReceipt.header.type).toBe('spawn.submit.response');
+
+    ws.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'request.cancel',
+      requestId: rootValidation.envelope.requestId,
+      reason: 'caller_cancel'
+    }));
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 1
+    );
+    sendEmptyResponseEnd(ws, childValidation.envelope.requestId);
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
+    );
+    await expect(rootResponse).resolves.toMatchObject({ status: 503 });
+  });
+
+  it('times out and cleans up a detached spawn independently of its parent', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true,
+      timeoutMs: 25
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+
+    const [child, childReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-timeout',
+      rootValidation.envelope.requestId
+    );
+    const childValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(child.header);
+    if (!childValidation.ok || !('invocation' in childValidation.envelope)) {
+      throw new Error('expected derived spawn invocation');
+    }
+    expect(childReceipt.header.type).toBe('spawn.submit.response');
+    const cancel = await nextRuntimeFrame(ws, 'request.cancel');
+    expect(cancel.header).toMatchObject({
+      requestId: childValidation.envelope.requestId,
+      reason: 'timeout'
+    });
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 1
+    );
+
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
+    );
+  });
+
+  it('cleans up accepted detached spawns when their runtime connection closes', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+    const [child, childReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-disconnect',
+      rootValidation.envelope.requestId
+    );
+    expect(child.header.type).toBe('request.start');
+    expect(childReceipt.header.type).toBe('spawn.submit.response');
+    expect(fixture.dispatcher.pendingLifecycleCounters().pendingUnary).toBe(2);
+
+    ws.close();
+    await until(
+      () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
+    );
+    await expect(rootResponse).resolves.toMatchObject({ status: 503 });
+  });
+
+  it('keeps concurrent test case capabilities isolated across derived requests', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const firstResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const firstRoot = await nextRuntimeFrame(ws, 'request.start');
+    const secondResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const secondRoot = await nextRuntimeFrame(ws, 'request.start');
+    const firstValidation =
+      validateRuntimeAssemblyRequestStartFrameHeader(firstRoot.header);
+    const secondValidation =
+      validateRuntimeAssemblyRequestStartFrameHeader(secondRoot.header);
+    if (!firstValidation.ok || !secondValidation.ok) {
+      throw new Error('expected two valid test root requests');
+    }
+    expect(firstValidation.envelope.testCaseCapability).not.toBe(
+      secondValidation.envelope.testCaseCapability
+    );
+
+    const [firstChild, firstChildReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-case-1',
+      firstValidation.envelope.requestId
+    );
+    expect(firstChildReceipt.header.type).toBe('spawn.submit.response');
+    const [secondChild, secondChildReceipt] = await sendSpawnAndReceive(
+      ws,
+      'spawn-rpc-case-2',
+      secondValidation.envelope.requestId
+    );
+    expect(secondChildReceipt.header.type).toBe('spawn.submit.response');
+    const firstChildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(firstChild.header);
+    const secondChildValidation =
+      validateRuntimeAssemblyRequestStartFrameWireHeader(secondChild.header);
+    if (
+      !firstChildValidation.ok ||
+      !secondChildValidation.ok ||
+      !('invocation' in firstChildValidation.envelope) ||
+      !('invocation' in secondChildValidation.envelope)
+    ) {
+      throw new Error('expected two valid derived spawn requests');
+    }
+    expect(firstChildValidation.envelope.testCaseCapability).toBe(
+      firstValidation.envelope.testCaseCapability
+    );
+    expect(secondChildValidation.envelope.testCaseCapability).toBe(
+      secondValidation.envelope.testCaseCapability
+    );
+
+    sendEmptyResponseEnd(ws, firstChildValidation.envelope.requestId);
+    sendEmptyResponseEnd(ws, secondChildValidation.envelope.requestId);
+    sendRootResponseEnd(ws, firstValidation.envelope.requestId);
+    sendRootResponseEnd(ws, secondValidation.envelope.requestId);
+    await Promise.all([firstResponse, secondResponse]);
+  });
+
+  it('fails closed for missing parents, mismatched owner facts, and exhausted capacity', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true,
+      maxConcurrency: 1
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    sendSpawnSubmit(ws, 'spawn-rpc-missing-parent', 'missing-request');
+    await expect(
+      nextRuntimeFrame(ws, 'spawn.submit.error')
+    ).resolves.toMatchObject({
+      header: {
+        error: { code: 'SpawnSubmitRejected', status: 502 }
+      }
+    });
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+
+    const otherWs = await openSocket(fixture.url);
+    sendCapabilities(otherWs, 'runtime-other');
+    sendActivation(otherWs, {
+      type: 'register',
+      environment: 'test',
+      generation: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_A },
+      replicaId: 'runtime-other'
+    });
+    await until(
+      () => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 2
+    );
+    sendSpawnSubmit(
+      otherWs,
+      'spawn-rpc-wrong-socket',
+      rootValidation.envelope.requestId,
+      {
+        runtimeId: 'runtime-other',
+        activationIdentity: {
+          ...activation(ASSEMBLY_A, 1),
+          runtimeReplicaId: 'runtime-other'
+        }
+      }
+    );
+    await expect(
+      nextRuntimeFrame(otherWs, 'spawn.submit.error')
+    ).resolves.toMatchObject({
+      header: {
+        error: { code: 'SpawnSubmitRejected', status: 502 }
+      }
+    });
+
+    const ownerFactMismatches = [
+      {
+        rpcId: 'spawn-rpc-service-mismatch',
+        overrides: { serviceId: 'example.com/other' }
+      },
+      {
+        rpcId: 'spawn-rpc-version-mismatch',
+        overrides: { serviceVersion: '2.0.0' }
+      },
+      {
+        rpcId: 'spawn-rpc-protocol-mismatch',
+        overrides: {
+          serviceProtocolIdentity:
+            `skiff-service-protocol-v5:sha256:${'e'.repeat(64)}`
+        }
+      },
+      {
+        rpcId: 'spawn-rpc-activation-mismatch',
+        overrides: {
+          activationIdentity: activation(ASSEMBLY_B, 1)
+        }
+      }
+    ] as const;
+    for (const mismatch of ownerFactMismatches) {
+      sendSpawnSubmit(
+        ws,
+        mismatch.rpcId,
+        rootValidation.envelope.requestId,
+        mismatch.overrides
+      );
+      await expect(
+        nextRuntimeFrame(ws, 'spawn.submit.error')
+      ).resolves.toMatchObject({
+        header: {
+          error: { code: 'SpawnSubmitRejected', status: 502 }
+        }
+      });
+    }
+
+    sendSpawnSubmit(
+      ws,
+      'spawn-rpc-owner-mismatch',
+      rootValidation.envelope.requestId,
+      { buildId: `skiff-package-build-v10:sha256:${'e'.repeat(64)}` }
+    );
+    await expect(
+      nextRuntimeFrame(ws, 'spawn.submit.error')
+    ).resolves.toMatchObject({
+      header: {
+        error: { code: 'SpawnSubmitRejected', status: 502 }
+      }
+    });
+
+    sendSpawnSubmit(
+      ws,
+      'spawn-rpc-capacity',
+      rootValidation.envelope.requestId
+    );
+    await expect(
+      nextRuntimeFrame(ws, 'spawn.submit.error')
+    ).resolves.toMatchObject({
+      header: {
+        error: { code: 'SpawnSubmitRejected', status: 503 }
+      }
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters().pendingUnary).toBe(1);
+
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
   });
 
   it('rejects non-exact test control fields and facts before runtime dispatch', async () => {
@@ -366,110 +782,6 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     });
     expect(created.header).toMatchObject({ actorRef: { epoch: 1 } });
 
-    const submit = nextRuntimeFrame(ws, 'spawn.submit.response');
-    ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['spawn.submit.request'],
-      rpcId: 'spawn-active-submit',
-      runtimeId: RUNTIME_ID,
-      activationIdentity,
-      serviceId: SERVICE_ID,
-      serviceVersion: SERVICE_VERSION,
-      serviceProtocolIdentity: SERVICE_PROTOCOL,
-      target: TARGET,
-      buildId: BUILD_ID,
-      spawnId: 'spawn-active-1'
-    }, new Uint8Array([7, 8])));
-    await expect(submit).resolves.toMatchObject({
-      header: { type: 'spawn.submit.response', spawnId: 'spawn-active-1' }
-    });
-
-    const claim = nextRuntimeFrame(ws, 'spawn.claim.response');
-    ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
-      rpcId: 'spawn-active-claim',
-      runtimeId: RUNTIME_ID,
-      activationIdentity,
-      serviceId: SERVICE_ID,
-      serviceVersion: SERVICE_VERSION,
-      serviceProtocolIdentity: SERVICE_PROTOCOL,
-      supportedTargets: [TARGET],
-      supportedSpawnCompatibilityKeys: [SPAWN_COMPATIBILITY],
-      buildId: BUILD_ID
-    }));
-    const claimed = await claim;
-    expect(claimed).toMatchObject({
-      header: {
-        type: 'spawn.claim.response',
-        claimed: true,
-        item: {
-          serviceId: SERVICE_ID,
-          buildId: BUILD_ID,
-          serviceProtocolIdentity: SERVICE_PROTOCOL,
-          activationIdentity
-        }
-      }
-    });
-    expect([...claimed.payloadBytes]).toEqual([7, 8]);
-    if (
-      claimed.header.type !== 'spawn.claim.response' ||
-      claimed.header.item === undefined
-    ) {
-      throw new Error('expected a claimed spawn item');
-    }
-
-    const renew = nextRuntimeFrame(ws, 'spawn.renew.response');
-    ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['spawn.renew.request'],
-      rpcId: 'spawn-active-renew',
-      runtimeId: RUNTIME_ID,
-      activationIdentity,
-      itemId: claimed.header.item.itemId,
-      leaseId: claimed.header.item.leaseId
-    }));
-    await expect(renew).resolves.toMatchObject({
-      header: {
-        type: 'spawn.renew.response',
-        rpcId: 'spawn-active-renew',
-        renewed: true
-      }
-    });
-
-    const wrongComplete = nextRuntimeFrame(ws, 'spawn.complete.error');
-    ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['spawn.complete.request'],
-      rpcId: 'spawn-wrong-complete',
-      runtimeId: RUNTIME_ID,
-      activationIdentity: {
-        ...activationIdentity,
-        deploymentRevision: 'revision-other'
-      },
-      itemId: claimed.header.item.itemId,
-      leaseId: claimed.header.item.leaseId
-    }));
-    await expect(wrongComplete).resolves.toMatchObject({
-      header: {
-        type: 'spawn.complete.error',
-        rpcId: 'spawn-wrong-complete',
-        error: { code: 'RuntimeActivationMismatch', status: 403 }
-      }
-    });
-
-    const complete = nextRuntimeFrame(ws, 'spawn.complete.response');
-    ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['spawn.complete.request'],
-      rpcId: 'spawn-active-complete',
-      runtimeId: RUNTIME_ID,
-      activationIdentity,
-      itemId: claimed.header.item.itemId,
-      leaseId: claimed.header.item.leaseId
-    }));
-    await expect(complete).resolves.toMatchObject({
-      header: {
-        type: 'spawn.complete.response',
-        rpcId: 'spawn-active-complete',
-        status: 'completed'
-      }
-    });
   });
 
   it('rejects every mismatched activation tuple field on the exact assembly sender', async () => {
@@ -831,6 +1143,7 @@ interface CompositeEndpointFixture {
   assemblyRegistry: AssemblyRuntimeRegistry;
   controlUrl: string;
   coordinator: AssemblyActivationCoordinator;
+  dispatcher: RuntimeDispatcher;
   endpoint: RuntimeEndpoint;
   runtimeRegistry: RuntimeRegistry;
   snapshots: RouterActiveAssemblySnapshotStore;
@@ -843,6 +1156,8 @@ async function createFixture(
     generation: number;
     assemblyIdentity: string;
     testGateway?: boolean;
+    maxConcurrency?: number;
+    timeoutMs?: number;
   } = { generation: 1, assemblyIdentity: ASSEMBLY_A }
 ): Promise<CompositeEndpointFixture> {
   const testGateway = initial.testGateway ?? false;
@@ -867,9 +1182,24 @@ async function createFixture(
     })),
     assemblyLoader: new MemoryRuntimeAssemblySnapshotLoader([
       assembly(EMPTY_ASSEMBLY),
-      assembly(ASSEMBLY_A, testGateway),
-      assembly(ASSEMBLY_B, testGateway),
-      assembly(ASSEMBLY_C, testGateway)
+      assembly(
+        ASSEMBLY_A,
+        testGateway,
+        initial.maxConcurrency,
+        initial.timeoutMs
+      ),
+      assembly(
+        ASSEMBLY_B,
+        testGateway,
+        initial.maxConcurrency,
+        initial.timeoutMs
+      ),
+      assembly(
+        ASSEMBLY_C,
+        testGateway,
+        initial.maxConcurrency,
+        initial.timeoutMs
+      )
     ]),
     snapshots,
     registry: assemblyRegistry,
@@ -893,6 +1223,7 @@ async function createFixture(
     assemblyRegistry,
     controlUrl: `http://${listening.host}:${listening.port}`,
     coordinator,
+    dispatcher,
     endpoint,
     runtimeRegistry,
     snapshots,
@@ -955,7 +1286,9 @@ function transition(
 
 function assembly(
   assemblyIdentity: string,
-  includeTestGateway = false
+  includeTestGateway = false,
+  maxConcurrency = 8,
+  timeoutMs = 1_000
 ): LoadedRuntimeAssembly {
   const revision = deploymentRevision(assemblyIdentity);
   const deployment = deploymentRef(revision);
@@ -974,6 +1307,15 @@ function assembly(
           contractVersion: SERVICE_VERSION,
           serviceProtocolIdentity: SERVICE_PROTOCOL
         }],
+    deploymentRuntimeBindings:
+      assemblyIdentity === EMPTY_ASSEMBLY
+        ? []
+        : [{
+            deployment,
+            packageBuildId: PACKAGE_BUILD_ID,
+            maxConcurrency,
+            timeoutMs
+          }],
     gatewayIngress:
       assemblyIdentity === EMPTY_ASSEMBLY || !includeTestGateway
         ? []
@@ -1027,6 +1369,89 @@ function actorKey() {
     canonicalActorIdKeyBytesBase64:
       Buffer.from('"thread-1"').toString('base64')
   };
+}
+
+function sendSpawnSubmit(
+  ws: WebSocket,
+  rpcId: string,
+  callerRequestId: string,
+  overrides: {
+    buildId?: string | null;
+    runtimeId?: string;
+    activationIdentity?: ReturnType<typeof activation>;
+    serviceId?: string;
+    serviceVersion?: string;
+    serviceProtocolIdentity?: string;
+  } = {}
+): void {
+  const {
+    buildId: _fixtureBuildId,
+    ...fixture
+  } = runtimeFrameHeaderFixtures['spawn.submit.request'];
+  ws.send(encodeRuntimeFrame({
+    ...fixture,
+    rpcId,
+    runtimeId: overrides.runtimeId ?? RUNTIME_ID,
+    activationIdentity:
+      overrides.activationIdentity ?? activation(ASSEMBLY_A, 1),
+    serviceId: overrides.serviceId ?? SERVICE_ID,
+    serviceVersion: overrides.serviceVersion ?? SERVICE_VERSION,
+    serviceProtocolIdentity:
+      overrides.serviceProtocolIdentity ?? SERVICE_PROTOCOL,
+    target: TARGET,
+    ...(overrides.buildId === null
+      ? {}
+      : { buildId: overrides.buildId ?? PACKAGE_BUILD_ID }),
+    callerRequestId
+  }, new Uint8Array([7, 8])));
+}
+
+async function sendSpawnAndReceive(
+  ws: WebSocket,
+  rpcId: string,
+  callerRequestId: string,
+  overrides: {
+    buildId?: string | null;
+    runtimeId?: string;
+    activationIdentity?: ReturnType<typeof activation>;
+    serviceId?: string;
+    serviceVersion?: string;
+    serviceProtocolIdentity?: string;
+  } = {}
+): Promise<[RuntimeBinaryFrame, RuntimeBinaryFrame]> {
+  const received = nextBinaryMessages(ws, 2);
+  sendSpawnSubmit(ws, rpcId, callerRequestId, overrides);
+  const frames = (await received).map((data) => decodeRuntimeFrame(data));
+  expect(frames[0]?.header.type).toBe('request.start');
+  expect(frames[1]?.header.type).toBe('spawn.submit.response');
+  return [frames[0]!, frames[1]!];
+}
+
+function sendEmptyResponseEnd(ws: WebSocket, requestId: string): void {
+  ws.send(encodeRuntimeFrame({
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'response.end',
+    requestId,
+    payloadPresent: false
+  }));
+}
+
+function sendRootResponseEnd(ws: WebSocket, requestId: string): void {
+  ws.send(encodeRuntimeFrame({
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'response.end',
+    requestId,
+    payloadPresent: true,
+    httpResponse: {
+      status: 200,
+      headers: [
+        {
+          name: 'content-type',
+          value: 'application/json; charset=utf-8'
+        }
+      ]
+    }
+  }, Buffer.from('null', 'utf8')));
 }
 
 function identity(character: string): string {
@@ -1176,6 +1601,33 @@ async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
       }
       resolve(rawDataBuffer(data));
     });
+  });
+}
+
+async function nextBinaryMessages(ws: WebSocket, count: number): Promise<Buffer[]> {
+  return await new Promise<Buffer[]>((resolve, reject) => {
+    const messages: Buffer[] = [];
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timed out waiting for binary frames'));
+    }, 1000);
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
+      if (!isBinary) {
+        cleanup();
+        reject(new Error('expected binary runtime frame'));
+        return;
+      }
+      messages.push(rawDataBuffer(data));
+      if (messages.length === count) {
+        cleanup();
+        resolve(messages);
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
   });
 }
 

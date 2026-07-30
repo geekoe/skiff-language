@@ -76,7 +76,7 @@ function canonicalRequest(): RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHea
       gatewayEntryIdentity: METHOD_GATEWAY_IDENTITY,
       businessIdentity: 'tenant-1'
     },
-    testEffectsEnabled: true
+    testEffectsEnabled: false
   };
 }
 
@@ -106,6 +106,9 @@ describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
     const decoded = decodeRuntimeAssemblyRequestStartFrame(encoded);
     expect(decoded.header).toEqual(header);
     expect(decoded.payloadBytes).toEqual(REQUEST_PAYLOAD);
+    if (!('ingress' in decoded.header.routing)) {
+      throw new Error('websocketJsonRpc decoded as an internal spawn request');
+    }
     expect(decoded.header.routing.ingress.method).toBe('status.get');
     expect('websocketJsonRpc' in decoded.header).toBe(true);
     expect('websocketConnect' in decoded.header).toBe(false);
@@ -157,6 +160,9 @@ describe('runtimeAssembly websocketJsonRpc strict transport wire', () => {
     const decoded = decodeRuntimeAssemblyRequestStartFrame(
       encodeBinaryFrame(connect)
     );
+    if (!('ingress' in decoded.header.routing)) {
+      throw new Error('websocketConnect decoded as an internal spawn request');
+    }
     expect(decoded.header.routing.ingress.method).toBeNull();
     expect('websocketConnect' in decoded.header).toBe(true);
     expect('websocketJsonRpc' in decoded.header).toBe(false);

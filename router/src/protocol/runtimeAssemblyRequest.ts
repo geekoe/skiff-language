@@ -26,7 +26,8 @@ import {
 export type RuntimeAssemblyRequestWireKind =
   | "http"
   | "websocketConnect"
-  | "websocketJsonRpc";
+  | "websocketJsonRpc"
+  | "spawn";
 
 export interface RuntimeAssemblyRequestDeploymentFrameHeader {
   serviceId: string;
@@ -74,6 +75,13 @@ export interface RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
   };
 }
 
+export interface RuntimeAssemblySpawnRequestRoutingFrameHeader {
+  kind: "runtimeAssembly";
+  assemblyIdentity: string;
+  assemblyGeneration: number;
+  deployment: RuntimeAssemblyRequestDeploymentFrameHeader;
+}
+
 // The HTTP producer view remains a named type while the wire reader exposes
 // RuntimeAssemblyRequestStartFrameWireHeader as the exact closed union.
 export type RuntimeAssemblyRequestRoutingFrameHeader =
@@ -101,6 +109,7 @@ export interface RuntimeAssemblyRequestStartFrameHeader
   extends RuntimeAssemblyRequestStartFrameHeaderBase {
   routing: RuntimeAssemblyHttpRequestRoutingFrameHeader;
   httpRequest: HttpRequestFrameMetadata;
+  testCaseCapability?: string;
 }
 
 export interface RuntimeAssemblyWebSocketConnectRequestFrameMetadata {
@@ -136,10 +145,29 @@ export interface RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
   websocketJsonRpc: RuntimeAssemblyWebSocketJsonRpcRequestFrameMetadata;
 }
 
+export interface RuntimeAssemblySpawnRequestStartFrameHeader
+  extends Omit<
+    RuntimeAssemblyRequestStartFrameHeaderBase,
+    "caller" | "mode" | "routing"
+  > {
+  mode: "unary";
+  caller: {
+    kind: "service";
+  };
+  routing: RuntimeAssemblySpawnRequestRoutingFrameHeader;
+  invocation: {
+    kind: "spawn";
+    targetKind: "function";
+    target: string;
+  };
+  testCaseCapability?: string;
+}
+
 export type RuntimeAssemblyRequestStartFrameWireHeader =
   | RuntimeAssemblyRequestStartFrameHeader
   | RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
-  | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader;
+  | RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader
+  | RuntimeAssemblySpawnRequestStartFrameHeader;
 
 export type RuntimeAssemblyRequestStartFrameTransportWireHeader =
   RuntimeAssemblyRequestStartFrameWireHeader;
@@ -168,7 +196,11 @@ const commonRequiredHeaderFields = [
   "routing",
   "trace",
 ] as const;
-const httpHeaderFields = new Set([...commonHeaderFields, "httpRequest"]);
+const httpHeaderFields = new Set([
+  ...commonHeaderFields,
+  "httpRequest",
+  "testCaseCapability",
+]);
 const websocketConnectHeaderFields = new Set([
   ...commonHeaderFields,
   "websocketConnect",
@@ -176,6 +208,11 @@ const websocketConnectHeaderFields = new Set([
 const websocketJsonRpcHeaderFields = new Set([
   ...commonHeaderFields,
   "websocketJsonRpc",
+]);
+const spawnHeaderFields = new Set([
+  ...commonHeaderFields,
+  "invocation",
+  "testCaseCapability",
 ]);
 const httpRequiredHeaderFields = new Set([
   ...commonRequiredHeaderFields,
@@ -189,6 +226,10 @@ const websocketJsonRpcRequiredHeaderFields = new Set([
   ...commonRequiredHeaderFields,
   "websocketJsonRpc",
 ]);
+const spawnRequiredHeaderFields = new Set([
+  ...commonRequiredHeaderFields,
+  "invocation",
+]);
 const routingFields = new Set([
   "kind",
   "assemblyIdentity",
@@ -196,6 +237,12 @@ const routingFields = new Set([
   "deployment",
   "gatewayEntryIdentity",
   "ingress",
+]);
+const spawnRoutingFields = new Set([
+  "kind",
+  "assemblyIdentity",
+  "assemblyGeneration",
+  "deployment",
 ]);
 const deploymentFields = new Set([
   "serviceId",
@@ -205,6 +252,7 @@ const deploymentFields = new Set([
 ]);
 const ingressFields = new Set(["protocol", "method", "path"]);
 const callerFields = new Set(["kind"]);
+const invocationFields = new Set(["kind", "targetKind", "target"]);
 
 export function hasRuntimeAssemblyRouting(
   envelope: Record<string, unknown>,
@@ -222,11 +270,13 @@ export function validateRuntimeAssemblyRequestStartHeader(
     http: httpHeaderFields,
     websocketConnect: websocketConnectHeaderFields,
     websocketJsonRpc: websocketJsonRpcHeaderFields,
+    spawn: spawnHeaderFields,
   }[wireKind];
   const requiredFields = {
     http: httpRequiredHeaderFields,
     websocketConnect: websocketConnectRequiredHeaderFields,
     websocketJsonRpc: websocketJsonRpcRequiredHeaderFields,
+    spawn: spawnRequiredHeaderFields,
   }[wireKind];
   const unsupportedHeader = firstUnsupportedField(envelope, allowedFields);
   if (unsupportedHeader !== undefined) {
@@ -257,8 +307,10 @@ export function validateRuntimeAssemblyRequestStartHeader(
   if (wireKind !== "http" && envelope.mode !== "unary") {
     return `invalid request.start runtimeAssembly envelope: ${wireKind} mode must be unary`;
   }
-  const callerError = validateCaller(envelope.caller);
+  const callerError = validateCaller(envelope.caller, wireKind);
   if (callerError !== null) return callerError;
+  const testCapabilityError = validateTestCapability(envelope, wireKind);
+  if (testCapabilityError !== null) return testCapabilityError;
   return (
     validateRuntimeAssemblyRequestRouting(envelope, wireKind) ??
     validateRuntimeAssemblyRequestMetadata(envelope, wireKind)
@@ -271,6 +323,26 @@ export function normalizeRuntimeAssemblyRequestStartHeader(
   return normalizeRuntimeAssemblyRequestMetadata(envelope);
 }
 
+function validateTestCapability(
+  envelope: Record<string, unknown>,
+  wireKind: RuntimeAssemblyRequestWireKind,
+): string | null {
+  const hasCapability = Object.prototype.hasOwnProperty.call(
+    envelope,
+    "testCaseCapability",
+  );
+  const testEffectsEnabled = envelope.testEffectsEnabled ?? false;
+  if (wireKind === "websocketConnect" || wireKind === "websocketJsonRpc") {
+    return testEffectsEnabled === false
+      ? null
+      : `invalid request.start runtimeAssembly envelope: ${wireKind} testEffectsEnabled must be false`;
+  }
+  if (testEffectsEnabled === hasCapability) return null;
+  return testEffectsEnabled === true
+    ? "invalid request.start runtimeAssembly envelope: testEffectsEnabled true requires testCaseCapability"
+    : "invalid request.start runtimeAssembly envelope: testCaseCapability requires testEffectsEnabled true";
+}
+
 export function validateRuntimeAssemblyRequestRouting(
   envelope: Record<string, unknown>,
   wireKind: RuntimeAssemblyRequestWireKind,
@@ -279,11 +351,16 @@ export function validateRuntimeAssemblyRequestRouting(
     return "invalid request.start envelope: routing must be an object";
   }
   const routing = envelope.routing;
-  const unsupportedRouting = firstUnsupportedField(routing, routingFields);
+  const expectedRoutingFields =
+    wireKind === "spawn" ? spawnRoutingFields : routingFields;
+  const unsupportedRouting = firstUnsupportedField(
+    routing,
+    expectedRoutingFields,
+  );
   if (unsupportedRouting !== undefined) {
     return `invalid request.start envelope: routing.${unsupportedRouting} is not supported`;
   }
-  const missingRouting = firstMissingField(routing, routingFields);
+  const missingRouting = firstMissingField(routing, expectedRoutingFields);
   if (missingRouting !== undefined) {
     return `invalid request.start envelope: routing.${missingRouting} is required`;
   }
@@ -304,14 +381,17 @@ export function validateRuntimeAssemblyRequestRouting(
     return "invalid request.start envelope: routing.assemblyGeneration must be a non-negative safe integer";
   }
   if (
-    typeof routing.gatewayEntryIdentity !== "string" ||
-    !GATEWAY_ENTRY_IDENTITY_PATTERN.test(routing.gatewayEntryIdentity)
+    wireKind !== "spawn" &&
+    (typeof routing.gatewayEntryIdentity !== "string" ||
+      !GATEWAY_ENTRY_IDENTITY_PATTERN.test(routing.gatewayEntryIdentity))
   ) {
     return "invalid request.start envelope: routing.gatewayEntryIdentity must be skiff-gateway-entry-v2:sha256:<64 lowercase hex>";
   }
   const deploymentError = validateDeployment(routing.deployment);
   if (deploymentError !== null) return deploymentError;
-  return validateIngress(routing.ingress, wireKind);
+  return wireKind === "spawn"
+    ? validateSpawnInvocation(envelope.invocation)
+    : validateIngress(routing.ingress, wireKind);
 }
 
 function validateDeployment(input: unknown): string | null {
@@ -360,6 +440,9 @@ function runtimeAssemblyRequestWireKind(
         "invalid request.start runtimeAssembly envelope: routing must be an object",
     };
   }
+  if (Object.prototype.hasOwnProperty.call(envelope, "invocation")) {
+    return { wireKind: "spawn" };
+  }
   if (!isRecord(envelope.routing.ingress)) {
     return {
       error:
@@ -387,15 +470,42 @@ function runtimeAssemblyRequestWireKind(
   };
 }
 
-function validateCaller(input: unknown): string | null {
+function validateCaller(
+  input: unknown,
+  wireKind: RuntimeAssemblyRequestWireKind,
+): string | null {
   if (!isRecord(input)) {
     return "invalid request.start runtimeAssembly envelope: caller must be an object";
   }
   const unsupported = rejectUnknownObjectFields(input, callerFields, "caller");
   if (unsupported !== null) return unsupported;
-  return input.kind === "gateway"
+  const expected = wireKind === "spawn" ? "service" : "gateway";
+  return input.kind === expected
     ? null
-    : "invalid request.start runtimeAssembly envelope: caller.kind must be gateway";
+    : `invalid request.start runtimeAssembly envelope: caller.kind must be ${expected}`;
+}
+
+function validateSpawnInvocation(input: unknown): string | null {
+  if (!isRecord(input)) {
+    return "invalid request.start envelope: invocation must be an object";
+  }
+  const unsupported = firstUnsupportedField(input, invocationFields);
+  if (unsupported !== undefined) {
+    return `invalid request.start envelope: invocation.${unsupported} is not supported`;
+  }
+  const missing = firstMissingField(input, invocationFields);
+  if (missing !== undefined) {
+    return `invalid request.start envelope: invocation.${missing} is required`;
+  }
+  if (
+    input.kind !== "spawn" ||
+    input.targetKind !== "function" ||
+    typeof input.target !== "string" ||
+    input.target.length === 0
+  ) {
+    return "invalid request.start envelope: invocation must be an exact function spawn";
+  }
+  return null;
 }
 
 function validateIngress(

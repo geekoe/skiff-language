@@ -48,6 +48,13 @@ export interface RuntimeAssemblyDeploymentRef {
   deploymentArtifactIdentity: string;
 }
 
+export interface RuntimeAssemblyDeploymentRuntimeBinding {
+  deployment: RuntimeAssemblyDeploymentRef;
+  packageBuildId: string;
+  maxConcurrency: number;
+  timeoutMs?: number;
+}
+
 export interface RuntimeAssemblyContractRef {
   serviceId: string;
   contractVersion: string;
@@ -73,6 +80,7 @@ export interface LoadedRuntimeAssembly {
   assemblyIdentity: string;
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
+  deploymentRuntimeBindings?: readonly RuntimeAssemblyDeploymentRuntimeBinding[];
   gatewayIngress: readonly RuntimeAssemblyIngressBinding[];
   actorMethods?: readonly RuntimeAssemblyActorMethod[];
 }
@@ -142,6 +150,7 @@ export interface RouterActiveAssemblySnapshot {
   assembly: RuntimeAssemblyRef;
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
+  deploymentRuntimeBindings?: readonly RuntimeAssemblyDeploymentRuntimeBinding[];
   ingress: RuntimeAssemblyIngressIndex;
   actorMethods?: readonly RuntimeAssemblyActorMethod[];
 }
@@ -234,6 +243,9 @@ export async function snapshotFromCommittedActivation(
     ...(assembly.resolvedContracts === undefined
       ? {}
       : { resolvedContracts: assembly.resolvedContracts }),
+    ...(assembly.deploymentRuntimeBindings === undefined
+      ? {}
+      : { deploymentRuntimeBindings: assembly.deploymentRuntimeBindings }),
     ingress: new RuntimeAssemblyIngressIndex(assembly.gatewayIngress),
     ...(assembly.actorMethods === undefined
       ? {}
@@ -629,6 +641,13 @@ function cloneLoadedRuntimeAssembly(
     ...(assembly.resolvedContracts === undefined
       ? {}
       : { resolvedContracts: structuredClone(assembly.resolvedContracts) }),
+    ...(assembly.deploymentRuntimeBindings === undefined
+      ? {}
+      : {
+          deploymentRuntimeBindings: structuredClone(
+            assembly.deploymentRuntimeBindings
+          )
+        }),
     gatewayIngress: assembly.gatewayIngress.map((binding) => {
       const {
         websocketMethods,

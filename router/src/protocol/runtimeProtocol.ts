@@ -136,10 +136,6 @@ const runtimeToRouterFrameHeaderTypes = [
   'actor.find.request',
   'actor.remove.request',
   'spawn.submit.request',
-  'spawn.claim.request',
-  'spawn.renew.request',
-  'spawn.complete.request',
-  'spawn.fail.request',
   'request.start',
   'request.cancel',
   'connection.send',
@@ -165,14 +161,6 @@ const routerToRuntimeFrameHeaderTypes = [
   'actor.remove.error',
   'spawn.submit.response',
   'spawn.submit.error',
-  'spawn.claim.response',
-  'spawn.claim.error',
-  'spawn.renew.response',
-  'spawn.renew.error',
-  'spawn.complete.response',
-  'spawn.complete.error',
-  'spawn.fail.response',
-  'spawn.fail.error',
   'request.start',
   'package-test.start',
   'request.cancel',
@@ -188,8 +176,8 @@ const SERVICE_PROTOCOL_IDENTITY_PATTERN =
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
 const BUILD_ID_PATTERN = /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_BUILD_ID_PATTERN = /^skiff-package-test-build-v1:sha256:[0-9a-f]{64}$/;
-const SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN =
-  /^skiff-(?:service|package-test)-build-v1:sha256:[0-9a-f]{64}$/;
+const PACKAGE_BUILD_ID_PATTERN =
+  /^skiff-package-build-v10:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_ENTRYPOINT_ID_PATTERN = /^skiff-package-test-entrypoint-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_ACTIVATION_ID_PATTERN = /^skiff-package-test-run-v1:[A-Za-z0-9._:~-]+$/;
 const ACTIVATION_IDENTITY_PATTERN = /^skiff-runtime-activation-v1:opaque:[A-Za-z0-9._:-]+$/;
@@ -276,7 +264,6 @@ const configShapeProtocolSchema = {
 const cancelReasons = REQUEST_CANCEL_REASONS satisfies readonly RequestCancelReason[];
 
 const spawnTargetKinds = ['function'] as const;
-const spawnFailReasons = ['failed', 'cancelled', 'timed_out'] as const;
 const dispatchModes = ['unary', 'serverStream'] as const;
 const websocketAdapterSourceKinds = [
   'websocket.connectRequest',
@@ -572,23 +559,6 @@ const runtimeControlErrorProperties = {
     },
     additionalProperties: true
   }
-} as const satisfies Record<string, ProtocolSchemaProperty>;
-
-const spawnClaimDescriptorProperties = {
-  itemId: { type: 'string' },
-  leaseId: { type: 'string' },
-  spawnExecutionId: { type: 'string' },
-  runtimeRequestId: { type: 'string' },
-  spawnId: { type: 'string' },
-  targetKind: { type: 'string', enum: spawnTargetKinds },
-  target: { type: 'string' },
-  serviceId: { type: 'string' },
-  serviceVersion: { type: 'string' },
-  serviceProtocolIdentity: { type: 'string' },
-  buildId: { type: 'string' },
-  activationIdentity: activationIdentitySchema,
-  payloadSchemaIdentity: { type: 'string' },
-  leaseExpiresAt: { type: 'string' }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
 const requestStartFrameProperties = {
@@ -1167,7 +1137,8 @@ export const runtimeFrameHeaderSchemas = {
       'serviceId',
       'serviceVersion',
       'serviceProtocolIdentity',
-      'target'
+      'target',
+      'callerRequestId'
     ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
@@ -1182,20 +1153,19 @@ export const runtimeFrameHeaderSchemas = {
       buildId: { type: 'string' },
       callerRequestId: { type: 'string' },
       traceId: { type: 'string' },
-      callerTarget: { type: 'string' },
-      maxQueueWaitMs: { type: 'number' }
+      callerTarget: { type: 'string' }
     },
     additionalProperties: false
   },
   'spawn.submit.response': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'spawnId', 'itemId', 'status'],
+    required: ['schemaVersion', 'type', 'rpcId', 'spawnId', 'requestId', 'status'],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['spawn.submit.response'] },
       ...runtimeRpcResponseBaseProperties,
       spawnId: { type: 'string' },
-      itemId: { type: 'string' },
+      requestId: { type: 'string' },
       status: { type: 'string', enum: ['submitted'] }
     },
     additionalProperties: false
@@ -1206,210 +1176,6 @@ export const runtimeFrameHeaderSchemas = {
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['spawn.submit.error'] },
-      ...runtimeControlErrorProperties
-    },
-    additionalProperties: false
-  },
-  'spawn.claim.request': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'rpcId',
-      'runtimeId',
-      'activationIdentity',
-      'workerId',
-      'serviceId',
-      'serviceVersion',
-      'serviceProtocolIdentity',
-      'supportedTargets',
-      'supportedSpawnCompatibilityKeys'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.claim.request'] },
-      ...runtimeRpcRequestBaseProperties,
-      workerId: { type: 'string' },
-      serviceId: { type: 'string' },
-      serviceVersion: { type: 'string' },
-      serviceProtocolIdentity: { type: 'string' },
-      supportedTargets: { type: 'array', items: { type: 'string' } },
-      supportedSpawnCompatibilityKeys: { type: 'array', items: { type: 'string' } },
-      buildId: { type: 'string' },
-      maxExecutionMs: { type: 'number' },
-      maxConcurrency: { type: 'number' }
-    },
-    additionalProperties: false
-  },
-  'spawn.claim.response': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'claimed'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.claim.response'] },
-      ...runtimeRpcResponseBaseProperties,
-      claimed: { type: 'boolean' },
-      item: {
-        type: 'object',
-        required: [
-          'itemId',
-          'leaseId',
-          'spawnExecutionId',
-          'runtimeRequestId',
-          'spawnId',
-          'targetKind',
-          'target',
-          'serviceId',
-          'serviceVersion',
-          'serviceProtocolIdentity',
-          'buildId',
-          'activationIdentity'
-        ],
-        properties: spawnClaimDescriptorProperties,
-        additionalProperties: false
-      }
-    },
-    additionalProperties: false
-  },
-  'spawn.claim.error': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'error'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.claim.error'] },
-      ...runtimeControlErrorProperties
-    },
-    additionalProperties: false
-  },
-  'spawn.renew.request': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'rpcId',
-      'runtimeId',
-      'activationIdentity',
-      'itemId',
-      'leaseId',
-      'workerId'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.renew.request'] },
-      ...runtimeRpcRequestBaseProperties,
-      itemId: { type: 'string' },
-      leaseId: { type: 'string' },
-      workerId: { type: 'string' }
-    },
-    additionalProperties: false
-  },
-  'spawn.renew.response': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'itemId', 'renewed'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.renew.response'] },
-      ...runtimeRpcResponseBaseProperties,
-      itemId: { type: 'string' },
-      renewed: { type: 'boolean' },
-      leaseExpiresAt: { type: 'string' }
-    },
-    additionalProperties: false
-  },
-  'spawn.renew.error': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'error'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.renew.error'] },
-      ...runtimeControlErrorProperties
-    },
-    additionalProperties: false
-  },
-  'spawn.complete.request': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'rpcId',
-      'runtimeId',
-      'activationIdentity',
-      'itemId',
-      'leaseId'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.complete.request'] },
-      ...runtimeRpcRequestBaseProperties,
-      itemId: { type: 'string' },
-      leaseId: { type: 'string' },
-      diagnostics: { type: 'object', additionalProperties: true }
-    },
-    additionalProperties: false
-  },
-  'spawn.complete.response': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'itemId', 'status'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.complete.response'] },
-      ...runtimeRpcResponseBaseProperties,
-      itemId: { type: 'string' },
-      status: { type: 'string', enum: ['completed'] }
-    },
-    additionalProperties: false
-  },
-  'spawn.complete.error': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'error'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.complete.error'] },
-      ...runtimeControlErrorProperties
-    },
-    additionalProperties: false
-  },
-  'spawn.fail.request': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'rpcId',
-      'runtimeId',
-      'activationIdentity',
-      'itemId',
-      'leaseId',
-      'reason'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.fail.request'] },
-      ...runtimeRpcRequestBaseProperties,
-      itemId: { type: 'string' },
-      leaseId: { type: 'string' },
-      reason: { type: 'string', enum: spawnFailReasons },
-      diagnostics: { type: 'object', additionalProperties: true }
-    },
-    additionalProperties: false
-  },
-  'spawn.fail.response': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'itemId', 'status'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.fail.response'] },
-      ...runtimeRpcResponseBaseProperties,
-      itemId: { type: 'string' },
-      status: { type: 'string', enum: spawnFailReasons }
-    },
-    additionalProperties: false
-  },
-  'spawn.fail.error': {
-    type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'error'],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['spawn.fail.error'] },
       ...runtimeControlErrorProperties
     },
     additionalProperties: false
@@ -1582,7 +1348,8 @@ export const runtimeFrameHeaderSchemas = {
             },
             additionalProperties: false
           },
-          testEffectsEnabled: { type: 'boolean' }
+          testEffectsEnabled: { type: 'boolean' },
+          testCaseCapability: { type: 'string' }
         },
         additionalProperties: false
       },
@@ -1718,7 +1485,7 @@ export const runtimeFrameHeaderSchemas = {
             },
             additionalProperties: false
           },
-          testEffectsEnabled: { type: 'boolean' }
+          testEffectsEnabled: { type: 'boolean', enum: [false] }
         },
         additionalProperties: false
       },
@@ -1815,7 +1582,73 @@ export const runtimeFrameHeaderSchemas = {
             },
             additionalProperties: false
           },
-          testEffectsEnabled: { type: 'boolean' }
+          testEffectsEnabled: { type: 'boolean', enum: [false] }
+        },
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          'schemaVersion',
+          'type',
+          'requestId',
+          'mode',
+          'caller',
+          'routing',
+          'invocation',
+          'trace',
+          'testEffectsEnabled'
+        ],
+        properties: {
+          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+          type: { type: 'string', enum: ['request.start'] },
+          requestId: { type: 'string' },
+          mode: { type: 'string', enum: ['unary'] },
+          caller: {
+            type: 'object',
+            required: ['kind'],
+            properties: {
+              kind: { type: 'string', enum: ['service'] }
+            },
+            additionalProperties: false
+          },
+          routing: {
+            type: 'object',
+            required: [
+              'kind',
+              'assemblyIdentity',
+              'assemblyGeneration',
+              'deployment'
+            ],
+            properties: {
+              kind: { type: 'string', enum: ['runtimeAssembly'] },
+              assemblyIdentity: {
+                type: 'string',
+                pattern: '^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$'
+              },
+              assemblyGeneration: {
+                type: 'integer',
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER
+              },
+              deployment: requestStartFrameProperties.routing.properties.deployment
+            },
+            additionalProperties: false
+          },
+          invocation: {
+            type: 'object',
+            required: ['kind', 'targetKind', 'target'],
+            properties: {
+              kind: { type: 'string', enum: ['spawn'] },
+              targetKind: { type: 'string', enum: ['function'] },
+              target: { type: 'string', minLength: 1 }
+            },
+            additionalProperties: false
+          },
+          deadline: requestStartFrameProperties.deadline,
+          trace: requestStartFrameProperties.trace,
+          testEffectsEnabled: { type: 'boolean' },
+          testCaseCapability: { type: 'string' }
         },
         additionalProperties: false
       }
@@ -2338,7 +2171,8 @@ const spawnFixture = {
   serviceId: runtimeRegisterFixture.serviceId,
   serviceVersion: '0.1.0',
   serviceProtocolIdentity: serviceProtocolIdentityFixture,
-  buildId: runtimeRegisterFixture.buildId,
+  buildId:
+    'skiff-package-build-v10:sha256:3333333333333333333333333333333333333333333333333333333333333333',
   target: spawnTargetFixture,
   spawnCompatibilityKey: `${'0.1.0'}:${serviceProtocolIdentityFixture}:${spawnTargetFixture}`,
   spawnId: 'spawn-fixture-1',
@@ -2488,18 +2322,17 @@ export const runtimeFrameHeaderFixtures = {
     serviceProtocolIdentity: spawnFixture.serviceProtocolIdentity,
     target: spawnFixture.target,
     spawnId: spawnFixture.spawnId,
-    buildId: runtimeRegisterFixture.buildId,
+    buildId: spawnFixture.buildId,
     callerRequestId: 'caller-request-fixture-1',
     traceId: 'trace-fixture-1',
-    callerTarget: runtimeRegisterTargetFixture,
-    maxQueueWaitMs: 30000
+    callerTarget: runtimeRegisterTargetFixture
   },
   'spawn.submit.response': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'spawn.submit.response',
     rpcId: 'spawn-submit-rpc-fixture-1',
     spawnId: spawnFixture.spawnId,
-    itemId: spawnFixture.itemId,
+    requestId: spawnFixture.runtimeRequestId,
     status: 'submitted'
   },
   'spawn.submit.error': {
@@ -2509,136 +2342,6 @@ export const runtimeFrameHeaderFixtures = {
     error: {
       code: 'SpawnSubmitFixtureError',
       message: 'fixture spawn submit failed'
-    }
-  },
-  'spawn.claim.request': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.claim.request',
-    rpcId: 'spawn-claim-rpc-fixture-1',
-    runtimeId: spawnFixture.runtimeId,
-    activationIdentity: actorControlActivationIdentityFixture,
-    workerId: spawnFixture.workerId,
-    serviceId: spawnFixture.serviceId,
-    serviceVersion: spawnFixture.serviceVersion,
-    serviceProtocolIdentity: spawnFixture.serviceProtocolIdentity,
-    supportedTargets: [spawnFixture.target],
-    supportedSpawnCompatibilityKeys: [spawnFixture.spawnCompatibilityKey],
-    maxExecutionMs: 30000,
-    maxConcurrency: 4
-  },
-  'spawn.claim.response': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.claim.response',
-    rpcId: 'spawn-claim-rpc-fixture-1',
-    claimed: true,
-    item: {
-      itemId: spawnFixture.itemId,
-      leaseId: spawnFixture.leaseId,
-      spawnExecutionId: spawnFixture.spawnExecutionId,
-      runtimeRequestId: spawnFixture.runtimeRequestId,
-      spawnId: spawnFixture.spawnId,
-      targetKind: 'function',
-      target: spawnFixture.target,
-      serviceId: spawnFixture.serviceId,
-      serviceVersion: spawnFixture.serviceVersion,
-      serviceProtocolIdentity: spawnFixture.serviceProtocolIdentity,
-      buildId: spawnFixture.buildId,
-      activationIdentity: actorControlActivationIdentityFixture,
-      payloadSchemaIdentity: `skiff-spawn-payload-v1:${spawnFixture.serviceProtocolIdentity}:${spawnFixture.target}`,
-      leaseExpiresAt: '2026-06-06T10:00:30.000Z'
-    }
-  },
-  'spawn.claim.error': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.claim.error',
-    rpcId: 'spawn-claim-rpc-fixture-1',
-    error: {
-      code: 'SpawnClaimFixtureError',
-      message: 'fixture spawn claim failed'
-    }
-  },
-  'spawn.renew.request': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.renew.request',
-    rpcId: 'spawn-renew-rpc-fixture-1',
-    runtimeId: spawnFixture.runtimeId,
-    activationIdentity: actorControlActivationIdentityFixture,
-    itemId: spawnFixture.itemId,
-    leaseId: spawnFixture.leaseId,
-    workerId: spawnFixture.workerId
-  },
-  'spawn.renew.response': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.renew.response',
-    rpcId: 'spawn-renew-rpc-fixture-1',
-    itemId: spawnFixture.itemId,
-    renewed: true,
-    leaseExpiresAt: '2026-06-06T10:00:30.000Z'
-  },
-  'spawn.renew.error': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.renew.error',
-    rpcId: 'spawn-renew-rpc-fixture-1',
-    error: {
-      code: 'SpawnRenewFixtureError',
-      message: 'fixture spawn renew failed'
-    }
-  },
-  'spawn.complete.request': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.complete.request',
-    rpcId: 'spawn-complete-rpc-fixture-1',
-    runtimeId: spawnFixture.runtimeId,
-    activationIdentity: actorControlActivationIdentityFixture,
-    itemId: spawnFixture.itemId,
-    leaseId: spawnFixture.leaseId,
-    diagnostics: {
-      ok: true
-    }
-  },
-  'spawn.complete.response': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.complete.response',
-    rpcId: 'spawn-complete-rpc-fixture-1',
-    itemId: spawnFixture.itemId,
-    status: 'completed'
-  },
-  'spawn.complete.error': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.complete.error',
-    rpcId: 'spawn-complete-rpc-fixture-1',
-    error: {
-      code: 'SpawnCompleteFixtureError',
-      message: 'fixture spawn complete failed'
-    }
-  },
-  'spawn.fail.request': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.fail.request',
-    rpcId: 'spawn-fail-rpc-fixture-1',
-    runtimeId: spawnFixture.runtimeId,
-    activationIdentity: actorControlActivationIdentityFixture,
-    itemId: spawnFixture.itemId,
-    leaseId: spawnFixture.leaseId,
-    reason: 'failed',
-    diagnostics: {
-      reason: 'fixture'
-    }
-  },
-  'spawn.fail.response': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.fail.response',
-    rpcId: 'spawn-fail-rpc-fixture-1',
-    itemId: spawnFixture.itemId,
-    status: 'failed'
-  },
-  'spawn.fail.error': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'spawn.fail.error',
-    rpcId: 'spawn-fail-rpc-fixture-1',
-    error: {
-      code: 'SpawnFailFixtureError',
-      message: 'fixture spawn fail failed'
     }
   },
   'request.start': {
@@ -2753,14 +2456,6 @@ export function validateRuntimeToRouterFrameHeader(
         ? validateActorRemoveRequest(envelope)
       : type === 'spawn.submit.request'
         ? validateSpawnSubmitRequest(envelope)
-      : type === 'spawn.claim.request'
-        ? validateSpawnClaimRequest(envelope)
-      : type === 'spawn.renew.request'
-        ? validateSpawnRenewRequest(envelope)
-      : type === 'spawn.complete.request'
-        ? validateSpawnCompleteRequest(envelope)
-      : type === 'spawn.fail.request'
-        ? validateSpawnFailRequest(envelope)
       : type === 'request.start'
         ? validateRequestStartFrameHeader(envelope, false)
       : type === 'request.cancel'
@@ -2827,22 +2522,6 @@ export function validateRouterToRuntimeFrameHeader(
         ? validateSpawnSubmitResponse(envelope)
       : type === 'spawn.submit.error'
         ? validateRuntimeControlError(envelope, 'spawn.submit.error')
-      : type === 'spawn.claim.response'
-        ? validateSpawnClaimResponse(envelope)
-      : type === 'spawn.claim.error'
-        ? validateRuntimeControlError(envelope, 'spawn.claim.error')
-      : type === 'spawn.renew.response'
-        ? validateSpawnRenewResponse(envelope)
-      : type === 'spawn.renew.error'
-        ? validateRuntimeControlError(envelope, 'spawn.renew.error')
-      : type === 'spawn.complete.response'
-        ? validateSpawnCompleteResponse(envelope)
-      : type === 'spawn.complete.error'
-        ? validateRuntimeControlError(envelope, 'spawn.complete.error')
-      : type === 'spawn.fail.response'
-        ? validateSpawnFailResponse(envelope)
-      : type === 'spawn.fail.error'
-        ? validateRuntimeControlError(envelope, 'spawn.fail.error')
       : type === 'request.start'
         ? validateRequestStartFrameHeader(envelope, true)
       : type === 'package-test.start'
@@ -3023,7 +2702,10 @@ export function validateRuntimeAssemblyRequestStartFrameHeader(
 ): EnvelopeValidationResult<RuntimeAssemblyRequestStartFrameHeader> {
   const result = validateRuntimeAssemblyRequestStartFrameWireHeader(value);
   if (!result.ok) return result;
-  if (result.envelope.routing.ingress.protocol !== 'http') {
+  if (
+    !('ingress' in result.envelope.routing) ||
+    result.envelope.routing.ingress.protocol !== 'http'
+  ) {
     return {
       ok: false,
       error:
@@ -3494,13 +3176,12 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
       envelope,
       'spawn.submit.request',
       'buildId',
-      SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
-      'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
+      PACKAGE_BUILD_ID_PATTERN,
+      'skiff-package-build-v10:sha256:<64 lowercase hex>'
     ) ??
-    optionalString(envelope, 'spawn.submit.request', 'callerRequestId') ??
+    requireString(envelope, 'spawn.submit.request', 'callerRequestId') ??
     optionalString(envelope, 'spawn.submit.request', 'traceId') ??
-    optionalString(envelope, 'spawn.submit.request', 'callerTarget') ??
-    optionalPositiveNumber(envelope, 'spawn.submit.request', 'maxQueueWaitMs')
+    optionalString(envelope, 'spawn.submit.request', 'callerTarget')
   );
 }
 
@@ -3508,147 +3189,8 @@ function validateSpawnSubmitResponse(envelope: Record<string, unknown>): string 
   return (
     validateRuntimeRpcBase(envelope, 'spawn.submit.response') ??
     requireString(envelope, 'spawn.submit.response', 'spawnId') ??
-    requireString(envelope, 'spawn.submit.response', 'itemId') ??
+    requireString(envelope, 'spawn.submit.response', 'requestId') ??
     requireEnum(envelope, 'spawn.submit.response', 'status', ['submitted'])
-  );
-}
-
-function validateSpawnClaimRequest(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcRequestBase(envelope, 'spawn.claim.request') ??
-    requireString(envelope, 'spawn.claim.request', 'workerId') ??
-    requirePublicationId(envelope, 'spawn.claim.request', 'serviceId') ??
-    requireString(envelope, 'spawn.claim.request', 'serviceVersion') ??
-    requireStringPattern(
-      envelope,
-      'spawn.claim.request',
-      'serviceProtocolIdentity',
-      SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v5:sha256:<64 lowercase hex>'
-    ) ??
-    requireNonEmptyStringArray(envelope, 'spawn.claim.request', 'supportedTargets') ??
-    requireNonEmptyStringArray(
-      envelope,
-      'spawn.claim.request',
-      'supportedSpawnCompatibilityKeys'
-    ) ??
-    optionalStringPattern(
-      envelope,
-      'spawn.claim.request',
-      'buildId',
-      SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
-      'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
-    ) ??
-    optionalPositiveNumber(envelope, 'spawn.claim.request', 'maxExecutionMs') ??
-    optionalPositiveNumber(envelope, 'spawn.claim.request', 'maxConcurrency')
-  );
-}
-
-function validateSpawnClaimResponse(envelope: Record<string, unknown>): string | null {
-  const baseError =
-    validateRuntimeRpcBase(envelope, 'spawn.claim.response') ??
-    requireBoolean(envelope, 'spawn.claim.response', 'claimed');
-  if (baseError) {
-    return baseError;
-  }
-  if (envelope.item === undefined) {
-    return envelope.claimed === true
-      ? 'invalid spawn.claim.response envelope: item must be an object when claimed is true'
-      : null;
-  }
-  if (!isRecord(envelope.item)) {
-    return 'invalid spawn.claim.response envelope: item must be an object';
-  }
-  return (
-    rejectUnsupportedObjectFields(
-      envelope.item,
-      'spawn.claim.response',
-      'item',
-      Object.keys(spawnClaimDescriptorProperties)
-    ) ??
-    requireString(envelope, 'spawn.claim.response', 'item.itemId') ??
-    requireString(envelope, 'spawn.claim.response', 'item.leaseId') ??
-    requireString(envelope, 'spawn.claim.response', 'item.spawnExecutionId') ??
-    requireString(envelope, 'spawn.claim.response', 'item.runtimeRequestId') ??
-    requireString(envelope, 'spawn.claim.response', 'item.spawnId') ??
-    requireEnum(envelope, 'spawn.claim.response', 'item.targetKind', spawnTargetKinds) ??
-    requireString(envelope, 'spawn.claim.response', 'item.target') ??
-    requirePublicationId(envelope, 'spawn.claim.response', 'item.serviceId') ??
-    requireString(envelope, 'spawn.claim.response', 'item.serviceVersion') ??
-    requireStringPattern(
-      envelope,
-      'spawn.claim.response',
-      'item.serviceProtocolIdentity',
-      SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v5:sha256:<64 lowercase hex>'
-    ) ??
-    requireStringPattern(
-      envelope,
-      'spawn.claim.response',
-      'item.buildId',
-      SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
-      'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
-    ) ??
-    validateControlActivationIdentity(
-      envelope,
-      'spawn.claim.response',
-      'item.activationIdentity'
-    ) ??
-    optionalString(envelope, 'spawn.claim.response', 'item.payloadSchemaIdentity') ??
-    optionalString(envelope, 'spawn.claim.response', 'item.leaseExpiresAt')
-  );
-}
-
-function validateSpawnRenewRequest(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcRequestBase(envelope, 'spawn.renew.request') ??
-    requireString(envelope, 'spawn.renew.request', 'itemId') ??
-    requireString(envelope, 'spawn.renew.request', 'leaseId') ??
-    requireString(envelope, 'spawn.renew.request', 'workerId')
-  );
-}
-
-function validateSpawnRenewResponse(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcBase(envelope, 'spawn.renew.response') ??
-    requireString(envelope, 'spawn.renew.response', 'itemId') ??
-    requireBoolean(envelope, 'spawn.renew.response', 'renewed') ??
-    optionalString(envelope, 'spawn.renew.response', 'leaseExpiresAt')
-  );
-}
-
-function validateSpawnCompleteRequest(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcRequestBase(envelope, 'spawn.complete.request') ??
-    requireString(envelope, 'spawn.complete.request', 'itemId') ??
-    requireString(envelope, 'spawn.complete.request', 'leaseId') ??
-    optionalRecord(envelope, 'spawn.complete.request', 'diagnostics')
-  );
-}
-
-function validateSpawnCompleteResponse(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcBase(envelope, 'spawn.complete.response') ??
-    requireString(envelope, 'spawn.complete.response', 'itemId') ??
-    requireEnum(envelope, 'spawn.complete.response', 'status', ['completed'])
-  );
-}
-
-function validateSpawnFailRequest(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcRequestBase(envelope, 'spawn.fail.request') ??
-    requireString(envelope, 'spawn.fail.request', 'itemId') ??
-    requireString(envelope, 'spawn.fail.request', 'leaseId') ??
-    requireEnum(envelope, 'spawn.fail.request', 'reason', spawnFailReasons) ??
-    optionalRecord(envelope, 'spawn.fail.request', 'diagnostics')
-  );
-}
-
-function validateSpawnFailResponse(envelope: Record<string, unknown>): string | null {
-  return (
-    validateRuntimeRpcBase(envelope, 'spawn.fail.response') ??
-    requireString(envelope, 'spawn.fail.response', 'itemId') ??
-    requireEnum(envelope, 'spawn.fail.response', 'status', spawnFailReasons)
   );
 }
 

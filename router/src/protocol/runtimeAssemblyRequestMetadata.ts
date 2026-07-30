@@ -48,10 +48,31 @@ export function validateRuntimeAssemblyRequestMetadata(
       validateHttpRequest(envelope);
     } else if (wireKind === "websocketConnect") {
       validateWebSocketConnect(envelope);
-    } else {
+    } else if (wireKind === "websocketJsonRpc") {
       validateWebSocketJsonRpc(envelope);
     }
     optionalBoolean(envelope, "testEffectsEnabled");
+    optionalString(envelope, "testCaseCapability", "testCaseCapability");
+    const hasTestCaseCapability = envelope.testCaseCapability !== undefined;
+    const testEffectsEnabled = envelope.testEffectsEnabled ?? false;
+    if (
+      (wireKind === "http" || wireKind === "spawn") &&
+      testEffectsEnabled !== hasTestCaseCapability
+    ) {
+      throw new RuntimeAssemblyRequestMetadataError(
+        testEffectsEnabled === true
+          ? "testEffectsEnabled true requires testCaseCapability"
+          : "testCaseCapability requires testEffectsEnabled true",
+      );
+    }
+    if (
+      (wireKind === "websocketConnect" || wireKind === "websocketJsonRpc") &&
+      testEffectsEnabled !== false
+    ) {
+      throw new RuntimeAssemblyRequestMetadataError(
+        `${wireKind} testEffectsEnabled must be false`,
+      );
+    }
     return null;
   } catch (error) {
     if (error instanceof RuntimeAssemblyRequestMetadataError) {

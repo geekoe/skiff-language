@@ -11,7 +11,9 @@ import {
   type RuntimeHealthEnvelope,
   type RuntimeRegisterEnvelope
 } from '../protocol/envelope.js';
-import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import type {
+  RuntimeAssemblyRequestStartFrameWireHeader
+} from '../protocol/runtimeAssemblyRequest.js';
 import {
   ActorSpawnRuntimeControl,
   type ActorSpawnRuntimeControlOptions,
@@ -85,7 +87,7 @@ export interface RuntimeLoopRiskHealthSnapshot {
 
 export type RuntimeUnaryDispatchFrameHeader =
   | RequestStartFrameHeader
-  | RuntimeAssemblyRequestStartFrameHeader;
+  | RuntimeAssemblyRequestStartFrameWireHeader;
 
 export type RuntimeDispatchFrameHeader =
   | RuntimeUnaryDispatchFrameHeader
@@ -135,6 +137,11 @@ export interface RuntimeConnectionFence {
 
 export interface RuntimeInFlightCounter {
   countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number;
+  countDeploymentInFlight?(
+    runtime: RuntimeDispatchRuntimeIdentity,
+    serviceId: string,
+    deploymentRevision: string
+  ): number;
 }
 
 export interface RuntimeConnectionProvider {
@@ -1171,7 +1178,7 @@ export class RuntimeRegistry {
 
 export function isRuntimeAssemblyRequestDispatchHeader(
   header: RuntimeDispatchFrameHeader
-): header is RuntimeAssemblyRequestStartFrameHeader {
+): header is RuntimeAssemblyRequestStartFrameWireHeader {
   return header.type === 'request.start' && 'routing' in header;
 }
 
@@ -1265,12 +1272,7 @@ function actorSpawnRuntimeControlErrorType(
   | 'actor.getOrCreate.error'
   | 'actor.replace.error'
   | 'actor.find.error'
-  | 'actor.remove.error'
-  | 'spawn.submit.error'
-  | 'spawn.claim.error'
-  | 'spawn.renew.error'
-  | 'spawn.complete.error'
-  | 'spawn.fail.error' {
+  | 'actor.remove.error' {
   switch (requestType) {
     case 'actor.getOrCreate.request':
       return 'actor.getOrCreate.error';
@@ -1280,15 +1282,5 @@ function actorSpawnRuntimeControlErrorType(
       return 'actor.find.error';
     case 'actor.remove.request':
       return 'actor.remove.error';
-    case 'spawn.submit.request':
-      return 'spawn.submit.error';
-    case 'spawn.claim.request':
-      return 'spawn.claim.error';
-    case 'spawn.renew.request':
-      return 'spawn.renew.error';
-    case 'spawn.complete.request':
-      return 'spawn.complete.error';
-    case 'spawn.fail.request':
-      return 'spawn.fail.error';
   }
 }

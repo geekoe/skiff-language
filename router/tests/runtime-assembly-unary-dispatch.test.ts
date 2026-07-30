@@ -365,6 +365,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       'ordinary-production'
     );
     expect(productionHeader.testEffectsEnabled).toBe(false);
+    expect(productionHeader).not.toHaveProperty('testCaseCapability');
 
     const testHeader = assemblyTestHttpRequestHeader({
       snapshot: fixture.snapshot,
@@ -373,13 +374,15 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       timeoutMs: 1_000,
       routing: productionHeader.routing,
       mode: productionHeader.mode,
-      httpRequest: productionHeader.httpRequest
+      httpRequest: productionHeader.httpRequest,
+      testCaseCapability: 'isolated-test-capability'
     });
     expect(testHeader).toMatchObject({
       routing: productionHeader.routing,
       mode: productionHeader.mode,
       httpRequest: productionHeader.httpRequest,
-      testEffectsEnabled: true
+      testEffectsEnabled: true,
+      testCaseCapability: 'isolated-test-capability'
     });
 
     await expect(
