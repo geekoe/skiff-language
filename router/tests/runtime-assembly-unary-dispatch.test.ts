@@ -505,7 +505,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     });
   });
 
-  it('uses the platform request timeout for both deadline and cancel timer', async () => {
+  it('uses the platform request timeout for both absolute deadline and cancel timer', async () => {
     const cases = [200, 50, 30];
 
     for (const [index, requestTimeoutMs] of cases.entries()) {
@@ -518,6 +518,7 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
         requestTimeoutMs
       });
       const finishPending = spyOnFinishPending(fixture.dispatcher);
+      const requestStartedAt = Date.now();
       const response = sendHttp(fixture.httpUrl, new Uint8Array());
       const requestFrame = decodeBinaryFrame(
         await nextBinaryMessage(fixture.runtime)
@@ -526,7 +527,13 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
         requestFrame.header
       );
       if (!validation.ok) throw new Error(validation.error);
-      expect(validation.envelope.deadline?.timeoutMs).toBe(requestTimeoutMs);
+      const deadline = validation.envelope.deadline;
+      expect(deadline?.timeoutMs).toBe(requestTimeoutMs);
+      const expiresAt = Date.parse(deadline!.expiresAt);
+      expect(expiresAt).toBeGreaterThanOrEqual(
+        requestStartedAt + requestTimeoutMs
+      );
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + requestTimeoutMs);
       const cancelObservation = observeRequestCancels(
         fixture.runtime,
         validation.envelope.requestId
@@ -534,12 +541,15 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       const cancelFrame = nextBinaryMessage(fixture.runtime);
       const completed = await response;
       expect(completed.status).toBe(504);
-      expect(JSON.parse(completed.body.toString())).toMatchObject({
-        error: {
-          code: 'TimeoutError',
-          message: `Runtime did not respond within ${requestTimeoutMs}ms`
-        }
-      });
+      const error = JSON.parse(completed.body.toString()).error;
+      expect(error.code).toBe('TimeoutError');
+      expect(error.message).toMatch(
+        /^Runtime did not respond within [1-9][0-9]*ms$/
+      );
+      const timerMs = Number(error.message.match(/within ([0-9]+)ms$/)?.[1]);
+      expect(Number.isInteger(timerMs)).toBe(true);
+      expect(timerMs).toBeGreaterThan(0);
+      expect(timerMs).toBeLessThanOrEqual(requestTimeoutMs);
       expect(decodeRuntimeFrame(await cancelFrame).header).toMatchObject({
         type: 'request.cancel',
         requestId: validation.envelope.requestId,
