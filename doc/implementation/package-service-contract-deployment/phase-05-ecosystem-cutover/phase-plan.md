@@ -476,7 +476,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F45D | [Router actor activation consumer](tasks/P5-F45D-router-actor-activation-consumer.md) | F45B merged | 高；Router registration/snapshot owner |
 | F45C result | [Runtime actor activation consumer result](tasks/P5-F45C-runtime-actor-activation-consumer-result.md) | `1538f83` | complete；worker子范围进入D46 |
 | F45D result | [Router actor activation consumer result](tasks/P5-F45D-router-actor-activation-consumer-result.md) | `b1fd753` | complete；Router 58/type-check PASS |
-| D46 | [Canonical spawn worker source](tasks/P5-D46-canonical-spawn-worker-source.md) | F45C finding | 设计分支暂停；不阻塞submit probe |
+| D46 | [Canonical spawn direct derived request](tasks/P5-D46-canonical-spawn-worker-source.md) | F45C finding + user decision | 设计已冻结；复用request.start与普通pending lifecycle |
 | F45E | [I02 canonical spawn submit probe](tasks/P5-F45E-i02-spawn-submit-probe.md) | F45A/C/D merged | 高；I02真实typed control consumer |
 | F45E result | [I02 canonical spawn submit probe result](tasks/P5-F45E-i02-spawn-submit-probe-result.md) | `dada6d5` | complete；direct 6/6 |
 | I35 | [Actor control / I02 combined](tasks/P5-I35-actor-control-i02-combined.md) | F45A–E merged | cheap combined；只解锁R05C |
