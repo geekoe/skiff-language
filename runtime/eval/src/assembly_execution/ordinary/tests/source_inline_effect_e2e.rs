@@ -590,7 +590,6 @@ fn linked_service_effect_fixture(
             .artifact_ref
             .package_local_abi_identity
             .clone(),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: Some(error_dependency.artifact_ref.package_build_id.clone()),
     }];
     package.service_requirements = vec![ServiceRequirement {
@@ -628,7 +627,6 @@ fn linked_service_effect_fixture(
                     package_requirement_alias: LINKED_ERROR_DEPENDENCY_ALIAS.to_string(),
                 },
                 package: dependency_ref,
-                collection_name_mapping: BTreeMap::new(),
             }],
         },
         service_binding_templates: Vec::new(),
@@ -1342,7 +1340,6 @@ fn package_link_fixture(packages: &[PackageArtifact]) -> RuntimeAssembly {
                     package_requirement_alias: requirement.alias.clone(),
                 },
                 package: package_artifact_ref(dependency).expect("dependency package reference"),
-                collection_name_mapping: requirement.collection_name_mapping.clone(),
             }
         })
         .collect();

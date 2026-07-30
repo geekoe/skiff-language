@@ -595,7 +595,6 @@ fn package_constant_fixture() -> PackageDirectFixture {
             package_id: dependency_ref.package_id.clone(),
             exact_version: dependency_ref.package_version.clone(),
             expected_local_abi: dependency_ref.package_local_abi_identity.clone(),
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: Some(dependency_ref.package_build_id.clone()),
         });
     skiff_artifact_identity::assign_package_artifact_identities(&mut caller_package)
@@ -624,7 +623,6 @@ fn package_constant_fixture() -> PackageDirectFixture {
                     package_requirement_alias: DEPENDENCY_ALIAS.to_string(),
                 },
                 package: dependency_ref,
-                collection_name_mapping: BTreeMap::new(),
             }],
         },
         service_binding_templates: Vec::new(),
@@ -773,7 +771,6 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
             package_id: callee_ref.package_id.clone(),
             exact_version: callee_ref.package_version.clone(),
             expected_local_abi: callee_ref.package_local_abi_identity.clone(),
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         });
     skiff_artifact_identity::assign_package_artifact_identities(&mut caller_package)
@@ -802,7 +799,6 @@ fn package_direct_fixture_with_caller(caller_kind: CallerFixtureKind) -> Package
                     package_requirement_alias: DEPENDENCY_ALIAS.to_string(),
                 },
                 package: callee_ref,
-                collection_name_mapping: BTreeMap::new(),
             }],
         },
         service_binding_templates: Vec::new(),

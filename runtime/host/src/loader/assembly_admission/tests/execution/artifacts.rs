@@ -540,7 +540,6 @@ impl ProjectedFixture {
                         package_requirement_alias: "providerPackage".to_string(),
                     },
                     package: provider_package_ref.clone(),
-                    collection_name_mapping: BTreeMap::new(),
                 }],
                 vec![ServiceSelectorBinding {
                     key: ServiceRequirementKey {
@@ -1714,7 +1713,6 @@ fn implementation_package(
             package_id: package.package_id,
             exact_version: package.package_version,
             expected_local_abi: package.package_local_abi_identity,
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         })
         .collect();

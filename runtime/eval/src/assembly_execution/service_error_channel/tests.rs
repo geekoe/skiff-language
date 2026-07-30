@@ -1598,7 +1598,6 @@ impl CoreFixture {
                         package_id: dependency_ref.package_id.clone(),
                         exact_version: dependency_ref.package_version.clone(),
                         expected_local_abi: dependency_ref.package_local_abi_identity.clone(),
-                        collection_name_mapping: BTreeMap::new(),
                         expected_package_build: Some(dependency_ref.package_build_id.clone()),
                     });
                 bindings.push(PackageBinding {
@@ -1607,7 +1606,6 @@ impl CoreFixture {
                         package_requirement_alias: alias,
                     },
                     package: dependency_ref.clone(),
-                    collection_name_mapping: BTreeMap::new(),
                 });
             }
         }

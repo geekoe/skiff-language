@@ -770,14 +770,10 @@ packages:
     version: 1.0.0
     alias: first
     topLevelAlias: firstImpl
-    collection_name_mapping:
-      sessions: first_sessions
   - id: example.com/second-sessions
     version: 1.0.0
     alias: second
     topLevelAlias: secondImpl
-    collection_name_mapping:
-      sessions: second_sessions
 "#,
     )
     .unwrap();

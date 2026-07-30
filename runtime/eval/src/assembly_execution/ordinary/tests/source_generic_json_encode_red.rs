@@ -381,7 +381,6 @@ fn package_link_fixture(packages: &[PackageArtifact]) -> RuntimeAssembly {
                     package_requirement_alias: requirement.alias.clone(),
                 },
                 package: package_artifact_ref(dependency).expect("dependency package reference"),
-                collection_name_mapping: requirement.collection_name_mapping.clone(),
             }
         })
         .collect();

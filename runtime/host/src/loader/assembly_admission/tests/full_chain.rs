@@ -490,7 +490,6 @@ impl CollectionIdentityFixture {
                     .package_local_abi
                     .local_abi_identity
                     .clone(),
-                collection_name_mapping: mapping.clone(),
                 expected_package_build: Some(dependency_package.package_build_id.clone()),
             });
             skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
@@ -523,7 +522,6 @@ impl CollectionIdentityFixture {
                     .package_local_abi
                     .local_abi_identity
                     .clone(),
-                collection_name_mapping: mapping.clone(),
                 expected_package_build: None,
             });
         if let Some((_, package)) = &diamond_subject {
@@ -534,7 +532,6 @@ impl CollectionIdentityFixture {
                     package_id: package.package_id.clone(),
                     exact_version: package.package_version.clone(),
                     expected_local_abi: package.package_local_abi.local_abi_identity.clone(),
-                    collection_name_mapping: BTreeMap::new(),
                     expected_package_build: Some(package.package_build_id.clone()),
                 });
         }
@@ -546,10 +543,6 @@ impl CollectionIdentityFixture {
                     package_id: package.package_id.clone(),
                     exact_version: package.package_version.clone(),
                     expected_local_abi: package.package_local_abi.local_abi_identity.clone(),
-                    collection_name_mapping: BTreeMap::from([(
-                        "cache_secret".to_string(),
-                        "mapped_package_secret".to_string(),
-                    )]),
                     expected_package_build: None,
                 });
         }
@@ -567,7 +560,6 @@ impl CollectionIdentityFixture {
                 package_requirement_alias: "store".to_string(),
             },
             package: dependency_ref.clone(),
-            collection_name_mapping: mapping,
         }];
         if let Some((_, package)) = &diamond_subject {
             package_bindings.extend([
@@ -577,7 +569,6 @@ impl CollectionIdentityFixture {
                         package_requirement_alias: "subject".to_string(),
                     },
                     package: package_ref(package),
-                    collection_name_mapping: BTreeMap::new(),
                 },
                 PackageBinding {
                     key: PackageRequirementKey {
@@ -585,9 +576,6 @@ impl CollectionIdentityFixture {
                         package_requirement_alias: "store".to_string(),
                     },
                     package: dependency_ref.clone(),
-                    collection_name_mapping: diamond_mapping
-                        .clone()
-                        .expect("diamond subject has a mapping"),
                 },
             ]);
         }
@@ -598,10 +586,6 @@ impl CollectionIdentityFixture {
                     package_requirement_alias: "cache".to_string(),
                 },
                 package: package_ref(package),
-                collection_name_mapping: BTreeMap::from([(
-                    "cache_secret".to_string(),
-                    "mapped_package_secret".to_string(),
-                )]),
             });
         }
         consumer_deployment.package_bindings = package_bindings;

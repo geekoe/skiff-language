@@ -718,7 +718,6 @@ fn base_package(
             exact_version: dependency.package_version.clone(),
             expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
             expected_package_build: None,
-            collection_name_mapping: BTreeMap::new(),
         })
         .collect();
     let contract_requirements = service_dependencies
@@ -791,7 +790,6 @@ fn package_binding(
             package_requirement_alias: alias.to_string(),
         },
         package: package_ref(provider),
-        collection_name_mapping: BTreeMap::new(),
     }
 }
 

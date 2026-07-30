@@ -1629,7 +1629,6 @@ fn package_requirement(
         package_id: package_id.to_string(),
         exact_version: "1.0.0".to_string(),
         expected_local_abi: local_abi(local_abi_identity),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     }
 }
@@ -1645,7 +1644,6 @@ fn package_binding(
             package_requirement_alias: alias.to_string(),
         },
         package: artifact_ref(dependency),
-        collection_name_mapping: BTreeMap::new(),
     }
 }
 

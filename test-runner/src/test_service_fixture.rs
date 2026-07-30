@@ -546,7 +546,6 @@ pub(crate) fn canonical_package_bindings(
                     package_requirement_alias: requirement.alias.clone(),
                 },
                 package: dependency.reference().clone(),
-                collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
         .collect()
