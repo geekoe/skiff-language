@@ -1,7 +1,16 @@
 //! Canonical package/service test infrastructure.
 //!
 //! A `kind: test` service compiles into an ordinary immutable `PackageArtifact`.
-//! Each selected case receives an isolated ordinary deployment and runtime assembly.
+//! All selected cases for that service share the compile, resolved config and dependency
+//! graph, then become roots of one multi-root `RuntimeAssembly` committed by one activation
+//! transaction. The assembly and activation generation are service-run scoped; an individual
+//! case does not own a separate assembly or generation.
+//!
+//! Each case still receives its own synthetic `ServiceDeployment`, `ServiceContract`, gateway
+//! entry, ingress binding, state namespace, heap, effect registry and execution nonce. Sharing
+//! an assembly does not share a deployment or mutable state. Every root dispatch receives a
+//! new opaque `testCaseCapability`; direct and recursive spawn requests inherit that exact
+//! capability instead of creating or borrowing one from another root.
 
 use std::{
     fs,
