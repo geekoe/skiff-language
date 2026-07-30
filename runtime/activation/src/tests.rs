@@ -37,6 +37,7 @@ fn empty_owned_bindings() -> ActivationOwnedBindings {
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
         state_bindings: Vec::new(),
+        resource_bindings: Vec::new(),
         policy: DeploymentPolicy {
             timeout_ms: Some(1_000),
             resources: ResourcePolicy {
@@ -158,6 +159,7 @@ fn activation_context_materializes_exact_resolved_secret_paths_in_memory() {
             secret_ref: "secret:provider-key".to_string(),
         }],
         state_bindings: Vec::new(),
+        resource_bindings: Vec::new(),
         policy,
     };
     let binding_template = ServiceBindingTemplate {

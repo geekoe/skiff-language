@@ -213,8 +213,24 @@ fn merge_config_access(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageResourceRequirement {
+    pub key: String,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageRuntimeCapabilityRequirement {
+    pub capability: String,
+    pub required_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageRuntimeRequirements {
     pub config: Vec<PackageConfigRequirement>,
+    pub resources: Vec<PackageResourceRequirement>,
+    pub runtime_capabilities: Vec<PackageRuntimeCapabilityRequirement>,
 }
 
 #[cfg(test)]
@@ -248,20 +264,17 @@ mod tests {
     }
 
     #[test]
-    fn package_runtime_requirements_reject_retired_state_resource_and_capability_fields() {
+    fn package_runtime_requirements_reject_retired_state() {
         let canonical = json!({
-            "config": []
+            "config": [],
+            "resources": [],
+            "runtimeCapabilities": []
         });
         serde_json::from_value::<PackageRuntimeRequirements>(canonical.clone()).unwrap();
 
-        for field in ["state", "resources", "runtimeCapabilities"] {
-            let mut retired = canonical.clone();
-            retired[field] = json!([]);
-            assert!(
-                serde_json::from_value::<PackageRuntimeRequirements>(retired).is_err(),
-                "{field} unexpectedly survived the package requirement hard cut"
-            );
-        }
+        let mut retired = canonical;
+        retired["state"] = json!([]);
+        assert!(serde_json::from_value::<PackageRuntimeRequirements>(retired).is_err());
     }
 
     #[test]

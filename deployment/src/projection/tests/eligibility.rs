@@ -420,6 +420,11 @@ fn unsupported_stream_and_native_claims_and_orphan_callback_declaration_cannot_f
     implementation_requirements
         .native_capabilities
         .push("native.socket".to_string());
+    native.input.resource_bindings.push(ResourceBinding {
+        requirement_key: "native-socket".to_string(),
+        capability: "native.socket".to_string(),
+        resource_ref: "resource:native-socket".to_string(),
+    });
     native.refresh_implementation_ref();
     assert_eligibility_reason(&native, BoundaryUnavailableReason::NativeAdapterUnavailable);
 }

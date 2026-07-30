@@ -294,7 +294,13 @@ fn validate_activation_template(
             template.implementation_package_build_id
         ));
     }
-    Ok(())
+    validate_unique_names(
+        template
+            .resource_bindings
+            .iter()
+            .map(|binding| binding.requirement_key.as_str()),
+        "activation resource binding",
+    )
 }
 
 fn validate_gateway_ingress(

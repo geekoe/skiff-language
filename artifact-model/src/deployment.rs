@@ -168,6 +168,21 @@ where
     deserializer.deserialize_map(GatewayEntriesVisitor)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceBinding {
+    pub requirement_key: String,
+    pub capability: String,
+    pub resource_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeCapabilityBinding {
+    pub capability: String,
+    pub version: String,
+}
+
 /// Non-semantic text retained for diagnostics and excluded from identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -190,6 +205,8 @@ pub struct ServiceDeploymentInput {
     #[serde(deserialize_with = "deserialize_gateway_entries")]
     pub gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     pub ingress: Vec<DeploymentIngressBinding>,
+    pub resource_bindings: Vec<ResourceBinding>,
+    pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
     pub diagnostic_text: DeploymentDiagnosticText,
 }
 
@@ -208,6 +225,8 @@ pub struct ServiceDeployment {
     #[serde(deserialize_with = "deserialize_gateway_entries")]
     pub gateway_entries: BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
     pub ingress: Vec<DeploymentIngressBinding>,
+    pub resource_bindings: Vec<ResourceBinding>,
+    pub runtime_capability_bindings: Vec<RuntimeCapabilityBinding>,
     pub diagnostic_text: DeploymentDiagnosticText,
 }
 
@@ -278,6 +297,8 @@ mod tests {
             service_selectors: Vec::new(),
             gateway_entries: BTreeMap::new(),
             ingress: Vec::new(),
+            resource_bindings: Vec::new(),
+            runtime_capability_bindings: Vec::new(),
             diagnostic_text: DeploymentDiagnosticText {
                 display_name: "users".to_string(),
                 notes: BTreeMap::new(),
@@ -285,14 +306,7 @@ mod tests {
         };
         let canonical = serde_json::to_value(deployment).unwrap();
 
-        for field in [
-            "configLiterals",
-            "secretRefs",
-            "stateBindings",
-            "resourceBindings",
-            "runtimeCapabilityBindings",
-            "policy",
-        ] {
+        for field in ["configLiterals", "secretRefs", "stateBindings", "policy"] {
             let mut retired = canonical.clone();
             retired[field] = json!([]);
             assert!(

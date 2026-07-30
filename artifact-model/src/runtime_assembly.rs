@@ -3,7 +3,8 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use crate::{
     validate_runtime_assembly_identity, AssemblyIdentity, ContractOperationId,
     GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageArtifactRef, PackageBinding,
-    PackageBuildId, ServiceContractRef, ServiceDeploymentRef, ServiceRequirementKey,
+    PackageBuildId, ResourceBinding, ServiceContractRef, ServiceDeploymentRef,
+    ServiceRequirementKey,
 };
 
 /// Exact reference to one immutable RuntimeAssembly record.
@@ -69,6 +70,7 @@ pub struct ServiceBindingTemplate {
 pub struct ActivationTemplate {
     pub deployment: ServiceDeploymentRef,
     pub implementation_package_build_id: PackageBuildId,
+    pub resource_bindings: Vec<ResourceBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,16 +238,11 @@ mod tests {
                 deployment_artifact_identity: "deployment".into(),
             },
             implementation_package_build_id: PackageBuildId::new("build"),
+            resource_bindings: Vec::new(),
         };
         let canonical = serde_json::to_value(template).unwrap();
 
-        for field in [
-            "configLiterals",
-            "secretRefs",
-            "stateBindings",
-            "resourceBindings",
-            "policy",
-        ] {
+        for field in ["configLiterals", "secretRefs", "stateBindings", "policy"] {
             let mut retired = canonical.clone();
             retired[field] = json!([]);
             assert!(

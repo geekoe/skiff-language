@@ -241,7 +241,9 @@ mod tests {
             "contractRequirements": [],
             "serviceRequirements": [],
             "runtimeRequirements": {
-                "config": []
+                "config": [],
+                "resources": [],
+                "runtimeCapabilities": []
             },
             "callableSemanticFacts": {},
             "boundaryProjections": {},
@@ -250,14 +252,9 @@ mod tests {
         serde_json::from_value::<PackageArtifact>(value.clone())
             .expect("complete strict package artifact wire");
 
-        for field in ["state", "resources", "runtimeCapabilities"] {
-            let mut retired = value.clone();
-            retired["runtimeRequirements"][field] = json!([]);
-            assert!(
-                serde_json::from_value::<PackageArtifact>(retired).is_err(),
-                "{field} unexpectedly survived the package artifact hard cut"
-            );
-        }
+        let mut retired_state = value.clone();
+        retired_state["runtimeRequirements"]["state"] = json!([]);
+        assert!(serde_json::from_value::<PackageArtifact>(retired_state).is_err());
 
         for forbidden in ["publicationAbi", "packageUnit", "serviceUnit"] {
             let mut invalid = value.clone();

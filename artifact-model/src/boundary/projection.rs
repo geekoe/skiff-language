@@ -29,6 +29,7 @@ pub enum BoundaryStateKind {
     Redis,
     Actor,
     Queue,
+    ExternalResource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +205,7 @@ pub struct BoundaryImplementationRequirements {
     pub config: Vec<BoundaryConfigRequirement>,
     pub state: Vec<BoundaryStateRequirement>,
     pub native_capabilities: Vec<String>,
+    pub runtime_capabilities: Vec<String>,
     pub complete_may_effects: CallableMayEffects,
     pub provenance: CallableProvenanceSummary,
 }

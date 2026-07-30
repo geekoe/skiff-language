@@ -941,10 +941,27 @@ fn implementation_requirements(
         })
         .collect::<Vec<_>>();
     config.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut state = runtime
+        .resources
+        .iter()
+        .map(|requirement| BoundaryStateRequirement {
+            key: requirement.key.clone(),
+            kind: BoundaryStateKind::ExternalResource,
+        })
+        .collect::<Vec<_>>();
+    state.sort_by(|left, right| left.key.cmp(&right.key));
+    let mut runtime_capabilities = runtime
+        .runtime_capabilities
+        .iter()
+        .map(|requirement| requirement.capability.clone())
+        .collect::<Vec<_>>();
+    runtime_capabilities.sort();
+    runtime_capabilities.dedup();
     BoundaryImplementationRequirements {
         config,
-        state: Vec::new(),
+        state,
         native_capabilities: Vec::new(),
+        runtime_capabilities,
         complete_may_effects,
         provenance,
     }
@@ -960,9 +977,9 @@ mod tests {
         BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
         CallableSemanticFacts, PackageArtifact, PackageBuildId, PackageCallableParameter,
         PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi,
-        PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexIdentity,
-        PackageSchemaIndexRef, PackageSchemaTypeId, PackageTypeRef, TypeRefIr, ValueProvenance,
-        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        PackageLocalAbiIdentity, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
+        PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSchemaTypeId, PackageTypeRef,
+        TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -1605,10 +1622,16 @@ mod tests {
     fn implementation_requirements_must_match_complete_facts_and_runtime_requirements() {
         let signature = unary_signature();
         let facts = safe_facts();
-        let runtime = empty_runtime_requirements();
+        let mut runtime = empty_runtime_requirements();
+        runtime
+            .runtime_capabilities
+            .push(PackageRuntimeCapabilityRequirement {
+                capability: "async".to_string(),
+                required_version: "1".to_string(),
+            });
         let canonical = canonical_boundary_callable_projection(&signature, &facts, &runtime);
         let callable_id = PackageCallableId::new("pkg-callable:example.pkg:run");
-        for mutation in 0..2 {
+        for mutation in 0..3 {
             let mut invalid = canonical.clone();
             let BoundaryCallableProjection::Available {
                 implementation_requirements,
@@ -1618,8 +1641,11 @@ mod tests {
                 unreachable!()
             };
             match mutation {
-                0 => implementation_requirements.complete_may_effects.may_suspend = true,
-                1 => {
+                0 => implementation_requirements
+                    .runtime_capabilities
+                    .push("forged".to_string()),
+                1 => implementation_requirements.complete_may_effects.may_suspend = true,
+                2 => {
                     implementation_requirements.provenance = CallableProvenanceSummary::Unknown {
                         reason: crate::CallableProvenanceUnknownReason::AnalysisPending,
                     }
@@ -1755,7 +1781,11 @@ mod tests {
     }
 
     fn empty_runtime_requirements() -> PackageRuntimeRequirements {
-        PackageRuntimeRequirements { config: Vec::new() }
+        PackageRuntimeRequirements {
+            config: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
+        }
     }
 
     fn available_contract(signature: &PackageCallableSignature) -> BoundaryOperationContract {

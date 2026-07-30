@@ -157,6 +157,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             config_literals: deployment.config_literals.clone(),
             secret_refs: deployment.secret_refs.clone(),
             state_bindings: deployment.state_bindings.clone(),
+            resource_bindings: deployment.resource_bindings.clone(),
             policy: deployment.policy.clone(),
         };
         activation
@@ -167,6 +168,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
             .sort_by(|left, right| left.path.cmp(&right.path));
         activation
             .state_bindings
+            .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
+        activation
+            .resource_bindings
             .sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
         self.activation_templates
             .insert(reference.clone(), activation);

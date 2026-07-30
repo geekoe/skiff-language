@@ -97,7 +97,8 @@ pub use compile_identity::{
 pub use compile_requirements::{
     canonicalize_package_config_requirements, ContractRequirement, PackageConfigAccess,
     PackageConfigRequirement, PackageConfigRequirementMergeError, PackageRequirement,
-    PackageRuntimeRequirements, ServiceCallRef, ServiceRequirement,
+    PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
+    ServiceCallRef, ServiceRequirement,
 };
 pub use config::{
     config_shape_from_package_requirements, ConfigMetadataFacts, ConfigShape, ConfigShapeEntry,
@@ -114,9 +115,10 @@ pub use contract_types::{
 pub use deployment::{
     DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding,
     DeploymentOperationBinding, GatewayAdapterPlan, IngressProtocol, IngressSelector,
-    PackageArtifactRef, PackageBinding, PackageRequirementKey, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    ServiceDeploymentRef, ServiceRequirementKey, ServiceSelectorBinding,
+    PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding,
+    RuntimeCapabilityBinding, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
+    ServiceDeploymentOperationInput, ServiceDeploymentRef, ServiceRequirementKey,
+    ServiceSelectorBinding,
 };
 pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
