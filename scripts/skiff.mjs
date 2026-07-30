@@ -41,7 +41,7 @@ const usage = `usage:
   skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
   skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff service dev registry list [--config <path>]
-  skiff service dev registry add <root> [--environment <name>] [--config <path>]
+  skiff service dev registry add <package-or-service-root> [--environment <name>] [--config <path>]
   skiff service dev registry remove <service-id-or-root> [--config <path>]
   skiff instance init <config> [--force]
   skiff instance paths <config> [--json]
@@ -61,6 +61,9 @@ const usage = `usage:
   skiff package publish <root> --artifact-root <dir> [--environment <name>] [--json]
   skiff assembly <build|publish> --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff assembly activate --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
+
+The dev registry watches only explicitly listed package and service roots;
+service package dependencies are not discovered as local source roots.
 `;
 
 try {

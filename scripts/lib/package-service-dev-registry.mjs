@@ -30,8 +30,15 @@ export async function runDevRegistryCommand(rawArgs, {
     }
     stdout(`authoring roots for ${registry.environment} in ${parsed.config}:`);
     for (const entry of registry.roots) {
-      stdout(`- ${entry.kind} ${entry.root}`);
+      stdout(
+        entry.kind === 'service'
+          ? `- service ${entry.serviceId} at ${entry.root}`
+          : `- package ${entry.root}`,
+      );
     }
+    stdout(
+      'only listed roots are watched; add every locally developed package dependency explicitly',
+    );
     return registry;
   }
 

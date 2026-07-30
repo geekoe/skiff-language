@@ -215,6 +215,8 @@ test('registry remove fails closed when one token matches a service ID and anoth
 
 test('canonical registry CLI is service dev registry and old dev registry is rejected', async () => {
   const fixture = await serviceFixture('cli', 'example.com/cli');
+  const packageRoot = join(fixture.temp, 'package');
+  await writePackageRoot(packageRoot, { packageId: 'example.com/cli-package-dependency' });
   const registryPath = join(fixture.temp, 'watch.json');
   const canonical = await captureAttachedCommand(process.execPath, [
     skiffCli,
@@ -228,6 +230,37 @@ test('canonical registry CLI is service dev registry and old dev registry is rej
   ], { cwd: fixture.temp });
   assert.equal(canonical.code, 0, canonical.stderr);
   assert.equal((await readDevRegistry(registryPath)).roots[0].serviceId, 'example.com/cli');
+  const addPackage = await captureAttachedCommand(process.execPath, [
+    skiffCli,
+    'service',
+    'dev',
+    'registry',
+    'add',
+    packageRoot,
+    '--config',
+    registryPath,
+  ], { cwd: fixture.temp });
+  assert.equal(addPackage.code, 0, addPackage.stderr);
+
+  const listed = await captureAttachedCommand(process.execPath, [
+    skiffCli,
+    'service',
+    'dev',
+    'registry',
+    'list',
+    '--config',
+    registryPath,
+  ], { cwd: fixture.temp });
+  assert.equal(listed.code, 0, listed.stderr);
+  assert.match(listed.stdout, new RegExp(`- package ${escapeRegExp(packageRoot)}`));
+  assert.match(
+    listed.stdout,
+    new RegExp(`- service example\\.com/cli at ${escapeRegExp(fixture.root)}`),
+  );
+  assert.match(
+    listed.stdout,
+    /only listed roots are watched; add every locally developed package dependency explicitly/,
+  );
 
   const retired = await captureAttachedCommand(process.execPath, [
     skiffCli,
@@ -240,6 +273,10 @@ test('canonical registry CLI is service dev registry and old dev registry is rej
   assert.notEqual(retired.code, 0);
   assert.match(retired.stderr, /unknown dev command registry/);
 });
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 test('watch reloads registry environment and sorted roots after atomic replacement', async () => {
   const first = await serviceFixture('watch-registry', 'example.com/watch-a');

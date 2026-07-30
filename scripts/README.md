@@ -121,20 +121,20 @@ skiff project paths
 
 `skiff.yml` is committed project default. Worktree-local overrides go in ignored `skiff.local.yml` with the same shape. Package resolution order is explicit `--packages-dir` values, then `skiff.local.yml` when it declares `packageDirs`, then `skiff.yml`. Entries are resolved relative to the config directory and searched in order. The first matching `<storage-projected-package-id>/<version>/package.yml` wins, so a worktree-local store can shadow a lower-priority shared store. `skiff package pull` without `--out` materializes package remote source archive contents under the first effective `packageDirs` entry, for example `.skiff-package-store/skiff~run~~llm/1.0.0/package.yml` for package id `skiff.run/llm`.
 
-`skiff service dev sync` and `skiff service dev watch` also accept a JSON dev config for multi-service setups. `sharedInputs` is an additional watch fingerprint input:
+Every `packageDirs` entry is a canonical package-store root, not a direct
+package source root. A dependency is selected below it as
+`<storage-projected-package-id>/<version>/package.yml`. Do not put paths such
+as `packages/my-package` directly in `packageDirs`.
 
-```json
-{
-  "sharedInputs": ["../skiff-packages"]
-}
-```
-
-For local package development, materialize package sources under the project package store with `skiff package pull`, or pass explicit package stores with repeated `--packages-dir <dir>` on `skiff check`, `skiff service dev sync`, and `skiff service dev watch`. Explicit package dirs are searched in the order provided and replace the project `packageDirs` for that command. `skiff test` instead resolves package and contract dependencies only from its canonical `--artifact-root`.
+For commands that accept `--packages-dir`, explicit package stores are searched
+in the order provided and replace the project `packageDirs` for that command.
+`skiff test` instead resolves package and contract dependencies only from its
+canonical `--artifact-root`.
 
 The global dev watch registry is managed under the service dev registry subcommand:
 
 ```bash
-skiff service dev registry add <service-dir>
+skiff service dev registry add <package-or-service-dir>
 skiff service dev registry list
 skiff service dev registry remove <root-or-service-id>
 ```
@@ -148,6 +148,14 @@ last-known-good activation and retries—it is never interpreted as an empty
 registry. Explicitly removing the final valid service instead commits a
 canonical empty assembly/config-snapshot pair and withdraws the previous dev
 services.
+
+The registry is also the exact source-watch boundary. Register every service
+root and every package root being developed locally. A service's `package.yml`
+declares dependency coordinates, but it does not declare local source paths;
+the watch therefore does not discover or watch package source roots from a
+service manifest. `packageDirs` and package-store contents are dependency
+resolution inputs, not additional watch roots. `registry list` prints the
+complete watched set so omissions can be checked before development.
 
 Before its first activation, managed watch reads the Router's exact committed
 environment/generation from `/__router/health`; it never assumes generation
