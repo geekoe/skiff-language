@@ -654,7 +654,6 @@ async function writeSafeFixture(root) {
         '    ingress_key: ServiceIngressKey,',
         '    entry: Arc<LinkedGatewayEntry>,',
         '    activation: Arc<ActivationContext>,',
-        '    policy: DeploymentPolicy,',
         '}',
         '',
       ].join('\n'),

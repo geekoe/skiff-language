@@ -219,7 +219,6 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
           'ingress_key: ServiceIngressKey',
           'entry: Arc<LinkedGatewayEntry>',
           'activation: Arc<ActivationContext>',
-          'policy: DeploymentPolicy',
         ],
       },
       {
