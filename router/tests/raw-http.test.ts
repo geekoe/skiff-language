@@ -297,7 +297,7 @@ describe('router raw HTTP gateway', () => {
     expect(frame).toBeDefined();
     expect(frame!.payloadBytes).toEqual(body);
     expect(frame!.header).toMatchObject({
-      schemaVersion: 'skiff-runtime-frame-v2',
+      schemaVersion: 'skiff-runtime-frame-v3',
       type: 'request.start',
       mode: 'unary',
       caller: {

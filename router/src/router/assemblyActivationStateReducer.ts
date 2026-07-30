@@ -19,6 +19,7 @@ export function prepareActivationState(
     expectedGeneration: request.expectedGeneration,
     candidateGeneration: request.expectedGeneration + 1,
     assembly: request.assembly,
+    configSnapshot: request.configSnapshot,
     participantReplicaIds: canonicalReplicaIds(participantReplicaIds)
   };
   if (current.pending !== null) {
@@ -57,7 +58,8 @@ export function commitActivationState(
   if (
     current.pending === null &&
     current.committed.generation === pending.candidateGeneration &&
-    current.committed.assembly.assemblyIdentity === pending.assembly.assemblyIdentity
+    current.committed.assembly.assemblyIdentity === pending.assembly.assemblyIdentity &&
+    current.committed.configSnapshot.snapshotId === pending.configSnapshot.snapshotId
   ) {
     return current;
   }
@@ -76,7 +78,8 @@ export function commitActivationState(
     ...current,
     committed: {
       generation: pending.candidateGeneration,
-      assembly: pending.assembly
+      assembly: pending.assembly,
+      configSnapshot: pending.configSnapshot
     },
     pending: null
   });
@@ -107,6 +110,7 @@ function samePendingActivation(left: PendingActivation, right: PendingActivation
     left.expectedGeneration === right.expectedGeneration &&
     left.candidateGeneration === right.candidateGeneration &&
     left.assembly.assemblyIdentity === right.assembly.assemblyIdentity &&
+    left.configSnapshot.snapshotId === right.configSnapshot.snapshotId &&
     left.participantReplicaIds.length === right.participantReplicaIds.length &&
     left.participantReplicaIds.every(
       (replicaId, index) => replicaId === right.participantReplicaIds[index]

@@ -41,6 +41,7 @@ interface AssemblyReplica extends RuntimeDispatchRuntimeIdentity {
   environment: string;
   generation: number;
   assemblyIdentity: string;
+  configSnapshotId: string;
   replicaId: string;
   state: AssemblyReplicaState;
   registeredAt: string;
@@ -64,6 +65,7 @@ export interface AssemblyReplicaSnapshot {
   environment: string;
   generation: number;
   assemblyIdentity: string;
+  configSnapshotId: string;
   state: AssemblyReplicaState;
   connected: boolean;
   inFlightCount: number;
@@ -126,6 +128,7 @@ export class AssemblyRuntimeRegistry {
       environment: control.environment,
       generation: control.generation,
       assemblyIdentity: control.assembly.assemblyIdentity,
+      configSnapshotId: control.configSnapshot.snapshotId,
       state: 'healthy',
       registeredAt: new Date().toISOString(),
       deploymentBindingsByService: deploymentBindingsByService(active),
@@ -276,6 +279,7 @@ export class AssemblyRuntimeRegistry {
       environment: replica.environment,
       generation: replica.generation,
       assemblyIdentity: replica.assemblyIdentity,
+      configSnapshotId: replica.configSnapshotId,
       state: replica.state,
       connected: replica.ws.readyState === WebSocket.OPEN,
       inFlightCount: this.countInFlight(replica),
@@ -547,6 +551,8 @@ function matchesActiveSnapshot(
     generation: number;
     assembly?: { assemblyIdentity: string };
     assemblyIdentity?: string;
+    configSnapshot?: { snapshotId: string };
+    configSnapshotId?: string;
   },
   active: RouterActiveAssemblySnapshot
 ): boolean {
@@ -554,7 +560,9 @@ function matchesActiveSnapshot(
     value.environment === active.environment &&
     value.generation === active.generation &&
     (value.assembly?.assemblyIdentity ?? value.assemblyIdentity) ===
-      active.assembly.assemblyIdentity
+      active.assembly.assemblyIdentity &&
+    (value.configSnapshot?.snapshotId ?? value.configSnapshotId) ===
+      active.configSnapshot.snapshotId
   );
 }
 

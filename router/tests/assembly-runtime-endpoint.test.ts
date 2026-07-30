@@ -1508,7 +1508,7 @@ async function createFixture(
     stateStore: new MemoryAssemblyActivationStateStore(initialActivationState({
       environment: 'test',
       generation: initial.generation,
-      assemblyIdentity: initial.assemblyIdentity
+      assemblyIdentity: initial.assemblyIdentity, configSnapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     })),
     assemblyLoader: new MemoryRuntimeAssemblySnapshotLoader([
       assembly(EMPTY_ASSEMBLY),
@@ -1591,7 +1591,7 @@ function registration(generation: number, assemblyIdentity: string): AssemblyAct
 
 function activationRequest(activationId: string, expectedGeneration: number, assemblyIdentity: string) {
   return {
-    schemaVersion: 'skiff-assembly-activation-request-v1' as const,
+    schemaVersion: 'skiff-assembly-activation-request-v2' as const,
     environment: 'test',
     activationId,
     expectedGeneration,

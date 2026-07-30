@@ -833,7 +833,7 @@ describe('runtime protocol fixtures and schemas', () => {
   it('returns clear validation errors for malformed runtime frame headers', () => {
     expect(
       validateRuntimeToRouterFrameHeader({
-        schemaVersion: 'skiff-runtime-frame-v2',
+        schemaVersion: 'skiff-runtime-frame-v3',
         type: 'response.end'
       })
     ).toEqual({
@@ -842,7 +842,7 @@ describe('runtime protocol fixtures and schemas', () => {
     });
     expect(
       validateRuntimeToRouterFrameHeader({
-        schemaVersion: 'skiff-runtime-frame-v2',
+        schemaVersion: 'skiff-runtime-frame-v3',
         type: 'response.error',
         requestId: 'request-1',
         errorKind: 'control',
@@ -1933,20 +1933,20 @@ describe('runtime binary frame foundations', () => {
       runtimeFrameHeaderFixtures['response.end'];
 
     expect(() => decodeRuntimeFrame(encodeBinaryFrame(requestStart))).toThrow(
-      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v2'
+      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v3'
     );
     expect(() => decodeRuntimeFrame(encodeBinaryFrame(responseEnd))).toThrow(
-      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v2'
+      'invalid skiff runtime frame: schemaVersion must be skiff-runtime-frame-v3'
     );
     expect(validateRouterToRuntimeFrameHeader(requestStart)).toEqual({
       ok: false,
       error:
-        'invalid request.start frame header envelope: schemaVersion must be one of skiff-runtime-frame-v2'
+        'invalid request.start frame header envelope: schemaVersion must be one of skiff-runtime-frame-v3'
     });
     expect(validateRuntimeToRouterFrameHeader(responseEnd)).toEqual({
       ok: false,
       error:
-        'invalid response.end frame header envelope: schemaVersion must be one of skiff-runtime-frame-v2'
+        'invalid response.end frame header envelope: schemaVersion must be one of skiff-runtime-frame-v3'
     });
   });
 

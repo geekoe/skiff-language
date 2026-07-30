@@ -42,8 +42,8 @@ export type TelemetryVisibility = (typeof TELEMETRY_VISIBILITIES)[number];
 export const SKIFF_BINARY_FRAME_MAGIC = Buffer.from([0x53, 0x4b, 0x42, 0x46]) as Buffer;
 export const SKIFF_BINARY_FRAME_VERSION = 1;
 export const SKIFF_BINARY_FRAME_HEADER_ENCODING_JSON = 1;
-export const RUNTIME_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v2' as const;
-export const RESPONSE_ERROR_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v2' as const;
+export const RUNTIME_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v3' as const;
+export const RESPONSE_ERROR_FRAME_SCHEMA_VERSION = 'skiff-runtime-frame-v3' as const;
 
 const BINARY_FRAME_FIXED_HEADER_BYTES = 14;
 const UINT32_MAX = 0xffffffff;
@@ -252,6 +252,9 @@ export interface RouterBootstrapActivation {
   generation: number;
   assembly: {
     assemblyIdentity: string;
+  };
+  configSnapshot: {
+    snapshotId: string;
   };
 }
 

@@ -56,7 +56,7 @@ describe('assembly activation serviceDb wire', () => {
   it('rejects serviceDb from the public activation request', () => {
     expect(() =>
       decodeAssemblyActivationRequest({
-        schemaVersion: 'skiff-assembly-activation-request-v1',
+        schemaVersion: 'skiff-assembly-activation-request-v2',
         environment: 'test',
         activationId: 'activation-1',
         expectedGeneration: 0,
@@ -69,7 +69,7 @@ describe('assembly activation serviceDb wire', () => {
   it('cannot persist mongoUrl in durable activation state', () => {
     expect(() =>
       decodeEnvironmentActivationState({
-        schemaVersion: 'skiff-environment-activation-state-v1',
+        schemaVersion: 'skiff-environment-activation-state-v2',
         environment: 'test',
         committed: {
           generation: 0,

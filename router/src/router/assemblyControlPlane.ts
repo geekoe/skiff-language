@@ -58,6 +58,7 @@ export class AssemblyControlPlane {
           environment: snapshot.environment,
           generation: snapshot.generation,
           assemblyIdentity: snapshot.assembly.assemblyIdentity,
+          configSnapshotId: snapshot.configSnapshot.snapshotId,
           ingressCount: snapshot.ingress.values().length
         },
         pendingActivation: state.pending,
@@ -89,7 +90,8 @@ export class AssemblyControlPlane {
       activeAssembly: {
         environment: snapshot.environment,
         generation: snapshot.generation,
-        assemblyIdentity: snapshot.assembly.assemblyIdentity
+        assemblyIdentity: snapshot.assembly.assemblyIdentity,
+        configSnapshotId: snapshot.configSnapshot.snapshotId
       },
       replicas: this.options.registry.snapshot()
     });

@@ -81,13 +81,15 @@ export function initialActivationState(input: {
   environment: string;
   generation: number;
   assemblyIdentity: string;
+  configSnapshotId: string;
 }): EnvironmentActivationState {
   return decodeEnvironmentActivationState({
     schemaVersion: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
     environment: input.environment,
     committed: {
       generation: input.generation,
-      assembly: { assemblyIdentity: input.assemblyIdentity }
+      assembly: { assemblyIdentity: input.assemblyIdentity },
+      configSnapshot: { snapshotId: input.configSnapshotId }
     },
     pending: null
   });

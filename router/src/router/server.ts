@@ -98,7 +98,8 @@ const runtimeEndpoint = new RuntimeEndpoint({
     return runtimeBootstrapForRouterConfig(config, {
       environment: active.environment,
       generation: active.generation,
-      assembly: { ...active.assembly }
+      assembly: { ...active.assembly },
+      configSnapshot: { ...active.configSnapshot }
     });
   },
   actorRuntimeDisconnect: actorDisconnect,

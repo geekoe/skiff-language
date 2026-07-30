@@ -9,12 +9,16 @@ import {
 export const ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT =
   "POST /__skiff/activate-assembly" as const;
 export const ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION =
-  "skiff-assembly-activation-request-v1" as const;
+  "skiff-assembly-activation-request-v2" as const;
 export const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION =
-  "skiff-environment-activation-state-v1" as const;
+  "skiff-environment-activation-state-v2" as const;
 
 export type RuntimeAssemblyRef = Readonly<{
   assemblyIdentity: string;
+}>;
+
+export type RuntimeConfigSnapshotRef = Readonly<{
+  snapshotId: string;
 }>;
 
 export type AssemblyActivationServiceDb = Readonly<{
@@ -27,11 +31,13 @@ export type AssemblyActivationRequest = Readonly<{
   activationId: string;
   expectedGeneration: number;
   assembly: RuntimeAssemblyRef;
+  configSnapshot: RuntimeConfigSnapshotRef;
 }>;
 
 export type CommittedActivation = Readonly<{
   generation: number;
   assembly: RuntimeAssemblyRef;
+  configSnapshot: RuntimeConfigSnapshotRef;
 }>;
 
 export type PendingActivation = Readonly<{
@@ -39,6 +45,7 @@ export type PendingActivation = Readonly<{
   expectedGeneration: number;
   candidateGeneration: number;
   assembly: RuntimeAssemblyRef;
+  configSnapshot: RuntimeConfigSnapshotRef;
   participantReplicaIds: readonly string[];
 }>;
 
@@ -67,6 +74,7 @@ export type AssemblyActivationControl =
       expectedGeneration: number;
       candidateGeneration: number;
       assembly: RuntimeAssemblyRef;
+      configSnapshot: RuntimeConfigSnapshotRef;
       replicaId: string;
       serviceDb?: AssemblyActivationServiceDb;
     }>
@@ -77,6 +85,7 @@ export type AssemblyActivationControl =
       expectedGeneration: number;
       candidateGeneration: number;
       assembly: RuntimeAssemblyRef;
+      configSnapshot: RuntimeConfigSnapshotRef;
       replicaId: string;
     }>
   | Readonly<{
@@ -86,6 +95,7 @@ export type AssemblyActivationControl =
       expectedGeneration: number;
       candidateGeneration: number;
       assembly: RuntimeAssemblyRef;
+      configSnapshot: RuntimeConfigSnapshotRef;
       replicaId: string;
       reason: AssemblyActivationRejectReason;
     }>
@@ -94,6 +104,7 @@ export type AssemblyActivationControl =
       environment: string;
       generation: number;
       assembly: RuntimeAssemblyRef;
+      configSnapshot: RuntimeConfigSnapshotRef;
       replicaId: string;
     }>;
 
@@ -104,6 +115,7 @@ const transitionFields = [
   "expectedGeneration",
   "candidateGeneration",
   "assembly",
+  "configSnapshot",
   "replicaId",
 ] as const;
 const provisioningTransitionFields = [...transitionFields, "serviceDb"] as const;
@@ -127,6 +139,7 @@ export function decodeAssemblyActivationRequest(
       "activationId",
       "expectedGeneration",
       "assembly",
+      "configSnapshot",
     ],
     "assembly activation request",
   );
@@ -145,6 +158,7 @@ export function decodeAssemblyActivationRequest(
       "expectedGeneration",
     ),
     assembly: decodeAssemblyRef(value.assembly),
+    configSnapshot: decodeConfigSnapshotRef(value.configSnapshot),
   };
 }
 
@@ -190,7 +204,7 @@ export function decodeAssemblyActivationControl(
   if (type === "register") {
     exactFields(
       value,
-      ["type", "environment", "generation", "assembly", "replicaId"],
+      ["type", "environment", "generation", "assembly", "configSnapshot", "replicaId"],
       "assembly activation control",
     );
     return {
@@ -198,6 +212,7 @@ export function decodeAssemblyActivationControl(
       environment: requiredEnvironment(value, "environment"),
       generation: requiredGeneration(value, "generation"),
       assembly: decodeAssemblyRef(value.assembly),
+      configSnapshot: decodeConfigSnapshotRef(value.configSnapshot),
       replicaId: requiredToken(value, "replicaId"),
     };
   }
@@ -251,10 +266,15 @@ export function decodeAssemblyActivationControls(
 
 function decodeCommittedActivation(input: unknown): CommittedActivation {
   const value = exactObject(input, "committed activation");
-  exactFields(value, ["generation", "assembly"], "committed activation");
+  exactFields(
+    value,
+    ["generation", "assembly", "configSnapshot"],
+    "committed activation",
+  );
   return {
     generation: requiredGeneration(value, "generation"),
     assembly: decodeAssemblyRef(value.assembly),
+    configSnapshot: decodeConfigSnapshotRef(value.configSnapshot),
   };
 }
 
@@ -267,6 +287,7 @@ function decodePendingActivation(input: unknown): PendingActivation {
       "expectedGeneration",
       "candidateGeneration",
       "assembly",
+      "configSnapshot",
       "participantReplicaIds",
     ],
     "pending activation",
@@ -282,6 +303,7 @@ function decodePendingActivation(input: unknown): PendingActivation {
     expectedGeneration,
     candidateGeneration,
     assembly: decodeAssemblyRef(value.assembly),
+    configSnapshot: decodeConfigSnapshotRef(value.configSnapshot),
     participantReplicaIds: decodeParticipantReplicaIds(
       value.participantReplicaIds,
     ),
@@ -307,6 +329,7 @@ function decodeTransition<
     expectedGeneration,
     candidateGeneration,
     assembly: decodeAssemblyRef(value.assembly),
+    configSnapshot: decodeConfigSnapshotRef(value.configSnapshot),
     replicaId: requiredToken(value, "replicaId"),
   };
 }
@@ -326,6 +349,20 @@ function decodeAssemblyRef(input: unknown): RuntimeAssemblyRef {
   exactFields(value, ["assemblyIdentity"], "runtime assembly ref");
   const assemblyIdentity = runtimeAssemblyIdentity(value.assemblyIdentity);
   return { assemblyIdentity };
+}
+
+function decodeConfigSnapshotRef(input: unknown): RuntimeConfigSnapshotRef {
+  const value = exactObject(input, "runtime config snapshot ref");
+  exactFields(value, ["snapshotId"], "runtime config snapshot ref");
+  const snapshotId = requiredString(value, "snapshotId");
+  if (
+    !/^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/.test(snapshotId)
+  ) {
+    throw new Error(
+      "snapshotId must use skiff-runtime-config-snapshot-v1:<32 lowercase hex>",
+    );
+  }
+  return { snapshotId };
 }
 
 function decodeParticipantReplicaIds(input: unknown): readonly string[] {

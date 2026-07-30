@@ -1,6 +1,7 @@
 import type {
   EnvironmentActivationState,
-  RuntimeAssemblyRef
+  RuntimeAssemblyRef,
+  RuntimeConfigSnapshotRef
 } from '../protocol/assemblyActivationProtocol.js';
 import type {
   RuntimeAssemblyWebSocketMethodTable,
@@ -147,6 +148,7 @@ export interface RouterActiveAssemblySnapshot {
   environment: string;
   generation: number;
   assembly: RuntimeAssemblyRef;
+  configSnapshot: RuntimeConfigSnapshotRef;
   resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
   resolvedContracts?: readonly RuntimeAssemblyContractRef[];
   deploymentRuntimeBindings?: readonly RuntimeAssemblyDeploymentRuntimeBinding[];
@@ -171,7 +173,8 @@ export class RouterActiveAssemblySnapshotStore {
       (snapshot.environment !== current.environment ||
         snapshot.generation < current.generation ||
         (snapshot.generation === current.generation &&
-          snapshot.assembly.assemblyIdentity !== current.assembly.assemblyIdentity))
+          (snapshot.assembly.assemblyIdentity !== current.assembly.assemblyIdentity ||
+            snapshot.configSnapshot.snapshotId !== current.configSnapshot.snapshotId)))
     ) {
       throw new Error('router active RuntimeAssembly snapshot cannot fork or move backward');
     }
@@ -236,6 +239,7 @@ export async function snapshotFromCommittedActivation(
     environment: state.environment,
     generation: state.committed.generation,
     assembly: state.committed.assembly,
+    configSnapshot: state.committed.configSnapshot,
     ...(assembly.resolvedDeployments === undefined
       ? {}
       : { resolvedDeployments: assembly.resolvedDeployments }),

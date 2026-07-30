@@ -37,6 +37,7 @@ export type ActivationAuditDocument = Readonly<{
   beforeGeneration: number;
   afterGeneration: number;
   assemblyIdentity: string;
+  configSnapshotId: string;
   participantReplicaIds: readonly string[];
   connectedReplicaIds: readonly string[];
   preparedReplicaIds: readonly string[];
@@ -122,6 +123,7 @@ export class MongoAssemblyActivationStateStore implements AssemblyActivationStat
           activationId: request.activationId,
           transition: 'prepare',
           assemblyIdentity: request.assembly.assemblyIdentity,
+          configSnapshotId: request.configSnapshot.snapshotId,
           participantReplicaIds: next.pending?.participantReplicaIds ?? [],
           connectedReplicaIds: [],
           preparedReplicaIds: []
@@ -140,6 +142,7 @@ export class MongoAssemblyActivationStateStore implements AssemblyActivationStat
         activationId: pending.activationId,
         transition: 'abort',
         assemblyIdentity: pending.assembly.assemblyIdentity,
+        configSnapshotId: pending.configSnapshot.snapshotId,
         participantReplicaIds: pending.participantReplicaIds,
         connectedReplicaIds: [],
         preparedReplicaIds: []
@@ -165,6 +168,7 @@ export class MongoAssemblyActivationStateStore implements AssemblyActivationStat
         activationId: pending.activationId,
         transition: 'commit',
         assemblyIdentity: pending.assembly.assemblyIdentity,
+        configSnapshotId: pending.configSnapshot.snapshotId,
         participantReplicaIds: pending.participantReplicaIds,
         connectedReplicaIds: canonicalIds(connectedReplicaIds),
         preparedReplicaIds: canonicalIds(preparedReplicaIds)

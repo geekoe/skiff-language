@@ -7,6 +7,9 @@ import {
 } from '../src/index.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
+const CONFIG_SNAPSHOT = {
+  snapshotId: 'skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+};
 
 describe('MongoAssemblyActivationStateStore', () => {
   it('persists CAS state and one derived audit event for idempotent retries', async () => {
@@ -15,14 +18,16 @@ describe('MongoAssemblyActivationStateStore', () => {
     await store.initialize(initialActivationState({
       environment: 'test',
       generation: 0,
-      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'0'.repeat(64)}`
+      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'0'.repeat(64)}`,
+      configSnapshotId: CONFIG_SNAPSHOT.snapshotId
     }));
     const request = {
-      schemaVersion: 'skiff-assembly-activation-request-v1' as const,
+      schemaVersion: 'skiff-assembly-activation-request-v2' as const,
       environment: 'test',
       activationId: 'activation-a',
       expectedGeneration: 0,
-      assembly: { assemblyIdentity: ASSEMBLY }
+      assembly: { assemblyIdentity: ASSEMBLY },
+      configSnapshot: CONFIG_SNAPSHOT
     };
 
     const prepared = await store.prepare(request, ['replica-b', 'replica-a']);
@@ -42,7 +47,8 @@ describe('MongoAssemblyActivationStateStore', () => {
 
     expect(committed.committed).toEqual({
       generation: 1,
-      assembly: { assemblyIdentity: ASSEMBLY }
+      assembly: { assemblyIdentity: ASSEMBLY },
+      configSnapshot: CONFIG_SNAPSHOT
     });
     expect(mongo.documents('router_assembly_activation_audit')).toHaveLength(2);
     expect(mongo.documents('router_assembly_activation_audit')).toMatchObject([
@@ -65,15 +71,17 @@ describe('MongoAssemblyActivationStateStore', () => {
     await store.initialize(initialActivationState({
       environment: 'test',
       generation: 0,
-      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'0'.repeat(64)}`
+      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'0'.repeat(64)}`,
+      configSnapshotId: CONFIG_SNAPSHOT.snapshotId
     }));
 
     await store.prepare({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-retry',
       expectedGeneration: 0,
-      assembly: { assemblyIdentity: ASSEMBLY }
+      assembly: { assemblyIdentity: ASSEMBLY },
+      configSnapshot: CONFIG_SNAPSHOT
     }, ['replica-a']);
 
     expect(mongo.transactionAttempts()).toBe(2);
@@ -89,15 +97,17 @@ describe('MongoAssemblyActivationStateStore', () => {
     const initial = await store.initialize(initialActivationState({
       environment: 'test',
       generation: 0,
-      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'0'.repeat(64)}`
+      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'0'.repeat(64)}`,
+      configSnapshotId: CONFIG_SNAPSHOT.snapshotId
     }));
 
     await expect(store.prepare({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-failure',
       expectedGeneration: 0,
-      assembly: { assemblyIdentity: ASSEMBLY }
+      assembly: { assemblyIdentity: ASSEMBLY },
+      configSnapshot: CONFIG_SNAPSHOT
     }, ['replica-a'])).rejects.toThrow('injected audit failure');
     await expect(store.read('test')).resolves.toEqual(initial);
   });

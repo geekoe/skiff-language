@@ -59,6 +59,7 @@ type RuntimeActivationResponse = Readonly<{
   expectedGeneration: number;
   candidateGeneration: number;
   assembly: { assemblyIdentity: string };
+  configSnapshot: { snapshotId: string };
   replicaId: string;
   reason?: string;
 }>;
@@ -444,7 +445,8 @@ export class AssemblyActivationCoordinator {
       committed !== undefined &&
       control.candidateGeneration === committed.generation &&
       control.expectedGeneration + 1 === committed.generation &&
-      control.assembly.assemblyIdentity === committed.assembly.assemblyIdentity
+      control.assembly.assemblyIdentity === committed.assembly.assemblyIdentity &&
+      control.configSnapshot.snapshotId === committed.configSnapshot.snapshotId
     );
   }
 
@@ -476,6 +478,7 @@ async function snapshotFromRequestActivation(
     environment: request.environment,
     generation: request.expectedGeneration + 1,
     assembly: request.assembly,
+    configSnapshot: request.configSnapshot,
     ...(assembly.resolvedDeployments === undefined
       ? {}
       : { resolvedDeployments: assembly.resolvedDeployments }),
@@ -499,11 +502,12 @@ async function snapshotFromPendingActivation(
 ): Promise<RouterActiveAssemblySnapshot> {
   return await snapshotFromRequestActivation(
     {
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: state.environment,
       activationId: pending.activationId,
       expectedGeneration: pending.expectedGeneration,
-      assembly: pending.assembly
+      assembly: pending.assembly,
+      configSnapshot: pending.configSnapshot
     },
     loader
   );
@@ -522,6 +526,7 @@ function transitionControl(
     expectedGeneration: pending.expectedGeneration,
     candidateGeneration: pending.candidateGeneration,
     assembly: pending.assembly,
+    configSnapshot: pending.configSnapshot,
     replicaId
   };
 }
@@ -537,6 +542,7 @@ function responseTransitionControl(
     expectedGeneration: response.expectedGeneration,
     candidateGeneration: response.candidateGeneration,
     assembly: response.assembly,
+    configSnapshot: response.configSnapshot,
     replicaId: response.replicaId
   };
 }
@@ -549,7 +555,8 @@ function matchesActivationRequest(
     pending.activationId === request.activationId &&
     pending.expectedGeneration === request.expectedGeneration &&
     pending.candidateGeneration === request.expectedGeneration + 1 &&
-    pending.assembly.assemblyIdentity === request.assembly.assemblyIdentity
+    pending.assembly.assemblyIdentity === request.assembly.assemblyIdentity &&
+    pending.configSnapshot.snapshotId === request.configSnapshot.snapshotId
   );
 }
 
@@ -561,7 +568,8 @@ function matchesPendingControl(
     pending.activationId === control.activationId &&
     pending.expectedGeneration === control.expectedGeneration &&
     pending.candidateGeneration === control.candidateGeneration &&
-    pending.assembly.assemblyIdentity === control.assembly.assemblyIdentity
+    pending.assembly.assemblyIdentity === control.assembly.assemblyIdentity &&
+    pending.configSnapshot.snapshotId === control.configSnapshot.snapshotId
   );
 }
 
@@ -575,6 +583,7 @@ function pendingActivationsEqual(
     left.expectedGeneration === right.expectedGeneration &&
     left.candidateGeneration === right.candidateGeneration &&
     left.assembly.assemblyIdentity === right.assembly.assemblyIdentity &&
+    left.configSnapshot.snapshotId === right.configSnapshot.snapshotId &&
     left.participantReplicaIds.length === right.participantReplicaIds.length &&
     left.participantReplicaIds.every(
       (replicaId, index) => replicaId === right.participantReplicaIds[index]
@@ -589,7 +598,8 @@ function matchesCommittedCandidate(
   return (
     state.pending === null &&
     state.committed.generation === pending.candidateGeneration &&
-    state.committed.assembly.assemblyIdentity === pending.assembly.assemblyIdentity
+    state.committed.assembly.assemblyIdentity === pending.assembly.assemblyIdentity &&
+    state.committed.configSnapshot.snapshotId === pending.configSnapshot.snapshotId
   );
 }
 
@@ -601,7 +611,9 @@ function committedActivationsEqual(
     left.environment === right.environment &&
     left.committed.generation === right.committed.generation &&
     left.committed.assembly.assemblyIdentity ===
-      right.committed.assembly.assemblyIdentity
+      right.committed.assembly.assemblyIdentity &&
+    left.committed.configSnapshot.snapshotId ===
+      right.committed.configSnapshot.snapshotId
   );
 }
 

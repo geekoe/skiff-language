@@ -26,7 +26,7 @@ describe('active RuntimeAssembly activation transaction', () => {
       const snapshots = new RouterActiveAssemblySnapshotStore();
       const registry = new AssemblyRuntimeRegistry(snapshots);
       const stateStore = new MemoryAssemblyActivationStateStore(
-        initialActivationState({
+        activationState({
           environment: 'test',
           generation: 1,
           assemblyIdentity: ASSEMBLY_A
@@ -54,11 +54,11 @@ describe('active RuntimeAssembly activation transaction', () => {
 
       let settled = false;
       const activation = coordinator.activate({
-        schemaVersion: 'skiff-assembly-activation-request-v1',
+        schemaVersion: 'skiff-assembly-activation-request-v2',
         environment: 'test',
         activationId: 'activation-independent-budget',
         expectedGeneration: 1,
-        assembly: { assemblyIdentity: ASSEMBLY_B }
+        assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
       }).finally(() => {
         settled = true;
       });
@@ -89,11 +89,11 @@ describe('active RuntimeAssembly activation transaction', () => {
     register(fixture.registry, runtimeB, 'replica-b', 1, ASSEMBLY_A);
 
     const activation = fixture.coordinator.activate({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-2',
       expectedGeneration: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 2);
     expect(fixture.snapshots.get().assembly.assemblyIdentity).toBe(ASSEMBLY_A);
@@ -110,12 +110,12 @@ describe('active RuntimeAssembly activation transaction', () => {
       responseControl('prepared', 'replica-b', ASSEMBLY_B, 1)
     );
     await expect(activation).resolves.toMatchObject({
-      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } },
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B), },
       pending: null
     });
     expect(fixture.snapshots.get()).toMatchObject({
       generation: 2,
-      assembly: { assemblyIdentity: ASSEMBLY_B },
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
       deploymentRuntimeBindings:
         assembly(ASSEMBLY_B).deploymentRuntimeBindings
     });
@@ -139,11 +139,11 @@ describe('active RuntimeAssembly activation transaction', () => {
     register(fixture.registry, runtimeB, 'replica-b', 1, ASSEMBLY_A);
     const before = fixture.coordinator.activationState().committed;
     const activation = fixture.coordinator.activate({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-reject',
       expectedGeneration: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_C }
+      assembly: { assemblyIdentity: ASSEMBLY_C }, configSnapshot: configSnapshot(ASSEMBLY_C),
     });
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 2);
     fixture.coordinator.handleRuntimeControl(
@@ -157,11 +157,11 @@ describe('active RuntimeAssembly activation transaction', () => {
     expect(controlsOfType(fixture.controls, 'abort')).toHaveLength(2);
 
     const disconnected = fixture.coordinator.activate({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-disconnect',
       expectedGeneration: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 4);
     fixture.registry.removeRuntimeConnection(runtimeB);
@@ -172,14 +172,14 @@ describe('active RuntimeAssembly activation transaction', () => {
 
   it('replays an exact durable pending transaction on startup and rebuilds from committed only', async () => {
     const stateStore = new MemoryAssemblyActivationStateStore({
-      schemaVersion: 'skiff-environment-activation-state-v1',
+      schemaVersion: 'skiff-environment-activation-state-v2',
       environment: 'test',
-      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A } },
+      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A }, configSnapshot: configSnapshot(ASSEMBLY_A), },
       pending: {
         activationId: 'activation-recover',
         expectedGeneration: 1,
         candidateGeneration: 2,
-        assembly: { assemblyIdentity: ASSEMBLY_B },
+        assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
         participantReplicaIds: ['replica-a', 'replica-b']
       }
     });
@@ -208,7 +208,7 @@ describe('active RuntimeAssembly activation transaction', () => {
     const snapshots = new RouterActiveAssemblySnapshotStore();
     const registry = new AssemblyRuntimeRegistry(snapshots);
     const stateStore = new MemoryAssemblyActivationStateStore(
-      initialActivationState({ environment: 'test', generation: 1, assemblyIdentity: ASSEMBLY_A })
+      activationState({ environment: 'test', generation: 1, assemblyIdentity: ASSEMBLY_A })
     );
     const coordinator = new AssemblyActivationCoordinator({
       environment: 'test',
@@ -226,21 +226,21 @@ describe('active RuntimeAssembly activation transaction', () => {
     await coordinator.initialize();
     register(registry, fakeSocket(), 'replica-a', 1, ASSEMBLY_A);
     await expect(coordinator.activate({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-timeout',
       expectedGeneration: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     })).rejects.toThrow(/timed out/);
     expect((await stateStore.read('test')).committed.generation).toBe(1);
 
     const committedStore = new MemoryAssemblyActivationStateStore(
-      initialActivationState({ environment: 'test', generation: 2, assemblyIdentity: ASSEMBLY_B })
+      activationState({ environment: 'test', generation: 2, assemblyIdentity: ASSEMBLY_B })
     );
     const committedFixture = await coordinatorFixture(committedStore);
     expect(committedFixture.snapshots.get()).toMatchObject({
       generation: 2,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     const stagedRuntime = fakeSocket();
     committedFixture.coordinator.handleRuntimeControl(
@@ -252,14 +252,14 @@ describe('active RuntimeAssembly activation transaction', () => {
       activationId: 'activation-before-crash',
       expectedGeneration: 1,
       candidateGeneration: 2,
-      assembly: { assemblyIdentity: ASSEMBLY_B },
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
       replicaId: 'replica-after-crash'
     });
   });
 
   it('rolls back a durable pending transaction when the commit adapter fails before CAS', async () => {
     const durable = new MemoryAssemblyActivationStateStore(
-      initialActivationState({
+      activationState({
         environment: 'test',
         generation: 1,
         assemblyIdentity: ASSEMBLY_A
@@ -277,11 +277,11 @@ describe('active RuntimeAssembly activation transaction', () => {
     const runtime = fakeSocket();
     register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
     const activation = fixture.coordinator.activate({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-adapter-failure',
       expectedGeneration: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 1);
     fixture.coordinator.handleRuntimeControl(
@@ -297,19 +297,19 @@ describe('active RuntimeAssembly activation transaction', () => {
 
     await expect(activation).rejects.toThrow(/injected commit adapter failure/);
     await expect(durable.read('test')).resolves.toMatchObject({
-      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A } },
+      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A }, configSnapshot: configSnapshot(ASSEMBLY_A), },
       pending: null
     });
     expect(fixture.snapshots.get()).toMatchObject({
       generation: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_A }
+      assembly: { assemblyIdentity: ASSEMBLY_A }, configSnapshot: configSnapshot(ASSEMBLY_A),
     });
     expect(controlsOfType(fixture.controls, 'abort')).toHaveLength(1);
   });
 
   it('converges to the durable commit when the adapter response is lost after CAS', async () => {
     const durable = new MemoryAssemblyActivationStateStore(
-      initialActivationState({
+      activationState({
         environment: 'test',
         generation: 1,
         assemblyIdentity: ASSEMBLY_A
@@ -328,11 +328,11 @@ describe('active RuntimeAssembly activation transaction', () => {
     const runtime = fakeSocket();
     register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
     const activation = fixture.coordinator.activate({
-      schemaVersion: 'skiff-assembly-activation-request-v1',
+      schemaVersion: 'skiff-assembly-activation-request-v2',
       environment: 'test',
       activationId: 'activation-lost-response',
       expectedGeneration: 1,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 1);
     fixture.coordinator.handleRuntimeControl(
@@ -347,12 +347,12 @@ describe('active RuntimeAssembly activation transaction', () => {
     );
 
     await expect(activation).resolves.toMatchObject({
-      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } },
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B), },
       pending: null
     });
     expect(fixture.snapshots.get()).toMatchObject({
       generation: 2,
-      assembly: { assemblyIdentity: ASSEMBLY_B }
+      assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     expect(controlsOfType(fixture.controls, 'commit')).toHaveLength(1);
   });
@@ -360,7 +360,7 @@ describe('active RuntimeAssembly activation transaction', () => {
 
 async function coordinatorFixture(
   stateStore: AssemblyActivationStateStore = new MemoryAssemblyActivationStateStore(
-    initialActivationState({ environment: 'test', generation: 1, assemblyIdentity: ASSEMBLY_A })
+    activationState({ environment: 'test', generation: 1, assemblyIdentity: ASSEMBLY_A })
   )
 ) {
   const snapshots = new RouterActiveAssemblySnapshotStore();
@@ -398,6 +398,7 @@ function register(
     environment: 'test',
     generation,
     assembly: { assemblyIdentity },
+    configSnapshot: configSnapshot(assemblyIdentity),
     replicaId
   });
 }
@@ -415,6 +416,7 @@ function responseControl(
     expectedGeneration,
     candidateGeneration: expectedGeneration + 1,
     assembly: { assemblyIdentity },
+    configSnapshot: configSnapshot(assemblyIdentity),
     replicaId
   };
   return type === 'reject'
@@ -459,6 +461,24 @@ function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
 
 function identity(character: string): string {
   return `skiff-runtime-assembly-v3:sha256:${character.repeat(64)}`;
+}
+
+function configSnapshot(assemblyIdentity: string) {
+  const marker = assemblyIdentity.slice(-1);
+  return {
+    snapshotId: `skiff-runtime-config-snapshot-v1:${marker.repeat(32)}`
+  };
+}
+
+function activationState(input: {
+  environment: string;
+  generation: number;
+  assemblyIdentity: string;
+}) {
+  return initialActivationState({
+    ...input,
+    configSnapshotId: configSnapshot(input.assemblyIdentity).snapshotId
+  });
 }
 
 function controlsOfType(controls: readonly AssemblyActivationControl[], type: string) {

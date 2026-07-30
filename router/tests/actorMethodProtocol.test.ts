@@ -72,7 +72,7 @@ test('all three actor errors retain typed context', () => {
   ];
   for (const error of errors) {
     const header = {
-      schemaVersion: 'skiff-runtime-frame-v2',
+      schemaVersion: 'skiff-runtime-frame-v3',
       type: 'actor.method.error',
       invocationId: 'inv:typed',
       error

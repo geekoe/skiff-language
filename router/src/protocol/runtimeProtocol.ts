@@ -356,6 +356,31 @@ const routerBootstrapProperties = {
       maxResponseBytes: { type: 'integer' }
     },
     additionalProperties: false
+  },
+  activation: {
+    type: 'object',
+    required: ['environment', 'generation', 'assembly', 'configSnapshot'],
+    properties: {
+      environment: { type: 'string' },
+      generation: { type: 'integer' },
+      assembly: {
+        type: 'object',
+        required: ['assemblyIdentity'],
+        properties: {
+          assemblyIdentity: { type: 'string' }
+        },
+        additionalProperties: false
+      },
+      configSnapshot: {
+        type: 'object',
+        required: ['snapshotId'],
+        properties: {
+          snapshotId: { type: 'string' }
+        },
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
   }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
@@ -947,7 +972,14 @@ export const runtimeFrameHeaderSchemas = {
   },
   'router.bootstrap': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'artifactsPath', 'serviceDb', 'http'],
+    required: [
+      'schemaVersion',
+      'type',
+      'artifactsPath',
+      'serviceDb',
+      'http',
+      'activation'
+    ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       ...routerBootstrapProperties
@@ -3312,7 +3344,7 @@ function validateRouterBootstrap(envelope: Record<string, unknown>): string | nu
     envelope.activation,
     'router.bootstrap',
     'activation',
-    ['environment', 'generation', 'assembly']
+    ['environment', 'generation', 'assembly', 'configSnapshot']
   );
   if (activationFieldsError !== null) {
     return activationFieldsError;
@@ -3353,6 +3385,26 @@ function validateRouterBootstrap(envelope: Record<string, unknown>): string | nu
     )
   ) {
     return 'invalid router.bootstrap envelope: activation.assembly.assemblyIdentity must be a canonical RuntimeAssembly identity';
+  }
+  if (!isRecord(envelope.activation.configSnapshot)) {
+    return 'invalid router.bootstrap envelope: activation.configSnapshot must be an object';
+  }
+  const activationConfigSnapshotFieldsError = rejectUnsupportedObjectFields(
+    envelope.activation.configSnapshot,
+    'router.bootstrap',
+    'activation.configSnapshot',
+    ['snapshotId']
+  );
+  if (activationConfigSnapshotFieldsError !== null) {
+    return activationConfigSnapshotFieldsError;
+  }
+  if (
+    typeof envelope.activation.configSnapshot.snapshotId !== 'string' ||
+    !/^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/.test(
+      envelope.activation.configSnapshot.snapshotId
+    )
+  ) {
+    return 'invalid router.bootstrap envelope: activation.configSnapshot.snapshotId must be a canonical opaque RuntimeConfigSnapshot identity';
   }
   if (!isRecord(envelope.http)) {
     return 'invalid router.bootstrap envelope: http must be an object';
