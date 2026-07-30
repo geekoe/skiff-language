@@ -1097,7 +1097,6 @@ fn package_dependency(id: &str, version: &str) -> PackageDependency {
         version: version.to_string(),
         alias: Some("pkg".to_string()),
         top_level_alias: None,
-        collection_name_mapping: BTreeMap::new(),
     }
 }
 

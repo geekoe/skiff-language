@@ -123,7 +123,6 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
             package_id: "example.com/payments-schema".to_string(),
             exact_version: "1.0.0".to_string(),
             expected_local_abi: PackageLocalAbiIdentity::new("payments-schema-abi"),
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: Some(PackageBuildId::new("payments-schema-build")),
         }],
         resolved_package_schemas: std::slice::from_ref(&package_schema),

@@ -297,7 +297,6 @@ fn validate_pre_source_schema(
         package_id: artifact.package_id.clone(),
         exact_version: artifact.package_version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     };
     validate_package_artifact_identities(artifact).map_err(|error| {
@@ -521,7 +520,6 @@ fn complete_package_requirement_closure(
         package_id: std_artifact.package_id.clone(),
         exact_version: std_artifact.package_version.clone(),
         expected_local_abi: std_artifact.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     });
     Ok(requirements)
@@ -617,7 +615,6 @@ fn package_requirement(
         package_id: dependency.id.clone(),
         exact_version: dependency.version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: dependency.collection_name_mapping.clone(),
         expected_package_build: dependency
             .top_level_alias
             .as_ref()

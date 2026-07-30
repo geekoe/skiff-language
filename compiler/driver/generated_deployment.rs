@@ -324,7 +324,6 @@ fn package_bindings(
                     package_closure,
                 )?
                 .clone(),
-                collection_name_mapping: requirement.collection_name_mapping.clone(),
             })
         })
         .collect()

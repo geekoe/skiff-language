@@ -301,7 +301,6 @@ pub(super) fn project_fixture_with_runtime_requirements(
             package_id: "example.dependency".to_string(),
             exact_version: "2.0.0".to_string(),
             expected_local_abi: PackageLocalAbiIdentity::new("local-abi:dependency:v2"),
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         }],
         contract_requirements: vec![contract_requirement.clone()],

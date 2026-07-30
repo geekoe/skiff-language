@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{de, Deserialize, Deserializer};
 use skiff_compiler_core::id::{PublicationId, SKIFF_STD_PUBLICATION_ID};
@@ -13,7 +13,6 @@ pub struct PackageDependency {
     pub version: String,
     pub alias: Option<String>,
     pub top_level_alias: Option<String>,
-    pub collection_name_mapping: BTreeMap<String, String>,
 }
 
 impl PackageDependency {
@@ -23,7 +22,6 @@ impl PackageDependency {
             version: "1.0.0".to_string(),
             alias: None,
             top_level_alias: None,
-            collection_name_mapping: BTreeMap::new(),
         }
     }
 
@@ -51,7 +49,6 @@ impl<'de> Deserialize<'de> for PackageDependency {
             alias: Option<String>,
             #[serde(rename = "topLevelAlias")]
             top_level_alias: Option<String>,
-            collection_name_mapping: Option<BTreeMap<String, String>>,
         }
 
         let dependency = RawDetailedPackageDependency::deserialize(deserializer)?;
@@ -66,7 +63,6 @@ impl<'de> Deserialize<'de> for PackageDependency {
             version,
             alias: dependency.alias,
             top_level_alias: dependency.top_level_alias,
-            collection_name_mapping: dependency.collection_name_mapping.unwrap_or_default(),
         })
     }
 }
@@ -165,14 +161,6 @@ pub fn collect_package_dependency_violations(
             violations,
         );
     }
-    if let Err(message) = skiff_artifact_model::validate_dependency_collection_name_mapping(
-        &dependency.collection_name_mapping,
-    ) {
-        violations.push(format!(
-            "{field_label} entry {} has invalid collection_name_mapping: {message}",
-            dependency.id
-        ));
-    }
 }
 
 fn collect_dependency_alias_violations(
@@ -254,39 +242,15 @@ mod tests {
     }
 
     #[test]
-    fn dependency_mapping_uses_the_frozen_authoring_spelling_and_rejects_collisions() {
-        let dependency: PackageDependency = serde_json::from_value(serde_json::json!({
+    fn dependency_rejects_removed_collection_mapping_authoring() {
+        let removed = serde_json::from_value::<PackageDependency>(serde_json::json!({
             "id": "example.store",
             "version": "1.0.0",
             "alias": "store",
             "collection_name_mapping": {
                 "package_secret": "mapped_package_secret"
             }
-        }))
-        .unwrap();
-        assert_eq!(
-            dependency.collection_name_mapping,
-            BTreeMap::from([(
-                "package_secret".to_string(),
-                "mapped_package_secret".to_string()
-            )])
-        );
-
-        let mut colliding = dependency;
-        colliding.collection_name_mapping = BTreeMap::from([
-            ("first".to_string(), "same_target".to_string()),
-            ("second".to_string(), "same_target".to_string()),
-        ]);
-        let mut aliases = BTreeSet::new();
-        let mut violations = Vec::new();
-        collect_package_dependency_violations(
-            &colliding,
-            "packages",
-            &mut aliases,
-            &mut violations,
-        );
-        assert!(violations
-            .iter()
-            .any(|message| message.contains("invalid collection_name_mapping")));
+        }));
+        assert!(removed.is_err());
     }
 }

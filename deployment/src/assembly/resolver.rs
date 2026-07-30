@@ -333,8 +333,7 @@ fn package_requirement_matches(
     requirement: &PackageRequirement,
     selected: &PackageBinding,
 ) -> bool {
-    selected.collection_name_mapping == requirement.collection_name_mapping
-        && selected.package.package_id == requirement.package_id
+    selected.package.package_id == requirement.package_id
         && selected.package.package_version == requirement.exact_version
         && selected.package.package_local_abi_identity == requirement.expected_local_abi
         && requirement

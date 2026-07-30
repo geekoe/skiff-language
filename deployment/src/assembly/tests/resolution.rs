@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_deployment_identity,
     validate_runtime_assembly_identity,
@@ -108,48 +106,6 @@ fn package_diamond_links_each_build_once_and_is_input_order_independent() {
     assert_eq!(first.resolved_packages.len(), 4);
     assert_eq!(first.package_link_plan.code_slots.len(), 4);
     assert_eq!(first.package_link_plan.package_links.len(), 4);
-}
-
-#[test]
-fn collection_mapping_is_preserved_from_requirement_through_assembly_link() {
-    let root_contract = contract("service.collection-mapping");
-    let dependency = package("package.collection-store", &[], &[]);
-    let mut root = package("package.collection-service", &[("store", &dependency)], &[]);
-    let mapping = BTreeMap::from([
-        (
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        ),
-        (
-            "package_audit".to_string(),
-            "mapped_package_audit".to_string(),
-        ),
-    ]);
-    root.package_requirements[0].collection_name_mapping = mapping.clone();
-    assign_package_artifact_identities(&mut root).unwrap();
-    let mut binding = package_binding(&root, "store", &dependency);
-    binding.collection_name_mapping = mapping.clone();
-    let deployment = deployment(
-        &root_contract,
-        &root,
-        "revision-mapped",
-        vec![binding],
-        Vec::new(),
-    );
-
-    let assembly = resolve_runtime_assembly(
-        &[deployment_ref(&deployment)],
-        std::slice::from_ref(&deployment),
-        std::slice::from_ref(&root_contract),
-        &[root, dependency],
-    )
-    .unwrap();
-
-    assert_eq!(
-        assembly.package_link_plan.package_links[0].collection_name_mapping,
-        mapping
-    );
-    validate_runtime_assembly_identity(&assembly).unwrap();
 }
 
 #[test]

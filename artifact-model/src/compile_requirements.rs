@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,9 +13,6 @@ pub struct PackageRequirement {
     pub package_id: String,
     pub exact_version: String,
     pub expected_local_abi: PackageLocalAbiIdentity,
-    /// Exact collection-name projection owned by this dependency edge.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub collection_name_mapping: BTreeMap<String, String>,
     /// Test-service dependencies with `topLevelAlias` bind the exact
     /// implementation build because private symbols are outside the public
     /// Local ABI. Ordinary public dependencies leave this unset.

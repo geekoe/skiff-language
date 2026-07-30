@@ -97,10 +97,6 @@ fn validate_requirements(artifact: &PackageArtifact) -> Result<()> {
                 requirement.alias
             ));
         }
-        skiff_artifact_model::validate_dependency_collection_name_mapping(
-            &requirement.collection_name_mapping,
-        )
-        .map_err(|message| crate::ArtifactIdentityError::InvalidPackageArtifact { message })?;
     }
     aliases.clear();
     for requirement in &artifact.contract_requirements {

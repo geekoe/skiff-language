@@ -279,7 +279,6 @@ fn exact_package_schema_batch_rejects_missing_version_build_and_abi_mismatch() {
         package_id: artifact.package_id.clone(),
         exact_version: artifact.package_version.clone(),
         expected_local_abi: artifact.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     };
     let schema = ResolvedPackageSchema::new(
@@ -374,35 +373,6 @@ fn exact_package_schema_batch_rejects_missing_version_build_and_abi_mismatch() {
     };
     assert!(
         exact_resolved_package_schemas(&[wrong_abi_requirement], &[artifact], &[], None,).is_err()
-    );
-}
-
-#[test]
-fn authored_dependency_collection_mapping_reaches_compile_requirement_exactly() {
-    let dependency_artifact = canonical_artifact("example.store", "1.0.0");
-    let mut dependency = PackageDependency::id("example.store");
-    dependency.alias = Some("store".to_string());
-    dependency.collection_name_mapping = BTreeMap::from([
-        (
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        ),
-        (
-            "package_audit".to_string(),
-            "mapped_package_audit".to_string(),
-        ),
-    ]);
-
-    let requirement = package_requirement(
-        "example.service",
-        &dependency,
-        std::slice::from_ref(&dependency_artifact),
-    )
-    .unwrap();
-
-    assert_eq!(
-        requirement.collection_name_mapping,
-        dependency.collection_name_mapping
     );
 }
 

@@ -95,8 +95,8 @@ fn validated_package_admission_cannot_be_reused_for_different_input() {
 }
 
 #[test]
-fn real_package_fixture_transports_collection_mapping_to_runtime_assembly() {
-    let root = TestDir::new("skiff-compiler", "collection-mapping-transport");
+fn dependency_declared_collection_remains_provider_owned_logical_input() {
+    let root = TestDir::new("skiff-compiler", "declared-collection-identity");
     root.write(
         "package.yml",
         r#"
@@ -106,8 +106,9 @@ packages:
   - id: example.com/mapping-store
     version: 1.0.0
     alias: store
-    collection_name_mapping:
-      package_secret: mapped_package_secret
+  - id: example.com/mapping-audit
+    version: 1.0.0
+    alias: audit
 "#,
     );
     root.write(
@@ -142,24 +143,40 @@ db object PackageSecret {
 }
 "#,
     );
+    let audit_dependency_path = std::path::PathBuf::from(".skiff-packages")
+        .join(
+            PublicationId::parse("example.com/mapping-audit")
+                .unwrap()
+                .artifact_path(),
+        )
+        .join("1.0.0");
+    root.write(
+        audit_dependency_path.join("package.yml"),
+        "id: example.com/mapping-audit\nversion: 1.0.0\n",
+    );
+    root.write(audit_dependency_path.join("api.yml"), "{}\n");
+    root.write(
+        audit_dependency_path.join("audit.skiff"),
+        r#"
+type PackageSecret { id: string, value: string }
+db object PackageSecret {
+  name "package_secret"
+  primary key(id)
+}
+"#,
+    );
 
     let (project, service_api) = compile_service_package_project(root.path()).unwrap();
-    let expected_mapping = std::collections::BTreeMap::from([(
-        "package_secret".to_string(),
-        "mapped_package_secret".to_string(),
-    )]);
-    assert_eq!(
-        project.package.artifact.package_requirements[0].collection_name_mapping,
-        expected_mapping
-    );
-    let dependency = project
-        .dependency("example.com/mapping-store", "1.0.0")
-        .expect("fresh dependency artifact");
-    assert!(dependency
-        .file_ir_units
-        .iter()
-        .flat_map(|file| file.unit.declarations.db.values())
-        .any(|declaration| declaration.collection_name == "package_secret"));
+    for package_id in ["example.com/mapping-store", "example.com/mapping-audit"] {
+        let dependency = project
+            .dependency(package_id, "1.0.0")
+            .expect("fresh dependency artifact");
+        assert!(dependency
+            .file_ir_units
+            .iter()
+            .flat_map(|file| file.unit.declarations.db.values())
+            .any(|declaration| declaration.collection_name == "package_secret"));
+    }
 
     let service = ServiceManifestAuthoring {
         id: "example.com/mapping-service".to_string(),
@@ -181,11 +198,6 @@ db object PackageSecret {
         package_schema_records: &project.package.resolved_package_schema_type_records,
     })
     .unwrap();
-    assert_eq!(
-        deployment.package_bindings[0].collection_name_mapping,
-        expected_mapping
-    );
-
     let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
     let mut packages = closure;
     packages.push(project.package.artifact.clone());
@@ -196,10 +208,7 @@ db object PackageSecret {
         &packages,
     )
     .unwrap();
-    assert_eq!(
-        assembly.package_link_plan.package_links[0].collection_name_mapping,
-        expected_mapping
-    );
+    assert_eq!(assembly.package_link_plan.package_links.len(), 2);
     skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
 }
 

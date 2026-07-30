@@ -738,10 +738,6 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         package_id: dependency_a.package_id.clone(),
         exact_version: dependency_a.package_version.clone(),
         expected_local_abi: dependency_a.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: BTreeMap::from([(
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        )]),
         expected_package_build: None,
     }];
     fixture.refresh_implementation_ref();
@@ -752,10 +748,6 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
     fixture.input.package_bindings = vec![PackageBinding {
         key: binding_key,
         package: package_ref(&dependency_a),
-        collection_name_mapping: BTreeMap::from([(
-            "package_secret".to_string(),
-            "mapped_package_secret".to_string(),
-        )]),
     }];
 
     assert!(matches!(
@@ -778,26 +770,6 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
         &fixture.package_schema_records,
     )
     .unwrap();
-    let mut drifted = fixture.input.clone();
-    drifted.package_bindings[0].collection_name_mapping.insert(
-        "package_secret".to_string(),
-        "drifted_package_secret".to_string(),
-    );
-    assert!(matches!(
-        project_service_deployment(
-            drifted,
-            &fixture.contract,
-            &[
-                fixture.implementation.clone(),
-                dependency_artifact("resource-a")
-            ],
-            &fixture.package_schema_records,
-        ),
-        Err(ProjectionError::RequirementBindingMismatch {
-            kind: "package",
-            ..
-        })
-    ));
     let dependency_b = dependency_artifact("resource-b");
     fixture.input.package_bindings[0].package = package_ref(&dependency_b);
     let second = project_service_deployment(
@@ -832,7 +804,6 @@ fn exact_package_closure_rejects_multiple_builds_for_one_package_id() {
             package_id: dependency_a.package_id.clone(),
             exact_version: dependency_a.package_version.clone(),
             expected_local_abi: dependency_a.package_local_abi.local_abi_identity.clone(),
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         })
         .collect();
@@ -844,7 +815,6 @@ fn exact_package_closure_rejects_multiple_builds_for_one_package_id() {
                 package_requirement_alias: "util-a".to_string(),
             },
             package: package_ref(&dependency_a),
-            collection_name_mapping: BTreeMap::new(),
         },
         PackageBinding {
             key: PackageRequirementKey {
@@ -852,7 +822,6 @@ fn exact_package_closure_rejects_multiple_builds_for_one_package_id() {
                 package_requirement_alias: "util-b".to_string(),
             },
             package: package_ref(&dependency_b),
-            collection_name_mapping: BTreeMap::new(),
         },
     ];
 
@@ -883,7 +852,6 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
         package_id: dependency.package_id.clone(),
         exact_version: dependency.package_version.clone(),
         expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     }];
     let BoundaryCallableProjection::Available {
@@ -911,7 +879,6 @@ fn transitive_requirement_cannot_fill_an_invalid_callable_projection() {
             package_requirement_alias: "util".to_string(),
         },
         package: package_ref(&dependency),
-        collection_name_mapping: BTreeMap::new(),
     }];
     assert!(matches!(
         project_service_deployment(
@@ -957,7 +924,6 @@ fn every_package_in_the_resolved_closure_gets_boundary_admission() {
         package_id: dependency.package_id.clone(),
         exact_version: dependency.package_version.clone(),
         expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     }];
     fixture.refresh_implementation_ref();
@@ -967,7 +933,6 @@ fn every_package_in_the_resolved_closure_gets_boundary_admission() {
             package_requirement_alias: "util".to_string(),
         },
         package: package_ref(&dependency),
-        collection_name_mapping: BTreeMap::new(),
     }];
 
     let error = project_service_deployment(

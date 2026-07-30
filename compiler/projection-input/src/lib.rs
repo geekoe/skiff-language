@@ -1153,7 +1153,6 @@ mod resolved_package_schema_tests {
             package_id: "example.com/models".to_string(),
             exact_version: "1.2.3".to_string(),
             expected_local_abi: PackageLocalAbiIdentity::new("abi"),
-            collection_name_mapping: BTreeMap::new(),
             expected_package_build: None,
         };
         assert!(matches!(

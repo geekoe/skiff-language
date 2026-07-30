@@ -575,7 +575,7 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
     typeName: 'PackageBinding',
-    requiredFields: Object.freeze(['key', 'package', 'collection_name_mapping']),
+    requiredFields: Object.freeze(['key', 'package']),
   }),
   Object.freeze({
     relPath: 'artifact-model/src/deployment.rs',
@@ -1521,7 +1521,6 @@ pub struct ServiceRequirementKey {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageBinding {
   pub key: PackageRequirementKey, pub package: PackageArtifactRef,
-  pub collection_name_mapping: Map,
 }
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceSelectorBinding { pub key: ServiceRequirementKey, pub contract: ServiceContractRef }

@@ -290,7 +290,6 @@ fn requirement(alias: &str, package: &PackageArtifact) -> PackageRequirement {
         expected_local_abi: PackageLocalAbiIdentity::new(
             package.package_local_abi.local_abi_identity.as_ref(),
         ),
-        collection_name_mapping: BTreeMap::new(),
         expected_package_build: None,
     }
 }

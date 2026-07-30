@@ -232,11 +232,6 @@ fn validate_requirement_target(
             "packageLocalAbiIdentity must be {}, got {}",
             requirement.expected_local_abi, target.package_local_abi_identity
         ))
-    } else if binding.collection_name_mapping != requirement.collection_name_mapping {
-        Some(format!(
-            "collectionNameMapping must be {:?}, got {:?}",
-            requirement.collection_name_mapping, binding.collection_name_mapping
-        ))
     } else if requirement
         .expected_package_build
         .as_ref()

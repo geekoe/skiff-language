@@ -60,9 +60,6 @@ pub struct ServiceRequirementKey {
 pub struct PackageBinding {
     pub key: PackageRequirementKey,
     pub package: PackageArtifactRef,
-    /// Exact collection-name projection copied from the bound requirement.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub collection_name_mapping: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
