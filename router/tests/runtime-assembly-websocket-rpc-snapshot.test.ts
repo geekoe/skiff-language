@@ -220,17 +220,20 @@ describe('RuntimeAssembly WebSocket RPC snapshot', () => {
           legacy;
         fixture.assembly.gatewayIngress[0].gatewayEntryIdentity = legacy;
       }
-    },
-    {
-      name: 'deployment activation maxConcurrency',
-      mutate: (fixture: Fixture) => {
-        fixture.deployment.policy.activation.maxConcurrency = 8;
-      }
     }
   ])('strictly rejects legacy $name records', ({ mutate }) => {
     const fixture = currentWebSocketFixture();
     mutate(fixture);
     expect(() => joinFixture(fixture)).toThrow();
+  });
+
+  it('strictly rejects the removed deployment activation policy', () => {
+    const fixture = currentWebSocketFixture();
+    fixture.deployment.policy.activation = { idleTimeoutMs: null };
+
+    expect(() => joinFixture(fixture)).toThrow(
+      /policy fields must contain principal,resources and only optional timeoutMs/
+    );
   });
 
   it('rejects DeploymentArtifact preimage drift under a current v3 prefix', () => {
@@ -416,7 +419,6 @@ function currentWebSocketFixture(): Fixture {
     policy: {
       timeoutMs: 5_000,
       resources: { cpuMillis: 100, memoryBytes: 1_048_576 },
-      activation: { idleTimeoutMs: null },
       principal: 'service:example.com/chat'
     },
     diagnosticText: { displayName: 'chat-current', notes: {} }

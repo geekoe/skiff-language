@@ -651,7 +651,7 @@ function decodeDeploymentPolicy(
   const value = exactObject(input, label);
   exactFieldsWithOptional(
     value,
-    ['resources', 'activation', 'principal'],
+    ['resources', 'principal'],
     ['timeoutMs'],
     label
   );
@@ -660,14 +660,6 @@ function decodeDeploymentPolicy(
   exactFields(resources, ['cpuMillis', 'memoryBytes'], `${label}.resources`);
   positiveSafeInteger(resources.cpuMillis, `${label}.resources.cpuMillis`);
   positiveSafeInteger(resources.memoryBytes, `${label}.resources.memoryBytes`);
-  const activation = exactObject(value.activation, `${label}.activation`);
-  exactFields(activation, ['idleTimeoutMs'], `${label}.activation`);
-  if (activation.idleTimeoutMs !== null) {
-    positiveSafeInteger(
-      activation.idleTimeoutMs,
-      `${label}.activation.idleTimeoutMs`
-    );
-  }
   if (!Object.hasOwn(value, 'timeoutMs')) {
     return undefined;
   }
