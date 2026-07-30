@@ -68,6 +68,201 @@ fn activation_request_preserves_dev_target_environment() {
 }
 
 #[test]
+fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case() {
+    let timeline = RefCell::new(Vec::new());
+    let activation_calls = Cell::new(0);
+    let readiness_calls = Cell::new(0);
+    let dispatch_coordinates = RefCell::new(Vec::new());
+
+    let summary = execute_shared_assembly_with(
+        three_entrypoints(),
+        7,
+        |expected_generation, candidate_generation| {
+            activation_calls.set(activation_calls.get() + 1);
+            timeline.borrow_mut().push("activate".to_string());
+            assert_eq!((expected_generation, candidate_generation), (7, 8));
+            Ok(test_active_assembly(candidate_generation))
+        },
+        |active| {
+            readiness_calls.set(readiness_calls.get() + 1);
+            timeline.borrow_mut().push("readiness".to_string());
+            assert_eq!(active.generation, 8);
+            Ok(())
+        },
+        |active, entrypoint| {
+            timeline
+                .borrow_mut()
+                .push(format!("dispatch:{}", entrypoint.case.name));
+            dispatch_coordinates.borrow_mut().push((
+                active.assembly.assembly_identity.as_str().to_string(),
+                active.generation,
+                entrypoint.deployment.clone(),
+                entrypoint.gateway_entry_identity.clone(),
+            ));
+            if entrypoint.case.name == "case 2" {
+                Ok(DispatchOutcome::Failed("assertion failed".to_string()))
+            } else {
+                Ok(DispatchOutcome::Passed)
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(activation_calls.get(), 1);
+    assert_eq!(readiness_calls.get(), 1);
+    assert_eq!(
+        &*timeline.borrow(),
+        &[
+            "activate",
+            "readiness",
+            "dispatch:case 1",
+            "dispatch:case 2",
+            "dispatch:case 3",
+        ]
+    );
+    assert_eq!((summary.passed, summary.failed), (2, 1));
+    let dispatch_coordinates = dispatch_coordinates.borrow();
+    assert_eq!(dispatch_coordinates.len(), 3);
+    assert!(dispatch_coordinates
+        .iter()
+        .all(
+            |(identity, generation, _, _)| identity == test_support::ASSEMBLY_B && *generation == 8
+        ));
+    assert_eq!(
+        dispatch_coordinates
+            .iter()
+            .map(|(_, _, deployment, _)| deployment.service_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "test.skiff/package/example-1",
+            "test.skiff/package/example-2",
+            "test.skiff/package/example-3",
+        ]
+    );
+    assert_eq!(
+        dispatch_coordinates
+            .iter()
+            .map(|(_, _, _, gateway)| gateway.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            concat!(
+                "skiff-gateway-entry-v2:sha256:",
+                "0000000000000000000000000000000000000000000000000000000000000001"
+            ),
+            concat!(
+                "skiff-gateway-entry-v2:sha256:",
+                "0000000000000000000000000000000000000000000000000000000000000002"
+            ),
+            concat!(
+                "skiff-gateway-entry-v2:sha256:",
+                "0000000000000000000000000000000000000000000000000000000000000003"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn shared_executor_activation_failure_has_an_empty_ledger_and_zero_dispatches() {
+    let readiness_calls = Cell::new(0);
+    let dispatch_calls = Cell::new(0);
+    let error = execute_shared_assembly_with(
+        three_entrypoints(),
+        11,
+        |expected_generation, candidate_generation| {
+            assert_eq!((expected_generation, candidate_generation), (11, 12));
+            Err::<ActivatedAssembly<()>, _>(CanonicalFixtureError::RemoteControl {
+                status: 409,
+                code: "ActivationGenerationMismatch".to_string(),
+                message: "expected generation did not match".to_string(),
+            })
+        },
+        |_| {
+            readiness_calls.set(readiness_calls.get() + 1);
+            Ok(())
+        },
+        |_, _| {
+            dispatch_calls.set(dispatch_calls.get() + 1);
+            Ok(DispatchOutcome::Passed)
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(readiness_calls.get(), 0);
+    assert_eq!(dispatch_calls.get(), 0);
+    assert_empty_first_case_ledger(error, "ActivationGenerationMismatch");
+}
+
+#[test]
+fn shared_executor_readiness_failure_has_an_empty_ledger_and_zero_dispatches() {
+    let activation_calls = Cell::new(0);
+    let readiness_calls = Cell::new(0);
+    let dispatch_calls = Cell::new(0);
+    let error = execute_shared_assembly_with(
+        three_entrypoints(),
+        3,
+        |expected_generation, candidate_generation| {
+            activation_calls.set(activation_calls.get() + 1);
+            assert_eq!((expected_generation, candidate_generation), (3, 4));
+            Ok(test_active_assembly(candidate_generation))
+        },
+        |_| {
+            readiness_calls.set(readiness_calls.get() + 1);
+            Err(CanonicalFixtureError::InvalidInput(
+                "runtime readiness failed: no healthy participant".to_string(),
+            ))
+        },
+        |_, _| {
+            dispatch_calls.set(dispatch_calls.get() + 1);
+            Ok(DispatchOutcome::Passed)
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(activation_calls.get(), 1);
+    assert_eq!(readiness_calls.get(), 1);
+    assert_eq!(dispatch_calls.get(), 0);
+    let CanonicalFixtureError::SuiteExecution {
+        completed,
+        module_path,
+        name,
+        source,
+    } = error
+    else {
+        panic!("readiness failure did not become a suite-level error");
+    };
+    assert!(completed.is_empty());
+    assert_eq!((module_path.as_str(), name.as_str()), ("main", "case 1"));
+    assert!(matches!(
+        *source,
+        CanonicalFixtureError::InvalidInput(ref message)
+            if message == "runtime readiness failed: no healthy participant"
+    ));
+}
+
+#[test]
+fn shared_executor_generation_overflow_fails_before_activation() {
+    let activation_calls = Cell::new(0);
+    let error = execute_shared_assembly_with(
+        three_entrypoints(),
+        u64::MAX,
+        |_, _| {
+            activation_calls.set(activation_calls.get() + 1);
+            Ok(test_active_assembly(0))
+        },
+        |_| Ok(()),
+        |_, _| Ok(DispatchOutcome::Passed),
+    )
+    .unwrap_err();
+
+    assert_eq!(activation_calls.get(), 0);
+    assert!(matches!(
+        error,
+        CanonicalFixtureError::InvalidInput(ref message)
+            if message == "assembly activation expected generation cannot advance"
+    ));
+}
+
+#[test]
 fn test_service_control_body_is_the_exact_http_request() {
     let entrypoint = test_service_entrypoint();
     let assembly = RuntimeAssemblyRef {
@@ -329,9 +524,53 @@ fn three_entrypoints() -> Vec<CanonicalTestServiceEntrypoint> {
         .map(|index| {
             let mut entrypoint = test_service_entrypoint();
             entrypoint.case.name = format!("case {index}");
+            entrypoint.selector.path = format!("/__skiff/test/{index}");
+            entrypoint.deployment = serde_json::from_value(serde_json::json!({
+                "serviceId": format!("test.skiff/package/example-{index}"),
+                "contractVersion": "1.0.0",
+                "deploymentRevision": format!("test-control-{index}"),
+                "deploymentArtifactIdentity": format!(
+                    "skiff-deployment-artifact-v4:sha256:{index:064x}"
+                ),
+            }))
+            .unwrap();
+            entrypoint.gateway_entry_identity = skiff_artifact_model::GatewayEntryIdentity::parse(
+                format!("skiff-gateway-entry-v2:sha256:{index:064x}"),
+            )
+            .unwrap();
             entrypoint
         })
         .collect()
+}
+
+fn test_active_assembly(generation: u64) -> ActivatedAssembly<()> {
+    ActivatedAssembly {
+        assembly: RuntimeAssemblyRef {
+            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
+                test_support::ASSEMBLY_B,
+            ),
+        },
+        generation,
+        readiness: (),
+    }
+}
+
+fn assert_empty_first_case_ledger(error: CanonicalFixtureError, expected_code: &str) {
+    let CanonicalFixtureError::SuiteExecution {
+        completed,
+        module_path,
+        name,
+        source,
+    } = error
+    else {
+        panic!("pre-dispatch failure did not become a suite-level error");
+    };
+    assert!(completed.is_empty());
+    assert_eq!((module_path.as_str(), name.as_str()), ("main", "case 1"));
+    assert!(matches!(
+        *source,
+        CanonicalFixtureError::RemoteControl { ref code, .. } if code == expected_code
+    ));
 }
 
 fn business_failure_response(code: &str, message: &str) -> String {

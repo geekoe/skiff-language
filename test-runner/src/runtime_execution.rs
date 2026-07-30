@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
@@ -11,7 +12,7 @@ use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef};
 use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::{read_root_package_manifest, CanonicalPackageProject},
-    canonical_store::CanonicalBaseAssembly,
+    canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
     inline_effects,
     test_discovery::TestServiceCase,
     test_service_fixture::{
@@ -59,127 +60,174 @@ pub fn run_package_cases(
         ingress_url,
     )?;
     fixture.publish(source_artifact_root, runtime_artifact_root)?;
-    execute_case_assemblies(fixture.cases, activation_url, ingress_url, options)
+    let shared_records = shared_fixture_records(&fixture.cases)?.clone();
+    let entrypoints = fixture
+        .cases
+        .into_iter()
+        .map(|case| case.entrypoint)
+        .collect();
+    execute_shared_assembly(
+        &shared_records,
+        entrypoints,
+        activation_url,
+        ingress_url,
+        options,
+    )
 }
 
-fn execute_case_assemblies(
-    cases: Vec<crate::test_service_fixture::CanonicalTestServiceCaseFixture>,
+fn shared_fixture_records(
+    cases: &[crate::test_service_fixture::CanonicalTestServiceCaseFixture],
+) -> Result<&CanonicalTestRecords, CanonicalFixtureError> {
+    let first = cases.first().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "shared test-service execution requires at least one case".to_string(),
+        )
+    })?;
+    let shared_assembly = runtime_assembly_ref(&first.records.assembly)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    for case in &cases[1..] {
+        let case_assembly = runtime_assembly_ref(&case.records.assembly)
+            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        if case_assembly != shared_assembly {
+            return Err(CanonicalFixtureError::InvalidInput(
+                "test-service fixture cases must reference one shared runtime assembly".to_string(),
+            ));
+        }
+    }
+    Ok(&first.records)
+}
+
+fn execute_shared_assembly(
+    records: &CanonicalTestRecords,
+    entrypoints: Vec<CanonicalTestServiceEntrypoint>,
     activation_url: &str,
     ingress_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
-    let mut expected_generation = options.expected_generation;
-    let mut results = Vec::with_capacity(cases.len());
-    for case in cases {
-        let candidate_generation = expected_generation.checked_add(1).ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(
-                "assembly activation expected generation cannot advance".to_string(),
-            )
-        })?;
-        let assembly_ref = runtime_assembly_ref(&case.records.assembly)
-            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-        let requested_identity = assembly_ref.assembly_identity.as_str().to_string();
-        let activation_id = format!(
-            "test-service-{}-{}",
-            std::process::id(),
-            requested_identity.rsplit(':').next().unwrap_or("assembly")
-        );
-        let body = activation_request_body(
-            &options.target_environment,
-            &activation_id,
-            expected_generation,
-            &assembly_ref,
-        )?;
-        let activation = http::request_url(
-            activation_url,
-            "POST",
-            None,
-            &body,
-            deadline_after(ACTIVATION_HTTP_TIMEOUT)?,
-            MAX_HTTP_RESPONSE_BYTES,
-        )?;
-        if !(200..300).contains(&activation.response.status) {
-            let error = wire::decode_control_error_response(&activation.response.body)?;
-            return Err(suite_execution_error(
-                results,
-                &case.entrypoint.case.module_path,
-                &case.entrypoint.case.name,
-                CanonicalFixtureError::RemoteControl {
+    let assembly_ref = runtime_assembly_ref(&records.assembly)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let requested_identity = assembly_ref.assembly_identity.as_str().to_string();
+    execute_shared_assembly_with(
+        entrypoints,
+        options.expected_generation,
+        |expected_generation, candidate_generation| {
+            let activation_id = format!(
+                "test-service-{}-{}",
+                std::process::id(),
+                requested_identity.rsplit(':').next().unwrap_or("assembly")
+            );
+            let body = activation_request_body(
+                &options.target_environment,
+                &activation_id,
+                expected_generation,
+                &assembly_ref,
+            )?;
+            let activation = http::request_url(
+                activation_url,
+                "POST",
+                None,
+                &body,
+                deadline_after(ACTIVATION_HTTP_TIMEOUT)?,
+                MAX_HTTP_RESPONSE_BYTES,
+            )?;
+            if !(200..300).contains(&activation.response.status) {
+                let error = wire::decode_control_error_response(&activation.response.body)?;
+                return Err(CanonicalFixtureError::RemoteControl {
                     status: activation.response.status,
                     code: error.code,
                     message: error.message,
+                });
+            }
+            let receipt = wire::decode_activation_receipt(&activation.response.body)?;
+            let target = readiness::target_from_receipt(
+                receipt.clone(),
+                &options.target_environment,
+                candidate_generation,
+                &requested_identity,
+            )?;
+            Ok(ActivatedAssembly {
+                assembly: receipt.assembly,
+                generation: receipt.generation,
+                readiness: HttpReadiness {
+                    target,
+                    peer_addr: activation.peer_addr,
+                    authority: activation.authority,
                 },
-            ));
-        }
-        let receipt = wire::decode_activation_receipt(&activation.response.body)?;
-        let active_assembly = receipt.assembly.clone();
-        let active_generation = receipt.generation;
-        let target = readiness::target_from_receipt(
-            receipt,
-            &options.target_environment,
-            candidate_generation,
-            &requested_identity,
-        )?;
-        readiness::poll(&target, deadline_after(READINESS_TIMEOUT)?, |deadline| {
-            http::request_peer(
-                activation.peer_addr,
-                &activation.authority,
-                HEALTH_PATH,
-                "GET",
-                &[],
-                deadline,
-                MAX_HTTP_RESPONSE_BYTES,
+            })
+        },
+        |active| {
+            readiness::poll(
+                &active.readiness.target,
+                deadline_after(READINESS_TIMEOUT)?,
+                |deadline| {
+                    http::request_peer(
+                        active.readiness.peer_addr,
+                        &active.readiness.authority,
+                        HEALTH_PATH,
+                        "GET",
+                        &[],
+                        deadline,
+                        MAX_HTTP_RESPONSE_BYTES,
+                    )
+                },
             )
-        })
-        .map_err(|source| {
-            suite_execution_error(
-                results.clone(),
-                &case.entrypoint.case.module_path,
-                &case.entrypoint.case.name,
-                source,
-            )
-        })?;
-        let one = execute_entrypoints(
-            vec![case.entrypoint],
-            activation_url,
-            ingress_url,
-            &active_assembly,
-            active_generation,
-        )
-        .map_err(|error| prepend_completed_results(results.clone(), error))?;
-        results.extend(one.results);
-        expected_generation = active_generation;
-    }
-    let passed = results.iter().filter(|result| result.passed).count();
-    let failed = results.len() - passed;
-    Ok(SkiffTestSummary {
-        passed,
-        skipped: 0,
-        failed,
-        results,
-    })
+        },
+        |active, entrypoint| {
+            execute_business_request_once(|| {
+                execute_control_test_dispatch(
+                    activation_url,
+                    ingress_url,
+                    &active.assembly,
+                    active.generation,
+                    entrypoint,
+                )
+            })
+        },
+    )
 }
 
-fn prepend_completed_results(
-    mut prefix: Vec<SkiffTestResult>,
-    error: CanonicalFixtureError,
-) -> CanonicalFixtureError {
-    let CanonicalFixtureError::SuiteExecution {
-        completed,
-        module_path,
-        name,
-        source,
-    } = error
-    else {
-        return error;
-    };
-    prefix.extend(completed);
-    CanonicalFixtureError::SuiteExecution {
-        completed: prefix,
-        module_path,
-        name,
-        source,
-    }
+#[derive(Debug)]
+struct ActivatedAssembly<Readiness> {
+    assembly: RuntimeAssemblyRef,
+    generation: u64,
+    readiness: Readiness,
+}
+
+#[derive(Debug)]
+struct HttpReadiness {
+    target: readiness::ReadinessTarget,
+    peer_addr: SocketAddr,
+    authority: String,
+}
+
+fn execute_shared_assembly_with<Readiness>(
+    entrypoints: Vec<CanonicalTestServiceEntrypoint>,
+    expected_generation: u64,
+    activate: impl FnOnce(u64, u64) -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
+    await_readiness: impl FnOnce(&ActivatedAssembly<Readiness>) -> Result<(), CanonicalFixtureError>,
+    mut dispatch: impl FnMut(
+        &ActivatedAssembly<Readiness>,
+        &CanonicalTestServiceEntrypoint,
+    ) -> Result<DispatchOutcome, CanonicalFixtureError>,
+) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    let first = entrypoints.first().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "shared test-service execution requires at least one entrypoint".to_string(),
+        )
+    })?;
+    let first_case = (first.case.module_path.clone(), first.case.name.clone());
+    let candidate_generation = expected_generation.checked_add(1).ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "assembly activation expected generation cannot advance".to_string(),
+        )
+    })?;
+    let active = activate(expected_generation, candidate_generation).map_err(|source| {
+        suite_execution_error(Vec::new(), &first_case.0, &first_case.1, source)
+    })?;
+    await_readiness(&active).map_err(|source| {
+        suite_execution_error(Vec::new(), &first_case.0, &first_case.1, source)
+    })?;
+    execute_entrypoints_with(entrypoints, |entrypoint| dispatch(&active, entrypoint))
 }
 
 fn activation_request_body(
@@ -209,26 +257,6 @@ fn test_service_run_scope() -> Result<String, CanonicalFixtureError> {
         .as_nanos();
     let sequence = TEST_SERVICE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     Ok(format!("{}-{timestamp}-{sequence}", std::process::id()))
-}
-
-fn execute_entrypoints(
-    entrypoints: Vec<CanonicalTestServiceEntrypoint>,
-    activation_url: &str,
-    ingress_url: &str,
-    assembly: &RuntimeAssemblyRef,
-    generation: u64,
-) -> Result<SkiffTestSummary, CanonicalFixtureError> {
-    execute_entrypoints_with(entrypoints, |entrypoint| {
-        execute_business_request_once(|| {
-            execute_control_test_dispatch(
-                activation_url,
-                ingress_url,
-                assembly,
-                generation,
-                entrypoint,
-            )
-        })
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
