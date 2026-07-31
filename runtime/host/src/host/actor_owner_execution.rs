@@ -105,15 +105,15 @@ impl RuntimeHost {
         let executor = ActorMethodExecutor::new(self.actor_instances.store());
         let Ok(handle) = executor
             .activate(
-            execution.interpreter(),
-            &context,
-            match control_instance_fence(control) {
-                Ok(fence) => fence,
-                Err(_) => return false,
-            },
-            &transition.bootstrap_encoding_version,
-            &bootstrap,
-        )
+                execution.interpreter(),
+                &context,
+                match control_instance_fence(control) {
+                    Ok(fence) => fence,
+                    Err(_) => return false,
+                },
+                &transition.bootstrap_encoding_version,
+                &bootstrap,
+            )
             .await
         else {
             return false;

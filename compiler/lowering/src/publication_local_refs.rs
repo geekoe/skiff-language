@@ -348,9 +348,10 @@ fn is_actor_registry_native_call(call: &skiff_artifact_model::CallIr) -> bool {
         skiff_artifact_model::CallTargetIr::Native { target } => {
             target.binding_key.as_deref() == Some("std.actor.get")
         }
-        skiff_artifact_model::CallTargetIr::PackageCallable { package_callable_id, .. } => {
-            package_callable_id.as_str().ends_with(":std.actor.get")
-        }
+        skiff_artifact_model::CallTargetIr::PackageCallable {
+            package_callable_id,
+            ..
+        } => package_callable_id.as_str().ends_with(":std.actor.get"),
         _ => false,
     }
 }

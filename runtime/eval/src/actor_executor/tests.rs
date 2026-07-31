@@ -532,7 +532,7 @@ fn suspension_probe_matrix_matches_only_real_async_native_paths() {
     for target in [
         "std.time.sleep",
         "std.file.read",
-        "std.actor.find",
+        "std.actor.get",
         "std.http.client.request",
         "std.http.client.stream",
         "std.http.client.sse",

@@ -2,15 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     ast::{
-        ActorCreateDecl, ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage, ConstDecl,
-        DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection, DbIndexEntry,
-        DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead,
-        DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection,
-        DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbStorageCodec,
-        DbStorageDecl, DbTransaction, DbWhereClause, DependencySourceAddress, DurationLiteral,
-        ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl, FieldPath, ForBinding,
-        FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl, InterfaceOperation, Literal, MatchArm,
-        PackageId, Param, Pattern, PatternField, RecordFieldSourceSpans, SourceFile,
+        ActorCreateDecl, ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage,
+        ConstDecl, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection,
+        DbIndexEntry, DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl,
+        DbLeaseRead, DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry,
+        DbProjection, DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector,
+        DbStorageCodec, DbStorageDecl, DbTransaction, DbWhereClause, DependencySourceAddress,
+        DurationLiteral, ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl, FieldPath,
+        ForBinding, FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl, InterfaceOperation, Literal,
+        MatchArm, PackageId, Param, Pattern, PatternField, RecordFieldSourceSpans, SourceFile,
         SourceSpanTable, Stmt, StmtSourceSpans, TypeDecl, TypeRef, UnaryOp, ValueBlock,
     },
     ast_utils::{expr_path, without_generic},
@@ -235,7 +235,11 @@ fn validate_type_decl_discriminator(
     Ok(())
 }
 
-fn validate_actor_declarations(actors: &[ActorDecl], types: &[TypeDecl], dbs: &[DbDecl]) -> Result<()> {
+fn validate_actor_declarations(
+    actors: &[ActorDecl],
+    types: &[TypeDecl],
+    dbs: &[DbDecl],
+) -> Result<()> {
     let type_by_name = types
         .iter()
         .map(|declaration| (declaration.name.as_str(), declaration))
@@ -279,7 +283,11 @@ fn validate_actor_declarations(actors: &[ActorDecl], types: &[TypeDecl], dbs: &[
                 actor.span.start,
             ));
         }
-        if !attached.fields.iter().any(|field| field.name == actor.key_field) {
+        if !attached
+            .fields
+            .iter()
+            .any(|field| field.name == actor.key_field)
+        {
             return Err(CompileError::syntax(
                 format!(
                     "actor {} key({}) must name a field of the attached type {}",
@@ -599,7 +607,7 @@ impl Parser {
                         "Actor" | "actor.Actor" | "std.actor.Actor"
                     ) {
                         return Err(CompileError::syntax(
-                            "actor declarations must use `actor Name id IdType { ... }`, not `type implements Actor`",
+                            "actor declarations must use `actor Name { key(field) ... }` attached to a same-file type, not `type implements Actor`",
                             start,
                         ));
                     }

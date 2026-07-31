@@ -351,7 +351,10 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
             &mut heap,
         )
         .unwrap();
-    assert_eq!(frame.read_field("count").unwrap(), RuntimeValue::Number(7.0));
+    assert_eq!(
+        frame.read_field("count").unwrap(),
+        RuntimeValue::Number(7.0)
+    );
     frame.suspend(&heap).unwrap();
     assert!(frame.read_field("count").is_err());
 }

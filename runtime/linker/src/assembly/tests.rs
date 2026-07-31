@@ -1186,11 +1186,7 @@ fn assembly_execution_links_actor_registry_call_to_declaration_owner() {
     use skiff_runtime_linked_program::{LinkedExprIr, UnitAddr};
 
     let image = link_identity_valid_execution_image(|file| {
-        append_actor_registry_call(
-            file,
-            "std.actor.get",
-            TypeRefIr::builtin("string"),
-        );
+        append_actor_registry_call(file, "std.actor.get", TypeRefIr::builtin("string"));
     })
     .expect("canonical Actor registry call should link");
     let code = image.execution_packages()[0].as_ref();
@@ -1221,11 +1217,7 @@ fn assembly_execution_defers_actor_metadata_for_generic_native_declaration() {
     use skiff_runtime_linked_program::LinkedExprIr;
 
     let image = link_identity_valid_execution_image(|file| {
-        append_actor_registry_call(
-            file,
-            "std.actor.get",
-            TypeRefIr::builtin("string"),
-        );
+        append_actor_registry_call(file, "std.actor.get", TypeRefIr::builtin("string"));
         file.executables[0]
             .type_params
             .push("ActorType".to_string());

@@ -1827,19 +1827,11 @@ fn program_service_symbol_type_addr(
     program_local_type_addr(files, unit, symbol)
 }
 
-fn is_actor_declaration_symbol(
-    program: ProgramTypeView<'_>,
-    symbol: &ServiceSymbolRef,
-) -> bool {
+fn is_actor_declaration_symbol(program: ProgramTypeView<'_>, symbol: &ServiceSymbolRef) -> bool {
     program
         .service_files
         .iter()
-        .chain(
-            program
-                .packages
-                .iter()
-                .flat_map(|package| package.files()),
-        )
+        .chain(program.packages.iter().flat_map(|package| package.files()))
         .flat_map(|file| file.actor_declarations.iter())
         .any(|declaration| declaration.actor_type == *symbol)
 }

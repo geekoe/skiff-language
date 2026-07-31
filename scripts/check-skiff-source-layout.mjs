@@ -115,7 +115,6 @@ async function checkManifests() {
     'StackTrace',
     'StackFrame',
     'TimeoutError',
-    'Actor',
     'ClientSessionRef',
     'ClientCapability',
   ]) {
@@ -332,9 +331,7 @@ function checkKnownSource(relPath, source) {
     case 'prelude/stream.skiff':
       return;
     case 'prelude/actor.skiff':
-      for (const name of ['getOrCreate', 'replace', 'find', 'remove']) {
-        expectMatches(source, nativeFunctionPattern(name), `${relPath} must define native function ${name}`);
-      }
+      expectMatches(source, nativeFunctionPattern('get'), `${relPath} must define native function get`);
       return;
     case 'prelude/session.skiff':
       return;

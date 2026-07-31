@@ -153,10 +153,7 @@ impl ActorFrameFixture {
                 name: "string".to_string(),
                 args: Vec::new(),
             },
-            &PlanContext::from_type_view(
-                self.program.projection().type_view(),
-                &addr,
-            ),
+            &PlanContext::from_type_view(self.program.projection().type_view(), &addr),
         )
         .expect("activation probe id plan");
         (

@@ -1122,13 +1122,11 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
     assert_eq!(create.parameters[0].name, "displayName");
     assert_eq!(create.parameters[1].name, "loginCount");
     assert_eq!(declaration.abi.public_methods.len(), 2);
-    assert!(
-        declaration
-            .abi
-            .public_methods
-            .iter()
-            .all(|method| method.name != "create")
-    );
+    assert!(declaration
+        .abi
+        .public_methods
+        .iter()
+        .all(|method| method.name != "create"));
     assert!(declaration.create_implementation.is_some());
     let rename = declaration
         .abi

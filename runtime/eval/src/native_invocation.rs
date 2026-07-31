@@ -17,7 +17,9 @@ use skiff_runtime_native::dispatch::{
     runtime_shared_native_route, RuntimeActorNativeMetadata, RuntimeNativeInvocation,
     RuntimeNativeRoute,
 };
-use skiff_runtime_native_contract::{NativeCallPlan, NativeDispatchTarget, NativeSignatureRegistry};
+use skiff_runtime_native_contract::{
+    NativeCallPlan, NativeDispatchTarget, NativeSignatureRegistry,
+};
 
 use super::{
     env::Env,
@@ -392,12 +394,11 @@ fn resolve_actor_native_metadata(
             "{diagnostic_target} actor call must not carry bootstrap typeArgs[2]"
         )));
     }
-    let expected_args = 1
-        + declaration
-            .create
-            .as_ref()
-            .map(|create| create.parameters.len())
-            .unwrap_or(0);
+    let expected_args = 1 + declaration
+        .create
+        .as_ref()
+        .map(|create| create.parameters.len())
+        .unwrap_or(0);
     if call.args.len() != expected_args {
         return Err(RuntimeError::InvalidArtifact(format!(
             "{diagnostic_target} expects id and create argument(s) totalling {expected_args}, got {}",

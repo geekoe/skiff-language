@@ -110,10 +110,7 @@ fn actor_get_route_is_an_owned_external_wait() {
     };
     let mut heap = RequestHeap::default();
     let target = "std.actor.get";
-    let args = vec![
-        RuntimeValue::Number(1.0),
-        RuntimeValue::Number(2.0),
-    ];
+    let args = vec![RuntimeValue::Number(1.0), RuntimeValue::Number(2.0)];
     let prepared = ActorNativeDispatch::prepare(
         actor.clone(),
         actor_invocation(target, 2, scalar_plan("unknown", RuntimeTypeNode::Unknown)),

@@ -1959,7 +1959,11 @@ impl<'a> FunctionLowerer<'a> {
             // The std actor registry entry is also reachable through the std
             // package's native callable wrapper; complete its type arguments
             // identically so the runtime can resolve the actor declaration.
-            if let CallTargetIr::PackageCallable { package_callable_id, .. } = target {
+            if let CallTargetIr::PackageCallable {
+                package_callable_id,
+                ..
+            } = target
+            {
                 if package_callable_id.as_str().ends_with(":std.actor.get") {
                     return self.complete_actor_registry_type_args(
                         package_callable_id.as_str(),
@@ -2682,10 +2686,7 @@ fn is_std_http_json_native_target(target: &NativeTarget) -> bool {
 }
 
 fn is_std_actor_registry_native_target(target: &NativeTarget) -> bool {
-    matches!(
-        target.binding_key.as_deref(),
-        Some("std.actor.get")
-    )
+    matches!(target.binding_key.as_deref(), Some("std.actor.get"))
 }
 
 fn insert_exact_native_type_arg(

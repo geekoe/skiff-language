@@ -926,7 +926,11 @@ fn materialize_instance(
         })?;
         if field.name == declaration.key_field {
             let wire: Value = serde_json::from_slice(
-                &request.fence.incarnation.logical_key.canonical_actor_id_key_bytes,
+                &request
+                    .fence
+                    .incarnation
+                    .logical_key
+                    .canonical_actor_id_key_bytes,
             )
             .map_err(|error| ActorInstanceStoreError::KeyFieldDecode {
                 field: field.name.clone(),

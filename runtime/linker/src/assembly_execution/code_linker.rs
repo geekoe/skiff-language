@@ -22,11 +22,7 @@ fn actor_registry_target_name(target: &LinkedCallTarget) -> Option<String> {
         .binding_key
         .clone()
         .unwrap_or_else(|| format!("{}.{}", target.namespace, target.symbol));
-    matches!(
-        name.as_str(),
-        "std.actor.get"
-    )
-    .then_some(name)
+    matches!(name.as_str(), "std.actor.get").then_some(name)
 }
 
 fn linked_type_descriptor_kind(descriptor: &LinkedTypeDescriptor) -> &'static str {
@@ -685,12 +681,11 @@ impl<'a> AssemblyCodeLinker<'a> {
                 declaration.actor_name
             );
         }
-        let expected_args = 1
-            + declaration
-                .create
-                .as_ref()
-                .map(|create| create.parameters.len())
-                .unwrap_or(0);
+        let expected_args = 1 + declaration
+            .create
+            .as_ref()
+            .map(|create| create.parameters.len())
+            .unwrap_or(0);
         if call.args.len() != expected_args {
             anyhow::bail!(
                 "{target_name} expects id and create argument(s) totalling {expected_args}, got {}",

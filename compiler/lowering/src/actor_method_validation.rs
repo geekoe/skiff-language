@@ -58,17 +58,12 @@ pub(super) fn validate_actor_source_rules(ast: &SourceFile) -> Result<()> {
 pub(super) fn validate_actor_method_ir_rules(unit: &FileIrUnit) -> Result<()> {
     for declaration in &unit.actor_declarations {
         let key_field = declaration.abi.key_field.as_str();
-        for executable_index in declaration
-            .method_implementations
-            .values()
-            .copied()
-            .chain(
-                declaration
-                    .create_implementation
-                    .as_ref()
-                    .map(|create| create.executable_index),
-            )
-        {
+        for executable_index in declaration.method_implementations.values().copied().chain(
+            declaration
+                .create_implementation
+                .as_ref()
+                .map(|create| create.executable_index),
+        ) {
             let executable = unit
                 .executables
                 .get(executable_index as usize)
@@ -152,9 +147,7 @@ fn validate_key_writes(actor: &ActorDecl, block: &Block) -> Result<()> {
                     validate_key_writes(actor, else_block)?;
                 }
             }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                validate_key_writes(actor, body)?
-            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => validate_key_writes(actor, body)?,
             Stmt::Match { arms, .. } => {
                 for arm in arms {
                     validate_key_writes(actor, &arm.body)?;
@@ -190,7 +183,11 @@ struct CreateValidator<'a> {
 impl CreateValidator<'_> {
     /// Returns `None` when the block always terminates (return/throw), or the
     /// set of definitely-assigned non-key fields on fallthrough.
-    fn analyze_block(&self, block: &Block, assigned: BTreeSet<String>) -> Result<Option<BTreeSet<String>>> {
+    fn analyze_block(
+        &self,
+        block: &Block,
+        assigned: BTreeSet<String>,
+    ) -> Result<Option<BTreeSet<String>>> {
         let mut current = assigned;
         for statement in &block.statements {
             match statement {
@@ -212,8 +209,7 @@ impl CreateValidator<'_> {
                         }
                     }
                 }
-                Stmt::Timeout { body, .. }
-                | Stmt::DbTransaction { body } => {
+                Stmt::Timeout { body, .. } | Stmt::DbTransaction { body } => {
                     current = self.require_fallthrough(self.analyze_block(body, current)?)?;
                 }
                 Stmt::Concurrent { body } | Stmt::Serial { body } => {
@@ -237,7 +233,11 @@ impl CreateValidator<'_> {
                         None => return Ok(None),
                     };
                 }
-                Stmt::For { iterable, body, .. } | Stmt::While { condition: iterable, body } => {
+                Stmt::For { iterable, body, .. }
+                | Stmt::While {
+                    condition: iterable,
+                    body,
+                } => {
                     self.check_reads(iterable, &current)?;
                     self.check_self_calls(iterable)?;
                     // A loop body may run zero times: only pre-loop
@@ -307,10 +307,7 @@ impl CreateValidator<'_> {
         Ok(Some(current))
     }
 
-    fn require_fallthrough(
-        &self,
-        outcome: Option<BTreeSet<String>>,
-    ) -> Result<BTreeSet<String>> {
+    fn require_fallthrough(&self, outcome: Option<BTreeSet<String>>) -> Result<BTreeSet<String>> {
         outcome.ok_or_else(|| {
             CompileError::Semantic(format!(
                 "actor {} create block always terminates before completing initialization",
@@ -397,9 +394,7 @@ impl CreateValidator<'_> {
             Expr::Timeout { value, .. } => self.check_reads(value, assigned)?,
             Expr::Throw { value } => self.check_reads(value, assigned)?,
             Expr::Rethrow { exception } => self.check_reads(exception, assigned)?,
-            Expr::Catch {
-                try_expr, ..
-            } => {
+            Expr::Catch { try_expr, .. } => {
                 // Conservative: assignments inside try or catch do not become
                 // definite after the catch expression.
                 self.check_reads(try_expr, assigned)?;
@@ -529,7 +524,11 @@ impl CreateValidator<'_> {
                         self.check_block_self_calls(else_block)?;
                     }
                 }
-                Stmt::For { iterable, body, .. } | Stmt::While { condition: iterable, body } => {
+                Stmt::For { iterable, body, .. }
+                | Stmt::While {
+                    condition: iterable,
+                    body,
+                } => {
                     self.check_self_calls(iterable)?;
                     self.check_block_self_calls(body)?;
                 }
@@ -632,7 +631,10 @@ fn check_query_block_reads(
     for clause in &query.where_clauses {
         match clause {
             DbWhereClause::Predicate { predicate } => validator.check_reads(predicate, assigned)?,
-            DbWhereClause::Conditional { condition, predicate } => {
+            DbWhereClause::Conditional {
+                condition,
+                predicate,
+            } => {
                 validator.check_reads(condition, assigned)?;
                 validator.check_reads(predicate, assigned)?;
             }
@@ -675,10 +677,7 @@ fn check_db_self_calls(validator: &CreateValidator<'_>, operation: &DbOperation)
     Ok(())
 }
 
-fn check_db_body_self_calls(
-    validator: &CreateValidator<'_>,
-    body: Option<&DbBody>,
-) -> Result<()> {
+fn check_db_body_self_calls(validator: &CreateValidator<'_>, body: Option<&DbBody>) -> Result<()> {
     match body {
         Some(DbBody::ObjectFields { fields }) => {
             for field in fields {
@@ -698,7 +697,10 @@ fn check_query_block_self_calls(
     for clause in &query.where_clauses {
         match clause {
             DbWhereClause::Predicate { predicate } => validator.check_self_calls(predicate)?,
-            DbWhereClause::Conditional { condition, predicate } => {
+            DbWhereClause::Conditional {
+                condition,
+                predicate,
+            } => {
                 validator.check_self_calls(condition)?;
                 validator.check_self_calls(predicate)?;
             }

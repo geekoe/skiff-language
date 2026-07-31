@@ -676,11 +676,7 @@ fn lower_actor_declarations(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        if actor.create.is_none()
-            && fields
-                .iter()
-                .any(|field| field.name != actor.key_field)
-        {
+        if actor.create.is_none() && fields.iter().any(|field| field.name != actor.key_field) {
             return Err(CompileError::Semantic(format!(
                 "actor {} must declare create(...) because attached type has non-key fields",
                 actor.name
@@ -805,30 +801,33 @@ fn lower_actor_declarations(
             actor_id_type,
             key_field: actor.key_field.clone(),
             fields,
-            create: actor.create.as_ref().map(|create| {
-                Ok(ActorCreateSignatureIr {
-                    parameters: create
-                        .params
-                        .iter()
-                        .map(|param| {
-                            Ok(FunctionTypeParamIr {
-                                name: param.name.clone(),
-                                ty: crate::type_lowering::lower_type_ref(
-                                    &param.ty,
-                                    type_indices,
-                                    local_db_objects,
-                                    publication_db_metadata,
-                                    package_aliases,
-                                    external_type_symbols,
-                                    source_alias_targets,
-                                    crate::type_lowering::TypeLoweringContext::value(),
-                                )?,
+            create: actor
+                .create
+                .as_ref()
+                .map(|create| {
+                    Ok(ActorCreateSignatureIr {
+                        parameters: create
+                            .params
+                            .iter()
+                            .map(|param| {
+                                Ok(FunctionTypeParamIr {
+                                    name: param.name.clone(),
+                                    ty: crate::type_lowering::lower_type_ref(
+                                        &param.ty,
+                                        type_indices,
+                                        local_db_objects,
+                                        publication_db_metadata,
+                                        package_aliases,
+                                        external_type_symbols,
+                                        source_alias_targets,
+                                        crate::type_lowering::TypeLoweringContext::value(),
+                                    )?,
+                                })
                             })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
+                            .collect::<Result<Vec<_>>>()?,
+                    })
                 })
-            })
-            .transpose()?,
+                .transpose()?,
             public_methods: actor_methods
                 .iter()
                 .map(|(method, _, _)| method.clone())
@@ -896,7 +895,9 @@ fn validate_actor_create_signature(
 
 fn validate_actor_key_type(ty: &TypeRefIr, actor_name: &str) -> Result<()> {
     let unsupported = match ty {
-        TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => Some("interface or function"),
+        TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
+            Some("interface or function")
+        }
         TypeRefIr::Builtin { name, .. }
             if matches!(name.as_str(), "unknown" | "void" | "never") =>
         {

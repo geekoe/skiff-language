@@ -227,22 +227,15 @@ impl ActorExecutionFrame {
         let authority = ActorExecutorAuthority::new();
         let mut acquire: Pin<
             Box<
-                dyn Future<
-                        Output = Result<
-                            ActorInstanceExecutionLease,
-                            ActorInstanceStoreError,
-                        >,
-                    > + Send,
+                dyn Future<Output = Result<ActorInstanceExecutionLease, ActorInstanceStoreError>>
+                    + Send,
             >,
         > = if self.suspension.shared.activation {
             Box::pin(
                 self.suspension
                     .shared
                     .store
-                    .acquire_execution_for_activation(
-                        &authority,
-                        &self.suspension.shared.handle,
-                    ),
+                    .acquire_execution_for_activation(&authority, &self.suspension.shared.handle),
             )
         } else {
             Box::pin(

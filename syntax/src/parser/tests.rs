@@ -984,7 +984,7 @@ fn ordinary_type_cannot_forge_actor_with_legacy_conformance() {
     ] {
         let error = parse_source(source).unwrap_err().to_string();
         assert!(
-            error.contains("actor declarations must use `actor Name id IdType"),
+            error.contains("actor declarations must use `actor Name { key(field)"),
             "unexpected error: {error}"
         );
     }

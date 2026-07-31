@@ -8,9 +8,7 @@ use crate::runtime_value_facade::{encode_base64, RequestHeap, RuntimeValue};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_runtime_capability_context::{
-    ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
-};
+use skiff_runtime_capability_context::{ActorGetOrCreateControlRequest, ActorKeyControlMetadata};
 
 const ACTOR_VALUE_ENCODING_VERSION: &str = "skiff-canonical-v1";
 
@@ -83,8 +81,8 @@ impl ActorNativeDispatch {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        let create_args_payload = canonical_json_bytes(&Value::Array(create_args))
-            .map_err(RuntimeError::from)?;
+        let create_args_payload =
+            canonical_json_bytes(&Value::Array(create_args)).map_err(RuntimeError::from)?;
         let operation = PreparedExternalNativeOperation::new(
             async move {
                 actor_context

@@ -89,23 +89,29 @@ impl<'a> ActorMethodExecutor<'a> {
             legacy_program = interpreter.program_projection()?;
             legacy_program.type_view()
         };
-        let (handle, materialized) = self
-            .store
-            .activate_with_created(crate::actor_instance::ActorActivationRequest {
-                fence,
-                bootstrap_encoding_version,
-                bootstrap_payload,
-                program,
-            })?;
+        let (handle, materialized) =
+            self.store
+                .activate_with_created(crate::actor_instance::ActorActivationRequest {
+                    fence,
+                    bootstrap_encoding_version,
+                    bootstrap_payload,
+                    program,
+                })?;
         if !materialized {
             return Ok(handle);
         }
-        let declaration =
-            resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
+        let declaration = resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
         validate_declaration_fence(declaration, handle.fence())?;
         if let Some(create) = declaration.create.as_ref() {
             if let Err(error) = self
-                .execute_create(interpreter, context, &handle, create, bootstrap_payload, program)
+                .execute_create(
+                    interpreter,
+                    context,
+                    &handle,
+                    create,
+                    bootstrap_payload,
+                    program,
+                )
                 .await
             {
                 self.store.discard_exact(&handle);
@@ -206,19 +212,11 @@ impl<'a> ActorMethodExecutor<'a> {
             &executable_addr,
             &mut heap,
         )?;
-        let declaration =
-            resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
+        let declaration = resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
         let field_plans = actor_field_plans(declaration, program, &executable_addr)?;
-        let frame = ActorExecutionFrame::new(
-            self.store.clone(),
-            handle.clone(),
-            lease,
-            field_plans,
-            true,
-        );
-        let context = context
-            .clone()
-            .with_actor_execution_frame(frame.clone());
+        let frame =
+            ActorExecutionFrame::new(self.store.clone(), handle.clone(), lease, field_plans, true);
+        let context = context.clone().with_actor_execution_frame(frame.clone());
         interpreter
             .call_program_executable(
                 context,

@@ -108,8 +108,7 @@ impl TryFrom<ActorDeclarationIrWire> for ActorDeclarationIr {
         if let Some(create) = wire.create_implementation.as_ref() {
             if public.contains(&create.identity) {
                 return Err(
-                    "actor create method identity must not be a public method identity"
-                        .to_string(),
+                    "actor create method identity must not be a public method identity".to_string(),
                 );
             }
         }
@@ -186,9 +185,7 @@ impl TryFrom<ActorAbiInputWire> for ActorAbiInput {
             .map(|field| &field.ty)
             .ok_or_else(|| format!("actor key field {} is absent from fields", wire.key_field))?;
         if key_type != &wire.actor_id_type {
-            return Err(
-                "actorIdType must exactly match the key field type".to_string(),
-            );
+            return Err("actorIdType must exactly match the key field type".to_string());
         }
         let mut field_names = BTreeSet::new();
         for field in &wire.fields {
