@@ -8,7 +8,7 @@ use skiff_artifact_model::{
 use skiff_compiler_core::type_ref::{
     catch_result_branches, contains_type_param, debug_text, is_null_type, map_entry,
     normalize_union, package_type_ref_to_ir, record_field_type, single_item,
-    substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
+    substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir, BuiltinShape,
 };
 
 use crate::{
@@ -519,7 +519,7 @@ fn check_source(
 fn direct_stream_item_type(ty: &PackageTypeRef) -> Option<&PackageTypeRef> {
     match ty {
         PackageTypeRef::Container { name, arguments }
-            if name == "Stream" && arguments.len() == 1 =>
+            if name == BuiltinShape::Stream.name() && arguments.len() == 1 =>
         {
             arguments.first()
         }
@@ -795,7 +795,7 @@ impl<'a> OwnerChecker<'a> {
                                 item_type,
                                 ..
                             } => PackageTypeRef::Container {
-                                name: "Stream".to_string(),
+                                name: BuiltinShape::Stream.name().to_string(),
                                 arguments: vec![package_type_ref_from_contract_type(item_type)],
                             },
                             skiff_artifact_model::BoundaryStreamContract::Unsupported {
@@ -1673,7 +1673,7 @@ impl<'a> OwnerChecker<'a> {
         let Some(actual) = actual else {
             return;
         };
-        let Some(expected) = self.resolve_builtin("bool") else {
+        let Some(expected) = self.resolve_builtin(BuiltinShape::Bool.name()) else {
             return;
         };
         if !self
@@ -2155,7 +2155,7 @@ impl<'a> OwnerChecker<'a> {
                         }
                     }
                     match transaction.mode {
-                        DbBlockMode::Effect => self.resolve_builtin("null"),
+                        DbBlockMode::Effect => self.resolve_builtin(BuiltinShape::Null.name()),
                         DbBlockMode::Value => last,
                     }
                 }
@@ -2179,7 +2179,7 @@ impl<'a> OwnerChecker<'a> {
                     } else {
                         self.check_block(&claim.body);
                     }
-                    self.resolve_builtin("bool")
+                    self.resolve_builtin(BuiltinShape::Bool.name())
                 }
                 Expr::DbLeaseRead(read) => {
                     self.check_expr(&read.key);
@@ -2562,7 +2562,9 @@ impl<'a> OwnerChecker<'a> {
             .map(|target| target.fields)
             .unwrap_or_default();
         let actual = self.check_db_predicate_expr(predicate, &fields);
-        let (Some(actual), Some(expected)) = (actual, self.resolve_builtin("bool")) else {
+        let (Some(actual), Some(expected)) =
+            (actual, self.resolve_builtin(BuiltinShape::Bool.name()))
+        else {
             return;
         };
         if !self
@@ -2740,9 +2742,11 @@ impl<'a> OwnerChecker<'a> {
                 },
                 serde_json::to_string(value).unwrap_or_else(|_| "\"<string>\"".to_string()),
             )),
-            Literal::Number(number) if number.fract() == 0.0 => self.resolve_builtin("integer"),
-            Literal::Number(_) => self.resolve_builtin("number"),
-            Literal::Bool(_) => self.resolve_builtin("bool"),
+            Literal::Number(number) if number.fract() == 0.0 => {
+                self.resolve_builtin(BuiltinShape::Integer.name())
+            }
+            Literal::Number(_) => self.resolve_builtin(BuiltinShape::Number.name()),
+            Literal::Bool(_) => self.resolve_builtin(BuiltinShape::Bool.name()),
             Literal::Null => Some(ResolvedTypeRef::with_text(
                 TypeRefIr::Literal {
                     value: LiteralIr::Null,
@@ -2760,7 +2764,7 @@ impl<'a> OwnerChecker<'a> {
     ) -> Option<ResolvedTypeRef> {
         match op {
             BinaryOp::Add if self.operands_string_concat(left, right) => {
-                self.resolve_builtin("string")
+                self.resolve_builtin(BuiltinShape::String.name())
             }
             BinaryOp::Eq
             | BinaryOp::Ne
@@ -2769,9 +2773,9 @@ impl<'a> OwnerChecker<'a> {
             | BinaryOp::Gt
             | BinaryOp::Ge
             | BinaryOp::And
-            | BinaryOp::Or => self.resolve_builtin("bool"),
+            | BinaryOp::Or => self.resolve_builtin(BuiltinShape::Bool.name()),
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-                self.resolve_builtin("number")
+                self.resolve_builtin(BuiltinShape::Number.name())
             }
         }
     }
@@ -2787,19 +2791,51 @@ impl<'a> OwnerChecker<'a> {
         match op {
             BinaryOp::Add if self.operands_string_concat(left, right) => {}
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-                self.check_operand_assignable(key, "binary arithmetic operand", left, "number");
-                self.check_operand_assignable(key, "binary arithmetic operand", right, "number");
+                self.check_operand_assignable(
+                    key,
+                    "binary arithmetic operand",
+                    left,
+                    BuiltinShape::Number.name(),
+                );
+                self.check_operand_assignable(
+                    key,
+                    "binary arithmetic operand",
+                    right,
+                    BuiltinShape::Number.name(),
+                );
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                if db_field_relational && self.operands_both_assignable_to(left, right, "string") {
+                if db_field_relational
+                    && self.operands_both_assignable_to(left, right, BuiltinShape::String.name())
+                {
                     return;
                 }
-                self.check_operand_assignable(key, "binary comparison operand", left, "number");
-                self.check_operand_assignable(key, "binary comparison operand", right, "number");
+                self.check_operand_assignable(
+                    key,
+                    "binary comparison operand",
+                    left,
+                    BuiltinShape::Number.name(),
+                );
+                self.check_operand_assignable(
+                    key,
+                    "binary comparison operand",
+                    right,
+                    BuiltinShape::Number.name(),
+                );
             }
             BinaryOp::And | BinaryOp::Or => {
-                self.check_operand_assignable(key, "binary boolean operand", left, "bool");
-                self.check_operand_assignable(key, "binary boolean operand", right, "bool");
+                self.check_operand_assignable(
+                    key,
+                    "binary boolean operand",
+                    left,
+                    BuiltinShape::Bool.name(),
+                );
+                self.check_operand_assignable(
+                    key,
+                    "binary boolean operand",
+                    right,
+                    BuiltinShape::Bool.name(),
+                );
             }
             BinaryOp::Eq | BinaryOp::Ne => {
                 let (Some(left), Some(right)) = (left, right) else {
@@ -2829,7 +2865,7 @@ impl<'a> OwnerChecker<'a> {
         left: Option<&ResolvedTypeRef>,
         right: Option<&ResolvedTypeRef>,
     ) -> bool {
-        let Some(expected) = self.resolve_builtin("string") else {
+        let Some(expected) = self.resolve_builtin(BuiltinShape::String.name()) else {
             return false;
         };
         left.is_some_and(|left| {
@@ -2866,9 +2902,12 @@ impl<'a> OwnerChecker<'a> {
         actual: Option<&ResolvedTypeRef>,
     ) {
         match op {
-            UnaryOp::Not => {
-                self.check_operand_assignable(key, "unary boolean operand", actual, "bool")
-            }
+            UnaryOp::Not => self.check_operand_assignable(
+                key,
+                "unary boolean operand",
+                actual,
+                BuiltinShape::Bool.name(),
+            ),
         }
     }
 
@@ -2901,7 +2940,7 @@ impl<'a> OwnerChecker<'a> {
 
     fn unary_type(&self, op: UnaryOp) -> Option<ResolvedTypeRef> {
         match op {
-            UnaryOp::Not => self.resolve_builtin("bool"),
+            UnaryOp::Not => self.resolve_builtin(BuiltinShape::Bool.name()),
         }
     }
 
@@ -3337,15 +3376,15 @@ impl<'a> OwnerChecker<'a> {
                         let text = format!("Array<{}>", item);
                         ResolvedTypeRef::with_text(
                             TypeRefIr::Builtin {
-                                name: "Array".to_string(),
+                                name: BuiltinShape::Array.name().to_string(),
                                 args: vec![item.ir],
                             },
                             text,
                         )
                     })
             }),
-            "db.exists" => self.resolve_builtin("bool"),
-            "db.count" => self.resolve_builtin("number"),
+            "db.exists" => self.resolve_builtin(BuiltinShape::Bool.name()),
+            "db.count" => self.resolve_builtin(BuiltinShape::Number.name()),
             _ => None,
         }
     }
@@ -3653,7 +3692,7 @@ impl<'a> OwnerChecker<'a> {
                         .ok()
                 })
                 .map(nullable_type),
-            "config.has" => self.resolve_builtin("bool"),
+            "config.has" => self.resolve_builtin(BuiltinShape::Bool.name()),
             _ => None,
         }
     }
@@ -3670,27 +3709,29 @@ impl<'a> OwnerChecker<'a> {
         let receiver_ty = self.expression_type_at_offset(key, offset)?;
         let return_type = builtin_receiver_call_return_type(&receiver_ty, method_name)?;
         let receiver_root = runtime_receiver_root_from_type_ref(&receiver_ty.ir);
-        if receiver_root.as_deref() == Some("Array") && method_name == "push" {
+        if receiver_root.as_deref() == Some(BuiltinShape::Array.name()) && method_name == "push" {
             self.validate_array_push_args(&receiver_ty, args, arg_types);
         }
-        if receiver_root.as_deref() == Some("string") && method_name == "contains" {
+        if receiver_root.as_deref() == Some(BuiltinShape::String.name())
+            && method_name == "contains"
+        {
             self.validate_resolved_call_params(
                 "string.contains",
                 vec![(
                     "needle".to_string(),
-                    resolved_type_from_ir(&builtin_type("string")),
+                    resolved_type_from_ir(&builtin_type(BuiltinShape::String.name())),
                 )],
                 args,
                 arg_types,
             );
         }
-        if receiver_root.as_deref() == Some("JsonObject") {
+        if receiver_root.as_deref() == Some(BuiltinShape::JsonObject.name()) {
             match method_name {
                 "get" | "has" | "delete" => self.validate_resolved_call_params(
                     &format!("JsonObject.{method_name}"),
                     vec![(
                         "field".to_string(),
-                        resolved_type_from_ir(&builtin_type("string")),
+                        resolved_type_from_ir(&builtin_type(BuiltinShape::String.name())),
                     )],
                     args,
                     arg_types,
@@ -3700,11 +3741,11 @@ impl<'a> OwnerChecker<'a> {
                     vec![
                         (
                             "field".to_string(),
-                            resolved_type_from_ir(&builtin_type("string")),
+                            resolved_type_from_ir(&builtin_type(BuiltinShape::String.name())),
                         ),
                         (
                             "value".to_string(),
-                            resolved_type_from_ir(&builtin_type("Json")),
+                            resolved_type_from_ir(&builtin_type(BuiltinShape::Json.name())),
                         ),
                     ],
                     args,
@@ -3713,7 +3754,9 @@ impl<'a> OwnerChecker<'a> {
                 _ => {}
             }
         }
-        if receiver_root.as_deref() == Some("Map") && matches!(method_name, "has" | "set") {
+        if receiver_root.as_deref() == Some(BuiltinShape::Map.name())
+            && matches!(method_name, "has" | "set")
+        {
             self.validate_map_has_or_set_args(&receiver_ty, method_name, args, arg_types);
         }
         if receiver_root.as_deref() == Some("bytes") && method_name == "toHex" {
@@ -3838,7 +3881,7 @@ impl<'a> OwnerChecker<'a> {
         }
         match path {
             "std.actor.find" => Some(nullable_type(actor.ty)),
-            "std.actor.remove" => self.resolve_builtin("bool"),
+            "std.actor.remove" => self.resolve_builtin(BuiltinShape::Bool.name()),
             _ => Some(actor.ty),
         }
     }
@@ -4236,12 +4279,17 @@ impl<'a> OwnerChecker<'a> {
             crate::shared::ast::DbOperationKind::Delete if operation.many => {
                 self.resolve_builtin("DbDeleteManyResult")
             }
-            crate::shared::ast::DbOperationKind::Upsert => {
-                Some(projection_record_type("DbUpsertResult", &target))
-            }
+            crate::shared::ast::DbOperationKind::Upsert => Some(projection_record_type(
+                BuiltinShape::DbUpsertResult.name(),
+                &target,
+            )),
             crate::shared::ast::DbOperationKind::Delete
-            | crate::shared::ast::DbOperationKind::Exists => self.resolve_builtin("bool"),
-            crate::shared::ast::DbOperationKind::Count => self.resolve_builtin("number"),
+            | crate::shared::ast::DbOperationKind::Exists => {
+                self.resolve_builtin(BuiltinShape::Bool.name())
+            }
+            crate::shared::ast::DbOperationKind::Count => {
+                self.resolve_builtin(BuiltinShape::Number.name())
+            }
         }
     }
 
@@ -4760,7 +4808,7 @@ fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
     let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
-    matches!(name.as_str(), "Stream" | "std.stream.Stream")
+    matches!(BuiltinShape::of_name(name), Some(BuiltinShape::Stream))
         .then_some(args)
         .filter(|args| args.len() == 1)
         .map(|args| ResolvedTypeRef::new(args[0].clone()))
@@ -4772,7 +4820,7 @@ fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTyp
     let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
-    if name != "Map" || args.len() != 2 {
+    if name != BuiltinShape::Map.name() || args.len() != 2 {
         return None;
     }
     let (key, value) = map_entry(&ty.ir)?;
@@ -4837,7 +4885,7 @@ fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> Resolved
     let text = format!("CatchResult<{}, {}>", value, error);
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
-            name: "CatchResult".to_string(),
+            name: BuiltinShape::CatchResult.name().to_string(),
             args: vec![value.ir, error.ir],
         },
         text,
@@ -4882,7 +4930,7 @@ fn builtin_receiver_call_return_type(
         BuiltinReceiverPublicReturnType::ArrayItem => array_item_type_ir(&receiver_ty.ir)?,
         BuiltinReceiverPublicReturnType::MapValue => map_value_type_ir(&receiver_ty.ir)?,
         BuiltinReceiverPublicReturnType::MapKeyArray => TypeRefIr::Builtin {
-            name: "Array".to_string(),
+            name: BuiltinShape::Array.name().to_string(),
             args: vec![map_key_type_ir(&receiver_ty.ir)?],
         },
     };
@@ -4919,7 +4967,7 @@ fn builtin_receiver_call_return_projection(
                 return None;
             };
             (arguments.len() == 2).then(|| PackageTypeRef::Container {
-                name: "Array".to_string(),
+                name: BuiltinShape::Array.name().to_string(),
                 arguments: vec![arguments[0].clone()],
             })
         }
@@ -4947,10 +4995,10 @@ pub fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
         }
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
-        } => Some("string".to_string()),
+        } => Some(BuiltinShape::String.name().to_string()),
         TypeRefIr::Literal {
             value: LiteralIr::Number { .. },
-        } => Some("number".to_string()),
+        } => Some(BuiltinShape::Number.name().to_string()),
         TypeRefIr::Nullable { inner } => runtime_receiver_root_from_type_ref(inner),
         _ => None,
     }
@@ -4974,8 +5022,8 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
         return None;
     };
     (matches!(
-        name.as_str(),
-        "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream"
+        BuiltinShape::of_name(name),
+        Some(BuiltinShape::Array | BuiltinShape::Stream)
     ) && args.len() == 1)
         .then(|| args[0].clone())
 }
@@ -5063,7 +5111,7 @@ fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
 
 fn db_lease_read_type() -> ResolvedTypeRef {
     let string = TypeRefIr::Builtin {
-        name: "string".to_string(),
+        name: BuiltinShape::String.name().to_string(),
         args: Vec::new(),
     };
     nullable_type(ResolvedTypeRef::with_text(
@@ -5082,7 +5130,7 @@ fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
     let text = format!("Array<{}>", item);
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
-            name: "Array".to_string(),
+            name: BuiltinShape::Array.name().to_string(),
             args: vec![item.ir],
         },
         text,
@@ -5271,12 +5319,12 @@ fn builtin_type(name: &str) -> TypeRefIr {
 }
 
 fn type_ir_is_void_or_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && (name == "void" || name == "null"))
+    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && matches!(BuiltinShape::of_name(name), Some(BuiltinShape::Void | BuiltinShape::Null)))
         || is_null_type(ty)
 }
 
 fn type_ir_is_never(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && name == "never")
+    matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && matches!(BuiltinShape::of_name(name), Some(BuiltinShape::Never)))
 }
 
 fn record_field_name_source_span(

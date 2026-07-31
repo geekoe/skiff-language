@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, TypeRefIr};
 use skiff_compiler_core::{
     prelude_registry::{compiler_builtin_type, CompilerBuiltinType, CompilerBuiltinTypeKind},
-    type_ref::substitute_type_params_in_type_ref_ref,
+    type_ref::{substitute_type_params_in_type_ref_ref, BuiltinShape},
 };
 
 use super::{
@@ -88,7 +88,7 @@ impl TypeResolutionModel {
                 exception
             ));
         };
-        if name != "Exception" {
+        if name != BuiltinShape::Exception.name() {
             return Err(format!(
                 "rethrow operand must be Exception<E>, found `{}`",
                 exception
@@ -378,7 +378,7 @@ impl TypeResolutionModel {
             TypeRefIr::TypeParam { name } => {
                 Err(format!("type argument `{name}` is not fully instantiated"))
             }
-            TypeRefIr::Builtin { name, .. } if name == "unknown" => {
+            TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Unknown.name() => {
                 Err("type argument `unknown` has no runtime identity".to_string())
             }
             TypeRefIr::Builtin { args, .. } => {

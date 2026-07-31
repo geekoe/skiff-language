@@ -2,7 +2,9 @@ use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     ContractTypeRef, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
-use skiff_compiler_core::type_ref::{contract_type_ref_to_ir, package_type_ref_to_ir};
+use skiff_compiler_core::type_ref::{
+    contract_type_ref_to_ir, package_type_ref_to_ir, BuiltinShape,
+};
 
 pub(super) use crate::contract_type_resolution::package_type_contains_contract;
 
@@ -366,7 +368,11 @@ fn package_type_is_json_target(ty: &PackageTypeRef) -> bool {
     matches!(
         ty,
         PackageTypeRef::Container { name, arguments }
-            if arguments.is_empty() && matches!(name.as_str(), "Json" | "JsonObject")
+            if arguments.is_empty()
+                && matches!(
+                    BuiltinShape::of_name(name),
+                    Some(BuiltinShape::Json | BuiltinShape::JsonObject)
+                )
     )
 }
 
@@ -374,7 +380,7 @@ fn package_type_is_json_object_target(ty: &PackageTypeRef) -> bool {
     matches!(
         ty,
         PackageTypeRef::Container { name, arguments }
-            if arguments.is_empty() && name == "JsonObject"
+            if arguments.is_empty() && name == BuiltinShape::JsonObject.name()
     )
 }
 
@@ -406,21 +412,27 @@ fn package_type_json_compatible(
                     });
             compatible
         }
-        PackageTypeRef::Container { name, arguments } => match name.as_str() {
-            "JsonObject" if arguments.is_empty() => true,
-            "Json" if arguments.is_empty() => !object_only,
-            "string" | "integer" | "number" | "bool" | "null" if arguments.is_empty() => {
-                !object_only
-            }
-            "Array" if arguments.len() == 1 => {
+        PackageTypeRef::Container { name, arguments } => match BuiltinShape::of_name(name) {
+            Some(BuiltinShape::JsonObject) if arguments.is_empty() => true,
+            Some(BuiltinShape::Json) if arguments.is_empty() => !object_only,
+            Some(
+                BuiltinShape::String
+                | BuiltinShape::Integer
+                | BuiltinShape::Number
+                | BuiltinShape::Bool
+                | BuiltinShape::Null,
+            ) if arguments.is_empty() => !object_only,
+            Some(BuiltinShape::Array)
+                if arguments.len() == 1 && name == BuiltinShape::Array.name() =>
+            {
                 !object_only
                     && package_type_json_compatible(&arguments[0], dependency_analysis, false)
             }
-            "Map" if arguments.len() == 2 => {
+            Some(BuiltinShape::Map) if arguments.len() == 2 && name == BuiltinShape::Map.name() => {
                 let string_key = matches!(
                     &arguments[0],
-                    PackageTypeRef::Container { name, arguments }
-                        if name == "string" && arguments.is_empty()
+                    PackageTypeRef::Container { name, arguments } if
+                        name == BuiltinShape::String.name() && arguments.is_empty()
                 );
                 string_key
                     && package_type_json_compatible(&arguments[1], dependency_analysis, false)
@@ -450,16 +462,22 @@ pub(crate) fn local_ir_json_compatible(
                 | skiff_artifact_model::LiteralIr::Number { .. }
                 | skiff_artifact_model::LiteralIr::Null,
         } => !object_only,
-        TypeRefIr::Builtin { name, args } => match name.as_str() {
-            "JsonObject" if args.is_empty() => true,
-            "Json" if args.is_empty() => !object_only,
-            "string" | "integer" | "number" | "bool" | "null" if args.is_empty() => !object_only,
-            "Array" if args.len() == 1 => {
+        TypeRefIr::Builtin { name, args } => match BuiltinShape::of_name(name) {
+            Some(BuiltinShape::JsonObject) if args.is_empty() => true,
+            Some(BuiltinShape::Json) if args.is_empty() => !object_only,
+            Some(
+                BuiltinShape::String
+                | BuiltinShape::Integer
+                | BuiltinShape::Number
+                | BuiltinShape::Bool
+                | BuiltinShape::Null,
+            ) if args.is_empty() => !object_only,
+            Some(BuiltinShape::Array) if args.len() == 1 && name == BuiltinShape::Array.name() => {
                 !object_only && local_ir_json_compatible(&args[0], dependency_analysis, false)
             }
-            "Map" if args.len() == 2 => {
-                matches!(&args[0], TypeRefIr::Builtin { name, args }
-                    if name == "string" && args.is_empty())
+            Some(BuiltinShape::Map) if args.len() == 2 && name == BuiltinShape::Map.name() => {
+                matches!(&args[0], TypeRefIr::Builtin { name, args } if
+                    name == BuiltinShape::String.name() && args.is_empty())
                     && local_ir_json_compatible(&args[1], dependency_analysis, false)
             }
             _ => false,
@@ -572,19 +590,19 @@ fn local_ir_target_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool 
                 value: skiff_artifact_model::LiteralIr::String { .. },
             },
             TypeRefIr::Builtin { name, args },
-        ) => name == "string" && args.is_empty(),
+        ) => name == BuiltinShape::String.name() && args.is_empty(),
         (
             TypeRefIr::Literal {
                 value: skiff_artifact_model::LiteralIr::Bool { .. },
             },
             TypeRefIr::Builtin { name, args },
-        ) => name == "bool" && args.is_empty(),
+        ) => name == BuiltinShape::Bool.name() && args.is_empty(),
         (
             TypeRefIr::Literal {
                 value: skiff_artifact_model::LiteralIr::Number { .. },
             },
             TypeRefIr::Builtin { name, args },
-        ) => name == "number" && args.is_empty(),
+        ) => name == BuiltinShape::Number.name() && args.is_empty(),
         _ => false,
     }
 }
@@ -641,7 +659,7 @@ fn package_type_is_null(ty: &PackageTypeRef) -> bool {
     matches!(
         ty,
         PackageTypeRef::Container { name, arguments }
-            if name == "null" && arguments.is_empty()
+            if name == BuiltinShape::Null.name() && arguments.is_empty()
     ) || matches!(
         ty,
         PackageTypeRef::Local {
