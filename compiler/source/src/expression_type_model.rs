@@ -739,6 +739,7 @@ impl<'a> OwnerChecker<'a> {
                 iterable,
                 body,
             } => self.check_for_stmt(binding, iterable, body),
+            Stmt::While { condition, body } => self.check_while_stmt(condition, body),
             Stmt::Match { value, arms } => self.check_match_stmt(value, arms),
             Stmt::DbTransaction { body } => self.check_block(body),
             Stmt::Throw { value } => self.check_throw_stmt(value),
@@ -1118,6 +1119,12 @@ impl<'a> OwnerChecker<'a> {
         for (name, previous) in previous_projected {
             self.contract_projection.bind(&name, previous);
         }
+        false
+    }
+
+    fn check_while_stmt(&mut self, condition: &Expr, body: &Block) -> bool {
+        self.check_condition(condition, "while condition");
+        self.check_block_scoped(body, &TypeNarrowing::default());
         false
     }
 

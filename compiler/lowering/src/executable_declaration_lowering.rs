@@ -841,6 +841,7 @@ fn stmt_contains_bare_return(stmt: &Stmt) -> bool {
                 || else_block.as_ref().is_some_and(block_contains_bare_return)
         }
         Stmt::For { body, .. }
+        | Stmt::While { body, .. }
         | Stmt::DbTransaction { body }
         | Stmt::Timeout { body, .. }
         | Stmt::Concurrent { body }

@@ -777,6 +777,10 @@ pub enum LinkedStmtIr {
         iterable: ExprRefIr,
         body: String,
     },
+    While {
+        condition: ExprRefIr,
+        body: String,
+    },
     Match {
         value: ExprRefIr,
         arms: Vec<MatchArmIr>,
@@ -1656,6 +1660,30 @@ mod exception_instruction_tests {
             "body": { "expression": 2 }
         }))
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod while_instruction_tests {
+    use super::*;
+
+    #[test]
+    fn linked_while_round_trips_canonical_wire_shape() {
+        let value = serde_json::json!({
+            "kind": "while",
+            "condition": { "expression": 0 },
+            "body": "while_body"
+        });
+
+        let decoded: LinkedStmtIr = serde_json::from_value(value.clone()).unwrap();
+        match &decoded {
+            LinkedStmtIr::While { condition, body } => {
+                assert_eq!(condition.expression, 0);
+                assert_eq!(body, "while_body");
+            }
+            other => panic!("expected while statement, got {other:?}"),
+        }
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
     }
 }
 

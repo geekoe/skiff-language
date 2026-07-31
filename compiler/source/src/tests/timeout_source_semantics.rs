@@ -438,6 +438,7 @@ fn concurrent_rejects_every_ast_representable_illegal_surface() {
     let cases = [
         ("if", "if true {}"),
         ("for", "for item in items {}"),
+        ("while", "while true {}"),
         ("match", "match true { true => {} }"),
         ("timeout", "timeout(1ms) {}"),
         ("value", "const nested = value { \"x\" }"),

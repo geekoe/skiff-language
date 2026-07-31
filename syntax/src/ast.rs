@@ -531,6 +531,10 @@ pub enum Stmt {
         iterable: Expr,
         body: Block,
     },
+    While {
+        condition: Expr,
+        body: Block,
+    },
     Match {
         value: Expr,
         arms: Vec<MatchArm>,

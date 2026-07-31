@@ -331,6 +331,30 @@ fn collect_config_uses_in_block(
                     violations,
                 );
             }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                collect_config_uses_in_expr(
+                    diagnostic_path,
+                    source_path,
+                    condition,
+                    statement_spans.and_then(|spans| spans.expressions.first()),
+                    &const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+                collect_config_uses_in_block(
+                    diagnostic_path,
+                    source_path,
+                    body,
+                    statement_spans.and_then(|spans| spans.blocks.first()),
+                    &const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
             Stmt::Match { value, arms } => {
                 collect_config_uses_in_expr(
                     diagnostic_path,

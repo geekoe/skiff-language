@@ -798,6 +798,25 @@ fn for_in_value_slot_round_trips_and_defaults_to_single_binding() {
 }
 
 #[test]
+fn while_round_trips_canonical_artifact_shape() {
+    let value = json!({
+        "kind": "while",
+        "condition": { "expression": 0 },
+        "body": "while_body"
+    });
+
+    let decoded: StmtIr = serde_json::from_value(value.clone()).unwrap();
+    match &decoded {
+        StmtIr::While { condition, body } => {
+            assert_eq!(condition.expression, 0);
+            assert_eq!(body, "while_body");
+        }
+        other => panic!("expected while statement, got {other:?}"),
+    }
+    assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+}
+
+#[test]
 fn type_decl_ir_round_trips_named_union_branch_identity_input() {
     let declaration = TypeDeclIr {
         name: "Outcome".to_string(),

@@ -116,6 +116,10 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
             visitor.visit_expr(iterable);
             visitor.visit_block(body);
         }
+        Stmt::While { condition, body } => {
+            visitor.visit_expr(condition);
+            visitor.visit_block(body);
+        }
         Stmt::Match { value, arms } => {
             visitor.visit_expr(value);
             for arm in arms {
@@ -607,6 +611,10 @@ pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stm
             visitor.visit_expr(iterable);
             visitor.visit_block(body);
         }
+        Stmt::While { condition, body } => {
+            visitor.visit_expr(condition);
+            visitor.visit_block(body);
+        }
         Stmt::Match { value, arms } => {
             visitor.visit_expr(value);
             for arm in arms {
@@ -998,6 +1006,9 @@ pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool
         Stmt::For { iterable, body, .. } => {
             expr_contains_with(iterable, predicate) || block_contains_expr(body, predicate)
         }
+        Stmt::While { condition, body } => {
+            expr_contains_with(condition, predicate) || block_contains_expr(body, predicate)
+        }
         Stmt::Match { value, arms } => {
             expr_contains_with(value, predicate)
                 || arms
@@ -1282,6 +1293,10 @@ fn collect_stmt_type_ref_dotted_root_imports(
             collect_expr_type_ref_dotted_root_imports(iterable, root, imports);
             collect_block_type_ref_dotted_root_imports(body, root, imports);
         }
+        Stmt::While { condition, body } => {
+            collect_expr_type_ref_dotted_root_imports(condition, root, imports);
+            collect_block_type_ref_dotted_root_imports(body, root, imports);
+        }
         Stmt::Match { value, arms } => {
             collect_expr_type_ref_dotted_root_imports(value, root, imports);
             for arm in arms {
@@ -1550,6 +1565,10 @@ fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTree
         }
         Stmt::For { iterable, body, .. } => {
             collect_expr_dotted_root_imports(iterable, root, imports);
+            collect_block_dotted_root_imports(body, root, imports);
+        }
+        Stmt::While { condition, body } => {
+            collect_expr_dotted_root_imports(condition, root, imports);
             collect_block_dotted_root_imports(body, root, imports);
         }
         Stmt::Match { value, arms } => {

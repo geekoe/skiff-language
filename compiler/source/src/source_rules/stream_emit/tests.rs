@@ -120,6 +120,25 @@ fn rejects_emit_in_non_stream_function() {
 }
 
 #[test]
+fn allows_emit_inside_while_loop_body() {
+    let violations = collect_typed(
+        r#"
+                type Chunk { value: string }
+
+                function events() -> Stream<Chunk> {
+                  while true {
+                    emit({ value: "ok" })
+                    break
+                  }
+                  return
+                }
+            "#,
+    );
+
+    assert_eq!(violations, Vec::<String>::new());
+}
+
+#[test]
 fn typed_checker_consumes_emit_facts_and_only_reports_stream_control_violations() {
     let violations = collect_typed(
         r#"
