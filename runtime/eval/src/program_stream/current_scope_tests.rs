@@ -23,11 +23,11 @@ use skiff_runtime_capability_context::{
     StreamRuntimeError, StreamRuntimeResult, StreamSink, TimeCapabilityContext,
 };
 use skiff_runtime_linked_program::{
-    BlockIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable, FileDeclarations,
+    BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable, FileDeclarations,
     FileLinkTargets, LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner,
-    LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedStmtIr,
-    LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceMeta, ServiceSymbolRef,
-    SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
+    LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+    LinkedStmtIr, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
+    ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -43,8 +43,7 @@ use crate::{
     },
     assembly_execution::ordinary::tests::test_runtime,
     env::{Env, Flow},
-    error::RuntimeError,
-    error::ScopeTerminalCarrier,
+    error::{unwrap_diagnostic_source_context, RuntimeError, ScopeTerminalCarrier},
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
     EvalRuntimeProgram,
 };
@@ -490,6 +489,19 @@ impl Wake for NoopWake {
     fn wake(self: Arc<Self>) {}
 }
 
+fn assert_program_depth_error(error: &RuntimeError) {
+    assert!(matches!(
+        unwrap_diagnostic_source_context(error),
+        RuntimeError::ResourceLimitExceeded {
+            resource,
+            limit: 32,
+            current: 32,
+            requested_delta: 1,
+            ..
+        } if resource == "programCallDepth"
+    ));
+}
+
 #[test]
 fn f445h_e4r_stream_for_in_materializes_current_local_deadline_owner_before_wait() {
     let executable = empty_executable();
@@ -695,6 +707,60 @@ async fn f445h_e4r_stream_for_in_ordinary_error_initiates_local_cleanup_once() {
         .expect_err("invalid body expression is an ordinary evaluator error");
     assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
     assert_eq!(cancellations.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn tail_call_negative_stream_real_consumer_barrier_uses_ordinary_call_and_cleans_up() {
+    let executable = body_executable(
+        vec![LinkedStmtIr::Return {
+            value: Some(ExprRefIr { expression: 0 }),
+        }],
+        vec![LinkedExprIr::Call {
+            call: CallIr {
+                target: LinkedCallTarget::Executable {
+                    addr: ExecutableAddr::service(0, 1),
+                },
+                site: site(),
+                args: Vec::new(),
+                type_args: Default::default(),
+                metadata: Default::default(),
+                actor_metadata: None,
+            },
+        }],
+    );
+    let mut file = empty_file(executable.clone());
+    file.executables.push(empty_executable());
+    let file = Arc::new(file);
+    let interpreter = interpreter_with_file(Arc::clone(&file));
+    let (runtime, cancellations, _) =
+        ScriptedStreamRuntime::new([Ok(StreamPoll::Item(json!("item")))]);
+    let context = scoped_context(&interpreter, runtime, test_runtime::execution_control())
+        .with_program_call_depth_for_test(32);
+
+    let error = interpreter
+        .exec_program_stream_for_in(
+            context,
+            &mut RequestHeap::default(),
+            &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
+            &ExecutableAddr::service(0, 0),
+            &file,
+            &executable,
+            0,
+            "body",
+            json!({"$stream": "tail-call-negative-stream-real-consumer"}),
+            None,
+            &[],
+            None,
+        )
+        .await
+        .expect_err("the exact local call in a real stream body must remain depth checked");
+
+    assert_program_depth_error(&error);
+    assert_eq!(
+        cancellations.load(Ordering::Acquire),
+        1,
+        "the ordinary call error must unwind through the real consumer cleanup guard exactly once"
+    );
 }
 
 #[test]
