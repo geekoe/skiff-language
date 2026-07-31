@@ -165,6 +165,12 @@ fn collect_emit_stmt_violations(
                 collect_emit_stmt_violations(path, stmt, violations);
             }
         }
+        crate::shared::ast::Stmt::While { condition, body } => {
+            collect_emit_expression_call_violations(path, condition, violations);
+            for stmt in &body.statements {
+                collect_emit_stmt_violations(path, stmt, violations);
+            }
+        }
         crate::shared::ast::Stmt::Match { value, arms } => {
             collect_emit_expression_call_violations(path, value, violations);
             for arm in arms {

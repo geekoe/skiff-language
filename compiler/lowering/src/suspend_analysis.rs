@@ -471,6 +471,11 @@ impl SuspendContext<'_, '_> {
                 self.env.pop_scope();
                 true
             }
+            Stmt::While { condition, body } => {
+                let _ = self.expr_may_suspend(condition);
+                let _ = self.block_may_suspend(body);
+                true
+            }
             Stmt::Match { value, arms } => {
                 self.expr_may_suspend(value)
                     || arms.iter().any(|arm| self.block_may_suspend(&arm.body))

@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use skiff_runtime_linked_program::{
-    BlockIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable, FileAddr,
-    FileDeclarations, FileLinkTargets, LinkOverlay, LinkedExecutable, LinkedExecutableBody,
-    LinkedExprIr, LinkedFileUnit, LinkedStmtIr, PublicationResourceTable, RuntimeTypeContext,
-    SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
+    AssignTargetIr, BinaryOpIr, BlockIr, ExecutableAddr, ExecutableKind, ExprRefIr,
+    ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedExecutable,
+    LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedStmtIr, PublicationResourceTable,
+    RuntimeTypeContext, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
 };
 use skiff_runtime_model::request_heap::RequestHeap;
+use skiff_runtime_model::runtime_value::RuntimeValue;
 
 use super::*;
 use crate::{env::Env, EvalRuntimeProgram, Interpreter};
@@ -99,7 +100,8 @@ impl LinkedCheckpointFixture {
         control: &ScopeAwareControl,
     ) -> Result<crate::env::Flow, RuntimeError> {
         let mut heap = RequestHeap::default();
-        let mut env = Env::new();
+        let mut env = Env::for_program_executable(&self.file.executables[0], None, 0)
+            .expect("fixture slot layout must be installable");
         let result = self
             .interpreter
             .exec_program_executable(
@@ -188,6 +190,435 @@ async fn f445h_e4r_spine_scripted_clock_terminates_pure_cpu_for_loop() {
         .execute(context, &control)
         .await
         .expect_err("loop checkpoints must observe the current scope deadline");
+    assert!(matches!(
+        error.scope_terminal().map(|carrier| carrier.terminal()),
+        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
+    ));
+}
+
+#[tokio::test]
+async fn while_false_condition_skips_body() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(1.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Bool { value: false },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(1.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::Add,
+                left: ExprRefIr { expression: 3 },
+                right: ExprRefIr { expression: 4 },
+            },
+        ],
+        vec![
+            LinkedStmtIr::Let {
+                slot: 0,
+                value: ExprRefIr { expression: 0 },
+            },
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 1 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Return {
+                value: Some(ExprRefIr { expression: 2 }),
+            },
+            LinkedStmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: 0 },
+                value: ExprRefIr { expression: 5 },
+            },
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![
+                    StmtRefIr { statement: 0 },
+                    StmtRefIr { statement: 1 },
+                    StmtRefIr { statement: 2 },
+                ],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![StmtRefIr { statement: 3 }],
+            },
+        ],
+        SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "counter".to_string(),
+                kind: "local".to_string(),
+            }],
+            frame_size: 1,
+        },
+    );
+    let (cancellation, root) = root_scope(None);
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let flow = fixture
+        .execute(context(control.clone()), &control)
+        .await
+        .expect("false while condition returns without executing the body");
+    match flow {
+        crate::env::Flow::Return(value) => {
+            assert_eq!(value.into_value(), RuntimeValue::Number(1.0));
+        }
+        other => panic!("expected return after while, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn while_reevaluates_condition_each_iteration() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(0.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(3.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::LessThan,
+                left: ExprRefIr { expression: 1 },
+                right: ExprRefIr { expression: 2 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(1.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::Add,
+                left: ExprRefIr { expression: 4 },
+                right: ExprRefIr { expression: 5 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+        ],
+        vec![
+            LinkedStmtIr::Let {
+                slot: 0,
+                value: ExprRefIr { expression: 0 },
+            },
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 3 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Return {
+                value: Some(ExprRefIr { expression: 7 }),
+            },
+            LinkedStmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: 0 },
+                value: ExprRefIr { expression: 6 },
+            },
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![
+                    StmtRefIr { statement: 0 },
+                    StmtRefIr { statement: 1 },
+                    StmtRefIr { statement: 2 },
+                ],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![StmtRefIr { statement: 3 }],
+            },
+        ],
+        SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "counter".to_string(),
+                kind: "local".to_string(),
+            }],
+            frame_size: 1,
+        },
+    );
+    let (cancellation, root) = root_scope(None);
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let flow = fixture
+        .execute(context(control.clone()), &control)
+        .await
+        .expect("bounded while executes");
+    match flow {
+        crate::env::Flow::Return(value) => {
+            assert_eq!(value.into_value(), RuntimeValue::Number(3.0));
+        }
+        other => panic!("expected return after while, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn while_break_exits_loop_and_execution_continues_after() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(0.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Bool { value: true },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(1.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::Add,
+                left: ExprRefIr { expression: 2 },
+                right: ExprRefIr { expression: 3 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(2.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::GreaterThanOrEqual,
+                left: ExprRefIr { expression: 5 },
+                right: ExprRefIr { expression: 6 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+        ],
+        vec![
+            LinkedStmtIr::Let {
+                slot: 0,
+                value: ExprRefIr { expression: 0 },
+            },
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 1 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Return {
+                value: Some(ExprRefIr { expression: 8 }),
+            },
+            LinkedStmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: 0 },
+                value: ExprRefIr { expression: 4 },
+            },
+            LinkedStmtIr::If {
+                condition: ExprRefIr { expression: 7 },
+                then_block: "exit".to_string(),
+                else_block: None,
+            },
+            LinkedStmtIr::Break,
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![
+                    StmtRefIr { statement: 0 },
+                    StmtRefIr { statement: 1 },
+                    StmtRefIr { statement: 2 },
+                ],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![StmtRefIr { statement: 3 }, StmtRefIr { statement: 4 }],
+            },
+            BlockIr {
+                label: "exit".to_string(),
+                statements: vec![StmtRefIr { statement: 5 }],
+            },
+        ],
+        SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "counter".to_string(),
+                kind: "local".to_string(),
+            }],
+            frame_size: 1,
+        },
+    );
+    let (cancellation, root) = root_scope(None);
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let flow = fixture
+        .execute(context(control.clone()), &control)
+        .await
+        .expect("break exits the while loop");
+    match flow {
+        crate::env::Flow::Return(value) => {
+            assert_eq!(value.into_value(), RuntimeValue::Number(2.0));
+        }
+        other => panic!("expected return after while break, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn while_continue_skips_remaining_body_statements() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(0.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(3.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::LessThan,
+                left: ExprRefIr { expression: 1 },
+                right: ExprRefIr { expression: 2 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(1.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::Add,
+                left: ExprRefIr { expression: 4 },
+                right: ExprRefIr { expression: 5 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+            LinkedExprIr::Literal {
+                value: skiff_artifact_model::LiteralIr::Number {
+                    value: serde_json::Number::from_f64(10.0).expect("finite literal"),
+                },
+            },
+            LinkedExprIr::Binary {
+                op: BinaryOpIr::Add,
+                left: ExprRefIr { expression: 7 },
+                right: ExprRefIr { expression: 8 },
+            },
+            LinkedExprIr::LoadSlot { slot: 0 },
+        ],
+        vec![
+            LinkedStmtIr::Let {
+                slot: 0,
+                value: ExprRefIr { expression: 0 },
+            },
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 3 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Return {
+                value: Some(ExprRefIr { expression: 10 }),
+            },
+            LinkedStmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: 0 },
+                value: ExprRefIr { expression: 6 },
+            },
+            LinkedStmtIr::Continue,
+            LinkedStmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: 0 },
+                value: ExprRefIr { expression: 9 },
+            },
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![
+                    StmtRefIr { statement: 0 },
+                    StmtRefIr { statement: 1 },
+                    StmtRefIr { statement: 2 },
+                ],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![
+                    StmtRefIr { statement: 3 },
+                    StmtRefIr { statement: 4 },
+                    StmtRefIr { statement: 5 },
+                ],
+            },
+        ],
+        SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "counter".to_string(),
+                kind: "local".to_string(),
+            }],
+            frame_size: 1,
+        },
+    );
+    let (cancellation, root) = root_scope(None);
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let flow = fixture
+        .execute(context(control.clone()), &control)
+        .await
+        .expect("continue skips the rest of the while body");
+    match flow {
+        crate::env::Flow::Return(value) => {
+            assert_eq!(value.into_value(), RuntimeValue::Number(3.0));
+        }
+        other => panic!("expected return after while continue, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn while_condition_and_backedge_checkpoints_observe_scope_deadline() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![LinkedExprIr::Literal {
+            value: skiff_artifact_model::LiteralIr::Bool { value: true },
+        }],
+        vec![
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 0 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Continue,
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![StmtRefIr { statement: 1 }],
+            },
+        ],
+        SlotLayoutIr::default(),
+    );
+    let base = Instant::now();
+    let (cancellation, root) = root_scope(None);
+    let scope = root
+        .derive(base + Duration::from_millis(1), site())
+        .expect("local scope");
+    let control = ScopeAwareControl::available(scope, cancellation.token());
+    let context =
+        context(control.clone()).with_execution_clock(ExecutionClock::new(ScriptedClock::new(
+            vec![
+                base,
+                base,
+                base,
+                base,
+                base,
+                base,
+                base,
+                base + Duration::from_millis(1),
+            ],
+            Arc::new(AtomicU64::new(0)),
+        )));
+
+    let error = fixture
+        .execute(context, &control)
+        .await
+        .expect_err("while checkpoints must observe the current scope deadline");
     assert!(matches!(
         error.scope_terminal().map(|carrier| carrier.terminal()),
         Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))

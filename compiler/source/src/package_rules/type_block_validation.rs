@@ -124,6 +124,26 @@ pub(super) fn collect_package_block_std_type_violations(
                     violations,
                 );
             }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                collect_package_expr_std_type_violations(
+                    path,
+                    condition,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+                collect_package_block_std_type_violations(
+                    path,
+                    body,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+            }
             Stmt::Match { value, arms } => {
                 collect_package_expr_std_type_violations(
                     path,

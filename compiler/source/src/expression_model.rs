@@ -376,6 +376,13 @@ impl OwnerCollector<'_> {
                 self.visit_expr(iterable, next_stmt_expr(&mut expressions, "for iterable")?)?;
                 self.visit_block(body, next_stmt_block(&mut blocks, "for body")?)?;
             }
+            Stmt::While { condition, body } => {
+                self.visit_expr(
+                    condition,
+                    next_stmt_expr(&mut expressions, "while condition")?,
+                )?;
+                self.visit_block(body, next_stmt_block(&mut blocks, "while body")?)?;
+            }
             Stmt::Match { value, arms } => {
                 self.visit_expr(value, next_stmt_expr(&mut expressions, "match value")?)?;
                 for (index, arm) in arms.iter().enumerate() {

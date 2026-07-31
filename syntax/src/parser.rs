@@ -1920,6 +1920,9 @@ impl Parser {
         if self.match_ident("for") {
             return self.parse_for(in_test, self.previous().span.start);
         }
+        if self.match_ident("while") {
+            return self.parse_while(in_test, self.previous().span.start);
+        }
         if self.match_ident("match") {
             return self.parse_match(in_test, self.previous().span.start);
         }
@@ -2278,6 +2281,23 @@ impl Parser {
             spans: StmtSourceSpans {
                 span: SourceSpan { start, end },
                 expressions: vec![iterable.spans],
+                blocks: vec![body.spans],
+            },
+        })
+    }
+
+    fn parse_while(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
+        let condition = self.parse_expression()?;
+        let body = self.parse_block(in_test)?;
+        let end = body.spans.span.end;
+        Ok(ParsedStmt {
+            stmt: Stmt::While {
+                condition: condition.expr,
+                body: body.block,
+            },
+            spans: StmtSourceSpans {
+                span: SourceSpan { start, end },
+                expressions: vec![condition.spans],
                 blocks: vec![body.spans],
             },
         })

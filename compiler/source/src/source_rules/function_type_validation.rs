@@ -112,6 +112,12 @@ fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &m
             collect_expr_function_type_violations(path, iterable, violations);
             collect_block_function_type_violations(path, body, violations);
         }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            collect_expr_function_type_violations(path, condition, violations);
+            collect_block_function_type_violations(path, body, violations);
+        }
         Stmt::Match { value, arms } => {
             collect_expr_function_type_violations(path, value, violations);
             for arm in arms {

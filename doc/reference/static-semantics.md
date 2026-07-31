@@ -169,6 +169,8 @@ loop binding 只在 loop body 内可见，离开 body 后恢复外层同名 bind
 
 当前合法 map key 类型只允许精确 `string` 或单一名义 representation over string。`Map<number,V>`、`Map<bool,V>` 和非 string payload representation key 都必须按既有 map key 规则拒绝；未来扩展非 string key 时，必须先定义 assignability、boundary encoding、runtime key representation 和 canonical ordering。
 
+`while expr { ... }` 的条件表达式必须为 `bool`。body 按 scoped block 检查，不引入 loop binding。§7 的 loop narrowing 规则适用于 `while`：narrowing 只在本次迭代控制流内有效，不自动归纳到下一次迭代。`break` / `continue` 只在 loop 内合法，且 `while` body 内的 `break` / `continue` 只作用于最近的 `while` / `for` loop。
+
 ## 9. Name Resolution And Reserved Names
 
 Skiff 使用 type namespace、value namespace 和 method namespace。`impl` 不绑定新顶层名字，只向 receiver 的 method namespace 添加方法。

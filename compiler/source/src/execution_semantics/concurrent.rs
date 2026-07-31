@@ -247,6 +247,7 @@ impl OwnerAnalyzer<'_> {
             | Stmt::Serial { .. }
             | Stmt::If { .. }
             | Stmt::For { .. }
+            | Stmt::While { .. }
             | Stmt::Match { .. }
             | Stmt::Throw { .. }
             | Stmt::Rethrow { .. }
