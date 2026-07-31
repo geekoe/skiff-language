@@ -706,445 +706,486 @@ impl<'a> OwnerChecker<'a> {
                 expect,
                 step_expect,
                 outcome,
-            } => {
-                // The synthetic target probe exists solely to obtain the same
-                // exact ResolvedCallTarget fact ordinary dependency calls use.
-                // It is not an invocation and therefore is not type-checked as
-                // a zero-argument call.
-                self.next_key();
-                self.next_key();
-                let Some(dependencies) = self.dependency_analysis else {
-                    self.outputs.diagnostics.push(format!(
-                        "{}: compiler test effect `{target}` has no dependency analysis",
-                        self.module_path
-                    ));
-                    return false;
-                };
-                let (signature, exact_target) = match dependencies.resolve_path(target) {
-                    crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Package {
-                        package_build_id,
-                        callable,
-                        ..
-                    } => {
-                        let Some(signature) = callable.signature().cloned() else {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: compiler test effect target `{target}` has no exact signature",
-                                self.module_path
-                            ));
-                            return false;
-                        };
-                        (
-                            signature,
-                            ExactTestEffectTarget::Package {
-                                package_build_id: package_build_id.clone(),
-                                callable_id: callable.callable_id().clone(),
-                            },
-                        )
-                    }
-                    crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Contract {
-                        requirement,
-                        operation,
-                    } => {
-                        let contract = &operation.contract;
-                        let return_type = match &contract.stream {
-                            skiff_artifact_model::BoundaryStreamContract::Unary => {
-                                package_type_ref_from_contract_type(&contract.return_value.ty)
-                            }
-                            skiff_artifact_model::BoundaryStreamContract::ServerStream {
-                                item_type,
-                                ..
-                            } => PackageTypeRef::Container {
-                                name: BuiltinShape::Stream.name().to_string(),
-                                arguments: vec![package_type_ref_from_contract_type(item_type)],
-                            },
-                            skiff_artifact_model::BoundaryStreamContract::Unsupported {
-                                ..
-                            } => {
-                                self.outputs.diagnostics.push(format!(
-                                    "{}: compiler test effect target `{target}` has an unsupported stream contract",
-                                    self.module_path
-                                ));
-                                return false;
-                            }
-                        };
-                        (
-                            skiff_artifact_model::PackageCallableSignature {
-                                type_params: Vec::new(),
-                                parameters: contract
-                                    .parameters
-                                    .iter()
-                                    .map(|parameter| {
-                                        skiff_artifact_model::PackageCallableParameter {
-                                            name: parameter.name.clone(),
-                                            ty: package_type_ref_from_contract_type(&parameter.ty),
-                                        }
-                                    })
-                                    .collect(),
-                                return_type,
-                                may_suspend: true,
-                            },
-                            ExactTestEffectTarget::Service {
-                                protocol_identity: requirement.expected_protocol_identity.clone(),
-                                operation_id: operation.operation_id.clone(),
-                            },
-                        )
-                    }
-                    _ => {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: unresolved compiler test effect target `{target}`",
-                            self.module_path
-                        ));
-                        return false;
-                    }
-                };
-                if *declaration_start {
-                    if let Some(previous) = self
-                        .test_effect_declarations
-                        .insert(exact_target.clone(), target.clone())
-                    {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: test effect targets `{previous}` and `{target}` resolve to the same exact target {exact_target:?}; use one explicit sequence",
-                            self.module_path
-                        ));
-                    }
-                }
-                if let Some(expect) = expect {
-                    let [parameter] = signature.parameters.as_slice() else {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: test effect `{target}` expect requires exactly one parameter",
-                            self.module_path
-                        ));
-                        return false;
-                    };
-                    self.check_test_effect_request_subset(expect, &parameter.ty);
-                }
-                if let Some(step_expect) = step_expect {
-                    let [parameter] = signature.parameters.as_slice() else {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: test effect `{target}` sequence step expect requires exactly one parameter",
-                            self.module_path
-                        ));
-                        return false;
-                    };
-                    self.check_test_effect_request_subset(step_expect, &parameter.ty);
-                }
-                match outcome {
-                    crate::shared::ast::TestEffectStepOutcome::Respond { value } => {
-                        self.check_test_effect_value(value, &signature.return_type, "respond");
-                        if direct_stream_item_type(&signature.return_type).is_some() {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: test effect `{target}` cannot use respond for a direct Stream<T> target; use stream",
-                                self.module_path
-                            ));
-                        }
-                    }
-                    crate::shared::ast::TestEffectStepOutcome::Throw { value } => {
-                        self.check_test_effect_throw(value, target);
-                    }
-                    crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
-                        let Some(item) = direct_stream_item_type(&signature.return_type) else {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: test effect `{target}` stream requires Stream<T> return",
-                                self.module_path
-                            ));
-                            return false;
-                        };
-                        for value in events {
-                            self.check_test_effect_value(value, item, "stream event");
-                        }
-                    }
-                }
-                false
-            }
-            Stmt::Assert { condition, .. } => {
-                let narrowings = self.condition_narrowings(condition);
-                self.check_condition(condition, "condition");
-                self.apply_narrowing(&narrowings.when_true);
-                false
-            }
+            } => self.check_compiler_test_effect_register_stmt(
+                target,
+                *declaration_start,
+                expect.as_ref(),
+                step_expect.as_ref(),
+                outcome,
+            ),
+            Stmt::Assert { condition, .. } => self.check_assert_stmt(condition),
             Stmt::Let {
                 name, ty, value, ..
-            } => {
-                let value_key = self.peek_key();
-                let actual = self.check_expr(value);
-                let projected_actual = self
-                    .contract_projection
-                    .expression_type(&value_key)
-                    .cloned();
-                let (binding_ty, projected_binding) = if let Some(annotation) = ty {
-                    match self
-                        .type_resolution
-                        .resolve_type_ref(annotation, &self.type_context)
-                    {
-                        Ok(expected) => {
-                            let (projected_expected, projection_failed) = match self
-                                .project_source_binding_type(annotation)
-                            {
-                                Ok(projected) => (projected, false),
-                                Err(error) => {
-                                    self.outputs.diagnostics.push(format!(
-                                        "{}: local binding `{name}` annotation exact source type projection failed: {error}",
-                                        self.module_path
-                                    ));
-                                    (None, true)
-                                }
-                            };
-                            if !projection_failed {
-                                if let Some(actual) = &actual {
-                                    self.check_value_assignable_to_expected(
-                                        Some(annotation),
-                                        value,
-                                        &value_key,
-                                        actual,
-                                        &expected,
-                                        projected_expected.as_ref(),
-                                        &format!("local binding {name} annotation"),
-                                        self.expression_span(&value_key),
-                                    );
-                                }
-                            }
-                            (Some(expected), projected_expected)
-                        }
-                        Err(error) => {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: failed to resolve local binding {name} annotation: {error}",
-                                self.module_path
-                            ));
-                            (actual, projected_actual)
-                        }
-                    }
-                } else {
-                    (actual, projected_actual)
-                };
-                if let Some(binding_ty) = binding_ty {
-                    self.env.insert(name.clone(), binding_ty);
-                }
-                self.contract_projection.bind(name, projected_binding);
-                false
-            }
-            Stmt::Assign { target, value } => {
-                let expected = self.check_expr(target);
-                let value_key = self.peek_key();
-                let actual = self.check_expr(value);
-                if matches!(
-                    target,
-                    Expr::Field { object, .. }
-                        if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
-                ) {
-                    if let (Some(actual), Some(expected)) = (actual.as_ref(), expected.as_ref()) {
-                        self.check_value_assignable_to_expected(
-                            None,
-                            value,
-                            &value_key,
-                            actual,
-                            expected,
-                            None,
-                            "self field assignment",
-                            self.expression_span(&value_key),
-                        );
-                    }
-                }
-                if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
-                    self.env.insert(name.clone(), actual);
-                    let projected = self
-                        .contract_projection
-                        .expression_type(&value_key)
-                        .cloned();
-                    self.contract_projection.bind(name, projected);
-                }
-                self.invalidate_path_refinements_for_write(target);
-                false
-            }
+            } => self.check_let_stmt(name, ty.as_ref(), value),
+            Stmt::Assign { target, value } => self.check_assign_stmt(target, value),
             Stmt::Timeout { body, .. } | Stmt::Serial { body } => {
-                self.check_block_scoped(body, &TypeNarrowing::default());
-                false
+                self.check_timeout_or_serial_stmt(body)
             }
-            Stmt::Concurrent { body } => {
-                self.check_concurrent_block(body, None);
-                false
-            }
+            Stmt::Concurrent { body } => self.check_concurrent_stmt(body),
             Stmt::If {
                 condition,
                 then_block,
                 else_block,
-            } => {
-                let narrowings = self.condition_narrowings(condition);
-                self.check_condition(condition, "if condition");
-                let then_exits = self.check_block_scoped(then_block, &narrowings.when_true);
-                let else_exits = else_block.as_ref().is_some_and(|else_block| {
-                    self.check_block_scoped(else_block, &narrowings.when_false)
-                });
-                match else_block {
-                    Some(_) if then_exits && else_exits => true,
-                    Some(_) if then_exits => {
-                        self.apply_narrowing(&narrowings.when_false);
-                        false
-                    }
-                    Some(_) if else_exits => {
-                        self.apply_narrowing(&narrowings.when_true);
-                        false
-                    }
-                    None if then_exits => {
-                        self.apply_narrowing(&narrowings.when_false);
-                        false
-                    }
-                    None => {
-                        if let Some(narrowing) =
-                            self.null_guard_assignment_narrowing(condition, then_block)
-                        {
-                            self.apply_narrowing(&narrowing);
-                        }
-                        false
-                    }
-                    _ => false,
-                }
-            }
+            } => self.check_if_stmt(condition, then_block, else_block.as_ref()),
             Stmt::For {
                 binding,
                 iterable,
                 body,
-            } => {
-                let iterable_key = self.peek_key();
-                let iterable_ty = self.check_expr(iterable);
-                let iterable_projection = self
-                    .contract_projection
-                    .expression_type(&iterable_key)
-                    .cloned();
-                let saved_projected_env = self.contract_projection.binding_snapshot();
-                let mut previous = Vec::new();
-                let mut previous_projected = Vec::new();
-                match binding {
-                    ForBinding::Item { item } => {
-                        match iterable_ty.as_ref().and_then(single_for_item_type) {
-                            Some(item_ty) => {
-                                previous
-                                    .push((item.clone(), self.env.insert(item.clone(), item_ty)));
-                                previous_projected
-                                    .push((item.clone(), saved_projected_env.get(item).cloned()));
-                                self.contract_projection.bind(
-                                    item,
-                                    iterable_projection
-                                        .as_ref()
-                                        .and_then(single_for_item_projection),
-                                );
-                            }
-                            None => self.outputs.diagnostics.push(format!(
-                                "{}: for iterable must be Array, Stream, or Map at {}",
-                                self.module_path,
-                                self.expression_span_label(&iterable_key)
-                            )),
-                        }
-                    }
-                    ForBinding::Entry { key, value } => match iterable_ty
-                        .as_ref()
-                        .and_then(map_entry_types)
-                    {
-                        Some((key_ty, value_ty)) => {
-                            previous.push((key.clone(), self.env.insert(key.clone(), key_ty)));
-                            previous
-                                .push((value.clone(), self.env.insert(value.clone(), value_ty)));
-                            previous_projected
-                                .push((key.clone(), saved_projected_env.get(key).cloned()));
-                            previous_projected
-                                .push((value.clone(), saved_projected_env.get(value).cloned()));
-                            let (key_projection, value_projection) = iterable_projection
-                                .as_ref()
-                                .and_then(map_entry_projections)
-                                .map(|(key, value)| (Some(key), Some(value)))
-                                .unwrap_or((None, None));
-                            self.contract_projection.bind(key, key_projection);
-                            self.contract_projection.bind(value, value_projection);
-                        }
-                        None => self.outputs.diagnostics.push(format!(
-                            "{}: for entry binding requires Map at {}",
-                            self.module_path,
-                            self.expression_span_label(&iterable_key)
-                        )),
-                    },
-                }
-                self.check_block(body);
-                for (name, previous) in previous {
-                    if let Some(previous) = previous {
-                        self.env.insert(name, previous);
-                    } else {
-                        self.env.remove(&name);
-                    }
-                }
-                for (name, previous) in previous_projected {
-                    self.contract_projection.bind(&name, previous);
-                }
-                false
-            }
-            Stmt::Match { value, arms } => {
-                self.check_expr(value);
-                for arm in arms {
-                    self.check_block(&arm.body);
-                }
-                false
-            }
+            } => self.check_for_stmt(binding, iterable, body),
+            Stmt::Match { value, arms } => self.check_match_stmt(value, arms),
             Stmt::DbTransaction { body } => self.check_block(body),
-            Stmt::Throw { value } => {
-                let key = self.peek_key();
-                if let Some(actual) = self.check_expr(value) {
-                    self.validate_throw_payload(&key, &actual, "throw");
-                }
-                true
-            }
-            Stmt::Emit(value) => {
-                let value_key = self.peek_key();
-                let actual = self.check_expr(value);
-                let Some(expected) = self.stream_chunk.clone() else {
-                    return false;
-                };
-                self.record_stream_emit_target(&value_key, expected.clone());
-                if let Some(actual) = actual {
-                    self.check_value_assignable_to_expected(
-                        None,
-                        value,
-                        &value_key,
-                        &actual,
-                        &expected,
-                        None,
-                        "emit chunk",
-                        self.expression_span(&value_key),
-                    );
-                }
-                false
-            }
-            Stmt::Expr(value) => {
-                let ty = self.check_expr(value);
-                ty.as_ref().is_some_and(|ty| type_ir_is_never(&ty.ir))
-            }
-            Stmt::Spawn { call } => {
-                let call_key = self.peek_key();
-                let actual = self.check_expr(call);
-                if let Some(actual) = actual {
-                    if !type_ir_is_void_or_null(&actual.ir) {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: spawn target return type mismatch at {}: expected void/null, found {}",
-                            self.module_path,
-                            self.expression_span_label(&call_key),
-                            actual
-                        ));
-                    }
-                }
-                false
-            }
-            Stmt::Rethrow { exception } => {
-                let key = self.peek_key();
-                if let Some(actual) = self.check_expr(exception) {
-                    self.validate_rethrow_operand(&key, &actual);
-                }
-                true
-            }
-            Stmt::Return(value) => {
-                if let Some(value) = value {
-                    self.check_return_value(value);
-                }
-                true
-            }
+            Stmt::Throw { value } => self.check_throw_stmt(value),
+            Stmt::Emit(value) => self.check_emit_stmt(value),
+            Stmt::Expr(value) => self.check_expr_stmt(value),
+            Stmt::Spawn { call } => self.check_spawn_stmt(call),
+            Stmt::Rethrow { exception } => self.check_rethrow_stmt(exception),
+            Stmt::Return(value) => self.check_return_stmt(value.as_ref()),
             Stmt::Break | Stmt::Continue => true,
         }
+    }
+
+    fn check_compiler_test_effect_register_stmt(
+        &mut self,
+        target: &str,
+        declaration_start: bool,
+        expect: Option<&Expr>,
+        step_expect: Option<&Expr>,
+        outcome: &crate::shared::ast::TestEffectStepOutcome,
+    ) -> bool {
+        // The synthetic target probe exists solely to obtain the same
+        // exact ResolvedCallTarget fact ordinary dependency calls use.
+        // It is not an invocation and therefore is not type-checked as
+        // a zero-argument call.
+        self.next_key();
+        self.next_key();
+        let Some(dependencies) = self.dependency_analysis else {
+            self.outputs.diagnostics.push(format!(
+                "{}: compiler test effect `{target}` has no dependency analysis",
+                self.module_path
+            ));
+            return false;
+        };
+        let (signature, exact_target) = match dependencies.resolve_path(target) {
+            crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Package {
+                package_build_id,
+                callable,
+                ..
+            } => {
+                let Some(signature) = callable.signature().cloned() else {
+                    self.outputs.diagnostics.push(format!(
+                        "{}: compiler test effect target `{target}` has no exact signature",
+                        self.module_path
+                    ));
+                    return false;
+                };
+                (
+                    signature,
+                    ExactTestEffectTarget::Package {
+                        package_build_id: package_build_id.clone(),
+                        callable_id: callable.callable_id().clone(),
+                    },
+                )
+            }
+            crate::dependency_analysis::ResolvedDependencyAnalysisTarget::Contract {
+                requirement,
+                operation,
+            } => {
+                let contract = &operation.contract;
+                let return_type = match &contract.stream {
+                    skiff_artifact_model::BoundaryStreamContract::Unary => {
+                        package_type_ref_from_contract_type(&contract.return_value.ty)
+                    }
+                    skiff_artifact_model::BoundaryStreamContract::ServerStream {
+                        item_type,
+                        ..
+                    } => PackageTypeRef::Container {
+                        name: BuiltinShape::Stream.name().to_string(),
+                        arguments: vec![package_type_ref_from_contract_type(item_type)],
+                    },
+                    skiff_artifact_model::BoundaryStreamContract::Unsupported { .. } => {
+                        self.outputs.diagnostics.push(format!(
+                                    "{}: compiler test effect target `{target}` has an unsupported stream contract",
+                                    self.module_path
+                                ));
+                        return false;
+                    }
+                };
+                (
+                    skiff_artifact_model::PackageCallableSignature {
+                        type_params: Vec::new(),
+                        parameters: contract
+                            .parameters
+                            .iter()
+                            .map(|parameter| skiff_artifact_model::PackageCallableParameter {
+                                name: parameter.name.clone(),
+                                ty: package_type_ref_from_contract_type(&parameter.ty),
+                            })
+                            .collect(),
+                        return_type,
+                        may_suspend: true,
+                    },
+                    ExactTestEffectTarget::Service {
+                        protocol_identity: requirement.expected_protocol_identity.clone(),
+                        operation_id: operation.operation_id.clone(),
+                    },
+                )
+            }
+            _ => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: unresolved compiler test effect target `{target}`",
+                    self.module_path
+                ));
+                return false;
+            }
+        };
+        if declaration_start {
+            if let Some(previous) = self
+                .test_effect_declarations
+                .insert(exact_target.clone(), target.to_string())
+            {
+                self.outputs.diagnostics.push(format!(
+                            "{}: test effect targets `{previous}` and `{target}` resolve to the same exact target {exact_target:?}; use one explicit sequence",
+                            self.module_path
+                        ));
+            }
+        }
+        if let Some(expect) = expect {
+            let [parameter] = signature.parameters.as_slice() else {
+                self.outputs.diagnostics.push(format!(
+                    "{}: test effect `{target}` expect requires exactly one parameter",
+                    self.module_path
+                ));
+                return false;
+            };
+            self.check_test_effect_request_subset(expect, &parameter.ty);
+        }
+        if let Some(step_expect) = step_expect {
+            let [parameter] = signature.parameters.as_slice() else {
+                self.outputs.diagnostics.push(format!(
+                            "{}: test effect `{target}` sequence step expect requires exactly one parameter",
+                            self.module_path
+                        ));
+                return false;
+            };
+            self.check_test_effect_request_subset(step_expect, &parameter.ty);
+        }
+        match outcome {
+            crate::shared::ast::TestEffectStepOutcome::Respond { value } => {
+                self.check_test_effect_value(value, &signature.return_type, "respond");
+                if direct_stream_item_type(&signature.return_type).is_some() {
+                    self.outputs.diagnostics.push(format!(
+                                "{}: test effect `{target}` cannot use respond for a direct Stream<T> target; use stream",
+                                self.module_path
+                            ));
+                }
+            }
+            crate::shared::ast::TestEffectStepOutcome::Throw { value } => {
+                self.check_test_effect_throw(value, target);
+            }
+            crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
+                let Some(item) = direct_stream_item_type(&signature.return_type) else {
+                    self.outputs.diagnostics.push(format!(
+                        "{}: test effect `{target}` stream requires Stream<T> return",
+                        self.module_path
+                    ));
+                    return false;
+                };
+                for value in events {
+                    self.check_test_effect_value(value, item, "stream event");
+                }
+            }
+        }
+        false
+    }
+
+    fn check_assert_stmt(&mut self, condition: &Expr) -> bool {
+        let narrowings = self.condition_narrowings(condition);
+        self.check_condition(condition, "condition");
+        self.apply_narrowing(&narrowings.when_true);
+        false
+    }
+
+    fn check_let_stmt(&mut self, name: &String, ty: Option<&TypeRef>, value: &Expr) -> bool {
+        let value_key = self.peek_key();
+        let actual = self.check_expr(value);
+        let projected_actual = self
+            .contract_projection
+            .expression_type(&value_key)
+            .cloned();
+        let (binding_ty, projected_binding) = if let Some(annotation) = ty {
+            match self
+                .type_resolution
+                .resolve_type_ref(annotation, &self.type_context)
+            {
+                Ok(expected) => {
+                    let (projected_expected, projection_failed) = match self
+                        .project_source_binding_type(annotation)
+                    {
+                        Ok(projected) => (projected, false),
+                        Err(error) => {
+                            self.outputs.diagnostics.push(format!(
+                                        "{}: local binding `{name}` annotation exact source type projection failed: {error}",
+                                        self.module_path
+                                    ));
+                            (None, true)
+                        }
+                    };
+                    if !projection_failed {
+                        if let Some(actual) = &actual {
+                            self.check_value_assignable_to_expected(
+                                Some(annotation),
+                                value,
+                                &value_key,
+                                actual,
+                                &expected,
+                                projected_expected.as_ref(),
+                                &format!("local binding {name} annotation"),
+                                self.expression_span(&value_key),
+                            );
+                        }
+                    }
+                    (Some(expected), projected_expected)
+                }
+                Err(error) => {
+                    self.outputs.diagnostics.push(format!(
+                        "{}: failed to resolve local binding {name} annotation: {error}",
+                        self.module_path
+                    ));
+                    (actual, projected_actual)
+                }
+            }
+        } else {
+            (actual, projected_actual)
+        };
+        if let Some(binding_ty) = binding_ty {
+            self.env.insert(name.clone(), binding_ty);
+        }
+        self.contract_projection.bind(name, projected_binding);
+        false
+    }
+
+    fn check_assign_stmt(&mut self, target: &Expr, value: &Expr) -> bool {
+        let expected = self.check_expr(target);
+        let value_key = self.peek_key();
+        let actual = self.check_expr(value);
+        if matches!(
+            target,
+            Expr::Field { object, .. }
+                if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
+        ) {
+            if let (Some(actual), Some(expected)) = (actual.as_ref(), expected.as_ref()) {
+                self.check_value_assignable_to_expected(
+                    None,
+                    value,
+                    &value_key,
+                    actual,
+                    expected,
+                    None,
+                    "self field assignment",
+                    self.expression_span(&value_key),
+                );
+            }
+        }
+        if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
+            self.env.insert(name.clone(), actual);
+            let projected = self
+                .contract_projection
+                .expression_type(&value_key)
+                .cloned();
+            self.contract_projection.bind(name, projected);
+        }
+        self.invalidate_path_refinements_for_write(target);
+        false
+    }
+
+    fn check_timeout_or_serial_stmt(&mut self, body: &Block) -> bool {
+        self.check_block_scoped(body, &TypeNarrowing::default());
+        false
+    }
+
+    fn check_concurrent_stmt(&mut self, body: &Block) -> bool {
+        self.check_concurrent_block(body, None);
+        false
+    }
+
+    fn check_if_stmt(
+        &mut self,
+        condition: &Expr,
+        then_block: &Block,
+        else_block: Option<&Block>,
+    ) -> bool {
+        let narrowings = self.condition_narrowings(condition);
+        self.check_condition(condition, "if condition");
+        let then_exits = self.check_block_scoped(then_block, &narrowings.when_true);
+        let else_exits = else_block
+            .is_some_and(|else_block| self.check_block_scoped(else_block, &narrowings.when_false));
+        match else_block {
+            Some(_) if then_exits && else_exits => true,
+            Some(_) if then_exits => {
+                self.apply_narrowing(&narrowings.when_false);
+                false
+            }
+            Some(_) if else_exits => {
+                self.apply_narrowing(&narrowings.when_true);
+                false
+            }
+            None if then_exits => {
+                self.apply_narrowing(&narrowings.when_false);
+                false
+            }
+            None => {
+                if let Some(narrowing) = self.null_guard_assignment_narrowing(condition, then_block)
+                {
+                    self.apply_narrowing(&narrowing);
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn check_for_stmt(&mut self, binding: &ForBinding, iterable: &Expr, body: &Block) -> bool {
+        let iterable_key = self.peek_key();
+        let iterable_ty = self.check_expr(iterable);
+        let iterable_projection = self
+            .contract_projection
+            .expression_type(&iterable_key)
+            .cloned();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
+        let mut previous = Vec::new();
+        let mut previous_projected = Vec::new();
+        match binding {
+            ForBinding::Item { item } => {
+                match iterable_ty.as_ref().and_then(single_for_item_type) {
+                    Some(item_ty) => {
+                        previous.push((item.clone(), self.env.insert(item.clone(), item_ty)));
+                        previous_projected
+                            .push((item.clone(), saved_projected_env.get(item).cloned()));
+                        self.contract_projection.bind(
+                            item,
+                            iterable_projection
+                                .as_ref()
+                                .and_then(single_for_item_projection),
+                        );
+                    }
+                    None => self.outputs.diagnostics.push(format!(
+                        "{}: for iterable must be Array, Stream, or Map at {}",
+                        self.module_path,
+                        self.expression_span_label(&iterable_key)
+                    )),
+                }
+            }
+            ForBinding::Entry { key, value } => {
+                match iterable_ty.as_ref().and_then(map_entry_types) {
+                    Some((key_ty, value_ty)) => {
+                        previous.push((key.clone(), self.env.insert(key.clone(), key_ty)));
+                        previous.push((value.clone(), self.env.insert(value.clone(), value_ty)));
+                        previous_projected
+                            .push((key.clone(), saved_projected_env.get(key).cloned()));
+                        previous_projected
+                            .push((value.clone(), saved_projected_env.get(value).cloned()));
+                        let (key_projection, value_projection) = iterable_projection
+                            .as_ref()
+                            .and_then(map_entry_projections)
+                            .map(|(key, value)| (Some(key), Some(value)))
+                            .unwrap_or((None, None));
+                        self.contract_projection.bind(key, key_projection);
+                        self.contract_projection.bind(value, value_projection);
+                    }
+                    None => self.outputs.diagnostics.push(format!(
+                        "{}: for entry binding requires Map at {}",
+                        self.module_path,
+                        self.expression_span_label(&iterable_key)
+                    )),
+                }
+            }
+        }
+        self.check_block(body);
+        for (name, previous) in previous {
+            if let Some(previous) = previous {
+                self.env.insert(name, previous);
+            } else {
+                self.env.remove(&name);
+            }
+        }
+        for (name, previous) in previous_projected {
+            self.contract_projection.bind(&name, previous);
+        }
+        false
+    }
+
+    fn check_match_stmt(&mut self, value: &Expr, arms: &[crate::shared::ast::MatchArm]) -> bool {
+        self.check_expr(value);
+        for arm in arms {
+            self.check_block(&arm.body);
+        }
+        false
+    }
+
+    fn check_throw_stmt(&mut self, value: &Expr) -> bool {
+        let key = self.peek_key();
+        if let Some(actual) = self.check_expr(value) {
+            self.validate_throw_payload(&key, &actual, "throw");
+        }
+        true
+    }
+
+    fn check_emit_stmt(&mut self, value: &Expr) -> bool {
+        let value_key = self.peek_key();
+        let actual = self.check_expr(value);
+        let Some(expected) = self.stream_chunk.clone() else {
+            return false;
+        };
+        self.record_stream_emit_target(&value_key, expected.clone());
+        if let Some(actual) = actual {
+            self.check_value_assignable_to_expected(
+                None,
+                value,
+                &value_key,
+                &actual,
+                &expected,
+                None,
+                "emit chunk",
+                self.expression_span(&value_key),
+            );
+        }
+        false
+    }
+
+    fn check_expr_stmt(&mut self, value: &Expr) -> bool {
+        let ty = self.check_expr(value);
+        ty.as_ref().is_some_and(|ty| type_ir_is_never(&ty.ir))
+    }
+
+    fn check_spawn_stmt(&mut self, call: &Expr) -> bool {
+        let call_key = self.peek_key();
+        let actual = self.check_expr(call);
+        if let Some(actual) = actual {
+            if !type_ir_is_void_or_null(&actual.ir) {
+                self.outputs.diagnostics.push(format!(
+                    "{}: spawn target return type mismatch at {}: expected void/null, found {}",
+                    self.module_path,
+                    self.expression_span_label(&call_key),
+                    actual
+                ));
+            }
+        }
+        false
+    }
+
+    fn check_rethrow_stmt(&mut self, exception: &Expr) -> bool {
+        let key = self.peek_key();
+        if let Some(actual) = self.check_expr(exception) {
+            self.validate_rethrow_operand(&key, &actual);
+        }
+        true
+    }
+
+    fn check_return_stmt(&mut self, value: Option<&Expr>) -> bool {
+        if let Some(value) = value {
+            self.check_return_value(value);
+        }
+        true
     }
 
     fn check_test_effect_request_subset(&mut self, value: &Expr, expected: &PackageTypeRef) {
@@ -1729,95 +1770,15 @@ impl<'a> OwnerChecker<'a> {
                     refined_ty.clone().or_else(|| self.env.get(name).cloned())
                 }
                 Expr::DependencySourceAddress(source) => {
-                    if diagnose_unknown_field {
-                        let message = format!(
-                        "{}: dependency source address `{}/{}` is not a value at {}; use `{}/{} as I` to box a public instance or call an exported callable",
-                        self.module_path,
-                        source.dependency_ref,
-                        source.public_path,
-                        self.expression_span_label(&key),
-                        source.dependency_ref,
-                        source.public_path
-                    );
-                        self.outputs.diagnostics.push(message);
-                    }
-                    None
+                    self.check_dependency_source_address_expr(&key, source, diagnose_unknown_field)
                 }
                 Expr::Binary { op, left, right } => {
-                    let db_relational = db_predicate_fields.is_some()
-                        && matches!(
-                            op,
-                            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
-                        );
-                    let db_logical =
-                        db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
-                    let db_field_relational = db_relational
-                        && db_predicate_fields
-                            .is_some_and(|fields| Self::is_db_field_operand(left, fields));
-                    let left_ty = if db_field_relational {
-                        self.check_db_field_operand(
-                            left,
-                            db_predicate_fields.expect("checked above"),
-                        )
-                    } else if db_logical {
-                        self.check_db_predicate_expr(
-                            left,
-                            db_predicate_fields.expect("checked above"),
-                        )
-                    } else {
-                        self.check_expr(left)
-                    };
-                    let right_ty = if db_logical {
-                        self.check_db_predicate_expr(
-                            right,
-                            db_predicate_fields.expect("checked above"),
-                        )
-                    } else {
-                        match op {
-                            BinaryOp::And => {
-                                let narrowing = self.condition_narrowings(left).when_true;
-                                self.check_expr_scoped(right, &narrowing)
-                            }
-                            BinaryOp::Or => {
-                                let narrowing = self.condition_narrowings(left).when_false;
-                                self.check_expr_scoped(right, &narrowing)
-                            }
-                            _ => self.check_expr(right),
-                        }
-                    };
-                    self.check_binary_operands(
-                        &key,
-                        *op,
-                        left_ty.as_ref(),
-                        right_ty.as_ref(),
-                        db_field_relational,
-                    );
-                    self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
+                    self.check_binary_expr(&key, *op, left, right, db_predicate_fields)
                 }
                 Expr::Unary { op, expr } => {
-                    let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not)
-                    {
-                        self.check_db_predicate_expr(
-                            expr,
-                            db_predicate_fields.expect("checked above"),
-                        )
-                    } else {
-                        self.check_expr(expr)
-                    };
-                    self.check_unary_operand(&key, *op, operand_ty.as_ref());
-                    self.unary_type(*op)
+                    self.check_unary_expr(&key, *op, expr, db_predicate_fields)
                 }
-                Expr::Call { callee, args } => {
-                    self.check_callee_expr(callee);
-                    let arg_types = args
-                        .iter()
-                        .map(|arg| {
-                            let key = self.peek_key();
-                            (key, self.check_expr(arg))
-                        })
-                        .collect::<Vec<_>>();
-                    self.call_type(&key, callee, args, &arg_types)
-                }
+                Expr::Call { callee, args } => self.check_call_expr(&key, callee, args),
                 Expr::Generic { callee, .. } => {
                     if diagnose_unknown_field {
                         self.check_expr(callee)
@@ -1826,324 +1787,32 @@ impl<'a> OwnerChecker<'a> {
                     }
                 }
                 Expr::InterfaceBox { value, interface } => {
-                    let value_ty = self.check_expr(value);
-                    let selector = match self
-                        .type_resolution
-                        .resolve_canonical_interface_selector_type_ref(
-                            interface,
-                            &self.type_context,
-                        ) {
-                        Ok(selector) => selector,
-                        Err(error) => {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: interface boxing selector `{}` failed at {}: {error}",
-                                self.module_path,
-                                interface.name,
-                                self.expression_span_label(&key)
-                            ));
-                            return None;
-                        }
-                    };
-                    let Some(value_ty) = value_ty else {
-                        return None;
-                    };
-                    let Some(receiver) = self
-                        .type_resolution
-                        .concrete_nominal_record_symbol(&value_ty, &self.type_context)
-                    else {
-                        self.outputs.diagnostics.push(format!(
-                        "{}: interface boxing source at {} must be a concrete nominal record, found {}",
-                        self.module_path,
-                        self.expression_span_label(&key),
-                        value_ty
-                    ));
-                        return None;
-                    };
-                    let expected_interface = ResolvedTypeRef::with_text(
-                        TypeRefIr::AnyInterface {
-                            interface: selector.instantiation_ref.clone(),
-                        },
-                        selector.source_text.clone(),
-                    );
-                    match self.type_resolution.concrete_type_conforms_to_interface(
-                        &value_ty,
-                        &expected_interface,
-                        &self.type_context,
-                    ) {
-                        Ok(Some(_)) => Some(ResolvedTypeRef::with_text(
-                            TypeRefIr::AnyInterface {
-                                interface: selector.instantiation_ref,
-                            },
-                            format!("any {}", selector.source_text),
-                        )),
-                        Ok(None) => {
-                            self.outputs.diagnostics.push(format!(
-                            "{}: type {} does not explicitly implement interface {} for boxing at {}",
-                            self.module_path,
-                            receiver,
-                            selector.source_text,
-                            self.expression_span_label(&key)
-                        ));
-                            None
-                        }
-                        Err(error) => {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: interface boxing conformance check failed at {}: {error}",
-                                self.module_path,
-                                self.expression_span_label(&key)
-                            ));
-                            None
-                        }
-                    }
+                    self.check_interface_box_expr(&key, value, interface)
                 }
                 Expr::Field { object, field } => {
-                    let object_key = self.peek_key();
-                    let object_ty = if diagnose_unknown_field {
-                        self.check_expr(object)
-                    } else {
-                        self.check_callee_expr(object)
-                    };
-                    object_ty.and_then(|object_ty| {
-                    let field_ty =
-                        if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
-                            && self
-                                .type_resolution
-                                .actor_type_resolution(&object_ty, &self.type_context)
-                                .is_some()
-                        {
-                            self.type_resolution.actor_state_field_type(
-                                &object_ty,
-                                field,
-                                &self.type_context,
-                            )
-                        } else {
-                            self.record_field_type(&object_ty, field)
-                        };
-                    if let (
-                        Some(dependency_analysis),
-                        Some(PackageTypeRef::PackageSchema {
-                            package_id,
-                            stable_schema_key,
-                            package_schema_type_id,
-                        }),
-                    ) = (
-                        self.dependency_analysis,
-                        self.contract_projection.expression_type(&object_key),
-                    ) {
-                        if let Some(record) = dependency_analysis.exact_package_type(
-                            package_id,
-                            stable_schema_key,
-                            package_schema_type_id,
-                        ) {
-                            if let skiff_artifact_model::ContractTypeDescriptor::Record {
-                                fields,
-                            } = &record.canonical_descriptor.descriptor
-                            {
-                                if let Some(field_type) = fields.get(field) {
-                                    self.contract_projection.record_expression_type(
-                                        key.clone(),
-                                        contract_call_typing::package_type_ref_from_contract_type(
-                                            field_type,
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    if diagnose_unknown_field && field_ty.is_none() {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: unknown field `{field}` on {} at {}",
-                            self.module_path,
-                            object_ty,
-                            self.expression_span_label(&key)
-                        ));
-                    }
-                    field_ty
-                })
+                    self.check_field_expr(&key, object, field, diagnose_unknown_field)
                 }
                 Expr::Record {
                     type_name,
                     type_args,
                     fields,
-                } => {
-                    let mut field_types = Vec::new();
-                    let mut provided_field_keys = Vec::new();
-                    for (name, value) in fields {
-                        let value_key = self.peek_key();
-                        provided_field_keys.push((name.clone(), value_key));
-                        let value_ty = self.check_expr(value);
-                        field_types.push(value_ty);
-                    }
-                    self.validate_constructor(
-                        &key,
-                        type_name,
-                        type_args,
-                        fields,
-                        &field_types,
-                        &provided_field_keys,
-                    )
-                }
-                Expr::ObjectLiteral { entries } => {
-                    let source_fact = self.expression_sources.fact(&key);
-                    let mut fields = BTreeMap::new();
-                    let mut source_fields = Vec::with_capacity(entries.len());
-                    for (index, entry) in entries.iter().enumerate() {
-                        let value_key = self.peek_key();
-                        let actual = self.check_expr(&entry.value);
-                        let Some(name) = object_literal_key_text(&entry.key) else {
-                            continue;
-                        };
-                        if let Some(actual) = &actual {
-                            fields.insert(name.clone(), actual.clone());
-                        }
-                        source_fields.push(ObjectLiteralSourceField {
-                            name,
-                            expression: value_key,
-                            actual,
-                            value_span: record_field_value_source_span(source_fact, index),
-                        });
-                    }
-                    self.outputs.object_materialization.sources.insert(
-                        key.clone(),
-                        ObjectLiteralSource {
-                            span: source_fact
-                                .map(|fact| fact.span)
-                                .unwrap_or_else(SourceSpan::synthetic),
-                            fields: source_fields,
-                        },
-                    );
-                    Some(ResolvedTypeRef::with_text(
-                        TypeRefIr::Record {
-                            fields: fields
-                                .iter()
-                                .map(|(name, ty)| (name.clone(), ty.ir.clone()))
-                                .collect(),
-                        },
-                        "{}".to_string(),
-                    ))
-                }
-                Expr::Patch { operations, .. } => {
-                    for operation in operations {
-                        match operation {
-                            crate::shared::ast::PatchOperation::Set { value, .. }
-                            | crate::shared::ast::PatchOperation::Inc { value, .. } => {
-                                self.check_expr(value);
-                            }
-                        }
-                    }
-                    None
-                }
+                } => self.check_record_expr(&key, type_name, type_args, fields),
+                Expr::ObjectLiteral { entries } => self.check_object_literal_expr(&key, entries),
+                Expr::Patch { operations, .. } => self.check_patch_expr(operations),
                 Expr::ValueBlock(value) => self.check_value_block_expr(&key, value),
-                Expr::ConcurrentValue(value) => {
-                    self.check_concurrent_block(&value.body, Some((&key, &value.tail)))
-                }
-                Expr::Timeout { value, .. } => {
-                    let value_key = self.peek_key();
-                    let ty = self.check_expr(value);
-                    self.transparent_value_targets
-                        .insert(key.clone(), value_key.clone());
-                    if let Some(projected) = self
-                        .contract_projection
-                        .expression_type(&value_key)
-                        .cloned()
-                    {
-                        self.contract_projection
-                            .record_expression_type(key.clone(), projected);
-                    }
-                    ty
-                }
-                Expr::Throw { value } => {
-                    if let Some(actual) = self.check_expr(value) {
-                        self.validate_throw_payload(&key, &actual, "throw expression");
-                    }
-                    None
-                }
-                Expr::Rethrow { exception } => {
-                    if let Some(actual) = self.check_expr(exception) {
-                        self.validate_rethrow_operand(&key, &actual);
-                    }
-                    None
-                }
+                Expr::ConcurrentValue(value) => self.check_concurrent_value_expr(&key, value),
+                Expr::Timeout { value, .. } => self.check_timeout_expr(&key, value),
+                Expr::Throw { value } => self.check_throw_expr(&key, value),
+                Expr::Rethrow { exception } => self.check_rethrow_expr(&key, exception),
                 Expr::Catch {
                     catch_type,
                     try_expr,
-                } => {
-                    let try_ty = self.check_expr(try_expr)?;
-                    let catch_ty = match self
-                        .type_resolution
-                        .resolve_type_ref(catch_type, &self.type_context)
-                    {
-                        Ok(catch_ty) => catch_ty,
-                        Err(error) => {
-                            self.outputs.diagnostics.push(format!(
-                                "{}: catch type cannot be resolved at {}: {error}",
-                                self.module_path,
-                                self.expression_span_label(&key)
-                            ));
-                            return None;
-                        }
-                    };
-                    if let Err(error) = self
-                        .type_resolution
-                        .catch_leaves(&catch_ty, &self.type_context)
-                    {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: invalid catch type `{}` at {}: {error}",
-                            self.module_path,
-                            catch_ty,
-                            self.expression_span_label(&key)
-                        ));
-                    }
-                    Some(catch_result_type(try_ty, catch_ty))
-                }
-                Expr::DbOperation(operation) => {
-                    self.check_db_operation_children(operation);
-                    self.db_operation_type(operation)
-                }
-                Expr::DbQuery(query) => {
-                    self.check_db_query_block(&query.query, &query.target);
-                    self.db_query_type(&query.target)
-                }
-                Expr::DbTransaction(transaction) => {
-                    let mut last = None;
-                    for stmt in &transaction.body.statements {
-                        if let Stmt::Expr(value) = stmt {
-                            last = self.check_expr(value);
-                        } else {
-                            self.check_stmt(stmt);
-                        }
-                    }
-                    match transaction.mode {
-                        DbBlockMode::Effect => self.resolve_builtin(BuiltinShape::Null.name()),
-                        DbBlockMode::Value => last,
-                    }
-                }
-                Expr::DbLeaseClaim(claim) => {
-                    self.check_expr(&claim.key);
-                    if let Some(binding) = &claim.binding {
-                        if let Ok(target) = self
-                            .type_resolution
-                            .resolve_type_ref(&claim.target, &self.type_context)
-                        {
-                            let previous = self.env.insert(binding.clone(), target);
-                            self.check_block(&claim.body);
-                            if let Some(previous) = previous {
-                                self.env.insert(binding.clone(), previous);
-                            } else {
-                                self.env.remove(binding);
-                            }
-                        } else {
-                            self.check_block(&claim.body);
-                        }
-                    } else {
-                        self.check_block(&claim.body);
-                    }
-                    self.resolve_builtin(BuiltinShape::Bool.name())
-                }
-                Expr::DbLeaseRead(read) => {
-                    self.check_expr(&read.key);
-                    Some(db_lease_read_type())
-                }
+                } => self.check_catch_expr(&key, catch_type, try_expr),
+                Expr::DbOperation(operation) => self.check_db_operation_expr(operation),
+                Expr::DbQuery(query) => self.check_db_query_expr(query),
+                Expr::DbTransaction(transaction) => self.check_db_transaction_expr(transaction),
+                Expr::DbLeaseClaim(claim) => self.check_db_lease_claim_expr(claim),
+                Expr::DbLeaseRead(read) => self.check_db_lease_read_expr(read),
             }
         };
         let ty = refined_ty.clone().or(ty);
@@ -2203,6 +1872,480 @@ impl<'a> OwnerChecker<'a> {
             },
         );
         ty
+    }
+
+    fn check_dependency_source_address_expr(
+        &mut self,
+        key: &ExpressionKey,
+        source: &crate::shared::ast::DependencySourceAddress,
+        diagnose_unknown_field: bool,
+    ) -> Option<ResolvedTypeRef> {
+        if diagnose_unknown_field {
+            let message = format!(
+                        "{}: dependency source address `{}/{}` is not a value at {}; use `{}/{} as I` to box a public instance or call an exported callable",
+                        self.module_path,
+                        source.dependency_ref,
+                        source.public_path,
+                        self.expression_span_label(&key),
+                        source.dependency_ref,
+                        source.public_path
+                    );
+            self.outputs.diagnostics.push(message);
+        }
+        None
+    }
+
+    fn check_binary_expr(
+        &mut self,
+        key: &ExpressionKey,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
+    ) -> Option<ResolvedTypeRef> {
+        let db_relational = db_predicate_fields.is_some()
+            && matches!(
+                op,
+                BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+            );
+        let db_logical =
+            db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
+        let db_field_relational = db_relational
+            && db_predicate_fields.is_some_and(|fields| Self::is_db_field_operand(left, fields));
+        let left_ty = if db_field_relational {
+            self.check_db_field_operand(left, db_predicate_fields.expect("checked above"))
+        } else if db_logical {
+            self.check_db_predicate_expr(left, db_predicate_fields.expect("checked above"))
+        } else {
+            self.check_expr(left)
+        };
+        let right_ty = if db_logical {
+            self.check_db_predicate_expr(right, db_predicate_fields.expect("checked above"))
+        } else {
+            match op {
+                BinaryOp::And => {
+                    let narrowing = self.condition_narrowings(left).when_true;
+                    self.check_expr_scoped(right, &narrowing)
+                }
+                BinaryOp::Or => {
+                    let narrowing = self.condition_narrowings(left).when_false;
+                    self.check_expr_scoped(right, &narrowing)
+                }
+                _ => self.check_expr(right),
+            }
+        };
+        self.check_binary_operands(
+            &key,
+            op,
+            left_ty.as_ref(),
+            right_ty.as_ref(),
+            db_field_relational,
+        );
+        self.binary_type(op, left_ty.as_ref(), right_ty.as_ref())
+    }
+
+    fn check_unary_expr(
+        &mut self,
+        key: &ExpressionKey,
+        op: UnaryOp,
+        expr: &Expr,
+        db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
+    ) -> Option<ResolvedTypeRef> {
+        let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not) {
+            self.check_db_predicate_expr(expr, db_predicate_fields.expect("checked above"))
+        } else {
+            self.check_expr(expr)
+        };
+        self.check_unary_operand(&key, op, operand_ty.as_ref());
+        self.unary_type(op)
+    }
+
+    fn check_call_expr(
+        &mut self,
+        key: &ExpressionKey,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<ResolvedTypeRef> {
+        self.check_callee_expr(callee);
+        let arg_types = args
+            .iter()
+            .map(|arg| {
+                let key = self.peek_key();
+                (key, self.check_expr(arg))
+            })
+            .collect::<Vec<_>>();
+        self.call_type(&key, callee, args, &arg_types)
+    }
+
+    fn check_interface_box_expr(
+        &mut self,
+        key: &ExpressionKey,
+        value: &Expr,
+        interface: &TypeRef,
+    ) -> Option<ResolvedTypeRef> {
+        let value_ty = self.check_expr(value);
+        let selector = match self
+            .type_resolution
+            .resolve_canonical_interface_selector_type_ref(interface, &self.type_context)
+        {
+            Ok(selector) => selector,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: interface boxing selector `{}` failed at {}: {error}",
+                    self.module_path,
+                    interface.name,
+                    self.expression_span_label(&key)
+                ));
+                return None;
+            }
+        };
+        let Some(value_ty) = value_ty else {
+            return None;
+        };
+        let Some(receiver) = self
+            .type_resolution
+            .concrete_nominal_record_symbol(&value_ty, &self.type_context)
+        else {
+            self.outputs.diagnostics.push(format!(
+                "{}: interface boxing source at {} must be a concrete nominal record, found {}",
+                self.module_path,
+                self.expression_span_label(&key),
+                value_ty
+            ));
+            return None;
+        };
+        let expected_interface = ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
+                interface: selector.instantiation_ref.clone(),
+            },
+            selector.source_text.clone(),
+        );
+        match self.type_resolution.concrete_type_conforms_to_interface(
+            &value_ty,
+            &expected_interface,
+            &self.type_context,
+        ) {
+            Ok(Some(_)) => Some(ResolvedTypeRef::with_text(
+                TypeRefIr::AnyInterface {
+                    interface: selector.instantiation_ref,
+                },
+                format!("any {}", selector.source_text),
+            )),
+            Ok(None) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: type {} does not explicitly implement interface {} for boxing at {}",
+                    self.module_path,
+                    receiver,
+                    selector.source_text,
+                    self.expression_span_label(&key)
+                ));
+                None
+            }
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: interface boxing conformance check failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(&key)
+                ));
+                None
+            }
+        }
+    }
+
+    fn check_field_expr(
+        &mut self,
+        key: &ExpressionKey,
+        object: &Expr,
+        field: &str,
+        diagnose_unknown_field: bool,
+    ) -> Option<ResolvedTypeRef> {
+        let object_key = self.peek_key();
+        let object_ty = if diagnose_unknown_field {
+            self.check_expr(object)
+        } else {
+            self.check_callee_expr(object)
+        };
+        object_ty.and_then(|object_ty| {
+            let field_ty = if matches!(object, Expr::Identifier(name) if name == "self")
+                && self
+                    .type_resolution
+                    .actor_type_resolution(&object_ty, &self.type_context)
+                    .is_some()
+            {
+                self.type_resolution
+                    .actor_state_field_type(&object_ty, field, &self.type_context)
+            } else {
+                self.record_field_type(&object_ty, field)
+            };
+            if let (
+                Some(dependency_analysis),
+                Some(PackageTypeRef::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    package_schema_type_id,
+                }),
+            ) = (
+                self.dependency_analysis,
+                self.contract_projection.expression_type(&object_key),
+            ) {
+                if let Some(record) = dependency_analysis.exact_package_type(
+                    package_id,
+                    stable_schema_key,
+                    package_schema_type_id,
+                ) {
+                    if let skiff_artifact_model::ContractTypeDescriptor::Record { fields } =
+                        &record.canonical_descriptor.descriptor
+                    {
+                        if let Some(field_type) = fields.get(field) {
+                            self.contract_projection.record_expression_type(
+                                key.clone(),
+                                contract_call_typing::package_type_ref_from_contract_type(
+                                    field_type,
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            if diagnose_unknown_field && field_ty.is_none() {
+                self.outputs.diagnostics.push(format!(
+                    "{}: unknown field `{field}` on {} at {}",
+                    self.module_path,
+                    object_ty,
+                    self.expression_span_label(&key)
+                ));
+            }
+            field_ty
+        })
+    }
+
+    fn check_record_expr(
+        &mut self,
+        key: &ExpressionKey,
+        type_name: &str,
+        type_args: &[TypeRef],
+        fields: &[(String, Expr)],
+    ) -> Option<ResolvedTypeRef> {
+        let mut field_types = Vec::new();
+        let mut provided_field_keys = Vec::new();
+        for (name, value) in fields {
+            let value_key = self.peek_key();
+            provided_field_keys.push((name.clone(), value_key));
+            let value_ty = self.check_expr(value);
+            field_types.push(value_ty);
+        }
+        self.validate_constructor(
+            &key,
+            type_name,
+            type_args,
+            fields,
+            &field_types,
+            &provided_field_keys,
+        )
+    }
+
+    fn check_object_literal_expr(
+        &mut self,
+        key: &ExpressionKey,
+        entries: &[crate::shared::ast::ObjectLiteralEntry],
+    ) -> Option<ResolvedTypeRef> {
+        let source_fact = self.expression_sources.fact(&key);
+        let mut fields = BTreeMap::new();
+        let mut source_fields = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let value_key = self.peek_key();
+            let actual = self.check_expr(&entry.value);
+            let Some(name) = object_literal_key_text(&entry.key) else {
+                continue;
+            };
+            if let Some(actual) = &actual {
+                fields.insert(name.clone(), actual.clone());
+            }
+            source_fields.push(ObjectLiteralSourceField {
+                name,
+                expression: value_key,
+                actual,
+                value_span: record_field_value_source_span(source_fact, index),
+            });
+        }
+        self.outputs.object_materialization.sources.insert(
+            key.clone(),
+            ObjectLiteralSource {
+                span: source_fact
+                    .map(|fact| fact.span)
+                    .unwrap_or_else(SourceSpan::synthetic),
+                fields: source_fields,
+            },
+        );
+        Some(ResolvedTypeRef::with_text(
+            TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.ir.clone()))
+                    .collect(),
+            },
+            "{}".to_string(),
+        ))
+    }
+
+    fn check_patch_expr(
+        &mut self,
+        operations: &[crate::shared::ast::PatchOperation],
+    ) -> Option<ResolvedTypeRef> {
+        for operation in operations {
+            match operation {
+                crate::shared::ast::PatchOperation::Set { value, .. }
+                | crate::shared::ast::PatchOperation::Inc { value, .. } => {
+                    self.check_expr(value);
+                }
+            }
+        }
+        None
+    }
+
+    fn check_concurrent_value_expr(
+        &mut self,
+        key: &ExpressionKey,
+        value: &crate::shared::ast::ValueBlock,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_concurrent_block(&value.body, Some((&key, &value.tail)))
+    }
+
+    fn check_timeout_expr(&mut self, key: &ExpressionKey, value: &Expr) -> Option<ResolvedTypeRef> {
+        let value_key = self.peek_key();
+        let ty = self.check_expr(value);
+        self.transparent_value_targets
+            .insert(key.clone(), value_key.clone());
+        if let Some(projected) = self
+            .contract_projection
+            .expression_type(&value_key)
+            .cloned()
+        {
+            self.contract_projection
+                .record_expression_type(key.clone(), projected);
+        }
+        ty
+    }
+
+    fn check_throw_expr(&mut self, key: &ExpressionKey, value: &Expr) -> Option<ResolvedTypeRef> {
+        if let Some(actual) = self.check_expr(value) {
+            self.validate_throw_payload(&key, &actual, "throw expression");
+        }
+        None
+    }
+
+    fn check_rethrow_expr(
+        &mut self,
+        key: &ExpressionKey,
+        exception: &Expr,
+    ) -> Option<ResolvedTypeRef> {
+        if let Some(actual) = self.check_expr(exception) {
+            self.validate_rethrow_operand(&key, &actual);
+        }
+        None
+    }
+
+    fn check_catch_expr(
+        &mut self,
+        key: &ExpressionKey,
+        catch_type: &TypeRef,
+        try_expr: &Expr,
+    ) -> Option<ResolvedTypeRef> {
+        let try_ty = self.check_expr(try_expr)?;
+        let catch_ty = match self
+            .type_resolution
+            .resolve_type_ref(catch_type, &self.type_context)
+        {
+            Ok(catch_ty) => catch_ty,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: catch type cannot be resolved at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(&key)
+                ));
+                return None;
+            }
+        };
+        if let Err(error) = self
+            .type_resolution
+            .catch_leaves(&catch_ty, &self.type_context)
+        {
+            self.outputs.diagnostics.push(format!(
+                "{}: invalid catch type `{}` at {}: {error}",
+                self.module_path,
+                catch_ty,
+                self.expression_span_label(&key)
+            ));
+        }
+        Some(catch_result_type(try_ty, catch_ty))
+    }
+
+    fn check_db_operation_expr(
+        &mut self,
+        operation: &crate::shared::ast::DbOperation,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_db_operation_children(operation);
+        self.db_operation_type(operation)
+    }
+
+    fn check_db_query_expr(
+        &mut self,
+        query: &crate::shared::ast::DbQuery,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_db_query_block(&query.query, &query.target);
+        self.db_query_type(&query.target)
+    }
+
+    fn check_db_transaction_expr(
+        &mut self,
+        transaction: &crate::shared::ast::DbTransaction,
+    ) -> Option<ResolvedTypeRef> {
+        let mut last = None;
+        for stmt in &transaction.body.statements {
+            if let Stmt::Expr(value) = stmt {
+                last = self.check_expr(value);
+            } else {
+                self.check_stmt(stmt);
+            }
+        }
+        match transaction.mode {
+            DbBlockMode::Effect => self.resolve_builtin(BuiltinShape::Null.name()),
+            DbBlockMode::Value => last,
+        }
+    }
+
+    fn check_db_lease_claim_expr(
+        &mut self,
+        claim: &crate::shared::ast::DbLeaseClaim,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_expr(&claim.key);
+        if let Some(binding) = &claim.binding {
+            if let Ok(target) = self
+                .type_resolution
+                .resolve_type_ref(&claim.target, &self.type_context)
+            {
+                let previous = self.env.insert(binding.clone(), target);
+                self.check_block(&claim.body);
+                if let Some(previous) = previous {
+                    self.env.insert(binding.clone(), previous);
+                } else {
+                    self.env.remove(binding);
+                }
+            } else {
+                self.check_block(&claim.body);
+            }
+        } else {
+            self.check_block(&claim.body);
+        }
+        self.resolve_builtin(BuiltinShape::Bool.name())
+    }
+
+    fn check_db_lease_read_expr(
+        &mut self,
+        read: &crate::shared::ast::DbLeaseRead,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_expr(&read.key);
+        Some(db_lease_read_type())
     }
 
     fn record_stream_emit_target(&mut self, key: &ExpressionKey, target: ResolvedTypeRef) {
@@ -2914,6 +3057,70 @@ impl<'a> OwnerChecker<'a> {
             Expr::Generic { callee, type_args } => (callee.as_ref(), type_args.as_slice()),
             _ => (callee, &[][..]),
         };
+        if let Some(return_type) =
+            self.receiver_dispatch_call_type(key, callee, type_args, args, arg_types)
+        {
+            return Some(return_type);
+        }
+        let path = expr_path(callee)?;
+        if !path
+            .split('.')
+            .next()
+            .is_some_and(|root| self.env.contains_key(root))
+        {
+            match self.contract_call_type(key, &path, type_args, arg_types) {
+                Ok(Some(return_type)) => return Some(return_type),
+                Err(()) => return None,
+                Ok(None) => {}
+            }
+        }
+        if type_args.is_empty() {
+            match self.dependency_package_call_type(key, &path, args, arg_types) {
+                Ok(Some(return_type)) => return Some(return_type),
+                Err(()) => return None,
+                Ok(None) => {}
+            }
+        }
+        if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
+            return Some(return_type);
+        }
+        if matches!(
+            path.as_str(),
+            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
+        ) {
+            return self.actor_registry_intrinsic_call_type(&path, type_args, args, arg_types);
+        }
+        match self.representation_constructor_call_type(key, &path, type_args, args, arg_types) {
+            Ok(Some(return_type)) => return Some(return_type),
+            Err(()) => return None,
+            Ok(None) => {}
+        }
+        match self.prelude_native_call_type(&path, type_args, args, arg_types) {
+            Ok(Some(return_type)) => return Some(return_type),
+            Err(()) => return None,
+            Ok(None) => {}
+        }
+        match self.local_callable_call_type(key, &path, type_args, args, arg_types) {
+            Ok(Some(return_type)) => return Some(return_type),
+            Err(()) => return None,
+            Ok(None) => {}
+        }
+        match self.package_callable_call_type(key, &path, type_args, args, arg_types) {
+            Ok(Some(return_type)) => return Some(return_type),
+            Err(()) => return None,
+            Ok(None) => {}
+        }
+        self.known_path_call_type(&path, type_args)
+    }
+
+    fn receiver_dispatch_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        callee: &Expr,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Option<ResolvedTypeRef> {
         if let Some(return_type) = self.runtime_receiver_call_type(key, callee, args, arg_types) {
             return Some(return_type);
         }
@@ -2937,142 +3144,150 @@ impl<'a> OwnerChecker<'a> {
         {
             return Some(return_type);
         }
-        let path = expr_path(callee)?;
-        if !path
-            .split('.')
-            .next()
-            .is_some_and(|root| self.env.contains_key(root))
-        {
-            if let Some(dependency_analysis) = self.dependency_analysis {
-                match ContractCallTyping::new(
-                    self.type_resolution,
-                    dependency_analysis,
-                    &self.type_context,
-                )
-                .check_call(
-                    &path,
-                    type_args.len(),
-                    arg_types,
-                    self.contract_projection.expression_types(),
-                ) {
-                    ContractCallOutcome::NotContract => {}
-                    ContractCallOutcome::Typed {
-                        return_type,
-                        projected_return_type,
-                    } => {
-                        self.contract_projection
-                            .record_expression_type(key.clone(), projected_return_type);
-                        return Some(return_type);
-                    }
-                    ContractCallOutcome::Invalid(diagnostics) => {
-                        let location = self.expression_span_label(key);
-                        self.outputs.diagnostics.extend(diagnostics.into_iter().map(
-                            |diagnostic| {
-                                format!("{}: {diagnostic} at {location}", self.module_path)
-                            },
-                        ));
-                        return None;
-                    }
-                }
+        None
+    }
+    fn contract_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        path: &str,
+        type_args: &[TypeRef],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Result<Option<ResolvedTypeRef>, ()> {
+        let Some(dependency_analysis) = self.dependency_analysis else {
+            return Ok(None);
+        };
+        match ContractCallTyping::new(
+            self.type_resolution,
+            dependency_analysis,
+            &self.type_context,
+        )
+        .check_call(
+            path,
+            type_args.len(),
+            arg_types,
+            self.contract_projection.expression_types(),
+        ) {
+            ContractCallOutcome::NotContract => Ok(None),
+            ContractCallOutcome::Typed {
+                return_type,
+                projected_return_type,
+            } => {
+                self.contract_projection
+                    .record_expression_type(key.clone(), projected_return_type);
+                Ok(Some(return_type))
+            }
+            ContractCallOutcome::Invalid(diagnostics) => {
+                let location = self.expression_span_label(key);
+                self.outputs.diagnostics.extend(
+                    diagnostics.into_iter().map(|diagnostic| {
+                        format!("{}: {diagnostic} at {location}", self.module_path)
+                    }),
+                );
+                Err(())
             }
         }
-        if type_args.is_empty() {
-            let signature = self.dependency_analysis.and_then(|dependency_analysis| {
-                let (canonical_dependency_ref, callable) =
-                    dependency_analysis.package_callable_by_source_path(&path)?;
-                let type_dependency_ref = dependency_source_address_parts(&path)
-                    .map(|(dependency_ref, _)| dependency_ref)
-                    .filter(|dependency_ref| {
-                        self.type_resolution
-                            .is_top_level_package_dependency_ref(dependency_ref)
-                    })
-                    .unwrap_or(canonical_dependency_ref);
-                Some((
-                    type_dependency_ref.to_string(),
-                    callable.signature()?.clone(),
-                ))
-            });
-            if let Some((dependency_ref, signature)) = signature {
-                let canonical_dependency_ref = self
-                    .type_resolution
-                    .canonical_package_dependency_ref(&dependency_ref)
-                    .to_string();
-                // Resolve each parameter independently: an owner/slot diagnostic
-                // must fail the compile without erasing an exact return fact.
-                let expected = signature
-                    .parameters
-                    .iter()
-                    .map(|parameter| {
-                        (
-                            parameter.name.clone(),
+    }
+    fn dependency_package_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        path: &str,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Result<Option<ResolvedTypeRef>, ()> {
+        let signature = self.dependency_analysis.and_then(|dependency_analysis| {
+            let (canonical_dependency_ref, callable) =
+                dependency_analysis.package_callable_by_source_path(&path)?;
+            let type_dependency_ref = dependency_source_address_parts(&path)
+                .map(|(dependency_ref, _)| dependency_ref)
+                .filter(|dependency_ref| {
+                    self.type_resolution
+                        .is_top_level_package_dependency_ref(dependency_ref)
+                })
+                .unwrap_or(canonical_dependency_ref);
+            Some((
+                type_dependency_ref.to_string(),
+                callable.signature()?.clone(),
+            ))
+        });
+        let Some((dependency_ref, signature)) = signature else {
+            return Ok(None);
+        };
+        let canonical_dependency_ref = self
+            .type_resolution
+            .canonical_package_dependency_ref(&dependency_ref)
+            .to_string();
+        // Resolve each parameter independently: an owner/slot diagnostic
+        // must fail the compile without erasing an exact return fact.
+        let expected = signature
+            .parameters
+            .iter()
+            .map(|parameter| {
+                (
+                    parameter.name.clone(),
+                    self.type_resolution
+                        .rehydrate_package_signature_type_for_dependency(
+                            &canonical_dependency_ref,
+                            &parameter.ty,
+                        )
+                        .or_else(|_| {
                             self.type_resolution
                                 .rehydrate_package_signature_type_for_dependency(
-                                    &canonical_dependency_ref,
+                                    &dependency_ref,
                                     &parameter.ty,
                                 )
-                                .or_else(|_| {
-                                    self.type_resolution
-                                        .rehydrate_package_signature_type_for_dependency(
-                                            &dependency_ref,
-                                            &parameter.ty,
-                                        )
-                                })
-                                .map(|exact| {
-                                    let ordinary =
-                                        self.type_resolution.bind_package_type_refs_to_dependency(
-                                            &resolved_package_type_ref(&exact),
-                                            &canonical_dependency_ref,
-                                        );
-                                    (ordinary, exact)
-                                }),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                self.validate_dependency_package_call_params(
-                    key, &path, &expected, args, arg_types,
-                );
+                        })
+                        .map(|exact| {
+                            let ordinary =
+                                self.type_resolution.bind_package_type_refs_to_dependency(
+                                    &resolved_package_type_ref(&exact),
+                                    &canonical_dependency_ref,
+                                );
+                            (ordinary, exact)
+                        }),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.validate_dependency_package_call_params(key, &path, &expected, args, arg_types);
 
-                let exact_projection = match self
-                    .type_resolution
-                    .rehydrate_package_signature_type_for_dependency(
-                        &dependency_ref,
-                        &signature.return_type,
-                    ) {
-                    Ok(return_type) => return_type,
-                    Err(error) => {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: call `{path}` return dependency type resolution failed at {}: {error}",
-                            self.module_path,
-                            self.expression_span_label(key),
-                        ));
-                        return None;
-                    }
-                };
-                let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
-                    &resolved_package_type_ref(&exact_projection),
-                    &dependency_ref,
-                );
-                let projected_return = self
-                    .type_resolution
-                    .rehydrate_package_signature_type_for_dependency(
-                        &canonical_dependency_ref,
-                        &signature.return_type,
-                    )
-                    .unwrap_or_else(|_| exact_projection.clone());
-                self.contract_projection
-                    .record_expression_type(key.clone(), projected_return);
-                return Some(resolved_return);
+        let exact_projection = match self
+            .type_resolution
+            .rehydrate_package_signature_type_for_dependency(
+                &dependency_ref,
+                &signature.return_type,
+            ) {
+            Ok(return_type) => return_type,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: call `{path}` return dependency type resolution failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(key),
+                ));
+                return Err(());
             }
-        }
-        if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
-            return Some(return_type);
-        }
-        if matches!(
-            path.as_str(),
-            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
-        ) {
-            return self.actor_registry_intrinsic_call_type(&path, type_args, args, arg_types);
-        }
+        };
+        let resolved_return = self.type_resolution.bind_package_type_refs_to_dependency(
+            &resolved_package_type_ref(&exact_projection),
+            &dependency_ref,
+        );
+        let projected_return = self
+            .type_resolution
+            .rehydrate_package_signature_type_for_dependency(
+                &canonical_dependency_ref,
+                &signature.return_type,
+            )
+            .unwrap_or_else(|_| exact_projection.clone());
+        self.contract_projection
+            .record_expression_type(key.clone(), projected_return);
+        Ok(Some(resolved_return))
+    }
+    fn representation_constructor_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        path: &str,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Result<Option<ResolvedTypeRef>, ()> {
         match self.type_resolution.resolve_representation_constructor(
             &path,
             type_args,
@@ -3094,95 +3309,38 @@ impl<'a> OwnerChecker<'a> {
                         },
                     );
                 }
-                return Some(representation.wrapper);
+                Ok(Some(representation.wrapper))
             }
-            Ok(None) => {}
+            Ok(None) => Ok(None),
             Err(error) => {
                 self.outputs.diagnostics.push(format!(
                     "{}: representation constructor `{path}` failed to resolve: {error}",
                     self.module_path
                 ));
-                return None;
+                Err(())
             }
         }
-        if let Some(return_type) = prelude_registry().native_return_type(&path) {
-            let native_context = native_return_type_context(&path, &self.type_context);
-            if let Some(params) = prelude_registry().native_params(&path) {
-                let mut expected = self.resolve_callable_param_types(
-                    &path,
-                    params.iter().map(String::as_str),
-                    &native_context,
-                    prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
-                    type_args,
-                );
-                if native_context.module_path != self.module_path {
-                    expected.params = expected
-                        .params
-                        .into_iter()
-                        .map(|(name, ty)| {
-                            (
-                                name,
-                                self.type_resolution
-                                    .externalize_local_type_refs(&ty, native_context.module_path),
-                            )
-                        })
-                        .collect();
-                }
-                if expected.complete {
-                    self.validate_resolved_call_params(&path, expected.params, args, arg_types);
-                }
-            }
-            let resolved_return_type = self.resolve_callable_return_type(
-                &return_type,
+    }
+    fn prelude_native_call_type(
+        &mut self,
+        path: &str,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Result<Option<ResolvedTypeRef>, ()> {
+        let Some(return_type) = prelude_registry().native_return_type(path) else {
+            return Ok(None);
+        };
+        let native_context = native_return_type_context(&path, &self.type_context);
+        if let Some(params) = prelude_registry().native_params(&path) {
+            let mut expected = self.resolve_callable_param_types(
+                &path,
+                params.iter().map(String::as_str),
                 &native_context,
                 prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
                 type_args,
-            )?;
-            return Some(if native_context.module_path == self.module_path {
-                resolved_return_type
-            } else {
-                self.type_resolution
-                    .externalize_local_type_refs(&resolved_return_type, native_context.module_path)
-            });
-        }
-        if let Some(signature) = self.local_callable_signature(&path).cloned() {
-            let signature_context = TypeResolutionContext::with_type_params(
-                &signature.module_path,
-                signature.type_params.iter().cloned().collect(),
             );
-            let type_params = signature.type_params.clone();
-            let params = signature.params.clone();
-            let return_type = signature.return_type.clone();
-            let declaration_name = signature.declaration_name.clone();
-            let projected_params = match params
-                .iter()
-                .map(|param| {
-                    self.project_callable_package_type(
-                        &param.ty,
-                        &signature_context,
-                        &type_params,
-                        type_args,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(projected) => projected,
-                Err(error) => {
-                    self.outputs.diagnostics.push(format!(
-                        "{}: call `{declaration_name}` exact parameter type projection failed: {error}",
-                        self.module_path
-                    ));
-                    return None;
-                }
-            };
-            let mut expected = self.resolve_callable_param_types(
-                &declaration_name,
-                params.iter().map(|param| param.ty.name.as_str()),
-                &signature_context,
-                &type_params,
-                type_args,
-            );
-            if signature.module_path != self.module_path {
+            if native_context.module_path != self.module_path {
                 expected.params = expected
                     .params
                     .into_iter()
@@ -3190,86 +3348,173 @@ impl<'a> OwnerChecker<'a> {
                         (
                             name,
                             self.type_resolution
-                                .externalize_local_type_refs(&ty, &signature.module_path),
+                                .externalize_local_type_refs(&ty, native_context.module_path),
                         )
                     })
                     .collect();
             }
             if expected.complete {
-                self.validate_resolved_call_params_with_projections(
-                    &declaration_name,
-                    expected.params,
-                    &projected_params,
-                    args,
-                    arg_types,
-                );
+                self.validate_resolved_call_params(&path, expected.params, args, arg_types);
             }
-            let projected_return_type = match self.project_callable_package_type(
+        }
+        let resolved_return_type = self
+            .resolve_callable_return_type(
                 &return_type,
-                &signature_context,
-                &type_params,
+                &native_context,
+                prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
                 type_args,
-            ) {
-                Ok(projected) => projected,
-                Err(error) => {
-                    self.outputs.diagnostics.push(format!(
-                        "{}: call `{declaration_name}` exact return type projection failed: {error}",
-                        self.module_path
-                    ));
-                    return None;
-                }
-            };
-            let resolved_return_type = self.resolve_callable_return_type(
+            )
+            .ok_or(())?;
+        Ok(Some(if native_context.module_path == self.module_path {
+            resolved_return_type
+        } else {
+            self.type_resolution
+                .externalize_local_type_refs(&resolved_return_type, native_context.module_path)
+        }))
+    }
+    fn local_callable_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        path: &str,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Result<Option<ResolvedTypeRef>, ()> {
+        let Some(signature) = self.local_callable_signature(path).cloned() else {
+            return Ok(None);
+        };
+        let signature_context = TypeResolutionContext::with_type_params(
+            &signature.module_path,
+            signature.type_params.iter().cloned().collect(),
+        );
+        let type_params = signature.type_params.clone();
+        let params = signature.params.clone();
+        let return_type = signature.return_type.clone();
+        let declaration_name = signature.declaration_name.clone();
+        let projected_params = match params
+            .iter()
+            .map(|param| {
+                self.project_callable_package_type(
+                    &param.ty,
+                    &signature_context,
+                    &type_params,
+                    type_args,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(projected) => projected,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: call `{declaration_name}` exact parameter type projection failed: {error}",
+                    self.module_path
+                ));
+                return Err(());
+            }
+        };
+        let mut expected = self.resolve_callable_param_types(
+            &declaration_name,
+            params.iter().map(|param| param.ty.name.as_str()),
+            &signature_context,
+            &type_params,
+            type_args,
+        );
+        if signature.module_path != self.module_path {
+            expected.params = expected
+                .params
+                .into_iter()
+                .map(|(name, ty)| {
+                    (
+                        name,
+                        self.type_resolution
+                            .externalize_local_type_refs(&ty, &signature.module_path),
+                    )
+                })
+                .collect();
+        }
+        if expected.complete {
+            self.validate_resolved_call_params_with_projections(
+                &declaration_name,
+                expected.params,
+                &projected_params,
+                args,
+                arg_types,
+            );
+        }
+        let projected_return_type = match self.project_callable_package_type(
+            &return_type,
+            &signature_context,
+            &type_params,
+            type_args,
+        ) {
+            Ok(projected) => projected,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: call `{declaration_name}` exact return type projection failed: {error}",
+                    self.module_path
+                ));
+                return Err(());
+            }
+        };
+        let resolved_return_type = self
+            .resolve_callable_return_type(
                 &return_type.name,
                 &signature_context,
                 &type_params,
                 type_args,
-            )?;
-            let resolved_return_type = if signature.module_path == self.module_path {
-                resolved_return_type
-            } else {
-                self.type_resolution
-                    .externalize_local_type_refs(&resolved_return_type, &signature.module_path)
-            };
-            if let Some(projected_return_type) = projected_return_type {
-                self.contract_projection
-                    .record_expression_type(key.clone(), projected_return_type);
-            }
-            return Some(resolved_return_type);
+            )
+            .ok_or(())?;
+        let resolved_return_type = if signature.module_path == self.module_path {
+            resolved_return_type
+        } else {
+            self.type_resolution
+                .externalize_local_type_refs(&resolved_return_type, &signature.module_path)
+        };
+        if let Some(projected_return_type) = projected_return_type {
+            self.contract_projection
+                .record_expression_type(key.clone(), projected_return_type);
         }
-        if let Some(signature) = self
-            .type_resolution
-            .resolve_package_callable(&path)
-            .cloned()
-        {
-            let package_root = package_callable_public_root(&path, &signature.source_symbol);
-            let signature_context = TypeResolutionContext::with_type_params(
-                &signature.module_path,
-                signature.type_params.iter().cloned().collect(),
-            );
-            let params = signature
-                .params
-                .iter()
-                .map(|param| {
-                    qualify_package_signature_type_text(
-                        param,
-                        &package_root,
-                        &signature.local_type_names,
-                    )
-                })
-                .collect::<Vec<_>>();
-            let expected = self.resolve_callable_param_types(
-                &path,
-                params.iter().map(String::as_str),
-                &signature_context,
-                &signature.type_params,
-                type_args,
-            );
-            if expected.complete {
-                self.validate_resolved_call_params(&path, expected.params, args, arg_types);
-            }
-            if let Some(exact_signature) = signature.exact_signature {
-                let substitutions = signature
+        Ok(Some(resolved_return_type))
+    }
+    fn package_callable_call_type(
+        &mut self,
+        key: &ExpressionKey,
+        path: &str,
+        type_args: &[TypeRef],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) -> Result<Option<ResolvedTypeRef>, ()> {
+        let Some(signature) = self.type_resolution.resolve_package_callable(path).cloned() else {
+            return Ok(None);
+        };
+        let package_root = package_callable_public_root(&path, &signature.source_symbol);
+        let signature_context = TypeResolutionContext::with_type_params(
+            &signature.module_path,
+            signature.type_params.iter().cloned().collect(),
+        );
+        let params = signature
+            .params
+            .iter()
+            .map(|param| {
+                qualify_package_signature_type_text(
+                    param,
+                    &package_root,
+                    &signature.local_type_names,
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected = self.resolve_callable_param_types(
+            &path,
+            params.iter().map(String::as_str),
+            &signature_context,
+            &signature.type_params,
+            type_args,
+        );
+        if expected.complete {
+            self.validate_resolved_call_params(&path, expected.params, args, arg_types);
+        }
+        if let Some(exact_signature) = signature.exact_signature {
+            let substitutions = signature
                     .type_params
                     .iter()
                     .zip(type_args)
@@ -3285,41 +3530,42 @@ impl<'a> OwnerChecker<'a> {
                             .map(|projected| (param.clone(), projected))
                     })
                     .collect::<Result<BTreeMap<_, _>, _>>();
-                let projected_return = match substitutions {
-                    Ok(substitutions) => {
-                        substitute_package_type(&exact_signature.return_type, &substitutions)
-                    }
-                    Err(error) => Err(error),
-                };
-                match projected_return {
-                    Ok(projected_return) => {
-                        let resolved_return = resolved_package_type_ref(&projected_return);
-                        self.contract_projection
-                            .record_expression_type(key.clone(), projected_return);
-                        return Some(resolved_return);
-                    }
-                    Err(error) => {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: call `{path}` exact return type substitution failed: {error}",
-                            self.module_path
-                        ));
-                        return None;
-                    }
+            let projected_return = match substitutions {
+                Ok(substitutions) => {
+                    substitute_package_type(&exact_signature.return_type, &substitutions)
+                }
+                Err(error) => Err(error),
+            };
+            match projected_return {
+                Ok(projected_return) => {
+                    let resolved_return = resolved_package_type_ref(&projected_return);
+                    self.contract_projection
+                        .record_expression_type(key.clone(), projected_return);
+                    return Ok(Some(resolved_return));
+                }
+                Err(error) => {
+                    self.outputs.diagnostics.push(format!(
+                        "{}: call `{path}` exact return type substitution failed: {error}",
+                        self.module_path
+                    ));
+                    return Err(());
                 }
             }
-            let package_return_type = qualify_package_signature_type_text(
-                &signature.return_type,
-                &package_root,
-                &signature.local_type_names,
-            );
-            return self.resolve_callable_return_type(
-                &package_return_type,
-                &signature_context,
-                &signature.type_params,
-                type_args,
-            );
         }
-        match path.as_str() {
+        let package_return_type = qualify_package_signature_type_text(
+            &signature.return_type,
+            &package_root,
+            &signature.local_type_names,
+        );
+        return Ok(self.resolve_callable_return_type(
+            &package_return_type,
+            &signature_context,
+            &signature.type_params,
+            type_args,
+        ));
+    }
+    fn known_path_call_type(&self, path: &str, type_args: &[TypeRef]) -> Option<ResolvedTypeRef> {
+        match path {
             "db.get" | "db.require" | "db.create" | "db.append" | "db.upsert" => {
                 type_args.first().and_then(|ty| {
                     self.type_resolution
@@ -3348,7 +3594,6 @@ impl<'a> OwnerChecker<'a> {
             _ => None,
         }
     }
-
     fn local_callable_signature(&self, path: &str) -> Option<&CallableSignature> {
         if !path.contains('.') {
             let module_qualified = format!("{}.{}", self.module_path, path);
