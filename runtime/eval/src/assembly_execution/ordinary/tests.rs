@@ -3,6 +3,7 @@ pub(crate) mod service_error_consumer;
 mod source_generic_json_encode_red;
 mod source_inline_effect_e2e;
 mod tail_call_execution;
+mod tail_call_negatives;
 #[path = "test_runtime.rs"]
 pub(crate) mod test_runtime;
 
