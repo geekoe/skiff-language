@@ -348,7 +348,7 @@ impl SuspendContext<'_, '_> {
             .fact(&key)?
             .ty
             .as_ref()
-            .map(|ty| ty.source_text.clone())
+            .map(|ty| ty.to_string())
     }
 
     fn next_expression_type(&self) -> Option<String> {

@@ -240,10 +240,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
     ) -> bool {
         actual_fields.iter().all(|(name, actual_ty)| {
             target_fields.get(name).is_some_and(|expected_ty| {
-                let expected = ResolvedTypeRef {
-                    ir: expected_ty.clone(),
-                    source_text: debug_text(expected_ty),
-                };
+                let expected = ResolvedTypeRef::new(expected_ty.clone());
                 self.type_ir_assignable_to_resolved_expected(actual_ty, &expected)
             })
         }) && target_fields.iter().all(|(name, expected_ty)| {
@@ -256,10 +253,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         actual_ty: &TypeRefIr,
         expected: &ResolvedTypeRef,
     ) -> bool {
-        let actual = ResolvedTypeRef {
-            ir: actual_ty.clone(),
-            source_text: debug_text(actual_ty),
-        };
+        let actual = ResolvedTypeRef::new(actual_ty.clone());
         self.type_resolution
             .assignable_in_context(&actual, expected, self.type_context)
             || self.package_json_context
@@ -356,7 +350,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .map(|field| (field.name.clone(), value_target.clone()))
                 .collect::<BTreeMap<_, _>>();
             let candidate = ObjectLiteralTargetCandidate {
-                label: target.source_text.clone(),
+                label: target.to_string(),
                 fields: fields.clone(),
                 kind: ObjectMaterializationKind::Map,
             };
@@ -377,7 +371,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             return Err(vec![format!(
                 "{}: {context} object literal target {} is not a record, discriminated union, Map<string, T>, JsonObject, or Json at {}",
                 self.diagnostic_path,
-                expected.source_text,
+                expected,
                 span_label(self.expression_span(value_key))
             )]);
         }
@@ -411,7 +405,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             many => Err(vec![format!(
                 "{}: {context} ambiguous object literal branch for {} at {}; matching branches: {}",
                 self.diagnostic_path,
-                expected.source_text,
+                expected,
                 span_label(self.expression_span(value_key)),
                 many.iter()
                     .map(|(candidate, _)| candidate.label.as_str())
@@ -450,8 +444,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                         self.diagnostic_path,
                         field.name,
                         span_label(field.value_span),
-                        expected.source_text,
-                        actual.source_text
+                        expected,
+                        actual
                     ));
                 }
             }
@@ -480,10 +474,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                     let name = object_literal_key_text(&entry.key)?;
                     let field_spans = source_fact.and_then(|fact| fact.record_fields.get(index));
                     Some(ObjectLiteralActualField {
-                        ty: fields.get(&name).map(|ty| ResolvedTypeRef {
-                            ir: ty.clone(),
-                            source_text: debug_text(ty),
-                        }),
+                        ty: fields.get(&name).map(|ty| ResolvedTypeRef::new(ty.clone())),
                         name,
                         name_span: field_spans
                             .map(|field| field.name_span)
@@ -510,7 +501,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .resolve_constructor_target_text(&annotation.name, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
-                    label: target.ty.source_text.clone(),
+                    label: target.ty.to_string(),
                     fields: target.fields,
                     kind: ObjectMaterializationKind::Record {
                         construct_target: target.ty,
@@ -524,7 +515,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .resolve_constructor_target_resolved(expected, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
-                    label: target.ty.source_text.clone(),
+                    label: target.ty.to_string(),
                     fields: target.fields,
                     kind: ObjectMaterializationKind::Record {
                         construct_target: target.ty,
@@ -538,7 +529,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .type_shape_ir(expected, self.type_context)
             {
                 candidates.extend(object_literal_target_candidates_from_ir(
-                    &expected.source_text,
+                    &expected.to_string(),
                     &shape,
                     expected,
                     false,
@@ -547,7 +538,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         }
         if candidates.is_empty() {
             candidates.extend(object_literal_target_candidates_from_ir(
-                &expected.source_text,
+                &expected.to_string(),
                 &expected.ir,
                 expected,
                 false,
@@ -593,8 +584,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                         self.diagnostic_path,
                         field.name,
                         span_label(field.value_span),
-                        expected.source_text,
-                        actual.source_text
+                        expected,
+                        actual
                     ));
                 }
             }
@@ -815,14 +806,9 @@ fn object_literal_target_candidates_from_ir(
             targets
                 .into_iter()
                 .map(|fields| {
-                    let branch = ResolvedTypeRef {
-                        source_text: debug_text(&TypeRefIr::Record {
-                            fields: fields.clone(),
-                        }),
-                        ir: TypeRefIr::Record {
-                            fields: fields.clone(),
-                        },
-                    };
+                    let branch = ResolvedTypeRef::new(TypeRefIr::Record {
+                        fields: fields.clone(),
+                    });
                     ObjectLiteralTargetCandidate {
                         label: label.to_string(),
                         fields: resolved_fields_from_ir(&fields),
@@ -902,13 +888,13 @@ fn map_object_value_target(target: &ResolvedTypeRef) -> Option<ResolvedTypeRef> 
         TypeRefIr::Builtin { name, args }
             if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject") =>
         {
-            Some(ResolvedTypeRef {
-                source_text: "Json".to_string(),
-                ir: TypeRefIr::Builtin {
+            Some(ResolvedTypeRef::with_text(
+                TypeRefIr::Builtin {
                     name: "Json".to_string(),
                     args: Vec::new(),
                 },
-            })
+                "Json".to_string(),
+            ))
         }
         _ => None,
     }
@@ -919,15 +905,7 @@ fn resolved_fields_from_ir(
 ) -> BTreeMap<String, ResolvedTypeRef> {
     fields
         .iter()
-        .map(|(name, ty)| {
-            (
-                name.clone(),
-                ResolvedTypeRef {
-                    ir: ty.clone(),
-                    source_text: debug_text(ty),
-                },
-            )
-        })
+        .map(|(name, ty)| (name.clone(), ResolvedTypeRef::new(ty.clone())))
         .collect()
 }
 

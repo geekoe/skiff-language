@@ -131,7 +131,7 @@ fn union_tag(fact: &TargetTypedObjectMaterialization) -> Option<&str> {
 fn fact_snapshot(fact: &TargetTypedObjectMaterialization) -> String {
     let kind = match &fact.kind {
         ObjectMaterializationKind::Record { construct_target } => {
-            format!("record({})", construct_target.source_text)
+            format!("record({})", construct_target)
         }
         ObjectMaterializationKind::DiscriminatedUnionBranch { .. } => {
             format!("union({})", union_tag(fact).unwrap_or("<unknown>"))
@@ -146,13 +146,13 @@ fn fact_snapshot(fact: &TargetTypedObjectMaterialization) -> String {
                 ObjectFieldValueSource::Provided { .. } => "provided",
                 ObjectFieldValueSource::SyntheticNull => "synthetic-null",
             };
-            format!("{}:{}={source}", field.name, field.ty.source_text)
+            format!("{}:{}={source}", field.name, field.ty)
         })
         .collect::<Vec<_>>()
         .join(",");
     format!(
         "target={};kind={kind};fields=[{fields}]",
-        fact.resolved_target.source_text
+        fact.resolved_target.to_string()
     )
 }
 

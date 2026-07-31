@@ -53,10 +53,7 @@ impl FunctionLowerer<'_> {
         else {
             return Err(materialization_error(
                 object_key,
-                format!(
-                    "has non-record current expression type {}",
-                    expression_fact.source_text
-                ),
+                format!("has non-record current expression type {}", expression_fact),
             ));
         };
         let mut remaining_expression_fields = expression_fields.clone();

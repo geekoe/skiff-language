@@ -203,12 +203,12 @@ fn interface_type(
             abi_expectation: abi_expectation.map(str::to_string),
         },
     };
-    ResolvedTypeRef {
-        ir: TypeRefIr::AnyInterface {
+    ResolvedTypeRef::with_text(
+        TypeRefIr::AnyInterface {
             interface: interface_instantiation_ref(identity, args),
         },
-        source_text: format!("any {symbol_path}"),
-    }
+        format!("any {symbol_path}"),
+    )
 }
 
 fn provider_store_root(package_id: &str, version: &str) -> String {
@@ -517,15 +517,15 @@ function generic(handler: any interfaces.GenericHandler<string>) -> string {
             !model.assignable(&package_owned, &unbound_dependency),
             "an unbound dependency alias must remain fail closed"
         );
-        let malformed = ResolvedTypeRef {
-            ir: TypeRefIr::AnyInterface {
+        let malformed = ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
                 interface: InterfaceInstantiationRef {
                     interface_abi_id: "{malformed".to_string(),
                     canonical_type_args: vec![],
                 },
             },
-            source_text: "malformed interface".to_string(),
-        };
+            "malformed interface".to_string(),
+        );
         assert!(
             !model.assignable(&package_owned, &malformed),
             "a malformed embedded identity must not match a valid identity"

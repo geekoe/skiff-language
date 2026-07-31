@@ -57,7 +57,32 @@ pub use catch_leaves::{CatchLeafIdentity, CatchLeaves};
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTypeRef {
     pub ir: TypeRefIr,
-    pub source_text: String,
+    pub source_text: Option<String>,
+}
+
+impl ResolvedTypeRef {
+    pub fn new(ir: TypeRefIr) -> Self {
+        Self {
+            ir,
+            source_text: None,
+        }
+    }
+
+    pub fn with_text(ir: TypeRefIr, text: String) -> Self {
+        Self {
+            ir,
+            source_text: Some(text),
+        }
+    }
+}
+
+impl std::fmt::Display for ResolvedTypeRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.source_text {
+            Some(text) => f.write_str(text),
+            None => write!(f, "{}", debug_text(&self.ir)),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -714,7 +739,7 @@ impl TypeResolutionModel {
                     .join(", ")
             )
         };
-        Ok(ResolvedTypeRef { source_text, ir })
+        Ok(ResolvedTypeRef::with_text(ir, source_text))
     }
 
     pub fn resolve_type_text(
@@ -727,7 +752,7 @@ impl TypeResolutionModel {
         let source_text = self.expand_alias_text(raw, context)?;
         let ir = self.resolve_type_expr(&expr, context)?;
         let ir = self.expand_alias_type_ref(&ir, context)?;
-        Ok(ResolvedTypeRef { ir, source_text })
+        Ok(ResolvedTypeRef::with_text(ir, source_text))
     }
 
     /// Produces the exact semantic type represented by `ty`, recursively
@@ -1034,12 +1059,12 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
         let selector = self.resolve_canonical_interface_selector_type_ref(interface, context)?;
-        Ok(ResolvedTypeRef {
-            source_text: format!("any {}", selector.source_text),
-            ir: TypeRefIr::AnyInterface {
+        Ok(ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref,
             },
-        })
+            format!("any {}", selector.source_text),
+        ))
     }
 
     pub fn resolve_canonical_interface_selector_type_ref(
@@ -1059,11 +1084,11 @@ impl TypeResolutionModel {
         let Some(interface) = self.interface_instantiation_from_resolved(resolved, context)? else {
             return Err(format!(
                 "resolved type `{}` is not an interface instantiation",
-                resolved.source_text
+                resolved
             ));
         };
         self.canonical_interface_selector_from_instantiation_resolution(
-            resolved.source_text.clone(),
+            resolved.to_string(),
             interface,
         )
     }
@@ -1334,14 +1359,14 @@ impl TypeResolutionModel {
                     else {
                         return Err(format!(
                             "constructor target `{}` is not a nominal record",
-                            target.source_text
+                            target
                         ));
                     };
                     let type_params = &schema_type.canonical_descriptor.type_params;
                     if type_params.len() != arguments.len() {
                         return Err(format!(
                             "constructor `{}` expects {} type arguments, found {}",
-                            target.source_text,
+                            target,
                             type_params.len(),
                             arguments.len()
                         ));
@@ -1357,13 +1382,7 @@ impl TypeResolutionModel {
                             let field_ty = contract_type_ref_ir(alias, field_ty)?;
                             let field_ty =
                                 substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
-                            Ok((
-                                name.clone(),
-                                ResolvedTypeRef {
-                                    source_text: debug_text(&field_ty),
-                                    ir: field_ty,
-                                },
-                            ))
+                            Ok((name.clone(), ResolvedTypeRef::new(field_ty)))
                         })
                         .collect::<Result<_, String>>()?;
                     return Ok(ConstructorTargetResolution {
@@ -1395,13 +1414,13 @@ impl TypeResolutionModel {
         let named = self.resolved_named_type(&base, context).ok_or_else(|| {
             format!(
                 "constructor target `{}` is not a resolved nominal type",
-                target.source_text
+                target
             )
         })?;
         if named.resolution.type_params.len() != arguments.len() {
             return Err(format!(
                 "constructor `{}` expects {} type arguments, found {}",
-                target.source_text,
+                target,
                 named.resolution.type_params.len(),
                 arguments.len()
             ));
@@ -1414,13 +1433,13 @@ impl TypeResolutionModel {
             SourceTypeKind::Actor { .. } => {
                 return Err(format!(
                     "actor `{}` is a nominal handle and cannot be constructed directly; use std.actor.getOrCreate or std.actor.replace",
-                    target.source_text
+                    target
                 ));
             }
             _ => {
                 return Err(format!(
                     "constructor target `{}` is not a nominal record",
-                    target.source_text
+                    target
                 ));
             }
         };
@@ -1459,10 +1478,7 @@ impl TypeResolutionModel {
                 };
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
-                let field = ResolvedTypeRef {
-                    source_text: debug_text(&field_ty),
-                    ir: field_ty,
-                };
+                let field = ResolvedTypeRef::new(field_ty);
                 Ok((
                     name.clone(),
                     if named.source_module_path == context.module_path {
@@ -1490,7 +1506,7 @@ impl TypeResolutionModel {
         if shape.type_params.len() != arguments.len() {
             return Err(format!(
                 "constructor `{}` expects {} type arguments, found {}",
-                target.source_text,
+                target,
                 shape.type_params.len(),
                 arguments.len()
             ));
@@ -1520,10 +1536,7 @@ impl TypeResolutionModel {
                 };
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
-                let field = ResolvedTypeRef {
-                    source_text: debug_text(&field_ty),
-                    ir: field_ty,
-                };
+                let field = ResolvedTypeRef::new(field_ty);
                 Ok((
                     name.clone(),
                     if shape.module_path == context.module_path {
@@ -1579,10 +1592,7 @@ impl TypeResolutionModel {
         let payload = self.resolve_type_expr(&TypeExpr::parse(&shape.payload), &payload_context)?;
         let payload = substitute_type_params_in_type_ref_ref(&payload, &substitutions);
         let payload = self.expand_alias_type_ref(&payload, &payload_context)?;
-        let payload = ResolvedTypeRef {
-            source_text: debug_text(&payload),
-            ir: payload,
-        };
+        let payload = ResolvedTypeRef::new(payload);
         let payload = if shape.module_path == context.module_path {
             payload
         } else {
@@ -1666,10 +1676,7 @@ impl TypeResolutionModel {
         method_name: &str,
         context: &TypeResolutionContext<'_>,
     ) -> Option<LocalReceiverMethodResolution> {
-        let resolved = ResolvedTypeRef {
-            source_text: debug_text(receiver),
-            ir: receiver.clone(),
-        };
+        let resolved = ResolvedTypeRef::new(receiver.clone());
         let owner = self.actual_receiver_symbol(&resolved, context)?;
         let receiver_type = self.source_types.get(&owner)?;
         if !matches!(receiver_type.kind, SourceTypeKind::Record { .. }) {
@@ -2270,12 +2277,12 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
         let selector = self.resolve_canonical_interface_selector_expr(interface, context)?;
-        Ok(ResolvedTypeRef {
-            source_text: format!("any {}", selector.source_text),
-            ir: TypeRefIr::AnyInterface {
+        Ok(ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref,
             },
-        })
+            format!("any {}", selector.source_text),
+        ))
     }
 
     fn reject_any_interface_selector_aliases(

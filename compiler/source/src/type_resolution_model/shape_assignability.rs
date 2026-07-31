@@ -823,13 +823,7 @@ impl TypeResolutionModel {
                 .iter()
                 .all(|item| self.json_assignable_in_context_inner(item, context, depth + 1)),
             _ => self
-                .type_shape_ir(
-                    &ResolvedTypeRef {
-                        ir: actual.clone(),
-                        source_text: debug_text(actual),
-                    },
-                    context,
-                )
+                .type_shape_ir(&ResolvedTypeRef::new(actual.clone()), context)
                 .is_some_and(|shape| {
                     self.json_assignable_in_context_inner(&shape, context, depth + 1)
                 }),
@@ -859,13 +853,7 @@ impl TypeResolutionModel {
                 .values()
                 .all(|field| self.json_assignable_in_context_inner(field, context, depth + 1)),
             _ => self
-                .type_shape_ir(
-                    &ResolvedTypeRef {
-                        ir: actual.clone(),
-                        source_text: debug_text(actual),
-                    },
-                    context,
-                )
+                .type_shape_ir(&ResolvedTypeRef::new(actual.clone()), context)
                 .is_some_and(|shape| {
                     self.json_object_assignable_in_context_inner(&shape, context, depth + 1)
                 }),
@@ -878,10 +866,7 @@ impl TypeResolutionModel {
         module_path: &str,
     ) -> ResolvedTypeRef {
         let ir = self.externalize_local_type_ir(&ty.ir, module_path);
-        ResolvedTypeRef {
-            source_text: debug_text(&ir),
-            ir,
-        }
+        ResolvedTypeRef::new(ir)
     }
 
     pub(crate) fn bind_package_type_refs_to_dependency(
@@ -902,10 +887,7 @@ impl TypeResolutionModel {
             package_id,
             expected_local_abi.as_str(),
         );
-        ResolvedTypeRef {
-            source_text: debug_text(&ir),
-            ir,
-        }
+        ResolvedTypeRef::new(ir)
     }
 
     pub(crate) fn rehydrate_package_signature_type_for_dependency(
@@ -1185,10 +1167,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Option<ResolvedTypeRef> {
         if let TypeRefIr::Record { fields } = &ty.ir {
-            return fields.get(field).map(|ty| ResolvedTypeRef {
-                ir: ty.clone(),
-                source_text: debug_text(ty),
-            });
+            return fields.get(field).map(|ty| ResolvedTypeRef::new(ty.clone()));
         }
         // A nominal record's canonical shape deliberately expands aliases for
         // validation and wire compatibility. Field projection must instead
@@ -1204,10 +1183,7 @@ impl TypeResolutionModel {
         }
         if let Some(shape) = self.type_shape_ir(ty, context) {
             if let Some(field_ty) = record_field_type(&shape, field) {
-                return Some(ResolvedTypeRef {
-                    source_text: debug_text(&field_ty),
-                    ir: field_ty,
-                });
+                return Some(ResolvedTypeRef::new(field_ty));
             }
         }
         None

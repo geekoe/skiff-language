@@ -103,10 +103,7 @@ impl<'a> DbProjectionTypeResolver<'a> {
     ) -> Result<TypeRefIr, String> {
         let recurse = |ty: &TypeRefIr, seen: &mut BTreeSet<String>| {
             self.expand_structural_type(
-                &ResolvedTypeRef {
-                    source_text: String::new(),
-                    ir: ty.clone(),
-                },
+                &ResolvedTypeRef::with_text(ty.clone(), String::new()),
                 context,
                 seen,
             )

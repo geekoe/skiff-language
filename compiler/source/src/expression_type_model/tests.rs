@@ -1225,7 +1225,7 @@ fn constructor_validation_error_carries_structured_field_facts() {
     );
     assert_eq!(validation.missing_required_fields[0].name, "age");
     assert_eq!(validation.type_mismatches[0].name, "email");
-    assert_eq!(validation.type_mismatches[0].expected.source_text, "string");
+    assert_eq!(validation.type_mismatches[0].expected.to_string(), "string");
     assert!(
         validation.type_mismatches[0].value_span != SourceSpan::synthetic(),
         "field mismatch should retain source value span"
@@ -1508,7 +1508,7 @@ fn expression_fact_source_text(
             model
                 .fact(key)
                 .and_then(|fact| fact.ty.as_ref())
-                .map(|ty| ty.source_text.clone())
+                .map(|ty| ty.to_string())
         })
         .unwrap_or_else(|| panic!("expression `{snippet}` should have a type fact"))
 }
@@ -1523,10 +1523,7 @@ fn single_for_item_wrappers_lock_container_and_local_behavior() {
         name: "number".to_string(),
         args: Vec::new(),
     };
-    let resolved = |ty: TypeRefIr| ResolvedTypeRef {
-        source_text: debug_text(&ty),
-        ir: ty,
-    };
+    let resolved = |ty: TypeRefIr| ResolvedTypeRef::new(ty);
 
     // ResolvedTypeRef wrapper: short and std.* full names resolve, Map yields
     // its key type.
@@ -1639,10 +1636,7 @@ fn map_entry_wrappers_lock_full_name_and_local_behavior() {
         name: "number".to_string(),
         args: Vec::new(),
     };
-    let resolved = |ty: TypeRefIr| ResolvedTypeRef {
-        source_text: debug_text(&ty),
-        ir: ty,
-    };
+    let resolved = |ty: TypeRefIr| ResolvedTypeRef::new(ty);
     let map_ir = |name: &str| TypeRefIr::Builtin {
         name: name.to_string(),
         args: vec![string.clone(), number.clone()],

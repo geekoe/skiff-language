@@ -66,7 +66,7 @@ impl TypeResolutionModel {
     ) -> Result<CatchLeaves, String> {
         let leaves = self.collect_catch_leaves(&ty.ir, context)?;
         if leaves.is_empty() {
-            return Err(format!("`{}` has no catch leaves", ty.source_text));
+            return Err(format!("`{}` has no catch leaves", ty));
         }
         Ok(CatchLeaves { leaves })
     }
@@ -79,19 +79,19 @@ impl TypeResolutionModel {
         let TypeRefIr::Builtin { name, args } = &exception.ir else {
             return Err(format!(
                 "rethrow operand must be Exception<E>, found `{}`",
-                exception.source_text
+                exception
             ));
         };
         let [payload] = args.as_slice() else {
             return Err(format!(
                 "rethrow operand must be Exception<E>, found `{}`",
-                exception.source_text
+                exception
             ));
         };
         if name != "Exception" {
             return Err(format!(
                 "rethrow operand must be Exception<E>, found `{}`",
-                exception.source_text
+                exception
             ));
         }
 
