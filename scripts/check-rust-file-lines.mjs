@@ -9,7 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const MAX_FILE_LINES = 8084; // current maximum; no exceptions
+const MAX_FILE_LINES = 6533; // current maximum; no exceptions
 
 const files = execFileSync(
   'rg',
