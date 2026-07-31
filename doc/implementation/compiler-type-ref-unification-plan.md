@@ -88,6 +88,11 @@ object_materialization}`），说明第一轮部分抽取已经完成，但 god 
 | `is_null_type_ir` / `type_ir_is_null` | trm 6236 / etm 5573 | 9 行完全相同，只差函数名 |
 | `union_type_ir` ×2 | trm 5915 / etm 5202 | 同名但语义分叉：trm 版递归 flatten + null 折叠 + sort/dedup；etm 版只做顶层 sort/dedup |
 
+另有第三份 `union_type_ir`：`compiler/lowering/src/type_lowering.rs` 269（消费点
+`function_lowering.rs` 2245），空 union → `never`、排序键为 lowering 的 `type_ref_ir_type_text`。
+这是 lowering 执行语义（空 union 的字段访问不可达），不是 trm/etm 型重复；决策（2026-07-31）：
+不纳入 canonical `normalize_union`，保持 lowering 私有实现。
+
 块级扫描还发现 ≥6 行精确重复块 114 组（其中 ≥8 行几十组、聚类后约十几组内容簇）。
 具体“8 组逐字 / 14 组 0.9+”的数字取决于扫描粒度，但重复存在且不止于上述清单。
 
