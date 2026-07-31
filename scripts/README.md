@@ -307,14 +307,20 @@ execute any of them. The loop-risk health evaluator also has one hermetic `self-
 Supporting modules have narrow, one-way responsibilities: `lib/verify-selector-graph.mjs` declares
 the ordinary selector namespace, `lib/verify-live-catalog.mjs` validates cross-catalog paths, IDs,
 and selector conflicts, and `lib/verify-live-plan.mjs` interprets the registry into prerequisites and
-phases. They must not duplicate selector or prerequisite declarations from the canonical registry.
+tasks. They must not duplicate selector or prerequisite declarations from the canonical registry.
 
 Use `node verify.mjs --only <selector> --list` to audit the generated or blocked plan without running
-the workload. Registry prerequisites are checked without executing tools, then checked again before
-the first phase: runtime needs `cargo` and `node`; encrypted storage needs `node`, `cargo`, `pnpm`,
-`mongod`, and `mongosh`; loop-risk health needs `node`; loop-risk stress needs `node`, `ps`, and the
-`ws` module resolved from `router/package.json`. The managed DB harness retains its isolated
-temporary root and `45000`–`45999` port range.
+the workload. `--jobs <n>` is the only concurrency parameter, defaulting to 1 (serial): the runner
+attempts every selected task and aggregates all failures in plan order, exiting with code 1 when any
+task is failed, blocked, or interrupted. Tasks are independent: a failure counts only against its
+own task and does not prevent other tasks from starting or continuing. Tasks are isolated: mutating
+tasks read the public repository and write only through a private root under `var/verify/tasks/`,
+and the current default plan contains no mutating tasks. Registry prerequisites are checked without
+executing tools, then checked again before the first task: runtime needs `cargo` and `node`;
+encrypted storage needs `node`, `cargo`, `pnpm`, `mongod`, and `mongosh`; loop-risk health needs
+`node`; loop-risk stress needs `node`, `ps`, and the `ws` module resolved from
+`router/package.json`. The managed DB harness retains its isolated temporary root and `45000`–`45999`
+port range.
 
 Both loop-risk selectors take one canonical JSON file via `--loop-risk-config <path>` or
 `SKIFF_LOOP_RISK_CONFIG`. Its exact shape is:
@@ -334,7 +340,7 @@ Both loop-risk selectors take one canonical JSON file via `--loop-risk-config <p
 `stress` is optional for the health selector and required for stress. List/plan construction rejects
 unknown fields, malformed targets, duplicate IDs/PIDs/paths, relative log paths, unreadable logs,
 missing prerequisites, and a missing config before any workload. Execution preflight re-reads the
-config and aggregates disappearing logs or dead PIDs before launching a command. Generated phases
+config and aggregates disappearing logs or dead PIDs before launching a command. Generated tasks
 receive only the absolute `--config` path; canonical stress cannot accept target overrides,
 fine-grained environment defaults, or `--skip-*`, and health, CPU, and log gates must all report
 `checked: true`.

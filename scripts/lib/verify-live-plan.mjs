@@ -31,7 +31,7 @@ const DISCOVERY_HANDLERS = Object.freeze({
   [LIVE_DISCOVERIES.RUNTIME_LIVE_TESTS]: discoverRuntimeLiveTests,
 });
 
-export async function liveSelectorPhases(root, selector, {
+export async function liveSelectorTasks(root, selector, {
   runtimeLiveActivationUrl,
   runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
@@ -86,14 +86,14 @@ export async function liveSelectorPhases(root, selector, {
     );
   }
   if (blockers.length > 0) {
-    return [blockedInvocationPhase(root, invocation, blockers.join('; '))];
+    return [blockedInvocationTask(root, invocation, blockers.join('; '))];
   }
 
   if (invocation.plan === LIVE_PLAN_TYPES.RUNTIME_FIXTURES) {
-    return runtimeFixturePhases(root, invocation, runtimeState, env);
+    return runtimeFixtureTasks(root, invocation, runtimeState, env);
   }
   if (invocation.plan === LIVE_PLAN_TYPES.FIXED_COMMAND) {
-    return [fixedCommandPhase(root, entry, invocation, inputState.values, loopRiskState, env)];
+    return [fixedCommandTask(root, entry, invocation, inputState.values, loopRiskState, env)];
   }
   throw new Error(`unsupported live plan type ${invocation.plan}`);
 }
@@ -110,18 +110,18 @@ async function inspectLoopRiskConfigState(root, invocation, configuredPath) {
   return { config, configPath, profile };
 }
 
-export function assertRegistryPhaseMetadata(phase) {
-  const hasOwnership = phase.ownership !== undefined;
-  const hasTier = phase.tier !== undefined;
+export function assertRegistryTaskMetadata(task) {
+  const hasOwnership = task.ownership !== undefined;
+  const hasTier = task.tier !== undefined;
   if (!hasOwnership && !hasTier) {
     return;
   }
   if (!hasOwnership || !hasTier) {
-    throw new Error(`registry phase requires ownership and tier metadata: ${phase.id}`);
+    throw new Error(`registry task requires ownership and tier metadata: ${task.id}`);
   }
-  assertOwnershipTier(phase.ownership, phase.tier, `phase ${phase.id}`);
-  if (phase.kind !== phase.tier) {
-    throw new Error(`registry phase kind must match tier: ${phase.id}`);
+  assertOwnershipTier(task.ownership, task.tier, `task ${task.id}`);
+  if (task.kind !== task.tier) {
+    throw new Error(`registry task kind must match tier: ${task.id}`);
   }
 }
 
@@ -228,7 +228,7 @@ async function inspectRuntimeFixtureState(root, entry, values) {
   };
 }
 
-function runtimeFixturePhases(root, invocation, runtimeState, env) {
+function runtimeFixtureTasks(root, invocation, runtimeState, env) {
   const {
     artifactRoot,
     activationUrl,
@@ -294,7 +294,7 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       ...(invocation.canonicalPolicy.forbidSkips ? ['--deny-skips'] : []),
       ...(invocation.canonicalPolicy.forbidUnchecked ? ['--require-tests'] : []),
     ];
-    return executableInvocationPhase(root, invocation, {
+    return executableInvocationTask(root, invocation, {
       id: `${invocation.idPrefix}${repoRelative(root, file)}`,
       command: 'cargo',
       args,
@@ -368,7 +368,7 @@ function canonicalRuntimeUrl(value, expectedPath) {
   return url.toString().replace(/\/$/, expectedPath === '/' ? '' : '');
 }
 
-function fixedCommandPhase(root, entry, invocation, inputValues, loopRiskState, env) {
+function fixedCommandTask(root, entry, invocation, inputValues, loopRiskState, env) {
   const scriptPath = resolve(root, entry.source.path);
   const resolvedInputValues = {
     ...inputValues,
@@ -378,7 +378,7 @@ function fixedCommandPhase(root, entry, invocation, inputValues, loopRiskState, 
   };
   const inputArgs = Object.entries(invocation.inputArgs ?? {})
     .flatMap(([input, option]) => [option, resolvedInputValues[input]]);
-  return executableInvocationPhase(root, invocation, {
+  return executableInvocationTask(root, invocation, {
     id: invocation.id,
     command: 'node',
     args: [entry.source.path, ...invocation.args, ...inputArgs],
@@ -413,7 +413,7 @@ function fixedCommandPhase(root, entry, invocation, inputValues, loopRiskState, 
   });
 }
 
-function executableInvocationPhase(root, invocation, execution) {
+function executableInvocationTask(root, invocation, execution) {
   return {
     ...execution,
     kind: invocation.tier,
@@ -423,7 +423,7 @@ function executableInvocationPhase(root, invocation, execution) {
   };
 }
 
-function blockedInvocationPhase(root, invocation, preconditionError) {
+function blockedInvocationTask(root, invocation, preconditionError) {
   return {
     id: invocation.id ?? `${invocation.idPrefix}inputs`,
     kind: invocation.tier,

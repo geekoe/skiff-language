@@ -121,24 +121,24 @@ test('package scripts only forward to canonical verify selectors', async () => {
   );
 });
 
-test('tooling selector has no Cargo phase and discovers every scripts test', async () => {
+test('tooling selector has no Cargo task and discovers every scripts test', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['tooling'] });
-  assert.equal(plan.phases.some((phase) => phase.command === 'cargo'), false);
+  assert.equal(plan.tasks.some((task) => task.command === 'cargo'), false);
 
-  const scriptTestPhase = plan.phases.find(
-    (phase) => phase.id === 'implementation:tooling:scripts-tests',
+  const scriptTestTask = plan.tasks.find(
+    (task) => task.id === 'implementation:tooling:scripts-tests',
   );
-  assert.ok(scriptTestPhase, 'tooling plan must contain one merged scripts-tests phase');
-  assert.deepEqual(scriptTestPhase.args.slice(1), await discoverScriptTests(root));
-  assert.ok(scriptTestPhase.args.includes('scripts/tests/runtime-stack-deploy.test.mjs'));
-  assert.ok(plan.phases.some((phase) =>
-    phase.id === 'implementation:tooling:dev-sync-fixture'));
+  assert.ok(scriptTestTask, 'tooling plan must contain one merged scripts-tests task');
+  assert.deepEqual(scriptTestTask.args.slice(1), await discoverScriptTests(root));
+  assert.ok(scriptTestTask.args.includes('scripts/tests/runtime-stack-deploy.test.mjs'));
+  assert.ok(plan.tasks.some((task) =>
+    task.id === 'implementation:tooling:dev-sync-fixture'));
 });
 
 test('compiler boundary selector is canonical and deduplicated across checks combinations', async () => {
   const focused = await buildVerifyPlan({ root, selectors: ['compiler-boundaries'] });
   assert.deepEqual(
-    focused.phases.map(({ id, args }) => ({ id, args })),
+    focused.tasks.map(({ id, args }) => ({ id, args })),
     [
       {
         id: 'checks:compiler-boundaries',
@@ -149,7 +149,7 @@ test('compiler boundary selector is canonical and deduplicated across checks com
 
   const checks = await buildVerifyPlan({ root, selectors: ['checks'] });
   assert.equal(
-    checks.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    checks.tasks.filter((task) => task.id === 'checks:compiler-boundaries').length,
     1,
   );
   const combined = await buildVerifyPlan({
@@ -157,25 +157,25 @@ test('compiler boundary selector is canonical and deduplicated across checks com
     selectors: ['checks', 'compiler-boundaries'],
   });
   assert.equal(
-    combined.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    combined.tasks.filter((task) => task.id === 'checks:compiler-boundaries').length,
     1,
   );
 
   const compiler = await buildVerifyPlan({ root, selectors: ['compiler'] });
   assert.equal(
-    compiler.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    compiler.tasks.filter((task) => task.id === 'checks:compiler-boundaries').length,
     1,
   );
-  assert.equal(compiler.phases.filter((phase) => phase.command === 'cargo').length, 1);
+  assert.equal(compiler.tasks.filter((task) => task.command === 'cargo').length, 1);
 });
 
 test('runtime artifact boundary checker belongs to the runtime subject without duplicating Cargo', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['runtime'] });
-  const boundaryPhases = plan.phases.filter((phase) =>
-    phase.args.includes('scripts/check-runtime-artifact-boundaries.mjs'));
+  const boundaryTasks = plan.tasks.filter((task) =>
+    task.args.includes('scripts/check-runtime-artifact-boundaries.mjs'));
 
   assert.deepEqual(
-    boundaryPhases.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
+    boundaryTasks.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
     [
       {
         id: 'implementation:runtime:artifact-boundaries:self-test',
@@ -191,15 +191,15 @@ test('runtime artifact boundary checker belongs to the runtime subject without d
       },
     ],
   );
-  assert.equal(plan.phases.filter((phase) => phase.command === 'cargo').length, 1);
+  assert.equal(plan.tasks.filter((task) => task.command === 'cargo').length, 1);
 });
 
 test('runtime execution and eval error boundary checkers belong to runtime and deduplicate with checks', async () => {
   const checks = await buildVerifyPlan({ root, selectors: ['checks'] });
-  const executionPhases = checks.phases.filter((phase) =>
-    phase.args.includes('scripts/check-runtime-execution-boundaries.mjs'));
+  const executionTasks = checks.tasks.filter((task) =>
+    task.args.includes('scripts/check-runtime-execution-boundaries.mjs'));
   assert.deepEqual(
-    executionPhases.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
+    executionTasks.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
     [
       {
         id: 'implementation:runtime:execution-boundaries:self-test',
@@ -218,10 +218,10 @@ test('runtime execution and eval error boundary checkers belong to runtime and d
 
   const runtime = await buildVerifyPlan({ root, selectors: ['runtime'] });
   assert.deepEqual(
-    runtime.phases
-      .filter((phase) =>
-        phase.args.includes('scripts/check-runtime-execution-boundaries.mjs')
-        || phase.args.includes('scripts/check-runtime-eval-error-boundary.mjs'))
+    runtime.tasks
+      .filter((task) =>
+        task.args.includes('scripts/check-runtime-execution-boundaries.mjs')
+        || task.args.includes('scripts/check-runtime-eval-error-boundary.mjs'))
       .map(({ id, kind, args }) => ({ id, kind, args })),
     [
       {
@@ -247,20 +247,20 @@ test('runtime execution and eval error boundary checkers belong to runtime and d
     ],
   );
   assert.equal(
-    runtime.phases.filter((phase) =>
-      phase.args.includes('scripts/check-runtime-artifact-boundaries.mjs')).length,
+    runtime.tasks.filter((task) =>
+      task.args.includes('scripts/check-runtime-artifact-boundaries.mjs')).length,
     2,
   );
 
   const combined = await buildVerifyPlan({ root, selectors: ['checks', 'runtime'] });
   assert.equal(
-    combined.phases.filter((phase) =>
-      phase.args.includes('scripts/check-runtime-execution-boundaries.mjs')).length,
+    combined.tasks.filter((task) =>
+      task.args.includes('scripts/check-runtime-execution-boundaries.mjs')).length,
     2,
   );
   assert.equal(
-    combined.phases.filter((phase) =>
-      phase.args.includes('scripts/check-runtime-eval-error-boundary.mjs')).length,
+    combined.tasks.filter((task) =>
+      task.args.includes('scripts/check-runtime-eval-error-boundary.mjs')).length,
     2,
   );
 });
@@ -309,10 +309,10 @@ test('canonical runtime-live plan aggregates every missing explicit input', asyn
       selectors: ['runtime-live'],
       env: {},
     });
-    assert.equal(plan.phases.length, 1);
-    const [phase] = plan.phases;
-    assert.equal(phase.id, 'live:runtime:inputs');
-    assert.match(phase.preconditionError, /runtime-live is missing required explicit input/);
+    assert.equal(plan.tasks.length, 1);
+    const [task] = plan.tasks;
+    assert.equal(task.id, 'live:runtime:inputs');
+    assert.match(task.preconditionError, /runtime-live is missing required explicit input/);
     for (const name of [
       'SKIFF_RUNTIME_LIVE_ACTIVATION_URL',
       'SKIFF_RUNTIME_LIVE_INGRESS_URL',
@@ -320,7 +320,7 @@ test('canonical runtime-live plan aggregates every missing explicit input', asyn
       'SKIFF_RUNTIME_LIVE_ENVIRONMENT',
       'SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION',
     ]) {
-      assert.match(phase.preconditionError, new RegExp(name));
+      assert.match(task.preconditionError, new RegExp(name));
     }
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -338,7 +338,7 @@ test('runtime-live CLI fails closed when canonical target inputs are absent', as
     `${result.stderr}\n${result.stdout}`,
     /runtime-live is missing required explicit input/,
   );
-  assert.doesNotMatch(result.stdout, /All selected Skiff verification phases passed/);
+  assert.doesNotMatch(result.stdout, /All selected Skiff verification tasks passed/);
   assert.doesNotMatch(result.stdout, /SKIP/);
 });
 
@@ -374,15 +374,15 @@ test('runtime-live blocks for every nonempty subset of missing required inputs',
         env: {},
         ...inputs,
       });
-      assert.equal(plan.phases.length, 1);
-      assert.match(plan.phases[0].preconditionError, /missing required explicit input/);
+      assert.equal(plan.tasks.length, 1);
+      assert.match(plan.tasks[0].preconditionError, /missing required explicit input/);
     }
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('runtime-live blocker prevents an earlier selected Cargo phase from starting', async () => {
+test('runtime-live blocked task never stops an earlier selected Cargo task', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-no-command-'));
   const bin = join(fixture, 'bin');
   const cargo = join(bin, 'cargo');
@@ -408,8 +408,11 @@ test('runtime-live blocker prevents an earlier selected Cargo phase from startin
       },
     );
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /runtime-live is missing required explicit input/);
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /runtime-live is missing required explicit input/,
+    );
+    await access(marker);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -492,7 +495,7 @@ test('runtime-live requires the canonical package owner and fixed test profile',
   }
 });
 
-test('runtime-live builds executable Cargo phases when config and fixtures exist', async () => {
+test('runtime-live builds executable Cargo tasks when config and fixtures exist', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-positive-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -508,11 +511,11 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
       selectors: ['runtime-live'],
       ...runtimeLiveInputs(artifactRoot),
     });
-    assert.equal(plan.phases.length, 1);
-    const [{ executionPreflight, ...phase }] = plan.phases;
+    assert.equal(plan.tasks.length, 1);
+    const [{ executionPreflight, ...task }] = plan.tasks;
     assert.equal(typeof executionPreflight, 'function');
     assert.equal(executionPreflight(), undefined);
-    assert.deepEqual([phase], [
+    assert.deepEqual([task], [
       {
         id: 'live:runtime:runtime/live-tests/example.live.test.skiff',
         kind: 'live/manual',
@@ -564,9 +567,9 @@ test('runtime-live target environment does not select the source config profile'
       runtimeLiveEnvironment: 'remote.prod',
     });
 
-    assert.equal(plan.phases.length, 1);
-    const environmentIndex = plan.phases[0].args.indexOf('--environment');
-    assert.equal(plan.phases[0].args[environmentIndex + 1], 'remote.prod');
+    assert.equal(plan.tasks.length, 1);
+    const environmentIndex = plan.tasks[0].args.indexOf('--environment');
+    assert.equal(plan.tasks[0].args[environmentIndex + 1], 'remote.prod');
     await assert.rejects(
       access(join(fixture, 'runtime', 'live-tests', 'config.remote.prod.yml')),
       { code: 'ENOENT' },
@@ -576,7 +579,7 @@ test('runtime-live target environment does not select the source config profile'
   }
 });
 
-test('runtime-live execution preflight catches target TOCTOU before any command starts', async () => {
+test('runtime-live execution preflight fails only its tasks without stopping marker tasks', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-preflight-toctou-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -600,16 +603,16 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
       selectors: ['runtime-live'],
       ...runtimeLiveInputs(artifactRoot),
     });
-    assert.equal(built.phases.length, 2);
-    assert.ok(built.phases.every((phase) => typeof phase.executionPreflight === 'function'));
-    assert.equal(new Set(built.phases.map((phase) => phase.executionPreflight)).size, 1);
+    assert.equal(built.tasks.length, 2);
+    assert.ok(built.tasks.every((task) => typeof task.executionPreflight === 'function'));
+    assert.equal(new Set(built.tasks.map((task) => task.executionPreflight)).size, 1);
 
     const markers = [
       join(fixture, 'earlier-command-ran'),
-      ...built.phases.map((_, index) => join(fixture, `runtime-command-${index}-ran`)),
+      ...built.tasks.map((_, index) => join(fixture, `runtime-command-${index}-ran`)),
       join(fixture, 'later-command-ran'),
     ];
-    const markerPhase = (id, marker, executionPreflight) => ({
+    const markerTask = (id, marker, executionPreflight) => ({
       id,
       kind: 'test',
       command: process.execPath,
@@ -623,14 +626,14 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
     });
     const plan = {
       selectors: ['test'],
-      phases: [
-        markerPhase('earlier-must-not-run', markers[0]),
-        ...built.phases.map((phase, index) => markerPhase(
-          phase.id,
+      tasks: [
+        markerTask('earlier-runs', markers[0]),
+        ...built.tasks.map((task, index) => markerTask(
+          task.id,
           markers[index + 1],
-          phase.executionPreflight,
+          task.executionPreflight,
         )),
-        markerPhase('later-must-not-run', markers.at(-1)),
+        markerTask('later-runs', markers.at(-1)),
       ],
     };
 
@@ -640,37 +643,27 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
     await rm(artifactRoot, { recursive: true });
     await writeFile(artifactRoot, 'replacement file\n');
 
-    await assert.rejects(
-      runVerifyPlan(plan, fixture),
-      (error) => {
-        for (const phase of built.phases) {
-          assert.match(
-            error.message,
-            new RegExp(`${escapeRegExp(phase.id)}: runtime-live fixture is no longer`),
-          );
-          assert.match(
-            error.message,
-            new RegExp(`${escapeRegExp(phase.id)}: runtime-live artifact root is no longer`),
-          );
-          assert.match(
-            error.message,
-            new RegExp(
-              `${escapeRegExp(phase.id)}: runtime-live package root is no longer canonical`,
-            ),
-          );
-          assert.match(
-            error.message,
-            new RegExp(
-              `${escapeRegExp(phase.id)}: runtime-live package root no longer owns fixed config`,
-            ),
-          );
-        }
-        return true;
-      },
+    const summary = await runVerifyPlan(plan, fixture);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'earlier-runs', status: 'passed' },
+        { id: built.tasks[0].id, status: 'failed' },
+        { id: built.tasks[1].id, status: 'failed' },
+        { id: 'later-runs', status: 'passed' },
+      ],
     );
-    for (const marker of markers) {
-      await assert.rejects(access(marker), { code: 'ENOENT' });
+    for (const task of built.tasks) {
+      const failed = summary.results.find((result) => result.id === task.id);
+      assert.match(failed.reason, /runtime-live fixture is no longer/);
+      assert.match(failed.reason, /runtime-live artifact root is no longer/);
+      assert.match(failed.reason, /runtime-live package root is no longer canonical/);
+      assert.match(failed.reason, /runtime-live package root no longer owns fixed config/);
     }
+    await access(markers[0]);
+    await assert.rejects(access(markers[1]), { code: 'ENOENT' });
+    await assert.rejects(access(markers[2]), { code: 'ENOENT' });
+    await access(markers[3]);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -745,16 +738,16 @@ test('generic development target environment cannot unlock runtime-live', async 
         SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: '/stable/artifacts',
       },
     });
-    assert.equal(plan.phases.length, 1);
-    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_ACTIVATION_URL/);
-    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_INGRESS_URL/);
-    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
+    assert.equal(plan.tasks.length, 1);
+    assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_ACTIVATION_URL/);
+    assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_INGRESS_URL/);
+    assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('real canonical runtime-live root renders exactly four ordered phases', async () => {
+test('real canonical runtime-live root renders exactly four ordered tasks', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-real-plan-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -765,7 +758,7 @@ test('real canonical runtime-live root renders exactly four ordered phases', asy
       ...runtimeLiveInputs(artifactRoot),
     });
     assert.deepEqual(
-      plan.phases.map((phase) => phase.id),
+      plan.tasks.map((task) => task.id),
       [
         'live:runtime:runtime/live-tests/internal/db_live.live.test.skiff',
         'live:runtime:runtime/live-tests/internal/file_live.live.test.skiff',
@@ -774,13 +767,13 @@ test('real canonical runtime-live root renders exactly four ordered phases', asy
       ],
     );
     assert.deepEqual(
-      plan.phases.map((phase) => {
-        const index = phase.args.indexOf('--expected-generation');
-        return phase.args[index + 1];
+      plan.tasks.map((task) => {
+        const index = task.args.indexOf('--expected-generation');
+        return task.args[index + 1];
       }),
       ['0', '1', '2', '3'],
     );
-    assert.ok(plan.phases.every((phase) => !phase.args.includes('--base-assembly')));
+    assert.ok(plan.tasks.every((task) => !task.args.includes('--base-assembly')));
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -844,7 +837,7 @@ test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentin
   }
 });
 
-test('duplicate phase IDs are rejected', () => {
+test('duplicate task IDs are rejected', () => {
   const duplicate = {
     id: 'duplicate',
     kind: 'test',
@@ -854,21 +847,21 @@ test('duplicate phase IDs are rejected', () => {
   };
   assert.throws(
     () => assertPlanIntegrity([duplicate, { ...duplicate }]),
-    /duplicate verify phase id: duplicate/,
+    /duplicate verify task id: duplicate/,
   );
 });
 
 test('empty plans and empty selector leaves fail closed even beside nonempty work', () => {
-  assert.throws(() => assertPlanIntegrity([]), /at least one phase/);
-  assert.throws(() => assertNonEmptyLeaf('empty', []), /empty produced no phases/);
+  assert.throws(() => assertPlanIntegrity([]), /at least one task/);
+  assert.throws(() => assertNonEmptyLeaf('empty', []), /empty produced no tasks/);
   assert.throws(
     () => assertNonEmptyLeaf('empty', undefined),
-    /empty produced no phases/,
+    /empty produced no tasks/,
   );
-  assert.doesNotThrow(() => assertNonEmptyLeaf('nonempty', [{ id: 'phase' }]));
+  assert.doesNotThrow(() => assertNonEmptyLeaf('nonempty', [{ id: 'task' }]));
 });
 
-test('duplicate command executions are rejected even when phase IDs differ', () => {
+test('duplicate command executions are rejected even when task IDs differ', () => {
   const first = {
     id: 'first',
     kind: 'test',
@@ -878,11 +871,11 @@ test('duplicate command executions are rejected even when phase IDs differ', () 
   };
   assert.throws(
     () => assertPlanIntegrity([first, { ...first, id: 'renamed-duplicate' }]),
-    /duplicate verify phase execution: first and renamed-duplicate/,
+    /duplicate verify task execution: first and renamed-duplicate/,
   );
 });
 
-test('blocked phases require a reason and cannot masquerade as executable phases', () => {
+test('blocked tasks require a reason and cannot masquerade as executable tasks', () => {
   assert.throws(
     () => assertPlanIntegrity([{
       id: 'blocked-without-reason',
@@ -890,7 +883,7 @@ test('blocked phases require a reason and cannot masquerade as executable phases
       cwd: root,
       preconditionError: '  ',
     }]),
-    /invalid blocked verify phase/,
+    /invalid blocked verify task/,
   );
   assert.throws(
     () => assertPlanIntegrity([{
@@ -901,7 +894,7 @@ test('blocked phases require a reason and cannot masquerade as executable phases
       command: 'node',
       args: [],
     }]),
-    /invalid blocked verify phase/,
+    /invalid blocked verify task/,
   );
   assert.throws(
     () => assertPlanIntegrity([{
@@ -911,12 +904,12 @@ test('blocked phases require a reason and cannot masquerade as executable phases
       preconditionError: 'missing config',
       executionPreflight: () => undefined,
     }]),
-    /invalid blocked verify phase/,
+    /invalid blocked verify task/,
   );
 });
 
-test('executable phases validate displayArgs and executionPreflight contracts', () => {
-  const phase = {
+test('executable tasks validate displayArgs and executionPreflight contracts', () => {
+  const task = {
     id: 'valid',
     kind: 'test',
     cwd: root,
@@ -924,75 +917,75 @@ test('executable phases validate displayArgs and executionPreflight contracts', 
     args: ['secret'],
   };
   assert.throws(
-    () => assertPlanIntegrity([{ ...phase, displayArgs: [] }]),
-    /invalid verify phase displayArgs/,
+    () => assertPlanIntegrity([{ ...task, displayArgs: [] }]),
+    /invalid verify task displayArgs/,
   );
   assert.throws(
-    () => assertPlanIntegrity([{ ...phase, executionPreflight: 'not-a-function' }]),
-    /invalid verify phase executionPreflight/,
+    () => assertPlanIntegrity([{ ...task, executionPreflight: 'not-a-function' }]),
+    /invalid verify task executionPreflight/,
   );
   assert.doesNotThrow(() => assertPlanIntegrity([{
-    ...phase,
+    ...task,
     displayArgs: ['<redacted>'],
     executionPreflight: () => undefined,
   }]));
 });
 
-test('runner aggregates static blockers before spawning any earlier or later work', async () => {
+test('blocked tasks record blocked without stopping earlier or later work', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-blocked-runner-'));
-  const marker = join(fixture, 'later-phase-ran');
+  const markers = [
+    join(fixture, 'earlier-task-ran'),
+    join(fixture, 'later-task-ran'),
+  ];
   try {
+    const markerTask = (id, marker) => ({
+      id,
+      kind: 'test',
+      command: process.execPath,
+      args: [
+        '--eval',
+        'require("node:fs").writeFileSync(process.argv[1], "ran")',
+        marker,
+      ],
+      cwd: fixture,
+    });
     const plan = {
       selectors: ['test'],
-      phases: [
+      tasks: [
+        markerTask('earlier-runs', markers[0]),
         {
-          id: 'earlier-must-not-run',
-          kind: 'test',
-          command: process.execPath,
-          args: [
-            '--eval',
-            'require("node:fs").writeFileSync(process.argv[1], "ran")',
-            marker,
-          ],
-          cwd: fixture,
-        },
-        {
-          id: 'blocked-phase',
+          id: 'blocked-task',
           kind: 'test',
           cwd: fixture,
           preconditionError: 'missing required config',
         },
-        {
-          id: 'later-must-not-run',
-          kind: 'test',
-          command: process.execPath,
-          args: [
-            '--eval',
-            'require("node:fs").writeFileSync(process.argv[1], "ran")',
-            marker,
-          ],
-          cwd: fixture,
-        },
+        markerTask('later-runs', markers[1]),
       ],
     };
-    await assert.rejects(
-      runVerifyPlan(plan, fixture),
-      /blocked-phase: missing required config/,
+    const summary = await runVerifyPlan(plan, fixture);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'earlier-runs', status: 'passed' },
+        { id: 'blocked-task', status: 'blocked' },
+        { id: 'later-runs', status: 'passed' },
+      ],
     );
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    assert.equal(summary.results[1].reason, 'missing required config');
+    await Promise.all(markers.map((marker) => access(marker)));
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('runner executes every read-only preflight, aggregates failures, and starts no command', async () => {
+test('preflight failures settle only their tasks and other tasks still run', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-execution-preflight-'));
-  const marker = join(fixture, 'phase-ran');
+  const marker = join(fixture, 'task-ran');
   const visited = [];
   try {
     const plan = {
       selectors: ['test'],
-      phases: [
+      tasks: [
         {
           id: 'would-run-first',
           kind: 'test',
@@ -1020,24 +1013,31 @@ test('runner executes every read-only preflight, aggregates failures, and starts
           },
         },
         {
-          id: 'static-blocker',
+          id: 'still-runs',
           kind: 'test',
+          command: process.execPath,
+          args: [
+            '--eval',
+            'require("node:fs").writeFileSync(process.argv[1], "ran")',
+            marker,
+          ],
           cwd: fixture,
-          preconditionError: 'static input missing',
         },
       ],
     };
-    await assert.rejects(
-      runVerifyPlan(plan, fixture),
-      (error) => {
-        assert.match(error.message, /would-run-first: first external prerequisite disappeared/);
-        assert.match(error.message, /also-preflighted: second prerequisite is unreadable/);
-        assert.match(error.message, /static-blocker: static input missing/);
-        return true;
-      },
+    const summary = await runVerifyPlan(plan, fixture);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'would-run-first', status: 'failed' },
+        { id: 'also-preflighted', status: 'failed' },
+        { id: 'still-runs', status: 'passed' },
+      ],
     );
+    assert.match(summary.results[0].reason, /first external prerequisite disappeared/);
+    assert.match(summary.results[1].reason, /second prerequisite is unreadable/);
     assert.deepEqual(visited, ['first', 'second']);
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    await access(marker);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -1048,7 +1048,7 @@ test('plan and execution logs use displayArgs without leaking execution-only sen
   const script = 'if (process.argv[1] !== "verify-display-secret-sentinel") process.exit(9)';
   const plan = {
     selectors: ['test'],
-    phases: [{
+    tasks: [{
       id: 'redacted-display',
       kind: 'test',
       command: process.execPath,
@@ -1071,13 +1071,13 @@ test('plan and execution logs use displayArgs without leaking execution-only sen
   assert.match(output, /<redacted-target>/);
 });
 
-test('runner is fail-fast after the first failed phase', async () => {
+test('runner continues after the first failed task', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-runner-'));
-  const marker = join(fixture, 'second-phase-ran');
+  const marker = join(fixture, 'second-task-ran');
   try {
     const plan = {
       selectors: ['test'],
-      phases: [
+      tasks: [
         {
           id: 'first-fails',
           kind: 'test',
@@ -1086,7 +1086,7 @@ test('runner is fail-fast after the first failed phase', async () => {
           cwd: fixture,
         },
         {
-          id: 'second-must-not-run',
+          id: 'second-runs',
           kind: 'test',
           command: process.execPath,
           args: [
@@ -1098,29 +1098,37 @@ test('runner is fail-fast after the first failed phase', async () => {
         },
       ],
     };
-    await assert.rejects(runVerifyPlan(plan, fixture), /first-fails failed with 7/);
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    const summary = await runVerifyPlan(plan, fixture);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'first-fails', status: 'failed' },
+        { id: 'second-runs', status: 'passed' },
+      ],
+    );
+    assert.match(summary.results[0].reason, /exited with 7/);
+    await access(marker);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('missing phase executable keeps phase identity and stops later commands', async () => {
+test('missing task executable fails only that task and later commands still run', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-missing-command-'));
-  const marker = join(fixture, 'later-phase-ran');
+  const marker = join(fixture, 'later-task-ran');
   try {
     const plan = {
       selectors: ['test'],
-      phases: [
+      tasks: [
         {
-          id: 'missing-executable-phase',
+          id: 'missing-executable-task',
           kind: 'test',
           command: `skiff-missing-executable-${process.pid}`,
           args: ['safe-test-arg'],
           cwd: fixture,
         },
         {
-          id: 'later-must-not-run',
+          id: 'later-runs',
           kind: 'test',
           command: process.execPath,
           args: [
@@ -1132,11 +1140,17 @@ test('missing phase executable keeps phase identity and stops later commands', a
         },
       ],
     };
-    await assert.rejects(
-      runVerifyPlan(plan, fixture),
-      /missing-executable-phase failed with ENOENT/,
+    const summary = await runVerifyPlan(plan, fixture);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'missing-executable-task', status: 'failed' },
+        { id: 'later-runs', status: 'passed' },
+      ],
     );
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    assert.match(summary.results[0].reason, /failed to spawn/);
+    assert.match(summary.results[0].reason, /ENOENT/);
+    await access(marker);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -1187,7 +1201,7 @@ test('filesystem discovery finds new tests and excludes generated or local direc
       selectors: ['scripts'],
     });
     assert.ok(
-      plan.phases.some((phase) => phase.args.includes('scripts/tests/new.test.mjs')),
+      plan.tasks.some((task) => task.args.includes('scripts/tests/new.test.mjs')),
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -1202,31 +1216,31 @@ test('every checker is classified once; compiler boundaries are default and live
   assert.equal(compilerBoundaries?.classification, CHECKER_CLASSIFICATIONS.DEFAULT);
   const defaultPlan = await buildVerifyPlan({ root, selectors: ['checks'] });
   assert.equal(
-    defaultPlan.phases.filter((phase) =>
-      phase.args.includes('scripts/check-compiler-boundaries.mjs')).length,
+    defaultPlan.tasks.filter((task) =>
+      task.args.includes('scripts/check-compiler-boundaries.mjs')).length,
     1,
   );
   assert.equal(
-    defaultPlan.phases.filter((phase) =>
-      phase.args.includes('--all-configured')).length,
+    defaultPlan.tasks.filter((task) =>
+      task.args.includes('--all-configured')).length,
     1,
   );
   assert.equal(
-    defaultPlan.phases.filter((phase) =>
-      phase.args.includes('scripts/check-command-execution-policy.mjs')).length,
+    defaultPlan.tasks.filter((task) =>
+      task.args.includes('scripts/check-command-execution-policy.mjs')).length,
     1,
   );
   const toolingPlan = await buildVerifyPlan({ root, selectors: ['tooling'] });
   assert.equal(
-    toolingPlan.phases.filter((phase) =>
-      phase.id === 'implementation:tooling:scripts-tests').length,
+    toolingPlan.tasks.filter((task) =>
+      task.id === 'implementation:tooling:scripts-tests').length,
     1,
   );
   assert.ok(
-    toolingPlan.phases.some((phase) =>
-      phase.args.includes('scripts/tests/command-execution-policy.test.mjs')),
+    toolingPlan.tasks.some((task) =>
+      task.args.includes('scripts/tests/command-execution-policy.test.mjs')),
   );
-  assert.equal(defaultPlan.phases.some((phase) => phase.id.startsWith('live:')), false);
+  assert.equal(defaultPlan.tasks.some((task) => task.id.startsWith('live:')), false);
 });
 
 test('direct CLI plans and filesystem discovery do not depend on the invocation cwd', async () => {
@@ -1320,8 +1334,4 @@ function withoutRuntimeLiveTarget() {
   delete env.SKIFF_DEV_ACTIVATION_URL;
   delete env.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT;
   return env;
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

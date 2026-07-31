@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import test from 'node:test';
 
-import { liveSelectorPhases } from '../lib/verify-live-plan.mjs';
+import { liveSelectorTasks } from '../lib/verify-live-plan.mjs';
 
 const RUNTIME_FIXTURES = [
   'db_live.live.test.skiff',
@@ -16,13 +16,13 @@ const RUNTIME_FIXTURES = [
 test('runtime-live assigns a consecutive generation to each canonical fixture', async () => {
   const fixture = await runtimeFixture();
   try {
-    const phases = await liveSelectorPhases(fixture.root, 'runtime-live', {
+    const tasks = await liveSelectorTasks(fixture.root, 'runtime-live', {
       ...fixture.inputs,
       runtimeLiveExpectedGeneration: '9',
     });
 
     assert.deepEqual(
-      phases.map((phase) => optionValue(phase.args, '--expected-generation')),
+      tasks.map((task) => optionValue(task.args, '--expected-generation')),
       ['9', '10', '11', '12'],
     );
   } finally {
@@ -35,32 +35,32 @@ test('runtime-live preserves the caller generation for a single fixture', async 
     fixtureNames: ['operation.live.test.skiff'],
   });
   try {
-    const [phase] = await liveSelectorPhases(fixture.root, 'runtime-live', {
+    const [task] = await liveSelectorTasks(fixture.root, 'runtime-live', {
       ...fixture.inputs,
       runtimeLiveExpectedGeneration: '41',
     });
 
-    assert.equal(optionValue(phase.args, '--expected-generation'), '41');
+    assert.equal(optionValue(task.args, '--expected-generation'), '41');
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('runtime-live retains canonical runner policy across every generation phase', async () => {
+test('runtime-live retains canonical runner policy across every generation task', async () => {
   const fixture = await runtimeFixture();
   try {
-    const phases = await liveSelectorPhases(fixture.root, 'runtime-live', {
+    const tasks = await liveSelectorTasks(fixture.root, 'runtime-live', {
       ...fixture.inputs,
       runtimeLiveExpectedGeneration: '0',
     });
 
-    assert.equal(phases.length, RUNTIME_FIXTURES.length);
-    for (const phase of phases) {
-      assert.equal(optionIndexes(phase.args, '--platform-source-root').length, 1);
-      assert.equal(optionValue(phase.args, '--platform-source-root'), fixture.root);
-      assert.equal(phase.args.includes('--base-assembly'), false);
-      assert.equal(phase.args.filter((arg) => arg === '--deny-skips').length, 1);
-      assert.equal(phase.args.filter((arg) => arg === '--require-tests').length, 1);
+    assert.equal(tasks.length, RUNTIME_FIXTURES.length);
+    for (const task of tasks) {
+      assert.equal(optionIndexes(task.args, '--platform-source-root').length, 1);
+      assert.equal(optionValue(task.args, '--platform-source-root'), fixture.root);
+      assert.equal(task.args.includes('--base-assembly'), false);
+      assert.equal(task.args.filter((arg) => arg === '--deny-skips').length, 1);
+      assert.equal(task.args.filter((arg) => arg === '--require-tests').length, 1);
     }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -70,13 +70,13 @@ test('runtime-live retains canonical runner policy across every generation phase
 test('runtime-live increments large generations without Number precision loss', async () => {
   const fixture = await runtimeFixture();
   try {
-    const phases = await liveSelectorPhases(fixture.root, 'runtime-live', {
+    const tasks = await liveSelectorTasks(fixture.root, 'runtime-live', {
       ...fixture.inputs,
       runtimeLiveExpectedGeneration: '9007199254740987',
     });
 
     assert.deepEqual(
-      phases.map((phase) => optionValue(phase.args, '--expected-generation')),
+      tasks.map((task) => optionValue(task.args, '--expected-generation')),
       [
         '9007199254740987',
         '9007199254740988',
@@ -94,7 +94,7 @@ test('runtime-live rejects invalid or overflowing generation sequences before pl
   try {
     for (const value of ['-1', '+1', '01', '1.0', '1e2', ' 1', '1 ']) {
       await assert.rejects(
-        liveSelectorPhases(fixture.root, 'runtime-live', {
+        liveSelectorTasks(fixture.root, 'runtime-live', {
           ...fixture.inputs,
           runtimeLiveExpectedGeneration: value,
         }),
@@ -107,7 +107,7 @@ test('runtime-live rejects invalid or overflowing generation sequences before pl
       '18446744073709551615',
     ]) {
       await assert.rejects(
-        liveSelectorPhases(fixture.root, 'runtime-live', {
+        liveSelectorTasks(fixture.root, 'runtime-live', {
           ...fixture.inputs,
           runtimeLiveExpectedGeneration: value,
         }),

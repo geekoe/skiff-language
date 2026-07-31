@@ -97,16 +97,16 @@ CLI policy 控制。
 ## Live Verification Ownership
 
 Canonical live/manual 编排只从 `scripts/lib/verify-live-registry.mjs` 生成。registry 把 source
-entry、invocation 和 generated phase 分开：entry 只拥有 checker script 或 fixture discovery，
-invocation 声明 selector、tier、ownership、输入、可执行文件和 strict policy，phase 才包含本次
+entry、invocation 和 generated task 分开：entry 只拥有 checker script 或 fixture discovery，
+invocation 声明 selector、tier、ownership、输入、可执行文件和 strict policy，task 才包含本次
 发现得到的具体命令。普通 checker registry 与 live registry 的 checker path 按计数全局恰好
-登记一次；live phase 的 fixed id/idPrefix 也和普通 checker invocation 全局去重。
+登记一次；live task 的 fixed id/idPrefix 也和普通 checker invocation 全局去重。
 
 模块边界保持单向：`verify-live-registry.mjs` 只拥有 canonical data/schema，
 `verify-selector-graph.mjs` 只拥有普通 public/composite/internal selector graph，
 `verify-live-catalog.mjs` 负责跨两类 registry 的 path/id/selector namespace 校验，
-`verify-live-plan.mjs` 解释 inputs、PATH prerequisite 并生成 phase。后两者不声明 selector 或
-prerequisite；普通 phase builder 还必须与 selector graph 的 leaf 集合精确对应，live selector
+`verify-live-plan.mjs` 解释 inputs、PATH prerequisite 并生成 task。后两者不声明 selector 或
+prerequisite；普通 task builder 还必须与 selector graph 的 leaf 集合精确对应，live selector
 因此不能覆盖 `compiler`、`checks` 或 `checks-default` 这类已有名字。
 
 ownership 约束如下：
@@ -123,7 +123,7 @@ non-live cleanup 路径虚报 `mongosh` 或 `sh`；encrypted-storage DB checker 
 `node`/`cargo`/`pnpm`/`mongod`/`mongosh`；loop-risk health 要求 `node`，stress 要求
 `node`/`ps` 和从 `router/package.json` 解析的 `ws` 模块。plan/list 阶段只读检查文件类型和
 executable bit，execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有
-`live/manual` phase 仍排除在默认 verify、所有普通 non-live selector 和 CI 之外。
+`live/manual` task 仍排除在默认 verify、所有普通 non-live selector 和 CI 之外。
 Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 reload URL 也会
 逐项校验，不能因另一个输入或 PATH 工具缺失而把空 discovery/非法配置降级成 blocked plan。
 
@@ -131,7 +131,7 @@ loop-risk 的两个 selector 只接受 `--loop-risk-config <path>` 或 `SKIFF_LO
 canonical JSON 顶层严格包含 `healthUrl`、`runtimeIds` 和可选 `stress`，其中 health URL 精确为
 `/__router/health?detail=loop-risk`；stress profile 还严格要求 WebSocket URL、唯一正整数 PID 和
 绝对 runtime log 路径。plan/list 会解析 config 并校验 log 可读性；execution preflight 会重读
-config、复核 log 与 PID 存活性，再启动任何 workload。phase 只传绝对 `--config` 路径，不能把
+config、复核 log 与 PID 存活性，再启动任何 workload。task 只传绝对 `--config` 路径，不能把
 细粒度 target/env 或 skip 选项混进 canonical 路径；stress 的 health、CPU、log 三个 gate 都
 必须实际检查并返回 `checked: true`。
 

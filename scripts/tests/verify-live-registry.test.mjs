@@ -212,14 +212,14 @@ test('live registry and global catalog reject id-prefix and cross-catalog id con
   prefixConflict[1].invocations[0].id = 'live:runtime:fixed-conflict';
   assert.throws(
     () => assertLiveRegistryIntegrity(prefixConflict),
-    /phase id\/idPrefix conflict/,
+    /task id\/idPrefix conflict/,
   );
 
   const ordinaryIdConflict = cloneRegistry();
   ordinaryIdConflict[1].invocations[0].id = 'checks:compiler-boundaries';
   await assert.rejects(
     assertVerifyCatalogComplete(root, { liveRegistry: ordinaryIdConflict }),
-    /phase id\/idPrefix conflict/,
+    /task id\/idPrefix conflict/,
   );
 });
 
@@ -255,7 +255,7 @@ test('registry-derived self-test injection follows leaf selector drift and rejec
     liveRegistry: leafDrift,
   });
   assert.equal(
-    movedPlan.phases.filter((phase) => phase.id === 'checks:loop-risk-health:self-test').length,
+    movedPlan.tasks.filter((task) => task.id === 'checks:loop-risk-health:self-test').length,
     1,
   );
   const oldLeafPlan = await buildVerifyPlan({
@@ -264,7 +264,7 @@ test('registry-derived self-test injection follows leaf selector drift and rejec
     liveRegistry: leafDrift,
   });
   assert.equal(
-    oldLeafPlan.phases.some((phase) => phase.id === 'checks:loop-risk-health:self-test'),
+    oldLeafPlan.tasks.some((task) => task.id === 'checks:loop-risk-health:self-test'),
     false,
   );
 
@@ -326,7 +326,7 @@ test('global catalog counts every discovered checker path exactly once across re
   );
 });
 
-test('registry-derived phase metadata is mandatory and matches ownership-tier rules', () => {
+test('registry-derived task metadata is mandatory and matches ownership-tier rules', () => {
   const base = {
     id: 'live:test',
     kind: LIVE_TIERS.LIVE_MANUAL,
@@ -372,10 +372,10 @@ test('runtime invocation blocks each missing executable and never invents DB cle
         ...fixture.inputs,
         env: { PATH: bin },
       });
-      assert.equal(plan.phases.length, 1);
-      assert.match(plan.phases[0].preconditionError, new RegExp(`PATH: ${missing}`));
-      assert.equal(plan.phases[0].tier, LIVE_TIERS.LIVE_MANUAL);
-      assert.equal(plan.phases[0].ownership, LIVE_OWNERSHIP.EXTERNAL);
+      assert.equal(plan.tasks.length, 1);
+      assert.match(plan.tasks[0].preconditionError, new RegExp(`PATH: ${missing}`));
+      assert.equal(plan.tasks[0].tier, LIVE_TIERS.LIVE_MANUAL);
+      assert.equal(plan.tasks[0].ownership, LIVE_OWNERSHIP.EXTERNAL);
     }
 
     const bin = await fakeExecutablePath(fixture.root, required, 'runtime-complete');
@@ -386,9 +386,9 @@ test('runtime invocation blocks each missing executable and never invents DB cle
       ...fixture.inputs,
       env: { PATH: bin },
     });
-    assert.equal(plan.phases.length, 1);
-    assert.equal(plan.phases[0].command, 'cargo');
-    assert.equal(plan.phases[0].ownership, LIVE_OWNERSHIP.EXTERNAL);
+    assert.equal(plan.tasks.length, 1);
+    assert.equal(plan.tasks[0].command, 'cargo');
+    assert.equal(plan.tasks[0].ownership, LIVE_OWNERSHIP.EXTERNAL);
     assert.doesNotMatch(
       JSON.stringify(invocation('runtime-live').value.requiredExecutables),
       /mongosh|(?:^|\W)sh(?:\W|$)/,
@@ -471,10 +471,10 @@ test('managed DB invocation blocks each exact executable and full PATH generates
         selectors: ['db-encrypted-storage-live'],
         env: { PATH: bin },
       });
-      assert.equal(plan.phases.length, 1);
-      assert.match(plan.phases[0].preconditionError, new RegExp(`PATH: ${missing}`));
-      assert.equal(plan.phases[0].tier, LIVE_TIERS.LIVE_MANUAL);
-      assert.equal(plan.phases[0].ownership, LIVE_OWNERSHIP.MANAGED);
+      assert.equal(plan.tasks.length, 1);
+      assert.match(plan.tasks[0].preconditionError, new RegExp(`PATH: ${missing}`));
+      assert.equal(plan.tasks[0].tier, LIVE_TIERS.LIVE_MANUAL);
+      assert.equal(plan.tasks[0].ownership, LIVE_OWNERSHIP.MANAGED);
     }
 
     const bin = await fakeExecutablePath(fixture, required, 'db-complete');
@@ -484,7 +484,7 @@ test('managed DB invocation blocks each exact executable and full PATH generates
       env: { PATH: bin },
     });
     assert.deepEqual(
-      plan.phases.map(({ id, command, args, tier, ownership }) => ({
+      plan.tasks.map(({ id, command, args, tier, ownership }) => ({
         id,
         command,
         args,
@@ -499,8 +499,8 @@ test('managed DB invocation blocks each exact executable and full PATH generates
         ownership: LIVE_OWNERSHIP.MANAGED,
       }],
     );
-    assert.equal(typeof plan.phases[0].executionPreflight, 'function');
-    assert.equal(await plan.phases[0].executionPreflight(), undefined);
+    assert.equal(typeof plan.tasks[0].executionPreflight, 'function');
+    assert.equal(await plan.tasks[0].executionPreflight(), undefined);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -547,14 +547,17 @@ test('DB list is blocked and execute starts no command when a declared tool is a
       { cwd: root, env },
     );
     assert.notEqual(executed.code, 0);
-    assert.match(executed.stderr, /live:db-encrypted-storage: .*PATH: mongod/);
+    assert.match(
+      `${executed.stdout}\n${executed.stderr}`,
+      /live:db-encrypted-storage: blocked: .*PATH: mongod/,
+    );
     await assert.rejects(access(marker), { code: 'ENOENT' });
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('actual canonical runtime discovery composes with the managed live phase', async () => {
+test('actual canonical runtime discovery composes with the managed live task', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-actual-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -576,14 +579,14 @@ test('actual canonical runtime discovery composes with the managed live phase', 
       env: { PATH: bin },
     };
     const plan = await buildVerifyPlan(options);
-    assert.equal(plan.phases.length, 5);
+    assert.equal(plan.tasks.length, 5);
     assert.deepEqual(
-      plan.phases.filter((phase) => phase.id.startsWith('live:runtime:'))
-        .map((phase) => phase.args[phase.args.indexOf('--expected-generation') + 1]),
+      plan.tasks.filter((task) => task.id.startsWith('live:runtime:'))
+        .map((task) => task.args[task.args.indexOf('--expected-generation') + 1]),
       ['0', '1', '2', '3'],
     );
     assert.equal(
-      plan.phases.filter((phase) => phase.id === 'live:db-encrypted-storage').length,
+      plan.tasks.filter((task) => task.id === 'live:db-encrypted-storage').length,
       1,
     );
     const deduplicated = await buildVerifyPlan({
@@ -591,8 +594,8 @@ test('actual canonical runtime discovery composes with the managed live phase', 
       selectors: ['runtime-live', 'runtime-live'],
     });
     assert.deepEqual(
-      deduplicated.phases.map((phase) => phase.id),
-      plan.phases.slice(0, 4).map((phase) => phase.id),
+      deduplicated.tasks.map((task) => task.id),
+      plan.tasks.slice(0, 4).map((task) => task.id),
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -608,8 +611,8 @@ test('loop-risk selectors consume one canonical config path without expanding ta
         selectors: [selector],
         env: { ...process.env, SKIFF_LOOP_RISK_CONFIG: '' },
       });
-      assert.equal(missing.phases.length, 1);
-      assert.match(missing.phases[0].preconditionError, /loop-risk config/);
+      assert.equal(missing.tasks.length, 1);
+      assert.match(missing.tasks[0].preconditionError, /loop-risk config/);
     }
 
     const plans = await Promise.all([
@@ -621,20 +624,20 @@ test('loop-risk selectors consume one canonical config path without expanding ta
         env: { ...process.env, SKIFF_LOOP_RISK_CONFIG: fixture.configPath },
       }),
     ]);
-    assert.deepEqual(plans[0].phases[0].args, [
+    assert.deepEqual(plans[0].tasks[0].args, [
       'scripts/check-loop-risk-health.mjs',
       '--config',
       fixture.configPath,
     ]);
-    assert.deepEqual(plans[1].phases[0].args, [
+    assert.deepEqual(plans[1].tasks[0].args, [
       'scripts/check-loop-risk-stress-live.mjs',
       '--config',
       fixture.configPath,
     ]);
-    assert.deepEqual(plans[2].phases[0].args, plans[0].phases[0].args);
-    assert.equal(await plans[1].phases[0].executionPreflight(), undefined);
+    assert.deepEqual(plans[2].tasks[0].args, plans[0].tasks[0].args);
+    assert.equal(await plans[1].tasks[0].executionPreflight(), undefined);
     for (const plan of plans) {
-      const rendered = JSON.stringify(plan.phases.map(({ executionPreflight, ...phase }) => phase));
+      const rendered = JSON.stringify(plan.tasks.map(({ executionPreflight, ...task }) => task));
       assert.doesNotMatch(rendered, /registry-target-secret|service-token/);
     }
 
@@ -674,7 +677,7 @@ test('loop-risk registry derives exact executable and module prerequisites', asy
           loopRiskConfig: fixture.configPath,
           env: { PATH: bin },
         });
-        assert.match(plan.phases[0].preconditionError, new RegExp(`PATH: ${missing}`));
+        assert.match(plan.tasks[0].preconditionError, new RegExp(`PATH: ${missing}`));
       }
     }
 
@@ -691,13 +694,13 @@ test('loop-risk registry derives exact executable and module prerequisites', asy
       loopRiskConfig: fixture.configPath,
       env: { PATH: bin },
     });
-    assert.match(moduleMissing.phases[0].preconditionError, /ws from router\/package.json/);
+    assert.match(moduleMissing.tasks[0].preconditionError, /ws from router\/package.json/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('loop-risk stress execution preflight aggregates dead PID and vanished log before any command', async () => {
+test('loop-risk stress execution preflight fails only its task without stopping neighbors', async () => {
   const fixture = await loopRiskConfigFixture({ pid: 2_147_483_647 });
   const marker = join(fixture.root, 'command-ran');
   try {
@@ -707,25 +710,29 @@ test('loop-risk stress execution preflight aggregates dead PID and vanished log 
       loopRiskConfig: fixture.configPath,
     });
     await unlink(fixture.logPath);
-    const markerPhase = (id) => ({
+    const markerTask = (id) => ({
       id,
       kind: 'test',
       command: process.execPath,
       args: ['--eval', 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker],
       cwd: fixture.root,
     });
-    await assert.rejects(
-      runVerifyPlan({
-        selectors: ['test'],
-        phases: [markerPhase('before'), ...plan.phases, markerPhase('after')],
-      }, fixture.root),
-      (error) => {
-        assert.match(error.message, /runtime log must be an existing readable file/);
-        assert.match(error.message, /runtime PID is not alive/);
-        return true;
-      },
+    const summary = await runVerifyPlan({
+      selectors: ['test'],
+      tasks: [markerTask('before'), ...plan.tasks, markerTask('after')],
+    }, fixture.root);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'before', status: 'passed' },
+        { id: 'live:loop-risk-stress', status: 'failed' },
+        { id: 'after', status: 'passed' },
+      ],
     );
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    const failed = summary.results[1];
+    assert.match(failed.reason, /runtime log must be an existing readable file/);
+    assert.match(failed.reason, /runtime PID is not alive/);
+    await access(marker);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -734,15 +741,15 @@ test('loop-risk stress execution preflight aggregates dead PID and vanished log 
 test('default verify never includes registry live/manual invocations', async () => {
   const plan = await buildVerifyPlan({ root });
   assert.equal(
-    plan.phases.some((phase) => phase.tier === LIVE_TIERS.LIVE_MANUAL),
+    plan.tasks.some((task) => task.tier === LIVE_TIERS.LIVE_MANUAL),
     false,
   );
   assert.equal(
-    plan.phases.some((phase) => LIVE_SELECTORS.includes(phase.id)),
+    plan.tasks.some((task) => LIVE_SELECTORS.includes(task.id)),
     false,
   );
   assert.equal(
-    plan.phases.filter((phase) => phase.id === 'checks:loop-risk-health:self-test').length,
+    plan.tasks.filter((task) => task.id === 'checks:loop-risk-health:self-test').length,
     1,
   );
 });
@@ -756,11 +763,11 @@ test('checks plus health live keeps self-test and network invocation unique', as
       loopRiskConfig: fixture.configPath,
     });
     assert.equal(
-      plan.phases.filter((phase) => phase.id === 'checks:loop-risk-health:self-test').length,
+      plan.tasks.filter((task) => task.id === 'checks:loop-risk-health:self-test').length,
       1,
     );
     assert.equal(
-      plan.phases.filter((phase) => phase.id === 'live:loop-risk-health').length,
+      plan.tasks.filter((task) => task.id === 'live:loop-risk-health').length,
       1,
     );
   } finally {
@@ -768,7 +775,7 @@ test('checks plus health live keeps self-test and network invocation unique', as
   }
 });
 
-test('blocked live prerequisites stop marker commands before and after the phase', async () => {
+test('blocked live prerequisites never stop marker tasks before or after the task', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-blocked-plan-'));
   const marker = join(fixture, 'command-ran');
   try {
@@ -778,7 +785,7 @@ test('blocked live prerequisites stop marker commands before and after the phase
       selectors: ['db-encrypted-storage-live'],
       env: { PATH: bin },
     });
-    const markerPhase = (id) => ({
+    const markerTask = (id) => ({
       id,
       kind: 'test',
       command: process.execPath,
@@ -789,18 +796,24 @@ test('blocked live prerequisites stop marker commands before and after the phase
       ],
       cwd: fixture,
     });
-    await assert.rejects(
-      runVerifyPlan({
-        selectors: ['test'],
-        phases: [
-          markerPhase('earlier-must-not-run'),
-          ...blocked.phases,
-          markerPhase('later-must-not-run'),
-        ],
-      }, fixture),
-      /live:db-encrypted-storage/,
+    const summary = await runVerifyPlan({
+      selectors: ['test'],
+      tasks: [
+        markerTask('earlier-runs'),
+        ...blocked.tasks,
+        markerTask('later-runs'),
+      ],
+    }, fixture);
+    assert.deepEqual(
+      summary.results.map(({ id, status }) => ({ id, status })),
+      [
+        { id: 'earlier-runs', status: 'passed' },
+        { id: 'live:db-encrypted-storage', status: 'blocked' },
+        { id: 'later-runs', status: 'passed' },
+      ],
     );
-    await assert.rejects(access(marker), { code: 'ENOENT' });
+    assert.match(summary.results[1].reason, /PATH: .*mongod/);
+    await access(marker);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }

@@ -97,7 +97,7 @@ export const CHECKER_REGISTRY = Object.freeze([
   }),
 ]);
 
-export async function checkerPhases(root, selector, { kind } = {}) {
+export async function checkerTasks(root, selector, { kind } = {}) {
   return CHECKER_REGISTRY.flatMap((entry) =>
     entry.invocations
       .filter((candidate) => candidate.selector === selector)
