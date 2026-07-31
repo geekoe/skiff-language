@@ -11,7 +11,7 @@ pub(super) use store::*;
 use std::{pin::pin, task::Poll};
 
 use serde_json::json;
-use skiff_runtime_linked_program::{LinkedExprIr, LinkedStmtIr};
+use skiff_runtime_linked_program::{LinkedCallTarget, LinkedExprIr, LinkedStmtIr};
 use skiff_runtime_model::runtime_value::{RuntimeObject, RuntimeValue};
 
 use crate::env::Env;
@@ -87,6 +87,50 @@ async fn db_actor_fixture_checkpoint() {
     assert!(matches!(
         &executable.body.statements[illegal_flow_statement.statement as usize],
         LinkedStmtIr::Return { .. }
+    ));
+
+    let tail_call_barrier = executable
+        .body
+        .blocks
+        .iter()
+        .find(|block| block.label == TAIL_CALL_BARRIER_BLOCK_LABEL)
+        .expect("tail-call barrier block");
+    let tail_call_statement = tail_call_barrier
+        .statements
+        .first()
+        .expect("tail-call barrier statement");
+    let LinkedStmtIr::Return { value: Some(value) } =
+        &executable.body.statements[tail_call_statement.statement as usize]
+    else {
+        panic!("tail-call barrier must return its exact local call");
+    };
+    assert!(matches!(
+        &executable.body.expressions[value.expression as usize],
+        LinkedExprIr::Call { call } if call == &fixture.linked.exact_local_call
+    ));
+    assert!(matches!(
+        &fixture.linked.exact_local_call.target,
+        LinkedCallTarget::Executable { addr }
+            if addr == &fixture.linked.addr
+    ));
+    let entry = executable
+        .body
+        .blocks
+        .iter()
+        .find(|block| block.label == "entry")
+        .expect("exact local callee entry");
+    let entry_statement = entry
+        .statements
+        .first()
+        .expect("structured return statement");
+    let LinkedStmtIr::Return { value: Some(value) } =
+        &executable.body.statements[entry_statement.statement as usize]
+    else {
+        panic!("exact local callee must return its structured result");
+    };
+    assert!(matches!(
+        &executable.body.expressions[value.expression as usize],
+        LinkedExprIr::ArrayLiteral { .. }
     ));
 
     let (frame, mut heap) = fixture.actor.execution_frame().await;
