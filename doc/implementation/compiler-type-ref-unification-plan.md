@@ -30,7 +30,8 @@ object_materialization}`），说明第一轮部分抽取已经完成，但 god 
 
 - 建立单一 canonical 类型表示（`TypeRefIr`），所有类型遍历、格式化、字段提取、union 规范化、
   builtin shape 逻辑只写一份，落在共享层。
-- `PackageTypeRef` / `ContractTypeRef` 收敛为边界视图；`ResolvedTypeRef` 收敛为 thin wrapper。
+- `PackageTypeRef` / `ContractTypeRef` 收敛为边界视图；`ResolvedTypeRef` 收敛为单一显示源
+  （Display=debug_text，source spelling 以 `Option` 保留）。
 - 消除两个文件之间的逐字/近似重复，以及 crate 内同类重复。
 - 修复同名 helper 的语义分叉（`union_type_ir`），用测试锁定唯一语义。
 - 保留两种投影策略并明确边界归属：source 内部用折叠版（`PackageSchema→PackageSymbol`），
@@ -223,25 +224,34 @@ pub fn package_type_ref_from_ir(
 ### 5.3 `ResolvedTypeRef` 的收敛路径
 
 ```rust
-pub struct ResolvedTypeRef { ir: TypeRefIr, source_text: String }  // 现状
+pub struct ResolvedTypeRef { ir: TypeRefIr, source_text: Option<String> }  // 修订后目标
 
-// 第一步：集中构造入口，行为不变
 impl ResolvedTypeRef {
-    pub fn new(ir: TypeRefIr) -> Self;                 // source_text = debug_text(&ir)
-    pub fn with_text(ir: TypeRefIr, text: String) -> Self; // 保留少数手拼文本
+    pub fn new(ir: TypeRefIr) -> Self;                    // source_text = None（Display 回退 debug_text）
+    pub fn with_text(ir: TypeRefIr, text: String) -> Self; // 保留 source spelling / 手拼文本
 }
 
-// 第二步：读点迁移完成后删字段
-pub struct ResolvedTypeRef(TypeRefIr);                 // impl Display = debug_text
+impl Display for ResolvedTypeRef { /* source_text 或 debug_text(&ir) */ }
 ```
 
-`source_text` 不能直接删：当前构造点约 66 处（排除测试；含测试约 70）、`.source_text` 读点
-约 64 处（含测试约 73；全仓库 87），数字随近期提交漂移，开工前以 rg 快照为准。其中大部分是
-`type_ref_debug_text(&...)`，但也有手拼的 `format!("Stream<{}>", ...)`、`"Json"`、
-`String::new()`，测试里还有 `"otherRole.LlmRole"`、`"{ value: string }"` 等断言字符串。
-注意 `CanonicalInterfaceSelectorResolution`（type_resolution_model.rs:188）也有独立的
-`pub source_text` 字段，删字段范围仅限 `ResolvedTypeRef`。先统一构造入口、再迁移读点、
-最后删字段，保证诊断输出逐字节不变。
+修订原因（Phase 5 实施证据，2026-07-31）：`source_text` 不全是 `type_ref_debug_text` 的冗余副本，
+在以下场景承载 IR 无法恢复的 source spelling，直接删字段会让诊断退化为 `#N`/裸 symbol_path：
+- `LocalType`：IR 只有 `type_index`，`debug_text` 渲染 `#N`，`source_text` 保留源码类型名（如
+  `User`、`Context`）；
+- `PackageSymbol`：`debug_text` 渲染裸 `symbol_path`，`source_text` 保留 alias 限定名（如
+  `renamedService.Payload`、`provider.PrivateBindings`、`other.Handler`）；
+- 手拼文本（`Stream<...>`、`Json`、`String::new()` 等）。
+实施时 6 个既有 golden 测试（contract_call_typing、runtime_slots、object_materialization、
+expression_type_model、package_imports、package_interface_identity）证明 Display=debug_text 会改变
+诊断输出；`doc/architecture/compiler-type-checking.md` 明确要求 `ResolvedTypeRef` 保留 source
+spelling/provenance。因此原"删字段"目标修订为：字段改为 `Option<String>`（仅在不等于 `debug_text`
+时存储），构造入口统一为 `new`/`with_text`，读点全部走 `Display`。
+
+构造点/读点统计：当前构造点约 66 处（排除测试；含测试约 70）、`.source_text` 读点约 64 处
+（含测试约 73；全仓库 87），数字随近期提交漂移，开工前以 rg 快照为准。注意
+`CanonicalInterfaceSelectorResolution`（type_resolution_model.rs:188）也有独立的 `pub source_text`
+字段，改动范围仅限 `ResolvedTypeRef`。诊断断言（测试文件里的 `expected.source_text == "..."`）是
+golden 基线，输出必须逐字节不变。
 
 ## 6. 分阶段实施
 
@@ -311,10 +321,14 @@ Record/Literal/Function/AnyInterface 成员、重复成员、`PackageTypeRef::Lo
 
 验证：identity 差分测试 + compiler 域测试 + contract fixture 测试 + `--only skiff-tests`。
 
-### Phase 5：`ResolvedTypeRef` 瘦身
+### Phase 5：`ResolvedTypeRef` 单一显示源（修订版）
 
-按 5.3 推进：先加 `new`/`with_text` 并替换构造点（当前约 66 处，含测试约 70），再迁移
-`.source_text` 读点（当前约 64 处，含测试约 73）到 `Display`，最后删 `source_text` 字段。
+按 5.3 推进：
+1. 加 `new`/`with_text` 并替换全部构造点（当前约 66 处，含测试约 70；手拼/source spelling 用
+   `with_text`，其余用 `new`）。
+2. 迁移 `.source_text` 读点（当前约 64 处，含测试约 73）到 `Display`。
+3. 字段改为 `Option<String>`（仅在不等于 `debug_text` 时存储），`Display` 渲染 override 或
+   `debug_text`；**不删除字段、不删 spelling**（修订原因见 5.3，架构契约要求保留）。
 范围仅限 `ResolvedTypeRef`，不动 `CanonicalInterfaceSelectorResolution`。诊断断言（测试文件里的
 `expected.source_text == "..."`）是 golden 基线，任何输出变化都要先解释再接受。
 
@@ -375,8 +389,10 @@ Record/Literal/Function/AnyInterface 成员、重复成员、`PackageTypeRef::Lo
   但仍不能混进等价重构，单独 commit。
 - `single_for_item_projection`/`map_entry_projections` 对 `Local` 包装容器的 `None` 行为
   必须测试锁定；from_ir 对 Record/Function/Literal 有损。
-- `source_text` 存在手拼文本与测试断言依赖，删除字段前必须先统一构造入口；范围仅限
-  `ResolvedTypeRef`，勿误伤 `CanonicalInterfaceSelectorResolution`。
+- `source_text` 存在手拼文本与测试断言依赖，且承载 IR 无法恢复的 source spelling（LocalType 名称、
+  alias 限定名、AnyInterface 限定名；架构契约要求保留），不能直接删字段；统一构造入口后改为
+  `Option<String>`（仅在不等于 `debug_text` 时存储）。范围仅限 `ResolvedTypeRef`，勿误伤
+  `CanonicalInterfaceSelectorResolution`。
 - union 规范化语义选择会影响编译结果，必须单独成阶段、单独跑 skiff-tests，
   不能混进“等价重构”步骤。
 - 行数门禁与 clippy 阈值都由当前最差文件决定（6533 / 534），机械拆分只会搬家；
