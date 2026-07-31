@@ -1,6 +1,6 @@
 # N1 dynamic barrier and excluded-target negative matrix
 
-Status: `implementation`
+Status: `complete`
 
 This leaf closes the dynamic negative matrix assigned to N1. It is test-only:
 if a real owner path permits an internal tail transfer, skips its continuation,
@@ -48,13 +48,20 @@ executable without production changes or external services:
 - stream tests already drive the real consumer cleanup and supervised deferred
   producer registries.
 
-For an exact local call inside an owner barrier, the proof is paired:
+For an exact local call inside an owner barrier, the proof uses the minimum
+owner-observable combination of:
 
 1. from ordinary depth, a structured value or terminal trace proves the real
    owner continuation ran after the callee;
 2. from seeded depth `32` at a direct evaluator seam (or `31` before a
    canonical assembly entry), the same call must produce structured
    `programCallDepth`, proving it stayed on the ordinary nested-call path.
+
+The call-argument and catch cases need only the exact linked shape plus the
+structured seeded-depth failure: that failure can only be produced by the
+nested call before either wrapper can transform its result. Owners with
+post-body cleanup or arbitration additionally assert their ordinary
+continuation/result.
 
 For service, Actor, native/builtin, and stream-deferred targets, the tests use
 their real dispatch/continuation result and assert no crate-private evaluator
@@ -85,8 +92,8 @@ source fixture belongs to this leaf.
 
 | Matrix item | Real path and minimum assertion |
 | --- | --- |
-| call argument | Canonical assembly outer call evaluates an exact local call as an argument; structured outer result at ordinary depth, `programCallDepth` at seeded depth. |
-| catch | Canonical assembly `Catch` owns the nested exact local call and materializes its catch result; structured result at ordinary depth, depth failure at the seeded boundary. |
+| call argument | Canonical assembly outer call evaluates an exact local call as an argument; the linked nested shape plus structured `programCallDepth` at seeded depth proves ordinary dispatch. |
+| catch | Canonical assembly `Catch` owns the nested exact local call; the linked wrapper shape plus structured depth failure at the seeded boundary proves the try call remained ordinary. |
 | timeout | Real timeout expression/body owns a nested exact local call; successful run preserves the post-body timeout/parent-scope result, seeded run reports depth before owner restoration is lost. |
 | concurrent | Real lane/value scheduler owns a nested exact local call; successful run preserves arbitration/parent result, seeded run reports depth through lane arbitration. |
 | transaction | Explicit transaction result/body evaluates the exact local call before commit; success traces `Begin -> Commit`, seeded failure traces `Begin -> Abort`, with heap rollback/retention and actor ownership asserted. |
@@ -131,5 +138,39 @@ item:
 
 ## Result
 
-Pending implementation, focused verification, commit/tree identity, and
-integrator handoff.
+N1 completed without a production defect or scope expansion. The final branch
+contains only this contract and the exclusive test write set above.
+
+The integrated implementation commits are:
+
+- `f632b0ae` — stream consumer/defer/producer-argument negatives;
+- `a5b86a72` — assembly call-argument/catch and excluded dispatch targets;
+- `7de1291c` — timeout and concurrent owner negatives;
+- `75c6958c` — DB transaction/lease fixture and cleanup negatives;
+- `a67494d9` — exact-local transaction result through the real commit owner.
+
+The dynamic result is 13 passing tests:
+
+- assembly: 6 (`call-argument`, `catch`, service, Actor, native, builtin);
+- timeout: 1;
+- concurrent: 1;
+- DB transaction: 1 test with commit, ordinary abort, and seeded-depth abort
+  subcases;
+- DB lease: 1 test with ordinary and seeded-depth release/cleanup subcases;
+- stream: 3 (consumer cleanup, deferred producer, stream-producing argument).
+
+Final focused evidence, all non-zero:
+
+```text
+assembly_tail_call_negative       6 passed, 443 filtered out
+tail_call_negative_timeout        1 passed, 448 filtered out
+tail_call_negative_concurrent     1 passed, 448 filtered out
+tail_call_negative_db_transaction 1 passed, 448 filtered out
+tail_call_negative_db_lease       1 passed, 448 filtered out
+tail_call_negative_stream         3 passed, 446 filtered out
+```
+
+The DB and stream filters were run after a package-only cleanup forced
+`skiff-runtime-eval` to compile from this exact worktree. Rustfmt check and
+`git diff --check` passed. No selector, full gate, live service, or MongoDB was
+run.
