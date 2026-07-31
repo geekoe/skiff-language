@@ -5,9 +5,8 @@ use super::capabilities::{
 use super::type_descriptor::TypeSubstitutions;
 use crate::error::{Result, RuntimeError};
 use serde_json::Value;
-use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_capability_context::SupervisedStreamConsumptionChild;
-use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable};
+use skiff_runtime_linked_program::LinkedExecutable;
 use skiff_runtime_model::{runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan};
 
 mod concurrent_plan;
@@ -42,23 +41,13 @@ use slot_store::{program_parameter_slot, program_slot_layout, RuntimeSlotLayout}
 pub use slot_store::{SlotDebugBinding, SlotStore};
 
 #[derive(Clone, Debug)]
-#[allow(private_interfaces)]
 pub enum Flow {
     Continue,
     Return(RuntimeValueCarrier),
-    TailCall(Box<PreparedTailCall>),
     Break,
     LoopContinue,
     Parked,
     ContinueConsumer,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedTailCall {
-    pub(crate) target: ExecutableAddr,
-    pub(crate) env: Env,
-    pub(crate) return_plan: Option<RuntimeTypePlan>,
-    pub(crate) tail_site: InstructionSourceSite,
 }
 
 #[derive(Clone, Debug)]
@@ -262,17 +251,4 @@ pub fn check_cancelled(execution: &ExecutionControl<'_>, env: &Env) -> Result<()
         return Err(RuntimeError::Cancelled);
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod flow_layout_tests {
-    use super::{Flow, PreparedTailCall};
-
-    #[test]
-    fn tail_call_payload_does_not_inline_prepared_frame_into_flow() {
-        assert!(
-            std::mem::size_of::<Flow>() < std::mem::size_of::<PreparedTailCall>(),
-            "Flow must keep the prepared environment behind a fixed-size owning indirection"
-        );
-    }
 }
