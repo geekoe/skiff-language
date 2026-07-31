@@ -12,6 +12,7 @@ use super::*;
 
 mod fixtures;
 mod representation_wrap;
+mod tail_call_structure;
 
 use fixtures::CycleFixture;
 

@@ -853,6 +853,8 @@ mod tests {
 
     use super::*;
 
+    mod tail_call_structure;
+
     const MODULE: &str = "internal.any_lowering";
     const PACKAGE_ID: &str = "example.com/reader";
     const PACKAGE_MODULE: &str = "pkg.reader";
