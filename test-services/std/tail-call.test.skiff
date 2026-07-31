@@ -1,0 +1,10 @@
+function tailAccumulate(remaining: number, accumulator: number) -> number {
+  if remaining == 0 {
+    return accumulator
+  }
+  return tailAccumulate(remaining - 1, accumulator + remaining)
+}
+
+test "direct tail recursion preserves its accumulator beyond the depth guard" {
+  assert tailAccumulate(1000, 0) == 500500
+}
