@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr,
-    NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
+    PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
     debug_text, is_null_type, normalize_union,
@@ -382,7 +382,8 @@ fn check_source(
     }
 
     for implementation in &ast.impls {
-        let inherited = generic_type_params(&implementation.target);
+        let inherited =
+            crate::shared::type_syntax::generic_type_parameter_names(&implementation.target);
         for method in &implementation.method_bodies {
             if method.is_native || method.is_provider {
                 continue;
@@ -4647,7 +4648,8 @@ fn callable_signatures(
             insert_function_signature(&mut signatures, &module_path, &function.name, function, &[]);
         }
         for implementation in &parsed.ast().impls {
-            let inherited = generic_type_params(&implementation.target);
+            let inherited =
+                crate::shared::type_syntax::generic_type_parameter_names(&implementation.target);
             for method in &implementation.methods {
                 let declaration_name =
                     impl_method_declaration_name(&implementation.target, &method.name);
@@ -4755,25 +4757,6 @@ fn insert_callable_signature(
     signatures
         .entry(format!("{module_path}.{declaration_name}"))
         .or_insert(signature);
-}
-
-fn generic_type_params(name: &str) -> Vec<String> {
-    crate::shared::type_syntax::generic_parts(name)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .map(|arg| arg.trim())
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {

@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use crate::{
     shared::ast::{FunctionDecl, InterfaceOperation, TypeRef},
     shared::parser::parse_source,
-    shared::type_syntax::{generic_args, generic_parts, split_top_level, string_literal},
+    shared::type_syntax::{
+        generic_parts, generic_type_parameter_names, split_top_level, string_literal,
+    },
 };
 
 use super::{
@@ -167,7 +169,7 @@ impl PreludeRegistry {
             validate_function_type_refs(function, &known, &[], module_path)?;
         }
         for implementation in &source.impls {
-            let impl_type_params = generic_type_params(&implementation.target);
+            let impl_type_params = generic_type_parameter_names(&implementation.target);
             validate_type_name(
                 &implementation.target,
                 &known,
@@ -348,23 +350,6 @@ fn validate_named_type_root(
     Err(format!(
         "unknown standard_library type reference {root} in module {module_path}"
     ))
-}
-
-fn generic_type_params(name: &str) -> Vec<String> {
-    generic_args(name)
-        .map(|args| {
-            args.into_iter()
-                .map(str::trim)
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn is_string_literal_type(name: &str) -> bool {

@@ -33,7 +33,7 @@ use crate::{
         },
         prelude_registry::prelude_registry,
         type_expr::TypeExpr,
-        type_syntax::generic_parts,
+        type_syntax::generic_type_parameter_names,
     },
 };
 use compiler_input_model::PackageDependency;
@@ -5595,7 +5595,7 @@ fn package_callable_resolution(
                     impl_target_matches(&implementation.target, module_path, target)
                 })
                 .and_then(|implementation| {
-                    let inherited = generic_type_params_from_text(&implementation.target);
+                    let inherited = generic_type_parameter_names(&implementation.target);
                     implementation
                         .methods
                         .iter()
@@ -5685,25 +5685,6 @@ fn function_callable_resolution(
 fn impl_target_matches(target: &str, module_path: &str, local_target: &str) -> bool {
     let target = target.strip_prefix("root.").unwrap_or(target);
     target == local_target || target == format!("{module_path}.{local_target}")
-}
-
-fn generic_type_params_from_text(name: &str) -> Vec<String> {
-    generic_parts(name)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .map(|arg| arg.trim())
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn expand_alias_text(raw: &str, aliases: &BTreeMap<String, String>) -> Result<String, String> {
