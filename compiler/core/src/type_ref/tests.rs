@@ -1045,6 +1045,32 @@ fn builtin_shape_of_name_maps_all_shapes_and_std_full_names() {
 }
 
 #[test]
+fn builtin_shape_name_round_trips_all_short_names() {
+    let expected = [
+        (BuiltinShape::Array, "Array"),
+        (BuiltinShape::Stream, "Stream"),
+        (BuiltinShape::Map, "Map"),
+        (BuiltinShape::Exception, "Exception"),
+        (BuiltinShape::CatchResult, "CatchResult"),
+        (BuiltinShape::DbUpsertResult, "DbUpsertResult"),
+        (BuiltinShape::Json, "Json"),
+        (BuiltinShape::JsonObject, "JsonObject"),
+        (BuiltinShape::Null, "null"),
+        (BuiltinShape::Void, "void"),
+        (BuiltinShape::Never, "never"),
+        (BuiltinShape::Unknown, "unknown"),
+        (BuiltinShape::String, "string"),
+        (BuiltinShape::Integer, "integer"),
+        (BuiltinShape::Number, "number"),
+        (BuiltinShape::Bool, "bool"),
+    ];
+    for (shape, name) in expected {
+        assert_eq!(shape.name(), name);
+        assert_eq!(BuiltinShape::of_name(name), Some(shape));
+    }
+}
+
+#[test]
 fn package_type_ref_to_ir_folds_schema_and_keeps_local_verbatim() {
     let local_with_schema = PackageTypeRef::Local {
         local_type: package_schema_ir("pkg", "key"),

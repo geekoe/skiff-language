@@ -583,6 +583,29 @@ impl BuiltinShape {
             _ => return None,
         })
     }
+
+    /// Returns the canonical short name for this shape, i.e. the name used
+    /// inside `TypeRefIr::Builtin` after source-spelling canonicalization.
+    pub const fn name(self) -> &'static str {
+        match self {
+            BuiltinShape::Array => "Array",
+            BuiltinShape::Stream => "Stream",
+            BuiltinShape::Map => "Map",
+            BuiltinShape::Exception => "Exception",
+            BuiltinShape::CatchResult => "CatchResult",
+            BuiltinShape::DbUpsertResult => "DbUpsertResult",
+            BuiltinShape::Json => "Json",
+            BuiltinShape::JsonObject => "JsonObject",
+            BuiltinShape::Null => "null",
+            BuiltinShape::Void => "void",
+            BuiltinShape::Never => "never",
+            BuiltinShape::Unknown => "unknown",
+            BuiltinShape::String => "string",
+            BuiltinShape::Integer => "integer",
+            BuiltinShape::Number => "number",
+            BuiltinShape::Bool => "bool",
+        }
+    }
 }
 
 /// Projects an ABI/wire `PackageTypeRef` into the canonical `TypeRefIr` using
