@@ -224,16 +224,52 @@ fn transition(
     }
 }
 
-#[tokio::test]
-async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
-    let assembly = Arc::new(empty_assembly());
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
-    let resolver = EmptyAssemblyResolver { assembly };
-    let (config_snapshot, config_resolver) = empty_snapshot("prod");
-    let host = runtime_host("runtime-a");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let prepared = host
-        .apply_assembly_activation_control(
+    #[tokio::test]
+    async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
+        let assembly = Arc::new(empty_assembly());
+        let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
+        let resolver = EmptyAssemblyResolver { assembly };
+        let (config_snapshot, config_resolver) = empty_snapshot("prod");
+        let host = runtime_host("runtime-a");
+
+        let prepared = host
+            .apply_assembly_activation_control(
+                transition(
+                    "prepare",
+                    reference.clone(),
+                    config_snapshot.clone(),
+                    "runtime-a",
+                ),
+                &resolver,
+                &config_resolver,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            prepared,
+            Some(AssemblyActivationControl::Prepared { .. })
+        ));
+        assert!(host.active_assembly_registration().unwrap().is_none());
+
+        host.apply_assembly_activation_control(
+            transition(
+                "abort",
+                reference.clone(),
+                config_snapshot.clone(),
+                "runtime-a",
+            ),
+            &resolver,
+            &config_resolver,
+        )
+        .await
+        .unwrap();
+        assert!(host.active_assembly_registration().unwrap().is_none());
+
+        host.apply_assembly_activation_control(
             transition(
                 "prepare",
                 reference.clone(),
@@ -245,240 +281,209 @@ async fn prepare_abort_commit_replay_and_cold_recovery_are_atomic() {
         )
         .await
         .unwrap();
-    assert!(matches!(
-        prepared,
-        Some(AssemblyActivationControl::Prepared { .. })
-    ));
-    assert!(host.active_assembly_registration().unwrap().is_none());
-
-    host.apply_assembly_activation_control(
-        transition(
-            "abort",
-            reference.clone(),
-            config_snapshot.clone(),
-            "runtime-a",
-        ),
-        &resolver,
-        &config_resolver,
-    )
-    .await
-    .unwrap();
-    assert!(host.active_assembly_registration().unwrap().is_none());
-
-    host.apply_assembly_activation_control(
-        transition(
-            "prepare",
-            reference.clone(),
-            config_snapshot.clone(),
-            "runtime-a",
-        ),
-        &resolver,
-        &config_resolver,
-    )
-    .await
-    .unwrap();
-    let committed = host
-        .apply_assembly_activation_control(
-            transition(
-                "commit",
-                reference.clone(),
-                config_snapshot.clone(),
-                "runtime-a",
-            ),
-            &resolver,
-            &config_resolver,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        committed,
-        AssemblyActivationControl::Register { generation: 1, .. }
-    ));
-
-    let replay = host
-        .apply_assembly_activation_control(
-            transition(
-                "commit",
-                reference.clone(),
-                config_snapshot.clone(),
-                "runtime-a",
-            ),
-            &resolver,
-            &config_resolver,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(replay, committed);
-
-    let restarted = runtime_host("runtime-a");
-    let recovered = restarted
-        .apply_assembly_activation_control(
-            transition("commit", reference, config_snapshot, "runtime-a"),
-            &resolver,
-            &config_resolver,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(recovered, committed);
-}
-
-#[tokio::test]
-async fn prepare_rejects_dev_config_snapshot_for_prod_before_ack() {
-    let assembly = Arc::new(empty_assembly());
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
-    let resolver = EmptyAssemblyResolver { assembly };
-    let (config_snapshot, config_resolver) = empty_snapshot("dev");
-    let host = runtime_host("runtime-a");
-
-    let reply = host
-        .apply_assembly_activation_control(
-            transition("prepare", reference, config_snapshot, "runtime-a"),
-            &resolver,
-            &config_resolver,
-        )
-        .await
-        .expect("environment mismatch is a fail-closed activation reply")
-        .expect("prepare must receive a reply");
-
-    assert!(matches!(
-        reply,
-        AssemblyActivationControl::Reject {
-            reason: AssemblyActivationRejectReason::Admission,
-            ..
-        }
-    ));
-    assert!(host.active_assembly_registration().unwrap().is_none());
-}
-
-#[tokio::test]
-async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_independent() {
-    let assembly = Arc::new(empty_assembly());
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
-    let resolver = EmptyAssemblyResolver { assembly };
-    let (config_snapshot, config_resolver) = empty_snapshot("prod");
-    let first = runtime_host("runtime-a");
-    let second = runtime_host("runtime-b");
-
-    for (host, replica) in [(&first, "runtime-a"), (&second, "runtime-b")] {
-        host.apply_assembly_activation_control(
-            transition(
-                "commit",
-                reference.clone(),
-                config_snapshot.clone(),
-                replica,
-            ),
-            &resolver,
-            &config_resolver,
-        )
-        .await
-        .unwrap();
-    }
-    let first_registration = first.active_assembly_registration().unwrap().unwrap();
-    let second_registration = second.active_assembly_registration().unwrap().unwrap();
-    assert_ne!(first_registration, second_registration);
-
-    let staged_successor = AssemblyActivationControl::Prepare {
-        environment: "prod".to_string(),
-        activation_id: "activation-2".to_string(),
-        expected_generation: 1,
-        candidate_generation: 2,
-        assembly: reference.clone(),
-        config_snapshot: config_snapshot.clone(),
-        replica_id: "runtime-a".to_string(),
-        service_db: None,
-    };
-    assert!(matches!(
-        first
+        let committed = host
             .apply_assembly_activation_control(
-                staged_successor.clone(),
+                transition(
+                    "commit",
+                    reference.clone(),
+                    config_snapshot.clone(),
+                    "runtime-a",
+                ),
                 &resolver,
                 &config_resolver,
             )
             .await
-            .unwrap(),
-        Some(AssemblyActivationControl::Prepared { .. })
-    ));
-    assert_eq!(
-        first.active_assembly_registration().unwrap().unwrap(),
-        first_registration,
-        "prepare must not switch or register the staged generation"
-    );
-    let abort = match staged_successor {
-        AssemblyActivationControl::Prepare {
-            environment,
-            activation_id,
-            expected_generation,
-            candidate_generation,
-            assembly,
-            config_snapshot,
-            replica_id,
-            ..
-        } => AssemblyActivationControl::Abort {
-            environment,
-            activation_id,
-            expected_generation,
-            candidate_generation,
-            assembly,
-            config_snapshot,
-            replica_id,
-        },
-        _ => unreachable!(),
-    };
-    first
-        .apply_assembly_activation_control(abort.clone(), &resolver, &config_resolver)
-        .await
-        .unwrap();
-    first
-        .apply_assembly_activation_control(abort, &resolver, &config_resolver)
-        .await
-        .expect("abort replay must be idempotent");
-    assert_eq!(
-        first.active_assembly_registration().unwrap().unwrap(),
-        first_registration
-    );
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            committed,
+            AssemblyActivationControl::Register { generation: 1, .. }
+        ));
 
-    let unknown = RuntimeAssemblyRef {
-        assembly_identity: AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v3:sha256:{}",
-            "b".repeat(64)
-        )),
-    };
-    let rejected = first
-        .apply_assembly_activation_control(
-            AssemblyActivationControl::Prepare {
-                environment: "prod".to_string(),
-                activation_id: "activation-2".to_string(),
-                expected_generation: 1,
-                candidate_generation: 2,
-                assembly: unknown,
-                config_snapshot,
-                replica_id: "runtime-a".to_string(),
-                service_db: None,
-            },
-            &resolver,
-            &config_resolver,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        rejected,
-        AssemblyActivationControl::Reject {
-            reason: AssemblyActivationRejectReason::Resolve,
-            ..
+        let replay = host
+            .apply_assembly_activation_control(
+                transition(
+                    "commit",
+                    reference.clone(),
+                    config_snapshot.clone(),
+                    "runtime-a",
+                ),
+                &resolver,
+                &config_resolver,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay, committed);
+
+        let restarted = runtime_host("runtime-a");
+        let recovered = restarted
+            .apply_assembly_activation_control(
+                transition("commit", reference, config_snapshot, "runtime-a"),
+                &resolver,
+                &config_resolver,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered, committed);
+    }
+
+    #[tokio::test]
+    async fn prepare_rejects_dev_config_snapshot_for_prod_before_ack() {
+        let assembly = Arc::new(empty_assembly());
+        let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
+        let resolver = EmptyAssemblyResolver { assembly };
+        let (config_snapshot, config_resolver) = empty_snapshot("dev");
+        let host = runtime_host("runtime-a");
+
+        let reply = host
+            .apply_assembly_activation_control(
+                transition("prepare", reference, config_snapshot, "runtime-a"),
+                &resolver,
+                &config_resolver,
+            )
+            .await
+            .expect("environment mismatch is a fail-closed activation reply")
+            .expect("prepare must receive a reply");
+
+        assert!(matches!(
+            reply,
+            AssemblyActivationControl::Reject {
+                reason: AssemblyActivationRejectReason::Admission,
+                ..
+            }
+        ));
+        assert!(host.active_assembly_registration().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_independent() {
+        let assembly = Arc::new(empty_assembly());
+        let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
+        let resolver = EmptyAssemblyResolver { assembly };
+        let (config_snapshot, config_resolver) = empty_snapshot("prod");
+        let first = runtime_host("runtime-a");
+        let second = runtime_host("runtime-b");
+
+        for (host, replica) in [(&first, "runtime-a"), (&second, "runtime-b")] {
+            host.apply_assembly_activation_control(
+                transition(
+                    "commit",
+                    reference.clone(),
+                    config_snapshot.clone(),
+                    replica,
+                ),
+                &resolver,
+                &config_resolver,
+            )
+            .await
+            .unwrap();
         }
-    ));
-    assert_eq!(
-        first.active_assembly_registration().unwrap().unwrap(),
-        first_registration
-    );
+        let first_registration = first.active_assembly_registration().unwrap().unwrap();
+        let second_registration = second.active_assembly_registration().unwrap().unwrap();
+        assert_ne!(first_registration, second_registration);
 
-    drop(first);
-    assert_eq!(
-        second.active_assembly_registration().unwrap().unwrap(),
-        second_registration
-    );
+        let staged_successor = AssemblyActivationControl::Prepare {
+            environment: "prod".to_string(),
+            activation_id: "activation-2".to_string(),
+            expected_generation: 1,
+            candidate_generation: 2,
+            assembly: reference.clone(),
+            config_snapshot: config_snapshot.clone(),
+            replica_id: "runtime-a".to_string(),
+            service_db: None,
+        };
+        assert!(matches!(
+            first
+                .apply_assembly_activation_control(
+                    staged_successor.clone(),
+                    &resolver,
+                    &config_resolver,
+                )
+                .await
+                .unwrap(),
+            Some(AssemblyActivationControl::Prepared { .. })
+        ));
+        assert_eq!(
+            first.active_assembly_registration().unwrap().unwrap(),
+            first_registration,
+            "prepare must not switch or register the staged generation"
+        );
+        let abort = match staged_successor {
+            AssemblyActivationControl::Prepare {
+                environment,
+                activation_id,
+                expected_generation,
+                candidate_generation,
+                assembly,
+                config_snapshot,
+                replica_id,
+                ..
+            } => AssemblyActivationControl::Abort {
+                environment,
+                activation_id,
+                expected_generation,
+                candidate_generation,
+                assembly,
+                config_snapshot,
+                replica_id,
+            },
+            _ => unreachable!(),
+        };
+        first
+            .apply_assembly_activation_control(abort.clone(), &resolver, &config_resolver)
+            .await
+            .unwrap();
+        first
+            .apply_assembly_activation_control(abort, &resolver, &config_resolver)
+            .await
+            .expect("abort replay must be idempotent");
+        assert_eq!(
+            first.active_assembly_registration().unwrap().unwrap(),
+            first_registration
+        );
+
+        let unknown = RuntimeAssemblyRef {
+            assembly_identity: AssemblyIdentity::new(format!(
+                "skiff-runtime-assembly-v3:sha256:{}",
+                "b".repeat(64)
+            )),
+        };
+        let rejected = first
+            .apply_assembly_activation_control(
+                AssemblyActivationControl::Prepare {
+                    environment: "prod".to_string(),
+                    activation_id: "activation-2".to_string(),
+                    expected_generation: 1,
+                    candidate_generation: 2,
+                    assembly: unknown,
+                    config_snapshot,
+                    replica_id: "runtime-a".to_string(),
+                    service_db: None,
+                },
+                &resolver,
+                &config_resolver,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            rejected,
+            AssemblyActivationControl::Reject {
+                reason: AssemblyActivationRejectReason::Resolve,
+                ..
+            }
+        ));
+        assert_eq!(
+            first.active_assembly_registration().unwrap().unwrap(),
+            first_registration
+        );
+
+        drop(first);
+        assert_eq!(
+            second.active_assembly_registration().unwrap().unwrap(),
+            second_registration
+        );
+    }
 }

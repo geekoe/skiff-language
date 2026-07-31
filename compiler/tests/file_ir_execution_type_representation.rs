@@ -27,101 +27,6 @@ const REQUEST_SCHEMA_KEY: &str = "Request";
 const SERVICE_ID: &str = "example.payments";
 const VERSION: &str = "1.0.0";
 
-#[test]
-fn contract_typed_executables_preserve_package_nominal_execution_identity() {
-    let without_external_symbol = compile_package_nominal_fixture("without-symbol", "");
-    let with_external_symbol =
-        compile_package_nominal_fixture("with-symbol", "type Unrelated { value: string }\n");
-
-    let baseline = module_artifact(&without_external_symbol.package, "main");
-    let with_symbol = module_artifact(&with_external_symbol.package, "main");
-    for name in ["wrapper", "private_helper", "consume"] {
-        assert_execution_signature_eq(
-            executable(baseline.unit.executables.as_slice(), name),
-            executable(with_symbol.unit.executables.as_slice(), name),
-        );
-    }
-
-    let request_type = package_nominal_request_type(&without_external_symbol);
-    let wrapper = executable(&baseline.unit.executables, "wrapper");
-    assert_eq!(wrapper.params.len(), 2);
-    assert_eq!(wrapper.params[0].name, "label");
-    assert_eq!(wrapper.params[0].ty, TypeRefIr::builtin("string"));
-    assert_eq!(wrapper.params[1].name, "request");
-    assert_eq!(wrapper.params[1].ty, request_type);
-    assert_eq!(wrapper.return_type, request_type);
-    assert!(!wrapper.may_suspend);
-
-    let private_helper = executable(&baseline.unit.executables, "private_helper");
-    let nested = TypeRefIr::Builtin {
-        name: "Array".to_string(),
-        args: vec![TypeRefIr::Nullable {
-            inner: Box::new(request_type.clone()),
-        }],
-    };
-    assert_eq!(private_helper.params[0].ty, nested);
-    assert_eq!(private_helper.return_type, nested);
-
-    let consume = executable(&baseline.unit.executables, "consume");
-    assert!(consume.may_suspend);
-    assert_eq!(consume.params[0].ty, request_type);
-    assert_eq!(consume.return_type, request_type);
-
-    assert!(baseline.unit.external_refs.service_symbols.is_empty());
-    assert_schema_dependency_requirement(&without_external_symbol);
-    let schema_dependency = without_external_symbol
-        .dependency(SCHEMA_PACKAGE_ID, VERSION)
-        .expect("canonical schema owner must remain in the dependency closure");
-    let contract_type_id =
-        &schema_dependency.package_schema_index.types[REQUEST_SCHEMA_KEY].package_schema_type_id;
-    let executable_wire = serde_json::to_string(&baseline.unit.executables).unwrap();
-    assert!(executable_wire.contains(SCHEMA_PACKAGE_ID));
-    assert!(executable_wire.contains(REQUEST_SCHEMA_KEY));
-    assert!(!executable_wire.contains(contract_type_id.as_str()));
-    assert!(!executable_wire.contains("packageSchema"));
-    assert!(!executable_wire.contains("serviceSymbol"));
-    assert!(
-        !executable_wire.contains("\"unknown\""),
-        "Package nominal execution identity must not degrade to builtin unknown"
-    );
-}
-
-#[test]
-fn impl_receiver_stays_local_while_contract_parameter_preserves_package_nominal_identity() {
-    let temp = TestDir::new("skiff-compiler", "file-ir-execution-impl-receiver");
-    write_consumer_manifest(&temp);
-    temp.write("api.yml", "{}\n");
-    temp.write(
-        "main.skiff",
-        r#"
-type Adapter { label: string }
-
-impl Adapter {
-  function relay(request: payments.Request) -> payments.Request {
-    return request
-  }
-}
-"#,
-    );
-    write_schema_package_dependency(&temp);
-    let dependencies = package_nominal_contract_fixture();
-    let project = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
-        .expect("impl receiver and Package nominal contract parameter fixture should compile");
-    let main = module_artifact(&project.package, "main");
-    let relay = executable(&main.unit.executables, "Adapter.relay");
-
-    assert_eq!(
-        relay.self_type,
-        Some(TypeRefIr::LocalType { type_index: 0 })
-    );
-    assert_eq!(relay.params.len(), 1);
-    assert_eq!(relay.params[0].name, "request");
-    assert_eq!(relay.params[0].ty, package_nominal_request_type(&project));
-    assert_eq!(relay.return_type, package_nominal_request_type(&project));
-    assert!(main.unit.external_refs.service_symbols.is_empty());
-    assert_schema_dependency_requirement(&project);
-}
-
 fn compile_package_nominal_fixture(
     suffix: &str,
     unrelated_type: &str,
@@ -314,5 +219,107 @@ fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
         encoding: BoundaryValueEncoding::CanonicalValue,
         owner,
         lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contract_typed_executables_preserve_package_nominal_execution_identity() {
+        let without_external_symbol = compile_package_nominal_fixture("without-symbol", "");
+        let with_external_symbol =
+            compile_package_nominal_fixture("with-symbol", "type Unrelated { value: string }\n");
+
+        let baseline = module_artifact(&without_external_symbol.package, "main");
+        let with_symbol = module_artifact(&with_external_symbol.package, "main");
+        for name in ["wrapper", "private_helper", "consume"] {
+            assert_execution_signature_eq(
+                executable(baseline.unit.executables.as_slice(), name),
+                executable(with_symbol.unit.executables.as_slice(), name),
+            );
+        }
+
+        let request_type = package_nominal_request_type(&without_external_symbol);
+        let wrapper = executable(&baseline.unit.executables, "wrapper");
+        assert_eq!(wrapper.params.len(), 2);
+        assert_eq!(wrapper.params[0].name, "label");
+        assert_eq!(wrapper.params[0].ty, TypeRefIr::builtin("string"));
+        assert_eq!(wrapper.params[1].name, "request");
+        assert_eq!(wrapper.params[1].ty, request_type);
+        assert_eq!(wrapper.return_type, request_type);
+        assert!(!wrapper.may_suspend);
+
+        let private_helper = executable(&baseline.unit.executables, "private_helper");
+        let nested = TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::Nullable {
+                inner: Box::new(request_type.clone()),
+            }],
+        };
+        assert_eq!(private_helper.params[0].ty, nested);
+        assert_eq!(private_helper.return_type, nested);
+
+        let consume = executable(&baseline.unit.executables, "consume");
+        assert!(consume.may_suspend);
+        assert_eq!(consume.params[0].ty, request_type);
+        assert_eq!(consume.return_type, request_type);
+
+        assert!(baseline.unit.external_refs.service_symbols.is_empty());
+        assert_schema_dependency_requirement(&without_external_symbol);
+        let schema_dependency = without_external_symbol
+            .dependency(SCHEMA_PACKAGE_ID, VERSION)
+            .expect("canonical schema owner must remain in the dependency closure");
+        let contract_type_id = &schema_dependency.package_schema_index.types[REQUEST_SCHEMA_KEY]
+            .package_schema_type_id;
+        let executable_wire = serde_json::to_string(&baseline.unit.executables).unwrap();
+        assert!(executable_wire.contains(SCHEMA_PACKAGE_ID));
+        assert!(executable_wire.contains(REQUEST_SCHEMA_KEY));
+        assert!(!executable_wire.contains(contract_type_id.as_str()));
+        assert!(!executable_wire.contains("packageSchema"));
+        assert!(!executable_wire.contains("serviceSymbol"));
+        assert!(
+            !executable_wire.contains("\"unknown\""),
+            "Package nominal execution identity must not degrade to builtin unknown"
+        );
+    }
+
+    #[test]
+    fn impl_receiver_stays_local_while_contract_parameter_preserves_package_nominal_identity() {
+        let temp = TestDir::new("skiff-compiler", "file-ir-execution-impl-receiver");
+        write_consumer_manifest(&temp);
+        temp.write("api.yml", "{}\n");
+        temp.write(
+            "main.skiff",
+            r#"
+    type Adapter { label: string }
+
+    impl Adapter {
+      function relay(request: payments.Request) -> payments.Request {
+        return request
+      }
+    }
+    "#,
+        );
+        write_schema_package_dependency(&temp);
+        let dependencies = package_nominal_contract_fixture();
+        let project =
+            compile_package_project_with_contract_dependencies(temp.path(), &dependencies).expect(
+                "impl receiver and Package nominal contract parameter fixture should compile",
+            );
+        let main = module_artifact(&project.package, "main");
+        let relay = executable(&main.unit.executables, "Adapter.relay");
+
+        assert_eq!(
+            relay.self_type,
+            Some(TypeRefIr::LocalType { type_index: 0 })
+        );
+        assert_eq!(relay.params.len(), 1);
+        assert_eq!(relay.params[0].name, "request");
+        assert_eq!(relay.params[0].ty, package_nominal_request_type(&project));
+        assert_eq!(relay.return_type, package_nominal_request_type(&project));
+        assert!(main.unit.external_refs.service_symbols.is_empty());
+        assert_schema_dependency_requirement(&project);
     }
 }

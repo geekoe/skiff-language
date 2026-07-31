@@ -20,162 +20,6 @@ use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnos
 
 const ROOT_PACKAGE_ID: &str = "example.com/inline-effect-tests";
 
-#[test]
-fn malformed_test_source_is_ignored_by_ordinary_compile_and_rejected_by_test_service_compile() {
-    let fixture = TestDir::new("skiff-compiler", "malformed-test-source-selection");
-    fixture.write(
-        "package.yml",
-        format!("id: {ROOT_PACKAGE_ID}\nversion: 1.0.0\n"),
-    );
-    fixture.write("api.yml", "{}\n");
-    fixture.write(
-        "service.yml",
-        format!("id: {ROOT_PACKAGE_ID}\nkind: test\n"),
-    );
-    fixture.write(
-        "main.skiff",
-        "function production() -> string { return \"ok\" }\n",
-    );
-    fixture.write("main.test.skiff", "test \"broken\" { assert true\n");
-
-    compile_package_project(fixture.path())
-        .expect("ordinary package compilation must not read or parse test-only source");
-
-    let error = compile_service_package_project(fixture.path())
-        .expect_err("kind:test compilation must parse its explicit test source surface")
-        .to_string();
-    assert!(error.contains("main.test.skiff"), "{error}");
-}
-
-#[test]
-fn test_service_rejects_inline_effect_request_and_outcome_type_mismatches() {
-    let cases = [
-        (
-            "common-expect",
-            r#"
-test "invalid common expect" effects {
-  helper/tools.lookup {
-    expect: { method: 7 },
-    respond: helper.EffectResponse { value: "ok" },
-  }
-} { assert true }
-"#,
-            "test effect expect subset",
-        ),
-        (
-            "step-expect",
-            r#"
-test "invalid step expect" effects {
-  helper/tools.lookup {
-    sequence: [{
-      expect: { url: 7 },
-      respond: helper.EffectResponse { value: "ok" },
-    }],
-  }
-} { assert true }
-"#,
-            "test effect expect subset",
-        ),
-        (
-            "respond",
-            r#"
-test "invalid response" effects {
-  helper/tools.lookup {
-    respond: { value: 7 },
-  }
-} { assert true }
-"#,
-            "test effect respond",
-        ),
-        (
-            "stream",
-            r#"
-test "invalid stream event" effects {
-  helper/tools.events {
-    stream: [{ value: 7 }],
-  }
-} { assert true }
-"#,
-            "test effect stream event",
-        ),
-        (
-            "throw",
-            r#"
-test "invalid throw" effects {
-  helper/tools.lookup {
-    throw: "not-a-nominal-error",
-  }
-} { assert true }
-"#,
-            "throw has invalid catch payload",
-        ),
-    ];
-
-    for (label, source, expected) in cases {
-        let fixture = TestDir::new("skiff-compiler", &format!("test-effect-{label}"));
-        write_package_effect_fixture(&fixture, source);
-
-        let error = compile_service_package_project(fixture.path())
-            .expect_err("invalid inline effect type must fail test-service compilation")
-            .to_string();
-        assert!(
-            error.contains(expected),
-            "expected {expected:?} for {label}, got {error}"
-        );
-    }
-}
-
-#[test]
-fn test_service_rejects_two_service_aliases_for_one_exact_effect_target() {
-    let fixture = TestDir::new("skiff-compiler", "duplicate-service-effect-alias");
-    fixture.write(
-        "package.yml",
-        format!(
-            r#"id: {ROOT_PACKAGE_ID}
-version: 1.0.0
-services:
-  - id: example.com/payments
-    version: 1.0.0
-    alias: payments
-  - id: example.com/payments
-    version: 1.0.0
-    alias: paymentsTwin
-"#
-        ),
-    );
-    fixture.write("api.yml", "{}\n");
-    fixture.write(
-        "service.yml",
-        format!("id: {ROOT_PACKAGE_ID}\nkind: test\n"),
-    );
-    fixture.write(
-        "main.test.skiff",
-        r#"
-test "duplicate exact service target" effects {
-  payments/echo { respond: "first" },
-  paymentsTwin/echo { respond: "second" },
-} { assert true }
-"#,
-    );
-
-    let contract = echo_contract();
-    let dependencies = BTreeMap::from([(
-        (ROOT_PACKAGE_ID.to_string(), "1.0.0".to_string()),
-        vec![
-            package_contract_dependency("payments", contract.clone()),
-            package_contract_dependency("paymentsTwin", contract),
-        ],
-    )]);
-    let error =
-        compile_service_package_project_with_contract_dependencies(fixture.path(), &dependencies)
-            .expect_err("duplicate aliases for one exact effect target must fail")
-            .to_string();
-
-    assert!(error.contains("payments/echo"), "{error}");
-    assert!(error.contains("paymentsTwin/echo"), "{error}");
-    assert!(error.contains("use one explicit sequence"), "{error}");
-}
-
 fn write_package_effect_fixture(fixture: &TestDir, test_source: &str) {
     fixture.write(
         "package.yml",
@@ -274,4 +118,167 @@ fn echo_contract() -> skiff_compiler::ServiceContract {
         },
     })
     .expect("echo contract compiles")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_test_source_is_ignored_by_ordinary_compile_and_rejected_by_test_service_compile() {
+        let fixture = TestDir::new("skiff-compiler", "malformed-test-source-selection");
+        fixture.write(
+            "package.yml",
+            format!("id: {ROOT_PACKAGE_ID}\nversion: 1.0.0\n"),
+        );
+        fixture.write("api.yml", "{}\n");
+        fixture.write(
+            "service.yml",
+            format!("id: {ROOT_PACKAGE_ID}\nkind: test\n"),
+        );
+        fixture.write(
+            "main.skiff",
+            "function production() -> string { return \"ok\" }\n",
+        );
+        fixture.write("main.test.skiff", "test \"broken\" { assert true\n");
+
+        compile_package_project(fixture.path())
+            .expect("ordinary package compilation must not read or parse test-only source");
+
+        let error = compile_service_package_project(fixture.path())
+            .expect_err("kind:test compilation must parse its explicit test source surface")
+            .to_string();
+        assert!(error.contains("main.test.skiff"), "{error}");
+    }
+
+    #[test]
+    fn test_service_rejects_inline_effect_request_and_outcome_type_mismatches() {
+        let cases = [
+            (
+                "common-expect",
+                r#"
+    test "invalid common expect" effects {
+      helper/tools.lookup {
+        expect: { method: 7 },
+        respond: helper.EffectResponse { value: "ok" },
+      }
+    } { assert true }
+    "#,
+                "test effect expect subset",
+            ),
+            (
+                "step-expect",
+                r#"
+    test "invalid step expect" effects {
+      helper/tools.lookup {
+        sequence: [{
+          expect: { url: 7 },
+          respond: helper.EffectResponse { value: "ok" },
+        }],
+      }
+    } { assert true }
+    "#,
+                "test effect expect subset",
+            ),
+            (
+                "respond",
+                r#"
+    test "invalid response" effects {
+      helper/tools.lookup {
+        respond: { value: 7 },
+      }
+    } { assert true }
+    "#,
+                "test effect respond",
+            ),
+            (
+                "stream",
+                r#"
+    test "invalid stream event" effects {
+      helper/tools.events {
+        stream: [{ value: 7 }],
+      }
+    } { assert true }
+    "#,
+                "test effect stream event",
+            ),
+            (
+                "throw",
+                r#"
+    test "invalid throw" effects {
+      helper/tools.lookup {
+        throw: "not-a-nominal-error",
+      }
+    } { assert true }
+    "#,
+                "throw has invalid catch payload",
+            ),
+        ];
+
+        for (label, source, expected) in cases {
+            let fixture = TestDir::new("skiff-compiler", &format!("test-effect-{label}"));
+            write_package_effect_fixture(&fixture, source);
+
+            let error = compile_service_package_project(fixture.path())
+                .expect_err("invalid inline effect type must fail test-service compilation")
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "expected {expected:?} for {label}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_service_rejects_two_service_aliases_for_one_exact_effect_target() {
+        let fixture = TestDir::new("skiff-compiler", "duplicate-service-effect-alias");
+        fixture.write(
+            "package.yml",
+            format!(
+                r#"id: {ROOT_PACKAGE_ID}
+    version: 1.0.0
+    services:
+      - id: example.com/payments
+        version: 1.0.0
+        alias: payments
+      - id: example.com/payments
+        version: 1.0.0
+        alias: paymentsTwin
+    "#
+            ),
+        );
+        fixture.write("api.yml", "{}\n");
+        fixture.write(
+            "service.yml",
+            format!("id: {ROOT_PACKAGE_ID}\nkind: test\n"),
+        );
+        fixture.write(
+            "main.test.skiff",
+            r#"
+    test "duplicate exact service target" effects {
+      payments/echo { respond: "first" },
+      paymentsTwin/echo { respond: "second" },
+    } { assert true }
+    "#,
+        );
+
+        let contract = echo_contract();
+        let dependencies = BTreeMap::from([(
+            (ROOT_PACKAGE_ID.to_string(), "1.0.0".to_string()),
+            vec![
+                package_contract_dependency("payments", contract.clone()),
+                package_contract_dependency("paymentsTwin", contract),
+            ],
+        )]);
+        let error = compile_service_package_project_with_contract_dependencies(
+            fixture.path(),
+            &dependencies,
+        )
+        .expect_err("duplicate aliases for one exact effect target must fail")
+        .to_string();
+
+        assert!(error.contains("payments/echo"), "{error}");
+        assert!(error.contains("paymentsTwin/echo"), "{error}");
+        assert!(error.contains("use one explicit sequence"), "{error}");
+    }
 }

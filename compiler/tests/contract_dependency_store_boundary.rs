@@ -52,48 +52,6 @@ impl Drop for TestRoot {
     }
 }
 
-#[test]
-fn store_backed_contract_and_schema_records_cross_the_driver_input_boundary() {
-    let (_root, _store, contract, loaded_schema) = stored_fixture();
-
-    let dependency = read_store_backed_dependency(&contract, loaded_schema).unwrap();
-
-    assert_eq!(
-        dependency
-            .schema_records()
-            .values()
-            .next()
-            .unwrap()
-            .package_id,
-        "example.types"
-    );
-}
-
-#[test]
-fn store_backed_schema_mismatch_fails_closed_at_the_driver_input_boundary() {
-    let (_root, _store, mut contract, loaded_schema) = stored_fixture();
-    let ContractTypeRef::PackageSchema {
-        stable_schema_key, ..
-    } = &mut contract
-        .operations
-        .values_mut()
-        .next()
-        .unwrap()
-        .contract
-        .parameters[0]
-        .ty
-    else {
-        panic!("fixture parameter must be package-schema-backed");
-    };
-    *stable_schema_key = "Other".to_string();
-    assign_service_contract_identities(&mut contract).unwrap();
-
-    assert!(matches!(
-        read_store_backed_dependency(&contract, loaded_schema),
-        Err(ContractDependencyError::SchemaReferenceMismatch { .. })
-    ));
-}
-
 fn stored_fixture() -> (
     TestRoot,
     CanonicalArtifactStore,
@@ -249,5 +207,52 @@ fn value_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
         encoding: BoundaryValueEncoding::CanonicalValue,
         owner,
         lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_backed_contract_and_schema_records_cross_the_driver_input_boundary() {
+        let (_root, _store, contract, loaded_schema) = stored_fixture();
+
+        let dependency = read_store_backed_dependency(&contract, loaded_schema).unwrap();
+
+        assert_eq!(
+            dependency
+                .schema_records()
+                .values()
+                .next()
+                .unwrap()
+                .package_id,
+            "example.types"
+        );
+    }
+
+    #[test]
+    fn store_backed_schema_mismatch_fails_closed_at_the_driver_input_boundary() {
+        let (_root, _store, mut contract, loaded_schema) = stored_fixture();
+        let ContractTypeRef::PackageSchema {
+            stable_schema_key, ..
+        } = &mut contract
+            .operations
+            .values_mut()
+            .next()
+            .unwrap()
+            .contract
+            .parameters[0]
+            .ty
+        else {
+            panic!("fixture parameter must be package-schema-backed");
+        };
+        *stable_schema_key = "Other".to_string();
+        assign_service_contract_identities(&mut contract).unwrap();
+
+        assert!(matches!(
+            read_store_backed_dependency(&contract, loaded_schema),
+            Err(ContractDependencyError::SchemaReferenceMismatch { .. })
+        ));
     }
 }

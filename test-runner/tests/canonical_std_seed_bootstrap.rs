@@ -9,95 +9,6 @@ use skiff_artifact_model::PackageArtifactRef;
 use skiff_compiler::{authoring::author_official_std_package, CompilerPlatformSources};
 use skiff_deployment::storage::CanonicalArtifactStore;
 
-#[test]
-fn bootstrap_only_seeds_the_exact_std_records_and_pointer_receipt() {
-    let root = TestRoot::new();
-    let artifacts = root.path().join("artifacts");
-    let platform_root = platform_source_root();
-    let binary = env!("CARGO_BIN_EXE_skiff-package-service-smoke-fixture");
-    let run = |environment: &str| {
-        let output = Command::new(binary)
-            .args([
-                "--bootstrap-only",
-                "--artifact-root",
-                artifacts.to_str().unwrap(),
-                "--environment",
-                environment,
-                "--platform-source-root",
-                platform_root.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
-    };
-
-    let first = run("bootstrap-std-a");
-    let repeated = run("bootstrap-std-b");
-    assert_eq!(first["schemaVersion"], "skiff-package-service-bootstrap-v2");
-    assert_json_keys(
-        &first["bootstrap"],
-        &["assembly", "configSnapshot", "generation", "std"],
-    );
-    assert_json_keys(
-        &first["bootstrap"]["std"],
-        &["package", "pointer", "pointerPath"],
-    );
-    assert_json_keys(
-        &first["bootstrap"]["std"]["package"],
-        &[
-            "artifact",
-            "fileIrRecordPaths",
-            "recordPath",
-            "resourceRecordPaths",
-        ],
-    );
-    assert_eq!(first["bootstrap"]["std"], repeated["bootstrap"]["std"]);
-
-    let platform_sources = CompilerPlatformSources::new(&platform_root).unwrap();
-    let expected = package_artifact_ref(
-        &author_official_std_package(&platform_sources)
-            .unwrap()
-            .artifact,
-    )
-    .unwrap();
-    assert_eq!(
-        first["bootstrap"]["std"]["package"]["artifact"],
-        serde_json::to_value(&expected).unwrap()
-    );
-    assert_eq!(
-        first["bootstrap"]["std"]["package"]["artifact"],
-        first["bootstrap"]["std"]["pointer"]["artifact"]
-    );
-    assert_eq!(
-        first["bootstrap"]["std"]["package"]["recordPath"],
-        first["bootstrap"]["std"]["pointer"]["recordPath"]
-    );
-    assert_eq!(
-        first["bootstrap"]["std"]["pointerPath"],
-        PackageArtifactPointerPath::new(&expected.package_id, &expected.package_version)
-            .unwrap()
-            .as_str()
-    );
-
-    let artifact: PackageArtifactRef =
-        serde_json::from_value(first["bootstrap"]["std"]["package"]["artifact"].clone()).unwrap();
-    let store = CanonicalArtifactStore::open(&artifacts).unwrap();
-    let pointer = store
-        .read_package_artifact_pointer(&artifact.package_id, &artifact.package_version)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(pointer).unwrap(),
-        first["bootstrap"]["std"]["pointer"]
-    );
-    store.read_package_artifact(&artifact).unwrap();
-}
-
 fn platform_source_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -142,5 +53,100 @@ impl TestRoot {
 impl Drop for TestRoot {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_only_seeds_the_exact_std_records_and_pointer_receipt() {
+        let root = TestRoot::new();
+        let artifacts = root.path().join("artifacts");
+        let platform_root = platform_source_root();
+        let binary = env!("CARGO_BIN_EXE_skiff-package-service-smoke-fixture");
+        let run = |environment: &str| {
+            let output = Command::new(binary)
+                .args([
+                    "--bootstrap-only",
+                    "--artifact-root",
+                    artifacts.to_str().unwrap(),
+                    "--environment",
+                    environment,
+                    "--platform-source-root",
+                    platform_root.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+
+        let first = run("bootstrap-std-a");
+        let repeated = run("bootstrap-std-b");
+        assert_eq!(first["schemaVersion"], "skiff-package-service-bootstrap-v2");
+        assert_json_keys(
+            &first["bootstrap"],
+            &["assembly", "configSnapshot", "generation", "std"],
+        );
+        assert_json_keys(
+            &first["bootstrap"]["std"],
+            &["package", "pointer", "pointerPath"],
+        );
+        assert_json_keys(
+            &first["bootstrap"]["std"]["package"],
+            &[
+                "artifact",
+                "fileIrRecordPaths",
+                "recordPath",
+                "resourceRecordPaths",
+            ],
+        );
+        assert_eq!(first["bootstrap"]["std"], repeated["bootstrap"]["std"]);
+
+        let platform_sources = CompilerPlatformSources::new(&platform_root).unwrap();
+        let expected = package_artifact_ref(
+            &author_official_std_package(&platform_sources)
+                .unwrap()
+                .artifact,
+        )
+        .unwrap();
+        assert_eq!(
+            first["bootstrap"]["std"]["package"]["artifact"],
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(
+            first["bootstrap"]["std"]["package"]["artifact"],
+            first["bootstrap"]["std"]["pointer"]["artifact"]
+        );
+        assert_eq!(
+            first["bootstrap"]["std"]["package"]["recordPath"],
+            first["bootstrap"]["std"]["pointer"]["recordPath"]
+        );
+        assert_eq!(
+            first["bootstrap"]["std"]["pointerPath"],
+            PackageArtifactPointerPath::new(&expected.package_id, &expected.package_version)
+                .unwrap()
+                .as_str()
+        );
+
+        let artifact: PackageArtifactRef =
+            serde_json::from_value(first["bootstrap"]["std"]["package"]["artifact"].clone())
+                .unwrap();
+        let store = CanonicalArtifactStore::open(&artifacts).unwrap();
+        let pointer = store
+            .read_package_artifact_pointer(&artifact.package_id, &artifact.package_version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(pointer).unwrap(),
+            first["bootstrap"]["std"]["pointer"]
+        );
+        store.read_package_artifact(&artifact).unwrap();
     }
 }

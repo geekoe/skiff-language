@@ -94,42 +94,47 @@ fn empty_assembly() -> RuntimeAssembly {
     assembly
 }
 
-#[test]
-fn exact_root_ref_enters_the_production_typed_loader() {
-    let assembly = Arc::new(empty_assembly());
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
-    let resolver = ExactResolver {
-        assembly: Arc::clone(&assembly),
-        root_reads: AtomicUsize::new(0),
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let hydrated = RuntimeAssemblyLoader::new(&resolver)
-        .load_ref(&reference)
-        .expect("exact root record should hydrate");
+    #[test]
+    fn exact_root_ref_enters_the_production_typed_loader() {
+        let assembly = Arc::new(empty_assembly());
+        let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
+        let resolver = ExactResolver {
+            assembly: Arc::clone(&assembly),
+            root_reads: AtomicUsize::new(0),
+        };
 
-    assert_eq!(
-        hydrated.assembly().assembly_identity,
-        reference.assembly_identity
-    );
-    assert_eq!(resolver.root_reads.load(Ordering::SeqCst), 1);
-    assert!(hydrated.code_slots().is_empty());
-}
+        let hydrated = RuntimeAssemblyLoader::new(&resolver)
+            .load_ref(&reference)
+            .expect("exact root record should hydrate");
 
-#[test]
-fn root_content_mismatch_is_rejected_before_graph_hydration() {
-    let requested = empty_assembly();
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&requested).unwrap();
-    let mut tampered = requested;
-    tampered.schema_version = "tampered-runtime-assembly".to_string();
-    let resolver = ExactResolver {
-        assembly: Arc::new(tampered),
-        root_reads: AtomicUsize::new(0),
-    };
+        assert_eq!(
+            hydrated.assembly().assembly_identity,
+            reference.assembly_identity
+        );
+        assert_eq!(resolver.root_reads.load(Ordering::SeqCst), 1);
+        assert!(hydrated.code_slots().is_empty());
+    }
 
-    let error = RuntimeAssemblyLoader::new(&resolver)
-        .load_ref(&reference)
-        .expect_err("tampered root content must fail closed");
+    #[test]
+    fn root_content_mismatch_is_rejected_before_graph_hydration() {
+        let requested = empty_assembly();
+        let reference = skiff_artifact_identity::runtime_assembly_ref(&requested).unwrap();
+        let mut tampered = requested;
+        tampered.schema_version = "tampered-runtime-assembly".to_string();
+        let resolver = ExactResolver {
+            assembly: Arc::new(tampered),
+            root_reads: AtomicUsize::new(0),
+        };
 
-    assert!(error.to_string().contains("runtime assembly"));
-    assert_eq!(resolver.root_reads.load(Ordering::SeqCst), 1);
+        let error = RuntimeAssemblyLoader::new(&resolver)
+            .load_ref(&reference)
+            .expect_err("tampered root content must fail closed");
+
+        assert!(error.to_string().contains("runtime assembly"));
+        assert_eq!(resolver.root_reads.load(Ordering::SeqCst), 1);
+    }
 }

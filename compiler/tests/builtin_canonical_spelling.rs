@@ -30,203 +30,6 @@ const CURRENT_CONSTRAINT_ERROR_SCHEMA: &str =
 const CURRENT_DB_FILE_IR: &str =
     "skiff-file-ir-v11:sha256:7fb95341ef99bd151a97ba82081d7bb061dadb85d6d6b921edb2976931c2c405";
 
-#[test]
-fn declared_source_aliases_emit_only_canonical_file_ir_builtin_names() {
-    assert_direct_lowering_canonicalizes_qualified_aliases();
-
-    let temp = TestDir::new("skiff-compiler", "canonical-builtin-spelling");
-    temp.write(
-        "package.yml",
-        "id: example.com/canonical-builtin-spelling\nversion: 1.0.0\n",
-    );
-    temp.write("api.yml", "check: main.check\n");
-    temp.write(
-        "main.skiff",
-        r#"import std
-
-type CanonicalBuiltinProbe {
-  boolBare: bool,
-  boolAlias: boolean,
-  arrayBare: Array<boolean>,
-  mapNested: Map<string, Array<boolean?>>,
-  callback: fn(flag: boolean) -> Stream<boolean>,
-  choice: boolean | string,
-  nested: { flag: boolean, payload: bytes },
-  request: std.http.HttpRequest,
-}
-
-function check(flag: boolean) -> bool {
-  return flag
-}
-"#,
-    );
-
-    let project =
-        compile_package_project(temp.path()).expect("declared builtin aliases should compile");
-    let main = module_artifact(&project.package, "main");
-    let probe = main
-        .unit
-        .type_table
-        .iter()
-        .find(|ty| ty.name == "CanonicalBuiltinProbe")
-        .expect("probe type should be emitted");
-    let TypeDescriptorIr::Record { fields } = &probe.descriptor else {
-        panic!("probe must be a record");
-    };
-    assert_eq!(fields["boolBare"], TypeRefIr::builtin("bool"));
-    assert_eq!(fields["boolAlias"], fields["boolBare"]);
-
-    let declared_aliases = file_ir_builtin_source_spellings()
-        .filter(|builtin| builtin.source_spelling != builtin.canonical_name)
-        .map(|builtin| builtin.source_spelling)
-        .collect::<BTreeSet<_>>();
-    let mut observed_names = BTreeSet::new();
-    for package in project.artifacts() {
-        assert_surface_is_canonical(
-            &format!("{} PackageArtifact", package.artifact.package_id),
-            &serde_json::to_value(&package.artifact).unwrap(),
-            &declared_aliases,
-            &mut observed_names,
-        );
-        assert_surface_is_canonical(
-            &format!("{} PackageSchema index", package.artifact.package_id),
-            &serde_json::to_value(&package.package_schema_index).unwrap(),
-            &declared_aliases,
-            &mut observed_names,
-        );
-        assert_surface_is_canonical(
-            &format!("{} PackageSchema records", package.artifact.package_id),
-            &serde_json::to_value(&package.package_schema_type_records).unwrap(),
-            &declared_aliases,
-            &mut observed_names,
-        );
-        for file in &package.file_ir_units {
-            assert_surface_is_canonical(
-                &format!(
-                    "{} FileIR {}",
-                    package.artifact.package_id, file.module_path
-                ),
-                &file.value(),
-                &declared_aliases,
-                &mut observed_names,
-            );
-        }
-    }
-    assert!(
-        observed_names.contains("bool"),
-        "canonical bool must remain present in emitted artifacts"
-    );
-
-    assert_fresh_std_database_errors_are_canonical(&project);
-}
-
-#[test]
-fn undeclared_builtin_spellings_are_not_implicit_source_aliases() {
-    for spelling in ["String", "Bytes"] {
-        let temp = TestDir::new(
-            "skiff-compiler",
-            &format!("noncanonical-builtin-{spelling}"),
-        );
-        temp.write(
-            "package.yml",
-            "id: example.com/noncanonical-builtin\nversion: 1.0.0\n",
-        );
-        temp.write("api.yml", "Bad: main.Bad\n");
-        temp.write("main.skiff", format!("type Bad {{ value: {spelling} }}\n"));
-
-        let error = compile_package_project(temp.path())
-            .expect_err("undeclared spelling must not compile as a builtin alias");
-        assert!(
-            error.to_string().contains(spelling),
-            "{spelling} failure should retain the rejected source spelling: {error}"
-        );
-    }
-}
-
-#[test]
-fn compiler_builtin_registry_retires_cancel_error_and_keeps_timeout_error() {
-    for spelling in ["CancelError", "std.error.CancelError"] {
-        assert!(
-            compiler_builtin_type(spelling).is_none(),
-            "retired cancellation spelling {spelling} must have no compiler builtin owner"
-        );
-    }
-
-    let timeout = compiler_builtin_type("TimeoutError")
-        .expect("TimeoutError must retain its compiler builtin owner");
-    assert_eq!(timeout.symbol, "std.error.TimeoutError");
-    assert_eq!(timeout.arity, 0);
-    assert_eq!(timeout.kind, CompilerBuiltinTypeKind::Error);
-    assert_eq!(compiler_builtin_type(timeout.symbol), Some(timeout));
-}
-
-#[test]
-fn cancel_error_short_and_qualified_type_spellings_are_rejected() {
-    assert_cancel_error_spellings_are_rejected("type", |spelling| {
-        format!("type Bad {{ value: {spelling} }}\n")
-    });
-}
-
-#[test]
-fn cancel_error_short_and_qualified_constructors_are_rejected() {
-    assert_cancel_error_spellings_are_rejected("constructor", |spelling| {
-        format!(
-            r#"function bad() -> {spelling} {{
-  return {spelling} {{}}
-}}
-"#
-        )
-    });
-}
-
-#[test]
-fn cancel_error_short_and_qualified_throw_payloads_are_rejected() {
-    assert_cancel_error_spellings_are_rejected("throw", |spelling| {
-        format!(
-            r#"function bad(value: {spelling}) -> void {{
-  throw value
-}}
-"#
-        )
-    });
-}
-
-#[test]
-fn cancel_error_short_and_qualified_catch_types_are_rejected() {
-    assert_cancel_error_spellings_are_rejected("catch", |spelling| {
-        format!(
-            r#"function bad(value: TimeoutError) -> void {{
-  const attempted = catch<{spelling}>(value)
-}}
-"#
-        )
-    });
-}
-
-#[test]
-fn cancel_error_short_and_qualified_rethrow_envelopes_are_rejected() {
-    assert_cancel_error_spellings_are_rejected("rethrow", |spelling| {
-        format!(
-            r#"function bad(exception: Exception<{spelling}>) -> void {{
-  rethrow exception
-}}
-"#
-        )
-    });
-}
-
-#[test]
-fn cancel_error_short_and_qualified_union_leaves_are_rejected() {
-    assert_cancel_error_spellings_are_rejected("union-leaf", |spelling| {
-        format!(
-            r#"function bad(value: TimeoutError) -> void {{
-  const attempted = catch<TimeoutError | {spelling}>(value)
-}}
-"#
-        )
-    });
-}
-
 fn assert_cancel_error_spellings_are_rejected(surface: &str, source: impl Fn(&str) -> String) {
     initialize_test_prelude_registry();
     for spelling in ["CancelError", "std.error.CancelError"] {
@@ -487,5 +290,207 @@ fn collect_builtin_names(value: &serde_json::Value, names: &mut Vec<String>) {
         | serde_json::Value::Bool(_)
         | serde_json::Value::Number(_)
         | serde_json::Value::String(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_source_aliases_emit_only_canonical_file_ir_builtin_names() {
+        assert_direct_lowering_canonicalizes_qualified_aliases();
+
+        let temp = TestDir::new("skiff-compiler", "canonical-builtin-spelling");
+        temp.write(
+            "package.yml",
+            "id: example.com/canonical-builtin-spelling\nversion: 1.0.0\n",
+        );
+        temp.write("api.yml", "check: main.check\n");
+        temp.write(
+            "main.skiff",
+            r#"import std
+
+    type CanonicalBuiltinProbe {
+      boolBare: bool,
+      boolAlias: boolean,
+      arrayBare: Array<boolean>,
+      mapNested: Map<string, Array<boolean?>>,
+      callback: fn(flag: boolean) -> Stream<boolean>,
+      choice: boolean | string,
+      nested: { flag: boolean, payload: bytes },
+      request: std.http.HttpRequest,
+    }
+
+    function check(flag: boolean) -> bool {
+      return flag
+    }
+    "#,
+        );
+
+        let project =
+            compile_package_project(temp.path()).expect("declared builtin aliases should compile");
+        let main = module_artifact(&project.package, "main");
+        let probe = main
+            .unit
+            .type_table
+            .iter()
+            .find(|ty| ty.name == "CanonicalBuiltinProbe")
+            .expect("probe type should be emitted");
+        let TypeDescriptorIr::Record { fields } = &probe.descriptor else {
+            panic!("probe must be a record");
+        };
+        assert_eq!(fields["boolBare"], TypeRefIr::builtin("bool"));
+        assert_eq!(fields["boolAlias"], fields["boolBare"]);
+
+        let declared_aliases = file_ir_builtin_source_spellings()
+            .filter(|builtin| builtin.source_spelling != builtin.canonical_name)
+            .map(|builtin| builtin.source_spelling)
+            .collect::<BTreeSet<_>>();
+        let mut observed_names = BTreeSet::new();
+        for package in project.artifacts() {
+            assert_surface_is_canonical(
+                &format!("{} PackageArtifact", package.artifact.package_id),
+                &serde_json::to_value(&package.artifact).unwrap(),
+                &declared_aliases,
+                &mut observed_names,
+            );
+            assert_surface_is_canonical(
+                &format!("{} PackageSchema index", package.artifact.package_id),
+                &serde_json::to_value(&package.package_schema_index).unwrap(),
+                &declared_aliases,
+                &mut observed_names,
+            );
+            assert_surface_is_canonical(
+                &format!("{} PackageSchema records", package.artifact.package_id),
+                &serde_json::to_value(&package.package_schema_type_records).unwrap(),
+                &declared_aliases,
+                &mut observed_names,
+            );
+            for file in &package.file_ir_units {
+                assert_surface_is_canonical(
+                    &format!(
+                        "{} FileIR {}",
+                        package.artifact.package_id, file.module_path
+                    ),
+                    &file.value(),
+                    &declared_aliases,
+                    &mut observed_names,
+                );
+            }
+        }
+        assert!(
+            observed_names.contains("bool"),
+            "canonical bool must remain present in emitted artifacts"
+        );
+
+        assert_fresh_std_database_errors_are_canonical(&project);
+    }
+
+    #[test]
+    fn undeclared_builtin_spellings_are_not_implicit_source_aliases() {
+        for spelling in ["String", "Bytes"] {
+            let temp = TestDir::new(
+                "skiff-compiler",
+                &format!("noncanonical-builtin-{spelling}"),
+            );
+            temp.write(
+                "package.yml",
+                "id: example.com/noncanonical-builtin\nversion: 1.0.0\n",
+            );
+            temp.write("api.yml", "Bad: main.Bad\n");
+            temp.write("main.skiff", format!("type Bad {{ value: {spelling} }}\n"));
+
+            let error = compile_package_project(temp.path())
+                .expect_err("undeclared spelling must not compile as a builtin alias");
+            assert!(
+                error.to_string().contains(spelling),
+                "{spelling} failure should retain the rejected source spelling: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_builtin_registry_retires_cancel_error_and_keeps_timeout_error() {
+        for spelling in ["CancelError", "std.error.CancelError"] {
+            assert!(
+                compiler_builtin_type(spelling).is_none(),
+                "retired cancellation spelling {spelling} must have no compiler builtin owner"
+            );
+        }
+
+        let timeout = compiler_builtin_type("TimeoutError")
+            .expect("TimeoutError must retain its compiler builtin owner");
+        assert_eq!(timeout.symbol, "std.error.TimeoutError");
+        assert_eq!(timeout.arity, 0);
+        assert_eq!(timeout.kind, CompilerBuiltinTypeKind::Error);
+        assert_eq!(compiler_builtin_type(timeout.symbol), Some(timeout));
+    }
+
+    #[test]
+    fn cancel_error_short_and_qualified_type_spellings_are_rejected() {
+        assert_cancel_error_spellings_are_rejected("type", |spelling| {
+            format!("type Bad {{ value: {spelling} }}\n")
+        });
+    }
+
+    #[test]
+    fn cancel_error_short_and_qualified_constructors_are_rejected() {
+        assert_cancel_error_spellings_are_rejected("constructor", |spelling| {
+            format!(
+                r#"function bad() -> {spelling} {{
+      return {spelling} {{}}
+    }}
+    "#
+            )
+        });
+    }
+
+    #[test]
+    fn cancel_error_short_and_qualified_throw_payloads_are_rejected() {
+        assert_cancel_error_spellings_are_rejected("throw", |spelling| {
+            format!(
+                r#"function bad(value: {spelling}) -> void {{
+      throw value
+    }}
+    "#
+            )
+        });
+    }
+
+    #[test]
+    fn cancel_error_short_and_qualified_catch_types_are_rejected() {
+        assert_cancel_error_spellings_are_rejected("catch", |spelling| {
+            format!(
+                r#"function bad(value: TimeoutError) -> void {{
+      const attempted = catch<{spelling}>(value)
+    }}
+    "#
+            )
+        });
+    }
+
+    #[test]
+    fn cancel_error_short_and_qualified_rethrow_envelopes_are_rejected() {
+        assert_cancel_error_spellings_are_rejected("rethrow", |spelling| {
+            format!(
+                r#"function bad(exception: Exception<{spelling}>) -> void {{
+      rethrow exception
+    }}
+    "#
+            )
+        });
+    }
+
+    #[test]
+    fn cancel_error_short_and_qualified_union_leaves_are_rejected() {
+        assert_cancel_error_spellings_are_rejected("union-leaf", |spelling| {
+            format!(
+                r#"function bad(value: TimeoutError) -> void {{
+      const attempted = catch<TimeoutError | {spelling}>(value)
+    }}
+    "#
+            )
+        });
     }
 }

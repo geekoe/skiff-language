@@ -22,137 +22,6 @@ use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 
 const PACKAGE_ID: &str = "example.com/compiler-owned-std-owner";
 
-#[test]
-fn compiler_owned_std_exact_signatures_coexist_with_service_contract_dependency() {
-    let project = compile_with_contract(
-        "exact-signatures",
-        r#"import std
-
-function run(connectionId: string) -> void {
-  std.time.sleep(1)
-  std.websocket.sendTextToConnection(connectionId, "ready")
-}
-"#,
-    );
-    let std = project
-        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
-        .expect("canonical std artifact must remain in the package closure");
-    let requirement = project
-        .package
-        .artifact
-        .package_requirements
-        .iter()
-        .find(|requirement| requirement.alias == "std")
-        .expect("lowered std refs must retain one exact package requirement");
-    assert_eq!(requirement.package_id, std.artifact.package_id);
-    assert_eq!(requirement.exact_version, std.artifact.package_version);
-    assert_eq!(
-        requirement.expected_local_abi,
-        std.artifact.package_local_abi.local_abi_identity
-    );
-    assert_eq!(
-        project.package.artifact.package_requirements.len(),
-        1,
-        "the code-free contract dependency must not leak a provider package artifact"
-    );
-    assert_eq!(project.package.artifact.contract_requirements.len(), 1);
-
-    let main = module_artifact(&project.package, "main");
-    for public_path in ["std.time.sleep", "std.websocket.sendTextToConnection"] {
-        let callable_id = public_callable_id(std, public_path);
-        assert!(
-            package_call(main, &callable_id).is_some(),
-            "lowering must retain the compiler-owned std call {public_path}"
-        );
-    }
-}
-
-#[test]
-fn compiler_owned_std_websocket_connect_type_owner_rehydrates_and_lowers() {
-    let project = compile_with_contract(
-        "websocket-connect-owner",
-        r#"import std
-
-function run(input: string) -> std.websocket.WebSocketConnectResult {
-  return std.json.decode<std.websocket.WebSocketConnectResult>(input)
-}
-"#,
-    );
-    let std = project
-        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
-        .expect("canonical std artifact must remain in the package closure");
-    let decode_id = public_callable_id(std, "std.json.decode");
-    let call = package_call(module_artifact(&project.package, "main"), &decode_id)
-        .expect("generic std call must lower through the selected artifact");
-    let ty = call.type_args.get("T0").unwrap_or_else(|| {
-        panic!(
-            "the exact std generic binder must survive lowering: {:?}",
-            call.type_args
-        )
-    });
-    let TypeRefIr::PackageSymbol { symbol } = ty else {
-        panic!("std WebSocket type argument must retain its exact package owner: {ty:?}");
-    };
-    assert_eq!(
-        symbol.package,
-        PackageRefIr::PackageId {
-            package_id: SKIFF_STD_PUBLICATION_ID.to_string()
-        }
-    );
-    assert_eq!(symbol.symbol_path, "std.websocket.WebSocketConnectResult");
-    assert_eq!(
-        project.package.artifact.package_requirements[0].expected_local_abi,
-        std.artifact.package_local_abi.local_abi_identity
-    );
-}
-
-#[test]
-fn compiler_owned_std_http_stream_uses_exact_symbol_owner_and_lowers() {
-    let project = compile_with_contract(
-        "http-stream-exact-owner",
-        r#"import std
-
-function run(input: std.http.HttpClientRequest) -> integer {
-  const response = std.http.stream(input)
-  return response.status
-}
-"#,
-    );
-    let std = project
-        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
-        .expect("canonical std artifact must remain in the package closure");
-    let PackageLocalAbiSymbol::Callable { signature, .. } =
-        &std.artifact.package_local_abi.public_symbols["std.http.stream"]
-    else {
-        panic!("std.http.stream must remain a public callable")
-    };
-    assert_eq!(
-        signature.return_type,
-        PackageTypeRef::Local {
-            local_type: TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: "std.http".to_string(),
-                    symbol: "HttpClientStreamHandle".to_string(),
-                },
-            },
-        }
-    );
-    assert_eq!(
-        count_json_kind(
-            &serde_json::to_value(&std.artifact.package_local_abi.public_symbols).unwrap(),
-            "localType",
-        ),
-        0,
-        "fresh official std public symbols must not contain ownerless LocalType values"
-    );
-
-    let stream_id = public_callable_id(std, "std.http.stream");
-    assert!(
-        package_call(module_artifact(&project.package, "main"), &stream_id).is_some(),
-        "the exact std.http.stream signature must rehydrate and lower through the real package compiler"
-    );
-}
-
 fn compile_with_contract(fixture: &str, source: &str) -> PublishedPackageProject {
     let temp = TestDir::new("skiff-compiler", &format!("compiler-owned-std-{fixture}"));
     temp.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
@@ -257,5 +126,141 @@ fn count_json_kind(value: &serde_json::Value, expected: &str) -> usize {
                     .sum::<usize>()
         }
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiler_owned_std_exact_signatures_coexist_with_service_contract_dependency() {
+        let project = compile_with_contract(
+            "exact-signatures",
+            r#"import std
+
+    function run(connectionId: string) -> void {
+      std.time.sleep(1)
+      std.websocket.sendTextToConnection(connectionId, "ready")
+    }
+    "#,
+        );
+        let std = project
+            .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+            .expect("canonical std artifact must remain in the package closure");
+        let requirement = project
+            .package
+            .artifact
+            .package_requirements
+            .iter()
+            .find(|requirement| requirement.alias == "std")
+            .expect("lowered std refs must retain one exact package requirement");
+        assert_eq!(requirement.package_id, std.artifact.package_id);
+        assert_eq!(requirement.exact_version, std.artifact.package_version);
+        assert_eq!(
+            requirement.expected_local_abi,
+            std.artifact.package_local_abi.local_abi_identity
+        );
+        assert_eq!(
+            project.package.artifact.package_requirements.len(),
+            1,
+            "the code-free contract dependency must not leak a provider package artifact"
+        );
+        assert_eq!(project.package.artifact.contract_requirements.len(), 1);
+
+        let main = module_artifact(&project.package, "main");
+        for public_path in ["std.time.sleep", "std.websocket.sendTextToConnection"] {
+            let callable_id = public_callable_id(std, public_path);
+            assert!(
+                package_call(main, &callable_id).is_some(),
+                "lowering must retain the compiler-owned std call {public_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_owned_std_websocket_connect_type_owner_rehydrates_and_lowers() {
+        let project = compile_with_contract(
+            "websocket-connect-owner",
+            r#"import std
+
+    function run(input: string) -> std.websocket.WebSocketConnectResult {
+      return std.json.decode<std.websocket.WebSocketConnectResult>(input)
+    }
+    "#,
+        );
+        let std = project
+            .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+            .expect("canonical std artifact must remain in the package closure");
+        let decode_id = public_callable_id(std, "std.json.decode");
+        let call = package_call(module_artifact(&project.package, "main"), &decode_id)
+            .expect("generic std call must lower through the selected artifact");
+        let ty = call.type_args.get("T0").unwrap_or_else(|| {
+            panic!(
+                "the exact std generic binder must survive lowering: {:?}",
+                call.type_args
+            )
+        });
+        let TypeRefIr::PackageSymbol { symbol } = ty else {
+            panic!("std WebSocket type argument must retain its exact package owner: {ty:?}");
+        };
+        assert_eq!(
+            symbol.package,
+            PackageRefIr::PackageId {
+                package_id: SKIFF_STD_PUBLICATION_ID.to_string()
+            }
+        );
+        assert_eq!(symbol.symbol_path, "std.websocket.WebSocketConnectResult");
+        assert_eq!(
+            project.package.artifact.package_requirements[0].expected_local_abi,
+            std.artifact.package_local_abi.local_abi_identity
+        );
+    }
+
+    #[test]
+    fn compiler_owned_std_http_stream_uses_exact_symbol_owner_and_lowers() {
+        let project = compile_with_contract(
+            "http-stream-exact-owner",
+            r#"import std
+
+    function run(input: std.http.HttpClientRequest) -> integer {
+      const response = std.http.stream(input)
+      return response.status
+    }
+    "#,
+        );
+        let std = project
+            .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+            .expect("canonical std artifact must remain in the package closure");
+        let PackageLocalAbiSymbol::Callable { signature, .. } =
+            &std.artifact.package_local_abi.public_symbols["std.http.stream"]
+        else {
+            panic!("std.http.stream must remain a public callable")
+        };
+        assert_eq!(
+            signature.return_type,
+            PackageTypeRef::Local {
+                local_type: TypeRefIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: "std.http".to_string(),
+                        symbol: "HttpClientStreamHandle".to_string(),
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            count_json_kind(
+                &serde_json::to_value(&std.artifact.package_local_abi.public_symbols).unwrap(),
+                "localType",
+            ),
+            0,
+            "fresh official std public symbols must not contain ownerless LocalType values"
+        );
+
+        let stream_id = public_callable_id(std, "std.http.stream");
+        assert!(
+            package_call(module_artifact(&project.package, "main"), &stream_id).is_some(),
+            "the exact std.http.stream signature must rehydrate and lower through the real package compiler"
+        );
     }
 }
