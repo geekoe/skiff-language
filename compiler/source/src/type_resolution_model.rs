@@ -10,7 +10,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
-    type_ref::substitute_type_params_in_type_ref_ref,
+    type_ref::{normalize_union, substitute_type_params_in_type_ref_ref},
 };
 
 use crate::{
@@ -743,7 +743,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<TypeRefIr, String> {
         self.expand_alias_type_ref_inner(ty, context, &mut BTreeSet::new())
-            .map(normalize_source_type_ref)
+            .map(normalize_union)
     }
 
     fn expand_alias_type_ref_inner(
@@ -928,12 +928,12 @@ impl TypeResolutionModel {
                     })
                     .collect::<Result<BTreeMap<_, _>, String>>()?,
             }),
-            TypeRefIr::Union { items } => Ok(union_type_ir(
-                items
+            TypeRefIr::Union { items } => Ok(normalize_union(TypeRefIr::Union {
+                items: items
                     .iter()
                     .map(|item| self.expand_alias_type_ref_inner(item, context, visiting))
                     .collect::<Result<Vec<_>, _>>()?,
-            )),
+            })),
             TypeRefIr::Nullable { inner } => Ok(TypeRefIr::Nullable {
                 inner: Box::new(self.expand_alias_type_ref_inner(inner, context, visiting)?),
             }),
@@ -2067,10 +2067,10 @@ impl TypeResolutionModel {
                     .map(|arg| self.canonicalize_type_ref(arg))
                     .collect(),
             },
-            TypeRefIr::Nullable { inner } => normalize_source_type_ref(TypeRefIr::Nullable {
+            TypeRefIr::Nullable { inner } => normalize_union(TypeRefIr::Nullable {
                 inner: Box::new(self.canonicalize_type_ref(inner)),
             }),
-            TypeRefIr::Union { items } => normalize_source_type_ref(TypeRefIr::Union {
+            TypeRefIr::Union { items } => normalize_union(TypeRefIr::Union {
                 items: items
                     .iter()
                     .map(|item| self.canonicalize_type_ref(item))
@@ -2142,10 +2142,10 @@ impl TypeResolutionModel {
                     .map(|arg| self.canonicalize_type_ref_for_module(module_path, arg))
                     .collect(),
             },
-            TypeRefIr::Nullable { inner } => normalize_source_type_ref(TypeRefIr::Nullable {
+            TypeRefIr::Nullable { inner } => normalize_union(TypeRefIr::Nullable {
                 inner: Box::new(self.canonicalize_type_ref_for_module(module_path, inner)),
             }),
-            TypeRefIr::Union { items } => normalize_source_type_ref(TypeRefIr::Union {
+            TypeRefIr::Union { items } => normalize_union(TypeRefIr::Union {
                 items: items
                     .iter()
                     .map(|item| self.canonicalize_type_ref_for_module(module_path, item))
@@ -5900,7 +5900,7 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
             for item in items {
                 field_types.push(record_field_type_from_ir(item, field)?);
             }
-            Some(union_type_ir(field_types))
+            Some(normalize_union(TypeRefIr::Union { items: field_types }))
         }
         TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
             match field {
@@ -5909,105 +5909,6 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
             }
         }
         _ => None,
-    }
-}
-
-fn union_type_ir(items: Vec<TypeRefIr>) -> TypeRefIr {
-    normalize_source_type_ref(TypeRefIr::Union { items })
-}
-
-fn normalize_source_type_ref(ty: TypeRefIr) -> TypeRefIr {
-    match ty {
-        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
-            name,
-            args: args.into_iter().map(normalize_source_type_ref).collect(),
-        },
-        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
-            base,
-            arguments: arguments
-                .into_iter()
-                .map(normalize_source_type_ref)
-                .collect(),
-        },
-        TypeRefIr::Record { fields } => TypeRefIr::Record {
-            fields: fields
-                .into_iter()
-                .map(|(name, ty)| (name, normalize_source_type_ref(ty)))
-                .collect(),
-        },
-        TypeRefIr::Union { items } => normalize_source_union(items, false),
-        TypeRefIr::Nullable { inner } => normalize_source_union(vec![*inner], true),
-        TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
-            interface: InterfaceInstantiationRef {
-                interface_abi_id: interface.interface_abi_id,
-                canonical_type_args: interface
-                    .canonical_type_args
-                    .into_iter()
-                    .map(normalize_source_type_ref)
-                    .collect(),
-            },
-        },
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => TypeRefIr::Function {
-            params: params
-                .into_iter()
-                .map(|param| FunctionTypeParamIr {
-                    name: param.name,
-                    ty: normalize_source_type_ref(param.ty),
-                })
-                .collect(),
-            return_type: Box::new(normalize_source_type_ref(*return_type)),
-        },
-        other => other,
-    }
-}
-
-fn normalize_source_union(items: Vec<TypeRefIr>, force_nullable: bool) -> TypeRefIr {
-    let mut flattened = Vec::new();
-    let mut has_null = force_nullable;
-    for item in items {
-        collect_source_union_member(
-            normalize_source_type_ref(item),
-            &mut flattened,
-            &mut has_null,
-        );
-    }
-    flattened.sort_by_key(type_ref_debug_text);
-    flattened.dedup();
-    let base = match flattened.as_slice() {
-        [] if has_null => return TypeRefIr::builtin("null"),
-        [] => return TypeRefIr::Union { items: flattened },
-        [only] => only.clone(),
-        _ => TypeRefIr::Union { items: flattened },
-    };
-    if has_null {
-        TypeRefIr::Nullable {
-            inner: Box::new(base),
-        }
-    } else {
-        base
-    }
-}
-
-fn collect_source_union_member(
-    item: TypeRefIr,
-    flattened: &mut Vec<TypeRefIr>,
-    has_null: &mut bool,
-) {
-    match item {
-        TypeRefIr::Union { items } => {
-            for item in items {
-                collect_source_union_member(item, flattened, has_null);
-            }
-        }
-        TypeRefIr::Nullable { inner } => {
-            *has_null = true;
-            collect_source_union_member(*inner, flattened, has_null);
-        }
-        item if is_null_type_ir(&item) => *has_null = true,
-        item => flattened.push(item),
     }
 }
 

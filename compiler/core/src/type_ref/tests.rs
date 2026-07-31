@@ -718,6 +718,84 @@ fn normalize_union_flattens_folds_null_sorts_and_dedups() {
 }
 
 #[test]
+fn normalize_union_phase2_matrix_function_any_interface_and_containers() {
+    // Phase 2 matrix rows not covered by the canonical test above: nested
+    // duplicate collapse, Function params, AnyInterface args, and container
+    // args (the IR shape produced by unwrapping `PackageTypeRef::Local`).
+    assert_eq!(
+        normalize_union(TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::Union {
+                    items: vec![native("string"), native("string")],
+                },
+                native("string"),
+            ],
+        }),
+        native("string")
+    );
+
+    assert_eq!(
+        normalize_union(TypeRefIr::Function {
+            params: vec![param(
+                "x",
+                TypeRefIr::Union {
+                    items: vec![
+                        native("string"),
+                        TypeRefIr::Literal {
+                            value: skiff_artifact_model::LiteralIr::Null,
+                        },
+                    ],
+                },
+            )],
+            return_type: Box::new(native("number")),
+        }),
+        TypeRefIr::Function {
+            params: vec![param(
+                "x",
+                TypeRefIr::Nullable {
+                    inner: Box::new(native("string")),
+                },
+            )],
+            return_type: Box::new(native("number")),
+        }
+    );
+
+    assert_eq!(
+        normalize_union(any_interface(vec![TypeRefIr::Union {
+            items: vec![
+                native("string"),
+                TypeRefIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::Null,
+                },
+            ],
+        }])),
+        any_interface(vec![TypeRefIr::Nullable {
+            inner: Box::new(native("string")),
+        }])
+    );
+
+    assert_eq!(
+        normalize_union(TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::Union {
+                items: vec![
+                    native("string"),
+                    TypeRefIr::Literal {
+                        value: skiff_artifact_model::LiteralIr::Null,
+                    },
+                ],
+            }],
+        }),
+        TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::Nullable {
+                inner: Box::new(native("string")),
+            }],
+        }
+    );
+}
+
+#[test]
 fn single_item_returns_container_item_or_map_key() {
     for name in [
         "Array",
