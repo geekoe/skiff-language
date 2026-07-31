@@ -8,7 +8,7 @@ import {
 import { scanCommandExecutionSource } from './command-execution-scanner.mjs';
 import { discoverJavaScriptFiles, repoRelative } from './verify-discovery.mjs';
 
-const ALLOWED_IMPORTED_SYMBOLS = new Set(['spawn', 'execFile']);
+const ALLOWED_IMPORTED_SYMBOLS = new Set(['spawn', 'execFile', 'execFileSync']);
 
 export async function assertCommandExecutionPolicy(root, {
   ledger = COMMAND_EXECUTION_LEDGER,
