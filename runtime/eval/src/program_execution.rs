@@ -1427,17 +1427,21 @@ impl Interpreter {
             let Flow::TailCall(prepared) = flow else {
                 return Ok(flow);
             };
+            let crate::env::PreparedTailCall {
+                target: prepared_target,
+                env: mut prepared_env,
+                return_plan: _,
+                tail_site: _,
+            } = *prepared;
             let projection = RuntimeExecutionProjection::for_context(self, &context)?;
-            let resolved = projection.resolve_nested_executable(&prepared.target)?;
+            let resolved = projection.resolve_nested_executable(&prepared_target)?;
             let target = resolved.addr.clone();
-            let mut env = prepared.env;
-            let _common_return_plan = prepared.return_plan;
             flow = {
                 let mut eval = EvalContext::new_callable(
                     self,
                     context.clone(),
                     heap,
-                    &mut env,
+                    &mut prepared_env,
                     &target,
                     resolved.file,
                     resolved.executable,

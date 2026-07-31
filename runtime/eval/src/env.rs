@@ -46,7 +46,7 @@ pub use slot_store::{SlotDebugBinding, SlotStore};
 pub enum Flow {
     Continue,
     Return(RuntimeValueCarrier),
-    TailCall(PreparedTailCall),
+    TailCall(Box<PreparedTailCall>),
     Break,
     LoopContinue,
     Parked,
@@ -262,4 +262,17 @@ pub fn check_cancelled(execution: &ExecutionControl<'_>, env: &Env) -> Result<()
         return Err(RuntimeError::Cancelled);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod flow_layout_tests {
+    use super::{Flow, PreparedTailCall};
+
+    #[test]
+    fn tail_call_payload_does_not_inline_prepared_frame_into_flow() {
+        assert!(
+            std::mem::size_of::<Flow>() < std::mem::size_of::<PreparedTailCall>(),
+            "Flow must keep the prepared environment behind a fixed-size owning indirection"
+        );
+    }
 }

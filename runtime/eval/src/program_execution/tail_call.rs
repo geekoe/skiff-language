@@ -119,7 +119,7 @@ impl Interpreter {
         type_args: &BTreeMap<String, LinkedTypeRef>,
         args: &[RuntimeValueCarrier],
         tail_site: InstructionSourceSite,
-    ) -> Result<Option<PreparedTailCall>> {
+    ) -> Result<Option<Box<PreparedTailCall>>> {
         let resolved = projection.resolve_nested_executable(target)?;
         let target = resolved.addr.clone();
         let callee = resolved.executable;
@@ -206,11 +206,11 @@ impl Interpreter {
             return Ok(None);
         }
 
-        Ok(Some(PreparedTailCall {
+        Ok(Some(Box::new(PreparedTailCall {
             target,
             env,
             return_plan,
             tail_site,
-        }))
+        })))
     }
 }
