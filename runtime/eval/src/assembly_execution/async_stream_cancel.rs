@@ -364,7 +364,7 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
     let _active = ProviderStreamTaskGuard::for_task(&producer);
     let args = std::mem::take(&mut producer.args);
     let terminal = {
-        let provider_context = producer.provider_context.borrow();
+        let provider_context = producer.provider_context.borrow_for_scheduled_task();
         let provider_future = call_provider_callable(
             &producer.interpreter,
             provider_context,
@@ -1126,6 +1126,48 @@ mod tests {
     fn first_poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
         let waker = Waker::from(Arc::new(NoopWake));
         future.poll(&mut Context::from_waker(&waker))
+    }
+
+    #[test]
+    fn provider_stream_scheduler_entry_uses_fresh_depth_borrow() {
+        let source = include_str!("async_stream_cancel.rs");
+        let entry = source
+            .split_once("async fn run_provider_stream")
+            .expect("provider stream task body remains present")
+            .1
+            .split_once("#[allow(clippy::too_many_arguments)]")
+            .expect("provider callable boundary remains present")
+            .0;
+        assert!(
+            entry.contains("producer.provider_context.borrow_for_scheduled_task()"),
+            "the independent provider task must reset inherited program-call depth"
+        );
+        assert!(
+            !entry.contains("producer.provider_context.borrow()"),
+            "the provider callable entry must not inherit the caller task depth"
+        );
+
+        let finish = source
+            .split_once("async fn finish_provider_stream")
+            .expect("provider terminal owner remains present")
+            .1
+            .split_once("async fn publish_provider_deadline_terminal")
+            .expect("provider terminal owner remains bounded")
+            .0;
+        assert!(
+            finish.contains("producer.provider_context.borrow()"),
+            "post-call error export remains an ordinary borrow"
+        );
+
+        let unary = include_str!("async_stream_cancel/prepared_unary.rs");
+        assert!(
+            unary.contains("provider_context.borrow()"),
+            "the original-chain unary continuation remains an ordinary borrow"
+        );
+        assert!(
+            !unary.contains("borrow_for_scheduled_task"),
+            "the unary continuation must not reset active program-call depth"
+        );
     }
 
     fn assert_inherited_request_deadline(
