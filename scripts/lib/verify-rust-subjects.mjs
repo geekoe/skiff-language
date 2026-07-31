@@ -2,7 +2,7 @@ const rustImplementationSubjects = [
   {
     selector: 'foundation',
     leafSelector: 'foundation-rust-tests',
-    phaseId: 'implementation:foundation:rust',
+    taskId: 'implementation:foundation:rust',
     packages: [
       rustPackage('canonical-json', 'skiff-canonical-json'),
       rustPackage('artifact-model', 'skiff-artifact-model'),
@@ -16,7 +16,7 @@ const rustImplementationSubjects = [
   {
     selector: 'compiler',
     leafSelector: 'compiler-rust-tests',
-    phaseId: 'implementation:compiler:rust',
+    taskId: 'implementation:compiler:rust',
     packages: [
       rustPackage('compiler/core', 'skiff-compiler-core'),
       rustPackage('compiler/contract', 'skiff-compiler-contract'),
@@ -34,7 +34,7 @@ const rustImplementationSubjects = [
   {
     selector: 'runtime',
     leafSelector: 'runtime-rust-tests',
-    phaseId: 'implementation:runtime:rust',
+    taskId: 'implementation:runtime:rust',
     packages: [
       rustPackage('runtime', 'runtime'),
       rustPackage('runtime/activation', 'skiff-runtime-activation'),
@@ -59,7 +59,7 @@ const rustImplementationSubjects = [
   {
     selector: 'test-runner',
     leafSelector: 'test-runner-rust-tests',
-    phaseId: 'implementation:test-runner:rust',
+    taskId: 'implementation:test-runner:rust',
     packages: [
       rustPackage('test-runner', 'skiff-test-runner'),
     ],
@@ -125,7 +125,7 @@ function assertRustSubjectRegistryIntegrity(subjects) {
   }
   assertUnique(subjects.map(({ selector }) => selector), 'Rust subject selectors');
   assertUnique(subjects.map(({ leafSelector }) => leafSelector), 'Rust subject leaves');
-  assertUnique(subjects.map(({ phaseId }) => phaseId), 'Rust subject phase ids');
+  assertUnique(subjects.map(({ taskId }) => taskId), 'Rust subject task ids');
 
   const workspaceMembers = [];
   const packageNames = [];

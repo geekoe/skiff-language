@@ -289,7 +289,7 @@ export function assertIdentifierDefinitionsUnique(definitions) {
       const right = definitions[rightIndex];
       if (identifierDefinitionsConflict(left, right)) {
         throw new Error(
-          `registry phase id/idPrefix conflict: ${left.label} and ${right.label}`,
+          `registry task id/idPrefix conflict: ${left.label} and ${right.label}`,
         );
       }
     }

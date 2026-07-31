@@ -19,14 +19,14 @@ test('tests and rust-quality retain separate canonical ownership', async () => {
     'checks',
   ]);
   const tests = await buildVerifyPlan({ root, selectors: ['tests'] });
-  assert.ok(tests.phases.some((phase) => phase.id === 'skiff-tests:canonical'));
-  assert.ok(tests.phases.some((phase) =>
-    phase.id === 'implementation:compiler:rust'));
-  assert.equal(tests.phases.some((phase) => phase.kind === 'rust-quality'), false);
+  assert.ok(tests.tasks.some((task) => task.id === 'skiff-tests:canonical'));
+  assert.ok(tests.tasks.some((task) =>
+    task.id === 'implementation:compiler:rust'));
+  assert.equal(tests.tasks.some((task) => task.kind === 'rust-quality'), false);
 
   const quality = await buildVerifyPlan({ root, selectors: ['rust-quality'] });
   assert.deepEqual(
-    quality.phases.map(({ id, kind, command, args }) => ({ id, kind, command, args })),
+    quality.tasks.map(({ id, kind, command, args }) => ({ id, kind, command, args })),
     [
       {
         id: 'rust-quality:format',
@@ -44,7 +44,7 @@ test('tests and rust-quality retain separate canonical ownership', async () => {
   );
 });
 
-test('default verify includes both Rust quality phases exactly once and no live work', async () => {
+test('default verify includes both Rust quality tasks exactly once and no live work', async () => {
   const plan = await buildVerifyPlan({ root });
   for (const id of [
     'skiff-tests:canonical',
@@ -59,12 +59,12 @@ test('default verify includes both Rust quality phases exactly once and no live 
     'checks:crate-public-api:self-test',
     'checks:crate-public-api:all-configured',
   ]) {
-    assert.equal(plan.phases.filter((phase) => phase.id === id).length, 1, id);
+    assert.equal(plan.tasks.filter((task) => task.id === id).length, 1, id);
   }
-  assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
+  assert.equal(plan.tasks.some((task) => task.id.startsWith('live:')), false);
 });
 
-test('rust-quality CLI list exposes exactly the format and file-line phases', async () => {
+test('rust-quality CLI list exposes exactly the format and file-line tasks', async () => {
   const result = await runProcess(process.execPath, [
     verifyPath,
     '--only',
@@ -72,7 +72,7 @@ test('rust-quality CLI list exposes exactly the format and file-line phases', as
     '--list',
   ]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /phases: 2/);
+  assert.match(result.stdout, /tasks: 2/);
   assert.equal((result.stdout.match(/rust-quality:format/g) ?? []).length, 1);
   assert.equal((result.stdout.match(/rust-quality:file-lines/g) ?? []).length, 1);
   assert.match(result.stdout, /cargo fmt --all -- --check/);
