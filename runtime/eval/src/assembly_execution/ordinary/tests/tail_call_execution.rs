@@ -6,6 +6,9 @@ use skiff_runtime_model::runtime_value::{RuntimeObject, RuntimeObjectFields};
 use super::*;
 use crate::error::RuntimeError;
 
+#[path = "tail_call_execution/carrier_materialization.rs"]
+mod carrier_materialization;
+
 const DEPTH_LIMIT_MINUS_ONE: usize = 31;
 const DEEP_HOPS: i64 = 96;
 

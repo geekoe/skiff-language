@@ -161,6 +161,128 @@ async fn runtime_program_legacy_tail_call_error_stack_is_bounded_after_100000_ho
     );
 }
 
+#[tokio::test]
+async fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_exception() {
+    let prefix_site = tail_error_prefix_site();
+    let tail_site = tail_error_eliminated_site();
+    let terminal_site = tail_error_terminal_site();
+    let program = Arc::new(program_with_executables_and_std_builtins(vec![
+        catch_rethrow_tail_error_executable(prefix_site.clone()),
+        tail_countdown_to_error_executable_with_targets(1, 2, tail_site),
+        tail_error_executable_at(terminal_site.clone()),
+    ]));
+    let file = Arc::clone(
+        program
+            .service_files
+            .first()
+            .expect("tail error program service file"),
+    );
+    let executable = file
+        .executables
+        .first()
+        .expect("tail error entry executable")
+        .clone();
+    let interpreter = Interpreter::with_program(Arc::clone(&program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+    let invocation_context = program_invocation_context(&interpreter, &frame);
+    let context = invocation_context.execution_context();
+    let mut heap = RequestHeap::default();
+    let mut env = Env::for_program_executable(&executable, Some(file.module_path.clone()), 0)
+        .expect("tail error entry environment");
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(30),
+        interpreter.exec_program_executable(
+            context,
+            &mut heap,
+            &mut env,
+            &ExecutableAddr::service(0, 0),
+            file.as_ref(),
+            &executable,
+        ),
+    )
+    .await
+    .expect("the bounded catch/rethrow workload should finish promptly")
+    .expect_err("the caught terminal exception should be rethrown");
+    let RuntimeError::UserException(exception) = runtime_error_leaf(&error) else {
+        panic!("expected a rethrown request-local tail exception, got {error:?}");
+    };
+    let request = exception.request();
+
+    assert_eq!(
+        exception.actual_payload_type(),
+        Some(&PlatformBuiltinErrorIdentity::JsonDecode.catch_identity())
+    );
+    assert_eq!(request.source(), &terminal_site);
+    assert_eq!(request.correlation().trace_id, "trace-program");
+    assert_eq!(
+        request.correlation().error_id,
+        "trace-program:local-error:1"
+    );
+    assert_eq!(
+        request.stack(),
+        [
+            ExceptionStackFrame::Local {
+                site: prefix_site.clone(),
+            },
+            ExceptionStackFrame::Local {
+                site: terminal_site,
+            },
+        ],
+        "the real non-tail prefix must remain while all deep tail edges stay eliminated"
+    );
+
+    let payload_handle = request
+        .local_value()
+        .expect("rethrow should preserve the request-local payload")
+        .as_heap_handle()
+        .expect("DecodeError payload should remain a heap object");
+    let target = heap
+        .object_field_carrier(payload_handle, "target")
+        .expect("DecodeError target should be readable")
+        .expect("DecodeError target should exist");
+    let message = heap
+        .object_field_carrier(payload_handle, "message")
+        .expect("DecodeError message should be readable")
+        .expect("DecodeError message should exist");
+    assert_eq!(
+        target.value(),
+        &RuntimeValue::String("tail.pressure".to_string())
+    );
+    assert_eq!(
+        message.value(),
+        &RuntimeValue::String("terminal".to_string())
+    );
+
+    let caught_handle = env
+        .get_slot(0)
+        .expect("exact catch should store its result")
+        .as_heap_handle()
+        .expect("catch result should be a heap object");
+    let caught_tag = heap
+        .object_field_carrier(caught_handle, "tag")
+        .expect("catch tag should be readable")
+        .expect("catch tag should exist");
+    assert_eq!(caught_tag.value(), &RuntimeValue::String("err".to_string()));
+    let caught_exception_handle = heap
+        .object_field_carrier(caught_handle, "exception")
+        .expect("caught exception should be readable")
+        .expect("err catch result should carry the exception")
+        .as_heap_handle()
+        .expect("caught exception should remain a request-local node");
+    let rethrow_exception_handle = env
+        .get_slot(1)
+        .expect("rethrow should load the caught exception")
+        .as_heap_handle()
+        .expect("rethrow slot should contain the caught exception node");
+    assert_eq!(rethrow_exception_handle, caught_exception_handle);
+    assert!(matches!(
+        heap.get(caught_exception_handle)
+            .expect("caught exception handle should resolve"),
+        HeapNode::Exception(caught) if caught == request
+    ));
+}
+
 async fn tail_countdown_instruction_count(hops: u64) -> u64 {
     let interpreter = Interpreter::with_program(
         Arc::new(program_with_executable(tail_countdown_executable("run", 0))),
@@ -420,6 +542,14 @@ fn infinite_tail_executable() -> LinkedExecutable {
 }
 
 fn tail_countdown_to_error_executable() -> LinkedExecutable {
+    tail_countdown_to_error_executable_with_targets(0, 1, test_instruction_site())
+}
+
+fn tail_countdown_to_error_executable_with_targets(
+    countdown_index: usize,
+    error_index: usize,
+    tail_site: skiff_artifact_model::InstructionSourceSite,
+) -> LinkedExecutable {
     let (params, slots) = countdown_params(false);
     LinkedExecutable {
         kind: ExecutableKind::Function,
@@ -466,11 +596,11 @@ fn tail_countdown_to_error_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
-                        "site": test_instruction_site(),
+                        "site": tail_site,
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
-                                ExecutableAddr::service(0, 0)
+                                ExecutableAddr::service(0, countdown_index)
                             ).unwrap()
                         },
                         "args": [{ "expression": 5 }]
@@ -479,11 +609,11 @@ fn tail_countdown_to_error_executable() -> LinkedExecutable {
                 {
                     "kind": "call",
                     "call": {
-                        "site": test_instruction_site(),
+                        "site": tail_site,
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
-                                ExecutableAddr::service(0, 1)
+                                ExecutableAddr::service(0, error_index)
                             ).unwrap()
                         },
                         "args": []
@@ -495,6 +625,12 @@ fn tail_countdown_to_error_executable() -> LinkedExecutable {
 }
 
 fn tail_error_executable() -> LinkedExecutable {
+    tail_error_executable_at(test_instruction_site())
+}
+
+fn tail_error_executable_at(
+    terminal_site: skiff_artifact_model::InstructionSourceSite,
+) -> LinkedExecutable {
     LinkedExecutable {
         kind: ExecutableKind::Function,
         symbol: "tailError".to_string(),
@@ -511,7 +647,7 @@ fn tail_error_executable() -> LinkedExecutable {
             "statements": [
                 {
                     "kind": "throw",
-                    "site": test_instruction_site(),
+                    "site": terminal_site,
                     "value": { "expression": 2 },
                     "payloadType": {
                         "kind": "builtin",
@@ -541,5 +677,121 @@ fn tail_error_executable() -> LinkedExecutable {
                 }
             ]
         })),
+    }
+}
+
+fn catch_rethrow_tail_error_executable(
+    prefix_site: skiff_artifact_model::InstructionSourceSite,
+) -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![
+                SlotIr {
+                    index: 0,
+                    name: "caught".to_string(),
+                    kind: "local".to_string(),
+                },
+                SlotIr {
+                    index: 1,
+                    name: "exception".to_string(),
+                    kind: "local".to_string(),
+                },
+                SlotIr {
+                    index: 2,
+                    name: "$catch0".to_string(),
+                    kind: "temp".to_string(),
+                },
+            ],
+            frame_size: 3,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                {
+                    "label": "entry",
+                    "statements": [
+                        { "statement": 0 },
+                        { "statement": 1 },
+                        { "statement": 2 }
+                    ]
+                }
+            ],
+            "statements": [
+                {
+                    "kind": "let",
+                    "slot": 0,
+                    "value": { "expression": 3 }
+                },
+                {
+                    "kind": "let",
+                    "slot": 1,
+                    "value": { "expression": 5 }
+                },
+                {
+                    "kind": "rethrow",
+                    "exceptionSlot": 1
+                }
+            ],
+            "expressions": [
+                {
+                    "kind": "literal",
+                    "value": { "kind": "number", "value": PRESSURE_HOPS }
+                },
+                {
+                    "kind": "call",
+                    "call": {
+                        "site": prefix_site,
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(
+                                ExecutableAddr::service(0, 1)
+                            ).unwrap()
+                        },
+                        "args": [{ "expression": 0 }]
+                    }
+                },
+                { "kind": "loadSlot", "slot": 2 },
+                {
+                    "kind": "catch",
+                    "tryExpression": { "expression": 1 },
+                    "catchSlot": 2,
+                    "catchType": {
+                        "kind": "builtin",
+                        "name": "std.json.DecodeError"
+                    },
+                    "body": { "expression": 2 }
+                },
+                { "kind": "loadSlot", "slot": 0 },
+                {
+                    "kind": "field",
+                    "object": { "expression": 4 },
+                    "field": "exception"
+                }
+            ]
+        })),
+    }
+}
+
+fn tail_error_prefix_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+    }
+}
+
+fn tail_error_eliminated_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::RuntimeControlFlow,
+    }
+}
+
+fn tail_error_terminal_site() -> skiff_artifact_model::InstructionSourceSite {
+    skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
     }
 }

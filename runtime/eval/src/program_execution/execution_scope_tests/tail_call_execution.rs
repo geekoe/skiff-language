@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use skiff_artifact_model::{SourcePosition, SourceSpanRef};
+use skiff_runtime_capability_context::{
+    ExecutionControl as CapabilityExecutionControl, OwnedExecutionControlApi,
+};
 use skiff_runtime_linked_program::{
     BinaryOpIr, BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable,
     FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedCallTarget, LinkedExecutable,
@@ -26,6 +30,224 @@ struct TailPressureFixture {
     interpreter: Interpreter,
     file: Arc<LinkedFileUnit>,
     entry: ExecutableAddr,
+}
+
+struct TailEntryCheckpointFixture {
+    interpreter: Interpreter,
+    file: Arc<LinkedFileUnit>,
+    entry: ExecutableAddr,
+    previous_site: InstructionSourceSite,
+    current_site: InstructionSourceSite,
+}
+
+#[derive(Clone)]
+struct ScheduledBudgetControl {
+    scope: ExecutionScope,
+    cancellation: CancellationToken,
+    cancelled: Arc<AtomicBool>,
+    instruction_units: Arc<AtomicU64>,
+    polls: Arc<AtomicU64>,
+    fail_on_poll: u64,
+}
+
+impl ScheduledBudgetControl {
+    fn new(scope: ExecutionScope, cancellation: CancellationToken, fail_on_poll: u64) -> Self {
+        Self {
+            scope,
+            cancelled: cancellation.cancel_flag(),
+            cancellation,
+            instruction_units: Arc::new(AtomicU64::new(0)),
+            polls: Arc::new(AtomicU64::new(0)),
+            fail_on_poll,
+        }
+    }
+}
+
+impl ExecutionControlApi for ScheduledBudgetControl {
+    fn owned(&self) -> OwnedExecutionControl {
+        OwnedExecutionControl::new(self.clone())
+    }
+
+    fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.scope
+            .effective_deadline()
+            .map(|deadline| deadline.at())
+    }
+
+    fn execution_scope(&self) -> std::result::Result<ExecutionScope, ExecutionScopeAccessError> {
+        Ok(self.scope.clone())
+    }
+
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> std::result::Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        let scope = self.scope.derive(local_deadline, site)?;
+        Ok(OwnedExecutionControl::new(Self {
+            scope,
+            cancellation: self.cancellation.clone(),
+            cancelled: Arc::clone(&self.cancelled),
+            instruction_units: Arc::clone(&self.instruction_units),
+            polls: Arc::clone(&self.polls),
+            fail_on_poll: self.fail_on_poll,
+        }))
+    }
+
+    fn check_cancelled(&self) -> ExecutionControlResult<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            Err(ExecutionControlError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()> {
+        self.instruction_units.fetch_add(units, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn poll_execution_budget(&self) -> ExecutionControlResult<()> {
+        let poll = self.polls.fetch_add(1, Ordering::Relaxed) + 1;
+        if poll == self.fail_on_poll {
+            Err(ExecutionControlError::BudgetExceeded(
+                ExecutionBudgetFailure {
+                    reason: ExecutionBudgetReason::InstructionLimitExceeded,
+                    instruction_count: self.instruction_units.load(Ordering::Relaxed),
+                    limit: Some(self.instruction_units.load(Ordering::Relaxed) - 1),
+                    elapsed_ms: 1.0,
+                },
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn file_source_stream_context(
+        &self,
+        stream_runtime: StreamRuntime,
+    ) -> FileSourceStreamContext<'static> {
+        test_runtime::file_source_stream_context(stream_runtime)
+    }
+}
+
+impl OwnedExecutionControlApi for ScheduledBudgetControl {
+    fn borrow(&self) -> CapabilityExecutionControl<'_> {
+        CapabilityExecutionControl::new(self.clone())
+    }
+
+    fn cancelled(&self) -> &AtomicBool {
+        self.cancelled.as_ref()
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        ExecutionControlApi::deadline(self)
+    }
+
+    fn execution_scope(&self) -> std::result::Result<ExecutionScope, ExecutionScopeAccessError> {
+        ExecutionControlApi::execution_scope(self)
+    }
+
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> std::result::Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        ExecutionControlApi::derive_scope(self, local_deadline, site)
+    }
+}
+
+impl TailEntryCheckpointFixture {
+    fn new() -> Self {
+        let file_id = "file:e1-tail-entry-checkpoint".to_string();
+        let entry = ExecutableAddr {
+            unit: UnitAddr::Service,
+            file: FileAddr::FileIrIdentity(file_id.clone()),
+            executable: 0,
+        };
+        let middle = ExecutableAddr {
+            executable: 1,
+            ..entry.clone()
+        };
+        let terminal = ExecutableAddr {
+            executable: 2,
+            ..entry.clone()
+        };
+        let previous_site = source_site(201);
+        let current_site = source_site(202);
+        let file = Arc::new(LinkedFileUnit {
+            schema_version: "skiff-file-ir-v3".to_string(),
+            file_ir_identity: file_id,
+            source_ast_hash: "source:e1-tail-entry-checkpoint".to_string(),
+            module_path: "e1.tailEntryCheckpoint".to_string(),
+            ir_format_version: None,
+            opcode_table_version: None,
+            source_map: SourceMapDto::default(),
+            declarations: FileDeclarations::default(),
+            link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
+            types: Vec::new(),
+            constants: Vec::new(),
+            executables: vec![
+                tail_forwarder("entry", middle, previous_site.clone()),
+                tail_forwarder("middle", terminal, current_site.clone()),
+                executable(
+                    "terminal",
+                    vec![LinkedExprIr::Literal {
+                        value: skiff_artifact_model::LiteralIr::Null,
+                    }],
+                ),
+            ],
+            external_refs: ExternalRefTable::default(),
+        });
+        let program = Arc::new(EvalRuntimeProgram::new(
+            "skiff.run/e1-tail-entry-checkpoint",
+            vec![Arc::clone(&file)],
+            Vec::new(),
+            PublicationResourceTable::default(),
+            Default::default(),
+            LinkOverlay::default(),
+            RuntimeTypeContext::default(),
+        ));
+        Self {
+            interpreter: Interpreter::with_program(program, test_runtime::runtime_factory()),
+            file,
+            entry,
+            previous_site,
+            current_site,
+        }
+    }
+
+    async fn execute(&self, context: ProgramExecutionContext<'static>) -> Result<crate::env::Flow> {
+        let mut heap = RequestHeap::default();
+        let mut env = Env::for_program_executable(
+            &self.file.executables[0],
+            Some(self.file.module_path.clone()),
+            0,
+        )?;
+        self.interpreter
+            .exec_program_executable(
+                context,
+                &mut heap,
+                &mut env,
+                &self.entry,
+                &self.file,
+                &self.file.executables[0],
+            )
+            .await
+    }
 }
 
 impl TailPressureFixture {
@@ -235,6 +457,36 @@ fn executable(symbol: &str, expressions: Vec<LinkedExprIr>) -> LinkedExecutable 
     }
 }
 
+fn tail_forwarder(
+    symbol: &str,
+    target: ExecutableAddr,
+    call_site: InstructionSourceSite,
+) -> LinkedExecutable {
+    executable(
+        symbol,
+        vec![LinkedExprIr::Call {
+            call: CallIr {
+                target: LinkedCallTarget::Executable { addr: target },
+                site: call_site,
+                args: Vec::new(),
+                type_args: Default::default(),
+                metadata: Default::default(),
+                actor_metadata: None,
+            },
+        }],
+    )
+}
+
+fn source_site(line: u32) -> InstructionSourceSite {
+    InstructionSourceSite::Source {
+        span: SourceSpanRef {
+            source_id: 901,
+            start: SourcePosition::new(line, 3),
+            end: SourcePosition::new(line, 19),
+        },
+    }
+}
+
 fn tail_countdown_executable(target: ExecutableAddr) -> LinkedExecutable {
     let remaining = ExprRefIr { expression: 0 };
     let zero = ExprRefIr { expression: 1 };
@@ -370,6 +622,75 @@ fn max_depth_context() -> ProgramExecutionContext<'static> {
     let (cancellation, scope) = root_scope(None);
     context(ScopeAwareControl::available(scope, cancellation.token()))
         .with_program_call_depth_for_test(super::super::MAX_PROGRAM_CALL_DEPTH)
+}
+
+fn scheduled_budget_context(control: ScheduledBudgetControl) -> ProgramExecutionContext<'static> {
+    let execution = CapabilityExecutionControl::new(control);
+    let runtime_factory = test_runtime::runtime_factory();
+    let stream_runtime = runtime_factory.stream_runtime();
+    let test_effect_doubles =
+        runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
+    let effects = test_runtime::effects_context();
+    let actor = test_runtime::actor_context_with_trace("trace:e1-entry-checkpoint");
+    ProgramExecutionContext::new(ProgramExecutionInput {
+        execution: execution.clone(),
+        config: test_runtime::config_context(),
+        db: skiff_runtime_capability_context::DbCapabilityContext::unavailable(),
+        file: test_runtime::file_context(),
+        file_source_stream: test_runtime::file_source_stream_context(stream_runtime.clone()),
+        time: TimeCapabilityContext::new(execution),
+        websocket: test_runtime::websocket_context(),
+        effects: effects.clone(),
+        http_client: effects.http_client_context(
+            HttpRuntimeOptions::explicit(false),
+            stream_runtime,
+            test_effect_doubles.clone(),
+        ),
+        test_effect_doubles,
+        actor: actor.clone(),
+        spawn: actor,
+        request_heap_limits: RequestHeapLimits::default(),
+    })
+}
+
+#[tokio::test]
+async fn tail_call_entry_checkpoint_attributes_the_current_edge_exactly_once() {
+    const FAIL_ON_POLL: u64 = 11;
+
+    let fixture = TailEntryCheckpointFixture::new();
+    let (cancellation, scope) = root_scope(None);
+    let control = ScheduledBudgetControl::new(scope, cancellation.token(), FAIL_ON_POLL);
+    let instruction_units = Arc::clone(&control.instruction_units);
+    let polls = Arc::clone(&control.polls);
+    let error = fixture
+        .execute(scheduled_budget_context(control))
+        .await
+        .expect_err("the terminal entry checkpoint must cross the scheduled budget");
+
+    assert_eq!(
+        polls.load(Ordering::Relaxed),
+        FAIL_ON_POLL,
+        "both entry preparations and tail transfer polls must succeed before the terminal entry checkpoint fails"
+    );
+    assert_eq!(
+        instruction_units.load(Ordering::Relaxed),
+        FAIL_ON_POLL,
+        "the failed entry checkpoint must account its unit after both transfer units"
+    );
+    let request = crate::exceptions::user_exception_for_catch(&error)
+        .expect("entry checkpoint budget failure should materialize a request exception")
+        .request();
+    assert_eq!(request.source(), &fixture.current_site);
+    assert_eq!(
+        request.stack(),
+        [
+            skiff_runtime_model::service_error::ExceptionStackFrame::Local {
+                site: fixture.current_site.clone(),
+            }
+        ],
+        "the current tail edge must be promoted exactly once"
+    );
+    assert_ne!(request.source(), &fixture.previous_site);
 }
 
 #[tokio::test]
