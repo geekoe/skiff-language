@@ -264,12 +264,12 @@ function writeRawResponseHead(socket, response, rawHeaders) {
 }
 
 function coupleSockets(left, right) {
-  const destroyBoth = (error) => {
-    if (!left.destroyed) left.destroy(error);
-    if (!right.destroyed) right.destroy(error);
+  const destroyBoth = () => {
+    if (!left.destroyed) left.destroy();
+    if (!right.destroyed) right.destroy();
   };
-  left.once('error', destroyBoth);
-  right.once('error', destroyBoth);
+  left.on('error', destroyBoth);
+  right.on('error', destroyBoth);
   left.once('close', () => {
     if (!right.destroyed) right.destroy();
   });
@@ -330,6 +330,11 @@ export function createLocalIngress(configInput) {
     proxyHttp(request, response, config, target);
   });
   server.on('upgrade', (request, socket, head) => {
+    // A client can reset the connection before the upstream handshake
+    // completes and before coupleSockets installs the tunnel handlers.
+    socket.on('error', () => {
+      if (!socket.destroyed) socket.destroy();
+    });
     const target = targetForRequest(request, config);
     if (!target) {
       socketResponse(socket, 421, 'Misdirected Request', 'unknown local ingress Host');
