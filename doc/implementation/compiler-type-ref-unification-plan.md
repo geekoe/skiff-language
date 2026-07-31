@@ -72,7 +72,7 @@ object_materialization}`），说明第一轮部分抽取已经完成，但 god 
 - assignability（1 个）：`package_public_to_internal`。
 - service schema（1 个）：`service_api_schemas`。
 
-### 4.2 具名重复清单（均已核对）
+### 4.2 具名重复清单（均已核对；行号为本文撰写时的基线快照，随阶段演进会失效）
 
 | 重复对 | 位置 | 性质 |
 | --- | --- | --- |
