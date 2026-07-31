@@ -291,6 +291,8 @@ fn start_provider_stream(
         _stream_runtime_owner: provider_stream_runtime_owner,
         #[cfg(test)]
         activity_probe: None,
+        #[cfg(test)]
+        depth_probe: None,
     };
     spawn_provider_stream(producer);
     Ok(receiver_value)
@@ -352,6 +354,8 @@ struct ProviderStreamTask {
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
     #[cfg(test)]
     activity_probe: Option<Arc<ProviderStreamTaskActivityProbe>>,
+    #[cfg(test)]
+    depth_probe: Option<Arc<ProviderStreamTaskDepthProbe>>,
 }
 
 fn spawn_provider_stream(producer: ProviderStreamTask) {
@@ -365,6 +369,10 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
     let args = std::mem::take(&mut producer.args);
     let terminal = {
         let provider_context = producer.provider_context.borrow_for_scheduled_task();
+        #[cfg(test)]
+        if let Some(probe) = &producer.depth_probe {
+            probe.record_callable_entry(&provider_context);
+        }
         let provider_future = call_provider_callable(
             &producer.interpreter,
             provider_context,
@@ -454,6 +462,10 @@ async fn finish_provider_stream(producer: ProviderStreamTask, terminal: Provider
         }
         ProviderTerminal::Provider(Err(error)) => {
             let provider_context = producer.provider_context.borrow();
+            #[cfg(test)]
+            if let Some(probe) = &producer.depth_probe {
+                probe.record_error_export(&provider_context);
+            }
             let terminal = match export_provider_failure(
                 &producer.interpreter,
                 &provider_context,
@@ -1016,6 +1028,45 @@ impl ProviderStreamTaskActivityProbe {
     }
 }
 
+#[cfg(test)]
+struct ProviderStreamTaskDepthProbe {
+    callable_entry: AtomicUsize,
+    error_export: AtomicUsize,
+}
+
+#[cfg(test)]
+impl Default for ProviderStreamTaskDepthProbe {
+    fn default() -> Self {
+        Self {
+            callable_entry: AtomicUsize::new(usize::MAX),
+            error_export: AtomicUsize::new(usize::MAX),
+        }
+    }
+}
+
+#[cfg(test)]
+impl ProviderStreamTaskDepthProbe {
+    fn record_callable_entry(&self, context: &ProgramExecutionContext<'_>) {
+        self.callable_entry
+            .store(context.program_call_depth_for_test(), Ordering::Release);
+    }
+
+    fn record_error_export(&self, context: &ProgramExecutionContext<'_>) {
+        self.error_export
+            .store(context.program_call_depth_for_test(), Ordering::Release);
+    }
+
+    fn callable_entry(&self) -> Option<usize> {
+        let depth = self.callable_entry.load(Ordering::Acquire);
+        (depth != usize::MAX).then_some(depth)
+    }
+
+    fn error_export(&self) -> Option<usize> {
+        let depth = self.error_export.load(Ordering::Acquire);
+        (depth != usize::MAX).then_some(depth)
+    }
+}
+
 struct ProviderStreamTaskGuard {
     #[cfg(test)]
     activity_probe: Option<Arc<ProviderStreamTaskActivityProbe>>,
@@ -1128,8 +1179,7 @@ mod tests {
         future.poll(&mut Context::from_waker(&waker))
     }
 
-    #[test]
-    fn provider_stream_scheduler_entry_uses_fresh_depth_borrow() {
+    fn assert_provider_stream_depth_borrow_sites() {
         let source = include_str!("async_stream_cancel.rs");
         let entry = source
             .split_once("async fn run_provider_stream")
@@ -1168,6 +1218,11 @@ mod tests {
             !unary.contains("borrow_for_scheduled_task"),
             "the unary continuation must not reset active program-call depth"
         );
+    }
+
+    #[test]
+    fn provider_stream_scheduler_entry_uses_fresh_depth_borrow() {
+        assert_provider_stream_depth_borrow_sites();
     }
 
     fn assert_inherited_request_deadline(
@@ -1793,6 +1848,18 @@ mod tests {
         Value,
         CancellationToken,
     ) {
+        provider_stream_failure_task_with_parent_depth(0)
+    }
+
+    fn provider_stream_failure_task_with_parent_depth(
+        parent_depth: usize,
+    ) -> (
+        ProviderStreamTask,
+        u64,
+        StreamRuntime,
+        Value,
+        CancellationToken,
+    ) {
         let fixture = ServiceErrorConsumerFixture::new(
             ProviderFailureKind::PublicRecord,
             ConsumerTopology::OneHop,
@@ -1832,7 +1899,9 @@ mod tests {
         let target = receiver_target
             .resolve_service_call(instruction)
             .expect("resolved provider target");
-        let receiver_context = fixture.execution_context(&interpreter, receiver_target);
+        let receiver_context = fixture
+            .execution_context(&interpreter, receiver_target)
+            .with_program_call_depth_for_test(parent_depth);
         let mut provider_context =
             provider_execution_context(&receiver_context, &target).expect("provider context");
         let provider_stream_owner = provider_context.take_stream_runtime_owner();
@@ -1873,8 +1942,50 @@ mod tests {
             request: target.provider_request().clone(),
             _stream_runtime_owner: provider_stream_owner,
             activity_probe: None,
+            depth_probe: None,
         };
         (task, generation, stream_runtime, stream_value, cancellation)
+    }
+
+    #[tokio::test]
+    async fn provider_stream_spawn_resets_only_the_callable_depth() {
+        const PARENT_DEPTH: usize = 17;
+
+        let (mut task, _, stream_runtime, stream_value, _) =
+            provider_stream_failure_task_with_parent_depth(PARENT_DEPTH);
+        assert_eq!(
+            task.provider_context.borrow().program_call_depth_for_test(),
+            PARENT_DEPTH,
+            "provider derivation and capture must retain the active parent depth"
+        );
+
+        let activity_probe = Arc::new(ProviderStreamTaskActivityProbe::default());
+        let depth_probe = Arc::new(ProviderStreamTaskDepthProbe::default());
+        task.activity_probe = Some(Arc::clone(&activity_probe));
+        task.depth_probe = Some(Arc::clone(&depth_probe));
+
+        spawn_provider_stream(task);
+        stream_runtime
+            .next(&stream_value)
+            .await
+            .expect_err("the fixed provider failure must reach the stream consumer");
+
+        assert_eq!(
+            activity_probe.entered(),
+            1,
+            "the provider callable must run in the spawned task"
+        );
+        assert_eq!(
+            depth_probe.callable_entry(),
+            Some(0),
+            "the spawned provider callable must enter with fresh task depth"
+        );
+        assert_eq!(
+            depth_probe.error_export(),
+            Some(PARENT_DEPTH),
+            "error export is an ordinary continuation and must retain captured depth"
+        );
+        assert_provider_stream_depth_borrow_sites();
     }
 
     #[test]
