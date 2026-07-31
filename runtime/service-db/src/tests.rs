@@ -628,10 +628,7 @@ fn service_db_runtime_derives_storage_identity_from_environment_and_service_id()
         &[],
     )
     .expect("exact service DB identity should build");
-    assert_eq!(
-        exact.database_name,
-        "example~com~~service"
-    );
+    assert_eq!(exact.database_name, "example~com~~service");
 }
 
 #[test]
