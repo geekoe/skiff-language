@@ -1512,3 +1512,119 @@ fn expression_fact_source_text(
         })
         .unwrap_or_else(|| panic!("expression `{snippet}` should have a type fact"))
 }
+
+#[test]
+fn single_for_item_wrappers_lock_container_and_local_behavior() {
+    let string = TypeRefIr::Builtin {
+        name: "string".to_string(),
+        args: Vec::new(),
+    };
+    let number = TypeRefIr::Builtin {
+        name: "number".to_string(),
+        args: Vec::new(),
+    };
+    let resolved = |ty: TypeRefIr| ResolvedTypeRef {
+        source_text: debug_text(&ty),
+        ir: ty,
+    };
+
+    // ResolvedTypeRef wrapper: short and std.* full names resolve, Map yields
+    // its key type.
+    for name in [
+        "Array",
+        "std.collection.Array",
+        "Stream",
+        "std.stream.Stream",
+    ] {
+        let item = single_for_item_type(&resolved(TypeRefIr::Builtin {
+            name: name.to_string(),
+            args: vec![string.clone()],
+        }))
+        .expect("single-argument container should resolve");
+        assert_eq!(item.ir, string);
+    }
+    for name in ["Map", "std.collection.Map"] {
+        let key = single_for_item_type(&resolved(TypeRefIr::Builtin {
+            name: name.to_string(),
+            args: vec![string.clone(), number.clone()],
+        }))
+        .expect("two-argument map should resolve");
+        assert_eq!(key.ir, string);
+    }
+    assert_eq!(
+        single_for_item_type(&resolved(TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![string.clone()],
+        })),
+        None,
+        "wrong arity must not resolve"
+    );
+    assert_eq!(
+        single_for_item_type(&resolved(TypeRefIr::Builtin {
+            name: "other".to_string(),
+            args: Vec::new(),
+        })),
+        None,
+        "non-container must not resolve"
+    );
+
+    // PackageTypeRef projection wrapper: Container resolves, including the
+    // std.* full names; Local-wrapped containers must stay None.
+    let container = |name: &str, arguments: Vec<PackageTypeRef>| PackageTypeRef::Container {
+        name: name.to_string(),
+        arguments,
+    };
+    let local = |ty: TypeRefIr| PackageTypeRef::Local { local_type: ty };
+    for name in [
+        "Array",
+        "std.collection.Array",
+        "Stream",
+        "std.stream.Stream",
+    ] {
+        assert_eq!(
+            single_for_item_projection(&container(
+                name,
+                vec![PackageTypeRef::Local {
+                    local_type: string.clone()
+                }]
+            )),
+            Some(PackageTypeRef::Local {
+                local_type: string.clone()
+            })
+        );
+    }
+    for name in ["Map", "std.collection.Map"] {
+        assert_eq!(
+            single_for_item_projection(&container(
+                name,
+                vec![
+                    PackageTypeRef::Local {
+                        local_type: string.clone()
+                    },
+                    PackageTypeRef::Local {
+                        local_type: number.clone()
+                    },
+                ]
+            )),
+            Some(PackageTypeRef::Local {
+                local_type: string.clone()
+            })
+        );
+    }
+    assert_eq!(
+        single_for_item_projection(&local(TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![string.clone()],
+        })),
+        None,
+        "Local-wrapped container must keep returning None"
+    );
+    assert_eq!(
+        single_for_item_projection(&local(TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![string, number],
+        })),
+        None,
+        "Local-wrapped map must keep returning None"
+    );
+}

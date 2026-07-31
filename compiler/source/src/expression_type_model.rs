@@ -5,7 +5,8 @@ use skiff_artifact_model::{
     PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    contains_type_param, debug_text, is_null_type, normalize_union, record_field_type,
+    contains_type_param, debug_text, is_null_type, normalize_union, package_type_ref_to_ir,
+    record_field_type, single_item,
     substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
@@ -4760,22 +4761,10 @@ fn insert_callable_signature(
 }
 
 fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
-    let TypeRefIr::Builtin { name, args } = &ty.ir else {
-        return None;
-    };
-    match name.as_str() {
-        "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream" if args.len() == 1 => {
-            Some(ResolvedTypeRef {
-                ir: args[0].clone(),
-                source_text: debug_text(&args[0]),
-            })
-        }
-        "Map" | "std.collection.Map" if args.len() == 2 => Some(ResolvedTypeRef {
-            ir: args[0].clone(),
-            source_text: debug_text(&args[0]),
-        }),
-        _ => None,
-    }
+    single_item(&ty.ir).map(|item| ResolvedTypeRef {
+        ir: item.clone(),
+        source_text: debug_text(item),
+    })
 }
 
 fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
@@ -4814,15 +4803,11 @@ fn single_for_item_projection(ty: &PackageTypeRef) -> Option<PackageTypeRef> {
     let PackageTypeRef::Container { name, arguments } = ty else {
         return None;
     };
-    match name.as_str() {
-        "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream"
-            if arguments.len() == 1 =>
-        {
-            Some(arguments[0].clone())
-        }
-        "Map" | "std.collection.Map" if arguments.len() == 2 => Some(arguments[0].clone()),
-        _ => None,
-    }
+    single_item(&TypeRefIr::Builtin {
+        name: name.clone(),
+        args: arguments.iter().map(package_type_ref_to_ir).collect(),
+    })
+    .map(|_| arguments[0].clone())
 }
 
 fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, PackageTypeRef)> {

@@ -395,8 +395,11 @@ fn collect_normalized_union_member(
 /// container: the sole argument for 1-argument containers, or the key type
 /// for a 2-argument `Map`.
 ///
-/// Absorbs `single_for_item_type` / `single_for_item_projection`
-/// (`expression_type_model.rs` 4776 / 4827), including the `std.*` full names.
+/// Absorbs the former private implementations `single_for_item_type` /
+/// `single_for_item_projection` in `expression_type_model.rs`, including the
+/// `std.*` full names. The projection wrapper keeps its
+/// `PackageTypeRef::Container`-only guard, so `Local`-wrapped containers
+/// still return `None`.
 pub fn single_item(ty: &TypeRefIr) -> Option<&TypeRefIr> {
     let TypeRefIr::Builtin { name, args } = ty else {
         return None;
