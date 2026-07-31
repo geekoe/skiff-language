@@ -13,6 +13,7 @@ export function parseVerifyArgs(argv) {
   const options = {
     help: false,
     list: false,
+    jobs: undefined,
     selectors: [],
     runtimeLiveActivationUrl: undefined,
     runtimeLiveIngressUrl: undefined,
@@ -35,6 +36,17 @@ export function parseVerifyArgs(argv) {
     if (arg === '--list' || arg === '--dry-run') {
       rejectRepeatedFlag(options.list, '--list/--dry-run');
       options.list = true;
+      continue;
+    }
+    if (arg === '--jobs') {
+      rejectRepeatedFlag(options.jobs !== undefined, '--jobs');
+      options.jobs = parseJobsValue(requiredValue(argv, index, '--jobs'));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--jobs=')) {
+      rejectRepeatedFlag(options.jobs !== undefined, '--jobs');
+      options.jobs = parseJobsValue(arg.slice('--jobs='.length));
       continue;
     }
     if (arg === '--only') {
@@ -87,14 +99,17 @@ export function parseVerifyArgs(argv) {
   if (options.selectors.length === 0) {
     options.selectors.push('verify');
   }
+  if (options.jobs === undefined) {
+    options.jobs = 1;
+  }
   return options;
 }
 
 export function printVerifyUsage() {
-  console.log(`usage: node scripts/verify.mjs [--only <selectors>] [--list]
+  console.log(`usage: node scripts/verify.mjs [--only <selectors>] [--jobs <n>] [--list]
 
 Default: complete non-live repository verification (tests + quality/check gates).
-Execution is fail-fast; use --list to audit every selected phase before running.
+Runs every selected task and reports all failures; use --list to audit every selected task before running.
 
 test domains:
   tests                        all non-live Skiff source and implementation tests
@@ -116,12 +131,13 @@ quality and focused selectors:
   type-check                   Router, telemetry, scripts, and VS Code static checks
   checks                       repository architecture and policy checks
   scripts  vscode              focused tooling tests
-  scripts-syntax  scripts-dev-sync  focused tooling phases
+  scripts-syntax  scripts-dev-sync  focused tooling tasks
   compiler-boundaries          focused compiler source-boundary check
 ${renderLiveSelectorHelp()}
 
 options:
   --only <a,b>                 select one or more groups; may be specified once
+  --jobs <n>                   concurrent slot budget; default 1, minimum 1
   --list, --dry-run            print the expanded plan without executing it
   --runtime-live-activation-url <url>
                                 explicit canonical assembly activation target
@@ -155,6 +171,13 @@ function splitSelectors(value) {
     }
   }
   return selectors;
+}
+
+function parseJobsValue(value) {
+  if (!/^(?:[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new Error('--jobs requires a positive integer');
+  }
+  return Number(value);
 }
 
 function rejectRepeatedOnly(options) {

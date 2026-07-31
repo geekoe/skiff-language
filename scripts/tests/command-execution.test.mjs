@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { access, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,7 +13,7 @@ import {
   childCompletion,
   runAttachedCommand,
 } from '../lib/command-execution.mjs';
-import { runOwnedCommand } from '../lib/owned-command.mjs';
+import { captureOwnedCommand, runOwnedCommand } from '../lib/owned-command.mjs';
 
 const commandModuleUrl = new URL('../lib/command-execution.mjs', import.meta.url).href;
 const missingCommand = `skiff-missing-command-${process.pid}-${Date.now()}`;
@@ -357,6 +357,100 @@ test('owned commands safely normalize nonzero and synchronous spawn failures', a
       return true;
     },
   );
+});
+
+test('captured owned command returns outcomes without throwing for zero, nonzero, and spawn failure', async () => {
+  const success = await captureOwnedCommand(process.execPath, [
+    '--eval',
+    "process.stdout.write('out'); process.stderr.write('err')",
+  ]);
+  assert.deepEqual(success, {
+    code: 0,
+    signal: null,
+    stdout: 'out',
+    stderr: 'err',
+    error: null,
+  });
+
+  const nonzero = await captureOwnedCommand(process.execPath, [
+    '--eval',
+    "process.stdout.write('out'); process.stderr.write('err'); process.exit(19)",
+  ]);
+  assert.deepEqual(nonzero, {
+    code: 19,
+    signal: null,
+    stdout: 'out',
+    stderr: 'err',
+    error: null,
+  });
+
+  if (process.platform !== 'win32') {
+    const signalled = await captureOwnedCommand(process.execPath, [
+      '--eval',
+      "process.kill(process.pid, 'SIGTERM')",
+    ]);
+    assert.equal(signalled.code, null);
+    assert.equal(signalled.signal, 'SIGTERM');
+    assert.equal(signalled.error, null);
+  }
+
+  const missing = await captureOwnedCommand(missingCommand, ['secret-async-arg']);
+  assert.equal(missing.error.name, 'SpawnFailure');
+  assert.equal(missing.error.command, missingCommand);
+  assert.equal(missing.error.code, 'ENOENT');
+  assert.equal(Object.isFrozen(missing.error), true);
+  assert.equal(missing.stdout, '');
+  assert.equal(missing.stderr, '');
+});
+
+test('captured owned command aborts through a signal and terminates the process group', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-owned-capture-abort-'));
+  const grandchildMarker = join(fixture, 'grandchild-ran');
+  try {
+    const controller = new AbortController();
+    const script = [
+      `const { spawn } = require('node:child_process');`,
+      `const fs = require('node:fs');`,
+      `const marker = ${JSON.stringify(grandchildMarker)};`,
+      `spawn(process.execPath, ['--eval', 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], "ran"), 1500)', marker], { stdio: 'ignore' });`,
+      `setInterval(() => {}, 500);`,
+    ].join('\n');
+    const completion = captureOwnedCommand(process.execPath, ['--eval', script], {
+      signal: controller.signal,
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+    controller.abort(new Error('test abort'));
+    const outcome = await completion;
+    assert.equal(outcome.code, null);
+    assert.ok(
+      outcome.signal === 'SIGTERM' || outcome.signal === 'SIGKILL',
+      `unexpected termination signal ${outcome.signal}`,
+    );
+    assert.match(outcome.error.message, /test abort/);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 400));
+    await assert.rejects(access(grandchildMarker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('captured owned command reports an already-aborted signal without spawning', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('already aborted'));
+  const outcome = await captureOwnedCommand(process.execPath, [
+    '--eval',
+    'process.exit(0)',
+  ], {
+    signal: controller.signal,
+  });
+  assert.equal(outcome.code, null);
+  assert.equal(outcome.signal, null);
+  assert.equal(outcome.stdout, '');
+  assert.equal(outcome.stderr, '');
+  assert.equal(outcome.error.name, 'Error');
+  assert.match(outcome.error.message, /already aborted/);
 });
 
 test('checked errors hide child-written secrets by default but expose explicit streams', async () => {

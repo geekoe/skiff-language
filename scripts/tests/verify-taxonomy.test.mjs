@@ -49,7 +49,7 @@ test('ordinary selectors expose the two test domains and implementation subjects
 test('Skiff source tests have one canonical command and remain deduplicated', async () => {
   const focused = await buildVerifyPlan({ root, selectors: ['skiff-tests'] });
   assert.deepEqual(
-    focused.phases.map(({ id, kind, command, args, cwd }) => ({
+    focused.tasks.map(({ id, kind, command, args, cwd }) => ({
       id,
       kind,
       command,
@@ -70,17 +70,17 @@ test('Skiff source tests have one canonical command and remain deduplicated', as
     selectors: ['tests', 'skiff-tests', 'implementation-tests', 'compiler'],
   });
   assert.equal(
-    combined.phases.filter((phase) => phase.id === 'skiff-tests:canonical').length,
+    combined.tasks.filter((task) => task.id === 'skiff-tests:canonical').length,
     1,
   );
   assert.equal(
-    combined.phases.filter((phase) => phase.id === 'implementation:compiler:rust').length,
+    combined.tasks.filter((task) => task.id === 'implementation:compiler:rust').length,
     1,
   );
-  assert.equal(new Set(combined.phases.map(({ id }) => id)).size, combined.phases.length);
+  assert.equal(new Set(combined.tasks.map(({ id }) => id)).size, combined.tasks.length);
 });
 
-test('implementation tests expand by subject without static or live phases', async () => {
+test('implementation tests expand by subject without static or live tasks', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['implementation-tests'] });
   for (const id of [
     'implementation:foundation:rust',
@@ -92,33 +92,33 @@ test('implementation tests expand by subject without static or live phases', asy
     'implementation:tooling:dev-sync-fixture',
     'implementation:tooling:vscode-grammar',
   ]) {
-    assert.equal(plan.phases.filter((phase) => phase.id === id).length, 1, id);
+    assert.equal(plan.tasks.filter((task) => task.id === id).length, 1, id);
   }
-  const compilerBoundaryPhases = plan.phases.filter(
-    (phase) => phase.id === 'checks:compiler-boundaries',
+  const compilerBoundaryTasks = plan.tasks.filter(
+    (task) => task.id === 'checks:compiler-boundaries',
   );
   assert.equal(
-    compilerBoundaryPhases.length,
+    compilerBoundaryTasks.length,
     1,
     'the compiler subject owns its canonical boundary check',
   );
   assert.ok(
-    plan.phases.every(
-      (phase) =>
-        phase.kind.startsWith('implementation:') ||
-        phase.id === 'checks:compiler-boundaries',
+    plan.tasks.every(
+      (task) =>
+        task.kind.startsWith('implementation:') ||
+        task.id === 'checks:compiler-boundaries',
     ),
   );
-  assert.equal(plan.phases.some((phase) => phase.id === 'skiff-tests:canonical'), false);
-  assert.equal(plan.phases.some((phase) => phase.id.startsWith('rust-quality:')), false);
-  assert.equal(plan.phases.some((phase) => phase.id.includes(':type-check')), false);
+  assert.equal(plan.tasks.some((task) => task.id === 'skiff-tests:canonical'), false);
+  assert.equal(plan.tasks.some((task) => task.id.startsWith('rust-quality:')), false);
+  assert.equal(plan.tasks.some((task) => task.id.includes(':type-check')), false);
   assert.equal(
-    plan.phases.some(
-      (phase) => phase.id.startsWith('checks:') && phase.id !== 'checks:compiler-boundaries',
+    plan.tasks.some(
+      (task) => task.id.startsWith('checks:') && task.id !== 'checks:compiler-boundaries',
     ),
     false,
   );
-  assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
+  assert.equal(plan.tasks.some((task) => task.id.startsWith('live:')), false);
 });
 
 test('each focused implementation subject is independently usable', async () => {
@@ -129,17 +129,17 @@ test('each focused implementation subject is independently usable', async () => 
     'tooling',
   ]) {
     const plan = await buildVerifyPlan({ root, selectors: [selector] });
-    assert.ok(plan.phases.length > 0, selector);
+    assert.ok(plan.tasks.length > 0, selector);
     assert.ok(
-      plan.phases.every(
-        (phase) =>
-          phase.kind === `implementation:${selector}` ||
-          (selector === 'compiler' && phase.id === 'checks:compiler-boundaries'),
+      plan.tasks.every(
+        (task) =>
+          task.kind === `implementation:${selector}` ||
+          (selector === 'compiler' && task.id === 'checks:compiler-boundaries'),
       ),
       selector,
     );
     assert.equal(
-      plan.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+      plan.tasks.filter((task) => task.id === 'checks:compiler-boundaries').length,
       selector === 'compiler' ? 1 : 0,
       selector,
     );
@@ -171,7 +171,7 @@ test('every current Rust workspace package belongs to exactly one subject', asyn
 test('default tests and verify plans exclude explicit live/manual selectors', async () => {
   for (const selectors of [['tests'], ['verify']]) {
     const plan = await buildVerifyPlan({ root, selectors });
-    assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
+    assert.equal(plan.tasks.some((task) => task.id.startsWith('live:')), false);
   }
 });
 

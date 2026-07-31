@@ -79,9 +79,9 @@ export const ORDINARY_LEAF_SELECTORS = Object.freeze(
   leafSelectors(VERIFY_SELECTOR_GRAPH),
 );
 
-export function assertOrdinaryPhaseBuilderCoverage(builders) {
+export function assertOrdinaryTaskBuilderCoverage(builders) {
   if (!builders || typeof builders !== 'object' || Array.isArray(builders)) {
-    throw new Error('ordinary verify phase builders must be an object');
+    throw new Error('ordinary verify task builders must be an object');
   }
   const actual = Object.keys(builders).sort();
   const expected = [...ORDINARY_LEAF_SELECTORS].sort();
@@ -90,10 +90,10 @@ export function assertOrdinaryPhaseBuilderCoverage(builders) {
   if (missing.length > 0 || unexpected.length > 0) {
     throw new Error([
       missing.length > 0
-        ? `missing ordinary verify phase builder(s): ${missing.join(', ')}`
+        ? `missing ordinary verify task builder(s): ${missing.join(', ')}`
         : '',
       unexpected.length > 0
-        ? `unexpected ordinary verify phase builder(s): ${unexpected.join(', ')}`
+        ? `unexpected ordinary verify task builder(s): ${unexpected.join(', ')}`
         : '',
     ].filter(Boolean).join('; '));
   }

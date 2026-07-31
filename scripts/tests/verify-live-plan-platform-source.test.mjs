@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import test from 'node:test';
 
-import { liveSelectorPhases } from '../lib/verify-live-plan.mjs';
+import { liveSelectorTasks } from '../lib/verify-live-plan.mjs';
 
 test('runtime-live forwards the absolute repository root exactly once', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-platform-source-'));
@@ -30,7 +30,7 @@ test('runtime-live forwards the absolute repository root exactly once', async ()
       await chmod(path, 0o755);
     }
 
-    const [phase] = await liveSelectorPhases(root, 'runtime-live', {
+    const [task] = await liveSelectorTasks(root, 'runtime-live', {
       runtimeLiveActivationUrl: 'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
@@ -38,12 +38,12 @@ test('runtime-live forwards the absolute repository root exactly once', async ()
       runtimeLiveExpectedGeneration: '0',
       env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
     });
-    const indexes = phase.args
+    const indexes = task.args
       .map((value, index) => (value === '--platform-source-root' ? index : -1))
       .filter((index) => index >= 0);
-    assert.deepEqual(indexes, [phase.args.indexOf('--platform-source-root')]);
-    assert.equal(phase.args[indexes[0] + 1], root);
-    assert.equal(phase.cwd, root);
+    assert.deepEqual(indexes, [task.args.indexOf('--platform-source-root')]);
+    assert.equal(task.args[indexes[0] + 1], root);
+    assert.equal(task.cwd, root);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

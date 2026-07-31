@@ -1,6 +1,6 @@
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
-import { checkerPhases } from './verify-checkers.mjs';
+import { checkerTasks } from './verify-checkers.mjs';
 import { assertVerifyCatalogComplete } from './verify-live-catalog.mjs';
 import {
   LIVE_REGISTRY,
@@ -9,8 +9,8 @@ import {
   liveInvocationSelectors,
 } from './verify-live-registry.mjs';
 import {
-  assertRegistryPhaseMetadata,
-  liveSelectorPhases,
+  assertRegistryTaskMetadata,
+  liveSelectorTasks,
 } from './verify-live-plan.mjs';
 import {
   discoverScriptTests,
@@ -19,7 +19,7 @@ import {
   ORDINARY_LEAF_SELECTORS,
   ORDINARY_PUBLIC_SELECTORS,
   VERIFY_SELECTOR_GRAPH,
-  assertOrdinaryPhaseBuilderCoverage,
+  assertOrdinaryTaskBuilderCoverage,
 } from './verify-selector-graph.mjs';
 import {
   RUST_IMPLEMENTATION_SUBJECTS,
@@ -52,7 +52,7 @@ export async function buildVerifyPlan({
   await assertVerifyCatalogComplete(catalogRoot, { liveRegistry });
   const liveSelectors = liveInvocationSelectors(liveRegistry);
   const leaves = expandSelectors(selectors);
-  const builders = phaseBuilders({
+  const builders = taskBuilders({
     root,
     runtimeLiveActivationUrl,
     runtimeLiveIngressUrl,
@@ -64,7 +64,7 @@ export async function buildVerifyPlan({
     liveRegistry,
     liveSelectors,
   });
-  const phases = [];
+  const tasks = [];
   for (const leaf of leaves) {
     const builder = builders[leaf];
     if (!builder) {
@@ -72,12 +72,12 @@ export async function buildVerifyPlan({
         `invalid selector ${leaf}; expected one of ${PUBLIC_SELECTORS.join(', ')}`,
       );
     }
-    const leafPhases = await builder();
-    assertNonEmptyLeaf(leaf, leafPhases);
-    phases.push(...leafPhases);
+    const leafTasks = await builder();
+    assertNonEmptyLeaf(leaf, leafTasks);
+    tasks.push(...leafTasks);
   }
-  assertPlanIntegrity(phases);
-  return { selectors: [...selectors], phases };
+  assertPlanIntegrity(tasks);
+  return { selectors: [...selectors], tasks };
 }
 
 export function expandSelectors(selectors) {
@@ -89,73 +89,137 @@ export function expandSelectors(selectors) {
   return leaves;
 }
 
-export function assertPlanIntegrity(phases) {
-  if (!Array.isArray(phases) || phases.length === 0) {
-    throw new Error('verify plan must contain at least one phase');
+export function assertPlanIntegrity(tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    throw new Error('verify plan must contain at least one task');
   }
   const seenIds = new Set();
   const seenExecutions = new Map();
-  for (const phase of phases) {
+  for (const task of tasks) {
     if (
-      !isNonEmptyString(phase.id)
-      || !isNonEmptyString(phase.kind)
-      || !isNonEmptyString(phase.cwd)
+      !isNonEmptyString(task.id)
+      || !isNonEmptyString(task.kind)
+      || !isNonEmptyString(task.cwd)
     ) {
-      throw new Error(`invalid verify phase: ${JSON.stringify(phase)}`);
+      throw new Error(`invalid verify task: ${JSON.stringify(task)}`);
     }
-    if (seenIds.has(phase.id)) {
-      throw new Error(`duplicate verify phase id: ${phase.id}`);
+    if (seenIds.has(task.id)) {
+      throw new Error(`duplicate verify task id: ${task.id}`);
     }
-    seenIds.add(phase.id);
-    assertRegistryPhaseMetadata(phase);
+    seenIds.add(task.id);
+    assertRegistryTaskMetadata(task);
+    assertTaskSchedulingMetadata(task);
 
-    if (phase.preconditionError !== undefined) {
+    if (task.preconditionError !== undefined) {
       if (
-        !isNonEmptyString(phase.preconditionError)
-        || phase.command !== undefined
-        || phase.args !== undefined
-        || phase.displayArgs !== undefined
-        || phase.executionPreflight !== undefined
+        !isNonEmptyString(task.preconditionError)
+        || task.command !== undefined
+        || task.args !== undefined
+        || task.displayArgs !== undefined
+        || task.executionPreflight !== undefined
+        || task.mutation !== undefined
       ) {
-        throw new Error(`invalid blocked verify phase: ${JSON.stringify(phase)}`);
+        throw new Error(`invalid blocked verify task: ${JSON.stringify(task)}`);
       }
       continue;
     }
-    if (!isNonEmptyString(phase.command) || !Array.isArray(phase.args)) {
-      throw new Error(`invalid executable verify phase: ${JSON.stringify(phase)}`);
+    if (!isNonEmptyString(task.command) || !Array.isArray(task.args)) {
+      throw new Error(`invalid executable verify task: ${JSON.stringify(task)}`);
     }
-    if (!phase.args.every((arg) => typeof arg === 'string')) {
-      throw new Error(`invalid executable verify phase args: ${JSON.stringify(phase)}`);
+    if (!task.args.every((arg) => typeof arg === 'string')) {
+      throw new Error(`invalid executable verify task args: ${JSON.stringify(task)}`);
     }
-    if (phase.displayArgs !== undefined && (
-      !Array.isArray(phase.displayArgs)
-      || phase.displayArgs.length !== phase.args.length
-      || !phase.displayArgs.every((arg) => typeof arg === 'string')
+    if (task.displayArgs !== undefined && (
+      !Array.isArray(task.displayArgs)
+      || task.displayArgs.length !== task.args.length
+      || !task.displayArgs.every((arg) => typeof arg === 'string')
     )) {
-      throw new Error(`invalid verify phase displayArgs: ${JSON.stringify(phase)}`);
+      throw new Error(`invalid verify task displayArgs: ${JSON.stringify(task)}`);
     }
     if (
-      phase.executionPreflight !== undefined
-      && typeof phase.executionPreflight !== 'function'
+      task.executionPreflight !== undefined
+      && typeof task.executionPreflight !== 'function'
     ) {
-      throw new Error(`invalid verify phase executionPreflight: ${phase.id}`);
+      throw new Error(`invalid verify task executionPreflight: ${task.id}`);
     }
 
-    const execution = JSON.stringify([resolve(phase.cwd), phase.command, phase.args]);
+    const execution = JSON.stringify([resolve(task.cwd), task.command, task.args]);
     const previousId = seenExecutions.get(execution);
     if (previousId) {
       throw new Error(
-        `duplicate verify phase execution: ${previousId} and ${phase.id}`,
+        `duplicate verify task execution: ${previousId} and ${task.id}`,
       );
     }
-    seenExecutions.set(execution, phase.id);
+    seenExecutions.set(execution, task.id);
   }
 }
 
-export function assertNonEmptyLeaf(leaf, phases) {
-  if (!Array.isArray(phases) || phases.length === 0) {
-    throw new Error(`verify selector leaf ${leaf} produced no phases`);
+export function assertNonEmptyLeaf(leaf, tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    throw new Error(`verify selector leaf ${leaf} produced no tasks`);
   }
+}
+
+function assertTaskSchedulingMetadata(task) {
+  if (task.slots !== undefined && (!Number.isInteger(task.slots) || task.slots < 1)) {
+    throw new Error(`invalid verify task slots for ${task.id}: ${JSON.stringify(task.slots)}`);
+  }
+  if (task.exclusive !== undefined && typeof task.exclusive !== 'boolean') {
+    throw new Error(`invalid verify task exclusive for ${task.id}: ${JSON.stringify(task.exclusive)}`);
+  }
+  if (task.mutation !== undefined) {
+    assertMutationShape(task);
+    if (task.exclusive !== true) {
+      throw new Error(`mutating verify task must be exclusive: ${task.id}`);
+    }
+  }
+}
+
+function assertMutationShape(task) {
+  const mutation = task.mutation;
+  if (!mutation || typeof mutation !== 'object' || Array.isArray(mutation)) {
+    throw new Error(`invalid verify task mutation for ${task.id}: ${JSON.stringify(mutation)}`);
+  }
+  const keys = Object.keys(mutation).sort();
+  if (keys.join(',') !== 'paths,redirect') {
+    throw new Error(`invalid verify task mutation for ${task.id}: ${JSON.stringify(mutation)}`);
+  }
+  const { paths, redirect } = mutation;
+  if (
+    !Array.isArray(paths)
+    || paths.length === 0
+    || !paths.every(isRepoRelativePath)
+    || new Set(paths).size !== paths.length
+  ) {
+    throw new Error(`invalid verify task mutation paths for ${task.id}: ${JSON.stringify(paths)}`);
+  }
+  if (
+    !redirect
+    || typeof redirect !== 'object'
+    || Array.isArray(redirect)
+    || Object.keys(redirect).length === 0
+  ) {
+    throw new Error(`invalid verify task mutation redirect for ${task.id}: ${JSON.stringify(redirect)}`);
+  }
+  for (const [name, path] of Object.entries(redirect)) {
+    if (!isEnvVarName(name)) {
+      throw new Error(`invalid verify task mutation redirect key for ${task.id}: ${JSON.stringify(name)}`);
+    }
+    if (typeof path !== 'string' || !paths.includes(path)) {
+      throw new Error(`invalid verify task mutation redirect value for ${task.id}: ${JSON.stringify(path)}`);
+    }
+  }
+}
+
+function isRepoRelativePath(value) {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && !isAbsolute(value)
+    && !value.split('/').includes('..');
+}
+
+function isEnvVarName(value) {
+  return typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 function expandSelector(selector, leaves, seenLeaves, active) {
@@ -176,7 +240,7 @@ function expandSelector(selector, leaves, seenLeaves, active) {
   }
 }
 
-function phaseBuilders({
+function taskBuilders({
   root,
   runtimeLiveActivationUrl,
   runtimeLiveIngressUrl,
@@ -200,25 +264,25 @@ function phaseBuilders({
   };
   const builders = {
     'skiff-tests': async () => [
-      phase(root, 'skiff-tests:canonical', 'skiff-tests', 'node', [
+      task(root, 'skiff-tests:canonical', 'skiff-tests', 'node', [
         'scripts/run-skiff-tests.mjs',
       ]),
     ],
-    ...rustSubjectPhaseBuilders(root),
+    ...rustSubjectTaskBuilders(root),
     'rust-quality': async () => [
-      phase(root, 'rust-quality:format', 'rust-quality', 'cargo', [
+      task(root, 'rust-quality:format', 'rust-quality', 'cargo', [
         'fmt',
         '--all',
         '--',
         '--check',
       ]),
-      ...await checkerPhases(root, 'rust-quality'),
+      ...await checkerTasks(root, 'rust-quality'),
     ],
     'router-type-check': async () => [
-      packagePhase(root, 'router:type-check', 'router', 'router', ['run', 'type-check']),
+      packageTask(root, 'router:type-check', 'router', 'router', ['run', 'type-check']),
     ],
     'router-tests': async () => [
-      packagePhase(
+      packageTask(
         root,
         'implementation:router',
         'implementation:router',
@@ -227,7 +291,7 @@ function phaseBuilders({
       ),
     ],
     'telemetry-type-check': async () => [
-      packagePhase(
+      packageTask(
         root,
         'telemetry:type-check',
         'telemetry',
@@ -236,7 +300,7 @@ function phaseBuilders({
       ),
     ],
     'telemetry-tests': async () => [
-      packagePhase(
+      packageTask(
         root,
         'implementation:telemetry',
         'implementation:telemetry',
@@ -244,18 +308,18 @@ function phaseBuilders({
         ['test'],
       ),
     ],
-    'scripts-syntax': async () => checkerPhases(root, 'scripts-syntax', {
+    'scripts-syntax': async () => checkerTasks(root, 'scripts-syntax', {
       kind: 'scripts',
     }),
-    'scripts-tests': async () => scriptTestPhases(root),
-    'scripts-dev-sync': async () => checkerPhases(root, 'scripts-dev-sync', {
+    'scripts-tests': async () => scriptTestTasks(root),
+    'scripts-dev-sync': async () => checkerTasks(root, 'scripts-dev-sync', {
       kind: 'implementation:tooling',
     }),
     'vscode-type-check': async () => [
-      packagePhase(root, 'vscode:type-check', 'vscode', 'vscode', ['run', 'type-check']),
+      packageTask(root, 'vscode:type-check', 'vscode', 'vscode', ['run', 'type-check']),
     ],
     'vscode-grammar': async () => [
-      packagePhase(
+      packageTask(
         root,
         'implementation:tooling:vscode-grammar',
         'implementation:tooling',
@@ -263,18 +327,18 @@ function phaseBuilders({
         ['run', 'test:grammar'],
       ),
     ],
-    'checks-default': async () => checkerPhases(root, 'checks'),
-    'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
+    'checks-default': async () => checkerTasks(root, 'checks'),
+    'compiler-boundaries': async () => checkerTasks(root, 'compiler-boundaries'),
     'runtime-execution-boundaries': async () =>
-      checkerPhases(root, 'runtime-execution-boundaries', {
+      checkerTasks(root, 'runtime-execution-boundaries', {
         kind: 'implementation:runtime',
       }),
     'runtime-eval-error-boundary': async () =>
-      checkerPhases(root, 'runtime-eval-error-boundary', {
+      checkerTasks(root, 'runtime-eval-error-boundary', {
         kind: 'implementation:runtime',
       }),
   };
-  assertOrdinaryPhaseBuilderCoverage(builders);
+  assertOrdinaryTaskBuilderCoverage(builders);
   const ordinaryLeaves = new Set(ORDINARY_LEAF_SELECTORS);
   const selfTestSelectors = liveInvocationSelectors(liveRegistry, {
     tier: LIVE_TIERS.SELF_TEST,
@@ -286,30 +350,30 @@ function phaseBuilders({
     const ordinaryBuilder = builders[selector];
     builders[selector] = async () => [
       ...await ordinaryBuilder(),
-      ...await liveSelectorPhases(root, selector, registryOptions),
+      ...await liveSelectorTasks(root, selector, registryOptions),
     ];
   }
   for (const selector of liveSelectors) {
     if (Object.hasOwn(builders, selector)) {
-      throw new Error(`live selector conflicts with verify phase builder: ${selector}`);
+      throw new Error(`live selector conflicts with verify task builder: ${selector}`);
     }
     builders[selector] = async () =>
-      liveSelectorPhases(root, selector, registryOptions);
+      liveSelectorTasks(root, selector, registryOptions);
   }
   return builders;
 }
 
-function rustSubjectPhaseBuilders(root) {
+function rustSubjectTaskBuilders(root) {
   return Object.fromEntries(
     RUST_IMPLEMENTATION_SUBJECTS.map((subject) => [
       subject.leafSelector,
       async () => [
-        ...(await checkerPhases(root, subject.selector, {
+        ...(await checkerTasks(root, subject.selector, {
           kind: `implementation:${subject.selector}`,
         })),
-        phase(
+        task(
           root,
-          subject.phaseId,
+          subject.taskId,
           `implementation:${subject.selector}`,
           'cargo',
           rustSubjectTestArgs(subject),
@@ -319,13 +383,13 @@ function rustSubjectPhaseBuilders(root) {
   );
 }
 
-async function scriptTestPhases(root) {
+async function scriptTestTasks(root) {
   const files = await discoverScriptTests(root);
   if (files.length === 0) {
     return [];
   }
   return [
-    phase(
+    task(
       root,
       'implementation:tooling:scripts-tests',
       'implementation:tooling',
@@ -335,11 +399,11 @@ async function scriptTestPhases(root) {
   ];
 }
 
-function packagePhase(root, id, kind, directory, args) {
-  return phase(join(root, directory), id, kind, 'pnpm', args);
+function packageTask(root, id, kind, directory, args) {
+  return task(join(root, directory), id, kind, 'pnpm', args);
 }
 
-function phase(cwd, id, kind, command, args, options = {}) {
+function task(cwd, id, kind, command, args, options = {}) {
   return { id, kind, command, args, cwd, ...options };
 }
 
