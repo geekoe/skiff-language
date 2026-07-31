@@ -21,11 +21,11 @@
 | 内存收件箱 | actor 同步调用 | （不提供） |
 | 持久收件箱 | （不提供；拆成“已接收 + 订阅结果”） | DB 写入 + `spawn` 唤醒 |
 
-典型 actor 场景：协同编辑的操作排序、实时房间、在线 session、配额计数，以及对活跃 stream 的停止、替换和事件排序。完整 LLM 推理循环、长工具执行、聊天消息可靠接收仍属于数据面；其中正在运行的单个 model turn 可以同时用 actor 承载实时控制状态。actor 不能取代 thread、message、run 和 checkpoint 的持久化模型。
+典型 actor 场景：协同编辑的操作排序、实时房间、在线 session、配额计数，以及对活跃 stream 的停止、替换和事件排序。完整 LLM 推理循环、长工具执行、聊天消息可靠接收仍属于数据面；agent 场景中 thread 本身是 actor，正在运行的 model turn 是它的活跃方法。actor 不能取代 thread、message、run 和 checkpoint 的持久化模型。
 
 ## Actor 定义
 
-actor 是 `type` 的包裹与限制：`type` 声明字段 shape，`actor` 声明把同一个名字包裹成 actor 句柄，`impl` 提供这个包裹内的行为。actor 声明不创建第二个源码类型名，也不携带字段；字段只来自 attached type。actor 的特征是运行时唯一性，不是易失性；同一个 type 可以同时挂 `db object` 和 `actor`。
+actor 是 `type` 的包裹与限制：`type` 声明字段 shape，`actor` 声明把同一个名字包裹成 actor 句柄，`impl` 提供这个包裹内的行为。actor 声明不创建第二个源码类型名，也不携带字段；字段只来自 attached type。actor 的特征是运行时唯一性，不是易失性；v1 不允许同一个 type 同时挂 `db object` 和 `actor`（禁止双挂），持久状态通过独立 type 和显式 db 操作表达。
 
 ```skiff
 type DocHub {
@@ -56,10 +56,10 @@ impl DocHub {
 规则：
 
 - `actor X` 必须附着到同文件同名 `type X`；attached type 必须是非泛型 concrete record。`X` 既是字段 shape 的声明者，也是外部可持有的 actor 句柄类型。
-- 同一个 type 可以同时挂 `db object` 和 `actor`：持久事实与运行时唯一性由同一个 shape 表达。同时挂时，actor 的 `key(field)` 必须与 db object 的 primary key 是同一个字段，保证两个 attachment 指向同一 identity。
-- actor 字段是易失工作内存；即使 type 同时挂 `db object`，字段也不会自动持久化或自动回填，持久化仍通过显式 db 操作表达。
+- v1 禁止双挂：`actor X` 与 `db object X` 不能附着到同一个 type。持久事实通过独立 type 表达（可以出现在 actor 成员中），actor type 本身不声明任何存储元数据。
+- actor 字段是易失工作内存，不自动持久化、不自动回填；持久化完全通过 impl 中的显式 db 操作表达（典型模式：create 里 `db require` / `db insert` 加载或建立，方法里 `db update` 写回）。actor type 不区分 volatile / 持久字段；成员可以是任意可编码类型，包括带 `db object` 附着的 record 类型，成员本身不产生持久化语义。一个 actor 可以拥有任意多个这类成员。
 - actor 声明只描述 actor 面元数据：`key(field)` 和可选的 `create(...)`。成员方法不进 actor 声明，全部通过 `impl` 引入。
-- `key(field)` 指定 identity 字段：必须是 attached type 的 stored field，类型必须可稳定 canonical 编码。key 字段由平台在激活时写入，成员方法内只读。
+- `key(field)` 指定 identity 字段：必须是 attached type 的字段，类型必须可稳定 canonical 编码。key 字段由平台在激活时写入（create 执行前），成员方法内只读。key 与持久状态主键的对应关系由 impl 维护，v1 编译器不强制。
 - actor 字段在实例存活期间跨调用保留；实例消亡即丢失。
 - 需要跨实例存活的事实必须显式写 service-owned database。
 - actor 可以拥有任意满足边界编码要求的成员方法。`stop`、`supersede` 等名字没有平台特殊语义，只是具体 actor 的普通方法；平台操作走显式 intrinsic。
@@ -94,7 +94,7 @@ registry entry 保存创建输入，不保存实例状态：
 
 - entry 是激活所需的最小事实，不是持久层；router 重启后 entry 丢失，业务在入口路径用 `get` 从业务事实重建。
 - 实例状态的演化不写回 registry；idle 逐出后重新激活时，按 entry 保存的创建输入重新执行 create 构造初始状态，不恢复逐出前的内存状态。
-- create 不要求是纯函数：允许挂起读取外部状态。典型实现是"记录存在则加载、不存在则按创建输入建立"——当 type 同时挂 `db object` 时，create 内 `db require` 当前文档回填字段，缺失则 `db insert` / `db upsert` 建立初始记录。重新激活因此以数据库当前事实为准，而不是恢复旧内存快照。
+- create 不要求是纯函数：允许挂起读取外部状态。典型实现是“记录存在则加载、不存在则按创建输入建立”——当 actor 需要持久状态时，create 内用 `db require` / `db find` 加载对应 db object 并回填成员，缺失则 `db insert` / `db upsert` 建立初始记录。重新激活因此以数据库当前事实为准，而不是恢复旧内存快照。
 
 ## 常驻实例与协程并发
 
@@ -117,25 +117,25 @@ dispatch 的调用即使被保守标记为可能挂起，也不会因此在调�
 response尚未就绪、调用实际等待时才释放executor。callee实现内部的推断summary只可供其owner
 runtime选择执行机制，不改变caller侧这一规则，也不属于ServiceContract。
 
-长生命周期成员方法是合法的，只要它通过异步 IO、stream next 等真实等待周期性释放执行权。方法之间可以交错，业务不维护 generation 字段：
+长生命周期成员方法是合法的，只要它通过异步 IO、stream next 等真实等待周期性释放执行权。方法之间可以交错，业务不维护 generation 字段。在 agent 场景中，这个 actor 就是 thread：
 
 ```skiff
-type ActiveTurn {
+type Thread {
   id: string
   running: bool
 }
 
-actor ActiveTurn {
+actor Thread {
   key(id)
   create()
 }
 
-impl ActiveTurn {
-  function create(self: ActiveTurn) -> void {
+impl Thread {
+  function create(self: Thread) -> void {
     self.running = false
   }
 
-  function run(self: ActiveTurn, request: LlmRequest) -> void {
+  function run(self: Thread, request: LlmRequest) -> void {
     self.running = true
     for delta in llm.stream(request) {
       events.send(delta)
@@ -143,7 +143,7 @@ impl ActiveTurn {
     self.running = false
   }
 
-  function isRunning(self: ActiveTurn) -> bool {
+  function isRunning(self: Thread) -> bool {
     return self.running
   }
 }
@@ -151,7 +151,7 @@ impl ActiveTurn {
 
 `stream.next()` 是潜在 suspension point：下一项已经缓冲时立即返回且不释放执行权，尚未到达时才挂起。因此 `run` 在等待 provider 时，同实例的其它方法（如 `isRunning`）可以执行。编译器仍将包含该操作的方法标记为 `maySuspend`，因为是否等待是运行时事实。
 
-第一版不提供业务侧取消：长方法只能运行到正常结束，或由实例生命周期机制（逐出、升级）终止。`stop`、`cancel` 等名字没有平台特殊语义；未来需要业务打断时，再以显式平台操作引入。
+第一版不提供平台级业务打断：长方法只能运行到正常结束，或由实例生命周期机制（逐出、升级）终止；挂起点不会被平台强制终止（ancestor cancellation 除外）。`stop`、`cancel` 等名字没有平台特殊语义。业务需要取消时，用普通方法设置标记字段，业务逻辑在自身的检查点读取该字段协作退出。
 
 runtime 在实例内部维护不暴露给业务的内部状态（如 incarnation epoch）。业务源码里不存在 generation 字段，也没有其它等价手工计数；跨 suspension point 的假设通过恢复后重新读取字段表达。
 
@@ -183,20 +183,21 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 
 ## 生命周期与恢复
 
-- 没有 active method 且在配置的 idle TTL 内无人访问时实例为 idle；runtime 可以自动逐出 idle 实例。典型 TTL 是数分钟，不属于业务正确性承诺。
+- 逐出的安全条件是实例没有 active method（包括没有 suspended method）：有方法在执行或挂起时不能逐出，v1 没有平台级打断可以终止它。满足安全条件且 idle TTL 内无人访问时实例为 idle，runtime 可以自动逐出。安全条件回答“可以销毁”，TTL 回答“何时销毁”，避免逐出后立即重新激活的颠簸。典型 TTL 是数分钟，不属于业务正确性承诺。
 - 正常 idle 逐出只清理 live 内存，不删除 registry entry；下次调用按 entry 保存的创建输入重新激活。
 - `upgrading` incarnation 即使有 suspended method 也会在这些方法到达安全点并退出后逐出。
 - owner runtime 断连或 crash：排队与执行中的调用以平台错误返回调用方；实例状态丢失；下一个调用按创建输入重新激活。
 - 平台不持久化待执行调用队列。可靠投递、重试和补偿属于数据面。
+- 身份删除（移除 registry entry 并清理持久状态）不在 v1 提供，需要显式操作：quiescence 只是必要条件——句柄仍可能被持有、spawned call 可能还在路上、持久状态需要业务清理，这些都不能从实例状态推导。
 
 ## 边界规则
 
 - actor 声明把 attached type 的名字包裹成外部可持有的 actor 句柄类型；源码不存在额外的
   `ActorRef<T>`包装。例如`UserActor`既用于方法签名中的类型声明，也表示一个具体
   `UserActor`实例的可路由句柄。
-- actor句柄只能用于调用actor方法：不能在外部读写actor字段（key字段同样只读），不能按普通值构造，不能写入DB，
-  不能进入公开API payload。Runtime可以继续用内部`ActorRef`结构保存actor type、actor id和路由
-  capability，但该结构不是Skiff源码类型。
+- actor 句柄只能用于调用 actor 方法：外部代码获得句柄后不能访问成员变量（key 字段同样只读），不能按普通值构造，不能写入 DB，
+  不能进入公开 API payload。Runtime 可以继续用内部 `ActorRef` 结构保存 actor type、actor id 和路由
+  capability，但该结构不是 Skiff 源码类型。
 - 方法参数与返回值必须可编码，不能携带 request-local handle。
 - actor 字段只能由 owner actor executor 上的成员方法访问；后台 task 不得绕过 actor 调用直接持有可变字段引用。
 - actor 的 `impl` 必须与 actor 声明同文件：成员方法集合是 actor ABI 的一部分，跨文件 impl 会让 ABI 扫描面扩散；普通 type 的 impl 不受此限制。
