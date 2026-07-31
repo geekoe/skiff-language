@@ -556,6 +556,10 @@
       "item": "fn std_builtin_type_declarations"
     },
     {
+      "path": "runtime/driver/eval/tests/program_execution/tail_call_execution.rs",
+      "item": "fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_exception"
+    },
+    {
       "path": "runtime/host/src/error/tests.rs",
       "item": "fn phase6_cross_crate_error_code_and_catch_golden_matrix"
     },
