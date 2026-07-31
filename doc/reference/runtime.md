@@ -51,6 +51,53 @@ Unary request 在 response end、response error、timeout 或runtime内部停止
 
 Request 结束后，request heap、call frames、slot values、lane state、exception envelope 和 request-local stream / resource handle 全部清理。Heap handle、`Exception<E>`、`CatchResult<T, E>` 和 request-local stream 不能逃逸到 request 结束之后。
 
+### Tail-call execution and recursive stack safety
+
+Skiff保证一类明确的本地尾调用不随递归次数增加程序调用深度或宿主native stack。一个调用只有同时满足以下
+条件才属于这项保证：
+
+- 它是显式`return`的完整返回表达式，例如`return next(value)`；位于普通nested block、`if`、statement
+  `match`或普通loop body中的显式`return`适用同一规则。
+- linked target是当前program中的exact executable。它可以是direct self、mutual recursion、同一Package
+  跨source module的function或静态解析的impl method；不要求callee与caller是同一个symbol。
+- caller与callee在当前generic substitution下的return plan canonical-equivalent，因此删除caller frame
+  不会跳过representation、nominal identity、union branch或container carrier materialization。
+- 调用点没有仍需在callee完成后运行的catch、timeout、transaction、concurrent join、stream cleanup或其它
+  lexical continuation。
+
+括号不改变上述位置。下面的调用不是这项保证中的尾调用：
+
+- `return 1 + recurse()`、`return wrap(recurse())`中的内层调用、作为另一个调用参数的调用，以及
+  constructor、representation wrap、interface box或其它结果转换内的调用；
+- `return catch<E>(recurse())`中的try expression，因为caller仍需生成`CatchResult`；
+- `timeout(...)`、DB transaction/lease、`concurrent` lane/value或尚未完成stream consumer cleanup中的调用；
+- deferred stream producer、service call、Actor dispatch、callback capability、native/builtin或尚未解析为
+  exact local executable的interface dispatch；
+- `spawn`与`emit`；前者创建独立request work，后者的参数求值不是callable return。
+
+`maySuspend`本身不是尾调用障碍。Exact local callee可以在同一个request、execution scope、heap和Actor
+execution frame内挂起并恢复；只有真实pending work适用既有suspension规则。Actor method内对local helper的
+exact executable调用可以是尾调用，但Actor dispatch本身不能越过owner、admission或epoch边界。
+
+尾转移仍按普通调用逐次计入instruction budget，并在每个callee function entry执行deadline、internal stop
+和budget checkpoint。无限尾递归因此必须被既有execution budget有界终止，不能因为不增长stack而逃逸。
+参数继续在caller环境中按源码顺序求值且只求值一次；转移后callee复用同一request heap，最终结果只按共同的
+return plan物化一次。
+
+异常诊断不为每个已消除的尾调用保留一帧。Runtime保留真实non-tail caller前缀，并把当前tail-transfer site
+用于该转移本身的错误归因；更早、已消除的tail site不进入最终stack trace。这样错误栈与执行空间都保持有界，
+`throw`/`rethrow`的payload、catch identity、`traceId`和`errorId`仍遵守本文件的错误规则。
+
+不满足尾调用条件的普通本地调用保持现有求值顺序和return materialization。只要实现仍以nested native
+future执行这些调用，runtime就必须在安全native stack边界之前以结构化
+`ResourceLimitExceeded(resource = "programCallDepth")`失败；该保护只统计真实active non-tail program
+frames，不能用于限制或模拟合格尾递归。当前保护值是runtime safety implementation detail，不是语言关键字、
+manifest字段或用户可配置budget；错误payload报告本次实际执行的limit。
+
+内部owner、trampoline与验证契约见
+[`../architecture/tail-call-execution.md`](../architecture/tail-call-execution.md)。该architecture文档不另行
+定义tail position或用户可观察递归语义。
+
 ## 3. Runtime transport model
 
 Runtime 内部transport分别表达service operation dispatch与typed gateway entry dispatch，不把raw
