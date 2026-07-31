@@ -792,11 +792,21 @@ fn interface_conformance_accepts_non_suspending_and_suspending_implementations()
 fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
     let model = analyze(
         r#"
-            actor Worker id string {
-              label: string
+            type Worker {
+              id: string,
+              label: string,
+            }
+
+            actor Worker {
+              key(id)
+              create(label: string)
             }
 
             impl Worker {
+              function create(self: Worker, label: string) -> void {
+                self.label = label
+              }
+
               function handle(self: Worker, value: string) -> string {
                 return value
               }

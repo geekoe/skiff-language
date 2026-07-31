@@ -5,9 +5,9 @@ use std::{
 
 use crate::file_ir::{assign_file_ir_identity, FileIrUnit};
 use skiff_artifact_model::{
-    ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
-    ActorImplementationIdentity, ActorPublicMethodIr, FunctionTypeParamIr,
-    ACTOR_RUNTIME_ABI_VERSION_V1,
+    ActorAbiInput, ActorCreateImplementationIr, ActorCreateSignatureIr, ActorDeclarationIr,
+    ActorFieldEncodingIr, ActorFieldIr, ActorImplementationIdentity, ActorPublicMethodIr,
+    FunctionTypeParamIr, TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_compiler_source::{
     parsed_sources::{parse_publication_sources, ParsedCompilerSource},
@@ -23,7 +23,7 @@ use skiff_compiler_source::{
     SourceExecutionSemantics, SourceInterfaceSignatureFacts, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
-    ast::{ConstDecl, SourceFile},
+    ast::{ActorCreateDecl, ConstDecl, FunctionDecl, SourceFile},
     error::{CompileError, Result},
     parser::parse_source,
 };
@@ -398,6 +398,7 @@ fn lower_source_file_ir_unit(
     let empty_service_calls = LoweredServiceCalls::default();
     let service_calls = service_calls.unwrap_or(&empty_service_calls);
     validate_supported_top_level(ast)?;
+    super::actor_method_validation::validate_actor_source_rules(ast)?;
 
     let type_indices = type_indices(ast);
     let const_indices = const_indices(&ast.consts);
@@ -516,6 +517,7 @@ fn lower_source_file_ir_unit(
         &mut unit,
         &mut next_span_id,
     )?;
+    super::actor_method_validation::validate_actor_method_ir_rules(&unit)?;
     unit.required_receiver_builtin_capability_version =
         required_receiver_builtin_capability_version(&unit);
     unit.external_refs.service_call_refs =
@@ -644,17 +646,17 @@ fn lower_actor_declarations(
     unit: &mut FileIrUnit,
 ) -> Result<()> {
     for actor in &ast.actors {
-        let actor_id_type = crate::type_lowering::lower_type_ref(
-            &actor.id_type,
-            type_indices,
-            local_db_objects,
-            publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            source_alias_targets,
-            crate::type_lowering::TypeLoweringContext::value(),
-        )?;
-        let fields = actor
+        let attached_type = ast
+            .types
+            .iter()
+            .find(|ty| ty.name == actor.name)
+            .ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "actor {} requires a same-file type declaration",
+                    actor.name
+                ))
+            })?;
+        let fields = attached_type
             .fields
             .iter()
             .map(|field| {
@@ -674,12 +676,87 @@ fn lower_actor_declarations(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        if actor.create.is_none()
+            && fields
+                .iter()
+                .any(|field| field.name != actor.key_field)
+        {
+            return Err(CompileError::Semantic(format!(
+                "actor {} must declare create(...) because attached type has non-key fields",
+                actor.name
+            )));
+        }
+        let actor_id_type = fields
+            .iter()
+            .find(|field| field.name == actor.key_field)
+            .map(|field| field.ty.clone())
+            .ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "actor {} key({}) must name a field of the attached type",
+                    actor.name, actor.key_field
+                ))
+            })?;
+        validate_actor_key_type(&actor_id_type, &actor.name)?;
+
+        let create_candidates = ast
+            .impls
+            .iter()
+            .filter(|implementation| implementation.target == actor.name)
+            .flat_map(|implementation| implementation.method_bodies.iter())
+            .filter(|method| !method.is_static && method.name == "create")
+            .collect::<Vec<_>>();
+        if let Some(create_decl) = actor.create.as_ref() {
+            if create_candidates.is_empty() {
+                return Err(CompileError::Semantic(format!(
+                    "actor {} declares create(...) but its impl has no create method",
+                    actor.name
+                )));
+            }
+            if create_candidates.len() > 1 {
+                return Err(CompileError::Semantic(format!(
+                    "actor {} impl declares create more than once",
+                    actor.name
+                )));
+            }
+            validate_actor_create_signature(actor, create_decl, create_candidates[0])?;
+        } else if !create_candidates.is_empty() {
+            return Err(CompileError::Semantic(format!(
+                "actor {} omits create(...) but its impl declares a create method; \
+                 create is required when the attached type has non-key fields",
+                actor.name
+            )));
+        }
+        let create_implementation = create_candidates
+            .first()
+            .map(|method| {
+                let declaration_name = impl_method_declaration_name(&actor.name, &method.name);
+                let executable_index = executable_index
+                    .entry(&declaration_name)
+                    .ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "missing semantic executable index for Actor create `{declaration_name}`"
+                        ))
+                    })?
+                    .executable_index;
+                let identity = skiff_artifact_identity::actor_method_identity(
+                    module_path,
+                    &actor.name,
+                    &method.name,
+                )
+                .map_err(|error| CompileError::Semantic(error.to_string()))?;
+                Ok(ActorCreateImplementationIr {
+                    identity,
+                    executable_index,
+                })
+            })
+            .transpose()?;
+
         let actor_methods = ast
             .impls
             .iter()
             .filter(|implementation| implementation.target == actor.name)
             .flat_map(|implementation| implementation.method_bodies.iter())
-            .filter(|method| !method.is_static)
+            .filter(|method| !method.is_static && method.name != "create")
             .map(|method| {
                 let declaration_name = impl_method_declaration_name(&actor.name, &method.name);
                 let executable_index = executable_index
@@ -726,7 +803,32 @@ fn lower_actor_declarations(
         let abi = ActorAbiInput {
             actor_name: actor.name.clone(),
             actor_id_type,
+            key_field: actor.key_field.clone(),
             fields,
+            create: actor.create.as_ref().map(|create| {
+                Ok(ActorCreateSignatureIr {
+                    parameters: create
+                        .params
+                        .iter()
+                        .map(|param| {
+                            Ok(FunctionTypeParamIr {
+                                name: param.name.clone(),
+                                ty: crate::type_lowering::lower_type_ref(
+                                    &param.ty,
+                                    type_indices,
+                                    local_db_objects,
+                                    publication_db_metadata,
+                                    package_aliases,
+                                    external_type_symbols,
+                                    source_alias_targets,
+                                    crate::type_lowering::TypeLoweringContext::value(),
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                })
+            })
+            .transpose()?,
             public_methods: actor_methods
                 .iter()
                 .map(|(method, _, _)| method.clone())
@@ -747,7 +849,66 @@ fn lower_actor_declarations(
                 .into_iter()
                 .map(|(_, identity, executable_index)| (identity, executable_index))
                 .collect(),
+            create_implementation,
         });
+    }
+    Ok(())
+}
+
+fn validate_actor_create_signature(
+    actor: &skiff_syntax::ast::ActorDecl,
+    declaration: &ActorCreateDecl,
+    method: &FunctionDecl,
+) -> Result<()> {
+    let mut impl_params = method.params.iter();
+    if method.implicit_self.is_none() {
+        impl_params.next();
+    }
+    let impl_params = impl_params.collect::<Vec<_>>();
+    if impl_params.len() != declaration.params.len() {
+        return Err(CompileError::Semantic(format!(
+            "actor {} create(...) declaration has {} parameter(s) but impl create has {}",
+            actor.name,
+            declaration.params.len(),
+            impl_params.len()
+        )));
+    }
+    for (impl_param, declared) in impl_params.iter().zip(&declaration.params) {
+        if impl_param.name != declared.name || impl_param.ty.name != declared.ty.name {
+            return Err(CompileError::Semantic(format!(
+                "actor {} create(...) declaration parameter `{}: {}` does not match impl parameter `{}: {}`",
+                actor.name,
+                declared.name,
+                declared.ty.name,
+                impl_param.name,
+                impl_param.ty.name
+            )));
+        }
+    }
+    if method.return_type.name != "void" {
+        return Err(CompileError::Semantic(format!(
+            "actor {} create must return void",
+            actor.name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_actor_key_type(ty: &TypeRefIr, actor_name: &str) -> Result<()> {
+    let unsupported = match ty {
+        TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => Some("interface or function"),
+        TypeRefIr::Builtin { name, .. }
+            if matches!(name.as_str(), "unknown" | "void" | "never") =>
+        {
+            Some(name.as_str())
+        }
+        _ => None,
+    };
+    if let Some(reason) = unsupported {
+        return Err(CompileError::Semantic(format!(
+            "actor {} key field type must support stable canonical encoding; {reason} does not",
+            actor_name
+        )));
     }
     Ok(())
 }

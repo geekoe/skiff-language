@@ -608,36 +608,47 @@ impl TypeResolutionModel {
     ) -> Option<ActorTypeResolution> {
         let key = self.actual_receiver_symbol(ty, context)?;
         let resolution = self.source_types.get(&key)?;
-        let SourceTypeKind::Actor { id_type, fields } = &resolution.kind else {
+        let SourceTypeKind::Actor {
+            key_field,
+            fields,
+            create,
+        } = &resolution.kind
+        else {
             return None;
         };
         let declaration_context = TypeResolutionContext::source(&resolution.module_path);
-        let id_type = self
-            .resolve_type_text(id_type, &declaration_context)
-            .ok()
-            .map(|resolved| {
-                if resolution.module_path == context.module_path {
-                    resolved
-                } else {
-                    self.externalize_local_type_refs(&resolved, &resolution.module_path)
-                }
-            })?;
+        let resolve_field = |name: &str, ty: &str| {
+            let resolved = self.resolve_type_text(ty, &declaration_context).ok()?;
+            let resolved = if resolution.module_path == context.module_path {
+                resolved
+            } else {
+                self.externalize_local_type_refs(&resolved, &resolution.module_path)
+            };
+            Some((name.to_string(), resolved))
+        };
+        let key_type = fields.get(key_field)?;
+        let id_type = resolve_field(key_field, key_type).map(|(_, ty)| ty)?;
         let fields = fields
             .iter()
-            .map(|(name, ty)| {
-                let resolved = self.resolve_type_text(ty, &declaration_context).ok()?;
-                let resolved = if resolution.module_path == context.module_path {
-                    resolved
-                } else {
-                    self.externalize_local_type_refs(&resolved, &resolution.module_path)
-                };
-                Some((name.clone(), resolved))
-            })
+            .map(|(name, ty)| resolve_field(name, ty))
             .collect::<Option<BTreeMap<_, _>>>()?;
+        let create = match create.as_ref() {
+            Some(params) => Some(
+                params
+                    .iter()
+                    .map(|(name, ty)| resolve_field(name, ty))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            None => None,
+        };
         Some(ActorTypeResolution {
             ty: ty.clone(),
+            name: resolution.name.clone(),
+            module_path: resolution.module_path.clone(),
             id_type,
+            key_field: key_field.clone(),
             fields,
+            create,
         })
     }
 
@@ -789,7 +800,7 @@ impl TypeResolutionModel {
             } => (fields, canonical_fields),
             SourceTypeKind::Actor { .. } => {
                 return Err(format!(
-                    "actor `{}` is a nominal handle and cannot be constructed directly; use std.actor.getOrCreate or std.actor.replace",
+                    "actor `{}` is a nominal handle and cannot be constructed directly; use std.actor.get",
                     target
                 ));
             }

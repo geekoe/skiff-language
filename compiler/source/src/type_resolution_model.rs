@@ -148,8 +148,9 @@ enum SourceTypeKind {
         canonical_fields: Option<BTreeMap<String, TypeRefIr>>,
     },
     Actor {
-        id_type: String,
+        key_field: String,
         fields: BTreeMap<String, String>,
+        create: Option<Vec<(String, String)>>,
     },
     Representation {
         target: String,
@@ -292,8 +293,12 @@ pub struct ConstructorTargetResolution {
 #[derive(Clone, Debug)]
 pub struct ActorTypeResolution {
     pub ty: ResolvedTypeRef,
+    pub name: String,
+    pub module_path: String,
     pub id_type: ResolvedTypeRef,
+    pub key_field: String,
     pub fields: BTreeMap<String, ResolvedTypeRef>,
+    pub create: Option<Vec<(String, ResolvedTypeRef)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1548,6 +1553,17 @@ fn index_source_types(
         );
     }
     for actor in &ast.actors {
+        let attached_fields = ast
+            .types
+            .iter()
+            .find(|ty| ty.name == actor.name)
+            .map(|ty| {
+                ty.fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.name.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         source_types.insert(
             SourceSymbolKey::new(module_path, &actor.name),
             SourceTypeResolution {
@@ -1555,12 +1571,15 @@ fn index_source_types(
                 type_params: Vec::new(),
                 local_type_names: BTreeSet::new(),
                 kind: SourceTypeKind::Actor {
-                    id_type: actor.id_type.name.clone(),
-                    fields: actor
-                        .fields
-                        .iter()
-                        .map(|field| (field.name.clone(), field.ty.name.clone()))
-                        .collect(),
+                    key_field: actor.key_field.clone(),
+                    fields: attached_fields,
+                    create: actor.create.as_ref().map(|create| {
+                        create
+                            .params
+                            .iter()
+                            .map(|param| (param.name.clone(), param.ty.name.clone()))
+                            .collect::<Vec<_>>()
+                    }),
                 },
                 module_path: module_path.to_string(),
                 public_path: None,

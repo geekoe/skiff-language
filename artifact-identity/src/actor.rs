@@ -171,12 +171,24 @@ pub fn actor_implementation_identity(
             "actor method implementations do not exactly match its public method identities",
         ));
     }
+    if let Some(create) = actor.create_implementation.as_ref() {
+        if public_ids.contains(&create.identity) {
+            return Err(invalid_actor_input(
+                "actor create implementation identity must not be a public method identity",
+            ));
+        }
+    }
 
     let mut roots = BTreeMap::new();
     let mut pending = Vec::new();
     for (method, index) in &actor.method_implementations {
         let key = executable_key(owner, *index)?;
         roots.insert(method.clone(), key.clone());
+        pending.push(key);
+    }
+    if let Some(create) = actor.create_implementation.as_ref() {
+        let key = executable_key(owner, create.executable_index)?;
+        roots.insert(create.identity.clone(), key.clone());
         pending.push(key);
     }
 

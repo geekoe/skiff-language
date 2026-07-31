@@ -82,10 +82,7 @@ const fn escaping_suspending_native(binding_key: &'static str) -> NativeCallable
 }
 
 pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
-    detached_native("std.actor.getOrCreate", true),
-    detached_native("std.actor.replace", true),
-    detached_native("std.actor.find", true),
-    detached_native("std.actor.remove", true),
+    detached_native("std.actor.get", true),
     detached_scalar_native("core.array.empty"),
     detached_scalar_native("core.map.empty"),
     detached_scalar_native("core.bytes.concat"),
@@ -140,7 +137,6 @@ pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCal
 
 const T0: NativeSignatureTypeExpr = NativeSignatureTypeExpr::TypeParam(0);
 const T1: NativeSignatureTypeExpr = NativeSignatureTypeExpr::TypeParam(1);
-const T2: NativeSignatureTypeExpr = NativeSignatureTypeExpr::TypeParam(2);
 const STRING: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("string");
 const BOOL: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("bool");
 const NUMBER: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("number");
@@ -216,36 +212,12 @@ const RESOURCE_INFO: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package 
 };
 pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
     NativeSignatureDef {
-        target: "std.actor.getOrCreate",
-        binding_key: "std.actor.getOrCreate",
-        aliases: &[],
-        type_param_count: 3,
-        params: &[T1, T2],
-        return_type: T0,
-    },
-    NativeSignatureDef {
-        target: "std.actor.replace",
-        binding_key: "std.actor.replace",
-        aliases: &[],
-        type_param_count: 3,
-        params: &[T1, T2],
-        return_type: T0,
-    },
-    NativeSignatureDef {
-        target: "std.actor.find",
-        binding_key: "std.actor.find",
+        target: "std.actor.get",
+        binding_key: "std.actor.get",
         aliases: &[],
         type_param_count: 2,
         params: &[T1],
-        return_type: NativeSignatureTypeExpr::Nullable(&T0),
-    },
-    NativeSignatureDef {
-        target: "std.actor.remove",
-        binding_key: "std.actor.remove",
-        aliases: &[],
-        type_param_count: 2,
-        params: &[T1],
-        return_type: BOOL,
+        return_type: T0,
     },
     NativeSignatureDef {
         target: "Array.empty",

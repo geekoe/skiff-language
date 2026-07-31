@@ -202,11 +202,21 @@ fn rejects_non_bool_while_condition() {
 fn actor_self_field_assignment_requires_declared_field_type() {
     let error = expression_type_result(
         r#"
-              actor Counter id string {
+              type Counter {
+                id: string,
                 count: number,
               }
 
+              actor Counter {
+                key(id)
+                create()
+              }
+
               impl Counter {
+                function create() -> void {
+                  self.count = 0
+                }
+
                 function corrupt() -> void {
                   self.count = "not a number"
                 }
@@ -227,23 +237,29 @@ fn actor_self_field_assignment_requires_declared_field_type() {
 fn explicit_actor_registry_intrinsics_return_nominal_handles() {
     expression_type_result(
         r#"
-              actor UserActor id string {
+              type UserActor {
+                id: string,
                 displayName: string,
                 loginCount: number,
               }
 
+              actor UserActor {
+                key(id)
+                create(displayName: string, loginCount: number)
+              }
+
               impl UserActor {
+                function create(self: UserActor, displayName: string, loginCount: number) -> void {
+                  self.displayName = displayName
+                  self.loginCount = loginCount
+                }
+
                 function label() -> string { return self.displayName }
               }
 
               function load(id: string) -> UserActor {
-                const actor: UserActor = std.actor.getOrCreate<UserActor>(
-                  id,
-                  { displayName: "Ada", loginCount: 1 }
-                )
+                const actor: UserActor = std.actor.get<UserActor>(id, "Ada", 1)
                 const label: string = actor.label()
-                const found: UserActor? = std.actor.find<UserActor>(id)
-                const removed: bool = std.actor.remove<UserActor>(id)
                 return actor
               }
             "#,
@@ -256,13 +272,14 @@ fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
     let error = expression_type_result(
         r#"
               type User { id: string }
-              actor UserActor id string { displayName: string }
+              type UserActor { id: string, displayName: string }
+              actor UserActor { key(id) create(displayName: string) }
 
               function invalid() -> void {
-                std.actor.find<User>("u1")
-                std.actor.find<UserActor>(42)
-                std.actor.replace<UserActor>("u1", { displayName: 42 })
-                const actor = std.actor.getOrCreate<UserActor>("u1", { displayName: "Ada" })
+                std.actor.get<User>("u1")
+                std.actor.get<UserActor>(42, "Ada")
+                std.actor.get<UserActor>("u1", 42)
+                const actor = std.actor.get<UserActor>("u1", "Ada")
                 const leaked = actor.displayName
                 const stored = db require UserActor("u1")
               }
@@ -272,10 +289,7 @@ fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
     let message = error.message();
     assert!(message.contains("is not an actor declaration"), "{message}");
     assert!(message.contains("argument 1"), "{message}");
-    assert!(
-        message.contains("argument 2 object literal field"),
-        "{message}"
-    );
+    assert!(message.contains("argument 2"), "{message}");
     assert!(message.contains("unknown field `displayName`"), "{message}");
     assert!(
         message.contains("cannot be used as a database object"),
@@ -287,7 +301,8 @@ fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
 fn explicit_actor_cannot_be_constructed_as_a_record() {
     let error = expression_type_result(
         r#"
-              actor UserActor id string { displayName: string }
+              type UserActor { id: string, displayName: string }
+              actor UserActor { key(id) create(displayName: string) }
               function invalid() -> UserActor {
                 return UserActor { displayName: "Ada" }
               }
@@ -740,7 +755,8 @@ fn self_field_resolution_keeps_actor_and_record_owners_distinct() {
         r#"
               type User { name: string }
               type Box<T> { value: T }
-              actor UserActor id string { name: string }
+              type UserActor { id: string, name: string }
+              actor UserActor { key(id) create() }
 
               impl User {
                 function name() -> string { return self.name }
@@ -749,6 +765,7 @@ fn self_field_resolution_keeps_actor_and_record_owners_distinct() {
                 function get() -> T { return self.value }
               }
               impl UserActor {
+                function create() -> void { self.name = "" }
                 function name() -> string { return self.name }
               }
             "#,
@@ -758,12 +775,14 @@ fn self_field_resolution_keeps_actor_and_record_owners_distinct() {
     let error = expression_type_result(
         r#"
               type User { name: string }
-              actor UserActor id string { name: string }
+              type UserActor { id: string, name: string }
+              actor UserActor { key(id) create() }
 
               impl User {
                 function invalid() -> string { return self.missing }
               }
               impl UserActor {
+                function create() -> void { self.name = "" }
                 function invalid() -> string { return self.missing }
               }
             "#,

@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     ast::{
-        ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage, ConstDecl,
+        ActorCreateDecl, ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage, ConstDecl,
         DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection, DbIndexEntry,
         DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead,
         DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection,
@@ -235,25 +235,65 @@ fn validate_type_decl_discriminator(
     Ok(())
 }
 
-fn reject_duplicate_actor_declarations(actors: &[ActorDecl], types: &[TypeDecl]) -> Result<()> {
-    let type_names = types
+fn validate_actor_declarations(actors: &[ActorDecl], types: &[TypeDecl], dbs: &[DbDecl]) -> Result<()> {
+    let type_by_name = types
+        .iter()
+        .map(|declaration| (declaration.name.as_str(), declaration))
+        .collect::<BTreeMap<_, _>>();
+    let db_type_names = dbs
         .iter()
         .map(|declaration| declaration.name.as_str())
         .collect::<BTreeSet<_>>();
     let mut actor_names = BTreeSet::new();
     for actor in actors {
-        if type_names.contains(actor.name.as_str()) {
+        if !actor_names.insert(actor.name.as_str()) {
+            return Err(CompileError::syntax(
+                format!("duplicated actor declaration {}", actor.name),
+                actor.span.start,
+            ));
+        }
+        let attached = type_by_name.get(actor.name.as_str()).ok_or_else(|| {
+            CompileError::syntax(
+                format!(
+                    "actor {} requires a same-file type declaration of the same name",
+                    actor.name
+                ),
+                actor.span.start,
+            )
+        })?;
+        if !attached.type_params.is_empty() {
             return Err(CompileError::syntax(
                 format!(
-                    "actor {} conflicts with a normal type declaration of the same name",
+                    "actor {} must attach to a non-generic type declaration",
                     actor.name
                 ),
                 actor.span.start,
             ));
         }
-        if !actor_names.insert(actor.name.as_str()) {
+        if attached.alias.is_some() || attached.discriminator.is_some() {
             return Err(CompileError::syntax(
-                format!("duplicated actor declaration {}", actor.name),
+                format!(
+                    "actor {} must attach to a concrete record type declaration",
+                    actor.name
+                ),
+                actor.span.start,
+            ));
+        }
+        if !attached.fields.iter().any(|field| field.name == actor.key_field) {
+            return Err(CompileError::syntax(
+                format!(
+                    "actor {} key({}) must name a field of the attached type {}",
+                    actor.name, actor.key_field, actor.name
+                ),
+                actor.span.start,
+            ));
+        }
+        if db_type_names.contains(actor.name.as_str()) {
+            return Err(CompileError::syntax(
+                format!(
+                    "type {} cannot attach both db object and actor declarations",
+                    actor.name
+                ),
                 actor.span.start,
             ));
         }
@@ -428,7 +468,7 @@ impl Parser {
                 ));
             }
         }
-        reject_duplicate_actor_declarations(&actors, &types)?;
+        validate_actor_declarations(&actors, &types, &dbs)?;
         Ok(SourceFile {
             provider_capability,
             functions,
@@ -601,22 +641,50 @@ impl Parser {
                 self.peek().span.start,
             ));
         }
-        self.expect_ident_value("id")?;
-        let id_type = self.parse_type()?;
-        if !self.check_symbol("{") {
-            return Err(CompileError::syntax(
-                "expected actor field body",
-                self.peek().span.start,
-            ));
+        self.expect_symbol("{")?;
+        self.expect_ident_value("key")?;
+        self.expect_symbol("(")?;
+        let key_field = self.expect_ident("expected actor key field name")?;
+        self.expect_symbol(")")?;
+        let mut create = None;
+        while !self.check_symbol("}") && !self.is_at_end() {
+            if self.match_symbol(";") {
+                continue;
+            }
+            if !self.check_ident("create") {
+                return Err(CompileError::syntax(
+                    "actor declaration body only supports key(field) and create(...)",
+                    self.peek().span.start,
+                ));
+            }
+            if create.is_some() {
+                return Err(CompileError::syntax(
+                    format!("actor {name} declares create more than once"),
+                    self.peek().span.start,
+                ));
+            }
+            create = Some(self.parse_actor_create_decl()?);
         }
-        let fields = self.parse_field_block()?;
+        self.expect_symbol("}")?;
         self.match_symbol(";");
         let end = self.previous().span.end;
         Ok(ActorDecl {
             exported,
             name,
-            id_type,
-            fields,
+            key_field,
+            create,
+            span: SourceSpan { start, end },
+        })
+    }
+
+    fn parse_actor_create_decl(&mut self) -> Result<ActorCreateDecl> {
+        let start = self.expect_ident_value("create")?.span.start;
+        self.expect_symbol("(")?;
+        let params = self.parse_params()?;
+        self.expect_symbol(")")?;
+        let end = self.previous().span.end;
+        Ok(ActorCreateDecl {
+            params,
             span: SourceSpan { start, end },
         })
     }

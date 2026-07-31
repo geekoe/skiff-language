@@ -1,4 +1,1 @@
-native function getOrCreate<T, Id, Bootstrap>(id: Id, bootstrap: Bootstrap) -> T
-native function replace<T, Id, Bootstrap>(id: Id, bootstrap: Bootstrap) -> T
-native function find<T, Id>(id: Id) -> T?
-native function remove<T, Id>(id: Id) -> bool
+native function get<T, Id>(id: Id) -> T

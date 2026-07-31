@@ -39,10 +39,7 @@ impl<'a> OwnerChecker<'a> {
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
             return Some(return_type);
         }
-        if matches!(
-            path.as_str(),
-            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
-        ) {
+        if path.as_str() == "std.actor.get" {
             return self.actor_registry_intrinsic_call_type(&path, type_args, args, arg_types);
         }
         match self.representation_constructor_call_type(key, &path, type_args, args, arg_types) {
@@ -1024,38 +1021,21 @@ impl<'a> OwnerChecker<'a> {
             ));
             return None;
         };
-        let needs_bootstrap = matches!(path, "std.actor.getOrCreate" | "std.actor.replace");
-        let expected_arity = if needs_bootstrap { 2 } else { 1 };
+        let create_params = actor.create.clone().unwrap_or_default();
+        let expected_arity = create_params.len() + 1;
         if args.len() != expected_arity {
             self.outputs.diagnostics.push(format!(
-                "{}: actor registry intrinsic `{path}` expects {expected_arity} arguments, found {}",
+                "{}: actor registry intrinsic `{path}` expects id and {} create argument(s), found {}",
                 self.module_path,
+                create_params.len(),
                 args.len()
             ));
         } else {
             let mut params = vec![("id".to_string(), actor.id_type.clone())];
-            if needs_bootstrap {
-                params.push((
-                    "bootstrap".to_string(),
-                    ResolvedTypeRef::with_text(
-                        TypeRefIr::Record {
-                            fields: actor
-                                .fields
-                                .iter()
-                                .map(|(name, ty)| (name.clone(), ty.ir.clone()))
-                                .collect(),
-                        },
-                        "{}".to_string(),
-                    ),
-                ));
-            }
+            params.extend(create_params);
             self.validate_resolved_call_params(path, params, args, arg_types);
         }
-        match path {
-            "std.actor.find" => Some(nullable_type(actor.ty)),
-            "std.actor.remove" => self.resolve_builtin(BuiltinShape::Bool.name()),
-            _ => Some(actor.ty),
-        }
+        Some(actor.ty)
     }
 
     pub(super) fn validate_array_push_args(

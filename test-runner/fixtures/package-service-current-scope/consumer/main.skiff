@@ -1,10 +1,20 @@
 import std
 
-actor Counter id string {
+type Counter {
+  id: string,
   count: number,
 }
 
+actor Counter {
+  key(id)
+  create()
+}
+
 impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
   function increment() -> string {
     self.count = self.count + 1
     return "actor-complete"
@@ -67,7 +77,7 @@ function nestedFile(value: string) -> string {
 function nestedActor() -> string {
   return timeout(440ms) value {
     timeout(240ms) value {
-      const counter = std.actor.getOrCreate<Counter>("current-scope", { count: 0 })
+      const counter = std.actor.get<Counter>("current-scope")
       counter.increment()
     }
   }

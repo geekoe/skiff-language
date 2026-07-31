@@ -194,8 +194,16 @@ pub struct TypeDecl {
 pub struct ActorDecl {
     pub exported: bool,
     pub name: String,
-    pub id_type: TypeRef,
-    pub fields: Vec<FieldDecl>,
+    pub key_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<ActorCreateDecl>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActorCreateDecl {
+    pub params: Vec<Param>,
     pub span: SourceSpan,
 }
 

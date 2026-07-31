@@ -18,9 +18,9 @@ use common::{
 };
 
 const CURRENT_STD_BUILD: &str =
-    "skiff-package-build-v10:sha256:73205b5194300ad86152f548c4084ddc4f7e3147554a3989a29804ac62804041";
+    "skiff-package-build-v10:sha256:327cdd9bbdfa55d5ea4d12d34947c4e048fd8e9b3c63163970b1d1de5ab598ea";
 const CURRENT_STD_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:8c787b445bd1778725635f2b9a93b41e914b4ef102b3c70684fa8d8065ed3a54";
+    "skiff-package-local-abi-v7:sha256:ca3e5fe7de0bbe80d6ab888e7466fec1b5014dfeb96fa13d164d79b5158634e2";
 const CURRENT_STD_SCHEMA_INDEX: &str =
     "skiff-package-schema-index-v1:sha256:a5cd6c2f4490ef48e9f024ced96670df6d1de86d3470ccf783eb54eb002fe06b";
 const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
@@ -57,7 +57,6 @@ fn assert_direct_lowering_canonicalizes_qualified_aliases() {
     initialize_test_prelude_registry();
     let unit = compile_source_file_ir_unit(
         r#"type QualifiedBuiltinProbe {
-  actor: std.actor.Actor<string>,
   bytesValue: std.bytes.bytes,
   arrayValue: std.collection.Array<boolean>,
   mapValue: std.collection.Map<string, boolean>,
@@ -92,7 +91,6 @@ fn assert_direct_lowering_canonicalizes_qualified_aliases() {
         &mut observed_names,
     );
     for canonical in [
-        "Actor",
         "bytes",
         "Array",
         "Map",

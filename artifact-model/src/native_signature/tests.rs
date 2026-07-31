@@ -49,10 +49,7 @@ fn websocket_request_signature_and_suspension_are_exact() {
 #[test]
 fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
     let expected = BTreeSet::from([
-        "std.actor.find",
-        "std.actor.getOrCreate",
-        "std.actor.remove",
-        "std.actor.replace",
+        "std.actor.get",
         "core.array.empty",
         "core.map.empty",
         "core.bytes.concat",
@@ -121,10 +118,7 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
             is_emit_response
                 || matches!(
                     semantics.binding_key,
-                    "std.actor.getOrCreate"
-                        | "std.actor.replace"
-                        | "std.actor.find"
-                        | "std.actor.remove"
+                    "std.actor.get"
                         | "std.file.create"
                         | "std.file.createFromStream"
                         | "std.http.client.request"

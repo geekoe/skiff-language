@@ -214,7 +214,8 @@ fn interface_conformance_fails_closed_for_missing_method_and_receiver_mismatch()
 fn ordinary_nominal_types_stay_outside_source_exact_conformance_ownership() {
     let model = build_interface_model(
         r#"
-            actor ShortActor id string {}
+            type ShortActor { id: string }
+            actor ShortActor { key(id) }
             type ShortFailure {}
         "#,
         &SourceDependencyAnalysisInput::default(),

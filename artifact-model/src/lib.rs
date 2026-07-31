@@ -8,9 +8,9 @@ pub use abi_identity::{
     TypeNameability,
 };
 pub use actor_declaration::{
-    ActorAbiIdentity, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
-    ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr,
-    ACTOR_RUNTIME_ABI_VERSION_V1,
+    ActorAbiIdentity, ActorAbiInput, ActorCreateImplementationIr, ActorCreateSignatureIr,
+    ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, ActorImplementationIdentity,
+    ActorMethodIdentity, ActorPublicMethodIr, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 mod activation_lexical;
 pub mod assembly_activation_control;

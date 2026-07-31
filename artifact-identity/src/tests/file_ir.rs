@@ -411,11 +411,20 @@ fn actor_declaration_abi_participates_in_file_ir_identity() {
     let abi = ActorAbiInput {
         actor_name: "DocHub".to_string(),
         actor_id_type: TypeRefIr::builtin("string"),
-        fields: vec![ActorFieldIr {
-            name: "nextSeq".to_string(),
-            ty: TypeRefIr::builtin("number"),
-            encoding: ActorFieldEncodingIr::CanonicalValueV1,
-        }],
+        key_field: "id".to_string(),
+        fields: vec![
+            ActorFieldIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+                encoding: ActorFieldEncodingIr::CanonicalValueV1,
+            },
+            ActorFieldIr {
+                name: "nextSeq".to_string(),
+                ty: TypeRefIr::builtin("number"),
+                encoding: ActorFieldEncodingIr::CanonicalValueV1,
+            },
+        ],
+        create: None,
         public_methods: Vec::new(),
         actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
     };
@@ -426,6 +435,7 @@ fn actor_declaration_abi_participates_in_file_ir_identity() {
         ),
         abi,
         method_implementations: Default::default(),
+        create_implementation: None,
     });
     let baseline = file_ir_identity(&unit).expect("actor File IR identity");
 
@@ -435,7 +445,7 @@ fn actor_declaration_abi_participates_in_file_ir_identity() {
     let changed_id = file_ir_identity(&unit).expect("changed actor id File IR identity");
     assert_ne!(baseline, changed_id);
 
-    unit.actor_declarations[0].abi.fields[0].ty = TypeRefIr::builtin("integer");
+    unit.actor_declarations[0].abi.fields[1].ty = TypeRefIr::builtin("integer");
     unit.actor_declarations[0].actor_abi_identity =
         actor_abi_identity(&unit.actor_declarations[0].abi).expect("changed actor ABI identity");
     let changed_field = file_ir_identity(&unit).expect("changed actor field File IR identity");

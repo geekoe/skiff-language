@@ -493,7 +493,7 @@ type Marker { request: std.http.HttpRequest }
             CallableEffectSummary::Analyzed { .. }
         ));
 
-        assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 94);
+        assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 91);
         for public_path in [
             "std.bytes.DecodeError",
             "std.crypto.sha256",

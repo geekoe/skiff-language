@@ -425,7 +425,8 @@ fn invalid_applied_nominal_bases_arity_and_type_param_scope_fail_closed() {
               interface Provider<T> {
                 function get(self: Self) -> T
               }
-              actor Worker id string {}
+              type Worker { id: string }
+              actor Worker { key(id) }
             "#,
     );
     let cases = [

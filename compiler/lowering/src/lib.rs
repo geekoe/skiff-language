@@ -1,4 +1,5 @@
 pub mod callable_return_types;
+mod actor_method_validation;
 mod db_lowering;
 mod declaration_lowering;
 pub mod entrypoint_abi;

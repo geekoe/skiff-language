@@ -1956,10 +1956,27 @@ impl<'a> FunctionLowerer<'a> {
         args: &[Expr],
     ) -> Result<()> {
         let CallTargetIr::Native { target } = target else {
+            // The std actor registry entry is also reachable through the std
+            // package's native callable wrapper; complete its type arguments
+            // identically so the runtime can resolve the actor declaration.
+            if let CallTargetIr::PackageCallable { package_callable_id, .. } = target {
+                if package_callable_id.as_str().ends_with(":std.actor.get") {
+                    return self.complete_actor_registry_type_args(
+                        package_callable_id.as_str(),
+                        type_args,
+                    );
+                }
+            }
             return Ok(());
         };
         if is_std_actor_registry_native_target(target) {
-            return self.complete_actor_registry_type_args(target, type_args);
+            return self.complete_actor_registry_type_args(
+                target
+                    .binding_key
+                    .as_deref()
+                    .unwrap_or(target.symbol.as_str()),
+                type_args,
+            );
         }
         if type_args.contains_key("T0") {
             return Ok(());
@@ -1976,16 +1993,13 @@ impl<'a> FunctionLowerer<'a> {
 
     fn complete_actor_registry_type_args(
         &self,
-        target: &NativeTarget,
+        diagnostic_target: &str,
         type_args: &mut BTreeMap<String, TypeRefIr>,
     ) -> Result<()> {
         let actor_ty = type_args.get("T0").cloned().ok_or_else(|| {
             unsupported(format!(
                 "actor registry intrinsic `{}` requires exact actor type argument T0",
-                target
-                    .binding_key
-                    .as_deref()
-                    .unwrap_or(target.symbol.as_str())
+                diagnostic_target
             ))
         })?;
         let actor_ty_text = type_ref_ir_type_text(&actor_ty);
@@ -1996,35 +2010,26 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 unsupported(format!(
                     "actor registry intrinsic `{}` T0 is not an actor declaration",
-                    target
-                        .binding_key
-                        .as_deref()
-                        .unwrap_or(target.symbol.as_str())
+                    diagnostic_target
                 ))
             })?;
-        insert_exact_native_type_arg(type_args, "T1", actor.id_type.ir)?;
-        if matches!(
-            target.binding_key.as_deref(),
-            Some("std.actor.getOrCreate" | "std.actor.replace")
-        ) {
-            insert_exact_native_type_arg(
-                type_args,
-                "T2",
-                TypeRefIr::Record {
-                    fields: actor
-                        .fields
-                        .into_iter()
-                        .map(|(name, ty)| (name, ty.ir))
-                        .collect(),
+        // The source-level actor nominal resolves to its attached record type;
+        // the registry intrinsic pins the actor declaration itself through a
+        // service symbol so the runtime can route by declaration owner.
+        type_args.insert(
+            "T0".to_string(),
+            TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: actor.module_path,
+                    symbol: actor.name,
                 },
-            )?;
-        } else if type_args.contains_key("T2") {
+            },
+        );
+        insert_exact_native_type_arg(type_args, "T1", actor.id_type.ir)?;
+        if type_args.contains_key("T2") {
             return Err(unsupported(format!(
                 "actor registry intrinsic `{}` must not carry bootstrap type argument T2",
-                target
-                    .binding_key
-                    .as_deref()
-                    .unwrap_or(target.symbol.as_str())
+                diagnostic_target
             )));
         }
         Ok(())
@@ -2679,7 +2684,7 @@ fn is_std_http_json_native_target(target: &NativeTarget) -> bool {
 fn is_std_actor_registry_native_target(target: &NativeTarget) -> bool {
     matches!(
         target.binding_key.as_deref(),
-        Some("std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove")
+        Some("std.actor.get")
     )
 }
 

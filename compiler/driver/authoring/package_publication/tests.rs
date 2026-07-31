@@ -25,9 +25,9 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:73205b5194300ad86152f548c4084ddc4f7e3147554a3989a29804ac62804041";
+    "skiff-package-build-v10:sha256:327cdd9bbdfa55d5ea4d12d34947c4e048fd8e9b3c63163970b1d1de5ab598ea";
 const EXPECTED_PRELUDE_ID: &str =
-    "skiff-prelude-v1:sha256:f2494c4021ce4c52030c74f1d2cee356cd707ca96d53ea0d0f8c039e526bc9d9";
+    "skiff-prelude-v1:sha256:ab981468accd9b0c436029e2db45d0e83ead732561573fa313c36fc49c66d053";
 
 #[test]
 fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
@@ -83,13 +83,13 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
         .public_symbols
         .contains_key("std.service.InternalError"));
     let PackageLocalAbiSymbol::Callable {
-        signature: actor_find,
+        signature: actor_get,
         ..
-    } = &published.artifact.package_local_abi.public_symbols["std.actor.find"]
+    } = &published.artifact.package_local_abi.public_symbols["std.actor.get"]
     else {
-        panic!("std.actor.find must remain a callable");
+        panic!("std.actor.get must remain a callable");
     };
-    assert_eq!(actor_find.type_params, ["T", "Id"]);
+    assert_eq!(actor_get.type_params, ["T", "Id"]);
     let internal_error_entry = &published.package_schema_index.types["std.service.InternalError"];
     assert_eq!(
         internal_error_entry.public_path.as_deref(),

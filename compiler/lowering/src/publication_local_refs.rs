@@ -297,8 +297,10 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         }
         ExprIr::Call { call } => {
             rewrite_call_target(index, module_path, &mut call.target);
-            for ty in call.type_args.values_mut() {
-                rewrite_type_ref(index, module_path, ty);
+            if !is_actor_registry_native_call(call) {
+                for ty in call.type_args.values_mut() {
+                    rewrite_type_ref(index, module_path, ty);
+                }
             }
         }
         ExprIr::Throw { payload_type, .. } => {
@@ -338,6 +340,18 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         | ExprIr::Timeout { .. }
         | ExprIr::ValueBlock { .. }
         | ExprIr::ConcurrentValue { .. } => {}
+    }
+}
+
+fn is_actor_registry_native_call(call: &skiff_artifact_model::CallIr) -> bool {
+    match &call.target {
+        skiff_artifact_model::CallTargetIr::Native { target } => {
+            target.binding_key.as_deref() == Some("std.actor.get")
+        }
+        skiff_artifact_model::CallTargetIr::PackageCallable { package_callable_id, .. } => {
+            package_callable_id.as_str().ends_with(":std.actor.get")
+        }
+        _ => false,
     }
 }
 

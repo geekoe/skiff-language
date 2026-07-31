@@ -1,10 +1,20 @@
 import std
 
-actor Counter id string {
+type Counter {
+  id: string,
   count: number,
 }
 
+actor Counter {
+  key(id)
+  create()
+}
+
 impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
   function increment() -> string {
     if self.count == 0 {
       self.count = 1
@@ -16,7 +26,7 @@ impl Counter {
 }
 
 function marker() -> string {
-  const counter = std.actor.getOrCreate<Counter>("shared", { count: 0 })
+  const counter = std.actor.get<Counter>("shared")
   return counter.increment()
 }
 

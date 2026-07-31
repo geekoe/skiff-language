@@ -4,8 +4,9 @@ use skiff_artifact_model::{
     },
     file_ir::ConstIr,
     types::{LiteralIr, TypeDeclIr, TypeDescriptorIr},
-    ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, ActorImplementationIdentity,
-    ActorPublicMethodIr, FileIrUnit, TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1,
+    ActorCreateSignatureIr, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorImplementationIdentity, ActorPublicMethodIr, FileIrUnit, FunctionTypeParamIr, TypeRefIr,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 
 use super::*;
@@ -13,12 +14,14 @@ use super::*;
 fn abi() -> ActorAbiInput {
     ActorAbiInput {
         actor_name: "DocHub".to_string(),
-        actor_id_type: TypeRefIr::builtin("string"),
+        actor_id_type: TypeRefIr::builtin("number"),
+        key_field: "nextSeq".to_string(),
         fields: vec![ActorFieldIr {
             name: "nextSeq".to_string(),
             ty: TypeRefIr::builtin("number"),
             encoding: ActorFieldEncodingIr::CanonicalValueV1,
         }],
+        create: None,
         public_methods: Vec::new(),
         actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
     }
@@ -38,6 +41,15 @@ fn actor_abi_identity_covers_id_fields_and_runtime_version() {
     let mut changed_runtime = abi();
     changed_runtime.actor_runtime_abi_version = "skiff-actor-runtime-abi-v2".to_string();
     assert_ne!(base, actor_abi_identity(&changed_runtime).unwrap());
+
+    let mut changed_create = abi();
+    changed_create.create = Some(ActorCreateSignatureIr {
+        parameters: vec![FunctionTypeParamIr {
+            name: "initialNextSeq".to_string(),
+            ty: TypeRefIr::builtin("number"),
+        }],
+    });
+    assert_ne!(base, actor_abi_identity(&changed_create).unwrap());
 
     let mut changed_methods = abi();
     changed_methods.public_methods.push(ActorPublicMethodIr {
@@ -127,6 +139,7 @@ fn actor_unit() -> FileIrUnit {
         actor_implementation_identity: ActorImplementationIdentity::new("pending"),
         abi: actor_abi,
         method_implementations: BTreeMap::from([(method_identity, 0)]),
+        create_implementation: None,
     });
     unit.executables = vec![
         executable("DocHub.append", Some(1)),

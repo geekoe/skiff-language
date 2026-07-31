@@ -1063,12 +1063,23 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
     initialize_test_prelude();
     let unit = lowered_unit(
         r#"
-              actor UserActor id string {
+              type UserActor {
+                id: string,
                 displayName: string,
                 loginCount: number,
               }
 
+              actor UserActor {
+                key(id)
+                create(displayName: string, loginCount: number)
+              }
+
               impl UserActor {
+                function create(self: UserActor, displayName: string, loginCount: number) -> void {
+                  self.displayName = displayName
+                  self.loginCount = loginCount
+                }
+
                 function rename(self: UserActor, value: string) -> string {
                   self.displayName = value
                   return self.displayName
@@ -1081,12 +1092,7 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
               }
 
               function load(id: string) -> UserActor {
-                const actor = std.actor.getOrCreate<UserActor>(
-                  id,
-                  { displayName: "Ada", loginCount: 1 }
-                )
-                const found = std.actor.find<UserActor>(id)
-                return actor
+                return std.actor.get<UserActor>(id, "Ada", 1)
               }
 
               function invoke(actor: UserActor) -> string {
@@ -1101,6 +1107,7 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
         .expect("actor declaration should be emitted in its owner file");
     assert_eq!(declaration.abi.actor_name, "UserActor");
     assert_eq!(declaration.abi.actor_id_type, TypeRefIr::builtin("string"));
+    assert_eq!(declaration.abi.key_field, "id");
     assert_eq!(
         declaration
             .abi
@@ -1108,9 +1115,21 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
             .iter()
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>(),
-        ["displayName", "loginCount"]
+        ["id", "displayName", "loginCount"]
     );
+    let create = declaration.abi.create.as_ref().expect("create signature");
+    assert_eq!(create.parameters.len(), 2);
+    assert_eq!(create.parameters[0].name, "displayName");
+    assert_eq!(create.parameters[1].name, "loginCount");
     assert_eq!(declaration.abi.public_methods.len(), 2);
+    assert!(
+        declaration
+            .abi
+            .public_methods
+            .iter()
+            .all(|method| method.name != "create")
+    );
+    assert!(declaration.create_implementation.is_some());
     let rename = declaration
         .abi
         .public_methods
@@ -1189,8 +1208,7 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
                 )
             })
             .collect::<Vec<_>>();
-    assert_eq!(calls.len(), 2);
-
+    assert_eq!(calls.len(), 1);
     let invoke = executable(&unit, "invoke");
     let actor_call = invoke
         .body
@@ -1225,36 +1243,23 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
     );
     assert_eq!(method_identity, &rename.method_identity);
 
-    let get_or_create = calls
+    let get = calls
         .iter()
         .find(|call| {
             matches!(
                 &call.target,
                 CallTargetIr::Native { target }
-                    if target.binding_key.as_deref() == Some("std.actor.getOrCreate")
+                    if target.binding_key.as_deref() == Some("std.actor.get")
             )
         })
-        .expect("getOrCreate call should be lowered");
-    assert_eq!(get_or_create.type_args["T1"], TypeRefIr::builtin("string"));
-    assert!(matches!(
-        &get_or_create.type_args["T2"],
-        TypeRefIr::Record { fields }
-            if fields["displayName"] == TypeRefIr::builtin("string")
-                && fields["loginCount"] == TypeRefIr::builtin("number")
-    ));
-
-    let find = calls
-        .iter()
-        .find(|call| {
-            matches!(
-                &call.target,
-                CallTargetIr::Native { target }
-                    if target.binding_key.as_deref() == Some("std.actor.find")
-            )
-        })
-        .expect("find call should be lowered");
-    assert_eq!(find.type_args["T1"], TypeRefIr::builtin("string"));
-    assert!(!find.type_args.contains_key("T2"));
+        .expect("get call should be lowered");
+    let TypeRefIr::ServiceSymbol { symbol: get_symbol } = &get.type_args["T0"] else {
+        panic!("get T0 must be a service symbol: {:?}", get.type_args["T0"]);
+    };
+    assert_eq!(get_symbol.symbol, "UserActor");
+    assert_eq!(get_symbol.module_path, MODULE);
+    assert_eq!(get.type_args["T1"], TypeRefIr::builtin("string"));
+    assert!(!get.type_args.contains_key("T2"));
 }
 
 #[test]

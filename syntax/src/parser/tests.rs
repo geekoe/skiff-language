@@ -909,24 +909,31 @@ fn rejects_removed_native_type_declaration() {
 #[test]
 fn parses_explicit_actor_declaration_and_round_trips_ast() {
     let source = r#"
-actor DocHub id DocId {
+type DocHub {
+  id: DocId,
   nextSeq: number,
-  pendingOps: Array<Op>
+  pendingOps: Array<Op>,
+}
+
+actor DocHub {
+  key(id)
+  create(initialNextSeq: number)
 }
 "#;
     let ast = parse_source(source).unwrap();
-    assert!(ast.types.is_empty());
+    assert_eq!(ast.types.len(), 1);
     assert_eq!(ast.actors.len(), 1);
     let actor = &ast.actors[0];
     assert_eq!(actor.name, "DocHub");
-    assert_eq!(actor.id_type.name, "DocId");
+    assert_eq!(actor.key_field, "id");
+    let create = actor.create.as_ref().expect("create declaration");
     assert_eq!(
-        actor
-            .fields
+        create
+            .params
             .iter()
-            .map(|field| field.name.as_str())
+            .map(|param| param.name.as_str())
             .collect::<Vec<_>>(),
-        ["nextSeq", "pendingOps"]
+        ["initialNextSeq"]
     );
     let wire = serde_json::to_value(&ast).unwrap();
     assert_eq!(
@@ -938,18 +945,30 @@ actor DocHub id DocId {
 #[test]
 fn explicit_actor_rejects_missing_id_generic_and_name_conflicts() {
     for (source, expected) in [
-        ("actor DocHub { value: string }", "expected id"),
+        ("actor DocHub { key(id) value: string }", "only supports key(field) and create"),
         (
-            "actor DocHub<T> id string { value: T }",
+            "type DocHub { id: string }\nactor DocHub { key(id) create() create() }",
+            "declares create more than once",
+        ),
+        (
+            "actor DocHub<T> { key(id) }",
             "actor declarations cannot be generic",
         ),
         (
-            "actor DocHub id string {}\nactor DocHub id string {}",
+            "type DocHub { id: string }\nactor DocHub { key(id) }\nactor DocHub { key(id) }",
             "duplicated actor declaration DocHub",
         ),
         (
-            "type DocHub { value: string }\nactor DocHub id string {}",
-            "conflicts with a normal type declaration",
+            "actor DocHub { key(id) }",
+            "requires a same-file type declaration",
+        ),
+        (
+            "type DocHub { id: string }\nactor DocHub { key(nope) }",
+            "must name a field of the attached type",
+        ),
+        (
+            "type DocHub { id: string }\ndb object DocHub { primary key(id) }\nactor DocHub { key(id) }",
+            "cannot attach both db object and actor",
         ),
     ] {
         let error = parse_source(source).unwrap_err().to_string();

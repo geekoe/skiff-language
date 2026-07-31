@@ -59,6 +59,8 @@ pub struct ActorDeclarationIr {
     pub actor_implementation_identity: ActorImplementationIdentity,
     pub abi: ActorAbiInput,
     pub method_implementations: BTreeMap<ActorMethodIdentity, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_implementation: Option<ActorCreateImplementationIr>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +70,8 @@ struct ActorDeclarationIrWire {
     actor_implementation_identity: ActorImplementationIdentity,
     abi: ActorAbiInput,
     method_implementations: BTreeMap<ActorMethodIdentity, u32>,
+    #[serde(default)]
+    create_implementation: Option<ActorCreateImplementationIr>,
 }
 
 impl TryFrom<ActorDeclarationIrWire> for ActorDeclarationIr {
@@ -91,13 +95,39 @@ impl TryFrom<ActorDeclarationIrWire> for ActorDeclarationIr {
                     .to_string(),
             );
         }
+        if wire.abi.create.is_none() && wire.create_implementation.is_some() {
+            return Err(
+                "actor createImplementation requires a declared create signature".to_string(),
+            );
+        }
+        if wire.abi.create.is_some() && wire.create_implementation.is_none() {
+            return Err(
+                "actor declared create signature requires a create implementation".to_string(),
+            );
+        }
+        if let Some(create) = wire.create_implementation.as_ref() {
+            if public.contains(&create.identity) {
+                return Err(
+                    "actor create method identity must not be a public method identity"
+                        .to_string(),
+                );
+            }
+        }
         Ok(Self {
             actor_abi_identity: wire.actor_abi_identity,
             actor_implementation_identity: wire.actor_implementation_identity,
             abi: wire.abi,
             method_implementations: wire.method_implementations,
+            create_implementation: wire.create_implementation,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorCreateImplementationIr {
+    pub identity: ActorMethodIdentity,
+    pub executable_index: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -109,7 +139,10 @@ impl TryFrom<ActorDeclarationIrWire> for ActorDeclarationIr {
 pub struct ActorAbiInput {
     pub actor_name: String,
     pub actor_id_type: TypeRefIr,
+    pub key_field: String,
     pub fields: Vec<ActorFieldIr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<ActorCreateSignatureIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public_methods: Vec<ActorPublicMethodIr>,
     pub actor_runtime_abi_version: String,
@@ -120,7 +153,10 @@ pub struct ActorAbiInput {
 struct ActorAbiInputWire {
     actor_name: String,
     actor_id_type: TypeRefIr,
+    key_field: String,
     fields: Vec<ActorFieldIr>,
+    #[serde(default)]
+    create: Option<ActorCreateSignatureIr>,
     #[serde(default)]
     public_methods: Vec<ActorPublicMethodIr>,
     actor_runtime_abi_version: String,
@@ -140,6 +176,20 @@ impl TryFrom<ActorAbiInputWire> for ActorAbiInput {
             ));
         }
         reject_actor_ref(&wire.actor_id_type)?;
+        if wire.key_field.trim().is_empty() {
+            return Err("keyField must be non-empty".to_string());
+        }
+        let key_type = wire
+            .fields
+            .iter()
+            .find(|field| field.name == wire.key_field)
+            .map(|field| &field.ty)
+            .ok_or_else(|| format!("actor key field {} is absent from fields", wire.key_field))?;
+        if key_type != &wire.actor_id_type {
+            return Err(
+                "actorIdType must exactly match the key field type".to_string(),
+            );
+        }
         let mut field_names = BTreeSet::new();
         for field in &wire.fields {
             if !field_names.insert(field.name.as_str()) {
@@ -147,9 +197,17 @@ impl TryFrom<ActorAbiInputWire> for ActorAbiInput {
             }
             reject_actor_ref(&field.ty)?;
         }
+        if let Some(create) = wire.create.as_ref() {
+            for parameter in &create.parameters {
+                reject_actor_ref(&parameter.ty)?;
+            }
+        }
         let mut method_names = BTreeSet::new();
         let mut method_identities = BTreeSet::new();
         for method in &wire.public_methods {
+            if method.name == "create" {
+                return Err("actor public method must not be named create".to_string());
+            }
             if !method_names.insert(method.name.as_str()) {
                 return Err(format!("duplicate actor public method {}", method.name));
             }
@@ -167,11 +225,19 @@ impl TryFrom<ActorAbiInputWire> for ActorAbiInput {
         Ok(Self {
             actor_name: wire.actor_name,
             actor_id_type: wire.actor_id_type,
+            key_field: wire.key_field,
             fields: wire.fields,
+            create: wire.create,
             public_methods: wire.public_methods,
             actor_runtime_abi_version: wire.actor_runtime_abi_version,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorCreateSignatureIr {
+    pub parameters: Vec<FunctionTypeParamIr>,
 }
 
 fn reject_actor_ref(ty: &TypeRefIr) -> Result<(), String> {

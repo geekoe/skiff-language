@@ -67,12 +67,6 @@ pub struct CompilerBuiltinType {
 
 pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
     CompilerBuiltinType {
-        name: "Actor",
-        symbol: "std.actor.Actor",
-        arity: 1,
-        kind: CompilerBuiltinTypeKind::OpaqueHandle,
-    },
-    CompilerBuiltinType {
         name: "bytes",
         symbol: "std.bytes.bytes",
         arity: 0,

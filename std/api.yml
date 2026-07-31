@@ -103,7 +103,4 @@ websocket:
 telemetry:
   emit: telemetry.emit
 actor:
-  getOrCreate: actor.getOrCreate
-  replace: actor.replace
-  find: actor.find
-  remove: actor.remove
+  get: actor.get
