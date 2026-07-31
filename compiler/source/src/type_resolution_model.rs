@@ -3078,48 +3078,49 @@ impl TypeResolutionModel {
         })
     }
 
+    fn package_symbol_resolution<'a, V>(
+        &self,
+        dependency_ref: &str,
+        symbol_path: &str,
+        map: &'a BTreeMap<PackageSymbolKey, V>,
+        full: bool,
+    ) -> Option<&'a V> {
+        let key = |dependency_ref: &str| PackageSymbolKey {
+            dependency_ref: dependency_ref.to_string(),
+            symbol_path: symbol_path.to_string(),
+        };
+        map.get(&key(dependency_ref)).or_else(|| {
+            if full {
+                let canonical = self.canonical_package_dependency_ref(dependency_ref);
+                if let Some(found) = self
+                    .package_dependency_canonical_refs
+                    .iter()
+                    .filter(|(_, candidate)| candidate.as_str() == canonical)
+                    .find_map(|(alias, _)| map.get(&key(alias)))
+                {
+                    return Some(found);
+                }
+            }
+            let by_package_id = self
+                .package_dependencies
+                .get(dependency_ref)
+                .and_then(|package_id| map.get(&key(package_id)));
+            if by_package_id.is_some() || !full {
+                return by_package_id;
+            }
+            self.package_dependencies
+                .iter()
+                .filter(|(_, candidate)| candidate.as_str() == dependency_ref)
+                .find_map(|(alias, _)| map.get(&key(alias)))
+        })
+    }
+
     fn package_type_resolution(
         &self,
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&SourceTypeResolution> {
-        let direct_key = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_types
-            .get(&direct_key)
-            .or_else(|| {
-                let canonical = self.canonical_package_dependency_ref(dependency_ref);
-                self.package_dependency_canonical_refs
-                    .iter()
-                    .filter(|(_, candidate)| candidate.as_str() == canonical)
-                    .find_map(|(alias, _)| {
-                        self.package_types.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
-            .or_else(|| {
-                let package_id = self.package_dependencies.get(dependency_ref)?;
-                let package_key = PackageSymbolKey {
-                    dependency_ref: package_id.clone(),
-                    symbol_path: symbol_path.to_string(),
-                };
-                self.package_types.get(&package_key)
-            })
-            .or_else(|| {
-                self.package_dependencies
-                    .iter()
-                    .filter(|(_, package_id)| package_id.as_str() == dependency_ref)
-                    .find_map(|(alias, _)| {
-                        self.package_types.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_types, true)
     }
 
     fn package_type_resolution_for_view(
@@ -3127,17 +3128,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&SourceTypeResolution> {
-        let direct = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_types.get(&direct).or_else(|| {
-            let package_id = self.package_dependencies.get(dependency_ref)?;
-            self.package_types.get(&PackageSymbolKey {
-                dependency_ref: package_id.clone(),
-                symbol_path: symbol_path.to_string(),
-            })
-        })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_types, false)
     }
 
     /// Returns the manifest dependency's primary alias for either of its
@@ -3211,18 +3202,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&PackageCallableResolution> {
-        let direct_key = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_callables.get(&direct_key).or_else(|| {
-            let package_id = self.package_dependencies.get(dependency_ref)?;
-            let package_key = PackageSymbolKey {
-                dependency_ref: package_id.clone(),
-                symbol_path: symbol_path.to_string(),
-            };
-            self.package_callables.get(&package_key)
-        })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_callables, false)
     }
 
     fn package_interface_fact(
@@ -3230,43 +3210,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&PackageInterfaceFact> {
-        let direct_key = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_interfaces
-            .get(&direct_key)
-            .or_else(|| {
-                let canonical = self.canonical_package_dependency_ref(dependency_ref);
-                self.package_dependency_canonical_refs
-                    .iter()
-                    .filter(|(_, candidate)| candidate.as_str() == canonical)
-                    .find_map(|(alias, _)| {
-                        self.package_interfaces.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
-            .or_else(|| {
-                let package_id = self.package_dependencies.get(dependency_ref)?;
-                let package_key = PackageSymbolKey {
-                    dependency_ref: package_id.clone(),
-                    symbol_path: symbol_path.to_string(),
-                };
-                self.package_interfaces.get(&package_key)
-            })
-            .or_else(|| {
-                self.package_dependencies
-                    .iter()
-                    .filter(|(_, package_id)| package_id.as_str() == dependency_ref)
-                    .find_map(|(alias, _)| {
-                        self.package_interfaces.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_interfaces, true)
     }
 
     fn package_interface_fact_for_view(
@@ -3274,17 +3218,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&PackageInterfaceFact> {
-        let direct = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_interfaces.get(&direct).or_else(|| {
-            let package_id = self.package_dependencies.get(dependency_ref)?;
-            self.package_interfaces.get(&PackageSymbolKey {
-                dependency_ref: package_id.clone(),
-                symbol_path: symbol_path.to_string(),
-            })
-        })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_interfaces, false)
     }
 
     pub(crate) fn resolve_source_type_key(
