@@ -3977,10 +3977,7 @@ impl<'a> OwnerChecker<'a> {
                 .enumerate()
                 .map(|(index, param)| {
                     let ty = substitute_type_params_in_ir(&param.ty, &substitutions.types);
-                    (
-                        format!("arg{index}"),
-                        ResolvedTypeRef::new(ty),
-                    )
+                    (format!("arg{index}"), ResolvedTypeRef::new(ty))
                 })
                 .collect();
             self.validate_resolved_call_params(&callable, params, args, arg_types);
@@ -5002,7 +4999,10 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
                 .filter(|text| !text.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| debug_text(inner));
-            Some(ResolvedTypeRef::with_text(inner.as_ref().clone(), source_text))
+            Some(ResolvedTypeRef::with_text(
+                inner.as_ref().clone(),
+                source_text,
+            ))
         }
         TypeRefIr::Union { items } => {
             let remaining = items

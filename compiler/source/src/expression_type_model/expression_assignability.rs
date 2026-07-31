@@ -350,7 +350,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .map(|field| (field.name.clone(), value_target.clone()))
                 .collect::<BTreeMap<_, _>>();
             let candidate = ObjectLiteralTargetCandidate {
-                    label: target.to_string(),
+                label: target.to_string(),
                 fields: fields.clone(),
                 kind: ObjectMaterializationKind::Map,
             };
@@ -474,9 +474,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                     let name = object_literal_key_text(&entry.key)?;
                     let field_spans = source_fact.and_then(|fact| fact.record_fields.get(index));
                     Some(ObjectLiteralActualField {
-                        ty: fields
-                            .get(&name)
-                            .map(|ty| ResolvedTypeRef::new(ty.clone())),
+                        ty: fields.get(&name).map(|ty| ResolvedTypeRef::new(ty.clone())),
                         name,
                         name_span: field_spans
                             .map(|field| field.name_span)
@@ -907,12 +905,7 @@ fn resolved_fields_from_ir(
 ) -> BTreeMap<String, ResolvedTypeRef> {
     fields
         .iter()
-        .map(|(name, ty)| {
-            (
-                name.clone(),
-                ResolvedTypeRef::new(ty.clone()),
-            )
-        })
+        .map(|(name, ty)| (name.clone(), ResolvedTypeRef::new(ty.clone())))
         .collect()
 }
 

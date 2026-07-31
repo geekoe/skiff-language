@@ -110,6 +110,22 @@ Display 渲染 override 或 debug_text；不删除字段、不删 spelling。
 
 Step 2 失败证据（修订前）已随设计 commit 31345d78 的修订原因记录，此处不再重复。
 
+## 自验收结果（branch `impl/type-ref-phase5`，3 commits）
+
+| 层级 | 命令 | owner | commit | 结果 |
+| --- | --- | --- | --- | --- |
+| compiler 域测试 | `cargo test -p skiff-compiler-source -p skiff-compiler-lowering -p skiff-compiler` | 开发 Agent | d4474d3d / 7d603188 / c7850af0 | 全绿（每步） |
+| rustfmt | `node scripts/verify.mjs --only rust-quality` | 开发 Agent | c7850af0（含 root fmt 修正） | passed |
+| 组合门禁 | `node scripts/verify.mjs --only compiler,rust-quality` | 开发 Agent | c7850af0 | 4/4 passed（compiler-boundaries、compiler:rust、format、file-lines） |
+| clippy | `cargo clippy --manifest-path compiler/Cargo.toml --all-targets` | 开发 Agent | c7850af0 | 无 error（advisory 警告为仓库既有） |
+| skiff-tests | `node scripts/verify.mjs --only skiff-tests` | 开发 Agent（worktree 自验收） | 3343e90d | 28/28 passed（worktree 内补齐 router/scripts 依赖后）；验收 Agent 合并后复跑（设计 §7） |
+
+写集（最终）：compiler/source（type_resolution_model.rs、expression_type_model.rs 及其
+contract_call_typing/type_projection/db_projection/expression_assignability/shape_assignability/
+catch_leaves/object_materialization 测试）、compiler/lowering（function_lowering.rs、
+type_inference.rs、suspend_analysis.rs、object_literal.rs、fact_validation.rs）、
+compiler/tests/package_interface_identity.rs、叶子任务文件。无范围外文件。
+
 ### 写集
 
 - `compiler/source/src/type_resolution_model.rs`（结构体、构造入口、读点、`.0` 迁移）

@@ -98,10 +98,8 @@ impl FunctionLowerer<'_> {
                 self.record_shape_fields(object_key, construct_target, "record construct target")
             }
             ObjectMaterializationKind::DiscriminatedUnionBranch { branch } => {
-                let target = ResolvedTypeRef::with_text(
-                    target,
-                    materialization.resolved_target.to_string(),
-                );
+                let target =
+                    ResolvedTypeRef::with_text(target, materialization.resolved_target.to_string());
                 let target_shape = self
                     .type_resolution
                     .type_shape_ir(&target, &self.type_resolution_context())

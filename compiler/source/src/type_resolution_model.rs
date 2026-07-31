@@ -57,26 +57,31 @@ pub use catch_leaves::{CatchLeafIdentity, CatchLeaves};
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTypeRef {
     pub ir: TypeRefIr,
-    pub source_text: String,
+    pub source_text: Option<String>,
 }
 
 impl ResolvedTypeRef {
     pub fn new(ir: TypeRefIr) -> Self {
-        let source_text = debug_text(&ir);
-        Self { ir, source_text }
+        Self {
+            ir,
+            source_text: None,
+        }
     }
 
     pub fn with_text(ir: TypeRefIr, text: String) -> Self {
         Self {
             ir,
-            source_text: text,
+            source_text: Some(text),
         }
     }
 }
 
 impl std::fmt::Display for ResolvedTypeRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.source_text)
+        match &self.source_text {
+            Some(text) => f.write_str(text),
+            None => write!(f, "{}", debug_text(&self.ir)),
+        }
     }
 }
 
@@ -1377,10 +1382,7 @@ impl TypeResolutionModel {
                             let field_ty = contract_type_ref_ir(alias, field_ty)?;
                             let field_ty =
                                 substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
-                            Ok((
-                                name.clone(),
-                                ResolvedTypeRef::new(field_ty),
-                            ))
+                            Ok((name.clone(), ResolvedTypeRef::new(field_ty)))
                         })
                         .collect::<Result<_, String>>()?;
                     return Ok(ConstructorTargetResolution {

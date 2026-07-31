@@ -212,11 +212,11 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                     {
                         let text = format!("Stream<{}>", resolved);
                         ResolvedTypeRef::with_text(
-                        skiff_artifact_model::TypeRefIr::Builtin {
-                            name: "Stream".to_string(),
-                            args: vec![resolved.ir],
-                        },
-                        text,
+                            skiff_artifact_model::TypeRefIr::Builtin {
+                                name: "Stream".to_string(),
+                                args: vec![resolved.ir],
+                            },
+                            text,
                         )
                     },
                     PackageTypeRef::Container {

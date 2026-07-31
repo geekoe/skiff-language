@@ -823,10 +823,7 @@ impl TypeResolutionModel {
                 .iter()
                 .all(|item| self.json_assignable_in_context_inner(item, context, depth + 1)),
             _ => self
-                .type_shape_ir(
-                    &ResolvedTypeRef::new(actual.clone()),
-                    context,
-                )
+                .type_shape_ir(&ResolvedTypeRef::new(actual.clone()), context)
                 .is_some_and(|shape| {
                     self.json_assignable_in_context_inner(&shape, context, depth + 1)
                 }),
@@ -856,10 +853,7 @@ impl TypeResolutionModel {
                 .values()
                 .all(|field| self.json_assignable_in_context_inner(field, context, depth + 1)),
             _ => self
-                .type_shape_ir(
-                    &ResolvedTypeRef::new(actual.clone()),
-                    context,
-                )
+                .type_shape_ir(&ResolvedTypeRef::new(actual.clone()), context)
                 .is_some_and(|shape| {
                     self.json_object_assignable_in_context_inner(&shape, context, depth + 1)
                 }),
@@ -1173,9 +1167,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Option<ResolvedTypeRef> {
         if let TypeRefIr::Record { fields } = &ty.ir {
-            return fields
-                .get(field)
-                .map(|ty| ResolvedTypeRef::new(ty.clone()));
+            return fields.get(field).map(|ty| ResolvedTypeRef::new(ty.clone()));
         }
         // A nominal record's canonical shape deliberately expands aliases for
         // validation and wire compatibility. Field projection must instead

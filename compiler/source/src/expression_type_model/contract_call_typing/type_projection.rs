@@ -669,7 +669,7 @@ pub(super) fn resolved_contract_type(
                     "{name}<{}>",
                     arguments
                         .iter()
-                            .map(|argument| argument.to_string())
+                        .map(|argument| argument.to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
