@@ -210,6 +210,7 @@ test('local ingress proxies WebSocket upgrade bytes with trusted selectors', asy
   upstream.on('upgrade', (request, socket) => {
     seenRequest = request;
     upstreamSocket = socket;
+    socket.on('error', () => {});
     socket.write(
       'HTTP/1.1 101 Switching Protocols\r\n'
       + 'Connection: Upgrade\r\n'
@@ -266,8 +267,16 @@ test('local ingress proxies WebSocket upgrade bytes with trusted selectors', asy
   assert.equal(seenRequest.headers['x-skiff-version'], '0.1.0');
   assert.equal(seenRequest.headers['x-drop-upgrade'], undefined);
 
-  socket.destroy();
+  socket.resetAndDestroy();
   await onceEvent(socket, 'close');
+
+  const health = await requestAndCollect({
+    port: ingressAddress.port,
+    path: '/__local_ingress/health',
+    headers: { Host: 'health.localhost:4003' },
+  });
+  assert.equal(health.statusCode, 200);
+  assert.deepEqual(JSON.parse(health.body), { status: 'ok' });
 });
 
 test('local ingress survives a client reset while WebSocket upgrade is pending', async (context) => {
@@ -303,6 +312,56 @@ test('local ingress survives a client reset while WebSocket upgrade is pending',
   );
   await withTimeout(upgradeReceived, 1_000, 'upstream did not receive upgrade');
   socket.resetAndDestroy();
+  await onceEvent(socket, 'close');
+
+  const health = await requestAndCollect({
+    port: ingressAddress.port,
+    path: '/__local_ingress/health',
+    headers: { Host: 'health.localhost:4003' },
+  });
+  assert.equal(health.statusCode, 200);
+  assert.deepEqual(JSON.parse(health.body), { status: 'ok' });
+});
+
+test('local ingress survives an upstream reset after WebSocket upgrade', async (context) => {
+  let upstreamSocket;
+  const upstream = http.createServer();
+  upstream.on('upgrade', (_request, socket) => {
+    upstreamSocket = socket;
+    socket.on('error', () => {});
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n'
+      + 'Connection: Upgrade\r\n'
+      + 'Upgrade: websocket\r\n'
+      + '\r\n',
+    );
+  });
+  const upstreamAddress = await listen(upstream);
+  context.after(() => {
+    upstreamSocket?.destroy();
+    return closeServer(upstream);
+  });
+
+  const ingress = createLocalIngress(configFor(upstreamAddress.port));
+  const ingressAddress = await listen(ingress);
+  context.after(() => closeServer(ingress));
+
+  const socket = net.connect({ host: '127.0.0.1', port: ingressAddress.port });
+  socket.on('error', () => {});
+  await onceEvent(socket, 'connect');
+  socket.write(
+    'GET /ws HTTP/1.1\r\n'
+    + `Host: agine.localhost:${ingressAddress.port}\r\n`
+    + 'Connection: Upgrade\r\n'
+    + 'Upgrade: websocket\r\n'
+    + '\r\n',
+  );
+  await waitForSocket(
+    socket,
+    (buffer) => buffer.includes('101 Switching Protocols'),
+    1_000,
+  );
+  upstreamSocket.resetAndDestroy();
   await onceEvent(socket, 'close');
 
   const health = await requestAndCollect({
