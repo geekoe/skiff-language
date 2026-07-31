@@ -16,10 +16,8 @@ node scripts/skiff.mjs instance up .skiff-instance/config.yml --repair-owned-con
 
 The LaunchAgent should use `RunAtLoad=true` and `KeepAlive=false`; process
 lifecycle is owned by `skiff instance up/down/restart/status/doctor/repair`.
-The main stable instance may set `components.mongo: managed` to own the shared
-local replica set on port `27017`. Do not install a second MongoDB LaunchAgent
-for that port. Managed MongoDB raises its own open-file soft limit to `65536`
-before `exec`, independently of the LaunchAgent's inherited limit.
+Managed MongoDB raises its own open-file soft limit to `65536` before `exec`,
+independently of the LaunchAgent's inherited limit.
 
 ```text
 .skiff-instance/dev-home/
@@ -66,9 +64,8 @@ launchctl print gui/$(id -u)/run.skiff.instance.stable
 ```
 
 Local dev service DB and telemetry storage default to `mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false`.
-Port `27017` is the shared local MongoDB replica set for Skiff dev. The main
-stable instance owns it as a managed component; other worktree instances leave
-MongoDB disabled and reuse that endpoint.
+Port `27017` is the shared local MongoDB replica set for Skiff dev; other
+worktree instances leave MongoDB disabled and reuse that endpoint.
 `router.yml` forwards that URL to service activations as `serviceDb.mongoUrl`;
 `telemetry.yml` uses the same MongoDB endpoint with database `skiff`.
 
