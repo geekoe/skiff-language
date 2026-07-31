@@ -808,11 +808,11 @@ fn db_recoverable_runtime_context(
     program_context: &ProgramExecutionContext<'_>,
     expected_plans: DbRecoverableRuntimeExpectedPlans,
 ) -> Result<DbRecoverableRuntimeContext> {
-    let actor_context = program_context.actor_context();
-    let artifact_identity = actor_context
+    let request_context = program_context.request_context();
+    let artifact_identity = request_context
         .request_service_protocol_identity()
         .to_string();
-    let build_id = actor_context.request_build_id().to_string();
+    let build_id = request_context.request_build_id().to_string();
     Ok(DbRecoverableRuntimeContext {
         behavior_hooks: Arc::new(EvalRecoverableBehaviorHooks::new_for_execution(program)?),
         expected_plans,
@@ -824,8 +824,8 @@ fn db_recoverable_runtime_context(
             RuntimeRecoverableStorageLane::RecoverableEnvelope,
         )
         .with_origin_service(RuntimeRecoverableServiceRef {
-            service_id: actor_context.service_id().to_string(),
-            version: Some(actor_context.service_version().to_string()),
+            service_id: request_context.service_id().to_string(),
+            version: Some(request_context.service_version().to_string()),
             build_id: Some(build_id.clone()),
         })
         .with_explicit_recoverable_slot(),

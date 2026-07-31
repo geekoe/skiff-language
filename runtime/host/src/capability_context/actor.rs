@@ -62,7 +62,7 @@ impl<'a> ActorClient<'a> {
         bootstrap_payload: Vec<u8>,
         scope: Option<ExecutionScope>,
     ) -> Result<ActorRef> {
-        request.rpc_id = self.control_rpc_id(ACTOR_GET_OR_CREATE_TARGET);
+        request.rpc_id = control_rpc_id(&self.context, ACTOR_GET_OR_CREATE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
             .context
@@ -72,9 +72,14 @@ impl<'a> ActorClient<'a> {
             request,
             payload: bootstrap_payload,
         };
-        let response: ActorGetOrCreateResponseFrameHeader = self
-            .send_control_request(ACTOR_GET_OR_CREATE_TARGET, &rpc_id, command, scope)
-            .await?;
+        let response: ActorGetOrCreateResponseFrameHeader = send_control_request(
+            &self.context,
+            ACTOR_GET_OR_CREATE_TARGET,
+            &rpc_id,
+            command,
+            scope,
+        )
+        .await?;
         Ok(actor_ref_from_metadata(response.actor_ref)?)
     }
 
@@ -103,7 +108,7 @@ impl<'a> ActorClient<'a> {
         bootstrap_payload: Vec<u8>,
         scope: Option<ExecutionScope>,
     ) -> Result<ActorRef> {
-        request.rpc_id = self.control_rpc_id(ACTOR_REPLACE_TARGET);
+        request.rpc_id = control_rpc_id(&self.context, ACTOR_REPLACE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
             .context
@@ -113,9 +118,9 @@ impl<'a> ActorClient<'a> {
             request,
             payload: bootstrap_payload,
         };
-        let response: ActorReplaceResponseFrameHeader = self
-            .send_control_request(ACTOR_REPLACE_TARGET, &rpc_id, command, scope)
-            .await?;
+        let response: ActorReplaceResponseFrameHeader =
+            send_control_request(&self.context, ACTOR_REPLACE_TARGET, &rpc_id, command, scope)
+                .await?;
         Ok(actor_ref_from_metadata(response.actor_ref)?)
     }
 
@@ -136,16 +141,15 @@ impl<'a> ActorClient<'a> {
         mut request: ActorFindControlRequest,
         scope: Option<ExecutionScope>,
     ) -> Result<Option<ActorRef>> {
-        request.rpc_id = self.control_rpc_id(ACTOR_FIND_TARGET);
+        request.rpc_id = control_rpc_id(&self.context, ACTOR_FIND_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
             .context
             .current_activation_identity(ACTOR_FIND_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorFind { request };
-        let response: ActorFindResponseFrameHeader = self
-            .send_control_request(ACTOR_FIND_TARGET, &rpc_id, command, scope)
-            .await?;
+        let response: ActorFindResponseFrameHeader =
+            send_control_request(&self.context, ACTOR_FIND_TARGET, &rpc_id, command, scope).await?;
         if !response.found {
             return Ok(None);
         }
@@ -173,17 +177,27 @@ impl<'a> ActorClient<'a> {
         mut request: ActorRemoveControlRequest,
         scope: Option<ExecutionScope>,
     ) -> Result<bool> {
-        request.rpc_id = self.control_rpc_id(ACTOR_REMOVE_TARGET);
+        request.rpc_id = control_rpc_id(&self.context, ACTOR_REMOVE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
             .context
             .current_activation_identity(ACTOR_REMOVE_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorRemove { request };
-        let response: ActorRemoveResponseFrameHeader = self
-            .send_control_request(ACTOR_REMOVE_TARGET, &rpc_id, command, scope)
-            .await?;
+        let response: ActorRemoveResponseFrameHeader =
+            send_control_request(&self.context, ACTOR_REMOVE_TARGET, &rpc_id, command, scope)
+                .await?;
         Ok(response.removed)
+    }
+}
+
+pub struct RequestClient<'a> {
+    context: RequestClientContext<'a>,
+}
+
+impl<'a> RequestClient<'a> {
+    pub fn new(context: RequestClientContext<'a>) -> Self {
+        Self { context }
     }
 
     pub async fn submit_spawn(
@@ -211,7 +225,7 @@ impl<'a> ActorClient<'a> {
         args_payload: Vec<u8>,
         scope: Option<ExecutionScope>,
     ) -> Result<SpawnSubmitResponseFrameHeader> {
-        request.rpc_id = self.control_rpc_id(SPAWN_SUBMIT_TARGET);
+        request.rpc_id = control_rpc_id(&self.context, SPAWN_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
             .context
@@ -221,75 +235,90 @@ impl<'a> ActorClient<'a> {
             request,
             payload: args_payload,
         };
-        let response: SpawnSubmitResponseFrameHeader = self
-            .send_control_request(SPAWN_SUBMIT_TARGET, &rpc_id, command, scope)
-            .await?;
+        let response: SpawnSubmitResponseFrameHeader =
+            send_control_request(&self.context, SPAWN_SUBMIT_TARGET, &rpc_id, command, scope)
+                .await?;
         validate_spawn_submit_response(&response, &rpc_id)?;
         Ok(response)
-    }
-
-    async fn send_control_request<TResponse>(
-        &self,
-        target: &str,
-        rpc_id: &str,
-        command: OutboundControlMessage,
-        scope: Option<ExecutionScope>,
-    ) -> Result<TResponse>
-    where
-        TResponse: DeserializeOwned,
-    {
-        let payload = self
-            .send_raw_control_request(target, rpc_id, command, scope)
-            .await?;
-        serde_json::from_slice(&payload).map_err(|error| {
-            RuntimeError::decode_target(
-                target,
-                format!("control response header is not valid JSON: {error}"),
-            )
-        })
-    }
-
-    async fn send_raw_control_request(
-        &self,
-        target: &str,
-        rpc_id: &str,
-        command: OutboundControlMessage,
-        scope: Option<ExecutionScope>,
-    ) -> Result<Vec<u8>> {
-        if scope
-            .as_ref()
-            .and_then(|scope| scope.terminal_at(std::time::Instant::now()))
-            .is_some()
-        {
-            return Err(RuntimeError::cancelled());
-        }
-        let (response_rx, lease) = self.context.open_outbound_response_lease(rpc_id)?;
-        if let Err(error) = self.context.send_outbound_request(rpc_id, command) {
-            let _ = lease.cancel("runtime_disconnect");
-            return Err(error);
-        }
-
-        match scope {
-            Some(scope) => {
-                await_control_response_in_scope(&self.context, target, lease, response_rx, scope)
-                    .await
-            }
-            None => await_control_response(&self.context, target, lease, response_rx).await,
-        }
-    }
-
-    fn control_rpc_id(&self, target: &str) -> String {
-        format!(
-            "{}:{}:{}",
-            self.context.request_id(),
-            target,
-            uuid::Uuid::new_v4()
-        )
     }
 }
 
 #[derive(Clone)]
 pub struct ActorClientContext<'a> {
+    runtime_id: &'a str,
+    request_id: &'a str,
+    activation_identity: Option<&'a ActivationIdentityControl>,
+    router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
+    outbound_requests: &'a OutboundRequestRegistry,
+    cancellation: CancellationToken,
+}
+
+pub type ActorCapabilityContext<'a> = ActorClientContext<'a>;
+
+impl<'a> ActorClientContext<'a> {
+    pub fn new(
+        invocation: InvocationContext<'a>,
+        activation_identity: Option<&'a ActivationIdentityControl>,
+        router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
+        outbound_requests: &'a OutboundRequestRegistry,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            runtime_id: invocation.runtime_id(),
+            request_id: invocation.request_id(),
+            activation_identity,
+            router_sender,
+            outbound_requests,
+            cancellation,
+        }
+    }
+
+    pub fn from_parts(
+        runtime_id: &'a str,
+        request_id: &'a str,
+        activation_identity: Option<&'a ActivationIdentityControl>,
+        router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
+        outbound_requests: &'a OutboundRequestRegistry,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            runtime_id,
+            request_id,
+            activation_identity,
+            router_sender,
+            outbound_requests,
+            cancellation,
+        }
+    }
+
+    pub fn runtime_id(&self) -> &'a str {
+        self.runtime_id
+    }
+
+    pub fn request_id(&self) -> &'a str {
+        self.request_id
+    }
+
+    pub fn activation_identity(&self) -> Option<&'a ActivationIdentityControl> {
+        self.activation_identity
+    }
+}
+
+impl<'a, 'ctx> From<&'a RequestClientContext<'ctx>> for ActorClientContext<'a> {
+    fn from(context: &'a RequestClientContext<'ctx>) -> Self {
+        Self {
+            runtime_id: context.runtime_id,
+            request_id: context.request_id,
+            activation_identity: context.activation_identity,
+            router_sender: context.router_sender,
+            outbound_requests: context.outbound_requests,
+            cancellation: context.cancellation.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RequestClientContext<'a> {
     runtime_id: &'a str,
     service_id: &'a str,
     service_version: &'a str,
@@ -305,9 +334,7 @@ pub struct ActorClientContext<'a> {
     cancellation: CancellationToken,
 }
 
-pub type ActorCapabilityContext<'a> = ActorClientContext<'a>;
-
-impl<'a> ActorClientContext<'a> {
+impl<'a> RequestClientContext<'a> {
     pub fn new(
         invocation: InvocationContext<'a>,
         activation_identity: Option<&'a ActivationIdentityControl>,
@@ -406,31 +433,56 @@ impl<'a> ActorClientContext<'a> {
         self.activation_identity
     }
 
-    fn current_activation_identity(&self, target: &str) -> Result<ActivationIdentityControl> {
-        self.activation_identity
-            .cloned()
-            .ok_or_else(|| RuntimeError::Protocol {
-                target: target.to_string(),
-                message: format!("{target} requires a current pinned ActivationContext"),
-            })
-    }
-
     pub fn trace_id(&self) -> Option<&'a str> {
         self.trace_id
+    }
+}
+
+trait ControlContext {
+    fn runtime_id(&self) -> &str;
+    fn request_id(&self) -> &str;
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
+    fn current_activation_identity(&self, target: &str) -> Result<ActivationIdentityControl>;
+    fn outbound_requests(&self) -> &OutboundRequestRegistry;
+    fn open_outbound_response_lease(
+        &self,
+        request_id: &str,
+    ) -> Result<(OutboundResponseReceiver, OutboundRequestLease)>;
+    fn send_outbound_request(
+        &self,
+        request_id: &str,
+        command: OutboundControlMessage,
+    ) -> Result<()>;
+    fn cancellation_token(&self) -> CancellationToken;
+    fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender>;
+}
+
+impl ControlContext for ActorClientContext<'_> {
+    fn runtime_id(&self) -> &str {
+        self.runtime_id
+    }
+
+    fn request_id(&self) -> &str {
+        self.request_id
+    }
+
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.activation_identity
+    }
+
+    fn outbound_requests(&self) -> &OutboundRequestRegistry {
+        self.outbound_requests
+    }
+
+    fn current_activation_identity(&self, target: &str) -> Result<ActivationIdentityControl> {
+        current_activation_identity(self.activation_identity, target)
     }
 
     fn open_outbound_response_lease(
         &self,
         request_id: &str,
     ) -> Result<(OutboundResponseReceiver, OutboundRequestLease)> {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let lease = self.outbound_requests.insert_with_lease(
-            request_id.to_string(),
-            sender,
-            self.outbound_cancel_sender(),
-            "caller_cancel",
-        )?;
-        Ok((receiver, lease))
+        open_outbound_response_lease(self, request_id)
     }
 
     fn send_outbound_request(
@@ -438,18 +490,7 @@ impl<'a> ActorClientContext<'a> {
         request_id: &str,
         command: OutboundControlMessage,
     ) -> Result<()> {
-        let sender = self
-            .router_sender
-            .ok_or_else(|| RuntimeError::ProviderUnavailable {
-                target: request_id.to_string(),
-                reason: "router writer is not available".to_string(),
-            })?;
-        sender
-            .send(RouterWriterMessage::Control(command))
-            .map_err(|_| RuntimeError::ProviderUnavailable {
-                target: request_id.to_string(),
-                reason: "router writer channel closed".to_string(),
-            })
+        send_outbound_request(self.router_sender, request_id, command)
     }
 
     fn cancellation_token(&self) -> CancellationToken {
@@ -457,17 +498,168 @@ impl<'a> ActorClientContext<'a> {
     }
 
     fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender> {
-        let sender = self.router_sender.cloned()?;
-        Some(std::sync::Arc::new(move |request_id, reason| {
-            sender
-                .send(cancel_message(request_id, reason))
-                .map_err(|_| OutboundRequestCancelSendError::Closed)
-        }))
+        outbound_cancel_sender(self.router_sender)
     }
 }
 
-async fn await_control_response(
-    context: &ActorClientContext<'_>,
+impl ControlContext for RequestClientContext<'_> {
+    fn runtime_id(&self) -> &str {
+        self.runtime_id
+    }
+
+    fn request_id(&self) -> &str {
+        self.request_id
+    }
+
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.activation_identity
+    }
+
+    fn outbound_requests(&self) -> &OutboundRequestRegistry {
+        self.outbound_requests
+    }
+
+    fn current_activation_identity(&self, target: &str) -> Result<ActivationIdentityControl> {
+        current_activation_identity(self.activation_identity, target)
+    }
+
+    fn open_outbound_response_lease(
+        &self,
+        request_id: &str,
+    ) -> Result<(OutboundResponseReceiver, OutboundRequestLease)> {
+        open_outbound_response_lease(self, request_id)
+    }
+
+    fn send_outbound_request(
+        &self,
+        request_id: &str,
+        command: OutboundControlMessage,
+    ) -> Result<()> {
+        send_outbound_request(self.router_sender, request_id, command)
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender> {
+        outbound_cancel_sender(self.router_sender)
+    }
+}
+
+fn current_activation_identity(
+    activation_identity: Option<&ActivationIdentityControl>,
+    target: &str,
+) -> Result<ActivationIdentityControl> {
+    activation_identity
+        .cloned()
+        .ok_or_else(|| RuntimeError::Protocol {
+            target: target.to_string(),
+            message: format!("{target} requires a current pinned ActivationContext"),
+        })
+}
+
+fn open_outbound_response_lease(
+    context: &impl ControlContext,
+    request_id: &str,
+) -> Result<(OutboundResponseReceiver, OutboundRequestLease)> {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let lease = context.outbound_requests().insert_with_lease(
+        request_id.to_string(),
+        sender,
+        context.outbound_cancel_sender(),
+        "caller_cancel",
+    )?;
+    Ok((receiver, lease))
+}
+
+fn send_outbound_request(
+    router_sender: Option<&mpsc::UnboundedSender<RouterWriterMessage>>,
+    request_id: &str,
+    command: OutboundControlMessage,
+) -> Result<()> {
+    let sender = router_sender.ok_or_else(|| RuntimeError::ProviderUnavailable {
+        target: request_id.to_string(),
+        reason: "router writer is not available".to_string(),
+    })?;
+    sender
+        .send(RouterWriterMessage::Control(command))
+        .map_err(|_| RuntimeError::ProviderUnavailable {
+            target: request_id.to_string(),
+            reason: "router writer channel closed".to_string(),
+        })
+}
+
+fn outbound_cancel_sender(
+    router_sender: Option<&mpsc::UnboundedSender<RouterWriterMessage>>,
+) -> Option<OutboundRequestCancelSender> {
+    let sender = router_sender.cloned()?;
+    Some(std::sync::Arc::new(move |request_id, reason| {
+        sender
+            .send(cancel_message(request_id, reason))
+            .map_err(|_| OutboundRequestCancelSendError::Closed)
+    }))
+}
+
+async fn send_control_request<C, TResponse>(
+    context: &C,
+    target: &str,
+    rpc_id: &str,
+    command: OutboundControlMessage,
+    scope: Option<ExecutionScope>,
+) -> Result<TResponse>
+where
+    C: ControlContext,
+    TResponse: DeserializeOwned,
+{
+    let payload = send_raw_control_request(context, target, rpc_id, command, scope).await?;
+    serde_json::from_slice(&payload).map_err(|error| {
+        RuntimeError::decode_target(
+            target,
+            format!("control response header is not valid JSON: {error}"),
+        )
+    })
+}
+
+async fn send_raw_control_request<C: ControlContext>(
+    context: &C,
+    target: &str,
+    rpc_id: &str,
+    command: OutboundControlMessage,
+    scope: Option<ExecutionScope>,
+) -> Result<Vec<u8>> {
+    if scope
+        .as_ref()
+        .and_then(|scope| scope.terminal_at(std::time::Instant::now()))
+        .is_some()
+    {
+        return Err(RuntimeError::cancelled());
+    }
+    let (response_rx, lease) = context.open_outbound_response_lease(rpc_id)?;
+    if let Err(error) = context.send_outbound_request(rpc_id, command) {
+        let _ = lease.cancel("runtime_disconnect");
+        return Err(error);
+    }
+
+    match scope {
+        Some(scope) => {
+            await_control_response_in_scope(context, target, lease, response_rx, scope).await
+        }
+        None => await_control_response(context, target, lease, response_rx).await,
+    }
+}
+
+fn control_rpc_id<C: ControlContext>(context: &C, target: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        context.request_id(),
+        target,
+        uuid::Uuid::new_v4()
+    )
+}
+
+async fn await_control_response<C: ControlContext>(
+    context: &C,
     target: &str,
     lease: OutboundRequestLease,
     mut receiver: OutboundResponseReceiver,
@@ -490,8 +682,8 @@ async fn await_control_response(
     }
 }
 
-async fn await_control_response_in_scope(
-    context: &ActorClientContext<'_>,
+async fn await_control_response_in_scope<C: ControlContext>(
+    context: &C,
     target: &str,
     lease: OutboundRequestLease,
     mut receiver: OutboundResponseReceiver,
@@ -587,7 +779,7 @@ fn scope_cancel_reason(terminal: &ExecutionScopeTerminal) -> &'static str {
     }
 }
 
-async fn wait_request_cancelled(context: &ActorClientContext<'_>) {
+async fn wait_request_cancelled<C: ControlContext>(context: &C) {
     context.cancellation_token().wait_cancelled().await;
 }
 

@@ -110,7 +110,10 @@ pub(crate) fn actor_from_request<'a>(
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
     actor_method_outbound: &'a Arc<ActorMethodOutboundRegistry>,
     cancellation: CancellationToken,
-) -> eval_capabilities::ActorCapabilityContext<'a> {
+) -> (
+    eval_capabilities::ActorCapabilityContext<'a>,
+    eval_capabilities::RequestCapabilityContext<'a>,
+) {
     let invocation = invocation_context_from_request(
         runtime_id,
         service_id,
@@ -118,32 +121,48 @@ pub(crate) fn actor_from_request<'a>(
         request,
         operation,
     );
-    let context = concrete::ActorClientContext::new(
+    let request_context = concrete::RequestClientContext::new(
         invocation,
         activation_identity,
         router_sender,
         outbound_requests.as_ref(),
         cancellation.clone(),
     );
-    let owned = RuntimeOwnedActorParts {
-        runtime_id: context.runtime_id().to_string(),
-        service_id: context.service_id().to_string(),
-        service_version: context.service_version().to_string(),
-        request_id: context.request_id().to_string(),
-        request_target: context.request_target().to_string(),
-        request_build_id: context.request_build_id().to_string(),
-        request_service_protocol_identity: context.request_service_protocol_identity().to_string(),
-        operation_service_protocol_identity: context
+    let actor_context = concrete::ActorClientContext::new(
+        invocation,
+        activation_identity,
+        router_sender,
+        outbound_requests.as_ref(),
+        cancellation.clone(),
+    );
+    let owned = RuntimeOwnedRequestParts {
+        runtime_id: request_context.runtime_id().to_string(),
+        service_id: request_context.service_id().to_string(),
+        service_version: request_context.service_version().to_string(),
+        request_id: request_context.request_id().to_string(),
+        request_target: request_context.request_target().to_string(),
+        request_build_id: request_context.request_build_id().to_string(),
+        request_service_protocol_identity: request_context
+            .request_service_protocol_identity()
+            .to_string(),
+        operation_service_protocol_identity: request_context
             .operation_service_protocol_identity()
             .map(str::to_string),
-        activation_identity: context.activation_identity().cloned(),
-        trace_id: context.trace_id().map(str::to_string),
+        activation_identity: request_context.activation_identity().cloned(),
+        trace_id: request_context.trace_id().map(str::to_string),
         router_sender: router_sender.cloned(),
         outbound_requests: outbound_requests.clone(),
         actor_method_outbound: actor_method_outbound.clone(),
         cancellation,
     };
-    actor(context, owned)
+    (
+        actor(
+            actor_context.clone(),
+            request_context.clone(),
+            owned.clone(),
+        ),
+        request_capability(actor_context, request_context, owned),
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -164,7 +183,10 @@ impl TestActorCapabilityFactory {
         router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
         outbound_requests: &'a Arc<OutboundRequestRegistry>,
         cancellation: CancellationToken,
-    ) -> eval_capabilities::ActorCapabilityContext<'a> {
+    ) -> (
+        eval_capabilities::ActorCapabilityContext<'a>,
+        eval_capabilities::RequestCapabilityContext<'a>,
+    ) {
         actor_from_request(
             runtime_id,
             service_id,

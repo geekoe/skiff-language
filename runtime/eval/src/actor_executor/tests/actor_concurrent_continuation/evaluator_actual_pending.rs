@@ -22,6 +22,7 @@ use skiff_runtime_capability_context::{
     CapabilityFuture, CapabilityResult, DbCapabilityContext, FileCapabilityApi,
     FileCapabilityContext, FileCapabilityFuture, FileCapabilitySource, FileCapabilitySourceApi,
     FileChunkSource, FileSourceStreamApi, FileSourceStreamContext, OwnedActorCapabilityContext,
+    OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
     SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
     StreamRuntimeResult, StreamSink, StreamSinkApi,

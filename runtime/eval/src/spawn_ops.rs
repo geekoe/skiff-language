@@ -11,7 +11,6 @@ use skiff_runtime_model::{
 
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
-    capabilities::SpawnClient,
     error::{Result, RuntimeError},
     invocation::EvalProgramProjection,
     program_execution::ProgramExecutionContext,
@@ -136,30 +135,30 @@ pub async fn submit_spawn_statement(
     };
 
     let projection = context.execution_projection().clone();
-    let spawn_context = context.context.spawn_context();
+    let request_context = context.context.request_context();
     let execution_control = context.execution.owned();
     let invocation = encode_spawn_request_payload(context, call, projection).await?;
 
-    SpawnClient::new(spawn_context.clone())
+    request_context
         .submit_spawn(
             SpawnSubmitControlRequest {
                 rpc_id: String::new(),
                 runtime_id: String::new(),
                 target_kind: invocation.target_kind,
-                service_id: spawn_context.service_id().to_string(),
-                service_version: spawn_context.service_version().to_string(),
-                service_protocol_identity: spawn_context
+                service_id: request_context.service_id().to_string(),
+                service_version: request_context.service_version().to_string(),
+                service_protocol_identity: request_context
                     .spawn_service_protocol_identity()
                     .to_string(),
                 target: invocation.target,
                 spawn_id: None,
-                build_id: spawn_submit_build_id(spawn_context.request_build_id()),
+                build_id: spawn_submit_build_id(request_context.request_build_id()),
                 activation_identity: current_activation_identity(
-                    spawn_context.activation_identity(),
+                    request_context.activation_identity(),
                 )?,
-                caller_request_id: Some(spawn_context.request_id().to_string()),
-                trace_id: spawn_context.trace_id().map(str::to_string),
-                caller_target: Some(spawn_context.request_target().to_string()),
+                caller_request_id: Some(request_context.request_id().to_string()),
+                trace_id: request_context.trace_id().map(str::to_string),
+                caller_target: Some(request_context.request_target().to_string()),
                 max_queue_wait_ms: None,
             },
             invocation.args_payload,
@@ -277,12 +276,12 @@ async fn encode_spawn_function_payload(
         &resolved.addr,
         resolved.executable,
     )?;
-    let spawn_context = context.context.spawn_context();
+    let request_context = context.context.request_context();
     let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload)
         .with_origin_service(
-            PayloadServiceRef::new(spawn_context.service_id())
-                .with_version(spawn_context.service_version())
-                .with_build_id(spawn_context.request_build_id()),
+            PayloadServiceRef::new(request_context.service_id())
+                .with_version(request_context.service_version())
+                .with_build_id(request_context.request_build_id()),
         );
     let args_payload = encode_spawn_args_payload(
         &RuntimeValue::Heap(args_handle),

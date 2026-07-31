@@ -176,14 +176,14 @@ pub use skiff_runtime_capability_context::{
     FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
     HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
     OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
-    OwnedExecutionControlApi, RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
-    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnClient,
-    SpawnSubmitControlRequest, StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext,
-    StreamConsumerCleanup, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamRuntimeError, StreamRuntimeOwner, StreamSink, StreamSinkApi,
-    SupervisedStreamConsumptionChild, TelemetryCapabilityApi, TelemetryCapabilityContext,
-    TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
-    HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    OwnedExecutionControlApi, OwnedRequestCapabilityContext, RequestCapabilityApi,
+    RequestCapabilityContext, RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
+    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnSubmitControlRequest,
+    StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
+    StreamRuntimeOwner, StreamSink, StreamSinkApi, SupervisedStreamConsumptionChild,
+    TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink,
+    WebsocketCapabilityApi, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {
@@ -538,19 +538,21 @@ impl<'execution> RuntimeNativeConfigCapabilityContext<'execution> {
 #[derive(Clone)]
 pub struct RuntimeNativeActorCapabilityContext<'execution>(
     ActorCapabilityContext<'execution>,
+    RequestCapabilityContext<'execution>,
     RuntimeNativeInvocationExecutionControl,
 );
 
 impl<'execution> RuntimeNativeActorCapabilityContext<'execution> {
     pub(crate) fn new(
         context: ActorCapabilityContext<'execution>,
+        request_context: RequestCapabilityContext<'execution>,
         invocation_execution: RuntimeNativeInvocationExecutionControl,
     ) -> Self {
-        Self(context, invocation_execution)
+        Self(context, request_context, invocation_execution)
     }
 
     pub(crate) fn invocation_execution(&self) -> &RuntimeNativeInvocationExecutionControl {
-        &self.1
+        &self.2
     }
 }
 
@@ -678,7 +680,7 @@ pub struct EvalRequestExecutionCapabilities<'a> {
     websocket: WebsocketCapabilityContext<'a>,
     effects: EffectDispatchContext,
     actor: ActorCapabilityContext<'a>,
-    spawn: ActorCapabilityContext<'a>,
+    request: RequestCapabilityContext<'a>,
 }
 
 pub struct EvalRequestProgramExecutionInput {
@@ -698,7 +700,7 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
         websocket: WebsocketCapabilityContext<'a>,
         effects: EffectDispatchContext,
         actor: ActorCapabilityContext<'a>,
-        spawn: ActorCapabilityContext<'a>,
+        request: RequestCapabilityContext<'a>,
     ) -> Self {
         Self {
             execution,
@@ -708,7 +710,7 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
             websocket,
             effects,
             actor,
-            spawn,
+            request,
         }
     }
 
@@ -724,7 +726,7 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
             websocket,
             effects,
             actor,
-            spawn,
+            request,
         } = self;
         let EvalRequestProgramExecutionInput {
             stream_runtime,
@@ -749,7 +751,7 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
             http_client,
             test_effect_doubles,
             actor,
-            spawn,
+            request,
             request_heap_limits,
         }
     }
@@ -770,11 +772,11 @@ impl NativeConfigCapability for RuntimeNativeConfigCapabilityContext<'_> {
 
 impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     fn service_id(&self) -> &str {
-        self.0.service_id()
+        self.1.service_id()
     }
 
     fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        self.0.activation_identity()
+        self.1.activation_identity()
     }
 
     fn get_or_create_actor<'a>(
@@ -787,7 +789,7 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
                 .get_or_create_actor(
                     request,
                     bootstrap_payload,
-                    self.1.execution_control().clone(),
+                    self.2.execution_control().clone(),
                 )
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
@@ -804,7 +806,7 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
                 .replace_actor(
                     request,
                     bootstrap_payload,
-                    self.1.execution_control().clone(),
+                    self.2.execution_control().clone(),
                 )
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
@@ -817,7 +819,7 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     ) -> NativeCapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .find_actor(request, self.1.execution_control().clone())
+                .find_actor(request, self.2.execution_control().clone())
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })
@@ -829,7 +831,7 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     ) -> NativeCapabilityFuture<'a, bool> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .remove_actor(request, self.1.execution_control().clone())
+                .remove_actor(request, self.2.execution_control().clone())
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })

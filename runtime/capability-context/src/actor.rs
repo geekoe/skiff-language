@@ -3,30 +3,19 @@ use std::sync::Arc;
 use skiff_runtime_model::runtime_value::ActorRef;
 
 use crate::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorInvocationOutcome, ActorInvocationRequest, ActorRemoveControlRequest,
-    ActorReplaceControlRequest, CapabilityFuture, CapabilityResult, OwnedExecutionControl,
-    SpawnSubmitControlRequest,
+    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorInvocationOutcome,
+    ActorInvocationRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    CapabilityFuture, CapabilityResult, OwnedExecutionControl,
 };
 
+/// Actor storage and invocation operations provided by the host/runtime.
+///
+/// Request/invocation metadata and `submit_spawn` live on
+/// [`crate::RequestCapabilityApi`] so actor-model consumers do not need them.
 pub trait ActorCapabilityApi: Send + Sync {
     fn owned(&self) -> OwnedActorCapabilityContext;
     fn borrow(&self) -> ActorCapabilityContext<'_>;
 
-    // Request/invocation metadata consumed by eval when assembling actor and spawn control requests.
-    fn runtime_id(&self) -> &str;
-    fn service_id(&self) -> &str;
-    fn service_version(&self) -> &str;
-    fn request_id(&self) -> &str;
-    fn request_target(&self) -> &str;
-    fn request_build_id(&self) -> &str;
-    fn spawn_service_protocol_identity(&self) -> &str;
-    fn request_service_protocol_identity(&self) -> &str;
-    fn operation_service_protocol_identity(&self) -> Option<&str>;
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
-    fn trace_id(&self) -> Option<&str>;
-
-    // Actor storage and spawn control operations provided by the host/runtime.
     fn get_or_create_actor<'a>(
         &'a self,
         request: ActorGetOrCreateControlRequest,
@@ -52,13 +41,6 @@ pub trait ActorCapabilityApi: Send + Sync {
         request: ActorRemoveControlRequest,
         execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, bool>;
-
-    fn submit_spawn<'a>(
-        &'a self,
-        request: SpawnSubmitControlRequest,
-        args_payload: Vec<u8>,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()>;
 
     fn invoke_actor<'a>(
         &'a self,
@@ -88,50 +70,6 @@ impl<'a> ActorCapabilityContext<'a> {
 
     pub fn borrow(&self) -> ActorCapabilityContext<'_> {
         self.inner.borrow()
-    }
-
-    pub fn runtime_id(&self) -> &str {
-        self.inner.runtime_id()
-    }
-
-    pub fn service_id(&self) -> &str {
-        self.inner.service_id()
-    }
-
-    pub fn service_version(&self) -> &str {
-        self.inner.service_version()
-    }
-
-    pub fn request_id(&self) -> &str {
-        self.inner.request_id()
-    }
-
-    pub fn request_target(&self) -> &str {
-        self.inner.request_target()
-    }
-
-    pub fn request_build_id(&self) -> &str {
-        self.inner.request_build_id()
-    }
-
-    pub fn spawn_service_protocol_identity(&self) -> &str {
-        self.inner.spawn_service_protocol_identity()
-    }
-
-    pub fn request_service_protocol_identity(&self) -> &str {
-        self.inner.request_service_protocol_identity()
-    }
-
-    pub fn operation_service_protocol_identity(&self) -> Option<&str> {
-        self.inner.operation_service_protocol_identity()
-    }
-
-    pub fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        self.inner.activation_identity()
-    }
-
-    pub fn trace_id(&self) -> Option<&str> {
-        self.inner.trace_id()
     }
 
     pub async fn get_or_create_actor(
@@ -170,17 +108,6 @@ impl<'a> ActorCapabilityContext<'a> {
         execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<bool> {
         self.inner.remove_actor(request, execution_control).await
-    }
-
-    pub async fn submit_spawn(
-        &self,
-        request: SpawnSubmitControlRequest,
-        args_payload: Vec<u8>,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityResult<()> {
-        self.inner
-            .submit_spawn(request, args_payload, execution_control)
-            .await
     }
 
     pub async fn invoke_actor(

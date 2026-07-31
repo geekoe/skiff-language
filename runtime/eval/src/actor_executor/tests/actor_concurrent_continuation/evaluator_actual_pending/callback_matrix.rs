@@ -478,9 +478,11 @@ fn caller_env(fixture: &CallbackFixture, heap: &mut RequestHeap) -> Env {
 
 fn callback_program_context(fixture: &CallbackFixture) -> ProgramExecutionContext<'static> {
     let actor = test_runtime::actor_context();
+    let request = test_runtime::request_context();
     let test_effect_doubles = fixture.evaluator.interpreter.test_effect_double_context();
     let rebinder = test_runtime::activation_execution_context_rebinder(
         &actor,
+        &request,
         fixture.evaluator.interpreter.stream_runtime.clone(),
         test_effect_doubles,
         fixture.evaluator.interpreter.http_options.clone(),
@@ -488,6 +490,7 @@ fn callback_program_context(fixture: &CallbackFixture) -> ProgramExecutionContex
     program_context_with(
         &fixture.evaluator.interpreter,
         actor,
+        request,
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
     )

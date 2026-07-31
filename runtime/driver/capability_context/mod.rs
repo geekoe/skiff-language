@@ -27,12 +27,12 @@ pub use skiff_runtime_host::capability_context::{
     DbRecoverableRuntimeExpectedPlans, DbRuntimeChange, DbRuntimeSetOp, EffectDispatchContext,
     FileCapabilityContext, FileCapabilityRecord, FileCapabilityRuntime, FileCapabilitySource,
     FileSourceStreamContext, HttpClientCapabilityContext, HttpEffectContext,
-    HttpResponseStreamCapabilityContext, HttpRuntimeOptions, RuntimeNativeFileCapabilityContext,
-    RuntimeNativeHttpClientCapabilityContext, RuntimeNativeHttpResponseStreamCapabilityContext,
-    RuntimeNativeTelemetryCapabilityContext, RuntimeNativeTimeCapabilityContext,
-    StreamCancelSignal, StreamCapabilityContext, StreamRuntime, StreamSink,
-    TelemetryCapabilityContext, TestEffectDouble, TestEffectDoubleContext, TimeCapabilityContext,
-    TypedStreamSink, WebsocketCapabilityContext,
+    HttpResponseStreamCapabilityContext, HttpRuntimeOptions, RequestClient, RequestClientContext,
+    RuntimeNativeFileCapabilityContext, RuntimeNativeHttpClientCapabilityContext,
+    RuntimeNativeHttpResponseStreamCapabilityContext, RuntimeNativeTelemetryCapabilityContext,
+    RuntimeNativeTimeCapabilityContext, StreamCancelSignal, StreamCapabilityContext, StreamRuntime,
+    StreamSink, TelemetryCapabilityContext, TestEffectDouble, TestEffectDoubleContext,
+    TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityContext,
 };
 pub use skiff_runtime_native_contract::{
     TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM,

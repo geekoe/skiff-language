@@ -632,6 +632,7 @@ fn scheduled_budget_context(control: ScheduledBudgetControl) -> ProgramExecution
         runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
     let effects = test_runtime::effects_context();
     let actor = test_runtime::actor_context_with_trace("trace:e1-entry-checkpoint");
+    let request = test_runtime::request_context_with_trace("trace:e1-entry-checkpoint");
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -648,7 +649,7 @@ fn scheduled_budget_context(control: ScheduledBudgetControl) -> ProgramExecution
         ),
         test_effect_doubles,
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

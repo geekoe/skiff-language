@@ -1357,13 +1357,13 @@ fn declare_runtime_value_request_parameters(
     if request_params.is_empty() && request.payload_bytes().is_empty() {
         return Ok(());
     }
-    let actor_context = context.execution_context().actor_context();
+    let request_context = context.execution_context().request_context();
     let spawn_decode = RecoverableSpawnDecodeContext {
         program,
         addr,
         executable,
-        artifact_identity: actor_context.request_service_protocol_identity(),
-        build_id: actor_context.request_build_id(),
+        artifact_identity: request_context.request_service_protocol_identity(),
+        build_id: request_context.request_build_id(),
     };
     let decoded = decode_request_args_payload(request, args_plan, heap, Some(spawn_decode))?;
     let object_handle = match &decoded {

@@ -149,7 +149,7 @@ impl TypedExecutionRuntime {
                 skiff_runtime_capability_context::HttpRuntimeOptions::from_env(),
             ),
         );
-        let actor = self.actor_factory.actor_from_request(
+        let (actor, request) = self.actor_factory.actor_from_request(
             "typed-execution-replica",
             self.service_id.as_str(),
             self.service_version.as_str(),
@@ -187,7 +187,7 @@ impl TypedExecutionRuntime {
             ),
             test_effect_doubles: interpreter.test_effect_double_context(),
             actor: actor.clone(),
-            spawn: actor,
+            request,
             request_heap_limits: self.heap_limits.clone(),
         })
         .with_runtime_assembly_target(target.clone());

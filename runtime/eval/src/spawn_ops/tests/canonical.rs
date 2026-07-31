@@ -19,6 +19,7 @@ use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
     ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
     CapabilityError, CapabilityFuture, OwnedActorCapabilityContext, OwnedExecutionControl,
+    OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
     SpawnSubmitControlRequest,
 };
 use skiff_runtime_model::{
@@ -51,50 +52,6 @@ impl ActorCapabilityApi for RecordingActor {
 
     fn borrow(&self) -> ActorCapabilityContext<'_> {
         ActorCapabilityContext::new(self.clone())
-    }
-
-    fn runtime_id(&self) -> &str {
-        "replica:canonical-spawn"
-    }
-
-    fn service_id(&self) -> &str {
-        PACKAGE_ID
-    }
-
-    fn service_version(&self) -> &str {
-        "1.0.0"
-    }
-
-    fn request_id(&self) -> &str {
-        "request:canonical-spawn"
-    }
-
-    fn request_target(&self) -> &str {
-        "operation:submit"
-    }
-
-    fn request_build_id(&self) -> &str {
-        "canonical-assembly-build"
-    }
-
-    fn spawn_service_protocol_identity(&self) -> &str {
-        "protocol:canonical-spawn"
-    }
-
-    fn request_service_protocol_identity(&self) -> &str {
-        "protocol:canonical-spawn"
-    }
-
-    fn operation_service_protocol_identity(&self) -> Option<&str> {
-        Some("protocol:canonical-spawn")
-    }
-
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        Some(&self.activation_identity)
-    }
-
-    fn trace_id(&self) -> Option<&str> {
-        Some("trace:canonical-spawn")
     }
 
     fn get_or_create_actor<'a>(
@@ -143,6 +100,72 @@ impl ActorCapabilityApi for RecordingActor {
         })
     }
 
+    fn invoke_actor<'a>(
+        &'a self,
+        _request: skiff_runtime_capability_context::ActorInvocationRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "Actor invocation is not under test",
+            ))
+        })
+    }
+}
+
+impl RequestCapabilityApi for RecordingActor {
+    fn owned(&self) -> OwnedRequestCapabilityContext {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> RequestCapabilityContext<'_> {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn runtime_id(&self) -> &str {
+        "replica:canonical-spawn"
+    }
+
+    fn service_id(&self) -> &str {
+        PACKAGE_ID
+    }
+
+    fn service_version(&self) -> &str {
+        "1.0.0"
+    }
+
+    fn request_id(&self) -> &str {
+        "request:canonical-spawn"
+    }
+
+    fn request_target(&self) -> &str {
+        "operation:submit"
+    }
+
+    fn request_build_id(&self) -> &str {
+        "canonical-assembly-build"
+    }
+
+    fn spawn_service_protocol_identity(&self) -> &str {
+        "protocol:canonical-spawn"
+    }
+
+    fn request_service_protocol_identity(&self) -> &str {
+        "protocol:canonical-spawn"
+    }
+
+    fn operation_service_protocol_identity(&self) -> Option<&str> {
+        Some("protocol:canonical-spawn")
+    }
+
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        Some(&self.activation_identity)
+    }
+
+    fn trace_id(&self) -> Option<&str> {
+        Some("trace:canonical-spawn")
+    }
+
     fn submit_spawn<'a>(
         &'a self,
         request: SpawnSubmitControlRequest,
@@ -161,18 +184,6 @@ impl ActorCapabilityApi for RecordingActor {
                 .expect("spawn recorder lock should remain available")
                 .push((request, args_payload));
             Ok(())
-        })
-    }
-
-    fn invoke_actor<'a>(
-        &'a self,
-        _request: skiff_runtime_capability_context::ActorInvocationRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
-        Box::pin(async {
-            Err(CapabilityError::unsupported(
-                "Actor invocation is not under test",
-            ))
         })
     }
 }
@@ -215,6 +226,7 @@ struct CanonicalSpawnFixture {
     eval_target: RuntimeAssemblyEvalTarget,
     caller_addr: skiff_runtime_linked_program::ExecutableAddr,
     actor: ActorCapabilityContext<'static>,
+    request: RequestCapabilityContext<'static>,
     activation_identity: ActivationIdentityControl,
     submissions: Arc<Mutex<Vec<(SpawnSubmitControlRequest, Vec<u8>)>>>,
     execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
@@ -224,7 +236,12 @@ struct CanonicalSpawnFixture {
 async fn f445h_i6_actor_scope_spawn_uses_current_projection_and_exact_target() {
     let fixture = canonical_spawn_fixture(Some(TARGET_SYMBOL));
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let context = execution_context(&interpreter, fixture.actor, Some(fixture.eval_target));
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
     let mut heap = RequestHeap::default();
 
     interpreter
@@ -264,7 +281,12 @@ async fn f445h_i6_actor_scope_spawn_uses_current_projection_and_exact_target() {
 async fn canonical_spawn_missing_metadata_fails_before_actor_capability() {
     let fixture = canonical_spawn_fixture(None);
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let context = execution_context(&interpreter, fixture.actor, Some(fixture.eval_target));
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
 
     let error = interpreter
         .execute_runtime_assembly_addr(
@@ -290,7 +312,7 @@ async fn canonical_spawn_missing_metadata_fails_before_actor_capability() {
 async fn canonical_spawn_missing_execution_projection_fails_before_actor_capability() {
     let fixture = canonical_spawn_fixture(Some(TARGET_SYMBOL));
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let context = execution_context(&interpreter, fixture.actor, None);
+    let context = execution_context(&interpreter, fixture.actor, fixture.request, None);
 
     let error = interpreter
         .execute_runtime_assembly_addr(
@@ -393,15 +415,18 @@ fn canonical_spawn_fixture(metadata_symbol: Option<&str>) -> CanonicalSpawnFixtu
     };
     let submissions = Arc::new(Mutex::new(Vec::new()));
     let execution_receipts = Arc::new(Mutex::new(Vec::new()));
-    let actor = ActorCapabilityContext::new(RecordingActor {
+    let recording_actor = RecordingActor {
         activation_identity: activation_identity.clone(),
         submissions: Arc::clone(&submissions),
         execution_receipts: Arc::clone(&execution_receipts),
-    });
+    };
+    let actor = ActorCapabilityContext::new(recording_actor.clone());
+    let request = RequestCapabilityContext::new(recording_actor);
     CanonicalSpawnFixture {
         eval_target,
         caller_addr: skiff_runtime_linked_program::ExecutableAddr::package(0, 0, 0),
         actor,
+        request,
         activation_identity,
         submissions,
         execution_receipts,
@@ -553,6 +578,7 @@ fn activation_context(
 fn execution_context<'a>(
     interpreter: &Interpreter,
     actor: ActorCapabilityContext<'static>,
+    request: RequestCapabilityContext<'static>,
     target: Option<RuntimeAssemblyEvalTarget>,
 ) -> ProgramExecutionContext<'a> {
     let execution = test_runtime::execution_control();
@@ -575,7 +601,7 @@ fn execution_context<'a>(
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     });
     match target {

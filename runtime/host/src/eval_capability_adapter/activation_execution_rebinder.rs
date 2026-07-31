@@ -246,7 +246,7 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
         let runtime_operation = self.provider_operation(&facts);
         let activation_identity =
             super::assembly_execution_context::activation_identity_control(&facts.activation);
-        let actor = actor_from_request(
+        let (actor, request_context) = actor_from_request(
             self.input.runtime_id.as_str(),
             deployment.service_id.as_str(),
             deployment.contract_version.as_str(),
@@ -257,8 +257,7 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
             &self.input.outbound_requests,
             &self.input.actor_method_outbound,
             self.input.cancellation.clone(),
-        )
-        .owned();
+        );
         let effects = effects(
             effect_dispatch_context_from_request(
                 &request,
@@ -285,8 +284,8 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
             websocket,
             effects,
             http_client,
-            actor.clone(),
-            actor,
+            actor.owned(),
+            request_context.owned(),
         ))
     }
 }

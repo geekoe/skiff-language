@@ -301,6 +301,7 @@ async fn inline_package_effect_stream_uses_the_current_context_runtime() {
         &interpreter,
         fixture.eval_target,
         test_runtime::actor_context(),
+        test_runtime::request_context(),
         context_stream_runtime,
     );
     let mut heap = RequestHeap::default();
@@ -1834,10 +1835,12 @@ fn execution_context_with_trace<'a>(
     target: RuntimeAssemblyEvalTarget,
     trace_id: &'static str,
 ) -> ProgramExecutionContext<'a> {
-    execution_context_with_actor(
+    execution_context_with_actor_and_stream_runtime(
         interpreter,
         target,
         test_runtime::actor_context_with_trace(trace_id),
+        test_runtime::request_context_with_trace(trace_id),
+        interpreter.stream_runtime.clone(),
     )
 }
 
@@ -1850,6 +1853,7 @@ fn execution_context_with_actor<'a>(
         interpreter,
         target,
         actor,
+        test_runtime::request_context(),
         interpreter.stream_runtime.clone(),
     )
 }
@@ -1858,6 +1862,7 @@ fn execution_context_with_actor_and_stream_runtime<'a>(
     interpreter: &Interpreter,
     target: RuntimeAssemblyEvalTarget,
     actor: skiff_runtime_capability_context::ActorCapabilityContext<'static>,
+    request: skiff_runtime_capability_context::RequestCapabilityContext<'static>,
     stream_runtime: skiff_runtime_capability_context::StreamRuntime,
 ) -> ProgramExecutionContext<'a> {
     let execution = test_runtime::execution_control();
@@ -1865,6 +1870,7 @@ fn execution_context_with_actor_and_stream_runtime<'a>(
     let test_effect_doubles = interpreter.test_effect_double_context();
     let rebinder = test_runtime::activation_execution_context_rebinder(
         &actor,
+        &request,
         stream_runtime.clone(),
         test_effect_doubles.clone(),
         interpreter.http_options.clone(),
@@ -1885,7 +1891,7 @@ fn execution_context_with_actor_and_stream_runtime<'a>(
         ),
         test_effect_doubles,
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
     .with_activation_execution_context_rebinder(rebinder)

@@ -495,9 +495,11 @@ mod server_stream_fixture {
     ) -> ProgramExecutionContext<'a> {
         let effects = test_runtime::effects_context();
         let actor = test_runtime::actor_context();
+        let request = test_runtime::request_context();
         let test_effect_doubles = interpreter.test_effect_double_context();
         let rebinder = test_runtime::activation_execution_context_rebinder(
             &actor,
+            &request,
             stream_runtime.clone(),
             test_effect_doubles.clone(),
             interpreter.http_options.clone(),
@@ -518,7 +520,7 @@ mod server_stream_fixture {
             ),
             test_effect_doubles,
             actor: actor.clone(),
-            spawn: actor,
+            request,
             request_heap_limits: RequestHeapLimits::default(),
         })
         .with_runtime_assembly_target(target);

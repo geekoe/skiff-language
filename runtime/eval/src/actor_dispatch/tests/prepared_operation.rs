@@ -18,6 +18,7 @@ use skiff_runtime_capability_context::{
     ActorInvocationOutcome, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
     ActorInvocationRequest, ActorRemoveControlRequest, ActorReplaceControlRequest, CapabilityError,
     CapabilityFuture, CapabilityResult, OwnedActorCapabilityContext, OwnedExecutionControl,
+    OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
     SpawnSubmitControlRequest,
 };
 use skiff_runtime_model::{
@@ -123,6 +124,82 @@ impl ActorCapabilityApi for RecordingActor {
         ActorCapabilityContext::new(self.clone())
     }
 
+    fn get_or_create_actor<'a>(
+        &'a self,
+        _request: ActorGetOrCreateControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        _request: ActorReplaceControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
+    }
+
+    fn find_actor<'a>(
+        &'a self,
+        _request: ActorFindControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, Option<ActorRef>> {
+        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
+    }
+
+    fn remove_actor<'a>(
+        &'a self,
+        _request: ActorRemoveControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, bool> {
+        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        _request: ActorInvocationRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorInvocationOutcome> {
+        self.state.starts.fetch_add(1, Ordering::AcqRel);
+        let reply = self
+            .state
+            .reply
+            .lock()
+            .expect("reply lock")
+            .take()
+            .expect("invocation must start only once");
+        match reply {
+            ActorReply::Ready(outcome) => Box::pin(async move { outcome }),
+            ActorReply::Pending(receiver) => {
+                let state = self.state.clone();
+                Box::pin(async move {
+                    let mut guard = PendingInvocationGuard {
+                        state,
+                        completed: false,
+                    };
+                    let outcome = receiver.await.map_err(|_| {
+                        CapabilityError::provider_unavailable("actor.test", "closed")
+                    })?;
+                    guard.completed = true;
+                    Ok(outcome?)
+                })
+            }
+        }
+    }
+}
+
+impl RequestCapabilityApi for RecordingActor {
+    fn owned(&self) -> OwnedRequestCapabilityContext {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> RequestCapabilityContext<'_> {
+        RequestCapabilityContext::new(self.clone())
+    }
+
     fn runtime_id(&self) -> &str {
         "runtime:test"
     }
@@ -167,40 +244,6 @@ impl ActorCapabilityApi for RecordingActor {
         None
     }
 
-    fn get_or_create_actor<'a>(
-        &'a self,
-        _request: ActorGetOrCreateControlRequest,
-        _bootstrap_payload: Vec<u8>,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorRef> {
-        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
-    }
-
-    fn replace_actor<'a>(
-        &'a self,
-        _request: ActorReplaceControlRequest,
-        _bootstrap_payload: Vec<u8>,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorRef> {
-        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
-    }
-
-    fn find_actor<'a>(
-        &'a self,
-        _request: ActorFindControlRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, Option<ActorRef>> {
-        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
-    }
-
-    fn remove_actor<'a>(
-        &'a self,
-        _request: ActorRemoveControlRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, bool> {
-        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
-    }
-
     fn submit_spawn<'a>(
         &'a self,
         _request: SpawnSubmitControlRequest,
@@ -208,38 +251,6 @@ impl ActorCapabilityApi for RecordingActor {
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
-    }
-
-    fn invoke_actor<'a>(
-        &'a self,
-        _request: ActorInvocationRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorInvocationOutcome> {
-        self.state.starts.fetch_add(1, Ordering::AcqRel);
-        let reply = self
-            .state
-            .reply
-            .lock()
-            .expect("reply lock")
-            .take()
-            .expect("invocation must start only once");
-        match reply {
-            ActorReply::Ready(outcome) => Box::pin(async move { outcome }),
-            ActorReply::Pending(receiver) => {
-                let state = self.state.clone();
-                Box::pin(async move {
-                    let mut guard = PendingInvocationGuard {
-                        state,
-                        completed: false,
-                    };
-                    let outcome = receiver.await.map_err(|_| {
-                        CapabilityError::provider_unavailable("actor.test", "closed")
-                    })?;
-                    guard.completed = true;
-                    Ok(outcome?)
-                })
-            }
-        }
     }
 }
 

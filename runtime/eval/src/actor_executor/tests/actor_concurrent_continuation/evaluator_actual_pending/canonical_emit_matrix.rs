@@ -681,9 +681,11 @@ async fn start_stream(
     let (frame, mut heap) = fixture.evaluator.actor_frame().await;
     let mut env = Env::new();
     let actor = test_runtime::actor_context();
+    let request = test_runtime::request_context();
     let test_effect_doubles = fixture.evaluator.interpreter.test_effect_double_context();
     let rebinder = test_runtime::activation_execution_context_rebinder(
         &actor,
+        &request,
         runtime.clone(),
         test_effect_doubles,
         fixture.evaluator.interpreter.http_options.clone(),
@@ -691,6 +693,7 @@ async fn start_stream(
     let context = program_context_with_stream(
         &fixture.evaluator.interpreter,
         actor,
+        request,
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
         runtime,

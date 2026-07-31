@@ -251,7 +251,7 @@ fn actor_invocation_fixture(
     cancellation: CancellationToken,
     invocation_id: &str,
 ) -> (
-    RuntimeOwnedActorParts,
+    RuntimeOwnedRequestParts,
     ActorInvocationRequest,
     mpsc::UnboundedReceiver<concrete::RouterWriterMessage>,
     Arc<ActorMethodOutboundRegistry>,
@@ -262,7 +262,7 @@ fn actor_invocation_fixture(
         "skiff-actor-implementation-v1:sha256:{}",
         "b".repeat(64)
     ));
-    let parts = RuntimeOwnedActorParts {
+    let parts = RuntimeOwnedRequestParts {
         runtime_id: "runtime-test".to_string(),
         service_id: "service-test".to_string(),
         service_version: "v1".to_string(),

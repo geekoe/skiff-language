@@ -11,6 +11,7 @@ pub(super) fn execution_context(
     let execution = ExecutionControl::new(control);
     let effects = EffectDispatchContext::new(HarnessEffects);
     let actor = ActorCapabilityContext::new(HarnessActor);
+    let request = RequestCapabilityContext::new(HarnessActor);
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: ConfigCapabilityContext::new(config),
@@ -29,7 +30,7 @@ pub(super) fn execution_context(
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

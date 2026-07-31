@@ -1,9 +1,10 @@
 //! Runtime concrete context constructors for promoted native capability traits.
 
 use super::{
-    ActorCapabilityContext, ActorClient, ConfigCapabilityContext, FileCapabilityContext,
+    ActorClient, ActorClientContext, ConfigCapabilityContext, FileCapabilityContext,
     FileSourceStreamContext, HttpClientCapabilityContext, HttpResponseStreamCapabilityContext,
-    TelemetryCapabilityContext, TimeCapabilityContext, WebsocketCapabilityContext,
+    RequestClientContext, TelemetryCapabilityContext, TimeCapabilityContext,
+    WebsocketCapabilityContext,
 };
 use crate::error as runtime_error;
 use bytes::Bytes;
@@ -193,7 +194,7 @@ impl<'execution> NativeConfigCapability for ConfigCapabilityContext<'execution> 
     }
 }
 
-impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
+impl<'execution> NativeActorCapability for RequestClientContext<'execution> {
     fn service_id(&self) -> &str {
         self.service_id()
     }
@@ -208,7 +209,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            ActorClient::new(self.clone())
+            ActorClient::new(ActorClientContext::from(self))
                 .get_or_create(request, bootstrap_payload)
                 .await
                 .into_native_result()
@@ -221,7 +222,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            ActorClient::new(self.clone())
+            ActorClient::new(ActorClientContext::from(self))
                 .replace(request, bootstrap_payload)
                 .await
                 .into_native_result()
@@ -233,7 +234,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         request: ActorFindControlRequest,
     ) -> NativeCapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            ActorClient::new(self.clone())
+            ActorClient::new(ActorClientContext::from(self))
                 .find(request)
                 .await
                 .into_native_result()
@@ -245,7 +246,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         request: ActorRemoveControlRequest,
     ) -> NativeCapabilityFuture<'a, bool> {
         Box::pin(async move {
-            ActorClient::new(self.clone())
+            ActorClient::new(ActorClientContext::from(self))
                 .remove(request)
                 .await
                 .into_native_result()

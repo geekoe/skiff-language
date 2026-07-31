@@ -302,6 +302,7 @@ async fn f445h_e4r_spine_create_from_stream_pending_reacquires_and_finalizes_onc
     let context = program_context_with(
         &fixture.interpreter,
         test_runtime::actor_context(),
+        test_runtime::request_context(),
         FileCapabilityContext::new(file.clone()),
         DbCapabilityContext::unavailable(),
     );
@@ -338,6 +339,7 @@ async fn f445h_e4r_spine_create_from_stream_pending_drop_settles_once() {
     let context = program_context_with(
         &fixture.interpreter,
         test_runtime::actor_context(),
+        test_runtime::request_context(),
         FileCapabilityContext::new(file.clone()),
         DbCapabilityContext::unavailable(),
     );
@@ -375,6 +377,7 @@ async fn f445h_i6_file_projection_to_pending_preserves_current_deadline_owner() 
     let context = program_context_with(
         &fixture.interpreter,
         test_runtime::actor_context(),
+        test_runtime::request_context(),
         FileCapabilityContext::new(file.clone()),
         DbCapabilityContext::unavailable(),
     )

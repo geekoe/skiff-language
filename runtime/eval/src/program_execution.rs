@@ -26,8 +26,9 @@ use super::{
         ActorCapabilityContext, ConfigCapabilityContext, DbCapabilityContext,
         EffectDispatchContext, ExecutionControl, FileCapabilityContext, FileCapabilitySource,
         FileSourceStreamContext, HttpClientCapabilityContext, OwnedActorCapabilityContext,
-        OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedWebsocketCapabilityContext,
-        StreamRuntime, StreamRuntimeOwner, TelemetryCapabilityContext, TestEffectDoubleContext,
+        OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedRequestCapabilityContext,
+        OwnedWebsocketCapabilityContext, RequestCapabilityContext, StreamRuntime,
+        StreamRuntimeOwner, TelemetryCapabilityContext, TestEffectDoubleContext,
         TimeCapabilityContext, WebsocketCapabilityContext,
     },
     error::attach_source_frame,
@@ -65,7 +66,7 @@ pub struct ProgramExecutionInput<'a> {
     pub http_client: HttpClientCapabilityContext,
     pub test_effect_doubles: TestEffectDoubleContext,
     pub actor: ActorCapabilityContext<'a>,
-    pub spawn: ActorCapabilityContext<'a>,
+    pub request: RequestCapabilityContext<'a>,
     pub request_heap_limits: RequestHeapLimits,
 }
 
@@ -104,7 +105,7 @@ pub struct OwnedActivationExecutionCapabilityBundle {
     effects: EffectDispatchContext,
     http_client: HttpClientCapabilityContext,
     actor: OwnedActorCapabilityContext,
-    spawn: OwnedActorCapabilityContext,
+    request: OwnedRequestCapabilityContext,
 }
 
 impl OwnedActivationExecutionCapabilityBundle {
@@ -117,7 +118,7 @@ impl OwnedActivationExecutionCapabilityBundle {
         effects: EffectDispatchContext,
         http_client: HttpClientCapabilityContext,
         actor: OwnedActorCapabilityContext,
-        spawn: OwnedActorCapabilityContext,
+        request: OwnedRequestCapabilityContext,
     ) -> Self {
         Self {
             config,
@@ -127,7 +128,7 @@ impl OwnedActivationExecutionCapabilityBundle {
             effects,
             http_client,
             actor,
-            spawn,
+            request,
         }
     }
 }
@@ -158,7 +159,7 @@ pub struct ProgramExecutionContext<'a> {
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
     actor: ActorCapabilityContext<'a>,
-    spawn: ActorCapabilityContext<'a>,
+    request: RequestCapabilityContext<'a>,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
     actor_execution_frame: Option<crate::actor_executor::ActorExecutionFrame>,
@@ -251,33 +252,23 @@ fn validate_activation_execution_capability_bundle(
         .deployment
         .contract_version
         .as_str();
-    if bundle.actor.service_id() != expected_service
-        || bundle.spawn.service_id() != expected_service
+    if bundle.request.service_id() != expected_service
+        || bundle.request.service_version() != expected_version
+        || bundle.request.request_build_id()
+            != target
+                .activation_context()
+                .implementation_package_build_id()
+                .as_str()
         || bundle.websocket.service_id() != expected_service
-        || bundle.actor.service_version() != expected_version
-        || bundle.spawn.service_version() != expected_version
-        || bundle.actor.request_build_id()
-            != target
-                .activation_context()
-                .implementation_package_build_id()
-                .as_str()
-        || bundle.spawn.request_build_id()
-            != target
-                .activation_context()
-                .implementation_package_build_id()
-                .as_str()
     {
         return Err(RuntimeError::InvalidArtifact(
             "activation execution capability bundle does not match the exact target owner"
                 .to_string(),
         ));
     }
-    if bundle.actor.runtime_id() != receiver.actor.runtime_id()
-        || bundle.spawn.runtime_id() != receiver.spawn.runtime_id()
-        || bundle.actor.request_id() != receiver.actor.request_id()
-        || bundle.spawn.request_id() != receiver.spawn.request_id()
-        || bundle.actor.trace_id() != receiver.actor.trace_id()
-        || bundle.spawn.trace_id() != receiver.spawn.trace_id()
+    if bundle.request.runtime_id() != receiver.request.runtime_id()
+        || bundle.request.request_id() != receiver.request.request_id()
+        || bundle.request.trace_id() != receiver.request.trace_id()
     {
         return Err(RuntimeError::InvalidArtifact(
             "activation owner switch changed request-wide execution identity".to_string(),
@@ -291,9 +282,7 @@ fn validate_activation_execution_capability_bundle(
             runtime_replica_id: target_identity.runtime_replica_id.clone(),
             deployment_revision: target_identity.deployment.deployment_revision.clone(),
         };
-    if bundle.actor.activation_identity() != Some(&expected_activation_identity)
-        || bundle.spawn.activation_identity() != Some(&expected_activation_identity)
-    {
+    if bundle.request.activation_identity() != Some(&expected_activation_identity) {
         return Err(RuntimeError::InvalidArtifact(
             "activation execution capability bundle is not pinned to the exact target activation"
                 .to_string(),
@@ -320,7 +309,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             http_client: self.http_client.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
             actor: self.actor.clone(),
-            spawn: self.spawn.clone(),
+            request: self.request.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
             runtime_assembly_target: self.runtime_assembly_target.clone(),
             actor_execution_frame: self.actor_execution_frame.clone(),
@@ -336,7 +325,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
 impl<'a> ProgramExecutionContext<'a> {
     pub fn new(input: ProgramExecutionInput<'a>) -> Self {
         let exception_trace_id = input
-            .actor
+            .request
             .trace_id()
             .filter(|trace_id| !trace_id.trim().is_empty())
             .map(str::to_string);
@@ -354,7 +343,7 @@ impl<'a> ProgramExecutionContext<'a> {
             http_client: input.http_client,
             test_effect_doubles: input.test_effect_doubles,
             actor: input.actor,
-            spawn: input.spawn,
+            request: input.request,
             request_heap_limits: input.request_heap_limits,
             runtime_assembly_target: None,
             actor_execution_frame: None,
@@ -428,7 +417,7 @@ impl<'a> ProgramExecutionContext<'a> {
             effects,
             http_client,
             actor,
-            spawn,
+            request,
         } = bundle;
         self.config = config;
         self.db = db;
@@ -437,7 +426,7 @@ impl<'a> ProgramExecutionContext<'a> {
         self.effects = effects;
         self.http_client = http_client;
         self.actor = actor;
-        self.spawn = spawn;
+        self.request = request;
         self.actor_execution_frame = None;
         reset_provider_local_stack(&mut self.local_call_stack);
         self = self.with_runtime_assembly_target(target);
@@ -564,8 +553,8 @@ impl<'a> ProgramExecutionContext<'a> {
         self.actor.clone()
     }
 
-    pub fn spawn_context(&self) -> ActorCapabilityContext<'a> {
-        self.spawn.clone()
+    pub fn request_context(&self) -> RequestCapabilityContext<'a> {
+        self.request.clone()
     }
 
     pub fn request_heap(&self) -> RequestHeap {
@@ -656,7 +645,7 @@ pub struct OwnedProgramExecutionContext {
     http_client: HttpClientCapabilityContext,
     test_effect_doubles: TestEffectDoubleContext,
     actor: OwnedActorCapabilityContext,
-    spawn: OwnedActorCapabilityContext,
+    request: OwnedRequestCapabilityContext,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
     exception_trace_id: Option<String>,
@@ -687,7 +676,7 @@ impl OwnedProgramExecutionContext {
             http_client: context.http_client.clone(),
             test_effect_doubles: context.test_effect_doubles.clone(),
             actor: actor.owned(),
-            spawn: context.spawn.owned(),
+            request: context.request.owned(),
             request_heap_limits: context.request_heap_limits.clone(),
             runtime_assembly_target: context.runtime_assembly_target.clone(),
             exception_trace_id: context.exception_trace_id.clone(),
@@ -707,7 +696,7 @@ impl OwnedProgramExecutionContext {
         let time = TimeCapabilityContext::new(execution.clone());
         let websocket = self.websocket.borrow();
         let actor = self.actor.borrow();
-        let spawn = self.spawn.borrow();
+        let request = self.request.borrow();
         let mut context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution,
             config,
@@ -720,7 +709,7 @@ impl OwnedProgramExecutionContext {
             http_client: self.http_client.clone(),
             test_effect_doubles: self.test_effect_doubles.clone(),
             actor,
-            spawn,
+            request,
             request_heap_limits: self.request_heap_limits.clone(),
         });
         context.execution_clock = self.execution_clock.clone();

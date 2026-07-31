@@ -22,15 +22,8 @@ async fn f445h_i6_actor_scope_control_four_entries_drop_waiter_and_fence_late_re
     let activation_identity = activation_identity();
     let context = ActorClientContext::from_parts(
         "runtime-test",
-        "service-test",
-        "v1",
         "request-test",
-        "program.test",
-        BUILD_ID,
-        "protocol-test",
-        Some("protocol-test"),
         Some(&activation_identity),
-        None,
         Some(&router_sender),
         outbound_requests.as_ref(),
         CancellationToken::new(),
@@ -99,15 +92,8 @@ async fn f445h_i6_actor_scope_control_committed_response_beats_ready_scope_deadl
     let activation_identity = activation_identity();
     let context = ActorClientContext::from_parts(
         "runtime-test",
-        "service-test",
-        "v1",
         "request-test",
-        "program.test",
-        BUILD_ID,
-        "protocol-test",
-        Some("protocol-test"),
         Some(&activation_identity),
-        None,
         Some(&router_sender),
         outbound_requests.as_ref(),
         CancellationToken::new(),
@@ -310,7 +296,7 @@ async fn submit_with_response(
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
     let outbound_requests = Arc::new(OutboundRequestRegistry::default());
     let activation_identity = activation_identity();
-    let context = ActorClientContext::from_parts(
+    let context = RequestClientContext::from_parts(
         "runtime-test",
         "service-test",
         "v1",
@@ -325,7 +311,7 @@ async fn submit_with_response(
         outbound_requests.as_ref(),
         CancellationToken::new(),
     );
-    let client = ActorClient::new(context);
+    let client = RequestClient::new(context);
     let submit = client.submit_spawn(spawn_submit_request(), Vec::new());
     tokio::pin!(submit);
 

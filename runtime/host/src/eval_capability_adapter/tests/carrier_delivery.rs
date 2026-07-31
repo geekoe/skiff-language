@@ -165,7 +165,7 @@ async fn f445h_i6_websocket_scope_native_projection_reaches_real_pending_and_anc
     .context_for_request(db.clone());
     let actor_factory = TestActorCapabilityFactory::default();
     let outbound_requests = Arc::new(OutboundRequestRegistry::default());
-    let actor = actor_factory.actor_from_request(
+    let (actor, request) = actor_factory.actor_from_request(
         "runtime:f445h-i6-websocket-receipt",
         "skiff.run/f445h-i6-websocket-receipt",
         "1.0.0",
@@ -193,7 +193,7 @@ async fn f445h_i6_websocket_scope_native_projection_reaches_real_pending_and_anc
         ),
         test_effect_doubles,
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits,
     });
 

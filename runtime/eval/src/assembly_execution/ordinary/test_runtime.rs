@@ -21,10 +21,11 @@ use skiff_runtime_capability_context::{
     FileChunkSource, FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture,
     HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
-    OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext,
-    SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
-    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
-    StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
+    OwnedRequestCapabilityContext,
+    OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext, RequestCapabilityApi,
+    RequestCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem,
+    StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
+    StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
     TelemetryCapabilityContext, WebsocketCapabilityApi,
     WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
 };
@@ -90,13 +91,14 @@ pub(crate) fn websocket_context() -> WebsocketCapabilityContext<'static> {
 }
 
 pub(crate) fn activation_execution_context_rebinder(
-    request_actor: &ActorCapabilityContext<'_>,
+    _request_actor: &ActorCapabilityContext<'_>,
+    request: &RequestCapabilityContext<'_>,
     stream_runtime: StreamRuntime,
     test_effect_doubles: TestEffectDoubleContext,
     http_options: HttpRuntimeOptions,
 ) -> Arc<dyn ActivationExecutionContextRebinder> {
     Arc::new(TestActivationExecutionContextRebinder {
-        request_actor: request_actor.owned(),
+        request: request.owned(),
         stream_runtime,
         test_effect_doubles,
         http_options,
@@ -111,12 +113,22 @@ pub(crate) fn actor_context_with_trace(trace_id: &'static str) -> ActorCapabilit
     ActorCapabilityContext::new(TestActor::request(Some(trace_id.to_string())))
 }
 
+pub(crate) fn request_context() -> RequestCapabilityContext<'static> {
+    RequestCapabilityContext::new(TestActor::request(None))
+}
+
+pub(crate) fn request_context_with_trace(
+    trace_id: &'static str,
+) -> RequestCapabilityContext<'static> {
+    RequestCapabilityContext::new(TestActor::request(Some(trace_id.to_string())))
+}
+
 pub(crate) fn effects_context() -> EffectDispatchContext {
     EffectDispatchContext::new(TestEffects)
 }
 
 struct TestActivationExecutionContextRebinder {
-    request_actor: OwnedActorCapabilityContext,
+    request: OwnedRequestCapabilityContext,
     stream_runtime: StreamRuntime,
     test_effect_doubles: TestEffectDoubleContext,
     http_options: HttpRuntimeOptions,
@@ -128,9 +140,9 @@ impl ActivationExecutionContextRebinder for TestActivationExecutionContextRebind
         target: &RuntimeAssemblyEvalTarget,
         _operation: &ActivationExecutionOperation,
     ) -> Result<OwnedActivationExecutionCapabilityBundle> {
-        let actor =
-            ActorCapabilityContext::new(TestActor::for_activation(&self.request_actor, target))
-                .owned();
+        let request_actor = TestActor::for_activation(&self.request, target);
+        let actor = ActorCapabilityContext::new(request_actor.clone()).owned();
+        let request = RequestCapabilityContext::new(request_actor).owned();
         let service_id = target
             .activation_context()
             .identity()
@@ -159,8 +171,8 @@ impl ActivationExecutionContextRebinder for TestActivationExecutionContextRebind
             websocket,
             effects,
             http_client,
-            actor.clone(),
             actor,
+            request,
         ))
     }
 }
@@ -833,7 +845,7 @@ impl TestActor {
     }
 
     fn for_activation(
-        request: &ActorCapabilityContext<'_>,
+        request: &RequestCapabilityContext<'_>,
         target: &RuntimeAssemblyEvalTarget,
     ) -> Self {
         let activation = target.activation_context();
@@ -865,40 +877,6 @@ impl ActorCapabilityApi for TestActor {
 
     fn borrow(&self) -> ActorCapabilityContext<'_> {
         ActorCapabilityContext::new(self.clone())
-    }
-
-    fn runtime_id(&self) -> &str {
-        &self.runtime_id
-    }
-    fn service_id(&self) -> &str {
-        &self.service_id
-    }
-    fn service_version(&self) -> &str {
-        &self.service_version
-    }
-    fn request_id(&self) -> &str {
-        &self.request_id
-    }
-    fn request_target(&self) -> &str {
-        "test-service"
-    }
-    fn request_build_id(&self) -> &str {
-        &self.request_build_id
-    }
-    fn spawn_service_protocol_identity(&self) -> &str {
-        ""
-    }
-    fn request_service_protocol_identity(&self) -> &str {
-        ""
-    }
-    fn operation_service_protocol_identity(&self) -> Option<&str> {
-        None
-    }
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        self.activation_identity.as_ref()
-    }
-    fn trace_id(&self) -> Option<&str> {
-        self.trace_id.as_deref()
     }
 
     fn get_or_create_actor<'a>(
@@ -951,19 +929,6 @@ impl ActorCapabilityApi for TestActor {
         })
     }
 
-    fn submit_spawn<'a>(
-        &'a self,
-        _request: SpawnSubmitControlRequest,
-        _args_payload: Vec<u8>,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()> {
-        Box::pin(async {
-            Err(CapabilityError::unsupported(
-                "test actor capability is unavailable",
-            ))
-        })
-    }
-
     fn invoke_actor<'a>(
         &'a self,
         _request: skiff_runtime_capability_context::ActorInvocationRequest,
@@ -972,6 +937,63 @@ impl ActorCapabilityApi for TestActor {
         Box::pin(async {
             Err(CapabilityError::unsupported(
                 "test actor capability is unavailable",
+            ))
+        })
+    }
+}
+
+impl RequestCapabilityApi for TestActor {
+    fn owned(&self) -> OwnedRequestCapabilityContext {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> RequestCapabilityContext<'_> {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+    fn service_id(&self) -> &str {
+        &self.service_id
+    }
+    fn service_version(&self) -> &str {
+        &self.service_version
+    }
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn request_target(&self) -> &str {
+        "test-service"
+    }
+    fn request_build_id(&self) -> &str {
+        &self.request_build_id
+    }
+    fn spawn_service_protocol_identity(&self) -> &str {
+        ""
+    }
+    fn request_service_protocol_identity(&self) -> &str {
+        ""
+    }
+    fn operation_service_protocol_identity(&self) -> Option<&str> {
+        None
+    }
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.activation_identity.as_ref()
+    }
+    fn trace_id(&self) -> Option<&str> {
+        self.trace_id.as_deref()
+    }
+
+    fn submit_spawn<'a>(
+        &'a self,
+        _request: SpawnSubmitControlRequest,
+        _args_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ()> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "test request capability is unavailable",
             ))
         })
     }

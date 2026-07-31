@@ -597,6 +597,7 @@ fn execution_context(interpreter: &Interpreter) -> ProgramExecutionContext<'stat
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
     let actor = test_runtime::actor_context_with_trace("trace:stream-supervision");
+    let request = test_runtime::request_context_with_trace("trace:stream-supervision");
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -615,7 +616,7 @@ fn execution_context(interpreter: &Interpreter) -> ProgramExecutionContext<'stat
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

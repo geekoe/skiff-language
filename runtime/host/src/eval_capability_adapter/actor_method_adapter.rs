@@ -180,7 +180,7 @@ impl ActorMethodEvalExecution {
             Arc::clone(&self.connection_requests),
             self.router_session.clone(),
         );
-        let actor = actor_from_request(
+        let (actor, request) = actor_from_request(
             self.runtime_id.as_str(),
             service_id,
             self.activation
@@ -220,7 +220,7 @@ impl ActorMethodEvalExecution {
             ),
             test_effect_doubles,
             actor: actor.clone(),
-            spawn: actor,
+            request,
             request_heap_limits: self.request_heap_limits.clone(),
         })
         .with_runtime_assembly_target(target);

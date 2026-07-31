@@ -11,7 +11,9 @@ use skiff_runtime_transport::protocol::{
 };
 use tokio::{sync::mpsc, time::timeout};
 
-use crate::capability_context::{ActorClient, ActorClientContext};
+use crate::capability_context::{
+    ActorClient, ActorClientContext, RequestClient, RequestClientContext,
+};
 
 use super::*;
 
@@ -23,7 +25,8 @@ async fn scoped_actor_response_dispatch_commits_before_ready_deadline() {
     let host = test_host();
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
     let activation = activation_identity();
-    let client = ActorClient::new(actor_context(&host, &router_sender, &activation));
+    let context = actor_context(&host, &router_sender, &activation);
+    let client = ActorClient::new(ActorClientContext::from(&context));
     let deadline = Instant::now() + Duration::from_millis(40);
     let scope = ExecutionScope::request(CancellationToken::new(), Some(deadline));
     let lifecycle = scope.clone();
@@ -77,9 +80,10 @@ async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
     let host = test_host();
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
     let activation = activation_identity();
-    let client = ActorClient::new(actor_context(&host, &router_sender, &activation));
     let scope = ExecutionScope::request(CancellationToken::new(), None);
     let lifecycle = scope.clone();
+    let context = actor_context(&host, &router_sender, &activation);
+    let client = RequestClient::new(context);
     let submit = client.submit_spawn_in_scope(spawn_submit_request(), Vec::new(), scope);
     tokio::pin!(submit);
 
@@ -130,7 +134,8 @@ async fn scoped_actor_error_dispatch_reaches_the_caller() {
     let host = test_host();
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
     let activation = activation_identity();
-    let client = ActorClient::new(actor_context(&host, &router_sender, &activation));
+    let context = actor_context(&host, &router_sender, &activation);
+    let client = ActorClient::new(ActorClientContext::from(&context));
     let scope = ExecutionScope::request(CancellationToken::new(), None);
     let find = client.find_in_scope(find_request(), scope);
     tokio::pin!(find);
@@ -195,8 +200,8 @@ fn actor_context<'a>(
     host: &'a crate::host::RuntimeHost,
     router_sender: &'a mpsc::UnboundedSender<RouterWriterMessage>,
     activation: &'a ActivationIdentityControl,
-) -> ActorClientContext<'a> {
-    ActorClientContext::from_parts(
+) -> RequestClientContext<'a> {
+    RequestClientContext::from_parts(
         "runtime-base",
         "service-test",
         "v1",

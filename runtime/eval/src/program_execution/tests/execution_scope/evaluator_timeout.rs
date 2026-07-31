@@ -239,6 +239,7 @@ fn traced_context(control: ScopeAwareControl) -> ProgramExecutionContext<'static
         runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
     let effects = test_runtime::effects_context();
     let actor = test_runtime::actor_context_with_trace(TRACE_ID);
+    let request = test_runtime::request_context_with_trace(TRACE_ID);
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -255,7 +256,7 @@ fn traced_context(control: ScopeAwareControl) -> ProgramExecutionContext<'static
         ),
         test_effect_doubles,
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

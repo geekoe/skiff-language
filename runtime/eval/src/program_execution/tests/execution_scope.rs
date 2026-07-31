@@ -25,7 +25,8 @@ use skiff_runtime_capability_context::{
     ExecutionScopeTerminal, FileCapabilityApi, FileCapabilityFuture, FileCapabilitySource,
     FileCapabilitySourceApi, FileChunkSource, FileSourceStreamContext, HttpCapabilityFuture,
     HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
-    OwnedExecutionControl, OwnedExecutionControlApi, SpawnSubmitControlRequest, StreamRuntime,
+    OwnedExecutionControl, OwnedExecutionControlApi, OwnedRequestCapabilityContext,
+    RequestCapabilityApi, RequestCapabilityContext, SpawnSubmitControlRequest, StreamRuntime,
     SupervisedStreamConsumptionLease,
 };
 use skiff_runtime_linked_program::{
@@ -231,6 +232,7 @@ struct ContextOverrides {
     file_source_stream: Option<FileSourceStreamContext<'static>>,
     websocket: Option<WebsocketCapabilityContext<'static>>,
     actor: Option<ActorCapabilityContext<'static>>,
+    request: Option<RequestCapabilityContext<'static>>,
 }
 
 fn context_with_overrides(
@@ -244,6 +246,9 @@ fn context_with_overrides(
         runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
     let effects = test_runtime::effects_context();
     let actor = overrides.actor.unwrap_or_else(test_runtime::actor_context);
+    let request = overrides
+        .request
+        .unwrap_or_else(test_runtime::request_context);
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -266,7 +271,7 @@ fn context_with_overrides(
         }),
         test_effect_doubles,
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }
@@ -526,6 +531,69 @@ impl ActorCapabilityApi for CarrierReceiptActor {
         ActorCapabilityContext::new(self.clone())
     }
 
+    fn get_or_create_actor<'a>(
+        &'a self,
+        _request: ActorGetOrCreateControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        self.record(execution_control);
+        Box::pin(async { Err(CapabilityError::unsupported("result is not under test")) })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        _request: ActorReplaceControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        self.record(execution_control);
+        Box::pin(async { Err(CapabilityError::unsupported("result is not under test")) })
+    }
+
+    fn find_actor<'a>(
+        &'a self,
+        _request: ActorFindControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, Option<ActorRef>> {
+        self.record(execution_control);
+        Box::pin(async { Ok(None) })
+    }
+
+    fn remove_actor<'a>(
+        &'a self,
+        _request: ActorRemoveControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, bool> {
+        self.record(execution_control);
+        Box::pin(async { Ok(false) })
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        _request: skiff_runtime_capability_context::ActorInvocationRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
+        self.record(execution_control);
+        Box::pin(async {
+            Ok(
+                skiff_runtime_capability_context::ActorInvocationOutcome::Returned(
+                    b"null".to_vec(),
+                ),
+            )
+        })
+    }
+}
+
+impl RequestCapabilityApi for CarrierReceiptActor {
+    fn owned(&self) -> OwnedRequestCapabilityContext {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> RequestCapabilityContext<'_> {
+        RequestCapabilityContext::new(self.clone())
+    }
+
     fn runtime_id(&self) -> &str {
         "runtime:f445h-i6-receipt"
     }
@@ -570,44 +638,6 @@ impl ActorCapabilityApi for CarrierReceiptActor {
         Some("trace:f445h-i6-receipt")
     }
 
-    fn get_or_create_actor<'a>(
-        &'a self,
-        _request: ActorGetOrCreateControlRequest,
-        _bootstrap_payload: Vec<u8>,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorRef> {
-        self.record(execution_control);
-        Box::pin(async { Err(CapabilityError::unsupported("result is not under test")) })
-    }
-
-    fn replace_actor<'a>(
-        &'a self,
-        _request: ActorReplaceControlRequest,
-        _bootstrap_payload: Vec<u8>,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorRef> {
-        self.record(execution_control);
-        Box::pin(async { Err(CapabilityError::unsupported("result is not under test")) })
-    }
-
-    fn find_actor<'a>(
-        &'a self,
-        _request: ActorFindControlRequest,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, Option<ActorRef>> {
-        self.record(execution_control);
-        Box::pin(async { Ok(None) })
-    }
-
-    fn remove_actor<'a>(
-        &'a self,
-        _request: ActorRemoveControlRequest,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, bool> {
-        self.record(execution_control);
-        Box::pin(async { Ok(false) })
-    }
-
     fn submit_spawn<'a>(
         &'a self,
         _request: SpawnSubmitControlRequest,
@@ -616,21 +646,6 @@ impl ActorCapabilityApi for CarrierReceiptActor {
     ) -> CapabilityFuture<'a, ()> {
         self.record(execution_control);
         Box::pin(async { Ok(()) })
-    }
-
-    fn invoke_actor<'a>(
-        &'a self,
-        _request: skiff_runtime_capability_context::ActorInvocationRequest,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, skiff_runtime_capability_context::ActorInvocationOutcome> {
-        self.record(execution_control);
-        Box::pin(async {
-            Ok(
-                skiff_runtime_capability_context::ActorInvocationOutcome::Returned(
-                    b"null".to_vec(),
-                ),
-            )
-        })
     }
 }
 

@@ -46,6 +46,7 @@ fn program_context(interpreter: &Interpreter) -> ProgramExecutionContext<'static
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
     let actor = test_runtime::actor_context();
+    let request = test_runtime::request_context();
     ProgramExecutionContext::new(ProgramExecutionInput {
         execution: execution.clone(),
         config: test_runtime::config_context(),
@@ -64,7 +65,7 @@ fn program_context(interpreter: &Interpreter) -> ProgramExecutionContext<'static
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }

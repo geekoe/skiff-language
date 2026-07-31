@@ -32,7 +32,9 @@ pub(crate) use skiff_runtime_native_contract::{
     TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM,
 };
 
-pub use actor::{ActorCapabilityContext, ActorClient, ActorClientContext};
+pub use actor::{
+    ActorCapabilityContext, ActorClient, ActorClientContext, RequestClient, RequestClientContext,
+};
 pub use effect_context::{EffectDispatchContext, HttpEffectContext};
 pub use http::HttpClientCapabilityContext;
 pub use native_projection::{

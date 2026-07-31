@@ -123,6 +123,58 @@ impl ActorCapabilityApi for HarnessActor {
         ActorCapabilityContext::new(self.clone())
     }
 
+    fn get_or_create_actor<'a>(
+        &'a self,
+        _request: ActorGetOrCreateControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        unsupported_capability()
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        _request: ActorReplaceControlRequest,
+        _bootstrap_payload: Vec<u8>,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        unsupported_capability()
+    }
+
+    fn find_actor<'a>(
+        &'a self,
+        _request: ActorFindControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, Option<ActorRef>> {
+        unsupported_capability()
+    }
+
+    fn remove_actor<'a>(
+        &'a self,
+        _request: ActorRemoveControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, bool> {
+        unsupported_capability()
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        _request: ActorInvocationRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, ActorInvocationOutcome> {
+        unsupported_capability()
+    }
+}
+
+impl RequestCapabilityApi for HarnessActor {
+    fn owned(&self) -> OwnedRequestCapabilityContext {
+        RequestCapabilityContext::new(self.clone())
+    }
+
+    fn borrow(&self) -> RequestCapabilityContext<'_> {
+        RequestCapabilityContext::new(self.clone())
+    }
+
     fn runtime_id(&self) -> &str {
         "combined-runtime"
     }
@@ -167,54 +219,12 @@ impl ActorCapabilityApi for HarnessActor {
         None
     }
 
-    fn get_or_create_actor<'a>(
-        &'a self,
-        _request: ActorGetOrCreateControlRequest,
-        _bootstrap_payload: Vec<u8>,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorRef> {
-        unsupported_capability()
-    }
-
-    fn replace_actor<'a>(
-        &'a self,
-        _request: ActorReplaceControlRequest,
-        _bootstrap_payload: Vec<u8>,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorRef> {
-        unsupported_capability()
-    }
-
-    fn find_actor<'a>(
-        &'a self,
-        _request: ActorFindControlRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, Option<ActorRef>> {
-        unsupported_capability()
-    }
-
-    fn remove_actor<'a>(
-        &'a self,
-        _request: ActorRemoveControlRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, bool> {
-        unsupported_capability()
-    }
-
     fn submit_spawn<'a>(
         &'a self,
         _request: SpawnSubmitControlRequest,
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {
-        unsupported_capability()
-    }
-
-    fn invoke_actor<'a>(
-        &'a self,
-        _request: ActorInvocationRequest,
-        _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ActorInvocationOutcome> {
         unsupported_capability()
     }
 }

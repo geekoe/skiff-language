@@ -60,13 +60,14 @@ pub(crate) use activation_execution_rebinder::provider_execution_facts_for_test;
 pub(crate) use activation_execution_rebinder::{
     activation_execution_context_rebinder, RuntimeActivationExecutionContextRebinderInput,
 };
-use actor::{actor, RuntimeOwnedActorParts};
+use actor::{actor, request_capability, RuntimeOwnedRequestParts};
 pub(crate) use actor_method_adapter::{ActorMethodEvalExecution, ActorMethodEvalExecutionInput};
 use config::RuntimeConfigCapabilityContext;
 pub(crate) use downcast::concrete_stream_runtime;
 use downcast::{
-    concrete_actor_context_from_owned, concrete_db_context, concrete_stream_cancel_signals,
-    concrete_test_double, concrete_test_effect_double_context, eval_test_double,
+    concrete_actor_context_from_owned, concrete_db_context, concrete_request_context_from_owned,
+    concrete_stream_cancel_signals, concrete_test_double, concrete_test_effect_double_context,
+    eval_test_double,
 };
 use effects::{RuntimeEffectDispatchContext, RuntimeTestEffectDoubleContext};
 use error::{ordinary_root_error_into_capability, root_result_into_capability, IntoEvalResult};

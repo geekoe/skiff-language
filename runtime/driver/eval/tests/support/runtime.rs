@@ -345,7 +345,7 @@ pub(crate) fn program_invocation_context<'a>(
     frame: &'a ProgramTestInvocation,
 ) -> ProgramInvocationContext<'a> {
     let execution = frame.execution_control();
-    let actor = frame.actor_factory.actor_from_request(
+    let (actor, request) = frame.actor_factory.actor_from_request(
         &frame.runtime_id,
         &frame.service_id,
         "0.0.0-test",
@@ -380,7 +380,7 @@ pub(crate) fn program_invocation_context<'a>(
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: frame.request_heap_limits.clone(),
     };
     ProgramInvocationContext::new(ProgramInvocationInput {

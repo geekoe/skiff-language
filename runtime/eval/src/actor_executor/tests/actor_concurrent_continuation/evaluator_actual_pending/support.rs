@@ -109,12 +109,14 @@ impl EvaluatorFixture {
 pub(super) fn program_context_with(
     interpreter: &Interpreter,
     actor: ActorCapabilityContext<'static>,
+    request: RequestCapabilityContext<'static>,
     file: FileCapabilityContext,
     db: DbCapabilityContext,
 ) -> ProgramExecutionContext<'static> {
     program_context_with_stream(
         interpreter,
         actor,
+        request,
         file,
         db,
         interpreter.stream_runtime.clone(),
@@ -124,6 +126,7 @@ pub(super) fn program_context_with(
 pub(super) fn program_context_with_stream(
     interpreter: &Interpreter,
     actor: ActorCapabilityContext<'static>,
+    request: RequestCapabilityContext<'static>,
     file: FileCapabilityContext,
     db: DbCapabilityContext,
     stream_runtime: StreamRuntime,
@@ -148,7 +151,7 @@ pub(super) fn program_context_with_stream(
         ),
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
-        spawn: actor,
+        request,
         request_heap_limits: RequestHeapLimits::default(),
     })
 }
@@ -205,6 +208,7 @@ pub(super) fn default_program_context(
     program_context_with(
         interpreter,
         test_runtime::actor_context(),
+        test_runtime::request_context(),
         test_runtime::file_context(),
         DbCapabilityContext::unavailable(),
     )

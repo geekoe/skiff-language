@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone)]
-pub(super) struct RuntimeOwnedActorParts {
+pub(super) struct RuntimeOwnedRequestParts {
     pub(super) runtime_id: String,
     pub(super) service_id: String,
     pub(super) service_version: String,
@@ -19,61 +19,49 @@ pub(super) struct RuntimeOwnedActorParts {
 }
 
 pub(super) fn actor<'a>(
-    context: concrete::ActorCapabilityContext<'a>,
-    owned: RuntimeOwnedActorParts,
+    actor_context: concrete::ActorClientContext<'a>,
+    request_context: concrete::RequestClientContext<'a>,
+    owned: RuntimeOwnedRequestParts,
 ) -> eval_capabilities::ActorCapabilityContext<'a> {
-    eval_capabilities::ActorCapabilityContext::new(RuntimeActorCapabilityContext { context, owned })
+    eval_capabilities::ActorCapabilityContext::new(RuntimeActorCapabilityContext {
+        actor_context,
+        request_context,
+        owned,
+    })
+}
+
+pub(super) fn request_capability<'a>(
+    actor_context: concrete::ActorClientContext<'a>,
+    request_context: concrete::RequestClientContext<'a>,
+    owned: RuntimeOwnedRequestParts,
+) -> eval_capabilities::RequestCapabilityContext<'a> {
+    eval_capabilities::RequestCapabilityContext::new(RuntimeActorCapabilityContext {
+        actor_context,
+        request_context,
+        owned,
+    })
 }
 
 #[derive(Clone)]
 pub(super) struct RuntimeActorCapabilityContext<'a> {
-    context: concrete::ActorCapabilityContext<'a>,
-    owned: RuntimeOwnedActorParts,
+    actor_context: concrete::ActorClientContext<'a>,
+    request_context: concrete::RequestClientContext<'a>,
+    owned: RuntimeOwnedRequestParts,
 }
 
 impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'_> {
     fn owned(&self) -> capability_contract::OwnedActorCapabilityContext {
-        capability_contract::ActorCapabilityContext::new(RuntimeOwnedActorCapabilityContext(
+        capability_contract::ActorCapabilityContext::new(RuntimeOwnedRequestCapabilityContext(
             self.owned.clone(),
         ))
     }
 
     fn borrow(&self) -> capability_contract::ActorCapabilityContext<'_> {
-        actor(self.context.clone(), self.owned.clone())
-    }
-
-    fn runtime_id(&self) -> &str {
-        self.context.runtime_id()
-    }
-    fn service_id(&self) -> &str {
-        self.context.service_id()
-    }
-    fn service_version(&self) -> &str {
-        self.context.service_version()
-    }
-    fn request_id(&self) -> &str {
-        self.context.request_id()
-    }
-    fn request_target(&self) -> &str {
-        self.context.request_target()
-    }
-    fn request_build_id(&self) -> &str {
-        self.context.request_build_id()
-    }
-    fn spawn_service_protocol_identity(&self) -> &str {
-        self.context.spawn_service_protocol_identity()
-    }
-    fn request_service_protocol_identity(&self) -> &str {
-        self.context.request_service_protocol_identity()
-    }
-    fn operation_service_protocol_identity(&self) -> Option<&str> {
-        self.context.operation_service_protocol_identity()
-    }
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        self.context.activation_identity()
-    }
-    fn trace_id(&self) -> Option<&str> {
-        self.context.trace_id()
+        actor(
+            self.actor_context.clone(),
+            self.request_context.clone(),
+            self.owned.clone(),
+        )
     }
 
     fn get_or_create_actor<'a>(
@@ -85,7 +73,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         Box::pin(async move {
             let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
-                concrete::ActorClient::new(self.context.clone())
+                concrete::ActorClient::new(self.actor_context.clone())
                     .get_or_create_in_scope(request, bootstrap_payload, scope)
                     .await,
             )
@@ -102,7 +90,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         Box::pin(async move {
             let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
-                concrete::ActorClient::new(self.context.clone())
+                concrete::ActorClient::new(self.actor_context.clone())
                     .replace_in_scope(request, bootstrap_payload, scope)
                     .await,
             )
@@ -118,7 +106,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         Box::pin(async move {
             let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
-                concrete::ActorClient::new(self.context.clone())
+                concrete::ActorClient::new(self.actor_context.clone())
                     .find_in_scope(request, scope)
                     .await,
             )
@@ -134,26 +122,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         Box::pin(async move {
             let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
-                concrete::ActorClient::new(self.context.clone())
+                concrete::ActorClient::new(self.actor_context.clone())
                     .remove_in_scope(request, scope)
                     .await,
             )
             .await
         })
-    }
-
-    fn submit_spawn<'a>(
-        &'a self,
-        request: SpawnSubmitControlRequest,
-        args_payload: Vec<u8>,
-        execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, ()> {
-        Box::pin(submit_spawn(
-            self.context.clone(),
-            request,
-            args_payload,
-            execution_control,
-        ))
     }
 
     fn invoke_actor<'a>(
@@ -170,32 +144,180 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
     }
 }
 
-struct RuntimeOwnedActorCapabilityContext(RuntimeOwnedActorParts);
+impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext<'_> {
+    fn owned(&self) -> capability_contract::OwnedRequestCapabilityContext {
+        capability_contract::RequestCapabilityContext::new(RuntimeOwnedRequestCapabilityContext(
+            self.owned.clone(),
+        ))
+    }
 
-impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityContext {
+    fn borrow(&self) -> capability_contract::RequestCapabilityContext<'_> {
+        request_capability(
+            self.actor_context.clone(),
+            self.request_context.clone(),
+            self.owned.clone(),
+        )
+    }
+
+    fn runtime_id(&self) -> &str {
+        self.request_context.runtime_id()
+    }
+    fn service_id(&self) -> &str {
+        self.request_context.service_id()
+    }
+    fn service_version(&self) -> &str {
+        self.request_context.service_version()
+    }
+    fn request_id(&self) -> &str {
+        self.request_context.request_id()
+    }
+    fn request_target(&self) -> &str {
+        self.request_context.request_target()
+    }
+    fn request_build_id(&self) -> &str {
+        self.request_context.request_build_id()
+    }
+    fn spawn_service_protocol_identity(&self) -> &str {
+        self.request_context.spawn_service_protocol_identity()
+    }
+    fn request_service_protocol_identity(&self) -> &str {
+        self.request_context.request_service_protocol_identity()
+    }
+    fn operation_service_protocol_identity(&self) -> Option<&str> {
+        self.request_context.operation_service_protocol_identity()
+    }
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.request_context.activation_identity()
+    }
+    fn trace_id(&self) -> Option<&str> {
+        self.request_context.trace_id()
+    }
+
+    fn submit_spawn<'a>(
+        &'a self,
+        request: SpawnSubmitControlRequest,
+        args_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, ()> {
+        Box::pin(submit_spawn(
+            self.request_context.clone(),
+            request,
+            args_payload,
+            execution_control,
+        ))
+    }
+}
+
+struct RuntimeOwnedRequestCapabilityContext(RuntimeOwnedRequestParts);
+
+impl capability_contract::ActorCapabilityApi for RuntimeOwnedRequestCapabilityContext {
     fn owned(&self) -> capability_contract::OwnedActorCapabilityContext {
-        capability_contract::ActorCapabilityContext::new(RuntimeOwnedActorCapabilityContext(
+        capability_contract::ActorCapabilityContext::new(RuntimeOwnedRequestCapabilityContext(
             self.0.clone(),
         ))
     }
 
     fn borrow(&self) -> capability_contract::ActorCapabilityContext<'_> {
-        let context = concrete::ActorCapabilityContext::from_parts(
-            &self.0.runtime_id,
-            &self.0.service_id,
-            &self.0.service_version,
-            &self.0.request_id,
-            &self.0.request_target,
-            &self.0.request_build_id,
-            &self.0.request_service_protocol_identity,
-            self.0.operation_service_protocol_identity.as_deref(),
-            self.0.activation_identity.as_ref(),
-            self.0.trace_id.as_deref(),
-            self.0.router_sender.as_ref(),
-            self.0.outbound_requests.as_ref(),
-            self.0.cancellation.clone(),
-        );
-        actor(context, self.0.clone())
+        actor(
+            concrete_actor_context_from_owned(&self.0),
+            concrete_request_context_from_owned(&self.0),
+            self.0.clone(),
+        )
+    }
+
+    fn get_or_create_actor<'a>(
+        &'a self,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
+        Box::pin(async move {
+            let scope = actor_execution_scope(&execution_control)?;
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .get_or_create_in_scope(request, bootstrap_payload, scope)
+                    .await,
+            )
+            .await
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
+        Box::pin(async move {
+            let scope = actor_execution_scope(&execution_control)?;
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .replace_in_scope(request, bootstrap_payload, scope)
+                    .await,
+            )
+            .await
+        })
+    }
+
+    fn find_actor<'a>(
+        &'a self,
+        request: ActorFindControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
+        Box::pin(async move {
+            let scope = actor_execution_scope(&execution_control)?;
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .find_in_scope(request, scope)
+                    .await,
+            )
+            .await
+        })
+    }
+
+    fn remove_actor<'a>(
+        &'a self,
+        request: ActorRemoveControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, bool> {
+        Box::pin(async move {
+            let scope = actor_execution_scope(&execution_control)?;
+            root_result_into_capability(
+                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                    .remove_in_scope(request, scope)
+                    .await,
+            )
+            .await
+        })
+    }
+
+    fn invoke_actor<'a>(
+        &'a self,
+        request: capability_contract::ActorInvocationRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::ActorInvocationOutcome>
+    {
+        Box::pin(invoke_actor_method(
+            self.0.clone(),
+            request,
+            execution_control,
+        ))
+    }
+}
+
+impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapabilityContext {
+    fn owned(&self) -> capability_contract::OwnedRequestCapabilityContext {
+        capability_contract::RequestCapabilityContext::new(RuntimeOwnedRequestCapabilityContext(
+            self.0.clone(),
+        ))
+    }
+
+    fn borrow(&self) -> capability_contract::RequestCapabilityContext<'_> {
+        request_capability(
+            concrete_actor_context_from_owned(&self.0),
+            concrete_request_context_from_owned(&self.0),
+            self.0.clone(),
+        )
     }
 
     fn runtime_id(&self) -> &str {
@@ -235,72 +357,6 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         self.0.trace_id.as_deref()
     }
 
-    fn get_or_create_actor<'a>(
-        &'a self,
-        request: ActorGetOrCreateControlRequest,
-        bootstrap_payload: Vec<u8>,
-        execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
-        Box::pin(async move {
-            let scope = actor_execution_scope(&execution_control)?;
-            root_result_into_capability(
-                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .get_or_create_in_scope(request, bootstrap_payload, scope)
-                    .await,
-            )
-            .await
-        })
-    }
-
-    fn replace_actor<'a>(
-        &'a self,
-        request: ActorReplaceControlRequest,
-        bootstrap_payload: Vec<u8>,
-        execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
-        Box::pin(async move {
-            let scope = actor_execution_scope(&execution_control)?;
-            root_result_into_capability(
-                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .replace_in_scope(request, bootstrap_payload, scope)
-                    .await,
-            )
-            .await
-        })
-    }
-
-    fn find_actor<'a>(
-        &'a self,
-        request: ActorFindControlRequest,
-        execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
-        Box::pin(async move {
-            let scope = actor_execution_scope(&execution_control)?;
-            root_result_into_capability(
-                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .find_in_scope(request, scope)
-                    .await,
-            )
-            .await
-        })
-    }
-
-    fn remove_actor<'a>(
-        &'a self,
-        request: ActorRemoveControlRequest,
-        execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, bool> {
-        Box::pin(async move {
-            let scope = actor_execution_scope(&execution_control)?;
-            root_result_into_capability(
-                concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                    .remove_in_scope(request, scope)
-                    .await,
-            )
-            .await
-        })
-    }
-
     fn submit_spawn<'a>(
         &'a self,
         request: SpawnSubmitControlRequest,
@@ -308,29 +364,16 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
         Box::pin(submit_spawn(
-            concrete_actor_context_from_owned(&self.0),
+            concrete_request_context_from_owned(&self.0),
             request,
             args_payload,
-            execution_control,
-        ))
-    }
-
-    fn invoke_actor<'a>(
-        &'a self,
-        request: capability_contract::ActorInvocationRequest,
-        execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, capability_contract::ActorInvocationOutcome>
-    {
-        Box::pin(invoke_actor_method(
-            self.0.clone(),
-            request,
             execution_control,
         ))
     }
 }
 
 async fn invoke_actor_method(
-    parts: RuntimeOwnedActorParts,
+    parts: RuntimeOwnedRequestParts,
     request: capability_contract::ActorInvocationRequest,
     execution_control: capability_contract::OwnedExecutionControl,
 ) -> capability_contract::CapabilityResult<capability_contract::ActorInvocationOutcome> {
@@ -555,14 +598,14 @@ fn actor_method_wire_timeout_ms(
 }
 
 async fn submit_spawn(
-    context: concrete::ActorCapabilityContext<'_>,
+    context: concrete::RequestClientContext<'_>,
     request: SpawnSubmitControlRequest,
     args_payload: Vec<u8>,
     execution_control: capability_contract::OwnedExecutionControl,
 ) -> capability_contract::CapabilityResult<()> {
     let scope = actor_execution_scope(&execution_control)?;
     root_result_into_capability(
-        concrete::ActorClient::new(context)
+        concrete::RequestClient::new(context)
             .submit_spawn_in_scope(request, args_payload, scope)
             .await,
     )

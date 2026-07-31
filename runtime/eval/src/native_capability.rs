@@ -106,6 +106,7 @@ impl<'context, 'execution> NativeCapabilityProjectionSource
     fn actor(&self) -> Self::Actor {
         RuntimeNativeActorCapabilityContext::new(
             self.context.actor_context(),
+            self.context.request_context(),
             self.invocation_execution.clone(),
         )
     }

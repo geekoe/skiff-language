@@ -11,10 +11,10 @@ mod http;
 mod native_projection;
 mod outbound_control;
 mod outbound_response;
+mod request;
 mod request_payload;
 mod response;
 mod scoped_execution;
-mod spawn;
 mod stream;
 mod stream_cleanup;
 mod telemetry;
@@ -85,6 +85,7 @@ pub use outbound_response::{
     OutboundRequestRegistry, OutboundRequestRegistryError, OutboundRequestTerminalSignal,
     OutboundResponse, OutboundResponseReceiver, OutboundResponseSender,
 };
+pub use request::{OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext};
 pub use request_payload::{
     binary_http_request_parts, http_name_value_context, http_name_value_contexts,
     BinaryHttpRequestContext, HttpNameValueContext, InvocationContext, RequestPayloadContext,
@@ -99,7 +100,6 @@ pub use scoped_execution::{
     ExecutionScopeDeriveError, ExecutionScopeLease, ExecutionScopeLeaseCompletion,
     ExecutionScopeLeaseTerminal, ExecutionScopeLifecycleSnapshot, ExecutionScopeTerminal,
 };
-pub use spawn::SpawnClient;
 pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
     StreamCapabilityContext, StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi,
