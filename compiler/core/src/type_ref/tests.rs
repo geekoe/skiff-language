@@ -1096,7 +1096,7 @@ fn package_type_ref_to_ir_folds_schema_and_keeps_local_verbatim() {
 }
 
 #[test]
-fn package_type_ref_to_ir_uses_serde_json_interface_identity() {
+fn package_type_ref_to_ir_uses_canonical_interface_identity() {
     let interface = PackageTypeRef::Container {
         name: "Iface".to_string(),
         arguments: Vec::new(),
@@ -1112,10 +1112,10 @@ fn package_type_ref_to_ir_uses_serde_json_interface_identity() {
     let TypeRefIr::AnyInterface { interface, .. } = ir else {
         panic!("expected AnyInterface");
     };
-    assert_eq!(
-        interface.interface_abi_id,
-        serde_json::to_string(&native("Iface")).unwrap()
-    );
+    let expected_key =
+        String::from_utf8(skiff_canonical_json::canonical_json_bytes(&native("Iface")).unwrap())
+            .unwrap();
+    assert_eq!(interface.interface_abi_id, expected_key);
     assert_eq!(interface.canonical_type_args, vec![native("string")]);
 }
 
@@ -1160,7 +1160,182 @@ fn package_type_ref_to_ir_exact_preserves_schema_and_uses_canonical_identity() {
     )
     .unwrap();
     assert_eq!(interface.interface_abi_id, expected_key);
-    assert_ne!(exact, folded);
+    assert_eq!(
+        exact, folded,
+        "identity unification makes folded/exact identities agree for container-based interfaces"
+    );
+
+    let schema_interface = PackageTypeRef::AnyInterface {
+        interface: Box::new(package_schema_ref("example.interfaces", "Reader")),
+        arguments: Vec::new(),
+    };
+    let exact = package_type_ref_to_ir_exact(&schema_interface);
+    let folded = package_type_ref_to_ir(&schema_interface);
+    let TypeRefIr::AnyInterface {
+        interface: exact_interface,
+    } = &exact
+    else {
+        panic!("expected AnyInterface");
+    };
+    assert_eq!(
+        serde_json::from_str::<TypeRefIr>(&exact_interface.interface_abi_id).unwrap(),
+        package_schema_ir("example.interfaces", "Reader")
+    );
+    assert_ne!(
+        exact, folded,
+        "folded identity must collapse PackageSchema while exact preserves it"
+    );
+}
+
+#[test]
+fn identity_serialization_differential_serde_json_vs_canonical_json() {
+    // Golden matrix locking the two identity algorithms: `serde_json::to_string`
+    // (declaration order) versus `skiff_canonical_json::canonical_json_bytes`
+    // (recursive key sorting). The `differs` flag records which inputs produce
+    // different identity strings; this is the permanent differential test for
+    // the Phase 4 identity unification (canonical JSON is the single algorithm).
+    let canonical_key = |ty: &TypeRefIr| {
+        String::from_utf8(skiff_canonical_json::canonical_json_bytes(ty).unwrap()).unwrap()
+    };
+    let array_of_string = TypeRefIr::Builtin {
+        name: "Array".to_string(),
+        args: vec![native("string")],
+    };
+    let package_symbol_with_abi = TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "example.types".to_string(),
+            },
+            symbol_path: "Request".to_string(),
+            abi_expectation: Some("abi:interfaces".to_string()),
+        },
+    };
+    let interface_identity = serde_json::to_string(&native("Reader")).unwrap();
+    let any_interface_with_args = TypeRefIr::AnyInterface {
+        interface: skiff_artifact_model::InterfaceInstantiationRef {
+            interface_abi_id: interface_identity.clone(),
+            canonical_type_args: vec![native("string")],
+        },
+    };
+    let nullable_schema = TypeRefIr::Nullable {
+        inner: Box::new(package_schema_ir("example.types", "Request")),
+    };
+    let applied_package_symbol = TypeRefIr::AppliedNominal {
+        base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol {
+            symbol: skiff_artifact_model::PackageSymbolRef {
+                package: skiff_artifact_model::PackageRefIr::PackageId {
+                    package_id: "example.types".to_string(),
+                },
+                symbol_path: "Request".to_string(),
+                abi_expectation: None,
+            },
+        },
+        arguments: vec![native("string")],
+    };
+    let union = TypeRefIr::Union {
+        items: vec![native("string"), package_symbol("example.types", "Request")],
+    };
+    let function = TypeRefIr::Function {
+        params: vec![param("input", native("string"))],
+        return_type: Box::new(native("string")),
+    };
+
+    let cases: &[(TypeRefIr, &str, &str, bool)] = &[
+        (
+            native("string"),
+            r#"{"kind":"builtin","name":"string"}"#,
+            r#"{"kind":"builtin","name":"string"}"#,
+            false,
+        ),
+        (
+            array_of_string.clone(),
+            r#"{"kind":"builtin","name":"Array","args":[{"kind":"builtin","name":"string"}]}"#,
+            r#"{"args":[{"kind":"builtin","name":"string"}],"kind":"builtin","name":"Array"}"#,
+            true,
+        ),
+        (
+            package_symbol("example.types", "Request"),
+            r#"{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}}"#,
+            r#"{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}}"#,
+            false,
+        ),
+        (
+            package_symbol_with_abi,
+            r#"{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request","abiExpectation":"abi:interfaces"}}"#,
+            r#"{"kind":"packageSymbol","symbol":{"abiExpectation":"abi:interfaces","package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}}"#,
+            true,
+        ),
+        (
+            package_schema_ir("example.types", "Request"),
+            r#"{"kind":"packageSchema","packageId":"example.types","stableSchemaKey":"Request","packageSchemaTypeId":"type:test"}"#,
+            r#"{"kind":"packageSchema","packageId":"example.types","packageSchemaTypeId":"type:test","stableSchemaKey":"Request"}"#,
+            true,
+        ),
+        (
+            TypeRefIr::AnyInterface {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id: interface_identity.clone(),
+                    canonical_type_args: Vec::new(),
+                },
+            },
+            r#"{"kind":"anyInterface","interface":{"interfaceAbiId":"{\"kind\":\"builtin\",\"name\":\"Reader\"}"}}"#,
+            r#"{"interface":{"interfaceAbiId":"{\"kind\":\"builtin\",\"name\":\"Reader\"}"},"kind":"anyInterface"}"#,
+            true,
+        ),
+        (
+            any_interface_with_args,
+            r#"{"kind":"anyInterface","interface":{"interfaceAbiId":"{\"kind\":\"builtin\",\"name\":\"Reader\"}","canonicalTypeArgs":[{"kind":"builtin","name":"string"}]}}"#,
+            r#"{"interface":{"canonicalTypeArgs":[{"kind":"builtin","name":"string"}],"interfaceAbiId":"{\"kind\":\"builtin\",\"name\":\"Reader\"}"},"kind":"anyInterface"}"#,
+            true,
+        ),
+        (
+            nullable_schema,
+            r#"{"kind":"nullable","inner":{"kind":"packageSchema","packageId":"example.types","stableSchemaKey":"Request","packageSchemaTypeId":"type:test"}}"#,
+            r#"{"inner":{"kind":"packageSchema","packageId":"example.types","packageSchemaTypeId":"type:test","stableSchemaKey":"Request"},"kind":"nullable"}"#,
+            true,
+        ),
+        (
+            union,
+            r#"{"kind":"union","items":[{"kind":"builtin","name":"string"},{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}}]}"#,
+            r#"{"items":[{"kind":"builtin","name":"string"},{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}}],"kind":"union"}"#,
+            true,
+        ),
+        (
+            TypeRefIr::Record {
+                fields: BTreeMap::from([("a".to_string(), native("string"))]),
+            },
+            r#"{"kind":"record","fields":{"a":{"kind":"builtin","name":"string"}}}"#,
+            r#"{"fields":{"a":{"kind":"builtin","name":"string"}},"kind":"record"}"#,
+            true,
+        ),
+        (
+            function,
+            r#"{"kind":"function","params":[{"name":"input","ty":{"kind":"builtin","name":"string"}}],"returnType":{"kind":"builtin","name":"string"}}"#,
+            r#"{"kind":"function","params":[{"name":"input","ty":{"kind":"builtin","name":"string"}}],"returnType":{"kind":"builtin","name":"string"}}"#,
+            false,
+        ),
+        (
+            applied_package_symbol,
+            r#"{"kind":"appliedNominal","base":{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}},"arguments":[{"kind":"builtin","name":"string"}]}"#,
+            r#"{"arguments":[{"kind":"builtin","name":"string"}],"base":{"kind":"packageSymbol","symbol":{"package":{"kind":"packageId","packageId":"example.types"},"symbolPath":"Request"}},"kind":"appliedNominal"}"#,
+            true,
+        ),
+    ];
+
+    for (ty, expected_serde, expected_canonical, differs) in cases {
+        let serde_str = serde_json::to_string(ty).unwrap();
+        let canonical_str = canonical_key(ty);
+        assert_eq!(serde_str, *expected_serde, "serde identity for {ty:?}");
+        assert_eq!(
+            canonical_str, *expected_canonical,
+            "canonical identity for {ty:?}"
+        );
+        assert_eq!(
+            serde_str == canonical_str,
+            !differs,
+            "difference classification for {ty:?}"
+        );
+    }
 }
 
 #[test]
@@ -1189,10 +1364,10 @@ fn contract_type_ref_to_ir_projects_all_variants() {
     let TypeRefIr::AnyInterface { interface, .. } = contract_type_ref_to_ir(&any_interface) else {
         panic!("expected AnyInterface");
     };
-    assert_eq!(
-        interface.interface_abi_id,
-        serde_json::to_string(&native("Iface")).unwrap()
-    );
+    let expected_key =
+        String::from_utf8(skiff_canonical_json::canonical_json_bytes(&native("Iface")).unwrap())
+            .unwrap();
+    assert_eq!(interface.interface_abi_id, expected_key);
     assert_eq!(interface.canonical_type_args, vec![native("string")]);
 
     assert_eq!(

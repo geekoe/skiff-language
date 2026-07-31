@@ -132,8 +132,7 @@ pub(super) fn normalize_implementation_type(
             let identity = normalize(&identity)?;
             Ok(TypeRefIr::AnyInterface {
                 interface: InterfaceInstantiationRef {
-                    interface_abi_id: serde_json::to_string(&identity)
-                        .map_err(|error| error.to_string())?,
+                    interface_abi_id: type_ref_abi_key(&identity),
                     canonical_type_args: interface
                         .canonical_type_args
                         .iter()

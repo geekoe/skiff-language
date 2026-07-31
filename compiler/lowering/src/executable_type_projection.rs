@@ -1,3 +1,4 @@
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr};
 
 /// Projects an exact source type into the representation needed to execute a
@@ -30,8 +31,7 @@ pub(crate) fn execution_type_ref(ty: &PackageTypeRef) -> TypeRefIr {
             arguments,
         } => TypeRefIr::AnyInterface {
             interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&execution_type_ref(interface))
-                    .expect("PackageTypeRef interface identity must serialize"),
+                interface_abi_id: type_ref_abi_key(&execution_type_ref(interface)),
                 canonical_type_args: arguments.iter().map(execution_type_ref).collect(),
             },
         },

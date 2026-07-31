@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
+use skiff_artifact_identity::{
+    canonical_interface_method_abi_id, interface_instantiation_ref, type_ref_abi_key,
+};
 use skiff_artifact_model::{
     ContractTypeDescriptor, ContractTypeRef, FileIrUnit, FunctionTypeParamIr,
     InterfaceInstantiationRef, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr,
@@ -4435,11 +4437,7 @@ fn normalize_artifact_interface_identities(
             let identity = recurse(identity)?;
             Ok(TypeRefIr::AnyInterface {
                 interface: InterfaceInstantiationRef {
-                    interface_abi_id: serde_json::to_string(&identity).map_err(|error| {
-                        format!(
-                            "package {package_id} {context} cannot encode interface ABI identity: {error}"
-                        )
-                    })?,
+                    interface_abi_id: type_ref_abi_key(&identity),
                     canonical_type_args: interface
                         .canonical_type_args
                         .into_iter()
@@ -5904,8 +5902,7 @@ fn contract_type_ref_ir(alias: &str, ty: &ContractTypeRef) -> Result<TypeRefIr, 
             let identity = contract_type_ref_ir(alias, interface)?;
             Ok(TypeRefIr::AnyInterface {
                 interface: skiff_artifact_model::InterfaceInstantiationRef {
-                    interface_abi_id: serde_json::to_string(&identity)
-                        .map_err(|error| error.to_string())?,
+                    interface_abi_id: type_ref_abi_key(&identity),
                     canonical_type_args: Vec::new(),
                 },
             })

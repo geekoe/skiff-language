@@ -70,7 +70,7 @@ fn package_owned_any_interface_keeps_exact_executable_target() {
         TypeRefIr::Nullable {
             inner: Box::new(TypeRefIr::AnyInterface {
                 interface: skiff_artifact_model::InterfaceInstantiationRef {
-                    interface_abi_id: serde_json::to_string(&TypeRefIr::PackageSymbol {
+                    interface_abi_id: type_ref_abi_key(&TypeRefIr::PackageSymbol {
                         symbol: PackageSymbolRef {
                             package: PackageRefIr::PackageId {
                                 package_id: "example.interfaces".to_string(),
@@ -78,8 +78,7 @@ fn package_owned_any_interface_keeps_exact_executable_target() {
                             symbol_path: "Reader".to_string(),
                             abi_expectation: None,
                         },
-                    })
-                    .unwrap(),
+                    }),
                     canonical_type_args: Vec::new(),
                 },
             }),

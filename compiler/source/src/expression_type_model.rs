@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
     PackageSymbolRef, PackageTypeRef, TypeRefIr,
@@ -5233,8 +5234,7 @@ fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
             arguments,
         } => TypeRefIr::AnyInterface {
             interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&package_type_ref_ir(interface))
-                    .expect("PackageTypeRef interface identity must serialize"),
+                interface_abi_id: type_ref_abi_key(&package_type_ref_ir(interface)),
                 canonical_type_args: arguments.iter().map(package_type_ref_ir).collect(),
             },
         },
@@ -5280,7 +5280,7 @@ fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
         TypeRefIr::AnyInterface { interface } => {
             let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map(|identity| recurse(&identity))
-                .and_then(|identity| serde_json::to_string(&identity))
+                .map(|identity| type_ref_abi_key(&identity))
                 .unwrap_or_else(|_| interface.interface_abi_id.clone());
             TypeRefIr::AnyInterface {
                 interface: skiff_artifact_model::InterfaceInstantiationRef {

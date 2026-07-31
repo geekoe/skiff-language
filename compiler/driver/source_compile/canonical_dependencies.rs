@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::{package_artifact_ref, validate_package_artifact_identities};
+use skiff_artifact_identity::{
+    package_artifact_ref, type_ref_abi_key, validate_package_artifact_identities,
+};
 use skiff_artifact_model::{
     InterfaceInstantiationRef, NominalTypeRefBaseIr, PackageArtifact, PackageCallableSignature,
     PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeRefIr,
@@ -464,7 +466,7 @@ fn bind_type_identity(ty: &TypeRefIr, artifact: &PackageArtifact) -> TypeRefIr {
         TypeRefIr::AnyInterface { interface } => {
             let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map(|identity| bind(&identity))
-                .and_then(|identity| serde_json::to_string(&identity))
+                .map(|identity| type_ref_abi_key(&identity))
                 .unwrap_or_else(|_| interface.interface_abi_id.clone());
             TypeRefIr::AnyInterface {
                 interface: InterfaceInstantiationRef {

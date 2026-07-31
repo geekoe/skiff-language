@@ -1,3 +1,4 @@
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     ContractTypeRef, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef,
     TypeRefIr,
@@ -287,10 +288,9 @@ fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr {
             arguments,
         } => TypeRefIr::AnyInterface {
             interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir_from_package(
+                interface_abi_id: type_ref_abi_key(&contract_type_ref_to_ir_from_package(
                     *interface,
-                ))
-                .expect("PackageTypeRef interface identity must serialize"),
+                )),
                 canonical_type_args: arguments
                     .into_iter()
                     .map(contract_type_ref_to_ir_from_package)
@@ -329,10 +329,9 @@ fn contract_type_ref_to_ir_from_package(ty: PackageTypeRef) -> TypeRefIr {
             arguments,
         } => TypeRefIr::AnyInterface {
             interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir_from_package(
+                interface_abi_id: type_ref_abi_key(&contract_type_ref_to_ir_from_package(
                     *interface,
-                ))
-                .expect("PackageTypeRef interface identity must serialize"),
+                )),
                 canonical_type_args: arguments
                     .into_iter()
                     .map(contract_type_ref_to_ir_from_package)
@@ -930,8 +929,7 @@ pub(super) fn resolved_contract_type(
                 source_text: format!("any {}", interface.source_text),
                 ir: TypeRefIr::AnyInterface {
                     interface: skiff_artifact_model::InterfaceInstantiationRef {
-                        interface_abi_id: serde_json::to_string(&interface.ir)
-                            .map_err(|error| error.to_string())?,
+                        interface_abi_id: type_ref_abi_key(&interface.ir),
                         canonical_type_args: arguments
                             .iter()
                             .map(|argument| {
