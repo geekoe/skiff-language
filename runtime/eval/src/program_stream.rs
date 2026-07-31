@@ -135,6 +135,11 @@ impl Interpreter {
                 Flow::Continue | Flow::LoopContinue => continue,
                 Flow::Break => return Ok(Flow::Continue),
                 Flow::Return(value) => return Ok(Flow::Return(value)),
+                Flow::TailCall(_) => {
+                    return Err(RuntimeError::InvalidArtifact(
+                        "stream consumer leaked an internal tail-call frame".to_string(),
+                    ))
+                }
                 Flow::Parked => return Ok(Flow::Parked),
                 Flow::ContinueConsumer => return Ok(Flow::ContinueConsumer),
             }

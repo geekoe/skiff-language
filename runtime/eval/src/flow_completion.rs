@@ -16,6 +16,7 @@ impl FlowCompletionPolicy {
             Flow::ContinueConsumer => Err(RuntimeError::Decode(format!(
                 "callable {symbol} exited with continue consumer outside a process consumer"
             ))),
+            Flow::TailCall(_) => Err(Self::escaped_tail_call("callable")),
         }
     }
 
@@ -38,6 +39,7 @@ impl FlowCompletionPolicy {
             Flow::ContinueConsumer => Err(RuntimeError::Decode(format!(
                 "const {name} exited with continue consumer outside a process consumer"
             ))),
+            Flow::TailCall(_) => Err(Self::escaped_tail_call("const")),
         }
     }
 
@@ -54,6 +56,7 @@ impl FlowCompletionPolicy {
             Flow::ContinueConsumer => Err(RuntimeError::Decode(
                 "valueBlock exited with continue consumer".to_string(),
             )),
+            Flow::TailCall(_) => Err(Self::escaped_tail_call("valueBlock")),
         }
     }
 
@@ -72,6 +75,7 @@ impl FlowCompletionPolicy {
             Flow::ContinueConsumer => Err(RuntimeError::Decode(format!(
                 "{label} expression exited with continue consumer"
             ))),
+            Flow::TailCall(_) => Err(Self::escaped_tail_call(label)),
         }
     }
 
@@ -86,6 +90,19 @@ impl FlowCompletionPolicy {
         RuntimeError::Decode(format!(
             "executable {} exited with continue consumer outside a process consumer",
             executable.symbol
+        ))
+    }
+
+    pub fn entry_tail_call_error(executable: &LinkedExecutable) -> RuntimeError {
+        RuntimeError::InvalidArtifact(format!(
+            "executable {} leaked an internal tail-call frame",
+            executable.symbol
+        ))
+    }
+
+    fn escaped_tail_call(owner: &str) -> RuntimeError {
+        RuntimeError::InvalidArtifact(format!(
+            "{owner} leaked an internal tail-call frame outside the evaluator trampoline"
         ))
     }
 }

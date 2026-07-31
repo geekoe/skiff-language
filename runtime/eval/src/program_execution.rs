@@ -49,6 +49,7 @@ use crate::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
 mod execution_scope;
 #[cfg(test)]
 mod execution_scope_tests;
+mod tail_call;
 
 #[allow(unused_imports)]
 pub(crate) use execution_scope::{ExecutionCheckpoint, ExecutionCheckpointKind};
@@ -414,6 +415,17 @@ impl<'a> ProgramExecutionContext<'a> {
         }
         self.program_call_depth = requested_depth;
         Ok(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_program_call_depth_for_test(mut self, depth: usize) -> Self {
+        self.program_call_depth = depth;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn program_call_depth_for_test(&self) -> usize {
+        self.program_call_depth
     }
 
     pub(crate) fn exception_stack_for_site(
@@ -1394,9 +1406,49 @@ impl Interpreter {
         executable: &LinkedExecutable,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)?
-            .exec_program_executable()
-            .await
+        let mut flow = {
+            let mut eval = EvalContext::new_callable(
+                self,
+                context.clone(),
+                heap,
+                env,
+                addr,
+                file,
+                executable,
+            )?;
+            let flow = eval.exec_program_executable().await?;
+            if let Flow::TailCall(prepared) = &flow {
+                eval.account_tail_transfer(&prepared.tail_site)?;
+            }
+            flow
+        };
+
+        loop {
+            let Flow::TailCall(prepared) = flow else {
+                return Ok(flow);
+            };
+            let projection = RuntimeExecutionProjection::for_context(self, &context)?;
+            let resolved = projection.resolve_nested_executable(&prepared.target)?;
+            let target = resolved.addr.clone();
+            let mut env = prepared.env;
+            let _common_return_plan = prepared.return_plan;
+            flow = {
+                let mut eval = EvalContext::new_callable(
+                    self,
+                    context.clone(),
+                    heap,
+                    &mut env,
+                    &target,
+                    resolved.file,
+                    resolved.executable,
+                )?;
+                let flow = eval.exec_program_executable().await?;
+                if let Flow::TailCall(next) = &flow {
+                    eval.account_tail_transfer(&next.tail_site)?;
+                }
+                flow
+            };
+        }
     }
 
     pub async fn eval_program_const<'ctx>(

@@ -90,6 +90,13 @@ pub struct EvalContext<'a> {
     pub addr: &'a ExecutableAddr,
     pub file: &'a LinkedFileUnit,
     pub executable: &'a LinkedExecutable,
+    tail_call_context: TailCallContext,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TailCallContext {
+    Transparent,
+    Barrier,
 }
 
 impl<'a> EvalContext<'a> {
@@ -101,6 +108,51 @@ impl<'a> EvalContext<'a> {
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
         executable: &'a LinkedExecutable,
+    ) -> Result<Self> {
+        Self::new_with_tail_call_context(
+            interpreter,
+            context,
+            heap,
+            env,
+            addr,
+            file,
+            executable,
+            TailCallContext::Barrier,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_callable(
+        interpreter: &'a Interpreter,
+        context: ProgramExecutionContext<'a>,
+        heap: &'a mut RequestHeap,
+        env: &'a mut Env,
+        addr: &'a ExecutableAddr,
+        file: &'a LinkedFileUnit,
+        executable: &'a LinkedExecutable,
+    ) -> Result<Self> {
+        Self::new_with_tail_call_context(
+            interpreter,
+            context,
+            heap,
+            env,
+            addr,
+            file,
+            executable,
+            TailCallContext::Transparent,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_tail_call_context(
+        interpreter: &'a Interpreter,
+        context: ProgramExecutionContext<'a>,
+        heap: &'a mut RequestHeap,
+        env: &'a mut Env,
+        addr: &'a ExecutableAddr,
+        file: &'a LinkedFileUnit,
+        executable: &'a LinkedExecutable,
+        tail_call_context: TailCallContext,
     ) -> Result<Self> {
         let projection = RuntimeExecutionProjection::for_context(interpreter, &context)?;
         let execution = context.execution();
@@ -114,7 +166,19 @@ impl<'a> EvalContext<'a> {
             addr,
             file,
             executable,
+            tail_call_context,
         })
+    }
+
+    pub(crate) async fn exec_program_block_with_tail_call_barrier(
+        &mut self,
+        label: &str,
+    ) -> Result<Flow> {
+        let previous = self.tail_call_context;
+        self.tail_call_context = TailCallContext::Barrier;
+        let result = self.exec_program_block(label).await;
+        self.tail_call_context = previous;
+        result
     }
 
     fn type_projection(&self) -> EvalTypeProjection<'a> {
@@ -309,13 +373,7 @@ impl<'a> EvalContext<'a> {
                 self.eval_program_expr_ref(*value).await?;
                 Ok(Flow::Continue)
             }
-            LinkedStmtIr::Return { value } => {
-                let value = match value {
-                    Some(value_ref) => self.eval_program_expr_ref(*value_ref).await?,
-                    None => RuntimeValue::Null.into(),
-                };
-                Ok(Flow::Return(value))
-            }
+            LinkedStmtIr::Return { value } => self.exec_program_return(*value).await,
             LinkedStmtIr::If {
                 condition,
                 then_block,
@@ -479,6 +537,90 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    async fn exec_program_return(&mut self, value: Option<ExprRefIr>) -> Result<Flow> {
+        let Some(value_ref) = value else {
+            return Ok(Flow::Return(RuntimeValue::Null.into()));
+        };
+        if self.tail_call_context == TailCallContext::Transparent {
+            let expression = program_expression_ref(self.executable, value_ref)?;
+            if let LinkedExprIr::Call { call } = expression {
+                if let LinkedCallTarget::Executable { addr } = &call.target {
+                    if !self.tail_call_has_stream_semantics(call)? {
+                        self.checkpoint_generated_chunk(1)?;
+                        let mut args = Vec::with_capacity(call.args.len());
+                        for arg in &call.args {
+                            args.push(self.eval_program_expr_ref(*arg).await?);
+                        }
+                        let prepared = self.interpreter.prepare_tail_call(
+                            self.projection.clone(),
+                            self.env,
+                            self.addr,
+                            self.executable,
+                            addr,
+                            &call.type_args,
+                            &args,
+                            call.site.clone(),
+                        );
+                        let prepared = self.promote_call_site_error(prepared, &call.site)?;
+                        if let Some(prepared) = prepared {
+                            return Ok(Flow::TailCall(prepared));
+                        }
+
+                        let result = self
+                            .interpreter
+                            .call_program_executable_carriers(
+                                self.context.clone().with_local_call_site(call.site.clone()),
+                                self.heap,
+                                self.env,
+                                self.addr,
+                                addr,
+                                &call.type_args,
+                                args,
+                            )
+                            .await;
+                        let value = self.promote_call_site_error(result, &call.site)?;
+                        return Ok(Flow::Return(value));
+                    }
+                }
+            }
+        }
+
+        self.eval_program_expr_ref(value_ref)
+            .await
+            .map(Flow::Return)
+    }
+
+    fn tail_call_has_stream_semantics(&mut self, call: &CallIr) -> Result<bool> {
+        for arg in &call.args {
+            let expression = program_expression_ref(self.executable, *arg)?;
+            if self
+                .interpreter
+                .resolve_stream_producer_call(
+                    self.projection.clone(),
+                    self.addr,
+                    self.heap,
+                    self.env,
+                    self.executable,
+                    expression,
+                )?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(self
+            .interpreter
+            .resolve_stream_producer_from_call(
+                self.projection.clone(),
+                self.addr,
+                self.heap,
+                self.env,
+                self.executable,
+                call,
+            )?
+            .is_some())
+    }
+
     #[async_recursion]
     pub async fn eval_program_expr_ref(
         &mut self,
@@ -587,7 +729,9 @@ impl<'a> EvalContext<'a> {
             }
             LinkedExprIr::Call { call } => self.eval_program_call(call).await,
             LinkedExprIr::ValueBlock { block, result } => {
-                let flow = self.exec_program_block(block).await?;
+                let flow = self
+                    .exec_program_block_with_tail_call_barrier(block)
+                    .await?;
                 if let Some(value) = FlowCompletionPolicy::value_block_value(flow)? {
                     Ok(value)
                 } else {
@@ -837,6 +981,7 @@ impl<'a> EvalContext<'a> {
                 }
                 Flow::Break => break,
                 Flow::Return(value) => return Ok(Flow::Return(value)),
+                Flow::TailCall(prepared) => return Ok(Flow::TailCall(prepared)),
                 Flow::Parked => return Ok(Flow::Parked),
                 Flow::ContinueConsumer => return Ok(Flow::ContinueConsumer),
             }
@@ -863,6 +1008,7 @@ impl<'a> EvalContext<'a> {
                 }
                 Flow::Break => break,
                 Flow::Return(value) => return Ok(Flow::Return(value)),
+                Flow::TailCall(prepared) => return Ok(Flow::TailCall(prepared)),
                 Flow::Parked => return Ok(Flow::Parked),
                 Flow::ContinueConsumer => return Ok(Flow::ContinueConsumer),
             }
@@ -1318,11 +1464,20 @@ impl<'a> EvalContext<'a> {
         self.promote_call_site_error(result, &call.site)
     }
 
-    fn promote_call_site_error(
+    pub(crate) fn account_tail_transfer(&mut self, site: &InstructionSourceSite) -> Result<()> {
+        let result: Result<()> = (|| {
+            self.context.execution().add_instruction_units(1)?;
+            self.context.execution().poll_execution_budget()?;
+            Ok(())
+        })();
+        self.promote_call_site_error(result, site)
+    }
+
+    fn promote_call_site_error<T>(
         &mut self,
-        result: Result<RuntimeValueCarrier>,
+        result: Result<T>,
         site: &InstructionSourceSite,
-    ) -> Result<RuntimeValueCarrier> {
+    ) -> Result<T> {
         let Err(error) = result else {
             return result;
         };
