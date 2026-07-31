@@ -189,7 +189,7 @@ impl BuiltinShape {
 
 // 纯转换（context-free，可以进 core）
 pub fn package_type_ref_to_ir(ty: &PackageTypeRef) -> TypeRefIr;         // 折叠策略：PackageSchema→PackageSymbol（source 内部）
-pub fn package_type_ref_to_ir_exact(ty: &PackageTypeRef) -> TypeRefIr;   // 精确策略：保留 PackageSchema，identity 用 type_ref_abi_key（ABI/export 边界）
+pub fn package_type_ref_to_ir_exact(ty: &PackageTypeRef) -> TypeRefIr;   // 精确策略：保留 PackageSchema，identity 用 canonical JSON（ABI/export 边界）
 pub fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr;       // 吸收 type_projection 双子
 ```
 
@@ -198,7 +198,9 @@ pub fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr;       // 吸�
   `ordinary_package_local_type_ir` 重写外均原样，折叠版不引入新重写。
 - ABI/export 边界（projection export links）用精确策略；`interface_abi_id` 统一以 canonical
   JSON（`type_ref_abi_key`）为准，变更需差分测试 + fixture golden（见 Phase 4；已确认不需
-  兼容历史 identity 串）。
+  兼容历史 identity 串）。注意 compiler-boundaries 规则禁止 compiler-core 依赖
+  `skiff_artifact_identity`；core 内直接用 `skiff_canonical_json::canonical_json_bytes`
+  （输出与 `type_ref_abi_key` 逐字节一致），不引入该依赖方向。
 - `single_for_item_projection` 不能假设"无损包回"：`from_ir` 对 Record/Function/Literal 有损，
   且 `Local` 包装的容器现有行为是返回 `None`。改接 `single_item` 时用测试锁定该行为。
 
@@ -290,6 +292,9 @@ Record/Literal/Function/AnyInterface 成员、重复成员、`PackageTypeRef::Lo
    fixture golden，单独成 commit（Non-Goals 第 3 条的唯一例外）。
 2. core 提供 `package_type_ref_to_ir`（折叠）与 `package_type_ref_to_ir_exact`（精确）两个纯函数，
    按 4.3 表的边界归属替换 5 份拷贝；etm 的 `ordinary_package_local_type_ir` 行为保持现状。
+   exact 版的 canonical identity 在 core 内用 `skiff_canonical_json::canonical_json_bytes`
+   实现（compiler-boundaries 禁止 core 依赖 `skiff_artifact_identity`；输出与
+   `type_ref_abi_key` 逐字节一致）。
 3. `contract_type_ref_to_ir` 与 `contract_type_ref_to_ir_from_package` 合并为直连
    `ContractTypeRef → TypeRefIr` 的一版，identity 按第 1 步决策执行。
 4. 反向投影：把 `contract_call_typing/type_projection.rs` 的 `package_type_ref_from_resolved_ir`
