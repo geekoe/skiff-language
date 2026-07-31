@@ -11,7 +11,7 @@ use skiff_runtime_model::{
 
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
-    capabilities::ActorClient,
+    capabilities::SpawnClient,
     error::{Result, RuntimeError},
     invocation::EvalProgramProjection,
     program_execution::ProgramExecutionContext,
@@ -140,7 +140,7 @@ pub async fn submit_spawn_statement(
     let execution_control = context.execution.owned();
     let invocation = encode_spawn_request_payload(context, call, projection).await?;
 
-    ActorClient::new(spawn_context.clone())
+    SpawnClient::new(spawn_context.clone())
         .submit_spawn(
             SpawnSubmitControlRequest {
                 rpc_id: String::new(),

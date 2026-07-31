@@ -177,12 +177,13 @@ pub use skiff_runtime_capability_context::{
     HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
     OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
     OwnedExecutionControlApi, RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
-    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnSubmitControlRequest,
-    StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup,
-    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
-    StreamRuntimeOwner, StreamSink, StreamSinkApi, SupervisedStreamConsumptionChild,
-    TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink,
-    WebsocketCapabilityApi, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnClient,
+    SpawnSubmitControlRequest, StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext,
+    StreamConsumerCleanup, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
+    StreamRuntimeError, StreamRuntimeOwner, StreamSink, StreamSinkApi,
+    SupervisedStreamConsumptionChild, TelemetryCapabilityApi, TelemetryCapabilityContext,
+    TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
+    HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {

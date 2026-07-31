@@ -241,17 +241,6 @@ impl<'a> ActorClient<'a> {
         self.context.remove_actor(request, execution_control).await
     }
 
-    pub async fn submit_spawn(
-        &self,
-        request: SpawnSubmitControlRequest,
-        args_payload: Vec<u8>,
-        execution_control: OwnedExecutionControl,
-    ) -> CapabilityResult<()> {
-        self.context
-            .submit_spawn(request, args_payload, execution_control)
-            .await
-    }
-
     pub async fn invoke_actor(
         &self,
         request: ActorInvocationRequest,

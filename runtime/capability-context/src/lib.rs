@@ -14,6 +14,7 @@ mod outbound_response;
 mod request_payload;
 mod response;
 mod scoped_execution;
+mod spawn;
 mod stream;
 mod stream_cleanup;
 mod telemetry;
@@ -98,6 +99,7 @@ pub use scoped_execution::{
     ExecutionScopeDeriveError, ExecutionScopeLease, ExecutionScopeLeaseCompletion,
     ExecutionScopeLeaseTerminal, ExecutionScopeLifecycleSnapshot, ExecutionScopeTerminal,
 };
+pub use spawn::SpawnClient;
 pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
     StreamCapabilityContext, StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi,
