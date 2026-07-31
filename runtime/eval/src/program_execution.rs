@@ -165,8 +165,17 @@ pub struct ProgramExecutionContext<'a> {
     exception_trace_id: Option<String>,
     exception_error_sequence: Arc<AtomicU64>,
     local_call_stack: Vec<ExceptionStackFrame>,
+    program_call_depth: usize,
     _stream_runtime_owner: Option<StreamRuntimeOwner>,
 }
+
+/// Keeps language-level recursion below the native stack boundary of the Tokio
+/// worker polling the evaluator futures.
+///
+/// Skiff calls are currently represented by nested `async_recursion` futures.
+/// The instruction budget is intentionally much larger than a safe native call
+/// stack, so it cannot be the only recursion guard.
+const MAX_PROGRAM_CALL_DEPTH: usize = 32;
 
 fn validate_activation_execution_capability_bundle(
     receiver: &ProgramExecutionContext<'_>,
@@ -261,6 +270,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             exception_trace_id: self.exception_trace_id.clone(),
             exception_error_sequence: self.exception_error_sequence.clone(),
             local_call_stack: self.local_call_stack.clone(),
+            program_call_depth: self.program_call_depth,
             _stream_runtime_owner: self._stream_runtime_owner.clone(),
         }
     }
@@ -294,6 +304,7 @@ impl<'a> ProgramExecutionContext<'a> {
             exception_trace_id,
             exception_error_sequence: Arc::new(AtomicU64::new(0)),
             local_call_stack: Vec::new(),
+            program_call_depth: 0,
             _stream_runtime_owner: None,
         }
     }
@@ -388,6 +399,21 @@ impl<'a> ProgramExecutionContext<'a> {
         self.local_call_stack
             .push(ExceptionStackFrame::Local { site });
         self
+    }
+
+    fn enter_program_call(mut self) -> Result<Self> {
+        let requested_depth = self.program_call_depth.saturating_add(1);
+        if requested_depth > MAX_PROGRAM_CALL_DEPTH {
+            return Err(RuntimeError::ResourceLimitExceeded {
+                resource: "programCallDepth".to_string(),
+                reason: "program call depth exceeds the runtime safety limit".to_string(),
+                limit: MAX_PROGRAM_CALL_DEPTH,
+                current: self.program_call_depth,
+                requested_delta: 1,
+            });
+        }
+        self.program_call_depth = requested_depth;
+        Ok(self)
     }
 
     pub(crate) fn exception_stack_for_site(
@@ -568,6 +594,7 @@ pub struct OwnedProgramExecutionContext {
     exception_trace_id: Option<String>,
     exception_error_sequence: Arc<AtomicU64>,
     local_call_stack: Vec<ExceptionStackFrame>,
+    program_call_depth: usize,
 }
 
 impl OwnedProgramExecutionContext {
@@ -598,6 +625,7 @@ impl OwnedProgramExecutionContext {
             exception_trace_id: context.exception_trace_id.clone(),
             exception_error_sequence: context.exception_error_sequence.clone(),
             local_call_stack: context.local_call_stack.clone(),
+            program_call_depth: context.program_call_depth,
         }
     }
 
@@ -633,11 +661,21 @@ impl OwnedProgramExecutionContext {
             self.activation_execution_context_rebinder.clone();
         context.exception_error_sequence = self.exception_error_sequence.clone();
         context.local_call_stack = self.local_call_stack.clone();
+        context.program_call_depth = self.program_call_depth;
         let mut context = match &self.runtime_assembly_target {
             Some(target) => context.with_runtime_assembly_target(target.clone()),
             None => context,
         };
         context._stream_runtime_owner = self._stream_runtime_owner.clone();
+        context
+    }
+
+    /// Reconstructs a context for work that starts at an independent scheduler
+    /// boundary. The new task has a fresh native stack, so call-depth accounting
+    /// must not inherit the parent task's active stack frames.
+    pub(crate) fn borrow_for_scheduled_task(&self) -> ProgramExecutionContext<'_> {
+        let mut context = self.borrow();
+        context.program_call_depth = 0;
         context
     }
 }
@@ -1004,6 +1042,7 @@ impl Interpreter {
         type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
         args: Vec<RuntimeValueCarrier>,
     ) -> Result<RuntimeValueCarrier> {
+        let context = context.enter_program_call()?;
         context.execution().add_instruction_units(1)?;
         context.execution().poll_execution_budget()?;
 
@@ -1247,6 +1286,7 @@ impl Interpreter {
         args: Vec<RuntimeValueCarrier>,
         allow_stream_defer: bool,
     ) -> Result<RuntimeValueCarrier> {
+        let context = context.enter_program_call()?;
         context.execution().add_instruction_units(1)?;
         context.execution().poll_execution_budget()?;
 

@@ -44,6 +44,7 @@ use crate::{
     assembly_execution::ordinary::tests::test_runtime,
     env::{Env, Flow},
     error::RuntimeError,
+    error::ScopeTerminalCarrier,
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
     EvalRuntimeProgram,
 };
@@ -549,6 +550,25 @@ fn f445h_e4r_stream_for_in_materializes_current_local_deadline_owner_before_wait
         usize::MAX,
         "an already-terminal scope must not enter the stream runtime"
     );
+}
+
+#[test]
+fn spawned_stream_producer_maps_local_scope_terminal_without_panicking() {
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .expect("deadline before now");
+    let root = ExecutionScope::request(CancellationToken::new(), None);
+    let scope = root
+        .derive(deadline, site())
+        .expect("derive local producer scope");
+    let terminal = scope
+        .terminal_at(Instant::now())
+        .expect("producer scope must be terminal");
+    let error = ScopeTerminalCarrier::runtime_error(terminal);
+
+    let stream_error = stream_runtime_error_from_producer(error, RequestHeap::default());
+
+    assert!(matches!(stream_error, StreamRuntimeError::Cancelled));
 }
 
 #[tokio::test]

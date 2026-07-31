@@ -162,6 +162,68 @@ async fn runtime_program_executes_route_by_executable_addr() {
     );
 }
 
+#[test]
+fn runtime_program_recursion_fails_before_exhausting_the_worker_stack() {
+    let worker = std::thread::Builder::new()
+        .name("program-recursion-limit-test".to_string())
+        .stack_size(crate::config::RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("recursion test runtime should build");
+            runtime.block_on(async {
+                let program = Arc::new(program_with_executable(recursive_executable()));
+                let interpreter = Interpreter::with_program(program, runtime_factory());
+                let frame = test_invocation("svc.main.run");
+
+                let error = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    execute_test_program_route(&interpreter, &frame),
+                )
+                .await
+                .expect("the recursion guard must terminate evaluation promptly")
+                .expect_err("unbounded recursion must fail at the language call-depth boundary");
+
+                let payload = error
+                    .ordinary_payload()
+                    .expect("call-depth exhaustion must remain an ordinary request failure");
+                assert_eq!(payload.code, "ResourceLimitExceeded");
+                assert_eq!(
+                    payload
+                        .details
+                        .as_ref()
+                        .and_then(|details| details["resource"].as_str()),
+                    Some("programCallDepth"),
+                    "unexpected recursion error: {error:?}"
+                );
+                assert_eq!(
+                    payload
+                        .details
+                        .as_ref()
+                        .and_then(|details| details["limit"].as_u64()),
+                    Some(32),
+                    "the public diagnostic must report the enforced depth"
+                );
+
+                let healthy_program =
+                    Arc::new(program_with_executable(healthy_after_recursion_executable()));
+                let healthy_interpreter =
+                    Interpreter::with_program(healthy_program, runtime_factory());
+                let healthy_frame = test_invocation("svc.main.run");
+                let value = execute_test_program_route(&healthy_interpreter, &healthy_frame)
+                    .await
+                    .expect("the same runtime must remain usable after rejecting recursion");
+                assert_eq!(value, json!("still-running"));
+            });
+        })
+        .expect("recursion test worker should spawn");
+
+    worker
+        .join()
+        .expect("language recursion must not abort the runtime process");
+}
+
 #[tokio::test]
 async fn runtime_program_route_skips_explicit_self_request_parameter() {
     let program = Arc::new(program_with_executable(explicit_self_route_executable()));
@@ -8016,6 +8078,83 @@ fn run_executable() -> LinkedExecutable {
                     }
                 },
             ],
+        })),
+    }
+}
+
+fn recursive_executable() -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                {
+                    "label": "entry",
+                    "statements": [
+                        { "statement": 0 }
+                    ]
+                }
+            ],
+            "statements": [
+                {
+                    "kind": "return",
+                    "value": { "expression": 0 }
+                }
+            ],
+            "expressions": [
+                {
+                    "kind": "call",
+                    "call": {
+                        "site": test_instruction_site(),
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(ExecutableAddr::service(0, 0)).unwrap()
+                        },
+                        "args": []
+                    }
+                }
+            ]
+        })),
+    }
+}
+
+fn healthy_after_recursion_executable() -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                {
+                    "label": "entry",
+                    "statements": [
+                        { "statement": 0 }
+                    ]
+                }
+            ],
+            "statements": [
+                {
+                    "kind": "return",
+                    "value": { "expression": 0 }
+                }
+            ],
+            "expressions": [
+                {
+                    "kind": "literal",
+                    "value": { "kind": "string", "value": "still-running" }
+                }
+            ]
         })),
     }
 }

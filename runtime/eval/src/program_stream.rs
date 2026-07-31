@@ -1084,7 +1084,7 @@ async fn run_stream_producer_task(
         );
     }
 
-    let context = owned_context.borrow();
+    let context = owned_context.borrow_for_scheduled_task();
     let context = match producer_site {
         Some(site) => context.with_local_call_site(site),
         None => context,
@@ -1118,16 +1118,29 @@ async fn run_stream_producer_task(
     match result {
         Ok(_) => sink.end().await,
         Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
-        Err(error) => match RequestHeapOwnedStreamError::try_new(error, producer_heap) {
-            Ok(error) => sink.fail(StreamRuntimeError::producer(error)).await,
-            Err(error) => {
-                debug_assert!(error.is_cancellation_terminal());
-                sink.fail(StreamRuntimeError::Cancelled).await;
-            }
-        },
+        Err(error) => {
+            sink.fail(stream_runtime_error_from_producer(error, producer_heap))
+                .await;
+        }
     }
     for (stream_runtime, stream_value) in arg_streams {
         stream_runtime.cancel(&stream_value);
+    }
+}
+
+fn stream_runtime_error_from_producer(
+    error: RuntimeError,
+    producer_heap: RequestHeap,
+) -> StreamRuntimeError {
+    match RequestHeapOwnedStreamError::try_new(error, producer_heap) {
+        Ok(error) => StreamRuntimeError::producer(error),
+        Err(error) => {
+            // Stream wire errors cannot own evaluator-local execution terminals.
+            // The consumer shares the same ExecutionScope and recovers the exact
+            // deadline/cancellation owner at its current-scope checkpoint.
+            debug_assert!(error.is_internal_execution_terminal());
+            StreamRuntimeError::Cancelled
+        }
     }
 }
 
