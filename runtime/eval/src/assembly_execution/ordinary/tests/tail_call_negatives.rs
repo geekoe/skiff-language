@@ -248,11 +248,21 @@ async fn assembly_tail_call_negative_actor_target_keeps_real_actor_dispatch() {
     project_dir.write(
         "main.skiff",
         r#"
-actor UserActor id string {
+type UserActor {
+  id: string,
   displayName: string,
 }
 
+actor UserActor {
+  key(id)
+  create(displayName: string)
+}
+
 impl UserActor {
+  function create(self: UserActor, displayName: string) -> void {
+    self.displayName = displayName
+  }
+
   function rename(self: UserActor, value: string) -> string {
     self.displayName = value
     return self.displayName

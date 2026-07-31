@@ -33,11 +33,21 @@ fn real_actor_source_links_to_routed_actor_dispatch() {
     project_dir.write(
         "main.skiff",
         r#"
-actor UserActor id string {
+type UserActor {
+  id: string,
   displayName: string,
 }
 
+actor UserActor {
+  key(id)
+  create(displayName: string)
+}
+
 impl UserActor {
+  function create(self: UserActor, displayName: string) -> void {
+    self.displayName = displayName
+  }
+
   function rename(self: UserActor, value: string) -> string {
     self.displayName = value
     return self.displayName
@@ -72,13 +82,13 @@ function invoke(actor: UserActor) -> string {
         .flat_map(|file| &file.actor_declarations)
         .find(|declaration| declaration.abi.actor_name == "UserActor")
         .expect("compiler artifact should contain the Actor declaration");
+    let attached_type = source_files
+        .iter()
+        .flat_map(|file| file.declarations.types.values())
+        .find(|declaration| declaration.symbol.ends_with(".UserActor"));
     assert!(
-        source_files.iter().all(|file| file
-            .declarations
-            .types
-            .values()
-            .all(|declaration| !declaration.symbol.ends_with(".UserActor"))),
-        "Actor handle must not be represented by a fake type declaration"
+        attached_type.is_some(),
+        "Actor handle must be backed by its attached record type declaration"
     );
     let source_method = source_declaration
         .abi
@@ -145,11 +155,18 @@ function invoke(actor: UserActor) -> string {
         .iter()
         .find(|executable| executable.symbol.ends_with(".invoke"))
         .expect("source invoke function should be linked");
-    assert!(matches!(
-        &invoke.params[0].ty,
-        LinkedTypeRef::ServiceSymbol { symbol }
-            if symbol.module_path == "main" && symbol.symbol == "UserActor"
-    ));
+    assert!(
+        matches!(
+            &invoke.params[0].ty,
+            LinkedTypeRef::Address { addr }
+                if matches!(
+                    addr.file,
+                    skiff_runtime_linked_program::FileAddr::LoadedFileIndex(0)
+                )
+        ),
+        "Actor nominal parameter type must resolve to the attached record type: {:?}",
+        invoke.params[0].ty
+    );
     let dispatch = invoke
         .body
         .expressions

@@ -154,6 +154,8 @@ struct ActorInstance {
     scheduler: Arc<tokio::sync::Mutex<()>>,
     next_execution_token: AtomicU64,
     upgrading: AtomicBool,
+    admitted: AtomicBool,
+    admission_notify: tokio::sync::Notify,
 }
 
 #[derive(Debug)]
@@ -166,6 +168,27 @@ struct ActorInstanceState {
 pub(crate) struct ActorFieldValue {
     pub name: String,
     pub value: RuntimeValue,
+    /// Platform-written key fields and fields assigned by `create` are
+    /// admitted. Fields still awaiting `create` assignment are not readable.
+    pub assigned: bool,
+}
+
+impl ActorFieldValue {
+    pub(crate) fn assigned(name: impl Into<String>, value: RuntimeValue) -> Self {
+        Self {
+            name: name.into(),
+            value,
+            assigned: true,
+        }
+    }
+
+    pub(crate) fn unassigned(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: RuntimeValue::Null,
+            assigned: false,
+        }
+    }
 }
 
 /// Capability token reserved for the Actor executor in this crate.
@@ -443,6 +466,17 @@ impl ActorInstanceStore {
         &self,
         request: ActorActivationRequest<'_>,
     ) -> Result<ActorInstanceHandle, ActorInstanceStoreError> {
+        self.activate_with_created(request)
+            .map(|(handle, _)| handle)
+    }
+
+    /// [`Self::activate`] plus whether this call materialized a new instance
+    /// (as opposed to reusing an existing incarnation). Only the materializer
+    /// may run `create` and mark the instance admitted.
+    pub fn activate_with_created(
+        &self,
+        request: ActorActivationRequest<'_>,
+    ) -> Result<(ActorInstanceHandle, bool), ActorInstanceStoreError> {
         request.fence.validate()?;
         let mut state = self
             .state
@@ -466,16 +500,25 @@ impl ActorInstanceStore {
             if existing.upgrading.load(Ordering::Acquire) {
                 return Err(ActorInstanceStoreError::InstanceReplaced);
             }
-            return Ok(ActorInstanceHandle {
-                fence: request.fence,
-                instance: Arc::clone(existing),
-            });
+            return Ok((
+                ActorInstanceHandle {
+                    fence: request.fence,
+                    instance: Arc::clone(existing),
+                },
+                false,
+            ));
         }
 
         let declaration =
             resolve_actor_declaration(request.program, &request.fence.declaration_owner)?;
         validate_declaration_fence(declaration, &request.fence)?;
-        let instance = Arc::new(materialize_instance(&request, declaration)?);
+        let materialized = materialize_instance(&request, declaration)?;
+        let instance = Arc::new(materialized.instance);
+        instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned")
+            .heap = materialized.heap;
 
         state
             .latest_epochs
@@ -486,10 +529,13 @@ impl ActorInstanceStore {
             .instances
             .insert(request.fence.incarnation.clone(), Arc::clone(&instance));
 
-        Ok(ActorInstanceHandle {
-            fence: request.fence,
-            instance,
-        })
+        Ok((
+            ActorInstanceHandle {
+                fence: request.fence,
+                instance,
+            },
+            true,
+        ))
     }
 
     /// Removes only the exact materialized instance represented by `handle`.
@@ -547,6 +593,7 @@ impl ActorInstanceStore {
             return false;
         };
         state.instances.remove(&handle.fence.incarnation);
+        handle.instance.admission_notify.notify_waiters();
         state
             .latest_epochs
             .entry(handle.fence.incarnation.logical_key.clone())
@@ -577,6 +624,7 @@ impl ActorInstanceStore {
                 });
             if matches {
                 state.instances.remove(&handle.fence.incarnation);
+                handle.instance.admission_notify.notify_waiters();
                 removed += 1;
             }
         }
@@ -644,6 +692,40 @@ impl ActorInstanceStore {
         _authority: &ActorExecutorAuthority,
         handle: &ActorInstanceHandle,
     ) -> Result<ActorInstanceExecutionLease, ActorInstanceStoreError> {
+        let instance = self.wait_until_admitted(handle).await?;
+        let scheduler_guard = Arc::clone(&instance.scheduler).lock_owned().await;
+        let instance = self.resolve_active_instance(handle)?;
+        let state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        let nonce = instance
+            .next_execution_token
+            .fetch_add(1, Ordering::Relaxed);
+        let token = Arc::new(ActorExecutionToken {
+            nonce,
+            active: AtomicBool::new(true),
+        });
+        let fields = Arc::new(Mutex::new(state.fields.clone()));
+        let heap = state.heap.clone();
+        drop(state);
+        Ok(ActorInstanceExecutionLease {
+            instance,
+            _scheduler_guard: scheduler_guard,
+            token,
+            fields,
+            heap: Some(heap),
+        })
+    }
+
+    /// Scheduler acquisition for the platform activation path (`create`).
+    /// The instance is intentionally not admitted yet, so this path skips the
+    /// admission gate that ordinary method execution waits on.
+    pub(crate) async fn acquire_execution_for_activation(
+        &self,
+        _authority: &ActorExecutorAuthority,
+        handle: &ActorInstanceHandle,
+    ) -> Result<ActorInstanceExecutionLease, ActorInstanceStoreError> {
         let instance = self.resolve_active_instance(handle)?;
         let scheduler_guard = Arc::clone(&instance.scheduler).lock_owned().await;
         let instance = self.resolve_active_instance(handle)?;
@@ -668,6 +750,25 @@ impl ActorInstanceStore {
             fields,
             heap: Some(heap),
         })
+    }
+
+    async fn wait_until_admitted(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<Arc<ActorInstance>, ActorInstanceStoreError> {
+        loop {
+            let instance = self.resolve_active_instance(handle)?;
+            if instance.admitted.load(Ordering::Acquire) {
+                return Ok(instance);
+            }
+            let notified = instance.admission_notify.notified();
+            tokio::pin!(notified);
+            let instance = self.resolve_active_instance(handle)?;
+            if instance.admitted.load(Ordering::Acquire) {
+                return Ok(instance);
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn commit_execution(
@@ -742,6 +843,20 @@ impl ActorInstanceStore {
         }
         Ok(instance)
     }
+
+    /// Marks the exact incarnation as admitted after a successful `create`
+    /// (or immediately when no `create` is declared). Wakes all waiters.
+    pub(crate) fn mark_admitted(
+        &self,
+        authority: &ActorExecutorAuthority,
+        handle: &ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceStoreError> {
+        let _ = authority;
+        let instance = self.resolve_active_instance(handle)?;
+        instance.admitted.store(true, Ordering::Release);
+        instance.admission_notify.notify_waiters();
+        Ok(())
+    }
 }
 
 fn ensure_instance_fence(
@@ -755,38 +870,37 @@ fn ensure_instance_fence(
     }
 }
 
+struct MaterializedActorInstance {
+    instance: ActorInstance,
+    heap: RequestHeap,
+}
+
 fn materialize_instance(
     request: &ActorActivationRequest<'_>,
     declaration: &LinkedActorDeclaration,
-) -> Result<ActorInstance, ActorInstanceStoreError> {
+) -> Result<MaterializedActorInstance, ActorInstanceStoreError> {
     if request.bootstrap_encoding_version != ACTOR_BOOTSTRAP_ENCODING_V1 {
         return Err(ActorInstanceStoreError::UnsupportedBootstrapEncoding {
             actual: request.bootstrap_encoding_version.to_string(),
         });
     }
     let payload: Value = serde_json::from_slice(request.bootstrap_payload).map_err(|error| {
-        ActorInstanceStoreError::BootstrapDecode {
+        ActorInstanceStoreError::CreationInputsDecode {
             message: error.to_string(),
         }
     })?;
-    let object = payload
-        .as_object()
-        .ok_or(ActorInstanceStoreError::BootstrapNotRecord)?;
-
-    let mut canonical_field_names = declaration
-        .fields
-        .iter()
-        .map(|field| field.name.as_str())
-        .collect::<Vec<_>>();
-    canonical_field_names.sort_unstable();
-    let actual_names = object.keys().map(String::as_str).collect::<Vec<_>>();
-    if actual_names != canonical_field_names {
-        return Err(ActorInstanceStoreError::BootstrapFieldShape {
-            expected: canonical_field_names
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            actual: actual_names.into_iter().map(str::to_string).collect(),
+    let create_args = payload
+        .as_array()
+        .ok_or(ActorInstanceStoreError::CreationInputsNotArray)?;
+    let expected_create_args = declaration
+        .create
+        .as_ref()
+        .map(|create| create.parameters.len())
+        .unwrap_or(0);
+    if create_args.len() != expected_create_args {
+        return Err(ActorInstanceStoreError::CreationInputCount {
+            expected: expected_create_args,
+            actual: create_args.len(),
         });
     }
 
@@ -810,32 +924,43 @@ fn materialize_instance(
                 message: error.to_string(),
             }
         })?;
-        let value = RuntimeBoundaryCodec::new(
-            &plan,
-            BoundaryUse::NativeArg,
-            format!("Actor bootstrap field {}", field.name),
-        )
-        .from_wire_json(
-            object
-                .get(&field.name)
-                .expect("exact bootstrap field shape checked"),
-            &mut heap,
-        )
-        .map_err(|error| ActorInstanceStoreError::BootstrapFieldDecode {
-            field: field.name.clone(),
-            message: error.to_string(),
-        })?;
-        fields.push(ActorFieldValue {
-            name: field.name.clone(),
-            value,
-        });
+        if field.name == declaration.key_field {
+            let wire: Value = serde_json::from_slice(
+                &request.fence.incarnation.logical_key.canonical_actor_id_key_bytes,
+            )
+            .map_err(|error| ActorInstanceStoreError::KeyFieldDecode {
+                field: field.name.clone(),
+                message: error.to_string(),
+            })?;
+            let value = RuntimeBoundaryCodec::new(
+                &plan,
+                BoundaryUse::NativeArg,
+                format!("Actor key field {}", field.name),
+            )
+            .from_wire_json(&wire, &mut heap)
+            .map_err(|error| ActorInstanceStoreError::KeyFieldDecode {
+                field: field.name.clone(),
+                message: error.to_string(),
+            })?;
+            fields.push(ActorFieldValue::assigned(field.name.clone(), value));
+        } else {
+            fields.push(ActorFieldValue::unassigned(field.name.clone()));
+        }
     }
-    Ok(ActorInstance {
-        fence: request.fence.clone(),
-        state: Mutex::new(ActorInstanceState { fields, heap }),
-        scheduler: Arc::new(tokio::sync::Mutex::new(())),
-        next_execution_token: AtomicU64::new(1),
-        upgrading: AtomicBool::new(false),
+    Ok(MaterializedActorInstance {
+        instance: ActorInstance {
+            fence: request.fence.clone(),
+            state: Mutex::new(ActorInstanceState {
+                fields,
+                heap: RequestHeap::default(),
+            }),
+            scheduler: Arc::new(tokio::sync::Mutex::new(())),
+            next_execution_token: AtomicU64::new(1),
+            upgrading: AtomicBool::new(false),
+            admitted: AtomicBool::new(false),
+            admission_notify: tokio::sync::Notify::new(),
+        },
+        heap,
     })
 }
 
@@ -925,21 +1050,18 @@ pub enum ActorInstanceStoreError {
     UnsupportedActorRuntimeAbi { actual: String },
     #[error("unsupported Actor bootstrap encoding {actual}")]
     UnsupportedBootstrapEncoding { actual: String },
-    #[error("Actor bootstrap payload decode failed: {message}")]
-    BootstrapDecode { message: String },
-    #[error("Actor bootstrap payload must be a record")]
-    BootstrapNotRecord,
-    #[error("Actor bootstrap field shape/order mismatch: expected {expected:?}, got {actual:?}")]
-    BootstrapFieldShape {
-        expected: Vec<String>,
-        actual: Vec<String>,
-    },
+    #[error("Actor creation inputs decode failed: {message}")]
+    CreationInputsDecode { message: String },
+    #[error("Actor creation inputs must be a JSON array")]
+    CreationInputsNotArray,
+    #[error("Actor creation inputs count mismatch: expected {expected}, got {actual}")]
+    CreationInputCount { expected: usize, actual: usize },
     #[error("Actor field {field} uses an unsupported encoding")]
     UnsupportedFieldEncoding { field: String },
     #[error("Actor field {field} type plan failed: {message}")]
     DeclarationType { field: String, message: String },
-    #[error("Actor bootstrap field {field} decode failed: {message}")]
-    BootstrapFieldDecode { field: String, message: String },
+    #[error("Actor key field {field} decode failed: {message}")]
+    KeyFieldDecode { field: String, message: String },
     #[error("Actor instance is not materialized")]
     InstanceNotFound,
     #[error("Actor instance handle was replaced")]

@@ -24,7 +24,7 @@ fn actor_registry_target_name(target: &LinkedCallTarget) -> Option<String> {
         .unwrap_or_else(|| format!("{}.{}", target.namespace, target.symbol));
     matches!(
         name.as_str(),
-        "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
+        "std.actor.get"
     )
     .then_some(name)
 }
@@ -656,16 +656,7 @@ impl<'a> AssemblyCodeLinker<'a> {
         let Some(target_name) = actor_registry_target_name(&call.target) else {
             return Ok(None);
         };
-        let needs_bootstrap = match target_name.as_str() {
-            "std.actor.getOrCreate" | "std.actor.replace" => true,
-            "std.actor.find" | "std.actor.remove" => false,
-            _ => return Ok(None),
-        };
-        let expected_keys: &[&str] = if needs_bootstrap {
-            &["T0", "T1", "T2"]
-        } else {
-            &["T0", "T1"]
-        };
+        let expected_keys: &[&str] = &["T0", "T1"];
         if call.type_args.len() != expected_keys.len()
             || expected_keys
                 .iter()
@@ -694,20 +685,17 @@ impl<'a> AssemblyCodeLinker<'a> {
                 declaration.actor_name
             );
         }
-        if let Some(bootstrap) = call.type_args.get("T2") {
-            let expected_bootstrap = LinkedTypeRef::Record {
-                fields: declaration
-                    .fields
-                    .iter()
-                    .map(|field| (field.name.clone(), field.ty.clone()))
-                    .collect(),
-            };
-            if bootstrap != &expected_bootstrap {
-                anyhow::bail!(
-                    "{target_name} T2 does not match actor {} bootstrap field shape",
-                    declaration.actor_name
-                );
-            }
+        let expected_args = 1
+            + declaration
+                .create
+                .as_ref()
+                .map(|create| create.parameters.len())
+                .unwrap_or(0);
+        if call.args.len() != expected_args {
+            anyhow::bail!(
+                "{target_name} expects id and create argument(s) totalling {expected_args}, got {}",
+                call.args.len()
+            );
         }
         let _ = (code_slot, file_index);
         Ok(Some(LinkedActorNativeMetadata {

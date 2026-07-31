@@ -1,15 +1,15 @@
 use super::{
-    prepared::run_prepared_native_call, unsupported_native_target, PreparedExternalNativeOperation,
-    PreparedNativeCall, RuntimeNativeInvocation,
+    prepared::run_prepared_native_call, PreparedExternalNativeOperation, PreparedNativeCall,
+    RuntimeNativeInvocation,
 };
 use crate::capability::NativeActorCapability;
 use crate::error::{Result, RuntimeError};
 use crate::runtime_value_facade::{encode_base64, RequestHeap, RuntimeValue};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
-    ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
 };
 
 const ACTOR_VALUE_ENCODING_VERSION: &str = "skiff-canonical-v1";
@@ -18,10 +18,7 @@ pub(super) struct ActorNativeDispatch;
 
 impl ActorNativeDispatch {
     pub(super) fn matches(target: &str) -> bool {
-        matches!(
-            target,
-            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
-        )
+        target == "std.actor.get"
     }
 
     #[allow(clippy::too_many_lines)]
@@ -73,118 +70,43 @@ impl ActorNativeDispatch {
                     ))
                 })?;
 
-        let operation = match binding_key.as_str() {
-            "std.actor.getOrCreate" => {
-                let bootstrap = native_boundary.to_wire_arg(
-                    1,
-                    &args[1],
-                    &format!("{diagnostic_target} bootstrap"),
+        let create_args = args
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(index, value)| {
+                native_boundary.to_wire_arg(
+                    index,
+                    value,
+                    &format!("{diagnostic_target} create argument {}", index - 1),
                     heap,
-                )?;
-                let bootstrap_payload =
-                    canonical_json_bytes(&bootstrap).map_err(RuntimeError::from)?;
-                PreparedExternalNativeOperation::new(
-                    async move {
-                        actor_context
-                            .get_or_create_actor(
-                                ActorGetOrCreateControlRequest {
-                                    rpc_id: String::new(),
-                                    runtime_id: String::new(),
-                                    activation_identity,
-                                    actor_key,
-                                    actor_abi_identity,
-                                    actor_implementation_identity: actor_implementation_identity
-                                        .clone(),
-                                    bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION
-                                        .to_string(),
-                                },
-                                bootstrap_payload,
-                            )
-                            .await
-                            .map(ActorRegistryOutput::ActorRef)
-                    },
-                    move |output, heap| {
-                        finalize_actor_registry_output(
-                            &invocation,
-                            &diagnostic_target,
-                            output,
-                            heap,
-                        )
-                    },
                 )
-            }
-            "std.actor.replace" => {
-                let bootstrap = native_boundary.to_wire_arg(
-                    1,
-                    &args[1],
-                    &format!("{diagnostic_target} bootstrap"),
-                    heap,
-                )?;
-                let bootstrap_payload =
-                    canonical_json_bytes(&bootstrap).map_err(RuntimeError::from)?;
-                PreparedExternalNativeOperation::new(
-                    async move {
-                        actor_context
-                            .replace_actor(
-                                ActorReplaceControlRequest {
-                                    rpc_id: String::new(),
-                                    runtime_id: String::new(),
-                                    activation_identity,
-                                    actor_key,
-                                    actor_abi_identity,
-                                    actor_implementation_identity,
-                                    bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION
-                                        .to_string(),
-                                },
-                                bootstrap_payload,
-                            )
-                            .await
-                            .map(ActorRegistryOutput::ActorRef)
-                    },
-                    move |output, heap| {
-                        finalize_actor_registry_output(
-                            &invocation,
-                            &diagnostic_target,
-                            output,
-                            heap,
-                        )
-                    },
-                )
-            }
-            "std.actor.find" => PreparedExternalNativeOperation::new(
-                async move {
-                    actor_context
-                        .find_actor(ActorFindControlRequest {
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let create_args_payload = canonical_json_bytes(&Value::Array(create_args))
+            .map_err(RuntimeError::from)?;
+        let operation = PreparedExternalNativeOperation::new(
+            async move {
+                actor_context
+                    .get_or_create_actor(
+                        ActorGetOrCreateControlRequest {
                             rpc_id: String::new(),
                             runtime_id: String::new(),
                             activation_identity,
                             actor_key,
-                        })
-                        .await
-                        .map(ActorRegistryOutput::OptionalActorRef)
-                },
-                move |output, heap| {
-                    finalize_actor_registry_output(&invocation, &diagnostic_target, output, heap)
-                },
-            ),
-            "std.actor.remove" => PreparedExternalNativeOperation::new(
-                async move {
-                    actor_context
-                        .remove_actor(ActorRemoveControlRequest {
-                            rpc_id: String::new(),
-                            runtime_id: String::new(),
-                            activation_identity,
-                            actor_key,
-                        })
-                        .await
-                        .map(ActorRegistryOutput::Removed)
-                },
-                move |output, heap| {
-                    finalize_actor_registry_output(&invocation, &diagnostic_target, output, heap)
-                },
-            ),
-            _ => return Err(unsupported_native_target(&binding_key)),
-        };
+                            actor_abi_identity,
+                            actor_implementation_identity,
+                            bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION.to_string(),
+                        },
+                        create_args_payload,
+                    )
+                    .await
+                    .map(ActorRegistryOutput::ActorRef)
+            },
+            move |output, heap| {
+                finalize_actor_registry_output(&invocation, &diagnostic_target, output, heap)
+            },
+        );
         Ok(PreparedNativeCall::ExternalWait(operation))
     }
 
@@ -206,8 +128,6 @@ impl ActorNativeDispatch {
 
 enum ActorRegistryOutput {
     ActorRef(crate::runtime_value_facade::ActorRef),
-    OptionalActorRef(Option<crate::runtime_value_facade::ActorRef>),
-    Removed(bool),
 }
 
 fn finalize_actor_registry_output(
@@ -218,18 +138,9 @@ fn finalize_actor_registry_output(
 ) -> Result<RuntimeValue> {
     let output = match output {
         ActorRegistryOutput::ActorRef(actor_ref) => RuntimeValue::ActorRef(actor_ref),
-        ActorRegistryOutput::OptionalActorRef(actor_ref) => actor_ref
-            .map(RuntimeValue::ActorRef)
-            .unwrap_or(RuntimeValue::Null),
-        ActorRegistryOutput::Removed(removed) => RuntimeValue::Bool(removed),
     };
     match output {
-        RuntimeValue::ActorRef(_) | RuntimeValue::Null => Ok(output),
-        RuntimeValue::Bool(_) => invocation.native_boundary()?.coerce_return(
-            &output,
-            &format!("{diagnostic_target} response"),
-            heap,
-        ),
+        RuntimeValue::ActorRef(_) => Ok(output),
         _ => Err(RuntimeError::InvalidArtifact(format!(
             "{diagnostic_target} produced an invalid actor registry result"
         ))),

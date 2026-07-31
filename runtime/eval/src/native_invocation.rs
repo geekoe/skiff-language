@@ -9,15 +9,15 @@ use skiff_runtime_linked_program::{
     LinkedActorDeclarationOwner, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget,
     TypeAddr, UnitAddr,
 };
-use skiff_runtime_linked_type_plan::{self as linked_type_plan, ProgramTypeView};
+use skiff_runtime_linked_type_plan::{
+    self as linked_type_plan, PlanContext, ProgramTypeView, RuntimeTypePlanLinkedExt,
+};
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
 use skiff_runtime_native::dispatch::{
     runtime_shared_native_route, RuntimeActorNativeMetadata, RuntimeNativeInvocation,
     RuntimeNativeRoute,
 };
-use skiff_runtime_native_contract::{
-    validate_native_call_arg_count, NativeCallPlan, NativeDispatchTarget, NativeSignatureRegistry,
-};
+use skiff_runtime_native_contract::{NativeCallPlan, NativeDispatchTarget, NativeSignatureRegistry};
 
 use super::{
     env::Env,
@@ -116,7 +116,8 @@ fn resolve_runtime_native_invocation_in_type_view(
     // descriptors. The Actor dispatcher validates T0 above and returns
     // RuntimeValue::ActorRef directly, so the generic native boundary must not
     // try to manufacture a TypeAddr/descriptor for T0. Keep the real argument
-    // plans (T1/T2) and use a detached scalar only for the unused return lane.
+    // plans (T1 plus create parameters) and use a detached scalar only for the
+    // unused return lane.
     let actor_plan_call = actor_metadata.as_ref().map(|_| {
         let mut plan_call = resolved_call.clone();
         plan_call.type_args.insert(
@@ -202,6 +203,39 @@ fn resolve_runtime_native_invocation_in_type_view(
             env,
             plan_call,
         )?;
+    }
+    if binding_key == "std.actor.get" {
+        if let Some(native_plan) = plan.as_mut() {
+            let declaration = if let Some(linked_metadata) = resolved_call.actor_metadata.as_ref() {
+                actor_declaration_for_owner(program, &linked_metadata.declaration_owner)?
+            } else {
+                let Some(LinkedTypeRef::ServiceSymbol { symbol }) =
+                    resolved_call.type_args.get("T0")
+                else {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "{target_name} actor typeArgs[0] is not a nominal actor ServiceSymbol"
+                    )));
+                };
+                actor_declaration_for_symbol(program, symbol)?
+            };
+            let context = PlanContext::from_type_view(program, current_addr);
+            for parameter in declaration
+                .create
+                .as_ref()
+                .map(|create| create.parameters.iter())
+                .into_iter()
+                .flatten()
+            {
+                let parameter_plan = RuntimeTypePlan::from_linked(&parameter.ty, &context)
+                    .map_err(|error| {
+                        RuntimeError::InvalidArtifact(format!(
+                            "{target_name} create parameter `{}` type plan failed: {error}",
+                            parameter.name
+                        ))
+                    })?;
+                native_plan.arg_plans.push(parameter_plan);
+            }
+        }
     }
     Ok(RuntimeNativeInvocation::new(
         target_name,
@@ -321,7 +355,6 @@ fn resolve_actor_native_metadata(
     if runtime_shared_native_route(binding_key) != Some(RuntimeNativeRoute::Actor) {
         return Ok(None);
     }
-    validate_actor_native_call_arg_count(binding_key, diagnostic_target, call)?;
     let actor_symbol = match call.type_args.get("T0") {
         Some(LinkedTypeRef::ServiceSymbol { symbol }) => symbol,
         _ => {
@@ -354,22 +387,21 @@ fn resolve_actor_native_metadata(
             "{diagnostic_target} actor typeArgs[1] does not match linked actor id declaration"
         )));
     }
-    if matches!(binding_key, "std.actor.getOrCreate" | "std.actor.replace") {
-        let expected_bootstrap = LinkedTypeRef::Record {
-            fields: declaration
-                .fields
-                .iter()
-                .map(|field| (field.name.clone(), field.ty.clone()))
-                .collect(),
-        };
-        if call.type_args.get("T2") != Some(&expected_bootstrap) {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "{diagnostic_target} actor typeArgs[2] does not match linked bootstrap declaration"
-            )));
-        }
-    } else if call.type_args.contains_key("T2") {
+    if call.type_args.contains_key("T2") {
         return Err(RuntimeError::InvalidArtifact(format!(
             "{diagnostic_target} actor call must not carry bootstrap typeArgs[2]"
+        )));
+    }
+    let expected_args = 1
+        + declaration
+            .create
+            .as_ref()
+            .map(|create| create.parameters.len())
+            .unwrap_or(0);
+    if call.args.len() != expected_args {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{diagnostic_target} expects id and create argument(s) totalling {expected_args}, got {}",
+            call.args.len()
         )));
     }
     Ok(Some(RuntimeActorNativeMetadata::new(
@@ -507,7 +539,9 @@ mod actor_declaration_resolution_tests {
                     name: "string".to_string(),
                     args: Vec::new(),
                 },
+                key_field: "id".to_string(),
                 fields: Vec::new(),
+                create: None,
                 public_methods: Vec::new(),
                 actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
             }],
@@ -547,19 +581,6 @@ mod actor_declaration_resolution_tests {
         };
         assert!(actor_declaration_for_owner(program, &forged).is_err());
     }
-}
-
-fn validate_actor_native_call_arg_count(
-    binding_key: &str,
-    diagnostic_target: &str,
-    call: &CallIr,
-) -> Result<()> {
-    let Some(spec) = NativeSignatureRegistry::builtins().binding_spec(binding_key) else {
-        return Ok(());
-    };
-    validate_native_call_arg_count(spec.signature, call.args.len()).map_err(|message| {
-        RuntimeError::InvalidArtifact(format!("{diagnostic_target} call {message}"))
-    })
 }
 
 fn type_identity(type_ref: &LinkedTypeRef) -> Result<String> {

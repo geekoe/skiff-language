@@ -21,6 +21,15 @@ pub fn validate_native_call_arg_count(
     signature: &NativeSignatureDef,
     arg_count: usize,
 ) -> std::result::Result<(), String> {
+    if signature.binding_key == "std.actor.get" {
+        // std.actor.get is variadic at the language level: id plus the actor
+        // declaration's create parameters. The exact count is enforced by the
+        // actor declaration-aware validators.
+        if arg_count >= 1 {
+            return Ok(());
+        }
+        return Err("expected an id and create argument(s), got 0".to_string());
+    }
     if arg_count == signature.params.len() {
         return Ok(());
     }

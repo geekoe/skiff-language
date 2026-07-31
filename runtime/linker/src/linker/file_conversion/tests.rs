@@ -486,11 +486,20 @@ fn actor_file() -> artifact::FileIrUnit {
     let abi = artifact::ActorAbiInput {
         actor_name: "DocHub".to_string(),
         actor_id_type: artifact::TypeRefIr::builtin("string"),
-        fields: vec![artifact::ActorFieldIr {
-            name: "nextSeq".to_string(),
-            ty: artifact::TypeRefIr::builtin("number"),
-            encoding: artifact::ActorFieldEncodingIr::CanonicalValueV1,
-        }],
+        key_field: "id".to_string(),
+        fields: vec![
+            artifact::ActorFieldIr {
+                name: "id".to_string(),
+                ty: artifact::TypeRefIr::builtin("string"),
+                encoding: artifact::ActorFieldEncodingIr::CanonicalValueV1,
+            },
+            artifact::ActorFieldIr {
+                name: "nextSeq".to_string(),
+                ty: artifact::TypeRefIr::builtin("number"),
+                encoding: artifact::ActorFieldEncodingIr::CanonicalValueV1,
+            },
+        ],
+        create: None,
         public_methods: Vec::new(),
         actor_runtime_abi_version: artifact::ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
     };
@@ -501,6 +510,7 @@ fn actor_file() -> artifact::FileIrUnit {
         ),
         abi,
         method_implementations: std::collections::BTreeMap::new(),
+        create_implementation: None,
     });
     file
 }

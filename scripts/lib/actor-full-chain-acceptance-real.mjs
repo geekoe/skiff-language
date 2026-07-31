@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { request as requestHttp } from 'node:http';
-import { decodeRuntimePayload } from './runtime-payload-codec.mjs';
 import { join } from 'node:path';
 
 import { captureCheckedCommand } from './command-execution.mjs';
@@ -41,6 +40,7 @@ export async function runActorFullChainAcceptance({
         expectedGeneration: 0,
         environment,
         assembly: receipt.candidate.assembly,
+        configSnapshot: receipt.candidate.configSnapshot,
         signal,
       });
       assert.equal(activation.response.ok, true);
@@ -87,11 +87,12 @@ async function invokeUnary(routerHttpUrl, entrypoint, signal) {
       headers: {
         'x-skiff-service': deployment.serviceId,
         'x-skiff-version': deployment.contractVersion,
+        'content-type': 'application/json',
       },
       signal,
     }, resolveResponse);
     request.once('error', rejectResponse);
-    request.end();
+    request.end('null');
   });
   const chunks = [];
   for await (const chunk of response) chunks.push(Buffer.from(chunk));
@@ -101,7 +102,7 @@ async function invokeUnary(routerHttpUrl, entrypoint, signal) {
     200,
     `Actor unary failed: ${body.toString('utf8')}`
   );
-  return decodeRuntimePayload(body, { type: 'string' });
+  return JSON.parse(body.toString('utf8'));
 }
 
 async function waitForTwoActiveReplicas({

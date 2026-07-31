@@ -165,6 +165,13 @@ fn string_type() -> LinkedTypeRef {
     }
 }
 
+fn runtime_string_type() -> LinkedTypeRef {
+    LinkedTypeRef::Native {
+        name: "string".to_string(),
+        args: Vec::new(),
+    }
+}
+
 fn thread_type() -> LinkedTypeRef {
     db_object_type("Thread")
 }
@@ -384,12 +391,21 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
             actor_abi_identity: actor_abi(),
             actor_implementation_identity: actor_implementation(),
             actor_name: "CheckpointActor".to_string(),
-            actor_id_type: string_type(),
-            fields: vec![LinkedActorField {
-                name: "count".to_string(),
-                ty: integer_type(),
-                encoding: ActorFieldEncodingIr::CanonicalValueV1,
-            }],
+            actor_id_type: runtime_string_type(),
+            key_field: "id".to_string(),
+            fields: vec![
+                LinkedActorField {
+                    name: "id".to_string(),
+                    ty: runtime_string_type(),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                LinkedActorField {
+                    name: "count".to_string(),
+                    ty: integer_type(),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: None,
             public_methods: Vec::new(),
             actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
         }],

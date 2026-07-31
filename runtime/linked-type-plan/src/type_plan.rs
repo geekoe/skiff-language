@@ -624,6 +624,12 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                 }
             }
             LinkedTypeRef::ServiceSymbol { symbol } => {
+                if is_actor_declaration_symbol(ctx.program, symbol) {
+                    // The actor registry intrinsic pins the actor declaration
+                    // with a service symbol. An Actor handle is an opaque
+                    // runtime value, not a service record.
+                    return Ok(unknown_plan_for_type_ref(type_ref));
+                }
                 match program_service_symbol_type_addr(ctx.program, &ctx.current_addr.unit, symbol)?
                 {
                     Some(addr) => return Self::resolve_addr_or_bridge(type_ref, addr, ctx),
@@ -1819,6 +1825,23 @@ fn program_service_symbol_type_addr(
         return Ok(None);
     };
     program_local_type_addr(files, unit, symbol)
+}
+
+fn is_actor_declaration_symbol(
+    program: ProgramTypeView<'_>,
+    symbol: &ServiceSymbolRef,
+) -> bool {
+    program
+        .service_files
+        .iter()
+        .chain(
+            program
+                .packages
+                .iter()
+                .flat_map(|package| package.files()),
+        )
+        .flat_map(|file| file.actor_declarations.iter())
+        .any(|declaration| declaration.actor_type == *symbol)
 }
 
 fn program_local_type_addr(

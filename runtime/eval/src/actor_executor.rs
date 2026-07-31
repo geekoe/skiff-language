@@ -6,7 +6,8 @@ use skiff_runtime_boundary::{
     runtime_value::RuntimeValue,
 };
 use skiff_runtime_linked_program::{
-    ExecutableAddr, LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedTypeRef,
+    ExecutableAddr, LinkedActorCreateMethod, LinkedActorMethodImplementation,
+    LinkedActorPublicMethod, LinkedTypeRef,
 };
 use skiff_runtime_linked_type_plan::{
     PlanContext, ProgramTypeView, RuntimeTypePlan, RuntimeTypePlanLinkedExt,
@@ -73,7 +74,7 @@ impl<'a> ActorMethodExecutor<'a> {
         }
     }
 
-    pub fn activate(
+    pub async fn activate(
         &self,
         interpreter: &Interpreter,
         context: &ProgramExecutionContext<'_>,
@@ -88,14 +89,31 @@ impl<'a> ActorMethodExecutor<'a> {
             legacy_program = interpreter.program_projection()?;
             legacy_program.type_view()
         };
-        Ok(self
+        let (handle, materialized) = self
             .store
-            .activate(crate::actor_instance::ActorActivationRequest {
+            .activate_with_created(crate::actor_instance::ActorActivationRequest {
                 fence,
                 bootstrap_encoding_version,
                 bootstrap_payload,
                 program,
-            })?)
+            })?;
+        if !materialized {
+            return Ok(handle);
+        }
+        let declaration =
+            resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
+        validate_declaration_fence(declaration, handle.fence())?;
+        if let Some(create) = declaration.create.as_ref() {
+            if let Err(error) = self
+                .execute_create(interpreter, context, &handle, create, bootstrap_payload, program)
+                .await
+            {
+                self.store.discard_exact(&handle);
+                return Err(error);
+            }
+        }
+        self.store.mark_admitted(&self.authority, &handle)?;
+        Ok(handle)
     }
 
     pub async fn execute(
@@ -131,21 +149,13 @@ impl<'a> ActorMethodExecutor<'a> {
             &executable_addr,
             &mut heap,
         )?;
-        let field_context = PlanContext::from_type_view(program, &executable_addr);
-        let field_plans = declaration
-            .fields
-            .iter()
-            .map(|field| {
-                RuntimeTypePlan::from_linked(&field.ty, &field_context)
-                    .map(|plan| (field.name.clone(), plan))
-                    .map_err(|error| ActorMethodExecutorError::TypePlan(error.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let field_plans = actor_field_plans(declaration, program, &executable_addr)?;
         let frame = ActorExecutionFrame::new(
             self.store.clone(),
             request.instance.clone(),
             lease,
             field_plans,
+            false,
         );
         let context = request
             .context
@@ -173,6 +183,74 @@ impl<'a> ActorMethodExecutor<'a> {
         frame.finish(heap)?;
         Ok(payload)
     }
+
+    async fn execute_create(
+        &self,
+        interpreter: &Interpreter,
+        context: &ProgramExecutionContext<'_>,
+        handle: &ActorInstanceHandle,
+        create: &LinkedActorCreateMethod,
+        create_args_payload: &[u8],
+        program: ProgramTypeView<'_>,
+    ) -> Result<(), ActorMethodExecutorError> {
+        let executable_addr = method_executable_addr(handle, &create.implementation);
+        let mut lease = self
+            .store
+            .acquire_execution_for_activation(&self.authority, handle)
+            .await?;
+        let mut heap = lease.take_heap();
+        let args = decode_create_arguments(
+            create_args_payload,
+            create,
+            program,
+            &executable_addr,
+            &mut heap,
+        )?;
+        let declaration =
+            resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
+        let field_plans = actor_field_plans(declaration, program, &executable_addr)?;
+        let frame = ActorExecutionFrame::new(
+            self.store.clone(),
+            handle.clone(),
+            lease,
+            field_plans,
+            true,
+        );
+        let context = context
+            .clone()
+            .with_actor_execution_frame(frame.clone());
+        interpreter
+            .call_program_executable(
+                context,
+                &mut heap,
+                &crate::env::Env::new(),
+                &executable_addr,
+                &executable_addr,
+                &Default::default(),
+                args,
+            )
+            .await
+            .map_err(actor_execution_error)?;
+        frame.finish(heap)?;
+        Ok(())
+    }
+}
+
+fn actor_field_plans(
+    declaration: &skiff_runtime_linked_program::LinkedActorDeclaration,
+    program: ProgramTypeView<'_>,
+    executable_addr: &ExecutableAddr,
+) -> Result<Vec<(String, RuntimeTypePlan)>, ActorMethodExecutorError> {
+    let field_context = PlanContext::from_type_view(program, executable_addr);
+    declaration
+        .fields
+        .iter()
+        .map(|field| {
+            RuntimeTypePlan::from_linked(&field.ty, &field_context)
+                .map(|plan| (field.name.clone(), plan))
+                .map_err(|error| ActorMethodExecutorError::TypePlan(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn exact_method<'a>(
@@ -232,6 +310,43 @@ fn decode_arguments(
                 &plan,
                 BoundaryUse::NativeArg,
                 format!("Actor argument {index}"),
+            )
+            .from_wire_json(wire, heap)
+            .map_err(|error| ActorMethodExecutorError::ArgumentDecode {
+                index,
+                message: error.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn decode_create_arguments(
+    payload: &[u8],
+    create: &LinkedActorCreateMethod,
+    program: ProgramTypeView<'_>,
+    executable_addr: &ExecutableAddr,
+    heap: &mut RequestHeap,
+) -> Result<Vec<RuntimeValue>, ActorMethodExecutorError> {
+    let values: Vec<Value> = serde_json::from_slice(payload)
+        .map_err(|error| ActorMethodExecutorError::ArgumentsPayload(error.to_string()))?;
+    if values.len() != create.parameters.len() {
+        return Err(ActorMethodExecutorError::ArgumentCount {
+            expected: create.parameters.len(),
+            actual: values.len(),
+        });
+    }
+    let context = PlanContext::from_type_view(program, executable_addr);
+    values
+        .iter()
+        .zip(&create.parameters)
+        .enumerate()
+        .map(|(index, (wire, parameter))| {
+            let plan = RuntimeTypePlan::from_linked(&parameter.ty, &context)
+                .map_err(|error| ActorMethodExecutorError::TypePlan(error.to_string()))?;
+            RuntimeBoundaryCodec::new(
+                &plan,
+                BoundaryUse::NativeArg,
+                format!("Actor create argument {index}"),
             )
             .from_wire_json(wire, heap)
             .map_err(|error| ActorMethodExecutorError::ArgumentDecode {

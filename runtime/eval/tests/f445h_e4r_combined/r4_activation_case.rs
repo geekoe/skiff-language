@@ -7,9 +7,9 @@ use super::{
 mod tests {
     use super::*;
 
-    #[test]
-    fn f445h_e4r_combined_r4_activation_ready_error_keeps_actor_segment() {
-        let harness = ActorHarness::new(true);
+    #[tokio::test]
+    async fn f445h_e4r_combined_r4_activation_ready_error_keeps_actor_segment() {
+        let harness = ActorHarness::new(true).await;
         let blocking = Arc::new(BlockingConfigState::default());
         let (entered_tx, entered_rx) = mpsc::channel();
         let (activation_tx, activation_rx) = mpsc::channel();
@@ -79,12 +79,8 @@ mod tests {
             activation_rx.recv_timeout(Duration::from_millis(250)).ok();
         let activation_completed_first = activation_before_competitor.is_some();
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .expect("combined competitor runtime");
-        let competitor_result = runtime
-            .block_on(async { tokio::time::timeout(Duration::from_secs(1), &mut competitor).await })
+        let competitor_result = tokio::time::timeout(Duration::from_secs(1), &mut competitor)
+            .await
             .expect("competitor completes after the activation segment closes")
             .expect("competitor evaluator succeeds");
         assert_eq!(competitor_result, b"3");

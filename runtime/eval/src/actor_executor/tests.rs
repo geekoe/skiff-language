@@ -90,11 +90,23 @@ fn actor_file(return_type: LinkedTypeRef, may_suspend: bool) -> Arc<LinkedFileUn
                 name: "string".to_string(),
                 args: Vec::new(),
             },
-            fields: vec![LinkedActorField {
-                name: "count".to_string(),
-                ty: integer(),
-                encoding: ActorFieldEncodingIr::CanonicalValueV1,
-            }],
+            key_field: "id".to_string(),
+            fields: vec![
+                LinkedActorField {
+                    name: "id".to_string(),
+                    ty: LinkedTypeRef::Native {
+                        name: "string".to_string(),
+                        args: Vec::new(),
+                    },
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                LinkedActorField {
+                    name: "count".to_string(),
+                    ty: integer(),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: None,
             public_methods: vec![LinkedActorPublicMethod {
                 method_identity: method,
                 name: "set".to_string(),
@@ -199,7 +211,7 @@ fn fixture(return_type: LinkedTypeRef, may_suspend: bool) -> Fixture {
         actor_implementation_identity: implementation(),
         declaration_owner: owner(),
     };
-    let payload = br#"{"count":1}"#;
+    let payload = br#"[]"#;
     let handle = store
         .activate(ActorActivationRequest {
             fence,
@@ -208,6 +220,16 @@ fn fixture(return_type: LinkedTypeRef, may_suspend: bool) -> Fixture {
             program: program.projection().type_view(),
         })
         .unwrap();
+    let authority = ActorExecutorAuthority::new();
+    store
+        .with_fields_for_executor(&authority, &handle, |fields, _| {
+            fields[1].value = RuntimeValue::Number(1.0);
+            fields[1].assigned = true;
+        })
+        .unwrap();
+    store
+        .mark_admitted(&authority, &handle)
+        .expect("fixture instance must be admitted");
     Fixture {
         interpreter,
         store,
@@ -276,8 +298,16 @@ async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, RequestHeap
         file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
         executable: 0,
     };
-    let plan = RuntimeTypePlan::from_linked(
+    let count_plan = RuntimeTypePlan::from_linked(
         &integer(),
+        &PlanContext::from_type_view(program.type_view(), &addr),
+    )
+    .unwrap();
+    let id_plan = RuntimeTypePlan::from_linked(
+        &LinkedTypeRef::Native {
+            name: "string".to_string(),
+            args: Vec::new(),
+        },
         &PlanContext::from_type_view(program.type_view(), &addr),
     )
     .unwrap();
@@ -286,7 +316,11 @@ async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, RequestHeap
             fixture.store.clone(),
             fixture.handle.clone(),
             lease,
-            vec![("count".to_string(), plan)],
+            vec![
+                ("id".to_string(), id_plan),
+                ("count".to_string(), count_plan),
+            ],
+            false,
         ),
         heap,
     )
@@ -467,7 +501,7 @@ async fn stale_epoch_resume_fails_without_reinstalling_execution_lease() {
         .activate(ActorActivationRequest {
             fence: newer_fence,
             bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-            bootstrap_payload: br#"{"count":20}"#,
+            bootstrap_payload: br#"[]"#,
             program: program.type_view(),
         })
         .unwrap();
@@ -591,7 +625,7 @@ async fn executor_rechecks_abi_implementation_epoch_and_rejects_ordinary_context
         .activate(ActorActivationRequest {
             fence: newer_fence,
             bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-            bootstrap_payload: br#"{"count":20}"#,
+            bootstrap_payload: br#"[]"#,
             program: program.type_view(),
         })
         .unwrap();

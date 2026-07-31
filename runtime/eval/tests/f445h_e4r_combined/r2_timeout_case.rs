@@ -6,7 +6,7 @@ mod tests {
 
     #[tokio::test]
     async fn f445h_e4r_combined_r2_timeout_statement_and_expression_execute() {
-        let harness = ActorHarness::new(false);
+        let harness = ActorHarness::new(false).await;
         let result = harness
             .execute(
                 "timeout",

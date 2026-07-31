@@ -103,7 +103,8 @@ impl RuntimeHost {
             return false;
         };
         let executor = ActorMethodExecutor::new(self.actor_instances.store());
-        let Ok(handle) = executor.activate(
+        let Ok(handle) = executor
+            .activate(
             execution.interpreter(),
             &context,
             match control_instance_fence(control) {
@@ -112,7 +113,9 @@ impl RuntimeHost {
             },
             &transition.bootstrap_encoding_version,
             &bootstrap,
-        ) else {
+        )
+            .await
+        else {
             return false;
         };
         match self.track_actor_instance(router_session_id, handle) {
@@ -308,6 +311,7 @@ impl RuntimeHost {
                     .map(|value| value.payload.as_slice())
                     .unwrap_or(&[]),
             )
+            .await
             .map_err(|error| {
                 execution_error(
                     &header.invoke.invocation_id,

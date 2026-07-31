@@ -60,8 +60,12 @@ pub struct LinkedActorDeclaration {
     pub actor_implementation_identity: ActorImplementationIdentity,
     pub actor_name: String,
     pub actor_id_type: LinkedTypeRef,
+    #[serde(default)]
+    pub key_field: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<LinkedActorField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<LinkedActorCreateMethod>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public_methods: Vec<LinkedActorPublicMethod>,
     pub actor_runtime_abi_version: String,
@@ -92,6 +96,18 @@ pub struct LinkedActorPublicMethod {
     pub parameters: Vec<LinkedFunctionTypeParamIr>,
     pub return_type: LinkedTypeRef,
     pub may_suspend: bool,
+    pub implementation: LinkedActorMethodImplementation,
+}
+
+/// The platform-only initialization method of an Actor declaration. It never
+/// appears in the handle method namespace and is executed by the owner runtime
+/// during activation with the registry entry's saved creation inputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorCreateMethod {
+    pub method_identity: ActorMethodIdentity,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<LinkedFunctionTypeParamIr>,
     pub implementation: LinkedActorMethodImplementation,
 }
 

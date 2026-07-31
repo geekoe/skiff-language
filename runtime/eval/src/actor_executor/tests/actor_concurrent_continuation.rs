@@ -616,7 +616,7 @@ async fn actor_concurrent_continuation_rejects_replacement_and_stale_epoch_witho
         .activate(ActorActivationRequest {
             fence: newer_fence,
             bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-            bootstrap_payload: br#"{"count":20}"#,
+            bootstrap_payload: br#"[]"#,
             program: program.type_view(),
         })
         .unwrap();

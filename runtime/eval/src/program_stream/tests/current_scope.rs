@@ -313,7 +313,16 @@ impl ActorFrameFixture {
                 name: "string".to_string(),
                 args: Vec::new(),
             },
-            fields: Vec::new(),
+            key_field: "id".to_string(),
+            fields: vec![skiff_runtime_linked_program::LinkedActorField {
+                name: "id".to_string(),
+                ty: LinkedTypeRef::Native {
+                    name: "string".to_string(),
+                    args: Vec::new(),
+                },
+                encoding: skiff_artifact_model::ActorFieldEncodingIr::CanonicalValueV1,
+            }],
+            create: None,
             public_methods: Vec::new(),
             actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
         }];
@@ -352,10 +361,13 @@ impl ActorFrameFixture {
                     declaration_owner: owner,
                 },
                 bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: b"{}",
+                bootstrap_payload: b"[]",
                 program: program.projection().type_view(),
             })
             .expect("activate fieldless stream Actor");
+        store
+            .mark_admitted(&ActorExecutorAuthority::new(), &handle)
+            .expect("stream Actor must be admitted");
         Self { store, handle }
     }
 
@@ -368,7 +380,13 @@ impl ActorFrameFixture {
             .expect("acquire stream Actor");
         let heap = lease.take_heap();
         (
-            ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), lease, Vec::new()),
+            ActorExecutionFrame::new(
+                self.store.clone(),
+                self.handle.clone(),
+                lease,
+                Vec::new(),
+                false,
+            ),
             heap,
         )
     }

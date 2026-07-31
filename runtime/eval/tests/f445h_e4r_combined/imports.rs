@@ -17,11 +17,11 @@ pub(super) use bytes::Bytes;
 pub(super) use serde_json::Value;
 pub(super) use sha2::{Digest, Sha256};
 pub(super) use skiff_artifact_model::{
-    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, InstructionSourceSite,
-    PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, SyntheticInstructionSiteReason,
-    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
+    InstructionSourceSite, PackageArtifact, PackageBuildId, PackageImplementationLinks,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
+    PackageSchemaIndexRef, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    SyntheticInstructionSiteReason, ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 pub(super) use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -73,7 +73,7 @@ pub(super) use skiff_runtime_linked_program::{
     anonymous_type_decl, ActivationRelativeServiceCall, BlockIr, CallIr, ExecutableAddr,
     ExecutableKind, ExprRefIr, ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets,
     HydratedPackageCode, LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner,
-    LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedCallTarget,
+    LinkedActorField, LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedCallTarget,
     LinkedConcurrentLaneIr, LinkedConcurrentPlanIr, LinkedExecutable, LinkedExecutableBody,
     LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr, LinkedTypeDescriptor,
     LinkedTypeRef, LiteralIr, NativeTarget, PackageCodeSlotIndex, PackageSymbolKey,

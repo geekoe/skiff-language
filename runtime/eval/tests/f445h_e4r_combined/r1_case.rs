@@ -6,7 +6,7 @@ mod tests {
 
     #[tokio::test]
     async fn f445h_e4r_combined_r1_actual_pending_ready_pending_and_checkpoint_stay_runnable() {
-        let harness = ActorHarness::new(false);
+        let harness = ActorHarness::new(false).await;
         let control = HarnessControl::request();
         let units = Arc::clone(&control.instruction_units);
         let result = tokio::time::timeout(

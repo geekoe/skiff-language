@@ -92,7 +92,7 @@ fn actor_invocation(
 }
 
 #[test]
-fn all_four_actor_registry_routes_are_owned_external_waits() {
+fn actor_get_route_is_an_owned_external_wait() {
     let calls = Arc::new(AtomicUsize::new(0));
     let actor_ref = ActorRef::new(
         "service.test",
@@ -109,61 +109,32 @@ fn all_four_actor_registry_routes_are_owned_external_waits() {
         calls: Arc::clone(&calls),
     };
     let mut heap = RequestHeap::default();
-    for (target, arg_count, return_plan) in [
-        (
-            "std.actor.getOrCreate",
-            2,
-            scalar_plan("unknown", RuntimeTypeNode::Unknown),
-        ),
-        (
-            "std.actor.replace",
-            2,
-            scalar_plan("unknown", RuntimeTypeNode::Unknown),
-        ),
-        (
-            "std.actor.find",
-            1,
-            scalar_plan("unknown", RuntimeTypeNode::Unknown),
-        ),
-        (
-            "std.actor.remove",
-            1,
-            scalar_plan("bool", RuntimeTypeNode::Bool),
-        ),
-    ] {
-        let args = (0..arg_count)
-            .map(|index| RuntimeValue::Number((index + 1) as f64))
-            .collect();
-        let prepared = ActorNativeDispatch::prepare(
-            actor.clone(),
-            actor_invocation(target, arg_count, return_plan),
-            target.to_string(),
-            args,
+    let target = "std.actor.get";
+    let args = vec![
+        RuntimeValue::Number(1.0),
+        RuntimeValue::Number(2.0),
+    ];
+    let prepared = ActorNativeDispatch::prepare(
+        actor.clone(),
+        actor_invocation(target, 2, scalar_plan("unknown", RuntimeTypeNode::Unknown)),
+        target.to_string(),
+        args,
+        &mut heap,
+    )
+    .unwrap_or_else(|error| panic!("{target} should prepare: {error}"));
+    let PreparedNativeCall::ExternalWait(operation) = prepared else {
+        panic!("{target} is an external registry operation");
+    };
+    let (mut wait, finalize) = operation.into_parts();
+    let Poll::Ready(outcome) = poll_external_wait(&mut wait) else {
+        panic!("fixture is immediately ready");
+    };
+    let value = finalize
+        .finalize(
+            outcome.unwrap_or_else(|error| panic!("{target} wait should succeed: {error}")),
             &mut heap,
         )
-        .unwrap_or_else(|error| panic!("{target} should prepare: {error}"));
-        let PreparedNativeCall::ExternalWait(operation) = prepared else {
-            panic!("{target} is an external registry operation");
-        };
-        let (mut wait, finalize) = operation.into_parts();
-        let Poll::Ready(outcome) = poll_external_wait(&mut wait) else {
-            panic!("fixture is immediately ready");
-        };
-        let value = finalize
-            .finalize(
-                outcome.unwrap_or_else(|error| panic!("{target} wait should succeed: {error}")),
-                &mut heap,
-            )
-            .unwrap_or_else(|error| panic!("{target} should finalize: {error}"));
-        match target {
-            "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" => {
-                assert_eq!(value, RuntimeValue::ActorRef(actor_ref.clone()));
-            }
-            "std.actor.remove" => {
-                assert_eq!(value, RuntimeValue::Bool(true));
-            }
-            _ => unreachable!(),
-        }
-    }
-    assert_eq!(calls.load(Ordering::Acquire), 4);
+        .unwrap_or_else(|error| panic!("{target} should finalize: {error}"));
+    assert_eq!(value, RuntimeValue::ActorRef(actor_ref.clone()));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
 }

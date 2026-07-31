@@ -243,7 +243,13 @@ fn actor_file(include_activation: bool) -> Arc<LinkedFileUnit> {
             actor_implementation_identity: actor_implementation(),
             actor_name: "CombinedActor".to_string(),
             actor_id_type: string_type(),
-            fields: Vec::new(),
+            key_field: "id".to_string(),
+            fields: vec![skiff_runtime_linked_program::LinkedActorField {
+                name: "id".to_string(),
+                ty: string_type(),
+                encoding: skiff_artifact_model::ActorFieldEncodingIr::CanonicalValueV1,
+            }],
+            create: None,
             public_methods,
             actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
         }],
@@ -261,7 +267,7 @@ pub(super) struct ActorHarness {
 }
 
 impl ActorHarness {
-    pub(super) fn new(include_activation: bool) -> Self {
+    pub(super) async fn new(include_activation: bool) -> Self {
         let file = actor_file(include_activation);
         let (interpreter, _) = interpreter_for(Arc::clone(&file));
         let store = ActorInstanceStore::new();
@@ -291,13 +297,19 @@ impl ActorHarness {
             link_overlay: LinkOverlay::default(),
             types: RuntimeTypeContext::default(),
         };
-        let handle = store
-            .activate(ActorActivationRequest {
+        let handle = ActorMethodExecutor::new(&store)
+            .activate(
+                &interpreter,
+                &execution_context(
+                    &interpreter,
+                    HarnessControl::request(),
+                    HarnessConfig::ordinary(),
+                ),
                 fence,
-                bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: b"{}",
-                program: program.projection().type_view(),
-            })
+                ACTOR_BOOTSTRAP_ENCODING_V1,
+                b"[]",
+            )
+            .await
             .expect("combined Actor activation");
         Self {
             interpreter,

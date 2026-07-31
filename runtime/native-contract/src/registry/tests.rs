@@ -49,8 +49,7 @@ fn native_signature_registry_binding_keys_are_unique() {
 fn native_required_context_is_explicit_for_contextful_std_bindings() {
     let registry = NativeSignatureRegistry::builtins();
     let cases = [
-        ("std.actor.getOrCreate", NativeRequiredContext::Actor),
-        ("std.actor.replace", NativeRequiredContext::Actor),
+        ("std.actor.get", NativeRequiredContext::Actor),
         ("std.file.create", NativeRequiredContext::File),
         ("std.file.createFromStream", NativeRequiredContext::File),
         ("core.date.now", NativeRequiredContext::Time),

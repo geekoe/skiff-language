@@ -5,15 +5,17 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    ActorAbiIdentity, ActorImplementationIdentity, ACTOR_RUNTIME_ABI_VERSION_V1,
+    ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_runtime_capability_context::StreamPoll;
 use skiff_runtime_linked_program::{
     ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay,
-    LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedCallTarget, LinkedExprIr,
-    LinkedFileUnit, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceSymbolRef,
-    SourceMapDto, UnitAddr,
+    LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField, LinkedCallTarget,
+    LinkedExprIr, LinkedFileUnit, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext,
+    ServiceSymbolRef, SourceMapDto, UnitAddr,
 };
+use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::request_heap::RequestHeap;
 
 use super::*;
@@ -42,6 +44,7 @@ const ACTOR_FILE: &str = "file:f445h-e4r-activation-actor";
 struct ActorFrameFixture {
     store: ActorInstanceStore,
     handle: ActorInstanceHandle,
+    program: Arc<EvalRuntimeProgram>,
 }
 
 impl ActorFrameFixture {
@@ -70,7 +73,16 @@ impl ActorFrameFixture {
                     name: "string".to_string(),
                     args: Vec::new(),
                 },
-                fields: Vec::new(),
+                key_field: "id".to_string(),
+                fields: vec![LinkedActorField {
+                    name: "id".to_string(),
+                    ty: LinkedTypeRef::Native {
+                        name: "string".to_string(),
+                        args: Vec::new(),
+                    },
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                }],
+                create: None,
                 public_methods: Vec::new(),
                 actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
             }],
@@ -109,11 +121,18 @@ impl ActorFrameFixture {
                     declaration_owner: owner,
                 },
                 bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: b"{}",
+                bootstrap_payload: b"[]",
                 program: program.projection().type_view(),
             })
             .expect("activate fieldless Actor probe");
-        Self { store, handle }
+        store
+            .mark_admitted(&ActorExecutorAuthority::new(), &handle)
+            .expect("fieldless Actor probe must be admitted");
+        Self {
+            store,
+            handle,
+            program,
+        }
     }
 
     async fn frame(&self) -> (ActorExecutionFrame, RequestHeap) {
@@ -124,8 +143,30 @@ impl ActorFrameFixture {
             .await
             .expect("acquire Actor probe");
         let heap = lease.take_heap();
+        let addr = ExecutableAddr {
+            unit: UnitAddr::Service,
+            file: FileAddr::FileIrIdentity(ACTOR_FILE.to_string()),
+            executable: 0,
+        };
+        let id_plan = RuntimeTypePlan::from_linked(
+            &LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            },
+            &PlanContext::from_type_view(
+                self.program.projection().type_view(),
+                &addr,
+            ),
+        )
+        .expect("activation probe id plan");
         (
-            ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), lease, Vec::new()),
+            ActorExecutionFrame::new(
+                self.store.clone(),
+                self.handle.clone(),
+                lease,
+                vec![("id".to_string(), id_plan)],
+                false,
+            ),
             heap,
         )
     }

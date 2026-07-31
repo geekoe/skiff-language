@@ -325,11 +325,20 @@ impl CycleFixture {
         let actor_abi = ActorAbiInput {
             actor_name: "DocHub".to_string(),
             actor_id_type: TypeRefIr::builtin("string"),
-            fields: vec![ActorFieldIr {
-                name: "nextSeq".to_string(),
-                ty: TypeRefIr::builtin("number"),
-                encoding: ActorFieldEncodingIr::CanonicalValueV1,
-            }],
+            key_field: "id".to_string(),
+            fields: vec![
+                ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                ActorFieldIr {
+                    name: "nextSeq".to_string(),
+                    ty: TypeRefIr::builtin("number"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: None,
             public_methods: vec![ActorPublicMethodIr {
                 method_identity: method_identity.clone(),
                 name: "submit".to_string(),
@@ -347,6 +356,7 @@ impl CycleFixture {
             actor_implementation_identity: actor_implementation_identity.clone(),
             abi: actor_abi,
             method_implementations: BTreeMap::from([(method_identity.clone(), 1)]),
+            create_implementation: None,
         });
         shared_file.executables[0]
             .body

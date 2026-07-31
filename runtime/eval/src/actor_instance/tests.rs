@@ -4,9 +4,11 @@ use std::{
 };
 
 use serde_json::json;
+use skiff_artifact_model::ActorMethodIdentity;
 use skiff_runtime_linked_program::{
-    ExternalRefTable, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedActorField,
-    LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext, ServiceSymbolRef, SourceMapDto,
+    ExternalRefTable, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedActorCreateMethod,
+    LinkedActorField, LinkedFileUnit, RuntimeExecutionPackage, RuntimeTypeContext,
+    ServiceSymbolRef, SourceMapDto,
 };
 
 use super::*;
@@ -69,7 +71,13 @@ fn fixture() -> ProgramFixture {
                 actor_implementation_identity: implementation(),
                 actor_name: "DocHub".to_string(),
                 actor_id_type: builtin("string"),
+                key_field: "id".to_string(),
                 fields: vec![
+                    LinkedActorField {
+                        name: "id".to_string(),
+                        ty: builtin("string"),
+                        encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                    },
                     LinkedActorField {
                         name: "count".to_string(),
                         ty: builtin("integer"),
@@ -81,6 +89,23 @@ fn fixture() -> ProgramFixture {
                         encoding: ActorFieldEncodingIr::CanonicalValueV1,
                     },
                 ],
+                create: Some(LinkedActorCreateMethod {
+                    method_identity: ActorMethodIdentity::new("skiff-actor-method-v1:create"),
+                    parameters: vec![
+                        skiff_runtime_linked_program::LinkedFunctionTypeParamIr {
+                            name: "count".to_string(),
+                            ty: builtin("integer"),
+                        },
+                        skiff_runtime_linked_program::LinkedFunctionTypeParamIr {
+                            name: "title".to_string(),
+                            ty: builtin("string"),
+                        },
+                    ],
+                    implementation:
+                        skiff_runtime_linked_program::LinkedActorMethodImplementation::LocalExecutable {
+                            executable_index: 0,
+                        },
+                }),
                 public_methods: Vec::new(),
                 actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
             }],
@@ -130,7 +155,7 @@ fn fence(epoch: u64) -> ActorInstanceFence {
 }
 
 fn payload() -> Vec<u8> {
-    br#"{"count":7,"title":"first"}"#.to_vec()
+    br#"[7,"first"]"#.to_vec()
 }
 
 fn request<'a>(
@@ -146,6 +171,12 @@ fn request<'a>(
     }
 }
 
+fn admitted(store: &ActorInstanceStore, handle: &ActorInstanceHandle) {
+    store
+        .mark_admitted(&ActorExecutorAuthority::new(), handle)
+        .expect("test instance must be admitted");
+}
+
 fn fence_for_id(id: &str, epoch: u64) -> ActorInstanceFence {
     let mut result = fence(epoch);
     let value = serde_json::to_value(id).unwrap();
@@ -157,13 +188,13 @@ fn fence_for_id(id: &str, epoch: u64) -> ActorInstanceFence {
 }
 
 #[test]
-fn real_linked_declaration_materializes_field_frame_in_declaration_order() {
+fn real_linked_declaration_materializes_key_and_unassigned_frame_in_declaration_order() {
     let fixture = fixture();
     let bytes = payload();
     let store = ActorInstanceStore::new();
     let handle = store
         .activate(request(fixture.view(), fence(1), &bytes))
-        .expect("valid bootstrap materializes");
+        .expect("valid creation inputs materialize");
 
     let fields = store
         .with_fields_for_executor(&ActorExecutorAuthority::new(), &handle, |fields, _heap| {
@@ -174,12 +205,19 @@ fn real_linked_declaration_materializes_field_frame_in_declaration_order() {
         fields,
         vec![
             ActorFieldValue {
+                name: "id".to_string(),
+                value: RuntimeValue::String("doc-1".to_string()),
+                assigned: true,
+            },
+            ActorFieldValue {
                 name: "count".to_string(),
-                value: RuntimeValue::Number(7.0),
+                value: RuntimeValue::Null,
+                assigned: false,
             },
             ActorFieldValue {
                 name: "title".to_string(),
-                value: RuntimeValue::String("first".to_string()),
+                value: RuntimeValue::Null,
+                assigned: false,
             },
         ]
     );
@@ -224,9 +262,11 @@ async fn execution_lease_serializes_one_instance_but_not_another() {
     let first = store
         .activate(request(fixture.view(), fence_for_id("first", 1), &bytes))
         .unwrap();
+    admitted(&store, &first);
     let second = store
         .activate(request(fixture.view(), fence_for_id("second", 1), &bytes))
         .unwrap();
+    admitted(&store, &second);
     let authority = ActorExecutorAuthority::new();
 
     let first_lease = store.acquire_execution(&authority, &first).await.unwrap();
@@ -248,16 +288,17 @@ async fn failed_execution_snapshot_does_not_change_live_fields() {
     let handle = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
     let lease = store.acquire_execution(&authority, &handle).await.unwrap();
     let execution_fields = lease.fields();
-    execution_fields.lock().unwrap()[0].value = RuntimeValue::Number(99.0);
+    execution_fields.lock().unwrap()[1].value = RuntimeValue::Number(99.0);
     drop(lease);
 
     let count = store
         .with_fields_for_executor(&authority, &handle, |fields, _| fields[0].value.clone())
         .unwrap();
-    assert_eq!(count, RuntimeValue::Number(7.0));
+    assert_eq!(count, RuntimeValue::String("doc-1".to_string()));
 }
 
 #[tokio::test]
@@ -268,6 +309,7 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
     let handle = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
     let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
     let mut heap = lease.take_heap();
@@ -281,7 +323,13 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
         handle,
         lease,
         vec![("count".to_string(), plan)],
+        false,
     );
+    assert!(frame
+        .read_field("count")
+        .unwrap_err()
+        .to_string()
+        .contains("not assigned yet"));
     let error = frame
         .write_field(
             "count",
@@ -293,23 +341,30 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("Actor self field count"));
-    assert_eq!(
-        frame.read_field("count").unwrap(),
-        RuntimeValue::Number(7.0)
-    );
+    frame
+        .write_field(
+            "count",
+            &builtin("integer"),
+            fixture.view(),
+            &ExecutableAddr::service(0, 0),
+            &RuntimeValue::Number(7.0),
+            &mut heap,
+        )
+        .unwrap();
+    assert_eq!(frame.read_field("count").unwrap(), RuntimeValue::Number(7.0));
     frame.suspend(&heap).unwrap();
     assert!(frame.read_field("count").is_err());
 }
 
 #[test]
-fn malformed_field_shapes_and_types_fail_without_caching() {
+fn malformed_creation_inputs_fail_without_caching() {
     let fixture = fixture();
     let store = ActorInstanceStore::new();
     for malformed in [
-        br#"{"title":"missing"}"#.as_slice(),
-        br#"{"count":7,"extra":true,"title":"many"}"#.as_slice(),
-        br#"{"title":"wrong-order","count":7}"#.as_slice(),
-        br#"{"count":"wrong-type","title":"bad"}"#.as_slice(),
+        br#"{"count":7,"title":"first"}"#.as_slice(),
+        br#"[7]"#.as_slice(),
+        br#"[7,"first",true]"#.as_slice(),
+        br#"not json"#.as_slice(),
     ] {
         assert!(store
             .activate(request(fixture.view(), fence(1), malformed))
@@ -469,6 +524,7 @@ async fn upgrade_fence_allows_owned_sync_segment_to_commit_but_blocks_next_acqui
     let handle = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
     let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
     lease.fields().lock().unwrap()[0].value = RuntimeValue::Number(12.0);
@@ -496,6 +552,7 @@ async fn suspended_continuation_cannot_resume_after_upgrade_fence() {
     let handle = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
     let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
     let heap = lease.take_heap();
@@ -512,7 +569,7 @@ async fn suspended_continuation_cannot_resume_after_upgrade_fence() {
 fn upgrade_discard_is_exact_idempotent_and_new_epoch_rebuilds_from_bootstrap() {
     let fixture = fixture();
     let original_bootstrap = payload();
-    let replacement_bootstrap = br#"{"count":3,"title":"replacement"}"#.to_vec();
+    let replacement_bootstrap = br#"[3,"replacement"]"#.to_vec();
     let store = ActorInstanceStore::new();
     let old = store
         .activate(request(fixture.view(), fence(1), &original_bootstrap))
@@ -548,11 +605,16 @@ fn upgrade_discard_is_exact_idempotent_and_new_epoch_rebuilds_from_bootstrap() {
             fields.to_vec()
         })
         .unwrap();
-    assert_eq!(fields[0].value, RuntimeValue::Number(3.0));
     assert_eq!(
-        fields[1].value,
-        RuntimeValue::String("replacement".to_string())
+        fields[0],
+        ActorFieldValue {
+            name: "id".to_string(),
+            value: RuntimeValue::String("doc-1".to_string()),
+            assigned: true,
+        }
     );
+    assert!(!fields[1].assigned);
+    assert!(!fields[2].assigned);
 }
 
 #[test]
@@ -724,7 +786,7 @@ fn empty_logical_key_components_are_rejected() {
 }
 
 #[test]
-fn bootstrap_object_order_is_canonical_not_declaration_storage_order() {
+fn creation_inputs_must_be_a_json_array() {
     let fixture = fixture();
     let store = ActorInstanceStore::new();
     let mut object = serde_json::Map::new();
@@ -733,7 +795,7 @@ fn bootstrap_object_order_is_canonical_not_declaration_storage_order() {
     let non_canonical = serde_json::to_vec(&Value::Object(object)).unwrap();
     assert!(matches!(
         store.activate(request(fixture.view(), fence(1), &non_canonical)),
-        Err(ActorInstanceStoreError::BootstrapFieldShape { .. })
+        Err(ActorInstanceStoreError::CreationInputsNotArray)
     ));
 }
 

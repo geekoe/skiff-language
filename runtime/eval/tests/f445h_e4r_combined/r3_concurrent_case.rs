@@ -6,7 +6,7 @@ mod tests {
 
     #[tokio::test]
     async fn f445h_e4r_combined_r3_concurrent_statement_value_and_actor_execute() {
-        let harness = ActorHarness::new(false);
+        let harness = ActorHarness::new(false).await;
         let result = harness
             .execute(
                 "concurrent",

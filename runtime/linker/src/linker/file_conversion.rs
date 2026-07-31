@@ -60,6 +60,21 @@ fn validate_actor_self_fields(unit: &artifact::FileIrUnit) -> anyhow::Result<()>
                 );
             }
         }
+        if let Some(create) = declaration.create_implementation.as_ref() {
+            if actor_fields_by_executable
+                .insert(
+                    create.executable_index,
+                    (&declaration.abi.actor_name, fields.clone()),
+                )
+                .is_some()
+            {
+                anyhow::bail!(
+                    "File IR {} executable index {} is claimed by more than one Actor method",
+                    unit.file_ir_identity,
+                    create.executable_index
+                );
+            }
+        }
     }
 
     for (const_index, constant) in unit.constants.iter().enumerate() {
@@ -207,6 +222,42 @@ fn linked_actor_declarations(
                     actor_name
                 );
             }
+            let create = declaration
+                .create_implementation
+                .as_ref()
+                .map(|create| {
+                    let create_signature = declaration.abi.create.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "File IR {} actor {} has a create implementation without a create signature",
+                            unit.file_ir_identity,
+                            actor_name
+                        )
+                    })?;
+                    if create.executable_index as usize >= unit.executables.len() {
+                        anyhow::bail!(
+                            "File IR {} actor {} create implementation index {} is out of bounds",
+                            unit.file_ir_identity,
+                            actor_name,
+                            create.executable_index
+                        );
+                    }
+                    Ok(LinkedActorCreateMethod {
+                        method_identity: create.identity.clone(),
+                        parameters: create_signature
+                            .parameters
+                            .iter()
+                            .map(|parameter| LinkedFunctionTypeParamIr {
+                                name: parameter.name.clone(),
+                                ty: linked_type_ref(&parameter.ty),
+                            })
+                            .collect(),
+                        implementation:
+                            LinkedActorMethodImplementation::LocalExecutable {
+                                executable_index: create.executable_index,
+                            },
+                    })
+                })
+                .transpose()?;
             Ok(LinkedActorDeclaration {
                 actor_type: artifact::ServiceSymbolRef {
                     module_path: unit.module_path.clone(),
@@ -219,6 +270,7 @@ fn linked_actor_declarations(
                     .clone(),
                 actor_name: declaration.abi.actor_name.clone(),
                 actor_id_type: linked_type_ref(&declaration.abi.actor_id_type),
+                key_field: declaration.abi.key_field.clone(),
                 fields: declaration
                     .abi
                     .fields
@@ -229,6 +281,7 @@ fn linked_actor_declarations(
                         encoding: field.encoding,
                     })
                     .collect(),
+                create,
                 public_methods: declaration
                     .abi
                     .public_methods

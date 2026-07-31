@@ -33,12 +33,23 @@ pub(crate) struct ActorExecutionFrame {
     pub(super) suspension: Arc<ActorSuspensionState>,
 }
 
+struct ActorContinuationShared {
+    store: ActorInstanceStore,
+    handle: ActorInstanceHandle,
+    fence: ActorContinuationFence,
+    field_plans: Vec<(String, RuntimeTypePlan)>,
+    /// Activation frames execute `create` before the instance is admitted and
+    /// must re-acquire the scheduler through the activation path on resume.
+    activation: bool,
+}
+
 impl ActorExecutionFrame {
     pub(crate) fn new(
         store: ActorInstanceStore,
         handle: ActorInstanceHandle,
         lease: ActorInstanceExecutionLease,
         field_plans: Vec<(String, RuntimeTypePlan)>,
+        activation: bool,
     ) -> Self {
         Self {
             suspension: Arc::new(ActorSuspensionState {
@@ -49,6 +60,7 @@ impl ActorExecutionFrame {
                         instance_identity: lease.instance_identity(),
                     },
                     field_plans,
+                    activation,
                 }),
                 lease: Mutex::new(Some(lease)),
                 outer_gate: Mutex::new(None),
@@ -103,7 +115,15 @@ impl ActorExecutionFrame {
             .expect("actor execution fields lock poisoned")
             .iter()
             .find(|candidate| candidate.name == field)
-            .map(|candidate| candidate.value.clone())
+            .map(|candidate| {
+                if !candidate.assigned {
+                    return Err(RuntimeError::InvalidArtifact(format!(
+                        "Actor execution field {field} is not assigned yet"
+                    )));
+                }
+                Ok(candidate.value.clone())
+            })
+            .transpose()?
             .ok_or_else(|| {
                 RuntimeError::InvalidArtifact(format!(
                     "Actor execution field {field} is absent from the instance frame"
@@ -146,6 +166,7 @@ impl ActorExecutionFrame {
                 ))
             })?;
         target.value = checked;
+        target.assigned = true;
         Ok(())
     }
 
@@ -204,12 +225,33 @@ impl ActorExecutionFrame {
             .map_err(RuntimeError::from)?;
         let cancel = execution.cancellation_token();
         let authority = ActorExecutorAuthority::new();
-        let acquire = self
-            .suspension
-            .shared
-            .store
-            .acquire_execution(&authority, &self.suspension.shared.handle);
-        tokio::pin!(acquire);
+        let mut acquire: Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            ActorInstanceExecutionLease,
+                            ActorInstanceStoreError,
+                        >,
+                    > + Send,
+            >,
+        > = if self.suspension.shared.activation {
+            Box::pin(
+                self.suspension
+                    .shared
+                    .store
+                    .acquire_execution_for_activation(
+                        &authority,
+                        &self.suspension.shared.handle,
+                    ),
+            )
+        } else {
+            Box::pin(
+                self.suspension
+                    .shared
+                    .store
+                    .acquire_execution(&authority, &self.suspension.shared.handle),
+            )
+        };
         let mut budget_tick = tokio::time::interval(std::time::Duration::from_millis(5));
         let mut lease = loop {
             tokio::select! {
@@ -233,6 +275,12 @@ impl ActorExecutionFrame {
             let source_heap = lease.heap_mut();
             let mut fields = fields.lock().expect("actor execution fields lock poisoned");
             for field in fields.iter_mut() {
+                if !field.assigned {
+                    // `create` may suspend before assigning every non-key
+                    // field; unassigned fields stay continuation-local until
+                    // `create` writes them.
+                    continue;
+                }
                 let (_, plan) = self
                     .suspension
                     .shared
@@ -365,13 +413,6 @@ impl ActorExecutionFrame {
 /// Fields, token, scheduler guard, and local heap ownership never cross frames.
 struct ActorContinuationFence {
     instance_identity: usize,
-}
-
-struct ActorContinuationShared {
-    store: ActorInstanceStore,
-    handle: ActorInstanceHandle,
-    fence: ActorContinuationFence,
-    field_plans: Vec<(String, RuntimeTypePlan)>,
 }
 
 pub(super) struct ActorSuspensionState {

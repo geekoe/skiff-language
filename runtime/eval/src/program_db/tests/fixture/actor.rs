@@ -10,7 +10,10 @@ use sha2::{Digest, Sha256};
 use skiff_runtime_capability_context::DbCapabilityContext;
 use skiff_runtime_linked_program::ServiceMeta;
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
-use skiff_runtime_model::request_heap::{RequestHeap, RequestHeapLimits};
+use skiff_runtime_model::{
+    request_heap::{RequestHeap, RequestHeapLimits},
+    runtime_value::RuntimeValue,
+};
 
 use crate::{
     actor_executor::ActorExecutionFrame,
@@ -32,6 +35,7 @@ pub(in crate::program_db::tests) struct ActorFixture {
     pub store: ActorInstanceStore,
     pub handle: ActorInstanceHandle,
     field_plan: RuntimeTypePlan,
+    id_field_plan: RuntimeTypePlan,
 }
 
 impl ActorFixture {
@@ -60,19 +64,37 @@ impl ActorFixture {
                     declaration_owner: actor_owner(),
                 },
                 bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: br#"{"count":1}"#,
+                bootstrap_payload: br#"[]"#,
                 program: linked.program.projection().type_view(),
             })
             .expect("DB/Actor fixture activation");
+        store
+            .with_fields_for_executor(&ActorExecutorAuthority::new(), &handle, |fields, _| {
+                fields[1].value = RuntimeValue::Number(1.0);
+                fields[1].assigned = true;
+            })
+            .unwrap();
+        store
+            .mark_admitted(&ActorExecutorAuthority::new(), &handle)
+            .expect("DB/Actor fixture instance must be admitted");
         let field_plan = RuntimeTypePlan::from_linked(
             &integer_type(),
             &PlanContext::from_type_view(linked.program.projection().type_view(), &linked.addr),
         )
         .expect("DB/Actor fixture field plan");
+        let id_field_plan = RuntimeTypePlan::from_linked(
+            &skiff_runtime_linked_program::LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            },
+            &PlanContext::from_type_view(linked.program.projection().type_view(), &linked.addr),
+        )
+        .expect("DB/Actor fixture id field plan");
         Self {
             store,
             handle,
             field_plan,
+            id_field_plan,
         }
     }
 
@@ -91,7 +113,11 @@ impl ActorFixture {
                 self.store.clone(),
                 self.handle.clone(),
                 lease,
-                vec![("count".to_string(), self.field_plan.clone())],
+                vec![
+                    ("id".to_string(), self.id_field_plan.clone()),
+                    ("count".to_string(), self.field_plan.clone()),
+                ],
+                false,
             ),
             heap,
         )

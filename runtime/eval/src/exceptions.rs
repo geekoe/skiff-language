@@ -719,6 +719,8 @@ pub fn annotate_runtime_type_plan(
         | LinkedTypeRef::AnyInterface { .. }
         | LinkedTypeRef::Function { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => {}
+        LinkedTypeRef::ServiceSymbol { symbol }
+            if program_actor_declaration_symbol(program, symbol) => {}
         LinkedTypeRef::LocalType { .. }
         | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
@@ -731,6 +733,23 @@ pub fn annotate_runtime_type_plan(
         }
     }
     Ok(())
+}
+
+fn program_actor_declaration_symbol(
+    program: ProgramTypeView<'_>,
+    symbol: &skiff_runtime_linked_program::ServiceSymbolRef,
+) -> bool {
+    program
+        .service_files
+        .iter()
+        .chain(
+            program
+                .packages
+                .iter()
+                .flat_map(|package| package.files()),
+        )
+        .flat_map(|file| file.actor_declarations.iter())
+        .any(|declaration| declaration.actor_type == *symbol)
 }
 
 fn annotate_nominal_plan(
