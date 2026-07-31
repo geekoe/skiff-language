@@ -107,8 +107,9 @@ Runtime只会在当前service完整DB plan已经满足后接纳activation。新�
 定义会拒绝activation。
 
 违反已生效唯一索引的业务写入抛出
-`std.db.ConstraintError { target: "std.db", message: "database constraint violated", retryable: false }`。
-该错误不包含Mongo错误文本、database/collection/physical index name、冲突key或业务值。若Runtime为已有
+`std.db.ConstraintError { kind: "unique", packageId: string, collection: string }`。
+`collection`是源码声明的logical collection identity。该错误不包含Mongo错误文本、database、physical
+collection/index name、冲突key或业务值。若Runtime为已有
 数据创建唯一索引时发现重复值，candidate prepare同样以脱敏、不可重试的constraint分类失败；由于service
 request尚未开始，该失败不进入业务`catch`。
 

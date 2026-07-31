@@ -1,6 +1,6 @@
 # P5-F449 Service DB Index Admission And Migration
 
-状态：**READY / IMPLEMENTATION ASSIGNED / R449 PENDING**
+状态：**COMPLETE / R449 PASS**
 
 ## Authority
 
@@ -39,8 +39,8 @@ F446/R446不能在该缺口存在时收尾。F449硬切为：
   不保留兼容reader/writer或`null`占位；
 - 普通/unique index只携带canonical logical name、ordered field paths、direction和unique；
 - index path复用既有DB field policy，encrypted、recoverable-envelope内部、动态shape及不可查询path保持拒绝；
-- 新增公开`std.db.ConstraintError { target, message, retryable }`，unique duplicate固定输出
-  `target: "std.db"`、`message: "database constraint violated"`、`retryable: false`；
+- 新增公开`std.db.ConstraintError { kind, packageId, collection }`，unique duplicate固定输出
+  `kind: "unique"`；`packageId`与`collection`只表示源码声明的logical owner/identity；
 - duplicate mapping不得包含Mongo error/code、database、collection、physical index、key pattern/value或
   原始document。
 
@@ -110,3 +110,22 @@ collection name，也不能把历史chat schema强行升级成当前shape。
 - 不迁移历史聊天运行数据，不删除旧库/备份；
 - 不改变service DB identity、collection identity、DB query surface或activation CAS owner；
 - 不push，不操作production远端数据。
+
+## Result
+
+F449在Skiff commit `3eb12ee5af04cae484457f1ce5a6138a400074bc` / tree
+`41b86018ee5bfdf1cb301f4b4c8ff712e65ac3dc`完成并快进合入`main`：
+
+- compiler、runtime、foundation、rust-quality与checks selector全部PASS；
+- service DB migration-tool测试`140 passed / 0 failed / 4 ignored`，真实filtered receipt测试`1/1`；
+- File IR硬切v11，当前stable active closure为9个Package、171个File IR，全部v11，v10为0；
+- stable迁移提交13个保留mapping：迁移检查点376条记录、39个collection、94个普通/unique secondary
+  index，其中14个unique；临时staging collection为0；
+- 4个Agine provider credential与1个Relay ChatGPT Plan credential的全部加密字段重写为v2；
+- 29个迁移ToolProvider在迁移检查点全部offline，并清除旧actor/connection/presence runtime字段；
+- 旧数据库、旧/新库迁移前archive、activation hard-cut archive和旧artifact root均保留。
+
+stable随后继续运行并产生新记录，因此376是迁移完成时的精确检查点，不是此后永不变化的live count。最终本机
+收据在ignored目录
+`.skiff-instance/logs/f449-final-closure-20260731T001927Z/`，目录`0700`、文件`0600`，`SHA256SUMS`
+复核通过；收据不包含secret或token。

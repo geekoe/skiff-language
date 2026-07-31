@@ -1,6 +1,14 @@
 # Phase 05：Ecosystem Cutover
 
-状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01/F01/D02/F02已收敛，
+状态：**PASS / COMPLETE**。2026-07-31 terminal closure在Skiff
+`6dfb38efce31d405390f238beed888381c5e3991`、Internals
+`1e747618f26aa850d9fa10cba871e748d8e10609`和skiff-packages
+`db4ddd9e05936b6fa8beff42ed242c8a73f08de3`复核：三仓clean `main`、未push；R447、R448、R449与R446均
+PASS；stable generation 12 healthy；DeepSeek chat smoke及双Host真实验收PASS。完整结果见
+[`P5-F446-closure-result.md`](tasks/P5-F446-closure-result.md)与
+[`P5-R446-unified-config-service-db-acceptance.md`](tasks/P5-R446-unified-config-service-db-acceptance.md)。
+
+以下为历史执行记录。P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01/F01/D02/F02已收敛，
 P5-R01 在 `c168b1dc` / tree `961998ac` 独立复验 PASS，Wave 2 consumer已解锁
 
 2026-07-28修正：I7真实组合assembly暴露旧Host全局selector设计错误。D0先冻结service-scoped ingress，
@@ -48,7 +56,7 @@ last-known-good、bounded retry与health-derived activation CAS；不扩到stabl
 generation-pinned原子rebind：provider/callback是仅有入口，provider获得自己的
 config/DB/file/actor/spawn/WebSocket/telemetry与fresh heap，原request保留deadline、内部停止、
 trace/lifecycle/stream/test等事实；missing exact context不查latest，escaping stream继续pin旧generation。
-R448 PASS前R446保持pending；R448 PASS也不替代下述R449前置。
+该项最终由R448 PASS关闭；R448也不替代下述R449前置。
 
 2026-07-30 service DB index复核：File IR虽然已有普通/unique index metadata，但Runtime没有创建或验证
 Mongo index，现有service DB实际只有`_id_`，unique约束没有生效；partial index还错误地把raw source AST
@@ -57,7 +65,7 @@ Mongo index，现有service DB实际只有`_id_`，unique约束没有生效；pa
 prepare/cold recovery、prepared ACK前协调同service全部version的exact index plan：missing additive create，
 exact pass，managed changed/removed fail closed，unmanaged与`_id_`保留；partial index改为compiler拒绝。
 本机迁移只保留Agent定义/设置及credential/key/upstream，聊天/session/run/tool/interaction历史不迁移，
-旧库与备份保留。R449 PASS前F448、F446与R446继续保持pending。
+旧库与备份保留。该项最终由R449 PASS关闭，并进入R446 terminal验收。
 
 ## 输入
 

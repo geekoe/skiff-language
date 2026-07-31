@@ -1,10 +1,10 @@
-# P5-F446 Current Closure Status
+# P5-F446 Closure Result
 
-状态：**DRAFT / IMPLEMENTATION IN PROGRESS / R446 PENDING**
+状态：**COMPLETE / R446 PASS**
 
-本文是F446当前实现收口记录，不是独立验收结果。只有
+本文记录F446实现收口；独立terminal结论仍由
 [`P5-R446-unified-config-service-db-acceptance.md`](P5-R446-unified-config-service-db-acceptance.md)
-可以给出最终`PASS`或`FAIL`。
+给出，当前结论为`PASS`。
 
 ## Authority
 
@@ -24,9 +24,9 @@
   [`db.md`](../../../../reference/db.md)、
   [`runtime.md`](../../../../reference/runtime.md)
 
-## Current Integrated Checkpoints
+## Historical Integrated Checkpoints
 
-本次复核基线是Skiff main `3344a5350a2ab593567ea38cbf5add4e9b8a1b8e`。该基线已经包含：
+2026-07-30中间复核基线是Skiff main `3344a5350a2ab593567ea38cbf5add4e9b8a1b8e`。该基线已经包含：
 
 - `b54495e2`：从共享artifact schema删除deployment config/state binding；
 - `29737432`：durable RuntimeConfigSnapshot protocol；
@@ -94,7 +94,31 @@ combined gate、跨仓库证据或R446。
    - R447先验收managed watch，R448独立验收activation owner switch，R449独立验收index/migration，再交由
      全新只读R446 owner执行terminal验收。
 
-主线程已经为上述实现缺口派发代码任务。它们完成、合流并通过R447/R448/R449前，本文件不得改为`PASS`。
+上述实现缺口已经完成、合流并分别通过R447、R448与R449。
+
+## Terminal Closure
+
+最终本机三仓状态：
+
+- Skiff `6dfb38efce31d405390f238beed888381c5e3991` / tree
+  `060162d25176eba73dc60471f5dcaf3f1cea71f0`；
+- Internals `1e747618f26aa850d9fa10cba871e748d8e10609` / tree
+  `33b60d604b7011e0b16ea63238afef8fabee87f6`；
+- skiff-packages `db4ddd9e05936b6fa8beff42ed242c8a73f08de3` / tree
+  `35f3102613bf0988c1c19adc53bfe1a7e2ef3b0f`。
+
+三个仓库都在`main`、clean、未push；各自只有主worktree，没有已合并临时branch。F446 exact combined
+checkpoint、F447 watch、F448 owner rebind与F449 index/migration的独立矩阵均PASS。
+
+stable当前generation 12，assembly
+`skiff-runtime-assembly-v3:sha256:bdeb7bfd7f8cebd5ef315308a150bba07e1b3fabaad071e63b2de7958a4beb3a`
+与snapshot `skiff-runtime-config-snapshot-v1:5692b19db3d243c6bc6a81f0b004ade2`精确配对；
+Router/Runtime healthy，pending activation为null，in-flight为0。active closure的171个File IR全部为v11。
+Mongo `rs0`是writable primary，94个受管secondary index与14个unique index均存在；迁移检查点376条保留
+记录的v2加密与ToolProvider清理收据通过，旧库与备份保留。
+
+Agine用`aihub/deepseek-v4-flash`完成真实chat smoke及双Host验收。历史Codex OAuth refresh token被上游
+`refresh_unauthorized`/HTTP 401拒绝是独立账号状态，不影响DeepSeek替代验收结论。
 
 ## Closed Secret Source Decision
 

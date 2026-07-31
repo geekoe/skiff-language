@@ -1,3 +1,5 @@
+PASS
+
 # P5-R446 Unified Config And Service DB Acceptance
 
 ## Role
@@ -38,3 +40,31 @@
 
 第一行输出`PASS`或`FAIL`。FAIL必须指出唯一owner、代码证据、失效gate与最小修复边界；不得在验收worktree
 直接修复。
+
+## Result Record
+
+terminal审计锚定：
+
+- Skiff `6dfb38efce31d405390f238beed888381c5e3991` / tree
+  `060162d25176eba73dc60471f5dcaf3f1cea71f0`；
+- Internals `1e747618f26aa850d9fa10cba871e748d8e10609` / tree
+  `33b60d604b7011e0b16ea63238afef8fabee87f6`；
+- skiff-packages `db4ddd9e05936b6fa8beff42ed242c8a73f08de3` / tree
+  `35f3102613bf0988c1c19adc53bfe1a7e2ef3b0f`。
+
+三仓均为clean `main`且未push。昂贵验证由各exact实现owner执行，没有在terminal审计中机械重跑：
+
+- F446 combined checkpoint覆盖artifact、compiler、snapshot、activation、service DB、test-runner、Host、
+  Router与Node链路；
+- R447 watch/registry、R448 activation owner rebind、R449 index/migration分别PASS；
+- F449最终candidate的foundation、compiler、runtime、rust-quality、checks及test-runner完整selector PASS；
+- stable generation 12 active pair healthy，pending为null，单Runtime replica connected/healthy且in-flight为0；
+- 171个active File IR全部v11，94个Mongo managed secondary index与14个unique index存在；
+- 迁移检查点376条记录，5个credential record的所有目标加密字段均为v2；旧库、archive及旧artifact root保留；
+- POSIX secret/snapshot/receipt权限与SHA manifest复核通过；
+- Agine DeepSeek chat smoke exit 0，双Host Playwright `1 passed`且exit 0。
+
+当前live数据库在验收后已有新运行记录，因此不要求总数仍等于迁移检查点376；索引、v2密文和保留数据不变量
+仍成立。旧Codex OAuth refresh token的上游401属于账号状态，未被误写为runtime或迁移失败。
+
+结论：Blocking Checks全部关闭，R446 **PASS**。

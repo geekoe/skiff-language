@@ -1,6 +1,10 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
-状态：active；P5-R01 已在 `c168b1dc` / tree `961998ac` PASS。T02/T03/T04已合流；T05 candidate
+状态：**PASS / COMPLETE**。terminal exact HEAD、stable、迁移及真实Agine验收见
+[`P5-F446-closure-result.md`](tasks/P5-F446-closure-result.md)与
+[`P5-R446-unified-config-service-db-acceptance.md`](tasks/P5-R446-unified-config-service-db-acceptance.md)。
+
+以下为历史执行流水。P5-R01 已在 `c168b1dc` / tree `961998ac` PASS。T02/T03/T04已合流；T05 candidate
 `f8ad689`接收审查FAIL，D04已冻结repair设计、F04在途；
 R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner断链。F03A已合流，R02A在
 `a7566bb`首次FAIL后完成D03/F03A1；第二次在`5715497`因raw Unicode/opaque number/default normalization

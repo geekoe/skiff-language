@@ -1,3 +1,5 @@
+PASS
+
 # P5-R447 Managed Dev Watch Acceptance
 
 ## Authority
@@ -41,3 +43,17 @@
 - `git diff --check`通过。
 
 最终记录必须锚定exact commit/tree与实际命令结果；不能用本设计文档或历史审阅代替实现证据。
+
+## Result Record
+
+验收锚定commit `8405a206a2f79dc8a70b36bdfec334a9fa293f9f` / tree
+`487a05f452e5204da1900ed48b95801e8fb52a1d`，后续canonical YAML parser收口至
+`206e8c25adbece46de0a3ab204eff00bbe853c95` / tree
+`85ddefa3430522af8116be81925a30c3ebbf98cd`。
+
+managed watch/registry Node组合测试`94/94`，最终三文件聚焦`38/38`，registry parser`25/25`；canonical
+empty assembly/snapshot的compiler、deployment、loader和Host聚焦测试全部PASS。脚本语法、package-store
+discovery、command policy、Rust格式与diff检查PASS，registry v1和固定generation 0生产残留为0。
+
+stable最终运行generation 12；watch、Router和Runtime均在线，active pair一致，pending activation为null。
+结论：R447 **PASS**。
