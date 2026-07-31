@@ -4,7 +4,9 @@ use skiff_artifact_model::{
     builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr,
     NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
-use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
+use skiff_compiler_core::type_ref::{
+    normalize_union, substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
+};
 
 use crate::{
     contract_type_resolution::substitute_package_type,
@@ -4930,14 +4932,15 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedType
             for item in items {
                 field_types.push(record_field_type_from_ir(item, field)?.ir);
             }
-            Some(resolved_type_from_ir(&union_type_ir(field_types)))
+            Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
+                items: field_types,
+            })))
         }
         TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
             match field {
-                "tag" => Some(resolved_type_from_ir(&union_type_ir(vec![
-                    literal_string_type("ok"),
-                    literal_string_type("err"),
-                ]))),
+                "tag" => Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
+                    items: vec![literal_string_type("ok"), literal_string_type("err")],
+                }))),
                 _ => None,
             }
         }
@@ -5129,8 +5132,9 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
                 .filter(|item| !type_ir_is_null(item))
                 .cloned()
                 .collect::<Vec<_>>();
-            (remaining.len() != items.len())
-                .then(|| resolved_type_from_ir(&union_type_ir(remaining)))
+            (remaining.len() != items.len()).then(|| {
+                resolved_type_from_ir(&normalize_union(TypeRefIr::Union { items: remaining }))
+            })
         }
         _ => None,
     }
@@ -5148,7 +5152,8 @@ fn narrow_type_by_tag(
             record_tag_literal(branch).is_some_and(|value| (value == tag_value) == include_matching)
         })
         .collect::<Vec<_>>();
-    (!selected.is_empty()).then(|| resolved_type_from_ir(&union_type_ir(selected)))
+    (!selected.is_empty())
+        .then(|| resolved_type_from_ir(&normalize_union(TypeRefIr::Union { items: selected })))
 }
 
 fn discriminated_record_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
@@ -5196,15 +5201,6 @@ fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
     ResolvedTypeRef {
         ir: ty.clone(),
         source_text: type_ref_debug_text(ty),
-    }
-}
-
-fn union_type_ir(mut items: Vec<TypeRefIr>) -> TypeRefIr {
-    items.sort_by_key(type_ref_debug_text);
-    items.dedup();
-    match items.as_slice() {
-        [only] => only.clone(),
-        _ => TypeRefIr::Union { items },
     }
 }
 

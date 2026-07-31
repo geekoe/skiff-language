@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 use skiff_artifact_model::{FunctionTypeParamIr, LiteralIr};
-use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
+use skiff_compiler_core::type_ref::{normalize_union, substitute_type_params_in_type_ref_ref};
 
 #[derive(Clone, Copy)]
 enum PackageMethodTypeOwner {
@@ -1715,12 +1715,12 @@ impl TypeResolutionModel {
                         .collect(),
                 },
             },
-            TypeRefIr::Union { items } => union_type_ir(
-                items
+            TypeRefIr::Union { items } => normalize_union(TypeRefIr::Union {
+                items: items
                     .iter()
                     .map(|item| self.transparent_alias_ir(item, context))
                     .collect(),
-            ),
+            }),
             TypeRefIr::Record { fields } => TypeRefIr::Record {
                 fields: fields
                     .iter()
