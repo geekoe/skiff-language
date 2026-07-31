@@ -67,6 +67,7 @@ use crate::{
 
 mod evaluator_checkpoint;
 mod evaluator_timeout;
+mod tail_call_execution;
 
 fn site() -> InstructionSourceSite {
     InstructionSourceSite::Synthetic {

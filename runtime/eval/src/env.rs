@@ -5,8 +5,9 @@ use super::capabilities::{
 use super::type_descriptor::TypeSubstitutions;
 use crate::error::{Result, RuntimeError};
 use serde_json::Value;
+use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_capability_context::SupervisedStreamConsumptionChild;
-use skiff_runtime_linked_program::LinkedExecutable;
+use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable};
 use skiff_runtime_model::{runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan};
 
 mod concurrent_plan;
@@ -41,13 +42,23 @@ use slot_store::{program_parameter_slot, program_slot_layout, RuntimeSlotLayout}
 pub use slot_store::{SlotDebugBinding, SlotStore};
 
 #[derive(Clone, Debug)]
+#[allow(private_interfaces)]
 pub enum Flow {
     Continue,
     Return(RuntimeValueCarrier),
+    TailCall(PreparedTailCall),
     Break,
     LoopContinue,
     Parked,
     ContinueConsumer,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedTailCall {
+    pub(crate) target: ExecutableAddr,
+    pub(crate) env: Env,
+    pub(crate) return_plan: Option<RuntimeTypePlan>,
+    pub(crate) tail_site: InstructionSourceSite,
 }
 
 #[derive(Clone, Debug)]
