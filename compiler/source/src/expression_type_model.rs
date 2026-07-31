@@ -245,12 +245,21 @@ struct OwnerChecker<'a> {
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
     transparent_value_targets: BTreeMap<ExpressionKey, ExpressionKey>,
     test_effect_declarations: BTreeMap<ExactTestEffectTarget, String>,
-    facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
+    outputs: &'a mut CheckOutputs,
+}
+
+/// Mutable output collections accumulated while checking one compilation's
+/// source files. `ExpressionTypeModel::build` creates one `CheckOutputs` and
+/// threads it through every owner checker; the finished collections are then
+/// moved into the returned model.
+#[derive(Default)]
+struct CheckOutputs {
+    facts: BTreeMap<ExpressionKey, ExpressionTypeFact>,
+    constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
-        &'a mut BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
-    object_materialization: &'a mut ObjectMaterializationState,
-    diagnostics: &'a mut Vec<String>,
+        BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
+    object_materialization: ObjectMaterializationState,
+    diagnostics: Vec<String>,
 }
 
 impl ExpressionTypeModel {
@@ -262,11 +271,7 @@ impl ExpressionTypeModel {
         dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
-        let mut facts = BTreeMap::new();
-        let mut constructor_validations = BTreeMap::new();
-        let mut representation_constructor_validations = BTreeMap::new();
-        let mut object_materialization = ObjectMaterializationState::default();
-        let mut diagnostics = Vec::new();
+        let mut outputs = CheckOutputs::default();
         for parsed in parsed_sources {
             check_source(
                 parsed.source().module_path.as_str(),
@@ -276,25 +281,28 @@ impl ExpressionTypeModel {
                 publication_db_metadata,
                 &callable_signatures,
                 dependency_analysis,
-                &mut facts,
-                &mut constructor_validations,
-                &mut representation_constructor_validations,
-                &mut object_materialization,
-                &mut diagnostics,
+                &mut outputs,
             );
         }
 
-        for (key, source) in &object_materialization.sources {
-            if object_materialization.targeted.contains(key) {
+        for (key, source) in &outputs.object_materialization.sources {
+            if outputs.object_materialization.targeted.contains(key) {
                 continue;
             }
-            diagnostics.push(format!(
+            outputs.diagnostics.push(format!(
                 "{}: object literal at {} requires an explicit target type",
                 key.module_path(),
                 span_label(source.span)
             ));
         }
 
+        let CheckOutputs {
+            facts,
+            constructor_validations,
+            representation_constructor_validations,
+            object_materialization,
+            diagnostics,
+        } = outputs;
         let model = Self {
             facts,
             constructor_validations,
@@ -345,14 +353,7 @@ fn check_source(
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
     dependency_analysis: Option<&SourceDependencyAnalysisInput>,
-    facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
-    representation_constructor_validations: &mut BTreeMap<
-        ExpressionKey,
-        RepresentationConstructorValidation,
-    >,
-    object_materialization: &mut ObjectMaterializationState,
-    diagnostics: &mut Vec<String>,
+    outputs: &mut CheckOutputs,
 ) {
     let const_env = const_type_env(
         ast,
@@ -375,11 +376,7 @@ fn check_source(
             callable_signatures,
             dependency_analysis,
             &const_env,
-            facts,
-            constructor_validations,
-            representation_constructor_validations,
-            object_materialization,
-            diagnostics,
+            outputs,
         );
     }
 
@@ -404,11 +401,7 @@ fn check_source(
                 callable_signatures,
                 dependency_analysis,
                 &const_env,
-                facts,
-                constructor_validations,
-                representation_constructor_validations,
-                object_materialization,
-                diagnostics,
+                outputs,
             );
         }
     }
@@ -420,7 +413,7 @@ fn check_source(
         {
             Some(Ok(projected)) => (Some(projected.clone()), false),
             Some(Err(error)) => {
-                diagnostics.push(format!(
+                outputs.diagnostics.push(format!(
                     "{module_path}: const `{}` annotation exact source type projection failed: {error}",
                     constant.name
                 ));
@@ -440,11 +433,7 @@ fn check_source(
             callable_signatures,
             dependency_analysis,
             None,
-            facts,
-            constructor_validations,
-            representation_constructor_validations,
-            object_materialization,
-            diagnostics,
+            outputs,
         );
         let value_key = checker.peek_key();
         let actual = checker.check_expr(&constant.value);
@@ -475,11 +464,7 @@ fn check_source(
             callable_signatures,
             dependency_analysis,
             None,
-            facts,
-            constructor_validations,
-            representation_constructor_validations,
-            object_materialization,
-            diagnostics,
+            outputs,
         );
         checker.check_block(&test.body);
     }
@@ -504,11 +489,7 @@ fn check_source(
                     callable_signatures,
                     dependency_analysis,
                     None,
-                    facts,
-                    constructor_validations,
-                    representation_constructor_validations,
-                    object_materialization,
-                    diagnostics,
+                    outputs,
                 );
                 checker.check_condition(where_expr, "db index where condition");
             }
@@ -580,14 +561,7 @@ fn check_function_owner(
     callable_signatures: &BTreeMap<String, CallableSignature>,
     dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     const_env: &ExactTypeEnvironment,
-    facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
-    representation_constructor_validations: &mut BTreeMap<
-        ExpressionKey,
-        RepresentationConstructorValidation,
-    >,
-    object_materialization: &mut ObjectMaterializationState,
-    diagnostics: &mut Vec<String>,
+    outputs: &mut CheckOutputs,
 ) {
     let type_params = inherited_type_params
         .iter()
@@ -641,11 +615,7 @@ fn check_function_owner(
         callable_signatures,
         dependency_analysis,
         Some(function.return_type.clone()),
-        facts,
-        constructor_validations,
-        representation_constructor_validations,
-        object_materialization,
-        diagnostics,
+        outputs,
     );
     checker.check_block(&function.body);
 }
@@ -665,14 +635,7 @@ impl<'a> OwnerChecker<'a> {
         callable_signatures: &'a BTreeMap<String, CallableSignature>,
         dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
         return_type: Option<TypeRef>,
-        facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-        constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
-        representation_constructor_validations: &'a mut BTreeMap<
-            ExpressionKey,
-            RepresentationConstructorValidation,
-        >,
-        object_materialization: &'a mut ObjectMaterializationState,
-        diagnostics: &'a mut Vec<String>,
+        outputs: &'a mut CheckOutputs,
     ) -> Self {
         let stream_chunk = return_type.as_ref().and_then(|return_type| {
             type_resolution
@@ -687,7 +650,7 @@ impl<'a> OwnerChecker<'a> {
             dependency_analysis,
             &type_context,
         );
-        diagnostics.extend(
+        outputs.diagnostics.extend(
             projection_diagnostics
                 .into_iter()
                 .map(|diagnostic| format!("{module_path}: {diagnostic}")),
@@ -709,11 +672,7 @@ impl<'a> OwnerChecker<'a> {
             path_refinements: BTreeMap::new(),
             transparent_value_targets: BTreeMap::new(),
             test_effect_declarations: BTreeMap::new(),
-            facts,
-            constructor_validations,
-            representation_constructor_validations,
-            object_materialization,
-            diagnostics,
+            outputs,
         }
     }
 
@@ -755,7 +714,7 @@ impl<'a> OwnerChecker<'a> {
                 self.next_key();
                 self.next_key();
                 let Some(dependencies) = self.dependency_analysis else {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: compiler test effect `{target}` has no dependency analysis",
                         self.module_path
                     ));
@@ -768,7 +727,7 @@ impl<'a> OwnerChecker<'a> {
                         ..
                     } => {
                         let Some(signature) = callable.signature().cloned() else {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: compiler test effect target `{target}` has no exact signature",
                                 self.module_path
                             ));
@@ -801,7 +760,7 @@ impl<'a> OwnerChecker<'a> {
                             skiff_artifact_model::BoundaryStreamContract::Unsupported {
                                 ..
                             } => {
-                                self.diagnostics.push(format!(
+                                self.outputs.diagnostics.push(format!(
                                     "{}: compiler test effect target `{target}` has an unsupported stream contract",
                                     self.module_path
                                 ));
@@ -831,7 +790,7 @@ impl<'a> OwnerChecker<'a> {
                         )
                     }
                     _ => {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: unresolved compiler test effect target `{target}`",
                             self.module_path
                         ));
@@ -843,7 +802,7 @@ impl<'a> OwnerChecker<'a> {
                         .test_effect_declarations
                         .insert(exact_target.clone(), target.clone())
                     {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: test effect targets `{previous}` and `{target}` resolve to the same exact target {exact_target:?}; use one explicit sequence",
                             self.module_path
                         ));
@@ -851,7 +810,7 @@ impl<'a> OwnerChecker<'a> {
                 }
                 if let Some(expect) = expect {
                     let [parameter] = signature.parameters.as_slice() else {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: test effect `{target}` expect requires exactly one parameter",
                             self.module_path
                         ));
@@ -861,7 +820,7 @@ impl<'a> OwnerChecker<'a> {
                 }
                 if let Some(step_expect) = step_expect {
                     let [parameter] = signature.parameters.as_slice() else {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: test effect `{target}` sequence step expect requires exactly one parameter",
                             self.module_path
                         ));
@@ -873,7 +832,7 @@ impl<'a> OwnerChecker<'a> {
                     crate::shared::ast::TestEffectStepOutcome::Respond { value } => {
                         self.check_test_effect_value(value, &signature.return_type, "respond");
                         if direct_stream_item_type(&signature.return_type).is_some() {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: test effect `{target}` cannot use respond for a direct Stream<T> target; use stream",
                                 self.module_path
                             ));
@@ -884,7 +843,7 @@ impl<'a> OwnerChecker<'a> {
                     }
                     crate::shared::ast::TestEffectStepOutcome::Stream { events } => {
                         let Some(item) = direct_stream_item_type(&signature.return_type) else {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: test effect `{target}` stream requires Stream<T> return",
                                 self.module_path
                             ));
@@ -923,7 +882,7 @@ impl<'a> OwnerChecker<'a> {
                             {
                                 Ok(projected) => (projected, false),
                                 Err(error) => {
-                                    self.diagnostics.push(format!(
+                                    self.outputs.diagnostics.push(format!(
                                         "{}: local binding `{name}` annotation exact source type projection failed: {error}",
                                         self.module_path
                                     ));
@@ -947,7 +906,7 @@ impl<'a> OwnerChecker<'a> {
                             (Some(expected), projected_expected)
                         }
                         Err(error) => {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: failed to resolve local binding {name} annotation: {error}",
                                 self.module_path
                             ));
@@ -1069,7 +1028,7 @@ impl<'a> OwnerChecker<'a> {
                                         .and_then(single_for_item_projection),
                                 );
                             }
-                            None => self.diagnostics.push(format!(
+                            None => self.outputs.diagnostics.push(format!(
                                 "{}: for iterable must be Array, Stream, or Map at {}",
                                 self.module_path,
                                 self.expression_span_label(&iterable_key)
@@ -1096,7 +1055,7 @@ impl<'a> OwnerChecker<'a> {
                             self.contract_projection.bind(key, key_projection);
                             self.contract_projection.bind(value, value_projection);
                         }
-                        None => self.diagnostics.push(format!(
+                        None => self.outputs.diagnostics.push(format!(
                             "{}: for entry binding requires Map at {}",
                             self.module_path,
                             self.expression_span_label(&iterable_key)
@@ -1161,7 +1120,7 @@ impl<'a> OwnerChecker<'a> {
                 let actual = self.check_expr(call);
                 if let Some(actual) = actual {
                     if !type_ir_is_void_or_null(&actual.ir) {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: spawn target return type mismatch at {}: expected void/null, found {}",
                             self.module_path,
                             self.expression_span_label(&call_key),
@@ -1204,14 +1163,14 @@ impl<'a> OwnerChecker<'a> {
         let mut selected = BTreeMap::new();
         for entry in entries {
             let Some(name) = object_literal_key_text(&entry.key) else {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: test effect expect subset keys must name static request fields",
                     self.module_path
                 ));
                 continue;
             };
             let Some(ty) = fields.get(&name) else {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: test effect expect subset contains unknown request field `{name}`",
                     self.module_path
                 ));
@@ -1252,7 +1211,7 @@ impl<'a> OwnerChecker<'a> {
             if package_type_target_assignable(projected, expected, dependencies) {
                 return;
             }
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: test effect {context} package type is not assignable to the declared target at {}",
                 self.module_path,
                 self.expression_span_label(&key)
@@ -1281,14 +1240,14 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .catch_leaves(&actual, &self.type_context)
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: test effect `{target}` throw has invalid catch payload at {}: {error}",
                 self.module_path,
                 self.expression_span_label(&key),
             ));
             return;
         }
-        if let Some(fact) = self.facts.get_mut(&key) {
+        if let Some(fact) = self.outputs.facts.get_mut(&key) {
             fact.test_effect_throw_payload_type = Some(actual.ir);
         }
     }
@@ -1303,7 +1262,7 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .catch_leaves(actual, &self.type_context)
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: {construct} payload `{}` has no valid nominal catch identity at {}: {error}",
                 self.module_path,
                 actual,
@@ -1317,7 +1276,7 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .exception_catch_leaves(actual, &self.type_context)
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: invalid rethrow operand `{}` at {}: {error}",
                 self.module_path,
                 actual,
@@ -1680,7 +1639,7 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .assignable_in_context(&actual, &expected, &self.type_context)
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: {context} type mismatch at {}: expected bool, found {}",
                 self.module_path,
                 self.current_expression_span_label(),
@@ -1696,7 +1655,7 @@ impl<'a> OwnerChecker<'a> {
             match actual.as_ref() {
                 Some(actual) if type_ir_is_void_or_null(&actual.ir) => return,
                 Some(actual) if stream_chunk_type(actual).is_none() => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: stream producer completion type mismatch at {}: expected null, found {}",
                         self.module_path,
                         self.expression_span_label(&value_key),
@@ -1780,7 +1739,7 @@ impl<'a> OwnerChecker<'a> {
                         source.dependency_ref,
                         source.public_path
                     );
-                        self.diagnostics.push(message);
+                        self.outputs.diagnostics.push(message);
                     }
                     None
                 }
@@ -1876,7 +1835,7 @@ impl<'a> OwnerChecker<'a> {
                         ) {
                         Ok(selector) => selector,
                         Err(error) => {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: interface boxing selector `{}` failed at {}: {error}",
                                 self.module_path,
                                 interface.name,
@@ -1892,7 +1851,7 @@ impl<'a> OwnerChecker<'a> {
                         .type_resolution
                         .concrete_nominal_record_symbol(&value_ty, &self.type_context)
                     else {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                         "{}: interface boxing source at {} must be a concrete nominal record, found {}",
                         self.module_path,
                         self.expression_span_label(&key),
@@ -1918,7 +1877,7 @@ impl<'a> OwnerChecker<'a> {
                             format!("any {}", selector.source_text),
                         )),
                         Ok(None) => {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                             "{}: type {} does not explicitly implement interface {} for boxing at {}",
                             self.module_path,
                             receiver,
@@ -1928,7 +1887,7 @@ impl<'a> OwnerChecker<'a> {
                             None
                         }
                         Err(error) => {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: interface boxing conformance check failed at {}: {error}",
                                 self.module_path,
                                 self.expression_span_label(&key)
@@ -1992,7 +1951,7 @@ impl<'a> OwnerChecker<'a> {
                         }
                     }
                     if diagnose_unknown_field && field_ty.is_none() {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: unknown field `{field}` on {} at {}",
                             self.module_path,
                             object_ty,
@@ -2044,7 +2003,7 @@ impl<'a> OwnerChecker<'a> {
                             value_span: record_field_value_source_span(source_fact, index),
                         });
                     }
-                    self.object_materialization.sources.insert(
+                    self.outputs.object_materialization.sources.insert(
                         key.clone(),
                         ObjectLiteralSource {
                             span: source_fact
@@ -2116,7 +2075,7 @@ impl<'a> OwnerChecker<'a> {
                     {
                         Ok(catch_ty) => catch_ty,
                         Err(error) => {
-                            self.diagnostics.push(format!(
+                            self.outputs.diagnostics.push(format!(
                                 "{}: catch type cannot be resolved at {}: {error}",
                                 self.module_path,
                                 self.expression_span_label(&key)
@@ -2128,7 +2087,7 @@ impl<'a> OwnerChecker<'a> {
                         .type_resolution
                         .catch_leaves(&catch_ty, &self.type_context)
                     {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: invalid catch type `{}` at {}: {error}",
                             self.module_path,
                             catch_ty,
@@ -2200,7 +2159,7 @@ impl<'a> OwnerChecker<'a> {
                 Ok(projected) => self
                     .contract_projection
                     .record_expression_type(key.clone(), projected),
-                Err(error) => self.diagnostics.push(format!(
+                Err(error) => self.outputs.diagnostics.push(format!(
                     "{}: refined expression exact type projection failed at {}: {error}",
                     self.module_path,
                     self.expression_span_label(&key)
@@ -2221,7 +2180,7 @@ impl<'a> OwnerChecker<'a> {
                     Ok(projected) => self
                         .contract_projection
                         .record_expression_type(key.clone(), projected),
-                    Err(error) => self.diagnostics.push(format!(
+                    Err(error) => self.outputs.diagnostics.push(format!(
                         "{}: derived expression exact type projection failed at {}: {error}",
                         self.module_path,
                         self.expression_span_label(&key)
@@ -2234,7 +2193,7 @@ impl<'a> OwnerChecker<'a> {
             .fact(&key)
             .map(|fact| fact.span)
             .unwrap_or_else(SourceSpan::synthetic);
-        self.facts.insert(
+        self.outputs.facts.insert(
             key,
             ExpressionTypeFact {
                 ty: ty.clone(),
@@ -2247,8 +2206,8 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn record_stream_emit_target(&mut self, key: &ExpressionKey, target: ResolvedTypeRef) {
-        let Some(fact) = self.facts.get_mut(key) else {
-            self.diagnostics.push(format!(
+        let Some(fact) = self.outputs.facts.get_mut(key) else {
+            self.outputs.diagnostics.push(format!(
                 "{}: emit target fact could not be recorded at {}",
                 self.module_path,
                 self.expression_span_label(key)
@@ -2275,7 +2234,7 @@ impl<'a> OwnerChecker<'a> {
         ) {
             Ok(target) => target,
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: constructor target `{type_name}` failed to resolve at {}: {error}",
                     self.module_path,
                     source_fact
@@ -2357,7 +2316,7 @@ impl<'a> OwnerChecker<'a> {
                     duplicate_expression: value_key.clone(),
                     name_span,
                 });
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: duplicate constructor field `{field_name}` at {}",
                     self.module_path,
                     span_label(name_span)
@@ -2384,7 +2343,7 @@ impl<'a> OwnerChecker<'a> {
                     name_span: record_field_name_source_span(source_fact, index),
                     value_span: record_field_value_source_span(source_fact, index),
                 });
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: unknown constructor field `{field_name}` for `{type_name}` at {}",
                     self.module_path,
                     span_label(record_field_name_source_span(source_fact, index))
@@ -2441,7 +2400,7 @@ impl<'a> OwnerChecker<'a> {
                     expected: expected.clone(),
                     span,
                 });
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: missing required constructor field `{field_name}` for `{type_name}` at {}",
                     self.module_path,
                     span_label(span)
@@ -2449,7 +2408,7 @@ impl<'a> OwnerChecker<'a> {
             }
         }
 
-        self.constructor_validations.insert(
+        self.outputs.constructor_validations.insert(
             key.clone(),
             ConstructorValidation {
                 target: target.ty.clone(),
@@ -2512,7 +2471,7 @@ impl<'a> OwnerChecker<'a> {
             if error.contains("has no DB metadata") {
                 return;
             }
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: db change field path `{}` is invalid: {error}",
                 self.module_path,
                 path.join(".")
@@ -2571,7 +2530,7 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .assignable_in_context(&actual, &expected, &self.type_context)
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: db where predicate type mismatch at {}: expected bool, found {}",
                 self.module_path,
                 self.current_expression_span_label(),
@@ -2848,7 +2807,7 @@ impl<'a> OwnerChecker<'a> {
                         .type_resolution
                         .assignable_in_context(right, left, &self.type_context)
                 {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: equality operand type mismatch at {}: left {}, right {}",
                         self.module_path,
                         self.expression_span_label(key),
@@ -2928,7 +2887,7 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .assignable_in_context(actual, &expected, &self.type_context)
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: {context} type mismatch at {}: expected {}, found {}",
                 self.module_path,
                 self.expression_span_label(key),
@@ -3007,10 +2966,11 @@ impl<'a> OwnerChecker<'a> {
                     }
                     ContractCallOutcome::Invalid(diagnostics) => {
                         let location = self.expression_span_label(key);
-                        self.diagnostics
-                            .extend(diagnostics.into_iter().map(|diagnostic| {
+                        self.outputs.diagnostics.extend(diagnostics.into_iter().map(
+                            |diagnostic| {
                                 format!("{}: {diagnostic} at {location}", self.module_path)
-                            }));
+                            },
+                        ));
                         return None;
                     }
                 }
@@ -3080,7 +3040,7 @@ impl<'a> OwnerChecker<'a> {
                     ) {
                     Ok(return_type) => return_type,
                     Err(error) => {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: call `{path}` return dependency type resolution failed at {}: {error}",
                             self.module_path,
                             self.expression_span_label(key),
@@ -3126,7 +3086,7 @@ impl<'a> OwnerChecker<'a> {
                     arg_types,
                 );
                 if let Some((payload, _)) = arg_types.first() {
-                    self.representation_constructor_validations.insert(
+                    self.outputs.representation_constructor_validations.insert(
                         key.clone(),
                         RepresentationConstructorValidation {
                             target: representation.wrapper.clone(),
@@ -3138,7 +3098,7 @@ impl<'a> OwnerChecker<'a> {
             }
             Ok(None) => {}
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: representation constructor `{path}` failed to resolve: {error}",
                     self.module_path
                 ));
@@ -3208,7 +3168,7 @@ impl<'a> OwnerChecker<'a> {
             {
                 Ok(projected) => projected,
                 Err(error) => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: call `{declaration_name}` exact parameter type projection failed: {error}",
                         self.module_path
                     ));
@@ -3252,7 +3212,7 @@ impl<'a> OwnerChecker<'a> {
             ) {
                 Ok(projected) => projected,
                 Err(error) => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: call `{declaration_name}` exact return type projection failed: {error}",
                         self.module_path
                     ));
@@ -3339,7 +3299,7 @@ impl<'a> OwnerChecker<'a> {
                         return Some(resolved_return);
                     }
                     Err(error) => {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: call `{path}` exact return type substitution failed: {error}",
                             self.module_path
                         ));
@@ -3545,7 +3505,7 @@ impl<'a> OwnerChecker<'a> {
         type_args: &[TypeRef],
     ) -> ResolvedTypeArgSubstitutions {
         if type_args.len() > type_params.len() {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: call `{callable}` type arity mismatch: expected {} type arguments, found {}",
                 self.module_path,
                 type_params.len(),
@@ -3593,7 +3553,7 @@ impl<'a> OwnerChecker<'a> {
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         if expected.len() != args.len() {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: call `{callable}` arity mismatch: expected {} arguments, found {}",
                 self.module_path,
                 expected.len(),
@@ -3630,7 +3590,7 @@ impl<'a> OwnerChecker<'a> {
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         if expected.len() != args.len() {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: call `{callable}` arity mismatch: expected {} arguments, found {}",
                 self.module_path,
                 expected.len(),
@@ -3641,7 +3601,7 @@ impl<'a> OwnerChecker<'a> {
             let (expected, exact_expected) = match expected {
                 Ok(expected) => expected,
                 Err(error) => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: call `{callable}` parameter {} `{name}` dependency type resolution failed at {}: {error}",
                         self.module_path,
                         index + 1,
@@ -3792,7 +3752,7 @@ impl<'a> OwnerChecker<'a> {
         )?;
         let callable = format!("{}.{}", receiver_ty, method_name);
         if !type_args.is_empty() {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: actor method `{callable}` does not accept explicit method type arguments",
                 self.module_path
             ));
@@ -3822,7 +3782,7 @@ impl<'a> OwnerChecker<'a> {
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         if type_args.len() != 1 {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: actor registry intrinsic `{path}` expects exactly one actor type argument, found {}",
                 self.module_path,
                 type_args.len()
@@ -3835,7 +3795,7 @@ impl<'a> OwnerChecker<'a> {
         {
             Ok(actor_ty) => actor_ty,
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: actor registry intrinsic `{path}` has unresolved actor type: {error}",
                     self.module_path
                 ));
@@ -3846,7 +3806,7 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .actor_type_resolution(&actor_ty, &self.type_context)
         else {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: actor registry intrinsic `{path}` type argument `{}` is not an actor declaration",
                 self.module_path, actor_ty
             ));
@@ -3855,7 +3815,7 @@ impl<'a> OwnerChecker<'a> {
         let needs_bootstrap = matches!(path, "std.actor.getOrCreate" | "std.actor.replace");
         let expected_arity = if needs_bootstrap { 2 } else { 1 };
         if args.len() != expected_arity {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: actor registry intrinsic `{path}` expects {expected_arity} arguments, found {}",
                 self.module_path,
                 args.len()
@@ -3898,7 +3858,7 @@ impl<'a> OwnerChecker<'a> {
             return;
         };
         if args.len() != 1 {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: call `Array.push` arity mismatch: expected 1 arguments, found {}",
                 self.module_path,
                 args.len()
@@ -3959,7 +3919,7 @@ impl<'a> OwnerChecker<'a> {
             .any_interface_method_signature(&receiver_ty.ir, method_name)?;
         let callable = format!("{}.{}", receiver_ty, method_name);
         if !type_args.is_empty() {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: any interface method `{callable}` does not accept method type arguments",
                 self.module_path
             ));
@@ -4057,7 +4017,7 @@ impl<'a> OwnerChecker<'a> {
         let Some((canonical_dependency_ref, callable)) =
             dependency_analysis.package_callable_by_source_path(&source_path)
         else {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: package receiver method `{source_path}` has no exact callable implementation member at {}",
                 self.module_path,
                 self.expression_span_label(key)
@@ -4065,7 +4025,7 @@ impl<'a> OwnerChecker<'a> {
             return None;
         };
         if canonical_dependency_ref != receiver_method.canonical_dependency_ref {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: package receiver method `{source_path}` resolves to dependency `{canonical_dependency_ref}` instead of `{}`",
                 self.module_path, receiver_method.canonical_dependency_ref
             ));
@@ -4081,7 +4041,7 @@ impl<'a> OwnerChecker<'a> {
             || signature.type_params.len() < receiver_param_count
             || signature.type_params.len() - receiver_param_count != type_args.len()
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: package receiver method `{source_path}` has an invalid receiver/generic signature",
                 self.module_path
             ));
@@ -4109,14 +4069,14 @@ impl<'a> OwnerChecker<'a> {
             let projected = match self.project_source_binding_type(type_arg) {
                 Ok(Some(projected)) => projected,
                 Ok(None) => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: package receiver method `{source_path}` type argument `{type_param}` has no exact package projection",
                         self.module_path
                     ));
                     return None;
                 }
                 Err(error) => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: package receiver method `{source_path}` type argument `{type_param}` projection failed: {error}",
                         self.module_path
                     ));
@@ -4143,7 +4103,7 @@ impl<'a> OwnerChecker<'a> {
         let exact_parameters = match exact_parameters {
             Ok(parameters) => parameters,
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: package receiver method `{source_path}` parameter substitution failed at {}: {error}",
                     self.module_path,
                     self.expression_span_label(key)
@@ -4160,7 +4120,7 @@ impl<'a> OwnerChecker<'a> {
             &expected_receiver,
             &self.type_context,
         ) {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: package receiver method `{source_path}` receiver type mismatch at {}: expected {}, found {}",
                 self.module_path,
                 self.expression_span_label(&receiver_key),
@@ -4197,7 +4157,7 @@ impl<'a> OwnerChecker<'a> {
             }) {
             Ok(return_type) => return_type,
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: package receiver method `{source_path}` return substitution failed at {}: {error}",
                     self.module_path,
                     self.expression_span_label(key)
@@ -4225,7 +4185,7 @@ impl<'a> OwnerChecker<'a> {
             key.owner().clone(),
             preorder_index,
         );
-        self.facts.get(&key)?.ty.clone()
+        self.outputs.facts.get(&key)?.ty.clone()
     }
 
     fn expression_projection_at_offset(
@@ -4255,7 +4215,7 @@ impl<'a> OwnerChecker<'a> {
             .actor_type_resolution(&target, &self.type_context)
             .is_some()
         {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: actor handle type `{}` cannot be used as a database object",
                 self.module_path, target
             ));
@@ -4315,7 +4275,8 @@ impl<'a> OwnerChecker<'a> {
         {
             Ok(ty) => Some(resolved_type_from_ir(&ty)),
             Err(error) => {
-                self.diagnostics
+                self.outputs
+                    .diagnostics
                     .push(format!("{}: {error}", self.module_path));
                 None
             }
@@ -4363,7 +4324,7 @@ impl<'a> OwnerChecker<'a> {
                     self.push_type_mismatch(context, span, &expected, actual);
                 }
             }
-            Err(error) => self.diagnostics.push(format!(
+            Err(error) => self.outputs.diagnostics.push(format!(
                 "{}: failed to resolve {context} annotation at {}: {error}",
                 self.module_path,
                 span_label(span)
@@ -4386,6 +4347,7 @@ impl<'a> OwnerChecker<'a> {
         let target_value = transparent_value_target(value);
         if matches!(target_value, Expr::ObjectLiteral { .. }) {
             let target_actual = self
+                .outputs
                 .facts
                 .get(&target_key)
                 .and_then(|fact| fact.ty.clone())
@@ -4435,7 +4397,7 @@ impl<'a> OwnerChecker<'a> {
         let expected_projected = match expected_projected.transpose() {
             Ok(expected) => expected,
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: {context} exact source type projection failed at {}: {error}",
                     self.module_path,
                     span_label(fallback_span)
@@ -4454,7 +4416,7 @@ impl<'a> OwnerChecker<'a> {
         ) {
             Ok(assignable) => assignable,
             Err(error) => {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: {context} exact source type projection failed at {}: {error}",
                     self.module_path,
                     span_label(fallback_span)
@@ -4474,7 +4436,7 @@ impl<'a> OwnerChecker<'a> {
             ) {
                 Ok(assignable) => assignable,
                 Err(error) => {
-                    self.diagnostics.push(format!(
+                    self.outputs.diagnostics.push(format!(
                         "{}: {context} exact source type projection failed at {}: {error}",
                         self.module_path,
                         span_label(fallback_span)
@@ -4490,7 +4452,7 @@ impl<'a> OwnerChecker<'a> {
             annotation, value, value_key, actual, expected, context,
         ) {
             if !diagnostics.is_empty() {
-                self.diagnostics.extend(diagnostics);
+                self.outputs.diagnostics.extend(diagnostics);
                 return false;
             }
         }
@@ -4498,7 +4460,7 @@ impl<'a> OwnerChecker<'a> {
             expected_projected.as_ref(),
             self.contract_projection.expression_type(value_key),
         ) {
-            self.diagnostics.push(format!(
+            self.outputs.diagnostics.push(format!(
                 "{}: {context} canonical type identity mismatch at {}: expected {expected:?}, found {actual:?}",
                 self.module_path,
                 span_label(fallback_span),
@@ -4530,7 +4492,8 @@ impl<'a> OwnerChecker<'a> {
         expected: &ResolvedTypeRef,
         context: &str,
     ) -> bool {
-        self.object_materialization
+        self.outputs
+            .object_materialization
             .targeted
             .insert(value_key.clone());
         let assignability = ExpressionAssignability::new(
@@ -4550,12 +4513,18 @@ impl<'a> OwnerChecker<'a> {
         ) {
             Ok(plan) => plan,
             Err(diagnostics) => {
-                self.diagnostics.extend(diagnostics);
+                self.outputs.diagnostics.extend(diagnostics);
                 return false;
             }
         };
-        let Some(source) = self.object_materialization.sources.get(value_key).cloned() else {
-            self.diagnostics.push(format!(
+        let Some(source) = self
+            .outputs
+            .object_materialization
+            .sources
+            .get(value_key)
+            .cloned()
+        else {
+            self.outputs.diagnostics.push(format!(
                 "{}: {context} target-typed object literal is missing source facts at {}",
                 self.module_path,
                 self.expression_span_label(value_key)
@@ -4594,7 +4563,7 @@ impl<'a> OwnerChecker<'a> {
                         object_literal_field_value(value, name)
                             .expect("materialization plan field must exist in object literal"),
                     ) {
-                        self.diagnostics.push(format!(
+                        self.outputs.diagnostics.push(format!(
                             "{}: {context} object literal field `{name}` has no resolved expression type at {}",
                             self.module_path,
                             span_label(provided.value_span)
@@ -4608,7 +4577,7 @@ impl<'a> OwnerChecker<'a> {
             } else if self.type_resolution.is_nullable(ty) {
                 ObjectFieldValueSource::SyntheticNull
             } else {
-                self.diagnostics.push(format!(
+                self.outputs.diagnostics.push(format!(
                     "{}: {context} materialization plan omitted required object literal field `{name}` at {}",
                     self.module_path,
                     span_label(source.span)
@@ -4623,7 +4592,7 @@ impl<'a> OwnerChecker<'a> {
             });
         }
         if valid {
-            self.object_materialization.facts.insert(
+            self.outputs.object_materialization.facts.insert(
                 value_key.clone(),
                 TargetTypedObjectMaterialization {
                     resolved_target: plan.resolved_target,
@@ -4642,7 +4611,7 @@ impl<'a> OwnerChecker<'a> {
         expected: &ResolvedTypeRef,
         actual: &ResolvedTypeRef,
     ) {
-        self.diagnostics.push(format!(
+        self.outputs.diagnostics.push(format!(
             "{}: {context} type mismatch at {}: expected {}, found {}",
             self.module_path,
             span_label(span),
