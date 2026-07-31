@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-runtime-model = { path = "../model" }
+
+[lints]
+workspace = true

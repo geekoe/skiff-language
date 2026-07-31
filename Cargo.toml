@@ -39,3 +39,7 @@ members = [
   "runtime/transport",
   "test-runner",
 ]
+
+[workspace.lints.clippy]
+tests_outside_test_module = "deny"
+too_many_lines = "deny"

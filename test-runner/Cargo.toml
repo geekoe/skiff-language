@@ -8,8 +8,8 @@ autotests = false
 [features]
 default = []
 
-[lints.clippy]
-too_many_lines = "warn"
+[lints]
+workspace = true
 
 [[bin]]
 name = "skiff-test-runner"

@@ -12,3 +12,6 @@ skiff-artifact-model = { path = "../artifact-model" }
 skiff-canonical-json = { path = "../canonical-json" }
 thiserror = "2.0"
 uuid = { version = "1.16", features = ["v4"] }
+
+[lints]
+workspace = true

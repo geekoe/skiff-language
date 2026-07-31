@@ -26,3 +26,6 @@ uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
+
+[lints]
+workspace = true

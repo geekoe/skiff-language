@@ -25,3 +25,6 @@ thiserror = "2.0"
 skiff-compiler = { path = "../../compiler" }
 skiff-deployment = { path = "../../deployment" }
 skiff-test-runner = { path = "../../test-runner" }
+
+[lints]
+workspace = true

@@ -1,0 +1,67 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tokio::sync::{oneshot, watch};
+
+use crate::error::RuntimeError;
+
+use super::{handle_renew_result, LeaseRenewOwner};
+
+#[test]
+fn renew_failure_requests_internal_stop() {
+    let stopped = AtomicBool::new(false);
+    assert!(!handle_renew_result(
+        Err(RuntimeError::Decode("renew failed".to_string())),
+        &stopped,
+    ));
+    assert!(stopped.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn db_actor_lease_owner_drop_aborts_renew_task() {
+    struct DropSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _ = signal.send(());
+            }
+        }
+    }
+
+    let (stop, _stopped) = watch::channel(false);
+    let (started_tx, started_rx) = oneshot::channel();
+    let (dropped_tx, dropped_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _drop_signal = DropSignal(Some(dropped_tx));
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+    let owner = LeaseRenewOwner {
+        stop: Some(stop),
+        task: Some(task),
+    };
+
+    started_rx.await.expect("renew task should start");
+    drop(owner);
+    dropped_rx
+        .await
+        .expect("owner drop must synchronously request task abort");
+}
+
+#[tokio::test]
+async fn normal_stop_signals_and_joins_renew_task() {
+    let (stop, mut stopped) = watch::channel(false);
+    let (joined_tx, joined_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        stopped.changed().await.expect("stop owner remains live");
+        assert!(*stopped.borrow());
+        let _ = joined_tx.send(());
+    });
+    let owner = LeaseRenewOwner {
+        stop: Some(stop),
+        task: Some(task),
+    };
+
+    owner.stop_and_join().await;
+    joined_rx.await.expect("renew task must be joined");
+}

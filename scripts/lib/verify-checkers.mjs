@@ -7,8 +7,8 @@ export const CHECKER_CLASSIFICATIONS = Object.freeze({
 });
 
 export const CHECKER_REGISTRY = Object.freeze([
-  checker('scripts/check-rust-clippy-baseline.mjs', CHECKER_CLASSIFICATIONS.RUST_QUALITY, {
-    invocations: [invocation('rust-quality:clippy-baseline', 'rust-quality')],
+  checker('scripts/check-rust-file-lines.mjs', CHECKER_CLASSIFICATIONS.RUST_QUALITY, {
+    invocations: [invocation('rust-quality:file-lines', 'rust-quality')],
   }),
   checker('scripts/check-command-execution-policy.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:command-execution-policy', 'checks')],
@@ -27,6 +27,9 @@ export const CHECKER_REGISTRY = Object.freeze([
       invocation('checks:crate-public-api:self-test', 'checks', ['--self-test']),
       invocation('checks:crate-public-api:all-configured', 'checks', ['--all-configured']),
     ],
+  }),
+  checker('scripts/check-javascript-syntax.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
+    invocations: [invocation('javascript:syntax', 'scripts-syntax')],
   }),
   checker('scripts/check-local-instance.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:local-instance', 'checks')],

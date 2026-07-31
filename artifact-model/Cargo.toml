@@ -11,3 +11,6 @@ serde_yaml = "0.9"
 
 [dev-dependencies]
 skiff-syntax = { path = "../syntax" }
+
+[lints]
+workspace = true

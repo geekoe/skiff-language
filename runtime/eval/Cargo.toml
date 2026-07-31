@@ -36,3 +36,6 @@ skiff-deployment = { path = "../../deployment" }
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
 skiff-test-runner = { path = "../../test-runner" }
+
+[lints]
+workspace = true

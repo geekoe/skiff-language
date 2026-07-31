@@ -5,7 +5,6 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { RUST_CLIPPY_BASELINE_ARGS } from '../lib/rust-clippy-baseline-check.mjs';
 import { buildVerifyPlan } from '../lib/verify-plan.mjs';
 import { VERIFY_SELECTOR_GRAPH } from '../lib/verify-selector-graph.mjs';
 
@@ -36,20 +35,13 @@ test('tests and rust-quality retain separate canonical ownership', async () => {
         args: ['fmt', '--all', '--', '--check'],
       },
       {
-        id: 'rust-quality:clippy-baseline',
+        id: 'rust-quality:file-lines',
         kind: 'rust-quality',
         command: 'node',
-        args: ['scripts/check-rust-clippy-baseline.mjs'],
+        args: ['scripts/check-rust-file-lines.mjs'],
       },
     ],
   );
-  assert.deepEqual(RUST_CLIPPY_BASELINE_ARGS, [
-    'clippy',
-    '--workspace',
-    '--all-targets',
-    '--no-deps',
-    '--message-format=json',
-  ]);
 });
 
 test('default verify includes both Rust quality phases exactly once and no live work', async () => {
@@ -61,7 +53,7 @@ test('default verify includes both Rust quality phases exactly once and no live 
     'implementation:runtime:rust',
     'implementation:test-runner:rust',
     'rust-quality:format',
-    'rust-quality:clippy-baseline',
+    'rust-quality:file-lines',
     'checks:artifact-identity',
     'checks:compiler-boundaries',
     'checks:crate-public-api:self-test',
@@ -72,7 +64,7 @@ test('default verify includes both Rust quality phases exactly once and no live 
   assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
 });
 
-test('rust-quality CLI list exposes exactly the format and baseline-aware Clippy phases', async () => {
+test('rust-quality CLI list exposes exactly the format and file-line phases', async () => {
   const result = await runProcess(process.execPath, [
     verifyPath,
     '--only',
@@ -82,9 +74,9 @@ test('rust-quality CLI list exposes exactly the format and baseline-aware Clippy
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /phases: 2/);
   assert.equal((result.stdout.match(/rust-quality:format/g) ?? []).length, 1);
-  assert.equal((result.stdout.match(/rust-quality:clippy-baseline/g) ?? []).length, 1);
+  assert.equal((result.stdout.match(/rust-quality:file-lines/g) ?? []).length, 1);
   assert.match(result.stdout, /cargo fmt --all -- --check/);
-  assert.match(result.stdout, /node scripts\/check-rust-clippy-baseline\.mjs/);
+  assert.match(result.stdout, /node scripts\/check-rust-file-lines\.mjs/);
 });
 
 test('CI runs canonical test domains plus a distinct quality/check scope', async () => {
@@ -101,7 +93,7 @@ test('CI runs canonical test domains plus a distinct quality/check scope', async
     1,
   );
   assert.match(workflow, /--profile minimal --component rustfmt --component clippy/);
-  assert.doesNotMatch(workflow, /cargo fmt|cargo clippy|check-rust-clippy-baseline/);
+  assert.doesNotMatch(workflow, /cargo fmt|cargo clippy|check-rust-file-lines/);
 
   const installedPackages = [
     ...workflow.matchAll(/pnpm --dir (\S+) install --frozen-lockfile/g),

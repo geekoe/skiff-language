@@ -11,8 +11,8 @@ path = "driver/lib.rs"
 name = "runtime"
 path = "driver/main.rs"
 
-[lints.clippy]
-too_many_lines = "warn"
+[lints]
+workspace = true
 
 [features]
 default = []

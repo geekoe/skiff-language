@@ -13,3 +13,6 @@ skiff-runtime-loader = { path = "../loader" }
 [dev-dependencies]
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-deployment = { path = "../../deployment" }
+
+[lints]
+workspace = true

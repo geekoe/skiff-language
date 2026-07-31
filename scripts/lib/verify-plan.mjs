@@ -13,9 +13,7 @@ import {
   liveSelectorPhases,
 } from './verify-live-plan.mjs';
 import {
-  discoverJavaScriptFiles,
   discoverScriptTests,
-  repoRelative,
 } from './verify-discovery.mjs';
 import {
   ORDINARY_LEAF_SELECTORS,
@@ -246,7 +244,9 @@ function phaseBuilders({
         ['test'],
       ),
     ],
-    'scripts-syntax': async () => javascriptSyntaxPhases(root),
+    'scripts-syntax': async () => checkerPhases(root, 'scripts-syntax', {
+      kind: 'scripts',
+    }),
     'scripts-tests': async () => scriptTestPhases(root),
     'scripts-dev-sync': async () => checkerPhases(root, 'scripts-dev-sync', {
       kind: 'implementation:tooling',
@@ -319,25 +319,20 @@ function rustSubjectPhaseBuilders(root) {
   );
 }
 
-async function javascriptSyntaxPhases(root) {
-  const files = await discoverJavaScriptFiles(root);
-  return files.map((file) => {
-    const path = repoRelative(root, file);
-    return phase(root, `javascript:syntax:${path}`, 'scripts', 'node', ['--check', path]);
-  });
-}
-
 async function scriptTestPhases(root) {
   const files = await discoverScriptTests(root);
-  return files.map((path) =>
+  if (files.length === 0) {
+    return [];
+  }
+  return [
     phase(
       root,
-      `implementation:tooling:${path}`,
+      'implementation:tooling:scripts-tests',
       'implementation:tooling',
       'node',
-      ['--test', path],
+      ['--test', ...files],
     ),
-  );
+  ];
 }
 
 function packagePhase(root, id, kind, directory, args) {

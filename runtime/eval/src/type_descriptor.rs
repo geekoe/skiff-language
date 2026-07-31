@@ -253,11 +253,6 @@ pub fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
     runtime_type_descriptor::split_top_level(input, delimiter)
 }
 
-#[cfg(all(test, any()))]
-pub fn type_substitutions_from_receiver(pattern: &str, actual: &str) -> TypeSubstitutions {
-    type_substitutions_from_receiver_matching(pattern, actual, type_name_matches)
-}
-
 pub fn provider_type_substitutions_from_receiver(
     pattern: &str,
     actual: &str,

@@ -10,3 +10,6 @@ skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-model = { path = "../model" }
 thiserror = "2.0"
+
+[lints]
+workspace = true

@@ -13,3 +13,6 @@ skiff-runtime-model = { path = "../model" }
 
 [dev-dependencies]
 skiff-artifact-identity = { path = "../../artifact-identity" }
+
+[lints]
+workspace = true

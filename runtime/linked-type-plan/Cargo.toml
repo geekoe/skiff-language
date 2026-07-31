@@ -16,3 +16,6 @@ skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 thiserror = "2.0"
+
+[lints]
+workspace = true

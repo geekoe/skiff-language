@@ -18,3 +18,6 @@ skiff-runtime-model = { path = "../model" }
 
 [dev-dependencies]
 skiff-canonical-json = { path = "../../canonical-json" }
+
+[lints]
+workspace = true

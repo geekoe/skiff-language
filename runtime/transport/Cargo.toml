@@ -14,3 +14,6 @@ skiff-canonical-json = { path = "../../canonical-json" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-request-contract = { path = "../request-contract" }
 url = "2.5"
+
+[lints]
+workspace = true

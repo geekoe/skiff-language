@@ -125,11 +125,12 @@ test('tooling selector has no Cargo phase and discovers every scripts test', asy
   const plan = await buildVerifyPlan({ root, selectors: ['tooling'] });
   assert.equal(plan.phases.some((phase) => phase.command === 'cargo'), false);
 
-  const scriptTestArgs = plan.phases
-    .filter((phase) => phase.id.startsWith('implementation:tooling:scripts/tests/'))
-    .map((phase) => phase.args.at(-1));
-  assert.deepEqual(scriptTestArgs, await discoverScriptTests(root));
-  assert.ok(scriptTestArgs.includes('scripts/tests/runtime-stack-deploy.test.mjs'));
+  const scriptTestPhase = plan.phases.find(
+    (phase) => phase.id === 'implementation:tooling:scripts-tests',
+  );
+  assert.ok(scriptTestPhase, 'tooling plan must contain one merged scripts-tests phase');
+  assert.deepEqual(scriptTestPhase.args.slice(1), await discoverScriptTests(root));
+  assert.ok(scriptTestPhase.args.includes('scripts/tests/runtime-stack-deploy.test.mjs'));
   assert.ok(plan.phases.some((phase) =>
     phase.id === 'implementation:tooling:dev-sync-fixture'));
 });
@@ -1185,7 +1186,9 @@ test('filesystem discovery finds new tests and excludes generated or local direc
       catalogRoot: root,
       selectors: ['scripts'],
     });
-    assert.ok(plan.phases.some((phase) => phase.id.endsWith('new.test.mjs')));
+    assert.ok(
+      plan.phases.some((phase) => phase.args.includes('scripts/tests/new.test.mjs')),
+    );
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -1216,9 +1219,12 @@ test('every checker is classified once; compiler boundaries are default and live
   const toolingPlan = await buildVerifyPlan({ root, selectors: ['tooling'] });
   assert.equal(
     toolingPlan.phases.filter((phase) =>
-      phase.id === 'implementation:tooling:scripts/tests/command-execution-policy.test.mjs')
-      .length,
+      phase.id === 'implementation:tooling:scripts-tests').length,
     1,
+  );
+  assert.ok(
+    toolingPlan.phases.some((phase) =>
+      phase.args.includes('scripts/tests/command-execution-policy.test.mjs')),
   );
   assert.equal(defaultPlan.phases.some((phase) => phase.id.startsWith('live:')), false);
 });
