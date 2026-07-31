@@ -371,6 +371,9 @@ Record/Literal/Function/AnyInterface 成员、重复成员、`PackageTypeRef::Lo
 - Phase 4 额外：identity 差分测试 + contract fixture / boundary 相关测试
   （`contract_dependency_test_fixture`、`contract_call_typing` 测试）+ `--only skiff-tests`。
 - Phase 5 merge 前：diagnostics fixture + `--only skiff-tests`。
+- skiff-tests 门禁注意（Phase 5 验收发现）：`run-skiff-tests.mjs` 使用
+  `.skiff-instance/dev-home/bin/skiff-compiler` 二进制，陈旧二进制会让端到端 gate 失去对当前
+  commit 的覆盖；需要验证编译器行为变化的阶段，跑 skiff-tests 前先重建该二进制并记录其构建时间。
 - 重复收编的验收：目标私有函数名在两个文件里 `rg` 应为 0 命中（除薄包装）。
 - 语义等价的验收：除 Phase 2 的差分测试外，任何诊断文本或类型输出变化都必须先出现在
   diff 里并有测试覆盖，不允许静默变化。
