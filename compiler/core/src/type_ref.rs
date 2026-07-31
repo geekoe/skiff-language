@@ -164,13 +164,12 @@ pub fn contains_boundary_unsafe_type(ty: &TypeRefIr) -> bool {
 
 /// Renders the canonical debug/display text for a type ref.
 ///
-/// Absorbs the two private copies in `compiler/source`
-/// (`type_resolution_model.rs` `type_ref_debug_text` and
-/// `expression_type_model.rs` `type_ref_debug_text`). The two copies differ
-/// only in how they format an `AppliedNominal` base; this core version uses
-/// the direct nominal-base formatting variant (etm style), which is
-/// byte-identical to the trm intermediate-`TypeRefIr` variant for every
-/// nominal base.
+/// Absorbs the former private implementations in `compiler/source`
+/// (`type_resolution_model.rs` and `expression_type_model.rs`). The two
+/// copies differed only in how they formatted an `AppliedNominal` base; this
+/// core version uses the direct nominal-base formatting variant, which is
+/// byte-identical to the intermediate-`TypeRefIr` variant for every nominal
+/// base (locked by differential evidence in the Phase 3 leaf task).
 pub fn debug_text(ty: &TypeRefIr) -> String {
     match ty {
         TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),

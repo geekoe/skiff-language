@@ -10,7 +10,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
-    type_ref::{normalize_union, substitute_type_params_in_type_ref_ref},
+    type_ref::{debug_text, normalize_union, substitute_type_params_in_type_ref_ref},
 };
 
 use crate::{
@@ -1198,7 +1198,7 @@ impl TypeResolutionModel {
             }
             other => Err(format!(
                 "interface ABI id resolves to non-interface type {}",
-                type_ref_debug_text(&other)
+                debug_text(&other)
             )),
         }
     }
@@ -1355,7 +1355,7 @@ impl TypeResolutionModel {
                             Ok((
                                 name.clone(),
                                 ResolvedTypeRef {
-                                    source_text: type_ref_debug_text(&field_ty),
+                                    source_text: debug_text(&field_ty),
                                     ir: field_ty,
                                 },
                             ))
@@ -1455,7 +1455,7 @@ impl TypeResolutionModel {
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
                 let field = ResolvedTypeRef {
-                    source_text: type_ref_debug_text(&field_ty),
+                    source_text: debug_text(&field_ty),
                     ir: field_ty,
                 };
                 Ok((
@@ -1516,7 +1516,7 @@ impl TypeResolutionModel {
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
                 let field = ResolvedTypeRef {
-                    source_text: type_ref_debug_text(&field_ty),
+                    source_text: debug_text(&field_ty),
                     ir: field_ty,
                 };
                 Ok((
@@ -1575,7 +1575,7 @@ impl TypeResolutionModel {
         let payload = substitute_type_params_in_type_ref_ref(&payload, &substitutions);
         let payload = self.expand_alias_type_ref(&payload, &payload_context)?;
         let payload = ResolvedTypeRef {
-            source_text: type_ref_debug_text(&payload),
+            source_text: debug_text(&payload),
             ir: payload,
         };
         let payload = if shape.module_path == context.module_path {
@@ -1662,7 +1662,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Option<LocalReceiverMethodResolution> {
         let resolved = ResolvedTypeRef {
-            source_text: type_ref_debug_text(receiver),
+            source_text: debug_text(receiver),
             ir: receiver.clone(),
         };
         let owner = self.actual_receiver_symbol(&resolved, context)?;
@@ -5912,79 +5912,6 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
     }
 }
 
-fn type_ref_debug_text(ty: &TypeRefIr) -> String {
-    match ty {
-        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Builtin { name, args } => format!(
-            "{name}<{}>",
-            args.iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::Nullable { inner } => format!("{}?", type_ref_debug_text(inner)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .map(type_ref_debug_text)
-            .collect::<Vec<_>>()
-            .join(" | "),
-        TypeRefIr::Literal {
-            value: LiteralIr::String { value },
-        } => serde_json::to_string(value).unwrap_or_else(|_| "\"<string>\"".to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::Null,
-        } => "null".to_string(),
-        TypeRefIr::Literal { .. } => "<literal>".to_string(),
-        TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
-        TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => format!("{module_path}#{type_index}"),
-        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
-            symbol.symbol_path()
-        }
-        TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
-        TypeRefIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => format!("{package_id}::{stable_schema_key}"),
-        TypeRefIr::AppliedNominal { base, arguments } => format!(
-            "{}<{}>",
-            type_ref_debug_text(&nominal_base_type_ref(base)),
-            arguments
-                .iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::AnyInterface { interface } => {
-            let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-                .map_or_else(
-                    |_| interface.interface_abi_id.clone(),
-                    |identity| type_ref_debug_text(&identity),
-                );
-            if interface.canonical_type_args.is_empty() {
-                format!("any {interface_name}")
-            } else {
-                format!(
-                    "any {}<{}>",
-                    interface_name,
-                    interface
-                        .canonical_type_args
-                        .iter()
-                        .map(type_ref_debug_text)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        }
-        TypeRefIr::Record { .. } => "{}".to_string(),
-        TypeRefIr::TypeParam { name } => name.clone(),
-        TypeRefIr::Function { .. } => "fn".to_string(),
-    }
-}
-
 fn contract_type_shape_ir(
     alias: &str,
     descriptor: &ContractTypeDescriptor,
@@ -6307,7 +6234,7 @@ fn nominal_base_from_type_ref(ty: TypeRefIr) -> Result<NominalTypeRefBaseIr, Str
         }
         other => Err(format!(
             "`{}` is not a legal applied nominal base",
-            type_ref_debug_text(&other)
+            debug_text(&other)
         )),
     }
 }

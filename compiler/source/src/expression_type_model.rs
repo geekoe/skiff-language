@@ -5,7 +5,8 @@ use skiff_artifact_model::{
     NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    normalize_union, substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
+    debug_text, normalize_union,
+    substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
 use crate::{
@@ -3758,7 +3759,7 @@ impl<'a> OwnerChecker<'a> {
                 (
                     format!("arg{index}"),
                     ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&param.ty),
+                        source_text: debug_text(&param.ty),
                         ir: param.ty.clone(),
                     },
                 )
@@ -3766,7 +3767,7 @@ impl<'a> OwnerChecker<'a> {
             .collect();
         self.validate_resolved_call_params(&callable, params, args, arg_types);
         Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&return_type),
+            source_text: debug_text(&return_type),
             ir: return_type,
         })
     }
@@ -3935,7 +3936,7 @@ impl<'a> OwnerChecker<'a> {
                 (
                     format!("arg{index}"),
                     ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&param.ty),
+                        source_text: debug_text(&param.ty),
                         ir: param.ty.clone(),
                     },
                 )
@@ -3943,7 +3944,7 @@ impl<'a> OwnerChecker<'a> {
             .collect();
         self.validate_resolved_call_params(&callable, params, args, arg_types);
         Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&operation.return_type),
+            source_text: debug_text(&operation.return_type),
             ir: operation.return_type,
         })
     }
@@ -3986,7 +3987,7 @@ impl<'a> OwnerChecker<'a> {
                     (
                         format!("arg{index}"),
                         ResolvedTypeRef {
-                            source_text: type_ref_debug_text(&ty),
+                            source_text: debug_text(&ty),
                             ir: ty,
                         },
                     )
@@ -3997,7 +3998,7 @@ impl<'a> OwnerChecker<'a> {
         let return_type =
             substitute_type_params_in_ir(&operation.return_type, &substitutions.types);
         Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&return_type),
+            source_text: debug_text(&return_type),
             ir: return_type,
         })
     }
@@ -4783,12 +4784,12 @@ fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
         "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream" if args.len() == 1 => {
             Some(ResolvedTypeRef {
                 ir: args[0].clone(),
-                source_text: type_ref_debug_text(&args[0]),
+                source_text: debug_text(&args[0]),
             })
         }
         "Map" | "std.collection.Map" if args.len() == 2 => Some(ResolvedTypeRef {
             ir: args[0].clone(),
-            source_text: type_ref_debug_text(&args[0]),
+            source_text: debug_text(&args[0]),
         }),
         _ => None,
     }
@@ -4803,7 +4804,7 @@ fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
         .filter(|args| args.len() == 1)
         .map(|args| ResolvedTypeRef {
             ir: args[0].clone(),
-            source_text: type_ref_debug_text(&args[0]),
+            source_text: debug_text(&args[0]),
         })
 }
 
@@ -4817,11 +4818,11 @@ fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTyp
     Some((
         ResolvedTypeRef {
             ir: args[0].clone(),
-            source_text: type_ref_debug_text(&args[0]),
+            source_text: debug_text(&args[0]),
         },
         ResolvedTypeRef {
             ir: args[1].clone(),
-            source_text: type_ref_debug_text(&args[1]),
+            source_text: debug_text(&args[1]),
         },
     ))
 }
@@ -5120,7 +5121,7 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| type_ref_debug_text(inner));
+                .unwrap_or_else(|| debug_text(inner));
             Some(ResolvedTypeRef {
                 ir: inner.as_ref().clone(),
                 source_text,
@@ -5200,7 +5201,7 @@ fn record_tag_literal(ty: &TypeRefIr) -> Option<&str> {
 fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
     ResolvedTypeRef {
         ir: ty.clone(),
-        source_text: type_ref_debug_text(ty),
+        source_text: debug_text(ty),
     }
 }
 
@@ -5332,83 +5333,10 @@ fn qualify_package_signature_type_text(
         .to_type_string()
 }
 
-fn type_ref_debug_text(ty: &TypeRefIr) -> String {
-    match ty {
-        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Builtin { name, args } => format!(
-            "{name}<{}>",
-            args.iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::Nullable { inner } => format!("{}?", type_ref_debug_text(inner)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .map(type_ref_debug_text)
-            .collect::<Vec<_>>()
-            .join(" | "),
-        TypeRefIr::Literal {
-            value: LiteralIr::String { value },
-        } => serde_json::to_string(value).unwrap_or_else(|_| "\"<string>\"".to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::Null,
-        } => "null".to_string(),
-        TypeRefIr::Literal { .. } => "<literal>".to_string(),
-        TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
-        TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => format!("{module_path}#{type_index}"),
-        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
-            symbol.symbol_path()
-        }
-        TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
-        TypeRefIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => format!("{package_id}::{stable_schema_key}"),
-        TypeRefIr::AppliedNominal { base, arguments } => format!(
-            "{}<{}>",
-            nominal_base_debug_text(base),
-            arguments
-                .iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::AnyInterface { interface } => {
-            let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-                .map_or_else(
-                    |_| interface.interface_abi_id.clone(),
-                    |identity| type_ref_debug_text(&identity),
-                );
-            if interface.canonical_type_args.is_empty() {
-                format!("any {interface_name}")
-            } else {
-                format!(
-                    "any {}<{}>",
-                    interface_name,
-                    interface
-                        .canonical_type_args
-                        .iter()
-                        .map(type_ref_debug_text)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        }
-        TypeRefIr::Record { .. } => "{}".to_string(),
-        TypeRefIr::TypeParam { name } => name.clone(),
-        TypeRefIr::Function { .. } => "fn".to_string(),
-    }
-}
-
 fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
     let ir = package_type_ref_ir(ty);
     ResolvedTypeRef {
-        source_text: type_ref_debug_text(&ir),
+        source_text: debug_text(&ir),
         ir,
     }
 }
@@ -5521,23 +5449,6 @@ fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
-    }
-}
-
-fn nominal_base_debug_text(base: &NominalTypeRefBaseIr) -> String {
-    match base {
-        NominalTypeRefBaseIr::LocalType { type_index } => format!("#{type_index}"),
-        NominalTypeRefBaseIr::PublicationType {
-            module_path,
-            type_index,
-        } => format!("{module_path}#{type_index}"),
-        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
-        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
-        NominalTypeRefBaseIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => format!("{package_id}::{stable_schema_key}"),
     }
 }
 

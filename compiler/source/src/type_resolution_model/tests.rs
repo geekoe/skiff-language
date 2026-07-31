@@ -1298,7 +1298,7 @@ fn resolved_test_interface(argument: TypeRefIr) -> ResolvedTypeRef {
         },
     };
     ResolvedTypeRef {
-        source_text: format!("I<{}>", type_ref_debug_text(&argument)),
+        source_text: format!("I<{}>", debug_text(&argument)),
         ir: TypeRefIr::AnyInterface {
             interface: interface_instantiation_ref(identity, vec![argument]),
         },

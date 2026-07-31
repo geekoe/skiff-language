@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use super::*;
 use skiff_artifact_model::{FunctionTypeParamIr, LiteralIr};
-use skiff_compiler_core::type_ref::{normalize_union, substitute_type_params_in_type_ref_ref};
+use skiff_compiler_core::type_ref::{
+    debug_text, normalize_union, substitute_type_params_in_type_ref_ref,
+};
 
 #[derive(Clone, Copy)]
 enum PackageMethodTypeOwner {
@@ -210,7 +212,7 @@ impl TypeResolutionModel {
             }
             _ => Err(format!(
                 "local interface boxing requires a source or package interface selector, found {}",
-                type_ref_debug_text(&expected_interface.identity)
+                debug_text(&expected_interface.identity)
             )),
         }
     }
@@ -227,7 +229,7 @@ impl TypeResolutionModel {
             .ok_or_else(|| {
                 format!(
                     "local interface boxing package selector {} does not resolve to a package interface",
-                    type_ref_debug_text(&interface.identity)
+                    debug_text(&interface.identity)
                 )
             })?
             .instantiate_methods(&interface.args)?;
@@ -823,7 +825,7 @@ impl TypeResolutionModel {
                 .type_shape_ir(
                     &ResolvedTypeRef {
                         ir: actual.clone(),
-                        source_text: type_ref_debug_text(actual),
+                        source_text: debug_text(actual),
                     },
                     context,
                 )
@@ -859,7 +861,7 @@ impl TypeResolutionModel {
                 .type_shape_ir(
                     &ResolvedTypeRef {
                         ir: actual.clone(),
-                        source_text: type_ref_debug_text(actual),
+                        source_text: debug_text(actual),
                     },
                     context,
                 )
@@ -876,7 +878,7 @@ impl TypeResolutionModel {
     ) -> ResolvedTypeRef {
         let ir = self.externalize_local_type_ir(&ty.ir, module_path);
         ResolvedTypeRef {
-            source_text: type_ref_debug_text(&ir),
+            source_text: debug_text(&ir),
             ir,
         }
     }
@@ -900,7 +902,7 @@ impl TypeResolutionModel {
             expected_local_abi.as_str(),
         );
         ResolvedTypeRef {
-            source_text: type_ref_debug_text(&ir),
+            source_text: debug_text(&ir),
             ir,
         }
     }
@@ -1188,7 +1190,7 @@ impl TypeResolutionModel {
         if let TypeRefIr::Record { fields } = &ty.ir {
             return fields.get(field).map(|ty| ResolvedTypeRef {
                 ir: ty.clone(),
-                source_text: type_ref_debug_text(ty),
+                source_text: debug_text(ty),
             });
         }
         // A nominal record's canonical shape deliberately expands aliases for
@@ -1206,7 +1208,7 @@ impl TypeResolutionModel {
         if let Some(shape) = self.type_shape_ir(ty, context) {
             if let Some(field_ty) = record_field_type_from_ir(&shape, field) {
                 return Some(ResolvedTypeRef {
-                    source_text: type_ref_debug_text(&field_ty),
+                    source_text: debug_text(&field_ty),
                     ir: field_ty,
                 });
             }
