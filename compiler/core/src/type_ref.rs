@@ -496,7 +496,10 @@ pub fn is_null_type(ty: &TypeRefIr) -> bool {
 
 /// Returns whether the type contains a type parameter anywhere.
 ///
-/// Absorbs `type_contains_type_param` (`expression_type_model.rs` 4850).
+/// Absorbs the former private implementations `type_contains_type_param`,
+/// `type_contains_unresolved_param`, and
+/// `type_ref_contains_type_parameter` in `compiler/source` and
+/// `compiler/projection`.
 pub fn contains_type_param(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::TypeParam { .. } => true,

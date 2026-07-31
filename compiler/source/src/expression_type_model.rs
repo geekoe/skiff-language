@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    debug_text, is_null_type, normalize_union,
+    contains_type_param, debug_text, is_null_type, normalize_union,
     substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
@@ -3409,7 +3409,7 @@ impl<'a> OwnerChecker<'a> {
                 (type_params.is_empty() || type_args.is_empty())
                     .then(|| self.type_resolution.resolve_type_text(raw, context).ok())
                     .flatten()
-                    .filter(|resolved| !type_contains_type_param(&resolved.ir))
+                    .filter(|resolved| !contains_type_param(&resolved.ir))
             })
     }
 
@@ -3561,7 +3561,7 @@ impl<'a> OwnerChecker<'a> {
             let Some(actual) = actual else {
                 continue;
             };
-            if type_contains_type_param(&expected.ir) || type_contains_type_param(&actual.ir) {
+            if contains_type_param(&expected.ir) || contains_type_param(&actual.ir) {
                 continue;
             }
             let context = format!("call `{callable}` argument {}", index + 1);
@@ -3613,7 +3613,7 @@ impl<'a> OwnerChecker<'a> {
             let Some(actual) = actual else {
                 continue;
             };
-            if type_contains_type_param(&expected.ir) || type_contains_type_param(&actual.ir) {
+            if contains_type_param(&expected.ir) || contains_type_param(&actual.ir) {
                 continue;
             }
             let context = format!("call `{callable}` argument {}", index + 1);
@@ -4831,40 +4831,6 @@ fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, Package
     };
     (matches!(name.as_str(), "Map" | "std.collection.Map") && arguments.len() == 2)
         .then(|| (arguments[0].clone(), arguments[1].clone()))
-}
-
-fn type_contains_type_param(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
-            args.iter().any(type_contains_type_param)
-        }
-        TypeRefIr::AppliedNominal { arguments, .. } => {
-            arguments.iter().any(type_contains_type_param)
-        }
-        TypeRefIr::Nullable { inner } => type_contains_type_param(inner),
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(type_contains_type_param),
-        TypeRefIr::Record { fields } => fields.values().any(type_contains_type_param),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_contains_type_param(&param.ty))
-                || type_contains_type_param(return_type)
-        }
-        TypeRefIr::Literal { .. }
-        | TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. } => false,
-    }
 }
 
 fn native_return_type_context<'a>(

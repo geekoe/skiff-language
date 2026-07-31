@@ -10,7 +10,10 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
-    type_ref::{debug_text, is_null_type, normalize_union, substitute_type_params_in_type_ref_ref},
+    type_ref::{
+        contains_type_param, debug_text, is_null_type, normalize_union,
+        substitute_type_params_in_type_ref_ref,
+    },
 };
 
 use crate::{
@@ -1638,7 +1641,7 @@ impl TypeResolutionModel {
         if receiver_type.public_path.as_deref() != Some(source_symbol_path.as_str())
             || self.package_interfaces.contains_key(&key)
             || receiver_type.type_params.len() != arguments.len()
-            || arguments.iter().any(type_contains_unresolved_param)
+            || arguments.iter().any(contains_type_param)
         {
             return None;
         }
@@ -1675,9 +1678,7 @@ impl TypeResolutionModel {
             _ => Vec::new(),
         };
         if receiver_type.type_params.len() != receiver_type_arguments.len()
-            || receiver_type_arguments
-                .iter()
-                .any(type_contains_unresolved_param)
+            || receiver_type_arguments.iter().any(contains_type_param)
         {
             return None;
         }
@@ -6237,41 +6238,6 @@ fn nominal_base_type_ref(base: &NominalTypeRefBaseIr) -> TypeRefIr {
             stable_schema_key: stable_schema_key.clone(),
             package_schema_type_id: package_schema_type_id.clone(),
         },
-    }
-}
-
-fn type_contains_unresolved_param(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::AppliedNominal { arguments, .. }
-        | TypeRefIr::Builtin {
-            args: arguments, ..
-        }
-        | TypeRefIr::Union { items: arguments } => {
-            arguments.iter().any(type_contains_unresolved_param)
-        }
-        TypeRefIr::Nullable { inner } => type_contains_unresolved_param(inner),
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(type_contains_unresolved_param),
-        TypeRefIr::Record { fields } => fields.values().any(type_contains_unresolved_param),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_contains_unresolved_param(&param.ty))
-                || type_contains_unresolved_param(return_type)
-        }
-        TypeRefIr::Literal { .. }
-        | TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. } => false,
     }
 }
 
