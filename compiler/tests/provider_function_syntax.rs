@@ -8,12 +8,12 @@ mod tests {
     fn rejects_module_provider_capability_declaration() {
         let error = parse_source(
             r#"
-                provider mongo
+            provider mongo
 
-                function main() -> number {
-                    return 1
-                }
-            "#,
+            function main() -> number {
+                return 1
+            }
+        "#,
         )
         .unwrap_err();
 
@@ -29,12 +29,12 @@ mod tests {
     fn rejects_provider_impl_function_without_body() {
         let error = parse_source_with_bodies_tolerant(
             r#"
-                provider mongo
+            provider mongo
 
-                impl MongoCollection<T> {
-                  provider function findMany(query: Query<T>) -> Array<T>
-                }
-            "#,
+            impl MongoCollection<T> {
+              provider function findMany(query: Query<T>) -> Array<T>
+            }
+        "#,
         )
         .unwrap_err();
 
@@ -50,12 +50,12 @@ mod tests {
     fn rejects_provider_function_with_body() {
         let error = parse_source(
             r#"
-                provider mongo
+            provider mongo
 
-                provider function findMany(query: Query<User>) -> Array<User> {
-                  return []
-                }
-            "#,
+            provider function findMany(query: Query<User>) -> Array<User> {
+              return []
+            }
+        "#,
         )
         .unwrap_err();
 
@@ -71,8 +71,8 @@ mod tests {
     fn rejects_provider_function_without_module_provider_capability() {
         let error = parse_source(
             r#"
-                provider function findMany(query: Query<User>) -> Array<User>
-            "#,
+            provider function findMany(query: Query<User>) -> Array<User>
+        "#,
         )
         .unwrap_err();
 
@@ -88,12 +88,12 @@ mod tests {
     fn rejects_provider_function_in_interface_operation() {
         let error = parse_source(
             r#"
-                provider mongo
+            provider mongo
 
-                interface MongoOps {
-                  provider function findMany(query: Query<User>) -> Array<User>
-                }
-            "#,
+            interface MongoOps {
+              provider function findMany(query: Query<User>) -> Array<User>
+            }
+        "#,
         )
         .unwrap_err();
 
@@ -109,9 +109,9 @@ mod tests {
     fn rejects_native_provider_function_modifier_combination() {
         let error = parse_source(
             r#"
-                provider mongo
-                native provider function findMany(query: Query<User>) -> Array<User>
-            "#,
+            provider mongo
+            native provider function findMany(query: Query<User>) -> Array<User>
+        "#,
         )
         .unwrap_err();
 

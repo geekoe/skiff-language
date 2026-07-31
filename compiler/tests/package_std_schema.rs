@@ -64,14 +64,14 @@ mod tests {
         temp.write(
             "errors.skiff",
             r#"type Ordinary {
-      value: string,
-    }
+  value: string,
+}
 
-    type Failure {
-      code: string,
-      message: string,
-    }
-    "#,
+type Failure {
+  code: string,
+  message: string,
+}
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("record schemas should compile");
@@ -101,32 +101,32 @@ mod tests {
                 "Envelope: schema.Envelope\n",
                 r#"import models
 
-    type Envelope { request: models.ModelRequest }
-    "#,
+type Envelope { request: models.ModelRequest }
+"#,
             ),
             (
                 "top-level-constant",
                 "request: schema.request\n",
                 r#"import models
 
-    const request: models.ModelRequest = {}
-    "#,
+const request: models.ModelRequest = {}
+"#,
             ),
             (
                 "package-expression",
                 "make: schema.make\n",
                 r#"import models
 
-    const make = models.make
-    "#,
+const make = models.make
+"#,
             ),
             (
                 "generic-function-type",
                 "CallbackBag: schema.CallbackBag\n",
                 r#"import models
 
-    type CallbackBag { callbacks: Array<fn(input: models.ModelRequest) -> void> }
-    "#,
+type CallbackBag { callbacks: Array<fn(input: models.ModelRequest) -> void> }
+"#,
             ),
         ] {
             let temp = TestDir::new("skiff-compiler", &format!("std-schema-{fixture}"));
@@ -153,7 +153,7 @@ mod tests {
         temp.write(
             "schema.skiff",
             r#"type RequestEnvelope { request: std.http.HttpClientRequest }
-    "#,
+"#,
         );
 
         let project =
@@ -168,20 +168,20 @@ mod tests {
         temp.write(
             "package.yml",
             r#"id: example.com/schema
+version: 1.0.0
+packages:
+  - id: skiff.run/std
     version: 1.0.0
-    packages:
-      - id: skiff.run/std
-        version: 1.0.0
-        alias: corelib
-    "#,
+    alias: corelib
+"#,
         );
         temp.write("api.yml", "Envelope: schema.Envelope\n");
         temp.write(
             "schema.skiff",
             r#"import corelib
 
-    type Envelope { request: corelib.http.HttpClientRequest }
-    "#,
+type Envelope { request: corelib.http.HttpClientRequest }
+"#,
         );
 
         let error = compile_package_project(temp.path())
@@ -199,25 +199,25 @@ mod tests {
         temp.write(
             "package.yml",
             r#"id: example.com/schema
-    version: 1.0.0
-    packages:
-      - id: example.com/models
-        version: 0.1.0
-        alias: models
-    "#,
+version: 1.0.0
+packages:
+  - id: example.com/models
+    version: 0.1.0
+    alias: models
+"#,
         );
         temp.write("api.yml", "Envelope: schema.Envelope\n");
         temp.write(
             "schema.skiff",
             r#"import models
-    import std
+import std
 
-    type Envelope {
-      model: models.ModelRequest,
-      request: std.http.HttpClientRequest,
-      callback: fn(input: models.ModelRequest) -> void,
-    }
-    "#,
+type Envelope {
+  model: models.ModelRequest,
+  request: std.http.HttpClientRequest,
+  callback: fn(input: models.ModelRequest) -> void,
+}
+"#,
         );
         write_models_package(&temp);
 
@@ -266,9 +266,9 @@ mod tests {
         temp.write(
             "api.skiff",
             r#"function echo(input: root.models.Payload) -> root.models.Payload {
-      return input
-    }
-    "#,
+  return input
+}
+"#,
         );
         temp.write("models.skiff", "type Payload { value: string }\n");
 
@@ -308,19 +308,19 @@ mod tests {
             "sse.skiff",
             r#"import std
 
-    function eventStatus(event: std.http.HttpSseEvent) -> integer? {
-      if event.tag == "response" {
-        return event.status
-      }
-      if event.tag == "event" {
-        const data = event.data
-        if data == "" {
-          return null
-        }
-      }
+function eventStatus(event: std.http.HttpSseEvent) -> integer? {
+  if event.tag == "response" {
+    return event.status
+  }
+  if event.tag == "event" {
+    const data = event.data
+    if data == "" {
       return null
     }
-    "#,
+  }
+  return null
+}
+"#,
         );
 
         let project =
@@ -345,19 +345,19 @@ mod tests {
         temp.write(
             "raw.skiff",
             r#"const rawRequest: HttpRequest = {
-      method: "GET",
-      url: "https://example.com",
-      path: "/",
-      query: Array.empty<std.http.HttpQueryParam>(),
-      headers: Array.empty<std.http.HttpHeader>(),
-      body: bytes.fromUtf8(""),
-    }
+  method: "GET",
+  url: "https://example.com",
+  path: "/",
+  query: Array.empty<std.http.HttpQueryParam>(),
+  headers: Array.empty<std.http.HttpHeader>(),
+  body: bytes.fromUtf8(""),
+}
 
-    type RawEnvelope {
-      request: HttpRequest,
-      response: HttpResponse,
-    }
-    "#,
+type RawEnvelope {
+  request: HttpRequest,
+  response: HttpResponse,
+}
+"#,
         );
 
         let project =

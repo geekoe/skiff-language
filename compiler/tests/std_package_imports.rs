@@ -277,10 +277,10 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    function truncate(value: string, maxBytes: number) -> string {
-      return std.string.truncateUtf8Bytes(value, maxBytes)
-    }
-    "#,
+function truncate(value: string, maxBytes: number) -> string {
+  return std.string.truncateUtf8Bytes(value, maxBytes)
+}
+"#,
         );
 
         let project =
@@ -357,24 +357,24 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    function cookieValue(request: std.http.HttpRequest) -> string? {
-      return std.http.cookie(request, "session")
-    }
+function cookieValue(request: std.http.HttpRequest) -> string? {
+  return std.http.cookie(request, "session")
+}
 
-    function headerValues(request: std.http.HttpRequest) -> Array<string> {
-      return std.http.headers(request, "x-trace")
-    }
+function headerValues(request: std.http.HttpRequest) -> Array<string> {
+  return std.http.headers(request, "x-trace")
+}
 
-    function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
-      const values = headerValues(request)
-      const session = cookieValue(request)
-      return std.http.HttpResponse {
-        status: 200,
-        headers: Array.empty<std.http.HttpHeader>(),
-        body: bytes.fromUtf8("ok"),
-      }
-    }
-    "#,
+function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const values = headerValues(request)
+  const session = cookieValue(request)
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("ok"),
+  }
+}
+"#,
         );
 
         let project = compile_package_project(temp.path())
@@ -439,12 +439,12 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    function run() -> void {
-      std.log.info("hello", null)
-    }
+function run() -> void {
+  std.log.info("hello", null)
+}
 
-    type Marker { request: std.http.HttpRequest }
-    "#,
+type Marker { request: std.http.HttpRequest }
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("std consumer should compile");
@@ -580,16 +580,16 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    function check() -> bool {
-      const jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
-      const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
-      const exactNumber = std.number.assertSafeInteger(1)
-      const timeResult = catch<std.time.DecodeError>(null)
-      const dbResult = catch<std.db.ConflictError>(null)
-      const constraintResult = catch<std.db.ConstraintError>(null)
-      return exactNumber == 1
-    }
-    "#,
+function check() -> bool {
+  const jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
+  const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
+  const exactNumber = std.number.assertSafeInteger(1)
+  const timeResult = catch<std.time.DecodeError>(null)
+  const dbResult = catch<std.db.ConflictError>(null)
+  const constraintResult = catch<std.db.ConstraintError>(null)
+  return exactNumber == 1
+}
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("std catch types should compile");
@@ -621,17 +621,17 @@ mod tests {
             "types.skiff",
             r#"import std
 
-    type Envelope {
-      request: std.http.HttpRequest,
-      event: std.http.HttpResponseStreamEvent,
-      file: std.file.ImmutableFile,
-      gateway: std.websocket.WebSocketConnectResult,
-      connect: std.websocket.WebSocketConnectRequest,
-      policy: std.websocket.WebSocketConnectionPolicy,
-      raw: Json,
-      bytesValue: bytes,
-    }
-    "#,
+type Envelope {
+  request: std.http.HttpRequest,
+  event: std.http.HttpResponseStreamEvent,
+  file: std.file.ImmutableFile,
+  gateway: std.websocket.WebSocketConnectResult,
+  connect: std.websocket.WebSocketConnectRequest,
+  policy: std.websocket.WebSocketConnectionPolicy,
+  raw: Json,
+  bytesValue: bytes,
+}
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("std types should compile");

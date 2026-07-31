@@ -293,14 +293,14 @@ mod tests {
         temp.write(
             "main.skiff",
             r#"
-    type Adapter { label: string }
+type Adapter { label: string }
 
-    impl Adapter {
-      function relay(request: payments.Request) -> payments.Request {
-        return request
-      }
-    }
-    "#,
+impl Adapter {
+  function relay(request: payments.Request) -> payments.Request {
+    return request
+  }
+}
+"#,
         );
         write_schema_package_dependency(&temp);
         let dependencies = package_nominal_contract_fixture();

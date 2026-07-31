@@ -56,15 +56,15 @@ mod tests {
         fs::write(
             temp.path().join("stream.skiff"),
             r#"
-    import std
+import std
 
-    function events(request: std.http.HttpClientRequest) -> Stream<std.http.HttpSseEvent> {
-      for event in std.http.sse(request) {
-        emit(event)
-      }
-      return
-    }
-    "#,
+function events(request: std.http.HttpClientRequest) -> Stream<std.http.HttpSseEvent> {
+  for event in std.http.sse(request) {
+    emit(event)
+  }
+  return
+}
+"#,
         )
         .unwrap();
 
@@ -109,20 +109,20 @@ mod tests {
         fs::write(
             temp.path().join("stream.skiff"),
             r#"
-    type Profile { nickname: string }
-    type GoodChunk { value: string, profile: Profile }
+type Profile { nickname: string }
+type GoodChunk { value: string, profile: Profile }
 
-    function flatEvents() -> Stream<GoodChunk> {
-      emit({ value: "ok", profile: { nickname: "Ada" } })
-      return
-    }
+function flatEvents() -> Stream<GoodChunk> {
+  emit({ value: "ok", profile: { nickname: "Ada" } })
+  return
+}
 
-    function nestedEvents() -> Stream<GoodChunk> {
-      const chunk: GoodChunk = { value: "ok", profile: { nickname: "Grace" } }
-      emit(chunk)
-      return
-    }
-    "#,
+function nestedEvents() -> Stream<GoodChunk> {
+  const chunk: GoodChunk = { value: "ok", profile: { nickname: "Grace" } }
+  emit(chunk)
+  return
+}
+"#,
         )
         .unwrap();
 

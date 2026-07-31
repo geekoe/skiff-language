@@ -371,31 +371,31 @@ mod tests {
             "health: main.health\n",
             json_rpc_source(),
             r#"path: /chat
-    connect:
-      handler: main.onConnect
-      adapterArgs:
-        - param: request
-          source: { kind: websocket.connectRequest }
-        - param: connectionId
-          source: { kind: websocket.connectionId }
-    jsonRpc:
-      status:
-        method: status.get
-        handler: main.status
-        adapterArgs:
-          - param: params
-            source: { kind: websocket.jsonRpcParams }
-          - param: connectionId
-            source: { kind: websocket.connectionId }
-          - param: businessIdentity
-            source: { kind: websocket.businessIdentity }
-      acknowledge:
-        method: status.acknowledge
-        handler: main.acknowledge
-        adapterArgs:
-          - param: params
-            source: { kind: websocket.jsonRpcParams }
-    "#,
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.status
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
+  acknowledge:
+    method: status.acknowledge
+    handler: main.acknowledge
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+"#,
         );
         let deployment = fixture.generate().expect("JSON-RPC method projection");
         assert!(fixture.api.contract.operations.is_empty());
@@ -474,52 +474,52 @@ mod tests {
             "path: /chat\n",
         );
         for (label, handler, args, expected) in [
-            (
-                "generic",
-                "main.genericStatus",
-                "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
-                "generic parameters",
-            ),
-            (
-                "scalar params",
-                "main.scalarParams",
-                "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
-                "top-level object or array",
-            ),
-            (
-                "stream return",
-                "main.streamStatus",
-                "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
-                "only unary",
-            ),
-            (
-                "wrong connection id",
-                "main.wrongConnectionIdRpc",
-                "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n      - param: connectionId\n        source: { kind: websocket.connectionId }\n",
-                "builtin string",
-            ),
-            (
-                "non-null business identity",
-                "main.wrongBusinessIdentityRpc",
-                "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n      - param: businessIdentity\n        source: { kind: websocket.businessIdentity }\n",
-                "nullable",
-            ),
-            (
-                "missing params",
-                "main.status",
-                "      - param: connectionId\n        source: { kind: websocket.connectionId }\n      - param: businessIdentity\n        source: { kind: websocket.businessIdentity }\n",
-                "signature order",
-            ),
-        ] {
-            let websocket = parse_service(&format!(
-                "path: /chat\njsonRpc:\n  status:\n    method: status.get\n    handler: {handler}\n    adapterArgs:\n{args}"
-            ));
-            let error = fixture.generate_with(Some(&websocket)).unwrap_err();
-            assert!(
-                error.to_string().contains(expected),
-                "{label}: expected {expected:?}, got {error}"
-            );
-        }
+        (
+            "generic",
+            "main.genericStatus",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
+            "generic parameters",
+        ),
+        (
+            "scalar params",
+            "main.scalarParams",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
+            "top-level object or array",
+        ),
+        (
+            "stream return",
+            "main.streamStatus",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n",
+            "only unary",
+        ),
+        (
+            "wrong connection id",
+            "main.wrongConnectionIdRpc",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n      - param: connectionId\n        source: { kind: websocket.connectionId }\n",
+            "builtin string",
+        ),
+        (
+            "non-null business identity",
+            "main.wrongBusinessIdentityRpc",
+            "      - param: params\n        source: { kind: websocket.jsonRpcParams }\n      - param: businessIdentity\n        source: { kind: websocket.businessIdentity }\n",
+            "nullable",
+        ),
+        (
+            "missing params",
+            "main.status",
+            "      - param: connectionId\n        source: { kind: websocket.connectionId }\n      - param: businessIdentity\n        source: { kind: websocket.businessIdentity }\n",
+            "signature order",
+        ),
+    ] {
+        let websocket = parse_service(&format!(
+            "path: /chat\njsonRpc:\n  status:\n    method: status.get\n    handler: {handler}\n    adapterArgs:\n{args}"
+        ));
+        let error = fixture.generate_with(Some(&websocket)).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "{label}: expected {expected:?}, got {error}"
+        );
+    }
     }
 
     #[test]
@@ -601,18 +601,18 @@ mod tests {
             "health: main.health\n",
             json_rpc_source(),
             r#"path: /chat
-    jsonRpc:
-      status:
-        method: status.get
-        handler: main.status
-        adapterArgs:
-          - param: params
-            source: { kind: websocket.jsonRpcParams }
-          - param: connectionId
-            source: { kind: websocket.connectionId }
-          - param: businessIdentity
-            source: { kind: websocket.businessIdentity }
-    "#,
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.status
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
+"#,
         );
         let first = fixture.generate().unwrap();
         let status_key = GatewayEntryKey::parse("status").unwrap();
@@ -763,12 +763,12 @@ mod tests {
             (
                 "missing formal",
                 r#"path: /chat
-    connect:
-      handler: main.onConnect
-      adapterArgs:
-        - param: request
-          source: { kind: websocket.connectRequest }
-    "#
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+"#
                 .to_string(),
                 "cover every handler formal exactly once",
             ),
@@ -780,42 +780,42 @@ mod tests {
             (
                 "duplicate formal",
                 r#"path: /chat
-    connect:
-      handler: main.onConnect
-      adapterArgs:
-        - param: request
-          source: { kind: websocket.connectRequest }
-        - param: request
-          source: { kind: websocket.connectionId }
-    "#
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: request
+      source: { kind: websocket.connectionId }
+"#
                 .to_string(),
                 "cover every handler formal exactly once",
             ),
             (
                 "reordered formals",
                 r#"path: /chat
-    connect:
-      handler: main.onConnect
-      adapterArgs:
-        - param: connectionId
-          source: { kind: websocket.connectionId }
-        - param: request
-          source: { kind: websocket.connectRequest }
-    "#
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+    - param: request
+      source: { kind: websocket.connectRequest }
+"#
                 .to_string(),
                 "signature order",
             ),
             (
                 "HTTP source",
                 r#"path: /chat
-    connect:
-      handler: main.onConnect
-      adapterArgs:
-        - param: request
-          source: { kind: http.request }
-        - param: connectionId
-          source: { kind: websocket.connectionId }
-    "#
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+"#
                 .to_string(),
                 "not allowed for websocketConnect",
             ),
@@ -838,14 +838,14 @@ mod tests {
             "health: main.health\n",
             connect_source(),
             r#"path: /chat
-    jsonRpc:
-      websocket:
-        method: status.get
-        handler: main.health
-        adapterArgs:
-          - param: params
-            source: { kind: websocket.jsonRpcParams }
-    "#,
+jsonRpc:
+  websocket:
+    method: status.get
+    handler: main.health
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+"#,
         );
         let error = collision.generate().unwrap_err();
         assert!(
@@ -860,10 +860,10 @@ mod tests {
         root.write(
             "main.skiff",
             r#"import std
-    function legacy() -> std.websocket.WebSocketConnectResult<string> {
-      return std.json.decode<std.websocket.WebSocketConnectResult<string>>("{}")
-    }
-    "#,
+function legacy() -> std.websocket.WebSocketConnectResult<string> {
+  return std.json.decode<std.websocket.WebSocketConnectResult<string>>("{}")
+}
+"#,
         );
         let error = compile_service_package_project(root.path())
             .expect_err("WebSocketConnectResult must be non-generic");
@@ -881,29 +881,29 @@ mod tests {
             "health: main.health\n",
             json_rpc_source(),
             r#"path: /chat
-    jsonRpc:
-      status:
-        method: status.get
-        handler: main.status
-        adapterArgs:
-          - param: params
-            source: { kind: websocket.jsonRpcParams }
-          - param: connectionId
-            source: { kind: websocket.connectionId }
-          - param: businessIdentity
-            source: { kind: websocket.businessIdentity }
-    "#,
+jsonRpc:
+  status:
+    method: status.get
+    handler: main.status
+    adapterArgs:
+      - param: params
+        source: { kind: websocket.jsonRpcParams }
+      - param: connectionId
+        source: { kind: websocket.connectionId }
+      - param: businessIdentity
+        source: { kind: websocket.businessIdentity }
+"#,
         );
         let http: HttpGatewayDocumentAuthoring = serde_yaml::from_str(
             r#"status:
-      method: GET
-      path: /status
-      kind: rawHttp
-      handler: main.raw
-      adapterArgs:
-        - param: request
-          source: { kind: http.request }
-    "#,
+  method: GET
+  path: /status
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+"#,
         )
         .unwrap();
         let closure = fixture.closure();

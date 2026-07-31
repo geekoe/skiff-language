@@ -157,60 +157,60 @@ mod tests {
             (
                 "common-expect",
                 r#"
-    test "invalid common expect" effects {
-      helper/tools.lookup {
-        expect: { method: 7 },
-        respond: helper.EffectResponse { value: "ok" },
-      }
-    } { assert true }
-    "#,
+test "invalid common expect" effects {
+  helper/tools.lookup {
+    expect: { method: 7 },
+    respond: helper.EffectResponse { value: "ok" },
+  }
+} { assert true }
+"#,
                 "test effect expect subset",
             ),
             (
                 "step-expect",
                 r#"
-    test "invalid step expect" effects {
-      helper/tools.lookup {
-        sequence: [{
-          expect: { url: 7 },
-          respond: helper.EffectResponse { value: "ok" },
-        }],
-      }
-    } { assert true }
-    "#,
+test "invalid step expect" effects {
+  helper/tools.lookup {
+    sequence: [{
+      expect: { url: 7 },
+      respond: helper.EffectResponse { value: "ok" },
+    }],
+  }
+} { assert true }
+"#,
                 "test effect expect subset",
             ),
             (
                 "respond",
                 r#"
-    test "invalid response" effects {
-      helper/tools.lookup {
-        respond: { value: 7 },
-      }
-    } { assert true }
-    "#,
+test "invalid response" effects {
+  helper/tools.lookup {
+    respond: { value: 7 },
+  }
+} { assert true }
+"#,
                 "test effect respond",
             ),
             (
                 "stream",
                 r#"
-    test "invalid stream event" effects {
-      helper/tools.events {
-        stream: [{ value: 7 }],
-      }
-    } { assert true }
-    "#,
+test "invalid stream event" effects {
+  helper/tools.events {
+    stream: [{ value: 7 }],
+  }
+} { assert true }
+"#,
                 "test effect stream event",
             ),
             (
                 "throw",
                 r#"
-    test "invalid throw" effects {
-      helper/tools.lookup {
-        throw: "not-a-nominal-error",
-      }
-    } { assert true }
-    "#,
+test "invalid throw" effects {
+  helper/tools.lookup {
+    throw: "not-a-nominal-error",
+  }
+} { assert true }
+"#,
                 "throw has invalid catch payload",
             ),
         ];
@@ -236,15 +236,15 @@ mod tests {
             "package.yml",
             format!(
                 r#"id: {ROOT_PACKAGE_ID}
+version: 1.0.0
+services:
+  - id: example.com/payments
     version: 1.0.0
-    services:
-      - id: example.com/payments
-        version: 1.0.0
-        alias: payments
-      - id: example.com/payments
-        version: 1.0.0
-        alias: paymentsTwin
-    "#
+    alias: payments
+  - id: example.com/payments
+    version: 1.0.0
+    alias: paymentsTwin
+"#
             ),
         );
         fixture.write("api.yml", "{}\n");
@@ -255,11 +255,11 @@ mod tests {
         fixture.write(
             "main.test.skiff",
             r#"
-    test "duplicate exact service target" effects {
-      payments/echo { respond: "first" },
-      paymentsTwin/echo { respond: "second" },
-    } { assert true }
-    "#,
+test "duplicate exact service target" effects {
+  payments/echo { respond: "first" },
+  paymentsTwin/echo { respond: "second" },
+} { assert true }
+"#,
         );
 
         let contract = echo_contract();

@@ -246,13 +246,13 @@ mod tests {
     #[test]
     fn restricted_sink_failure_does_not_mutate_fixed_bytes() {
         let encoded = br#"{
-          "kind":"internalError",
-          "payload":{
-            "message":"The service could not complete the request.",
-            "traceId":"fixed-trace",
-            "errorId":"fixed-error"
-          }
-        }"#
+      "kind":"internalError",
+      "payload":{
+        "message":"The service could not complete the request.",
+        "traceId":"fixed-trace",
+        "errorId":"fixed-error"
+      }
+    }"#
         .to_vec();
         let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
         let (request, events) = request_telemetry(false);
@@ -308,20 +308,20 @@ mod tests {
     #[test]
     fn request_to_wire_preserves_three_fixed_payloads() {
         let fixtures = [
-            br#"{"kind":"publicTypedError","packageId":"example.com/errors","stableSchemaKey":"not-found","packageSchemaTypeId":"type:not-found","encodedPayload":[123,125],"traceId":"trace-public","errorId":"error-public"}"#
-                .as_slice(),
-            br#"{
-              "kind":"internalError",
-              "payload":{
-                "message":"The service could not complete the request.",
-                "traceId":"trace-internal",
-                "errorId":"error-internal"
-              }
-            }"#
+        br#"{"kind":"publicTypedError","packageId":"example.com/errors","stableSchemaKey":"not-found","packageSchemaTypeId":"type:not-found","encodedPayload":[123,125],"traceId":"trace-public","errorId":"error-public"}"#
             .as_slice(),
-            br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"error-platform"}"#
-                .as_slice(),
-        ];
+        br#"{
+          "kind":"internalError",
+          "payload":{
+            "message":"The service could not complete the request.",
+            "traceId":"trace-internal",
+            "errorId":"error-internal"
+          }
+        }"#
+        .as_slice(),
+        br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"error-platform"}"#
+            .as_slice(),
+    ];
 
         for (index, encoded) in fixtures.into_iter().enumerate() {
             let encoded = encoded.to_vec();

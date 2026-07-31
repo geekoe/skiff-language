@@ -258,46 +258,46 @@ mod tests {
 
         let consumer = TestDir::new("skiff-compiler", "interface-consumer-direct");
         consumer.write(
-            "package.yml",
-            format!(
-                "id: example.com/interface-consumer\nversion: 1.0.0\npackages:\n  - id: {DIRECT_PROVIDER_ID}\n    version: {DIRECT_PROVIDER_VERSION}\n    alias: provider\n"
-            ),
-        );
+        "package.yml",
+        format!(
+            "id: example.com/interface-consumer\nversion: 1.0.0\npackages:\n  - id: {DIRECT_PROVIDER_ID}\n    version: {DIRECT_PROVIDER_VERSION}\n    alias: provider\n"
+        ),
+    );
         consumer.write("api.yml", "{}\n");
         consumer.write(
             "main.skiff",
             r#"
-    import provider
+import provider
 
-    function direct(handler: any provider.Handler) -> string {
-      return provider/accept(handler)
-    }
+function direct(handler: any provider.Handler) -> string {
+  return provider/accept(handler)
+}
 
-    function roundTrip(handler: any provider.Handler) -> any provider.Handler {
-      const echoed: any provider.Handler = provider/echo(handler)
-      return echoed
-    }
+function roundTrip(handler: any provider.Handler) -> any provider.Handler {
+  const echoed: any provider.Handler = provider/echo(handler)
+  return echoed
+}
 
-    function nullable(handler: any provider.Handler?) -> string {
-      return provider/acceptNullable(handler)
-    }
+function nullable(handler: any provider.Handler?) -> string {
+  return provider/acceptNullable(handler)
+}
 
-    function array(handlers: Array<any provider.Handler>) -> string {
-      return provider/acceptArray(handlers)
-    }
+function array(handlers: Array<any provider.Handler>) -> string {
+  return provider/acceptArray(handlers)
+}
 
-    function record(bindings: {
-      direct: any provider.Handler,
-      maybe: any provider.Handler?,
-      many: Array<any provider.Handler>,
-    }) -> string {
-      return provider/acceptRecord(bindings)
-    }
+function record(bindings: {
+  direct: any provider.Handler,
+  maybe: any provider.Handler?,
+  many: Array<any provider.Handler>,
+}) -> string {
+  return provider/acceptRecord(bindings)
+}
 
-    function generic(handler: any provider.GenericHandler<string>) -> string {
-      return provider/acceptGeneric(handler)
-    }
-    "#,
+function generic(handler: any provider.GenericHandler<string>) -> string {
+  return provider/acceptGeneric(handler)
+}
+"#,
         );
         write_direct_provider(
             &consumer,
@@ -337,35 +337,35 @@ mod tests {
     fn transitive_dependency_owned_interface_identity_uses_the_same_exact_owner() {
         let consumer = TestDir::new("skiff-compiler", "interface-consumer-transitive");
         consumer.write(
-            "package.yml",
-            format!(
-                "id: example.com/transitive-interface-consumer\nversion: 1.0.0\npackages:\n  - id: {INTERFACE_BASE_ID}\n    version: 1.0.0\n    alias: interfaces\n  - id: {INTERFACE_FACADE_ID}\n    version: 1.0.0\n    alias: gateway\n"
-            ),
-        );
+        "package.yml",
+        format!(
+            "id: example.com/transitive-interface-consumer\nversion: 1.0.0\npackages:\n  - id: {INTERFACE_BASE_ID}\n    version: 1.0.0\n    alias: interfaces\n  - id: {INTERFACE_FACADE_ID}\n    version: 1.0.0\n    alias: gateway\n"
+        ),
+    );
         consumer.write("api.yml", "{}\n");
         consumer.write(
             "main.skiff",
             r#"
-    import gateway
-    import interfaces
+import gateway
+import interfaces
 
-    function direct(handler: any interfaces.Handler) -> string {
-      return gateway/accept(handler)
-    }
+function direct(handler: any interfaces.Handler) -> string {
+  return gateway/accept(handler)
+}
 
-    function roundTrip(handler: any interfaces.Handler) -> any interfaces.Handler {
-      const echoed: any interfaces.Handler = gateway/echo(handler)
-      return echoed
-    }
+function roundTrip(handler: any interfaces.Handler) -> any interfaces.Handler {
+  const echoed: any interfaces.Handler = gateway/echo(handler)
+  return echoed
+}
 
-    function nested(handlers: Array<any interfaces.Handler?>) -> string {
-      return gateway/acceptNested(handlers)
-    }
+function nested(handlers: Array<any interfaces.Handler?>) -> string {
+  return gateway/acceptNested(handlers)
+}
 
-    function generic(handler: any interfaces.GenericHandler<string>) -> string {
-      return gateway/acceptGeneric(handler)
-    }
-    "#,
+function generic(handler: any interfaces.GenericHandler<string>) -> string {
+  return gateway/acceptGeneric(handler)
+}
+"#,
         );
         write_interface_base(&consumer, &provider_store_root(INTERFACE_BASE_ID, "1.0.0"));
         write_interface_facade(
@@ -538,35 +538,35 @@ mod tests {
         consumer.write(
             "package.yml",
             r#"id: example.com/interface-negative-consumer
+version: 1.0.0
+packages:
+  - id: example.com/interface-negative-provider
     version: 1.0.0
-    packages:
-      - id: example.com/interface-negative-provider
-        version: 1.0.0
-        alias: provider
-      - id: example.com/interface-other-provider
-        version: 1.0.0
-        alias: other
-    "#,
+    alias: provider
+  - id: example.com/interface-other-provider
+    version: 1.0.0
+    alias: other
+"#,
         );
         consumer.write("api.yml", "{}\n");
         consumer.write(
             "main.skiff",
             r#"
-    import other
-    import provider
+import other
+import provider
 
-    function wrongPackage(handler: any other.Handler) -> string {
-      return provider/accept(handler)
-    }
+function wrongPackage(handler: any other.Handler) -> string {
+  return provider/accept(handler)
+}
 
-    function wrongSymbol(handler: any provider.OtherHandler) -> string {
-      return provider/accept(handler)
-    }
+function wrongSymbol(handler: any provider.OtherHandler) -> string {
+  return provider/accept(handler)
+}
 
-    function wrongGeneric(handler: any provider.GenericHandler<integer>) -> string {
-      return provider/acceptGeneric(handler)
-    }
-    "#,
+function wrongGeneric(handler: any provider.GenericHandler<integer>) -> string {
+  return provider/acceptGeneric(handler)
+}
+"#,
         );
         write_negative_provider(
             &consumer,

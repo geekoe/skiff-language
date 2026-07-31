@@ -231,9 +231,9 @@ mod tests {
 
         let incomplete_live = run_runner(runner, base.into_iter().chain(["--live"]), &[]);
         assert_failure_contains(
-            &incomplete_live,
-            "--live requires --activation-url, --ingress-url, --environment and --expected-generation",
-        );
+        &incomplete_live,
+        "--live requires --activation-url, --ingress-url, --environment and --expected-generation",
+    );
 
         let cli_target = run_runner(
             runner,

@@ -176,24 +176,24 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/import-app
-    version: 1.0.0
-    packages:
-      - id: google.com/cloud
-        version: 0.1.0
-        alias: gcloud
-    "#,
+version: 1.0.0
+packages:
+  - id: google.com/cloud
+    version: 0.1.0
+    alias: gcloud
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import gcloud
-    function run() -> string {
-      const stored = gcloud/storage.upload()
-      return gcloud/compute.start()
-    }
-    "#,
+import gcloud
+function run() -> string {
+  const stored = gcloud/storage.upload()
+  return gcloud/compute.start()
+}
+"#,
         )
         .unwrap();
         write_cloud_dependency(temp.path());
@@ -237,12 +237,12 @@ mod tests {
         fs::write(
             nested.path().join("package.yml"),
             r#"id: example.com/nested-consumer
-    version: 1.0.0
-    packages:
-      - id: skiff.run/llm
-        version: 0.1.0
-        alias: llm
-    "#,
+version: 1.0.0
+packages:
+  - id: skiff.run/llm
+    version: 0.1.0
+    alias: llm
+"#,
         )
         .unwrap();
         fs::write(nested.path().join("api.yml"), "{}\n").unwrap();
@@ -266,12 +266,12 @@ mod tests {
         fs::write(
             folded.path().join("package.yml"),
             r#"id: example.com/folded-consumer
-    version: 1.0.0
-    packages:
-      - id: skiff.run/llm
-        version: 0.1.0
-        alias: llm
-    "#,
+version: 1.0.0
+packages:
+  - id: skiff.run/llm
+    version: 0.1.0
+    alias: llm
+"#,
         )
         .unwrap();
         fs::write(folded.path().join("api.yml"), "{}\n").unwrap();
@@ -293,12 +293,12 @@ mod tests {
         fs::write(
             flat.path().join("package.yml"),
             r#"id: example.com/flat-consumer
-    version: 1.0.0
-    packages:
-      - id: skiff.run/llm
-        version: 0.1.0
-        alias: llm
-    "#,
+version: 1.0.0
+packages:
+  - id: skiff.run/llm
+    version: 0.1.0
+    alias: llm
+"#,
         )
         .unwrap();
         fs::write(flat.path().join("api.yml"), "{}\n").unwrap();
@@ -324,36 +324,36 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/widget-tests
+version: 1.0.0
+packages:
+  - id: example.com/widget
     version: 1.0.0
-    packages:
-      - id: example.com/widget
-        version: 1.0.0
-        alias: widget
-        topLevelAlias: widgetImpl
-    "#,
+    alias: widget
+    topLevelAlias: widgetImpl
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
-            temp.path().join("main.skiff"),
-            r#"
-    import widget
-    import widgetImpl
+        temp.path().join("main.skiff"),
+        r#"
+import widget
+import widgetImpl
 
-    function run() -> string {
-      const publicValue = widget/internal.codec.reveal()
-      const seed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.PRIVATE_VALUE
-      const revealed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal(seed)
-      const contextual: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal({ value: "contextual" })
-      return publicValue + revealed.value + contextual.value
-    }
+function run() -> string {
+  const publicValue = widget/internal.codec.reveal()
+  const seed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.PRIVATE_VALUE
+  const revealed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal(seed)
+  const contextual: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal({ value: "contextual" })
+  return publicValue + revealed.value + contextual.value
+}
 
-    function construct() -> widgetImpl/internal.codec.PrivateValue {
-      return widgetImpl/internal.codec.PrivateValue { value: "constructed" }
-    }
-    "#,
-        )
-        .unwrap();
+function construct() -> widgetImpl/internal.codec.PrivateValue {
+  return widgetImpl/internal.codec.PrivateValue { value: "constructed" }
+}
+"#,
+    )
+    .unwrap();
         let dependency = temp
             .path()
             .join(".skiff-packages/example~com~~widget/1.0.0");
@@ -372,20 +372,20 @@ mod tests {
         fs::write(
             dependency.join("internal/codec.skiff"),
             r#"
-    type PrivateValue {
-      value: string
-    }
+type PrivateValue {
+  value: string
+}
 
-    const PRIVATE_VALUE: PrivateValue = PrivateValue { value: "private" }
+const PRIVATE_VALUE: PrivateValue = PrivateValue { value: "private" }
 
-    function reveal(value: PrivateValue) -> PrivateValue {
-      return value
-    }
+function reveal(value: PrivateValue) -> PrivateValue {
+  return value
+}
 
-    function privateOnly() -> string {
-      return "private-only"
-    }
-    "#,
+function privateOnly() -> string {
+  return "private-only"
+}
+"#,
         )
         .unwrap();
         fs::write(
@@ -540,10 +540,10 @@ mod tests {
         );
 
         fs::write(
-            temp.path().join("main.skiff"),
-            "import widgetImpl\nfunction bad(value: widgetImpl.internal.codec.PrivateValue) -> string { return value.value }\n",
-        )
-        .unwrap();
+        temp.path().join("main.skiff"),
+        "import widgetImpl\nfunction bad(value: widgetImpl.internal.codec.PrivateValue) -> string { return value.value }\n",
+    )
+    .unwrap();
         let error = compile_package_project(temp.path())
             .expect_err("top-level type access must require slash syntax")
             .to_string();
@@ -553,10 +553,10 @@ mod tests {
         );
 
         fs::write(
-            temp.path().join("main.skiff"),
-            "import widget\nfunction bad() -> string { return widget/internal.codec.privateOnly() }\n",
-        )
-        .unwrap();
+        temp.path().join("main.skiff"),
+        "import widget\nfunction bad() -> string { return widget/internal.codec.privateOnly() }\n",
+    )
+    .unwrap();
         let error = compile_package_project(temp.path())
             .expect_err("public mode must not fall back to private source symbols")
             .to_string();
@@ -572,13 +572,13 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/box-tests
+version: 1.0.0
+packages:
+  - id: example.com/box
     version: 1.0.0
-    packages:
-      - id: example.com/box
-        version: 1.0.0
-        alias: subject
-        topLevelAlias: subjectImpl
-    "#,
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
         )
         .unwrap();
         fs::write(
@@ -590,13 +590,13 @@ mod tests {
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import subjectImpl
+import subjectImpl
 
-    function run() -> string {
-      const box = subjectImpl/internal.makeBox("ok")
-      return box.read()
-    }
-    "#,
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.read()
+}
+"#,
         )
         .unwrap();
 
@@ -611,20 +611,20 @@ mod tests {
         fs::write(
             dependency.join("internal.skiff"),
             r#"
-    type Box {
-      value: string
-    }
+type Box {
+  value: string
+}
 
-    function makeBox(value: string) -> Box {
-      return Box { value: value }
-    }
+function makeBox(value: string) -> Box {
+  return Box { value: value }
+}
 
-    impl Box {
-      function read(self: Box) -> string {
-        return self.value
-      }
-    }
-    "#,
+impl Box {
+  function read(self: Box) -> string {
+    return self.value
+  }
+}
+"#,
         )
         .unwrap();
 
@@ -725,13 +725,13 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/box-negative-tests
+version: 1.0.0
+packages:
+  - id: example.com/box-negative
     version: 1.0.0
-    packages:
-      - id: example.com/box-negative
-        version: 1.0.0
-        alias: subject
-        topLevelAlias: subjectImpl
-    "#,
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
         )
         .unwrap();
         fs::write(
@@ -758,36 +758,36 @@ mod tests {
         fs::write(
             dependency.join("internal.skiff"),
             r#"
-    type Box {
-      value: string
-    }
+type Box {
+  value: string
+}
 
-    function makeBox(value: string) -> Box {
-      return Box { value: value }
-    }
+function makeBox(value: string) -> Box {
+  return Box { value: value }
+}
 
-    impl Box {
-      function read(self: Box) -> string {
-        return self.value
-      }
+impl Box {
+  function read(self: Box) -> string {
+    return self.value
+  }
 
-      function append(self: Box, suffix: string) -> string {
-        return self.value + suffix
-      }
-    }
-    "#,
+  function append(self: Box, suffix: string) -> string {
+    return self.value + suffix
+  }
+}
+"#,
         )
         .unwrap();
 
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import subjectImpl
-    function run() -> string {
-      const box = subjectImpl/internal.makeBox("ok")
-      return box.append("!")
-    }
-    "#,
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.append("!")
+}
+"#,
         )
         .unwrap();
         compile_service_package_project(temp.path())
@@ -797,56 +797,56 @@ mod tests {
             (
                 "ordinary alias",
                 r#"
-    import subject
-    function run() -> string {
-      const box = subject/makeBox("ok")
-      return box.read()
-    }
-    "#,
+import subject
+function run() -> string {
+  const box = subject/makeBox("ok")
+  return box.read()
+}
+"#,
                 "receiver method `read`",
             ),
             (
                 "missing method",
                 r#"
-    import subjectImpl
-    function run() -> string {
-      const box = subjectImpl/internal.makeBox("ok")
-      return box.missing()
-    }
-    "#,
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.missing()
+}
+"#,
                 "internal.Box.missing",
             ),
             (
                 "missing explicit argument",
                 r#"
-    import subjectImpl
-    function run() -> string {
-      const box = subjectImpl/internal.makeBox("ok")
-      return box.append()
-    }
-    "#,
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.append()
+}
+"#,
                 "expected 1 arguments, found 0",
             ),
             (
                 "explicit receiver argument",
                 r#"
-    import subjectImpl
-    function run() -> string {
-      const box = subjectImpl/internal.makeBox("ok")
-      return box.read(box)
-    }
-    "#,
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.read(box)
+}
+"#,
                 "expected 0 arguments, found 1",
             ),
             (
                 "wrong argument type",
                 r#"
-    import subjectImpl
-    function run() -> string {
-      const box = subjectImpl/internal.makeBox("ok")
-      return box.append(1)
-    }
-    "#,
+import subjectImpl
+function run() -> string {
+  const box = subjectImpl/internal.makeBox("ok")
+  return box.append(1)
+}
+"#,
                 "argument 1 type mismatch",
             ),
         ];
@@ -886,13 +886,13 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/generic-box-tests
+version: 1.0.0
+packages:
+  - id: example.com/generic-box
     version: 1.0.0
-    packages:
-      - id: example.com/generic-box
-        version: 1.0.0
-        alias: subject
-        topLevelAlias: subjectImpl
-    "#,
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
         )
         .unwrap();
         fs::write(
@@ -904,13 +904,13 @@ mod tests {
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import subjectImpl
+import subjectImpl
 
-    function run() -> string {
-      const box = subjectImpl/internal.Box<string> { value: "ok" }
-      return box.read()
-    }
-    "#,
+function run() -> string {
+  const box = subjectImpl/internal.Box<string> { value: "ok" }
+  return box.read()
+}
+"#,
         )
         .unwrap();
 
@@ -927,16 +927,16 @@ mod tests {
         fs::write(
             dependency.join("internal.skiff"),
             r#"
-    type Box<T> {
-      value: T
-    }
+type Box<T> {
+  value: T
+}
 
-    impl Box<T> {
-      function read(self: Box<T>) -> T {
-        return self.value
-      }
-    }
-    "#,
+impl Box<T> {
+  function read(self: Box<T>) -> T {
+    return self.value
+  }
+}
+"#,
         )
         .unwrap();
 
@@ -995,13 +995,13 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/provider-tests
+version: 1.0.0
+packages:
+  - id: example.com/provider
     version: 1.0.0
-    packages:
-      - id: example.com/provider
-        version: 1.0.0
-        alias: provider
-        topLevelAlias: providerImpl
-    "#,
+    alias: provider
+    topLevelAlias: providerImpl
+"#,
         )
         .unwrap();
         fs::write(
@@ -1013,50 +1013,50 @@ mod tests {
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import providerImpl
+import providerImpl
 
-    function matrix(rows: Array<providerImpl/model.Session>) -> bool {
-      const inserted = db insert providerImpl/model.Session {
-        id = "one"
-        value = "first"
-        visits = 0
-      }
-      const found = db find many providerImpl/model.Session {
-        where value != null
-        order id asc
-        limit 10
-      }
-      const optional = db optional providerImpl/model.Session("one")
-      const required = db require providerImpl/model.Session("one")
-      const updated = db update providerImpl/model.Session("one") { visits += 1 }
-      const replaced = db replace providerImpl/model.Session("one") {
-        value = "replacement"
-        visits = 2
-      }
-      const upserted = db upsert providerImpl/model.Session("two") {
-        value = "created"
-        visits = 0
-      } { visits += 1 }
-      const count = db count providerImpl/model.Session { where id != null }
-      const exists = db exists providerImpl/model.Session("one")
-      const query = db query providerImpl/model.Session { where visits >= 0 }
-      const insertedMany = db insert many providerImpl/model.Session values rows
-      const updatedMany = db update many providerImpl/model.Session {
-        where visits >= 0
-      } { visits += 1 }
-      const deleted = db delete providerImpl/model.Session("two")
-      const deletedMany = db delete many providerImpl/model.Session { where visits > 10 }
-      const claimed = db claim providerImpl/model.Session("one").worker as locked {
-        db update providerImpl/model.Session("one") { visits += 1 }
-      }
-      const lease = db lease providerImpl/model.Session("one").worker
-      db transaction {
-        db update providerImpl/model.Session("one") { value = "transaction" }
-        db require providerImpl/model.Session("one")
-      }
-      return claimed
-    }
-    "#,
+function matrix(rows: Array<providerImpl/model.Session>) -> bool {
+  const inserted = db insert providerImpl/model.Session {
+    id = "one"
+    value = "first"
+    visits = 0
+  }
+  const found = db find many providerImpl/model.Session {
+    where value != null
+    order id asc
+    limit 10
+  }
+  const optional = db optional providerImpl/model.Session("one")
+  const required = db require providerImpl/model.Session("one")
+  const updated = db update providerImpl/model.Session("one") { visits += 1 }
+  const replaced = db replace providerImpl/model.Session("one") {
+    value = "replacement"
+    visits = 2
+  }
+  const upserted = db upsert providerImpl/model.Session("two") {
+    value = "created"
+    visits = 0
+  } { visits += 1 }
+  const count = db count providerImpl/model.Session { where id != null }
+  const exists = db exists providerImpl/model.Session("one")
+  const query = db query providerImpl/model.Session { where visits >= 0 }
+  const insertedMany = db insert many providerImpl/model.Session values rows
+  const updatedMany = db update many providerImpl/model.Session {
+    where visits >= 0
+  } { visits += 1 }
+  const deleted = db delete providerImpl/model.Session("two")
+  const deletedMany = db delete many providerImpl/model.Session { where visits > 10 }
+  const claimed = db claim providerImpl/model.Session("one").worker as locked {
+    db update providerImpl/model.Session("one") { visits += 1 }
+  }
+  const lease = db lease providerImpl/model.Session("one").worker
+  db transaction {
+    db update providerImpl/model.Session("one") { value = "transaction" }
+    db require providerImpl/model.Session("one")
+  }
+  return claimed
+}
+"#,
         )
         .unwrap();
         let provider = temp
@@ -1072,23 +1072,23 @@ mod tests {
         fs::write(
             provider.join("model.skiff"),
             r#"
-    type Session {
-      id: string,
-      value: string,
-      visits: number
-    }
+type Session {
+  id: string,
+  value: string,
+  visits: number
+}
 
-    type NotDb {
-      id: string
-    }
+type NotDb {
+  id: string
+}
 
-    db object Session {
-      name "sessions"
-      primary key(id)
-      lease worker ttl 1000 max 5000
-      index byVisits(visits asc)
-    }
-    "#,
+db object Session {
+  name "sessions"
+  primary key(id)
+  lease worker ttl 1000 max 5000
+  index byVisits(visits asc)
+}
+"#,
         )
         .unwrap();
 
@@ -1163,10 +1163,10 @@ mod tests {
         );
 
         fs::write(
-            temp.path().join("main.skiff"),
-            "import providerImpl\nfunction bad() -> number { return db count providerImpl/model.NotDb {} }\n",
-        )
-        .unwrap();
+        temp.path().join("main.skiff"),
+        "import providerImpl\nfunction bad() -> number { return db count providerImpl/model.NotDb {} }\n",
+    )
+    .unwrap();
         let error = compile_service_package_project(temp.path())
             .expect_err("a top-level non-DB type must not become a DB target")
             .to_string();
@@ -1182,40 +1182,40 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/agent-tests
+version: 1.0.0
+packages:
+  - id: example.com/subject
     version: 1.0.0
-    packages:
-      - id: example.com/subject
-        version: 1.0.0
-        alias: subject
-        topLevelAlias: subjectImpl
-      - id: example.com/agent
-        version: 1.0.0
-        alias: agent
-        topLevelAlias: agentImpl
-    "#,
+    alias: subject
+    topLevelAlias: subjectImpl
+  - id: example.com/agent
+    version: 1.0.0
+    alias: agent
+    topLevelAlias: agentImpl
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
-            temp.path().join("main.skiff"),
-            r#"
-    import agentImpl
-    import subjectImpl
+        temp.path().join("main.skiff"),
+        r#"
+import agentImpl
+import subjectImpl
 
-    function pointId(value: agentImpl/canonical.CanonicalMessagePointView) -> string {
-      return value.point.id
-    }
+function pointId(value: agentImpl/canonical.CanonicalMessagePointView) -> string {
+  return value.point.id
+}
 
-    function bindings(value: agentImpl/canonical.AgentRuntimeBindings) -> agentImpl/canonical.AgentRuntimeBindings {
-      return value
-    }
+function bindings(value: agentImpl/canonical.AgentRuntimeBindings) -> agentImpl/canonical.AgentRuntimeBindings {
+  return value
+}
 
-    function subjectId(value: subjectImpl/internal.SubjectState) -> string {
-      return value.id
-    }
-    "#,
-        )
-        .unwrap();
+function subjectId(value: subjectImpl/internal.SubjectState) -> string {
+  return value.id
+}
+"#,
+    )
+    .unwrap();
 
         let store = temp.path().join(".skiff-packages");
         let agent = store.join("example~com~~agent/1.0.0");
@@ -1228,30 +1228,30 @@ mod tests {
         fs::write(
             agent.join("api.yml"),
             r#"canonical:
-      CanonicalMessagePoint: canonical.CanonicalMessagePoint
-      CanonicalMessagePointView: canonical.CanonicalMessagePointView
-      ToolProvider: canonical.ToolProvider
-      AgentRuntimeBindings: canonical.AgentRuntimeBindings
-    "#,
+  CanonicalMessagePoint: canonical.CanonicalMessagePoint
+  CanonicalMessagePointView: canonical.CanonicalMessagePointView
+  ToolProvider: canonical.ToolProvider
+  AgentRuntimeBindings: canonical.AgentRuntimeBindings
+"#,
         )
         .unwrap();
         fs::write(
             agent.join("canonical.skiff"),
             r#"
-    type CanonicalMessagePoint {
-      id: string
-    }
+type CanonicalMessagePoint {
+  id: string
+}
 
-    type CanonicalMessagePointView {
-      point: CanonicalMessagePoint
-    }
+type CanonicalMessagePointView {
+  point: CanonicalMessagePoint
+}
 
-    interface ToolProvider {}
+interface ToolProvider {}
 
-    type AgentRuntimeBindings {
-      provider: any ToolProvider
-    }
-    "#,
+type AgentRuntimeBindings {
+  provider: any ToolProvider
+}
+"#,
         )
         .unwrap();
 
@@ -1300,13 +1300,13 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/provider-tests
+version: 1.0.0
+packages:
+  - id: example.com/provider
     version: 1.0.0
-    packages:
-      - id: example.com/provider
-        version: 1.0.0
-        alias: provider
-        topLevelAlias: providerImpl
-    "#,
+    alias: provider
+    topLevelAlias: providerImpl
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
@@ -1323,79 +1323,79 @@ mod tests {
         fs::write(
             provider.join("api.yml"),
             r#"PublicInput: api.PublicInput
-    PublicOutput: api.PublicOutput
-    PublicHandler: api.PublicHandler
-    PublicEnvelope: api.PublicEnvelope
-    "#,
+PublicOutput: api.PublicOutput
+PublicHandler: api.PublicHandler
+PublicEnvelope: api.PublicEnvelope
+"#,
         )
         .unwrap();
         fs::write(
             provider.join("api.skiff"),
             r#"
-    type PublicInput {
-      text: string
-    }
+type PublicInput {
+  text: string
+}
 
-    type PublicOutput {
-      text: string
-    }
+type PublicOutput {
+  text: string
+}
 
-    interface PublicHandler {
-      function handle(self: Self, input: PublicInput) -> PublicOutput
-    }
+interface PublicHandler {
+  function handle(self: Self, input: PublicInput) -> PublicOutput
+}
 
-    type PublicEnvelope<T> {
-      value: T
-    }
-    "#,
+type PublicEnvelope<T> {
+  value: T
+}
+"#,
         )
         .unwrap();
         fs::write(
             provider.join("internal.skiff"),
             r#"
-    type PrivateInput {
-      text: string
-    }
+type PrivateInput {
+  text: string
+}
 
-    function run(
-      input: root.api.PublicInput,
-      values: Array<root.api.PublicInput?>,
-      handler: any root.api.PublicHandler
-    ) -> root.api.PublicOutput {
-      return handler.handle(input)
-    }
+function run(
+  input: root.api.PublicInput,
+  values: Array<root.api.PublicInput?>,
+  handler: any root.api.PublicHandler
+) -> root.api.PublicOutput {
+  return handler.handle(input)
+}
 
-    function echoEnvelope(
-      value: root.api.PublicEnvelope<root.api.PublicInput>
-    ) -> root.api.PublicEnvelope<root.api.PublicInput> {
-      return value
-    }
+function echoEnvelope(
+  value: root.api.PublicEnvelope<root.api.PublicInput>
+) -> root.api.PublicEnvelope<root.api.PublicInput> {
+  return value
+}
 
-    function privateRun(input: PrivateInput) -> root.api.PublicOutput {
-      return { text: input.text }
-    }
-    "#,
+function privateRun(input: PrivateInput) -> root.api.PublicOutput {
+  return { text: input.text }
+}
+"#,
         )
         .unwrap();
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import provider
-    import providerImpl
+import provider
+import providerImpl
 
-    function run(
-      input: provider.PublicInput,
-      values: Array<provider.PublicInput?>,
-      handler: any provider.PublicHandler,
-      envelope: provider.PublicEnvelope<provider.PublicInput>
-    ) -> provider.PublicOutput {
-      const echoed: provider.PublicEnvelope<provider.PublicInput> =
-        providerImpl/internal.echoEnvelope(envelope)
-      const result: provider.PublicOutput =
-        providerImpl/internal.run(echoed.value, values, handler)
-      return result
-    }
-    "#,
+function run(
+  input: provider.PublicInput,
+  values: Array<provider.PublicInput?>,
+  handler: any provider.PublicHandler,
+  envelope: provider.PublicEnvelope<provider.PublicInput>
+) -> provider.PublicOutput {
+  const echoed: provider.PublicEnvelope<provider.PublicInput> =
+    providerImpl/internal.echoEnvelope(envelope)
+  const result: provider.PublicOutput =
+    providerImpl/internal.run(echoed.value, values, handler)
+  return result
+}
+"#,
         )
         .unwrap();
 
@@ -1406,13 +1406,13 @@ mod tests {
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import provider
-    import providerImpl
+import provider
+import providerImpl
 
-    function bad(input: provider.PublicInput) -> provider.PublicOutput {
-      return providerImpl/internal.privateRun(input)
-    }
-    "#,
+function bad(input: provider.PublicInput) -> provider.PublicOutput {
+  return providerImpl/internal.privateRun(input)
+}
+"#,
         )
         .unwrap();
         let error = compile_package_project(temp.path())
@@ -1427,16 +1427,16 @@ mod tests {
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import provider
+import provider
 
-    function bad(
-      input: provider.PublicInput,
-      values: Array<provider.PublicInput?>,
-      handler: any provider.PublicHandler
-    ) -> provider.PublicOutput {
-      return provider/internal.run(input, values, handler)
-    }
-    "#,
+function bad(
+  input: provider.PublicInput,
+  values: Array<provider.PublicInput?>,
+  handler: any provider.PublicHandler
+) -> provider.PublicOutput {
+  return provider/internal.run(input, values, handler)
+}
+"#,
         )
         .unwrap();
         let error = compile_package_project(temp.path())
@@ -1456,32 +1456,32 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/tool-consumer
-    version: 1.0.0
-    packages:
-      - id: example.com/tool-types
-        version: 0.1.0
-        alias: tools
-    "#,
+version: 1.0.0
+packages:
+  - id: example.com/tool-types
+    version: 0.1.0
+    alias: tools
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import tools
+import tools
 
-    function automatic() -> tools.ToolChoice {
-      return { tag: "auto" }
-    }
+function automatic() -> tools.ToolChoice {
+  return { tag: "auto" }
+}
 
-    function named(name: string) -> tools.ToolChoice {
-      return { tag: "tool", name: name, options: { note: null } }
-    }
+function named(name: string) -> tools.ToolChoice {
+  return { tag: "tool", name: name, options: { note: null } }
+}
 
-    function throughCall() -> tools.ToolChoice {
-      return tools/accept({ tag: "auto" })
-    }
-    "#,
+function throughCall() -> tools.ToolChoice {
+  return tools/accept({ tag: "auto" })
+}
+"#,
         )
         .unwrap();
 
@@ -1502,15 +1502,15 @@ mod tests {
         fs::write(
             dependency.join("types.skiff"),
             r#"
-    type ToolOptions { note: string? }
-    type ToolChoice discriminator "tag" =
-      { tag: "auto" }
-      | { tag: "tool", name: string, options: ToolOptions? }
+type ToolOptions { note: string? }
+type ToolChoice discriminator "tag" =
+  { tag: "auto" }
+  | { tag: "tool", name: string, options: ToolOptions? }
 
-    function accept(choice: ToolChoice) -> ToolChoice {
-      return choice
-    }
-    "#,
+function accept(choice: ToolChoice) -> ToolChoice {
+  return choice
+}
+"#,
         )
         .unwrap();
 
@@ -1531,23 +1531,23 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(
-            targets
-                .iter()
-                .filter(|target| matches!(
-                    target,
-                    skiff_artifact_model::TypeRefIr::PackageSymbol {
-                        symbol: skiff_artifact_model::PackageSymbolRef {
-                            package: skiff_artifact_model::PackageRefIr::Dependency { dependency_ref },
-                            symbol_path,
-                            ..
-                        }
-                    } if dependency_ref == "tools" && symbol_path == "ToolChoice"
-                ))
-                .count()
-                >= 3,
-            "return and public-call literals must retain the exact Package nominal target: {}",
-            file.value()
-        );
+        targets
+            .iter()
+            .filter(|target| matches!(
+                target,
+                skiff_artifact_model::TypeRefIr::PackageSymbol {
+                    symbol: skiff_artifact_model::PackageSymbolRef {
+                        package: skiff_artifact_model::PackageRefIr::Dependency { dependency_ref },
+                        symbol_path,
+                        ..
+                    }
+                } if dependency_ref == "tools" && symbol_path == "ToolChoice"
+            ))
+            .count()
+            >= 3,
+        "return and public-call literals must retain the exact Package nominal target: {}",
+        file.value()
+    );
         let through_call = file
             .unit
             .executables
@@ -1585,12 +1585,12 @@ mod tests {
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import tools
+import tools
 
-    function invalid() -> tools.ToolChoice {
-      return tools/accept({ tag: "tool", name: 42 })
-    }
-    "#,
+function invalid() -> tools.ToolChoice {
+  return tools/accept({ tag: "tool", name: 42 })
+}
+"#,
         )
         .unwrap();
         let error = compile_package_project(temp.path())
@@ -1609,12 +1609,12 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/result-consumer
+version: 1.0.0
+packages:
+  - id: example.com/result-provider
     version: 1.0.0
-    packages:
-      - id: example.com/result-provider
-        version: 1.0.0
-        alias: provider
-    "#,
+    alias: provider
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
@@ -1630,78 +1630,78 @@ mod tests {
         fs::write(
             provider.join("api.yml"),
             r#"Handler: tools.Handler
-    Bindings: tools.Bindings
-    Child: api.Child
-    Result: api.Result
-    Label: api.Label
-    run: api.run
-    "#,
+Bindings: tools.Bindings
+Child: api.Child
+Result: api.Result
+Label: api.Label
+run: api.run
+"#,
         )
         .unwrap();
         fs::write(
             provider.join("tools.skiff"),
             r#"
-    interface Handler {
-      function handle(self: Self, input: string) -> string
-    }
+interface Handler {
+  function handle(self: Self, input: string) -> string
+}
 
-    type Bindings {
-      handler: any Handler
-    }
-    "#,
+type Bindings {
+  handler: any Handler
+}
+"#,
         )
         .unwrap();
         fs::write(
             provider.join("api.skiff"),
             r#"
 
-    type Child {
-      id: string
-    }
+type Child {
+  id: string
+}
 
-    alias Label = string
+alias Label = string
 
-    type Result {
-      ok: bool,
-      note: string?,
-      child: Child,
-      label: Label,
-    }
+type Result {
+  ok: bool,
+  note: string?,
+  child: Child,
+  label: Label,
+}
 
-    type PrivateBindings {
-      marker: string
-    }
+type PrivateBindings {
+  marker: string
+}
 
-    function run(bindings: root.tools.Bindings) -> Result {
-      return {
-        ok: true,
-        note: null,
-        child: { id: "child" },
-        label: "ready",
-      }
-    }
-    "#,
+function run(bindings: root.tools.Bindings) -> Result {
+  return {
+    ok: true,
+    note: null,
+    child: { id: "child" },
+    label: "ready",
+  }
+}
+"#,
         )
         .unwrap();
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import provider
+import provider
 
-    function throughLocal(bindings: provider.Bindings) -> JsonObject {
-      const result = provider/run(bindings)
-      return {
-        ok: result.ok,
-        note: result.note,
-        childId: result.child.id,
-        label: result.label,
-      }
-    }
+function throughLocal(bindings: provider.Bindings) -> JsonObject {
+  const result = provider/run(bindings)
+  return {
+    ok: result.ok,
+    note: result.note,
+    childId: result.child.id,
+    label: result.label,
+  }
+}
 
-    function direct(bindings: provider.Bindings) -> bool {
-      return provider/run(bindings).ok
-    }
-    "#,
+function direct(bindings: provider.Bindings) -> bool {
+  return provider/run(bindings).ok
+}
+"#,
         )
         .unwrap();
 
@@ -1803,11 +1803,11 @@ mod tests {
         };
         let error = compile_error(
             r#"
-    import provider
-    function bad() -> bool {
-      return provider/run().ok
-    }
-    "#,
+import provider
+function bad() -> bool {
+  return provider/run().ok
+}
+"#,
         );
         assert!(
             error.contains("call `provider/run` arity mismatch"),
@@ -1821,11 +1821,11 @@ mod tests {
 
         let error = compile_error(
             r#"
-    import provider
-    function bad() -> bool {
-      return provider/run("wrong").ok
-    }
-    "#,
+import provider
+function bad() -> bool {
+  return provider/run("wrong").ok
+}
+"#,
         );
         assert!(
             error.contains("call `provider/run` argument 1")
@@ -1841,12 +1841,12 @@ mod tests {
 
         let error = compile_error(
             r#"
-    import provider
-    type OtherBindings { marker: string }
-    function bad(other: OtherBindings) -> bool {
-      return provider/run(other).ok
-    }
-    "#,
+import provider
+type OtherBindings { marker: string }
+function bad(other: OtherBindings) -> bool {
+  return provider/run(other).ok
+}
+"#,
         );
         assert!(
             error.contains("call `provider/run` argument 1") && error.contains("type mismatch"),
@@ -1860,26 +1860,26 @@ mod tests {
 
         let error = compile_error(
             r#"
-    import provider
-    function bad(bindings: provider.Bindings) -> string {
-      return provider/run(bindings).missing
-    }
-    "#,
+import provider
+function bad(bindings: provider.Bindings) -> string {
+  return provider/run(bindings).missing
+}
+"#,
         );
         assert!(error.contains("unknown field `missing`"), "{error}");
 
         let error = compile_error(
             r#"
-    import provider
-    function bad(value: provider.PrivateBindings) -> string {
-      return value.marker
-    }
-    "#,
+import provider
+function bad(value: provider.PrivateBindings) -> string {
+  return value.marker
+}
+"#,
         );
         assert!(
-            error.contains("unknown field `marker` on provider.PrivateBindings"),
-            "private/nonexported owner-local record shape must not resolve through the dependency alias: {error}"
-        );
+        error.contains("unknown field `marker` on provider.PrivateBindings"),
+        "private/nonexported owner-local record shape must not resolve through the dependency alias: {error}"
+    );
     }
 
     #[test]
@@ -1888,13 +1888,13 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/transitive-app
-    version: 1.0.0
-    packages:
-      - id: example.com/facade
-        version: 0.1.0
-        alias: app
-        topLevelAlias: appImpl
-    "#,
+version: 1.0.0
+packages:
+  - id: example.com/facade
+    version: 0.1.0
+    alias: app
+    topLevelAlias: appImpl
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
@@ -1912,12 +1912,12 @@ mod tests {
         fs::write(
             facade.join("package.yml"),
             r#"id: example.com/facade
+version: 0.1.0
+packages:
+  - id: google.com/cloud
     version: 0.1.0
-    packages:
-      - id: google.com/cloud
-        version: 0.1.0
-        alias: platform
-    "#,
+    alias: platform
+"#,
         )
         .unwrap();
         fs::write(facade.join("api.yml"), "facade: facade_impl.facade\n").unwrap();
@@ -1973,39 +1973,39 @@ mod tests {
         fs::write(
             temp.path().join("package.yml"),
             r#"id: example.com/alias-consumer
+version: 1.0.0
+packages:
+  - id: example.com/alias-facade
     version: 1.0.0
-    packages:
-      - id: example.com/alias-facade
-        version: 1.0.0
-        alias: facade
-      - id: example.com/alias-base
-        version: 1.0.0
-        alias: base
-    "#,
+    alias: facade
+  - id: example.com/alias-base
+    version: 1.0.0
+    alias: base
+"#,
         )
         .unwrap();
         fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
         fs::write(
             temp.path().join("main.skiff"),
             r#"
-    import facade
+import facade
 
-    function scalar(value: facade.Scalar) -> string {
-      return value
-    }
+function scalar(value: facade.Scalar) -> string {
+  return value
+}
 
-    function status(value: facade.Status) -> string {
-      return value
-    }
+function status(value: facade.Status) -> string {
+  return value
+}
 
-    function users(value: facade.Users) -> facade.Users {
-      return value
-    }
+function users(value: facade.Users) -> facade.Users {
+  return value
+}
 
-    function remote(value: facade.RemoteUser) -> facade.RemoteUser {
-      return value
-    }
-    "#,
+function remote(value: facade.RemoteUser) -> facade.RemoteUser {
+  return value
+}
+"#,
         )
         .unwrap();
 
@@ -2028,49 +2028,49 @@ mod tests {
         fs::write(
             facade.join("package.yml"),
             r#"id: example.com/alias-facade
+version: 1.0.0
+packages:
+  - id: example.com/alias-base
     version: 1.0.0
-    packages:
-      - id: example.com/alias-base
-        version: 1.0.0
-        alias: base
-    "#,
+    alias: base
+"#,
         )
         .unwrap();
         fs::write(
             facade.join("api.yml"),
             r#"Scalar: aliases.Scalar
-    Status: aliases.Status
-    Users: aliases.Users
-    RemoteUser: aliases.RemoteUser
-    Envelope: aliases.Envelope
-    echoScalar: aliases.echoScalar
-    echoStatus: aliases.echoStatus
-    echoUsers: aliases.echoUsers
-    echoRemote: aliases.echoRemote
-    "#,
+Status: aliases.Status
+Users: aliases.Users
+RemoteUser: aliases.RemoteUser
+Envelope: aliases.Envelope
+echoScalar: aliases.echoScalar
+echoStatus: aliases.echoStatus
+echoUsers: aliases.echoUsers
+echoRemote: aliases.echoRemote
+"#,
         )
         .unwrap();
         fs::write(
             facade.join("aliases.skiff"),
             r#"
-    import base
+import base
 
-    alias Scalar = string
-    alias Status = "running" | "completed" | "failed"
-    alias Users = Array<base.User?>
-    alias RemoteUser = base.User
+alias Scalar = string
+alias Status = "running" | "completed" | "failed"
+alias Users = Array<base.User?>
+alias RemoteUser = base.User
 
-    type Envelope {
-      user: RemoteUser,
-      status: Status,
-      users: Users,
-    }
+type Envelope {
+  user: RemoteUser,
+  status: Status,
+  users: Users,
+}
 
-    function echoScalar(value: Scalar) -> Scalar { return value }
-    function echoStatus(value: Status) -> Status { return value }
-    function echoUsers(value: Users) -> Users { return value }
-    function echoRemote(value: RemoteUser) -> RemoteUser { return value }
-    "#,
+function echoScalar(value: Scalar) -> Scalar { return value }
+function echoStatus(value: Status) -> Status { return value }
+function echoUsers(value: Users) -> Users { return value }
+function echoRemote(value: RemoteUser) -> RemoteUser { return value }
+"#,
         )
         .unwrap();
 
@@ -2255,18 +2255,18 @@ mod tests {
         for alias in ["left", "right"] {
             let temp = TestDir::new("skiff-compiler", alias);
             fs::write(
-                temp.path().join("package.yml"),
-                format!(
-                    "id: example.com/identity-app\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n    alias: {alias}\n"
-                ),
-            )
-            .unwrap();
+            temp.path().join("package.yml"),
+            format!(
+                "id: example.com/identity-app\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n    alias: {alias}\n"
+            ),
+        )
+        .unwrap();
             fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
             fs::write(
                 temp.path().join("main.skiff"),
                 format!(
-                    "import {alias}\nfunction run() -> string {{ return {alias}/storage.upload() }}\n"
-                ),
+                "import {alias}\nfunction run() -> string {{ return {alias}/storage.upload() }}\n"
+            ),
             )
             .unwrap();
             write_cloud_dependency(temp.path());
@@ -2284,25 +2284,25 @@ mod tests {
     #[test]
     fn invalid_dependency_aliases_and_unknown_roots_fail_closed() {
         for (name, manifest, expected) in [
-            (
-                "complex-without-alias",
-                "id: example.com/invalid\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n",
-                "google.com/cloud requires alias",
-            ),
-            (
-                "duplicate-alias",
-                "id: example.com/invalid\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n    alias: cloud\n  - id: example.org/cloud\n    version: 0.1.0\n    alias: cloud\n",
-                "packages alias cloud",
-            ),
-        ] {
-            let temp = TestDir::new("skiff-compiler", name);
-            fs::write(temp.path().join("package.yml"), manifest).unwrap();
-            fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
-            let error = read_user_package_manifest(&temp.path().join("package.yml"))
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains(expected), "unexpected {name} error: {error}");
-        }
+        (
+            "complex-without-alias",
+            "id: example.com/invalid\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n",
+            "google.com/cloud requires alias",
+        ),
+        (
+            "duplicate-alias",
+            "id: example.com/invalid\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n    alias: cloud\n  - id: example.org/cloud\n    version: 0.1.0\n    alias: cloud\n",
+            "packages alias cloud",
+        ),
+    ] {
+        let temp = TestDir::new("skiff-compiler", name);
+        fs::write(temp.path().join("package.yml"), manifest).unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+        let error = read_user_package_manifest(&temp.path().join("package.yml"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
 
         let unknown = TestDir::new("skiff-compiler", "unknown-root-call");
         fs::write(

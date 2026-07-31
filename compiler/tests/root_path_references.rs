@@ -65,13 +65,13 @@ mod tests {
         fs::write(
             temp.path().join("internal/consumer.skiff"),
             r#"
-    type Helper { local: string }
-    type Holder { helper: root.internal.helpers.Helper }
+type Helper { local: string }
+type Holder { helper: root.internal.helpers.Helper }
 
-    function hold(value: root.internal.helpers.Helper) -> Holder {
-      return Holder { helper: value }
-    }
-    "#,
+function hold(value: root.internal.helpers.Helper) -> Holder {
+  return Holder { helper: value }
+}
+"#,
         )
         .unwrap();
 
@@ -105,9 +105,9 @@ mod tests {
         fs::write(
             temp.path().join("internal/models.skiff"),
             r#"
-    type Thread { id: string, ownerUserId: string }
-    db object Thread { name "thread" primary key(id) }
-    "#,
+type Thread { id: string, ownerUserId: string }
+db object Thread { name "thread" primary key(id) }
+"#,
         )
         .unwrap();
         fs::write(
@@ -196,11 +196,11 @@ mod tests {
         fs::write(
             ignored.path().join("broken.test.skiff"),
             r#"
-    test "test-only root reference" {
-      const missing: root.internal.missing.Helper = root.internal.missing.Helper { value: "hi" }
-      assert true
-    }
-    "#,
+test "test-only root reference" {
+  const missing: root.internal.missing.Helper = root.internal.missing.Helper { value: "hi" }
+  assert true
+}
+"#,
         )
         .unwrap();
 

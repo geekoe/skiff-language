@@ -32,21 +32,21 @@ mod tests {
         let temp = package_with_source(
             "logical-db-schema",
             r#"
-    type Prompt {
-      id: string,
-      promptId: number,
-      externalId: string?,
-      secret: string
-    }
+type Prompt {
+  id: string,
+  promptId: number,
+  externalId: string?,
+  secret: string
+}
 
-    db object Prompt {
-      primary key(id)
-      storage secret using encrypted
-      retention 180 days
-      index byFeed(promptId desc, id desc)
-      unique index byExternalId(externalId)
-    }
-    "#,
+db object Prompt {
+  primary key(id)
+  storage secret using encrypted
+  retention 180 days
+  index byFeed(promptId desc, id desc)
+  unique index byExternalId(externalId)
+}
+"#,
         );
         let project = compile_package_project(temp.path()).expect("package should compile");
         let declaration = module_artifact(&project.package, "main")
@@ -78,11 +78,11 @@ mod tests {
         let temp = package_with_source(
             "logical-db-nested-types",
             r#"
-    type Window { resetAt: Date? }
-    type Quota { recoverAt: Date?, windows: Array<Window> }
-    type Source { id: string, createdAt: Date, quota: Quota? }
-    db object Source { primary key(id) }
-    "#,
+type Window { resetAt: Date? }
+type Quota { recoverAt: Date?, windows: Array<Window> }
+type Source { id: string, createdAt: Date, quota: Quota? }
+db object Source { primary key(id) }
+"#,
         );
         let project = compile_package_project(temp.path()).expect("package should compile");
         let value = module_artifact(&project.package, "main").value();
@@ -128,21 +128,21 @@ mod tests {
             (
                 "db-duplicate-index",
                 r#"
-    type Record { id: string, owner: string }
-    db object Record {
-      primary key(id)
-      index byOwner(owner)
-      index byOwner(id)
-    }
-    "#,
+type Record { id: string, owner: string }
+db object Record {
+  primary key(id)
+  index byOwner(owner)
+  index byOwner(id)
+}
+"#,
                 "index name byOwner is declared more than once",
             ),
             (
                 "db-invalid-index-path",
                 r#"
-    type Record { id: string, owner: string }
-    db object Record { primary key(id); index byOwner(owner.missing) }
-    "#,
+type Record { id: string, owner: string }
+db object Record { primary key(id); index byOwner(owner.missing) }
+"#,
                 "cannot traverse non-record field owner",
             ),
         ] {
@@ -161,29 +161,29 @@ mod tests {
         let temp = package_with_source(
             "logical-db-operations",
             r#"
-    type Credential { id: string, apiKey: string, label: string? }
-    db object Credential {
-      primary key(id)
-      storage apiKey using encrypted
-    }
+type Credential { id: string, apiKey: string, label: string? }
+db object Credential {
+  primary key(id)
+  storage apiKey using encrypted
+}
 
-    function write(id: string, value: string) -> bool {
-      db insert Credential { id = id apiKey = value }
-      db require Credential(id) { fields { apiKey } }
-      db update Credential(id) { apiKey = value }
-      db replace Credential(id) { apiKey = value }
-      db upsert Credential(id) { apiKey = value } { apiKey = value }
-      return true
-    }
+function write(id: string, value: string) -> bool {
+  db insert Credential { id = id apiKey = value }
+  db require Credential(id) { fields { apiKey } }
+  db update Credential(id) { apiKey = value }
+  db replace Credential(id) { apiKey = value }
+  db upsert Credential(id) { apiKey = value } { apiKey = value }
+  return true
+}
 
-    function scan(lastId: string) -> Array<Credential> {
-      return db find many Credential {
-        where id > lastId
-        order id asc
-        limit 100
-      }
-    }
-    "#,
+function scan(lastId: string) -> Array<Credential> {
+  return db find many Credential {
+    where id > lastId
+    order id asc
+    limit 100
+  }
+}
+"#,
         );
         let project = compile_package_project(temp.path()).expect("DB operations should compile");
         let value = module_artifact(&project.package, "main").value();
@@ -228,13 +228,13 @@ mod tests {
         ] {
             let source = format!(
                 r#"
-    type Record {{ id: string, value: string }}
-    db object Record {{ primary key(id) }}
-    function write(id: string, value: string) -> bool {{
-      {operation}
-      return true
-    }}
-    "#
+type Record {{ id: string, value: string }}
+db object Record {{ primary key(id) }}
+function write(id: string, value: string) -> bool {{
+  {operation}
+  return true
+}}
+"#
             );
             assert_compile_error_contains(name, &source, expected);
         }
@@ -266,16 +266,16 @@ mod tests {
         ] {
             let source = format!(
                 r#"
-    type Credential {{ id: string, apiKey: string }}
-    db object Credential {{
-      primary key(id)
-      storage apiKey using encrypted
-    }}
-    function run(id: string, value: string) -> bool {{
-      {operation}
-      return true
-    }}
-    "#
+type Credential {{ id: string, apiKey: string }}
+db object Credential {{
+  primary key(id)
+  storage apiKey using encrypted
+}}
+function run(id: string, value: string) -> bool {{
+  {operation}
+  return true
+}}
+"#
             );
             assert_compile_error_contains(name, &source, expected);
         }
@@ -286,15 +286,15 @@ mod tests {
         let temp = package_with_source(
             "logical-db-number-key",
             r#"
-    type Counter { id: number, value: string }
-    db object Counter { primary key(id) }
-    function write(value: string) -> bool {
-      db insert Counter { id = 1 value = value }
-      db require Counter(1)
-      db update Counter(1) { value = value }
-      return true
-    }
-    "#,
+type Counter { id: number, value: string }
+db object Counter { primary key(id) }
+function write(value: string) -> bool {
+  db insert Counter { id = 1 value = value }
+  db require Counter(1)
+  db update Counter(1) { value = value }
+  return true
+}
+"#,
         );
         compile_package_project(temp.path()).expect("number-key DB operations should compile");
     }

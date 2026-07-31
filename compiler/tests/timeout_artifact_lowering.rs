@@ -77,41 +77,41 @@ mod tests {
         fixture.write(
             "main.skiff",
             r#"
-    function statementTimeout() -> number {
-      timeout(20ms) {
-        const ignored = 1
-      }
-      return 2
-    }
+function statementTimeout() -> number {
+  timeout(20ms) {
+    const ignored = 1
+  }
+  return 2
+}
 
-    function sequentialValue() -> string {
-      return timeout(30ms) value {
-        const value = "ok"
-        value
-      }
-    }
+function sequentialValue() -> string {
+  return timeout(30ms) value {
+    const value = "ok"
+    value
+  }
+}
 
-    function concurrentValue() -> number {
-      return timeout(40ms) concurrent value {
-        const seed = 1
-        const derived = seed + 1
-        serial {
-          const local = 3
-        }
-        derived
-      }
+function concurrentValue() -> number {
+  return timeout(40ms) concurrent value {
+    const seed = 1
+    const derived = seed + 1
+    serial {
+      const local = 3
     }
+    derived
+  }
+}
 
-    function concurrentStatement() -> number {
-      concurrent {
-        const first = 1
-        serial {
-          const second = 2
-        }
-      }
-      return 3
+function concurrentStatement() -> number {
+  concurrent {
+    const first = 1
+    serial {
+      const second = 2
     }
-    "#,
+  }
+  return 3
+}
+"#,
         );
 
         let project =
@@ -125,9 +125,9 @@ mod tests {
         assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         assert_eq!(
-            file.file_ir_identity,
-            "skiff-file-ir-v11:sha256:08ad0e03a0185e71756621f104cac45f20a86971102828c9c49d0b977a00e3a6"
-        );
+        file.file_ir_identity,
+        "skiff-file-ir-v11:sha256:08ad0e03a0185e71756621f104cac45f20a86971102828c9c49d0b977a00e3a6"
+    );
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
             file.file_ir_identity
@@ -272,9 +272,9 @@ mod tests {
             "function run(value: number) -> number {\n  return value\n}\n",
         );
         timed.write(
-            "main.skiff",
-            "function run(value: number) -> number {\n  timeout(20ms) {\n    const ignored = value\n  }\n  return value\n}\n",
-        );
+        "main.skiff",
+        "function run(value: number) -> number {\n  timeout(20ms) {\n    const ignored = value\n  }\n  return value\n}\n",
+    );
 
         let plain =
             compile_package_project(plain.path()).expect("plain public package should compile");

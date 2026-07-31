@@ -39,13 +39,13 @@ mod tests {
             "example.com/ordinary-test-roots",
             "public: main.publicHelper\n",
             "function publicHelper() -> bool { return true }\n\
-             function privateHelper() -> bool { return true }\n",
+         function privateHelper() -> bool { return true }\n",
             "function testLocalHelper() -> bool { return true }\n\
-             test \"root visibility\" {\n\
-               assert root.main.publicHelper()\n\
-               assert root.main.privateHelper()\n\
-               assert root.main.__test.testLocalHelper()\n\
-             }\n",
+         test \"root visibility\" {\n\
+           assert root.main.publicHelper()\n\
+           assert root.main.privateHelper()\n\
+           assert root.main.__test.testLocalHelper()\n\
+         }\n",
         );
 
         let project = compile_package_project_for_test(&platform_sources(), &service, &artifacts)

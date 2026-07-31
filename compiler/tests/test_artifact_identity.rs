@@ -141,9 +141,9 @@ mod tests {
             "applied-nominal-local-abi",
             "run: main.run\n",
             r#"
-    type Box<T> { value: T }
-    function run(value: Box<string>) -> Box<string> { return value }
-    "#,
+type Box<T> { value: T }
+function run(value: Box<string>) -> Box<string> { return value }
+"#,
         );
 
         let project =

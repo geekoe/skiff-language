@@ -95,12 +95,12 @@ mod tests {
             "non-End stream termination must run exactly one consumer cleanup"
         );
         assert!(
-            completed_from_child_scope,
-            "R4 expected current child scope to terminate pending next() before cleanup; {terminal}; next received {} cancellation token(s)",
-            stream
-                .state
-                .last_cancel_token_count
-                .load(Ordering::Acquire)
-        );
+        completed_from_child_scope,
+        "R4 expected current child scope to terminate pending next() before cleanup; {terminal}; next received {} cancellation token(s)",
+        stream
+            .state
+            .last_cancel_token_count
+            .load(Ordering::Acquire)
+    );
     }
 }

@@ -299,114 +299,114 @@ mod tests {
             "health: main.health\n",
             r#"import std
 
-    type Context {
-      requestId: string,
-    }
+type Context {
+  requestId: string,
+}
 
-    type Status = "new" | "old"
+type Status = "new" | "old"
 
-    alias Label = string
-    type UserId = string
+alias Label = string
+type UserId = string
 
-    type Input {
-      id: UserId,
-      name: Label,
-      note: string?,
-      status: Status,
-      tags: Array<string>,
-    }
+type Input {
+  id: UserId,
+  name: Label,
+  note: string?,
+  status: Status,
+  tags: Array<string>,
+}
 
-    type Output {
-      accepted: boolean,
-      status: Status,
-    }
+type Output {
+  accepted: boolean,
+  status: Status,
+}
 
-    type Box<T> {
-      value: T,
-    }
+type Box<T> {
+  value: T,
+}
 
-    type Envelope<T> {
-      item: Box<T>,
-    }
+type Envelope<T> {
+  item: Box<T>,
+}
 
-    function health() -> string {
-      return "ok"
-    }
+function health() -> string {
+  return "ok"
+}
 
-    function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
-      return null
-    }
+function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  return null
+}
 
-    function prepare(request: std.http.HttpRequest) -> Context {
-      return Context { requestId: request.path }
-    }
+function prepare(request: std.http.HttpRequest) -> Context {
+  return Context { requestId: request.path }
+}
 
-    function typed(
-      request: std.http.HttpRequest,
-      body: Input,
-      bodyAgain: Input,
-      context: Context
-    ) -> Output {
-      return Output { accepted: true, status: body.status }
-    }
+function typed(
+  request: std.http.HttpRequest,
+  body: Input,
+  bodyAgain: Input,
+  context: Context
+) -> Output {
+  return Output { accepted: true, status: body.status }
+}
 
-    function boxed(body: Envelope<string>) -> Envelope<string> {
-      return body
-    }
+function boxed(body: Envelope<string>) -> Envelope<string> {
+  return body
+}
 
-    function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
-      return std.http.noContent()
-    }
+function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
 
-    function rawStream(
-      request: std.http.HttpRequest
-    ) -> Stream<std.http.HttpResponseStreamEvent> {
-      emit(std.http.streamChunk(request.body))
-      emit(std.http.streamEnd())
-      return null
-    }
-    "#,
+function rawStream(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}
+"#,
             r#"typed:
-      method: POST
-      path: /typed
-      kind: typedJson
-      handler: main.typed
-      guard: main.guard
-      pre: main.prepare
-      adapterArgs:
-        - param: request
-          source: { kind: http.request }
-        - param: body
-          source: { kind: http.body }
-        - param: bodyAgain
-          source: { kind: http.body }
-        - param: context
-          source: { kind: http.context }
-    boxed:
-      method: POST
-      path: /boxed
-      kind: typedJson
-      handler: main.boxed
-      adapterArgs:
-        - param: body
-          source: { kind: http.body }
-    raw:
-      method: GET
-      path: /raw
-      kind: rawHttp
-      handler: main.raw
-      adapterArgs:
-        - param: request
-          source: { kind: http.request }
-    rawStream:
-      method: GET
-      path: /raw-stream
-      kind: rawHttp
-      handler: main.rawStream
-      adapterArgs:
-        - param: request
-          source: { kind: http.request }
-    "#,
+  method: POST
+  path: /typed
+  kind: typedJson
+  handler: main.typed
+  guard: main.guard
+  pre: main.prepare
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+    - param: body
+      source: { kind: http.body }
+    - param: bodyAgain
+      source: { kind: http.body }
+    - param: context
+      source: { kind: http.context }
+boxed:
+  method: POST
+  path: /boxed
+  kind: typedJson
+  handler: main.boxed
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+raw:
+  method: GET
+  path: /raw
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+rawStream:
+  method: GET
+  path: /raw-stream
+  kind: rawHttp
+  handler: main.rawStream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+"#,
         );
         let deployment = fixture.generate().expect("all HTTP modes must project");
 
@@ -520,18 +520,18 @@ mod tests {
             "health: main.health\n",
             r#"function health() -> string { return "ok" }
 
-    type Input { value: string }
-    type Output { accepted: boolean }
+type Input { value: string }
+type Output { accepted: boolean }
 
-    function eligible(body: Input) -> Stream<Output> {
-      emit({ accepted: true })
-      return null
-    }
+function eligible(body: Input) -> Stream<Output> {
+  emit({ accepted: true })
+  return null
+}
 
-    function unprojectable(body: Input) -> Stream<Map<string, string>> {
-      return null
-    }
-    "#,
+function unprojectable(body: Input) -> Stream<Map<string, string>> {
+  return null
+}
+"#,
             "{}\n",
         );
         let expected = "typedJson supports only unary handler returns; HTTP streaming requires rawHttp + Stream<std.http.HttpResponseStreamEvent>";
@@ -545,9 +545,9 @@ mod tests {
             assert!(error.contains(expected), "{error}");
         }
         assert_eq!(
-            errors[0], errors[1],
-            "typedJson stream rejection must depend on adapter kind and outer return, not item schema"
-        );
+        errors[0], errors[1],
+        "typedJson stream rejection must depend on adapter kind and outer return, not item schema"
+    );
     }
 
     #[test]
@@ -556,10 +556,10 @@ mod tests {
             "reserved-websocket-key",
             "health: main.health\n",
             r#"function health() -> string { return "ok" }
-    type Input { value: string }
-    type Output { accepted: boolean }
-    function typed(body: Input) -> Output { return { accepted: true } }
-    "#,
+type Input { value: string }
+type Output { accepted: boolean }
+function typed(body: Input) -> Output { return { accepted: true } }
+"#,
             typed_http("main.typed", "body").replacen("typed:", "websocket:", 1),
         );
         let error = fixture
@@ -574,8 +574,8 @@ mod tests {
             "dual-surface",
             "health: main.health\ndual: main.dual\n",
             r#"function health() -> string { return "ok" }
-    function dual(body: string) -> string { return "ok" }
-    "#,
+function dual(body: string) -> string { return "ok" }
+"#,
             &["dual"],
             typed_http("main.dual", "body"),
         );
@@ -589,9 +589,9 @@ mod tests {
         let service_operation_callable_id = &deployment.operation_bindings[0].package_callable_id;
         let gateway_handler = gateway.handler.as_ref().expect("HTTP gateway handler");
         assert_ne!(
-            service_operation_callable_id, gateway_handler,
-            "public service-call and private implementation callable IDs are distinct identity domains"
-        );
+        service_operation_callable_id, gateway_handler,
+        "public service-call and private implementation callable IDs are distinct identity domains"
+    );
         let service_operation_target =
             &fixture.project.package.artifact.callable_links[service_operation_callable_id].target;
         let gateway_target =
@@ -694,11 +694,11 @@ mod tests {
             "identity-param-name",
             "health: main.health\n",
             r#"function health() -> string { return "ok" }
-    type Input { value: string }
-    type Output { value: string }
-    function first(body: Input) -> Output { return { value: body.value } }
-    function second(payload: Input) -> Output { return { value: payload.value } }
-    "#,
+type Input { value: string }
+type Output { value: string }
+function first(body: Input) -> Output { return { value: body.value } }
+function second(payload: Input) -> Output { return { value: payload.value } }
+"#,
             typed_http("main.first", "body"),
         );
         let first = names.generate().unwrap();
@@ -798,13 +798,13 @@ mod tests {
         root.write(
             "main.skiff",
             r#"function health() -> string { return "ok" }
-    type StringInput { value: string }
-    type StringOutput { value: string }
-    type IntegerInput { value: integer }
-    type IntegerOutput { value: integer }
-    function first(body: StringInput) -> StringOutput { return { value: body.value } }
-    function second(body: IntegerInput) -> IntegerOutput { return { value: body.value } }
-    "#,
+type StringInput { value: string }
+type StringOutput { value: string }
+type IntegerInput { value: integer }
+type IntegerOutput { value: integer }
+function first(body: StringInput) -> StringOutput { return { value: body.value } }
+function second(body: IntegerInput) -> IntegerOutput { return { value: body.value } }
+"#,
         );
         root.write("http.yml", typed_http("main.first", "body"));
 
@@ -910,100 +910,100 @@ mod tests {
             "health: main.health\n",
             r#"import std
 
-    type Context { id: string }
-    type Input { value: string }
+type Context { id: string }
+type Input { value: string }
 
-    function health() -> string { return "ok" }
-    function generic<T>(body: T) -> string { return "x" }
-    function genericPre<T>(request: std.http.HttpRequest) -> T {
-      return std.json.decode<T>("null")
-    }
-    function genericGuard<T>(request: std.http.HttpRequest) -> std.http.HttpResponse? { return null }
-    function prepare(request: std.http.HttpRequest) -> Context { return { id: "x" } }
-    function wrongPrepare(value: string) -> Context { return { id: value } }
-    function wrongGuard(request: string) -> std.http.HttpResponse? { return null }
-    function two(a: string, b: integer) -> string { return a }
-    function request(value: string) -> string { return value }
-    function context(body: Input, value: string) -> string { return body.value + value }
-    function typed(body: Input) -> string { return body.value }
-    function raw(request: std.http.HttpRequest) -> string { return request.path }
-    function rawBody(
-      request: std.http.HttpRequest,
-      body: Input
-    ) -> std.http.HttpResponse {
-      return std.http.noContent()
-    }
-    function nullableRaw(request: std.http.HttpRequest) -> std.http.HttpResponse? { return null }
-    function rawStream(request: std.http.HttpRequest) -> Stream<string> {
-      emit(request.path)
-      return null
-    }
-    "#,
+function health() -> string { return "ok" }
+function generic<T>(body: T) -> string { return "x" }
+function genericPre<T>(request: std.http.HttpRequest) -> T {
+  return std.json.decode<T>("null")
+}
+function genericGuard<T>(request: std.http.HttpRequest) -> std.http.HttpResponse? { return null }
+function prepare(request: std.http.HttpRequest) -> Context { return { id: "x" } }
+function wrongPrepare(value: string) -> Context { return { id: value } }
+function wrongGuard(request: string) -> std.http.HttpResponse? { return null }
+function two(a: string, b: integer) -> string { return a }
+function request(value: string) -> string { return value }
+function context(body: Input, value: string) -> string { return body.value + value }
+function typed(body: Input) -> string { return body.value }
+function raw(request: std.http.HttpRequest) -> string { return request.path }
+function rawBody(
+  request: std.http.HttpRequest,
+  body: Input
+) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
+function nullableRaw(request: std.http.HttpRequest) -> std.http.HttpResponse? { return null }
+function rawStream(request: std.http.HttpRequest) -> Stream<string> {
+  emit(request.path)
+  return null
+}
+"#,
             typed_http("main.typed", "body"),
         );
 
         let cases = [
-            (
-                "generic-handler",
-                typed_http("main.generic", "body"),
-                "generic parameters",
-            ),
-            (
-                "missing-formal",
-                "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs: []\n".to_string(),
-                "cover every handler formal",
-            ),
-            (
-                "unknown-formal",
-                typed_http("main.typed", "unknown"),
-                "cover every handler formal",
-            ),
-            (
-                "duplicate-formal",
-                "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
-                "cover every handler formal exactly once",
-            ),
-            (
-                "same-source-different-type",
-                "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.two\n    adapterArgs:\n      - param: a\n        source: { kind: http.body }\n      - param: b\n        source: { kind: http.body }\n".to_string(),
-                "incompatible exact formal types",
-            ),
-            (
-                "request-mismatch",
-                "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.request\n    adapterArgs:\n      - param: value\n        source: { kind: http.request }\n".to_string(),
-                "HttpRequest",
-            ),
-            (
-                "context-without-pre",
-                "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n".to_string(),
-                "requires an entry-local pre",
-            ),
-            (
-                "typed-missing-body",
-                "typed:\n    method: GET\n    path: /typed\n    kind: typedJson\n    handler: main.health\n    adapterArgs: []\n".to_string(),
-                "requires at least one http.body",
-            ),
-            (
-                "raw-return",
-                "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.raw\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
-                "HttpResponse",
-            ),
-            (
-                "raw-body",
-                "raw:\n    method: POST\n    path: /raw\n    kind: rawHttp\n    handler: main.rawBody\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
-                "rawHttp cannot consume http.body",
-            ),
-            (
-                "nullable-raw-response",
-                raw_http("main.nullableRaw", "request"),
-                "HttpResponse",
-            ),
-            (
-                "raw-stream-item",
-                "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.rawStream\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
-                "HttpResponseStreamEvent",
-            ),
-        ];
+        (
+            "generic-handler",
+            typed_http("main.generic", "body"),
+            "generic parameters",
+        ),
+        (
+            "missing-formal",
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs: []\n".to_string(),
+            "cover every handler formal",
+        ),
+        (
+            "unknown-formal",
+            typed_http("main.typed", "unknown"),
+            "cover every handler formal",
+        ),
+        (
+            "duplicate-formal",
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.typed\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
+            "cover every handler formal exactly once",
+        ),
+        (
+            "same-source-different-type",
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.two\n    adapterArgs:\n      - param: a\n        source: { kind: http.body }\n      - param: b\n        source: { kind: http.body }\n".to_string(),
+            "incompatible exact formal types",
+        ),
+        (
+            "request-mismatch",
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.request\n    adapterArgs:\n      - param: value\n        source: { kind: http.request }\n".to_string(),
+            "HttpRequest",
+        ),
+        (
+            "context-without-pre",
+            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n".to_string(),
+            "requires an entry-local pre",
+        ),
+        (
+            "typed-missing-body",
+            "typed:\n    method: GET\n    path: /typed\n    kind: typedJson\n    handler: main.health\n    adapterArgs: []\n".to_string(),
+            "requires at least one http.body",
+        ),
+        (
+            "raw-return",
+            "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.raw\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
+            "HttpResponse",
+        ),
+        (
+            "raw-body",
+            "raw:\n    method: POST\n    path: /raw\n    kind: rawHttp\n    handler: main.rawBody\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n      - param: body\n        source: { kind: http.body }\n".to_string(),
+            "rawHttp cannot consume http.body",
+        ),
+        (
+            "nullable-raw-response",
+            raw_http("main.nullableRaw", "request"),
+            "HttpResponse",
+        ),
+        (
+            "raw-stream-item",
+            "raw:\n    method: GET\n    path: /raw\n    kind: rawHttp\n    handler: main.rawStream\n    adapterArgs:\n      - param: request\n        source: { kind: http.request }\n".to_string(),
+            "HttpResponseStreamEvent",
+        ),
+    ];
         for (label, http, expected) in cases {
             let service = parse_service(&http);
             let error = fixture.generate_error(&service, &fixture.project.package.artifact);
@@ -1038,8 +1038,8 @@ mod tests {
         }
 
         let context_mismatch = parse_service(
-            "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    pre: main.prepare\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n",
-        );
+        "typed:\n    method: POST\n    path: /typed\n    kind: typedJson\n    handler: main.context\n    pre: main.prepare\n    adapterArgs:\n      - param: body\n        source: { kind: http.body }\n      - param: value\n        source: { kind: http.context }\n",
+    );
         let error = fixture.generate_error(&context_mismatch, &fixture.project.package.artifact);
         assert!(
             error
@@ -1056,17 +1056,17 @@ mod tests {
             "health: main.health\n",
             r#"function health() -> string { return "ok" }
 
-    type Node { value: string, next: Node? }
+type Node { value: string, next: Node? }
 
-    interface Reader {
-      function read(self: Self) -> string
-    }
+interface Reader {
+  function read(self: Self) -> string
+}
 
-    function mapBody(body: Map<string, string>) -> string { return "x" }
-    function recursive(body: Node) -> string { return body.value }
-    function callback(body: fn(value: string) -> string) -> string { return "x" }
-    function interfaceBody(body: any Reader) -> string { return "x" }
-    "#,
+function mapBody(body: Map<string, string>) -> string { return "x" }
+function recursive(body: Node) -> string { return body.value }
+function callback(body: fn(value: string) -> string) -> string { return "x" }
+function interfaceBody(body: any Reader) -> string { return "x" }
+"#,
             "{}\n",
         );
         for (label, handler, expected) in [

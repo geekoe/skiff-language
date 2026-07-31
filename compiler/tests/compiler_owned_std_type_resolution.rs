@@ -139,11 +139,11 @@ mod tests {
             "exact-signatures",
             r#"import std
 
-    function run(connectionId: string) -> void {
-      std.time.sleep(1)
-      std.websocket.sendTextToConnection(connectionId, "ready")
-    }
-    "#,
+function run(connectionId: string) -> void {
+  std.time.sleep(1)
+  std.websocket.sendTextToConnection(connectionId, "ready")
+}
+"#,
         );
         let std = project
             .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
@@ -184,10 +184,10 @@ mod tests {
             "websocket-connect-owner",
             r#"import std
 
-    function run(input: string) -> std.websocket.WebSocketConnectResult {
-      return std.json.decode<std.websocket.WebSocketConnectResult>(input)
-    }
-    "#,
+function run(input: string) -> std.websocket.WebSocketConnectResult {
+  return std.json.decode<std.websocket.WebSocketConnectResult>(input)
+}
+"#,
         );
         let std = project
             .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
@@ -223,11 +223,11 @@ mod tests {
             "http-stream-exact-owner",
             r#"import std
 
-    function run(input: std.http.HttpClientRequest) -> integer {
-      const response = std.http.stream(input)
-      return response.status
-    }
-    "#,
+function run(input: std.http.HttpClientRequest) -> integer {
+  const response = std.http.stream(input)
+  return response.status
+}
+"#,
         );
         let std = project
             .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
@@ -259,8 +259,8 @@ mod tests {
 
         let stream_id = public_callable_id(std, "std.http.stream");
         assert!(
-            package_call(module_artifact(&project.package, "main"), &stream_id).is_some(),
-            "the exact std.http.stream signature must rehydrate and lower through the real package compiler"
-        );
+        package_call(module_artifact(&project.package, "main"), &stream_id).is_some(),
+        "the exact std.http.stream signature must rehydrate and lower through the real package compiler"
+    );
     }
 }

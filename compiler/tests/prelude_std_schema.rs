@@ -24,13 +24,13 @@ mod tests {
         temp.write(
             "prelude.skiff",
             r#"function inspect(
-      flag: bool,
-      count: integer,
-      request: HttpRequest
-    ) -> bool {
-      return flag
-    }
-    "#,
+  flag: bool,
+  count: integer,
+  request: HttpRequest
+) -> bool {
+  return flag
+}
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("prelude types should compile");
@@ -60,8 +60,8 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    type RequestBox { request: std.http.HttpClientRequest }
-    "#,
+type RequestBox { request: std.http.HttpClientRequest }
+"#,
         );
 
         let project =
@@ -93,9 +93,9 @@ mod tests {
         temp.write(
             "builtins.skiff",
             r#"function check(flag: bool, count: integer) -> integer {
-      return 1
-    }
-    "#,
+  return 1
+}
+"#,
         );
 
         let project =
@@ -153,16 +153,16 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    function handle(request: std.http.HttpRequest) -> std.http.HttpResponse {
-      return std.http.noContent()
-    }
+function handle(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
 
-    function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-      emit(std.http.streamChunk(request.body))
-      emit(std.http.streamEnd())
-      return null
-    }
-    "#,
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}
+"#,
         );
 
         let project = compile_package_project(temp.path())
@@ -176,9 +176,9 @@ mod tests {
             let projection = &project.package.artifact.boundary_projections[callable_id];
             if let BoundaryCallableProjection::Unavailable { reasons } = projection {
                 assert!(
-                    !reasons.contains(&BoundaryUnavailableReason::UnsupportedBoundaryType),
-                    "{public_name} must admit its imported HTTP types before independent semantic eligibility closes: {reasons:?}"
-                );
+                !reasons.contains(&BoundaryUnavailableReason::UnsupportedBoundaryType),
+                "{public_name} must admit its imported HTTP types before independent semantic eligibility closes: {reasons:?}"
+            );
             }
         }
     }
@@ -191,9 +191,9 @@ mod tests {
         temp.write(
             "callback.skiff",
             r#"function run(callback: fn(value: string) -> string) -> void {
-      return
-    }
-    "#,
+  return
+}
+"#,
         );
 
         let project =
@@ -223,13 +223,13 @@ mod tests {
         temp.write(
             "callback.skiff",
             r#"interface Handler {
-      function handle(self: Self, value: string) -> string
-    }
+  function handle(self: Self, value: string) -> string
+}
 
-    function run(callback: any Handler) -> string {
-      return "accepted"
-    }
-    "#,
+function run(callback: any Handler) -> string {
+  return "accepted"
+}
+"#,
         );
 
         let project = compile_package_project(temp.path())
@@ -414,11 +414,11 @@ mod tests {
             "schema.skiff",
             r#"import std
 
-    type Exchange {
-      request: std.http.HttpClientRequest,
-      response: std.http.HttpClientResponse,
-    }
-    "#,
+type Exchange {
+  request: std.http.HttpClientRequest,
+  response: std.http.HttpClientResponse,
+}
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("std schema refs should compile");

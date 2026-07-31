@@ -168,26 +168,26 @@ mod tests {
             true,
             false,
             r#"
-                type Local { value: string }
-                function localHelper(value: Local) -> Local { return value }
-                interface PublicApi {
-                  function submit(
-                    self: Self,
-                    input: payments.User,
-                    nested: Array<payments.User?>?
-                  ) -> payments.User
-                }
-                type Handler implements PublicApi {}
-                impl Handler {
-                  function submit(
-                    input: payments.User,
-                    nested: Array<payments.User?>?
-                  ) -> payments.User {
-                    return input
-                  }
-                }
-                const handler: Handler = Handler {}
-            "#
+            type Local { value: string }
+            function localHelper(value: Local) -> Local { return value }
+            interface PublicApi {
+              function submit(
+                self: Self,
+                input: payments.User,
+                nested: Array<payments.User?>?
+              ) -> payments.User
+            }
+            type Handler implements PublicApi {}
+            impl Handler {
+              function submit(
+                input: payments.User,
+                nested: Array<payments.User?>?
+              ) -> payments.User {
+                return input
+              }
+            }
+            const handler: Handler = Handler {}
+        "#
             .to_string(),
             "api.skiff",
         )

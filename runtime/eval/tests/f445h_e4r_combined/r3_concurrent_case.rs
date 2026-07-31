@@ -20,9 +20,9 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| format!("success payload {:?}", result.as_ref().ok()));
         assert!(
-            result.is_ok(),
-            "R3 expected concurrent statement + value inside a real Actor frame; production returned {actual}"
-        );
+        result.is_ok(),
+        "R3 expected concurrent statement + value inside a real Actor frame; production returned {actual}"
+    );
         assert_eq!(result.expect("R3 concurrent success"), b"2");
     }
 }

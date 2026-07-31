@@ -189,10 +189,10 @@ mod tests {
         write_profile(
             &service,
             r#""test.skiff/config-snapshot":
-      skiff:
-        test:
-          ingressUrl: http://authored.invalid
-    "#,
+  skiff:
+    test:
+      ingressUrl: http://authored.invalid
+"#,
         );
         let error = assemble_service(&service, &artifacts).unwrap_err();
         assert!(error.contains("skiff.test.ingressUrl"), "{error}");
@@ -201,8 +201,8 @@ mod tests {
         write_profile(
             &service,
             r#""unknown.example/package":
-      token: forbidden
-    "#,
+  token: forbidden
+"#,
         );
         let error = assemble_service(&service, &artifacts).unwrap_err();
         assert!(

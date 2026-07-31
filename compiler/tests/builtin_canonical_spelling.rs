@@ -311,21 +311,21 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    type CanonicalBuiltinProbe {
-      boolBare: bool,
-      boolAlias: boolean,
-      arrayBare: Array<boolean>,
-      mapNested: Map<string, Array<boolean?>>,
-      callback: fn(flag: boolean) -> Stream<boolean>,
-      choice: boolean | string,
-      nested: { flag: boolean, payload: bytes },
-      request: std.http.HttpRequest,
-    }
+type CanonicalBuiltinProbe {
+  boolBare: bool,
+  boolAlias: boolean,
+  arrayBare: Array<boolean>,
+  mapNested: Map<string, Array<boolean?>>,
+  callback: fn(flag: boolean) -> Stream<boolean>,
+  choice: boolean | string,
+  nested: { flag: boolean, payload: bytes },
+  request: std.http.HttpRequest,
+}
 
-    function check(flag: boolean) -> bool {
-      return flag
-    }
-    "#,
+function check(flag: boolean) -> bool {
+  return flag
+}
+"#,
         );
 
         let project =
@@ -439,9 +439,9 @@ mod tests {
         assert_cancel_error_spellings_are_rejected("constructor", |spelling| {
             format!(
                 r#"function bad() -> {spelling} {{
-      return {spelling} {{}}
-    }}
-    "#
+  return {spelling} {{}}
+}}
+"#
             )
         });
     }
@@ -451,9 +451,9 @@ mod tests {
         assert_cancel_error_spellings_are_rejected("throw", |spelling| {
             format!(
                 r#"function bad(value: {spelling}) -> void {{
-      throw value
-    }}
-    "#
+  throw value
+}}
+"#
             )
         });
     }
@@ -463,9 +463,9 @@ mod tests {
         assert_cancel_error_spellings_are_rejected("catch", |spelling| {
             format!(
                 r#"function bad(value: TimeoutError) -> void {{
-      const attempted = catch<{spelling}>(value)
-    }}
-    "#
+  const attempted = catch<{spelling}>(value)
+}}
+"#
             )
         });
     }
@@ -475,9 +475,9 @@ mod tests {
         assert_cancel_error_spellings_are_rejected("rethrow", |spelling| {
             format!(
                 r#"function bad(exception: Exception<{spelling}>) -> void {{
-      rethrow exception
-    }}
-    "#
+  rethrow exception
+}}
+"#
             )
         });
     }
@@ -487,9 +487,9 @@ mod tests {
         assert_cancel_error_spellings_are_rejected("union-leaf", |spelling| {
             format!(
                 r#"function bad(value: TimeoutError) -> void {{
-      const attempted = catch<TimeoutError | {spelling}>(value)
-    }}
-    "#
+  const attempted = catch<TimeoutError | {spelling}>(value)
+}}
+"#
             )
         });
     }

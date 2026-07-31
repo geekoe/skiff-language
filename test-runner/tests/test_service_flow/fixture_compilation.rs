@@ -143,9 +143,9 @@ mod tests {
                 "{fixture_name} operation bindings must cover exactly the specialized contract"
             );
             assert!(
-                deployment.operation_bindings.is_empty(),
-                "{fixture_name} has no serviceCalls and must not bind its external gateways as operations"
-            );
+            deployment.operation_bindings.is_empty(),
+            "{fixture_name} has no serviceCalls and must not bind its external gateways as operations"
+        );
 
             let probe_key = GatewayEntryKey::parse("probe").expect("canonical probe key");
             let probe = deployment
@@ -234,8 +234,8 @@ mod tests {
             std.package_local_abi.local_abi_identity
         );
         assert!(
-            requirement.expected_package_build.is_none(),
-            "compiler-owned std must remain a public-ABI dependency, not a private top-level binding"
-        );
+        requirement.expected_package_build.is_none(),
+        "compiler-owned std must remain a public-ABI dependency, not a private top-level binding"
+    );
     }
 }

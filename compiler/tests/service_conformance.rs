@@ -293,39 +293,39 @@ mod tests {
         consumer.write(
             "package.yml",
             r#"id: example.com/package-stream-expression-consumer
+version: 1.0.0
+packages:
+  - id: example.com/package-stream-expression-provider
     version: 1.0.0
-    packages:
-      - id: example.com/package-stream-expression-provider
-        version: 1.0.0
-        alias: feed
-    "#,
+    alias: feed
+"#,
         );
         consumer.write("api.yml", "run: main.run\n");
         consumer.write(
             "main.skiff",
             r#"import feed
 
-    function run() -> Stream<string> {
-      for event in feed/events() {
-        emit(event)
-      }
-      const inferred = feed/events()
-      for event in inferred {
-        emit(event)
-      }
-      const events: Stream<string> = feed/events()
-      for event in events {
-        emit(event)
-      }
-      return null
-    }
-    "#,
+function run() -> Stream<string> {
+  for event in feed/events() {
+    emit(event)
+  }
+  const inferred = feed/events()
+  for event in inferred {
+    emit(event)
+  }
+  const events: Stream<string> = feed/events()
+  for event in events {
+    emit(event)
+  }
+  return null
+}
+"#,
         );
         write_stream_dependency(&consumer);
 
         compile_package_project(consumer.path()).expect(
-            "package stream result must retain exact Event identity through expression, binding and iteration",
-        );
+        "package stream result must retain exact Event identity through expression, binding and iteration",
+    );
     }
 
     #[test]
@@ -334,25 +334,25 @@ mod tests {
         consumer.write(
             "package.yml",
             r#"id: example.com/package-non-stream-iteration-consumer
+version: 1.0.0
+packages:
+  - id: example.com/package-stream-expression-provider
     version: 1.0.0
-    packages:
-      - id: example.com/package-stream-expression-provider
-        version: 1.0.0
-        alias: feed
-    "#,
+    alias: feed
+"#,
         );
         consumer.write("api.yml", "run: main.run\n");
         consumer.write(
             "main.skiff",
             r#"import feed
 
-    function run() -> null {
-      for event in feed/one() {
-        return null
-      }
-      return null
-    }
-    "#,
+function run() -> null {
+  for event in feed/one() {
+    return null
+  }
+  return null
+}
+"#,
         );
         write_stream_dependency(&consumer);
 
@@ -373,10 +373,10 @@ mod tests {
             "example.com/stream-producer-completion-value",
             "run: main.run\n",
             r#"function run() -> Stream<string> {
-      emit("event")
-      return "not-a-completion"
-    }
-    "#,
+  emit("event")
+  return "not-a-completion"
+}
+"#,
         );
 
         let error = compile_package_project(package.path())
@@ -446,12 +446,12 @@ mod tests {
             "example.com/generated-service-stream-consumer",
             "run: main.run\n",
             r#"function run(input: feed.Request) -> string {
-      for event in feed/events(input) {
-        return event.message
-      }
-      return ""
-    }
-    "#,
+  for event in feed/events(input) {
+    return event.message
+  }
+  return ""
+}
+"#,
         );
         write_schema_package_dependency(
             &consumer,
@@ -459,10 +459,10 @@ mod tests {
             "example.com/generated-service-stream-provider",
             "Event: model.Event\nRequest: model.Request\nevents: main.events\n",
             r#"function events(input: root.model.Request) -> Stream<root.model.Event> {
-      emit(root.model.Event { message: "event" })
-      return
-    }
-    "#,
+  emit(root.model.Event { message: "event" })
+  return
+}
+"#,
             Some("type Event { message: string }\ntype Request { topic: string }\n"),
         );
         let dependencies = BTreeMap::from([(
@@ -533,11 +533,11 @@ mod tests {
             "example.com/generated-service-stream-wrong-alias-consumer",
             "run: main.run\n",
             r#"function run(input: feed.Request) -> void {
-      for event in wrong/events(input) {
-        return
-      }
-    }
-    "#,
+  for event in wrong/events(input) {
+    return
+  }
+}
+"#,
         );
         write_schema_package_dependency(
             &consumer,
@@ -545,10 +545,10 @@ mod tests {
             "example.com/generated-service-stream-wrong-alias-provider",
             "Event: model.Event\nRequest: model.Request\nevents: main.events\n",
             r#"function events(input: root.model.Request) -> Stream<root.model.Event> {
-      emit(root.model.Event { message: "event" })
-      return
-    }
-    "#,
+  emit(root.model.Event { message: "event" })
+  return
+}
+"#,
             Some("type Event { message: string }\ntype Request { topic: string }\n"),
         );
         let dependencies = BTreeMap::from([(
@@ -693,9 +693,9 @@ mod tests {
             "example.com/payments-provider",
             "handle: main.handle\n",
             r#"function handle(request: payments.Request) -> string {
-      return "accepted"
-    }
-    "#,
+  return "accepted"
+}
+"#,
         );
         write_echo_schema_dependency(&provider, "example.com/payments-provider");
         let provider_dependencies = BTreeMap::from([(
@@ -777,9 +777,9 @@ mod tests {
             "example.com/payments-consumer",
             "run: main.run\n",
             r#"function run(input: payments.Request) -> string {
-      return payments/echo(input)
-    }
-    "#,
+  return payments/echo(input)
+}
+"#,
         );
         write_echo_schema_dependency(&consumer, "example.com/payments-consumer");
         let consumer_dependencies = BTreeMap::from([(
@@ -881,10 +881,10 @@ mod tests {
             "example.com/callable-effects-provider",
             "handle: main.handle\n",
             r#"function handle(input: string) -> string {
-      if input == "helper-mutated" { return "accepted" }
-      return "rejected"
-    }
-    "#,
+  if input == "helper-mutated" { return "accepted" }
+  return "rejected"
+}
+"#,
         );
         let provider_project =
             compile_package_project_with_contract_dependencies(provider.path(), &BTreeMap::new())
@@ -898,24 +898,24 @@ mod tests {
         consumer.write(
             "package.yml",
             r#"id: example.com/callable-effects-consumer
+version: 1.0.0
+packages:
+  - id: example.com/callable-effects-helper
     version: 1.0.0
-    packages:
-      - id: example.com/callable-effects-helper
-        version: 1.0.0
-        alias: helper
-    "#,
+    alias: helper
+"#,
         );
         consumer.write("api.yml", "run: main.run\n");
         consumer.write(
             "main.skiff",
             r#"import helper
 
-    function run() -> string {
-      const box: helper.Box = { value: "consumer" }
-      helper/tools.mutate(box)
-      return payments/echo(box.value)
-    }
-    "#,
+function run() -> string {
+  const box: helper.Box = { value: "consumer" }
+  helper/tools.mutate(box)
+  return payments/echo(box.value)
+}
+"#,
         );
         consumer.write(
             ".skiff-packages/example~com~~callable-effects-helper/1.0.0/package.yml",
@@ -929,10 +929,10 @@ mod tests {
             ".skiff-packages/example~com~~callable-effects-helper/1.0.0/helper.skiff",
             r#"type Box { value: string }
 
-    function mutate(input: Box) -> void {
-      input.value = "helper-mutated"
-    }
-    "#,
+function mutate(input: Box) -> void {
+  input.value = "helper-mutated"
+}
+"#,
         );
         let dependencies = BTreeMap::from([(
             (
@@ -996,27 +996,27 @@ mod tests {
             "read: main.read\nput: main.put\nputOwned: main.putOwned\n",
             r#"type Stored { id: string, value: string, tags: Array<string> }
 
-    db object Stored {
-      primary key(id)
-    }
+db object Stored {
+  primary key(id)
+}
 
-    function read(id: string) -> string {
-      const stored = db require Stored(id)
-      return stored.value
-    }
+function read(id: string) -> string {
+  const stored = db require Stored(id)
+  return stored.value
+}
 
-    function put(id: string, value: string) -> void {
-      db insert Stored {
-        id = id
-        value = value
-        tags = Array.empty<string>()
-      }
-    }
+function put(id: string, value: string) -> void {
+  db insert Stored {
+    id = id
+    value = value
+    tags = Array.empty<string>()
+  }
+}
 
-    function putOwned(id: string, tags: Array<string>) -> void {
-      db insert Stored { id = id value = "owned" tags = tags }
-    }
-    "#,
+function putOwned(id: string, tags: Array<string>) -> void {
+  db insert Stored { id = id value = "owned" tags = tags }
+}
+"#,
         );
         package.write(
             "package.yml",
@@ -1065,22 +1065,22 @@ mod tests {
             (
                 "unknown-operation",
                 r#"function run(input: payments.Request) -> string {
-      return payments/missing(input)
-    }"#,
+  return payments/missing(input)
+}"#,
                 "no operation stable key `missing`",
             ),
             (
                 "wrong-argument",
                 r#"function run() -> string {
-      return payments/echo("not a request")
-    }"#,
+  return payments/echo("not a request")
+}"#,
                 "argument 1 type mismatch",
             ),
             (
                 "wrong-return-use",
                 r#"function run(input: payments.Request) -> bool {
-      return payments/echo(input)
-    }"#,
+  return payments/echo(input)
+}"#,
                 "return type mismatch",
             ),
         ] {
@@ -1114,15 +1114,15 @@ mod tests {
         temp.write(
             "package.yml",
             r#"id: example.com/service-contract-alias-conflict
+version: 1.0.0
+packages:
+  - id: example.com/package-payments
     version: 1.0.0
-    packages:
-      - id: example.com/package-payments
-        version: 1.0.0
-        alias: payments
-      - id: example.com/echo-schema
-        version: 1.0.0
-        alias: contractSchema
-    "#,
+    alias: payments
+  - id: example.com/echo-schema
+    version: 1.0.0
+    alias: contractSchema
+"#,
         );
         temp.write(
             ".skiff-packages/example~com~~package-payments/1.0.0/package.yml",

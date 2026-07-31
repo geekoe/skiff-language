@@ -60,50 +60,50 @@ mod tests {
         temp.write(
             "api.yml",
             r#"GenericRecord: models.GenericRecord
-    GenericRepresentation: models.GenericRepresentation
-    GenericBranch: models.GenericBranch
-    GenericUnion: models.GenericUnion
-    GenericInterface: models.GenericInterface
-    TransitiveEnvelope: models.TransitiveEnvelope
-    Closed: models.Closed
-    roundTrip: models.roundTrip
-    "#,
+GenericRepresentation: models.GenericRepresentation
+GenericBranch: models.GenericBranch
+GenericUnion: models.GenericUnion
+GenericInterface: models.GenericInterface
+TransitiveEnvelope: models.TransitiveEnvelope
+Closed: models.Closed
+roundTrip: models.roundTrip
+"#,
         );
         temp.write(
             "models.skiff",
             r#"
-    import std
+import std
 
-    type GenericRecord<T> {
-      value: T,
-    }
+type GenericRecord<T> {
+  value: T,
+}
 
-    type GenericRepresentation<T> = string
+type GenericRepresentation<T> = string
 
-    type GenericBranch<T> {
-      value: T,
-    }
+type GenericBranch<T> {
+  value: T,
+}
 
-    type GenericUnion<T> discriminator "tag" =
-      GenericBranch<T>
-      | { tag: "inline", value: T }
+type GenericUnion<T> discriminator "tag" =
+  GenericBranch<T>
+  | { tag: "inline", value: T }
 
-    interface GenericInterface<T> {
-      function read(self: Self, fallback: T) -> T
-    }
+interface GenericInterface<T> {
+  function read(self: Self, fallback: T) -> T
+}
 
-    type TransitiveEnvelope {
-      value: GenericRecord<string>,
-    }
+type TransitiveEnvelope {
+  value: GenericRecord<string>,
+}
 
-    type Closed {
-      error: std.service.InternalError,
-    }
+type Closed {
+  error: std.service.InternalError,
+}
 
-    function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
-      return { value: value.value }
-    }
-    "#,
+function roundTrip(value: GenericRecord<string>) -> GenericRecord<string> {
+  return { value: value.value }
+}
+"#,
         );
 
         let project = compile_package_project(temp.path())
@@ -219,23 +219,23 @@ mod tests {
         temp.write(
             "package.yml",
             r#"id: example.com/generic-consumer
+version: 1.0.0
+packages:
+  - id: example.com/generic-provider
     version: 1.0.0
-    packages:
-      - id: example.com/generic-provider
-        version: 1.0.0
-        alias: models
-    "#,
+    alias: models
+"#,
         );
         temp.write("api.yml", "echo: main.echo\n");
         temp.write(
             "main.skiff",
             r#"
-    import models
+import models
 
-    function echo(value: models.Box<string>) -> models.Box<string> {
-      return value
-    }
-    "#,
+function echo(value: models.Box<string>) -> models.Box<string> {
+  return value
+}
+"#,
         );
         temp.write(
             ".skiff-packages/example~com~~generic-provider/1.0.0/package.yml",
@@ -278,11 +278,11 @@ mod tests {
         temp.write(
             "main.skiff",
             r#"
-    import models
+import models
 
-    function echo(value: models.Box<string, integer>) -> void {
-    }
-    "#,
+function echo(value: models.Box<string, integer>) -> void {
+}
+"#,
         );
         let error = compile_package_project(temp.path())
             .expect_err("wrong generic arity must remain fail closed")

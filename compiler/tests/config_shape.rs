@@ -27,13 +27,13 @@ mod tests {
         let temp = package_with_source(
             "config-runtime-requirements",
             r#"
-    function configured() -> string {
-      const token = config.require<string>("app.token")
-      const region = config.optional<string>("app.region")
-      const enabled = config.has("app.enabled")
-      return token
-    }
-    "#,
+function configured() -> string {
+  const token = config.require<string>("app.token")
+  const region = config.optional<string>("app.region")
+  const enabled = config.has("app.enabled")
+  return token
+}
+"#,
         );
         let project = compile_package_project(temp.path()).expect("package should compile");
 
@@ -101,9 +101,9 @@ mod tests {
         temp.write(
             "main.test.skiff",
             r#"
-    const testToken = config.require<string>("test.token")
-    test "config helper" { assert testToken == testToken, "same token" }
-    "#,
+const testToken = config.require<string>("test.token")
+test "config helper" { assert testToken == testToken, "same token" }
+"#,
         );
 
         let project = compile_package_project(temp.path()).expect("package should compile");
@@ -138,12 +138,12 @@ mod tests {
             (
                 "config-conflicting-types",
                 r#"
-    function configured() -> string {
-      const text = config.require<string>("app.value")
-      const number = config.optional<number>("app.value")
-      return text
-    }
-    "#,
+function configured() -> string {
+  const text = config.require<string>("app.value")
+  const number = config.optional<number>("app.value")
+  return text
+}
+"#,
                 "conflicting",
             ),
         ] {
@@ -184,11 +184,11 @@ mod tests {
         let binding = package_with_source(
             "reserved-config-binding",
             r#"
-    function configured() -> string {
-      const config = "shadow"
-      return config
-    }
-    "#,
+function configured() -> string {
+  const config = "shadow"
+  return config
+}
+"#,
         );
         let binding_error = compile_error(binding);
         assert!(
@@ -203,11 +203,11 @@ mod tests {
             (
                 "config-alias",
                 r#"
-    function configured() -> string? {
-      const read = config.optional<string>
-      return read("app.token")
-    }
-    "#,
+function configured() -> string? {
+  const read = config.optional<string>
+  return read("app.token")
+}
+"#,
                 "cannot be aliased or called indirectly",
             ),
             (

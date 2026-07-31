@@ -41,17 +41,17 @@ mod tests {
         fs::write(
             temp.path().join("repo.skiff"),
             r#"
-    type User { id: string, name: string }
-    type Repo {}
+type User { id: string, name: string }
+type Repo {}
 
-    impl Repo {
-      function findOne(id: string) -> User? { return null }
-    }
+impl Repo {
+  function findOne(id: string) -> User? { return null }
+}
 
-    function findUser(repo: Repo, id: string) -> User? {
-      return repo.findOne(id)
-    }
-    "#,
+function findUser(repo: Repo, id: string) -> User? {
+  return repo.findOne(id)
+}
+"#,
         )
         .unwrap();
 
@@ -69,55 +69,55 @@ mod tests {
             (
                 "connect-without-import",
                 r#"
-    type User { id: string, name: string }
-    function findUser(id: string) -> User? {
-      const db = connect.mongo.Target("cluster-a", "app")
-      const users = db.Collection<User>("user")
-      return users.findOne({ id: id })
-    }
-    "#,
+type User { id: string, name: string }
+function findUser(id: string) -> User? {
+  const db = connect.mongo.Target("cluster-a", "app")
+  const users = db.Collection<User>("user")
+  return users.findOne({ id: id })
+}
+"#,
                 "connect.mongo provider wrapper has been removed",
             ),
             (
                 "connect-with-import",
                 r#"
-    import connect
-    type User { id: string, name: string }
-    function findUser(id: string) -> User? {
-      const db = connect.mongo.Target("cluster-a", "app")
-      const users = db.Collection<User>("user")
-      return users.findOne({ id: id })
-    }
-    "#,
+import connect
+type User { id: string, name: string }
+function findUser(id: string) -> User? {
+  const db = connect.mongo.Target("cluster-a", "app")
+  const users = db.Collection<User>("user")
+  return users.findOne({ id: id })
+}
+"#,
                 "connect.mongo provider wrapper has been removed",
             ),
             (
                 "std-mongo-root",
                 r#"
-    function rejected() -> number {
-      const target = std.mongo.Target("cluster-a", "app")
-      return 1
-    }
-    "#,
+function rejected() -> number {
+  const target = std.mongo.Target("cluster-a", "app")
+  return 1
+}
+"#,
                 "std.mongo is not permitted as a std module root",
             ),
             (
                 "unknown-root",
                 r#"
-    function rejected() -> number {
-      const helper = missing.helper
-      return 1
-    }
-    "#,
+function rejected() -> number {
+  const helper = missing.helper
+  return 1
+}
+"#,
                 "unresolved root missing in expression missing.helper",
             ),
             (
                 "provider-primitive",
                 r#"
-    function findUser() -> {} {
-      return __providerCallFindOne({}, {})
-    }
-    "#,
+function findUser() -> {} {
+  return __providerCallFindOne({}, {})
+}
+"#,
                 "internal provider-call primitive __providerCallFindOne",
             ),
         ];

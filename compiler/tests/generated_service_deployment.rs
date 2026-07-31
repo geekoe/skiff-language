@@ -221,16 +221,16 @@ mod tests {
         root.write(
             "package.yml",
             r#"
-    id: example.com/mapping-service-package
+id: example.com/mapping-service-package
+version: 1.0.0
+packages:
+  - id: example.com/mapping-store
     version: 1.0.0
-    packages:
-      - id: example.com/mapping-store
-        version: 1.0.0
-        alias: store
-      - id: example.com/mapping-audit
-        version: 1.0.0
-        alias: audit
-    "#,
+    alias: store
+  - id: example.com/mapping-audit
+    version: 1.0.0
+    alias: audit
+"#,
         );
         root.write(
             "service.yml",
@@ -257,12 +257,12 @@ mod tests {
         root.write(
             dependency_path.join("store.skiff"),
             r#"
-    type PackageSecret { id: string, value: string }
-    db object PackageSecret {
-      name "package_secret"
-      primary key(id)
-    }
-    "#,
+type PackageSecret { id: string, value: string }
+db object PackageSecret {
+  name "package_secret"
+  primary key(id)
+}
+"#,
         );
         let audit_dependency_path = std::path::PathBuf::from(".skiff-packages")
             .join(
@@ -279,12 +279,12 @@ mod tests {
         root.write(
             audit_dependency_path.join("audit.skiff"),
             r#"
-    type PackageSecret { id: string, value: string }
-    db object PackageSecret {
-      name "package_secret"
-      primary key(id)
-    }
-    "#,
+type PackageSecret { id: string, value: string }
+db object PackageSecret {
+  name "package_secret"
+  primary key(id)
+}
+"#,
         );
 
         let (project, service_api) = compile_service_package_project(root.path()).unwrap();
@@ -455,29 +455,29 @@ mod tests {
             "main.skiff",
             r#"import std
 
-    function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
-      return std.http.noContent()
-    }
+function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.noContent()
+}
 
-    function health() -> string {
-      return "ok"
-    }
-    "#,
+function health() -> string {
+  return "ok"
+}
+"#,
         );
         let (project, service_api) = compile_service_package_project(root.path()).unwrap();
         let service_source = "id: example.com/http\n";
         let service = serde_yaml::from_str::<ServiceManifestAuthoring>(service_source).unwrap();
         let http = serde_yaml::from_str::<HttpGatewayDocumentAuthoring>(
             r#"
-    raw:
-      method: GET
-      path: /artifacts
-      kind: rawHttp
-      handler: main.raw
-      adapterArgs:
-        - param: request
-          source: { kind: http.request }
-    "#,
+raw:
+  method: GET
+  path: /artifacts
+  kind: rawHttp
+  handler: main.raw
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+"#,
         )
         .unwrap();
         let closure = project
@@ -504,10 +504,10 @@ mod tests {
     fn generated_service_deployment_refuses_legacy_websocket_operation_ingress() {
         let error = serde_yaml::from_str::<WebSocketGatewayDocumentAuthoring>(
             r#"
-    routes:
-      - path: /events
-        operation: read
-    "#,
+routes:
+  - path: /events
+    operation: read
+"#,
         )
         .unwrap_err();
         assert!(

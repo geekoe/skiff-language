@@ -90,18 +90,18 @@ mod tests {
 
         let helper = root.path().join("helper");
         write_package(
-            &helper,
-            "id: example.com/helper\nversion: 1.0.0\npackages:\n  - id: example.com/leaf\n    version: 1.0.0\n    alias: leaf\n",
-            "function marker() -> string { return \"helper\" }\n",
-        );
+        &helper,
+        "id: example.com/helper\nversion: 1.0.0\npackages:\n  - id: example.com/leaf\n    version: 1.0.0\n    alias: leaf\n",
+        "function marker() -> string { return \"helper\" }\n",
+    );
         publish_package(&helper, &artifacts);
 
         let service = root.path().join("test-service");
         write_package(
-            &service,
-            "id: test.skiff/transitive-store\nversion: 1.0.0\npackages:\n  - id: example.com/helper\n    version: 1.0.0\n    alias: helper\n",
-            "",
-        );
+        &service,
+        "id: test.skiff/transitive-store\nversion: 1.0.0\npackages:\n  - id: example.com/helper\n    version: 1.0.0\n    alias: helper\n",
+        "",
+    );
         fs::write(
             service.join("service.yml"),
             "id: test.skiff/transitive-store\nkind: test\n",

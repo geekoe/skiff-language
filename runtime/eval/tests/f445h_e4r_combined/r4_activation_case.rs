@@ -97,14 +97,14 @@ mod tests {
             .join()
             .expect("combined activation thread joins");
         assert!(
-            activation_result
-                .as_ref()
-                .is_err_and(|error| error.contains("no runtime assembly target")),
-            "activation probe intentionally uses a first-Ready fail-closed production operation: {activation_result:?}"
-        );
+        activation_result
+            .as_ref()
+            .is_err_and(|error| error.contains("no runtime assembly target")),
+        "activation probe intentionally uses a first-Ready fail-closed production operation: {activation_result:?}"
+    );
         assert!(
-            activation_completed_first,
-            "R4 expected first-Ready activation failure to retain the Actor segment; R1 pre-suspend let the queued competitor run first"
-        );
+        activation_completed_first,
+        "R4 expected first-Ready activation failure to retain the Actor segment; R1 pre-suspend let the queued competitor run first"
+    );
     }
 }

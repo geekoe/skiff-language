@@ -110,21 +110,21 @@ mod tests {
             (
                 "connect-provider-wrapper",
                 r#"
-    import connect
-    function run() -> {} {
-      const db = connect.mongo.Target("cluster-a", "app")
-      return {}
-    }
-    "#,
+import connect
+function run() -> {} {
+  const db = connect.mongo.Target("cluster-a", "app")
+  return {}
+}
+"#,
                 "connect.mongo provider wrapper has been removed",
             ),
             (
                 "internal-provider-primitive",
                 r#"
-    function run() -> {} {
-      return __providerCallFindOne({}, {})
-    }
-    "#,
+function run() -> {} {
+  return __providerCallFindOne({}, {})
+}
+"#,
                 "internal provider-call primitive",
             ),
         ] {
