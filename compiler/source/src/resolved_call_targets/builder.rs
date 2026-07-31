@@ -282,6 +282,10 @@ impl AstVisitor for TargetCollector<'_> {
                 self.visit_block(body);
                 self.value_scope = saved_scope;
             }
+            Stmt::While { condition, body } => {
+                self.visit_expr(condition);
+                self.visit_block(body);
+            }
             Stmt::Match { value, arms } => {
                 self.visit_expr(value);
                 for arm in arms {

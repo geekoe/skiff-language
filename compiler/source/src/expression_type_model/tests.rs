@@ -180,6 +180,25 @@ fn nullable_union_alias_rejects_non_member_literal() {
 }
 
 #[test]
+fn rejects_non_bool_while_condition() {
+    let error = expression_type_result(
+        r#"
+              function run() -> void {
+                while 1 {
+                  return
+                }
+              }
+            "#,
+    )
+    .expect_err("while condition must be bool");
+    assert!(
+        error.message().contains("while condition type mismatch"),
+        "unexpected diagnostic: {}",
+        error.message()
+    );
+}
+
+#[test]
 fn actor_self_field_assignment_requires_declared_field_type() {
     let error = expression_type_result(
         r#"

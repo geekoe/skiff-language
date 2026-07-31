@@ -505,6 +505,10 @@ impl AstVisitorMut for RootRefResolver<'_> {
                     visitor.visit_block(body);
                 });
             }
+            Stmt::While { condition, body } => {
+                self.visit_expr(condition);
+                self.visit_block(body);
+            }
             Stmt::Match { value, arms } => {
                 self.visit_expr(value);
                 for arm in arms {
@@ -712,6 +716,10 @@ impl AstVisitor for RootRefCollector<'_> {
                 self.with_package_binding(for_binding_binds_package(binding), |visitor| {
                     visitor.visit_block(body);
                 });
+            }
+            Stmt::While { condition, body } => {
+                self.visit_expr(condition);
+                self.visit_block(body);
             }
             Stmt::Match { value, arms } => {
                 self.visit_expr(value);

@@ -190,6 +190,11 @@ impl<'a> OwnerAnalyzer<'a> {
                 }
                 self.validate_block(body, &mut nested, context);
             }
+            Stmt::While { condition, body } => {
+                self.validate_expr(condition, scope, context);
+                let mut nested = scope.clone();
+                self.validate_block(body, &mut nested, context);
+            }
             Stmt::Match { value, arms } => {
                 self.validate_expr(value, scope, context);
                 for arm in arms {

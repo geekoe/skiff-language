@@ -115,6 +115,12 @@ block 是 `{ Stmt* }`。statement 包括声明、赋值、控制流、stream 输
 ForStmt = "for" Identifier ("," Identifier)? "in" Expr Block
 ```
 
+`while` 循环语法是：
+
+```ebnf
+WhileStmt = "while" Expr Block
+```
+
 单绑定形态可用于 `Array<T>`、`Stream<T>` 和 `Map<K,V>`；在 map 上绑定 key。双绑定形态只用于 `Map<K,V>`，第一个名字绑定 key，第二个名字绑定 value。`for (key, value) in map`、`for key: value in map` 和 `for key => value in map` 不属于当前语法。
 
 `return` 可带表达式，也可裸返回。`throw` / `rethrow` 同时有 statement 和 expression 形态；expression 形态类型为 `never`。

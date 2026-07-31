@@ -268,6 +268,10 @@ impl StreamEmitTypeChecker<'_> {
                 self.check_expr(iterable);
                 self.check_block(body);
             }
+            Stmt::While { condition, body } => {
+                self.check_expr(condition);
+                self.check_block(body);
+            }
             Stmt::Match { value, arms } => {
                 self.check_expr(value);
                 for arm in arms {

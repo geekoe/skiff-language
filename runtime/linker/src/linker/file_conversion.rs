@@ -728,6 +728,10 @@ fn linked_stmt(
             iterable: linked_expr_ref(iterable),
             body: body.clone(),
         },
+        artifact::StmtIr::While { condition, body } => LinkedStmtIr::While {
+            condition: linked_expr_ref(condition),
+            body: body.clone(),
+        },
         artifact::StmtIr::Match { value, arms } => LinkedStmtIr::Match {
             value: linked_expr_ref(value),
             arms: arms

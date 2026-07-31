@@ -631,6 +631,10 @@ impl<'a> FunctionLowerer<'a> {
                     body,
                 }
             }
+            Stmt::While { condition, body } => StmtIr::While {
+                condition: self.lower_expr(condition)?,
+                body: self.lower_scoped_block("while_body", body, |_| Ok(()))?,
+            },
             Stmt::Match { value, arms } => {
                 let value = self.lower_expr(value)?;
                 let arms = arms
@@ -2789,6 +2793,9 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
         Stmt::For { iterable, body, .. } => {
             expr_preorder_node_count(iterable) + block_preorder_node_count(body)
         }
+        Stmt::While { condition, body } => {
+            expr_preorder_node_count(condition) + block_preorder_node_count(body)
+        }
         Stmt::Match { value, arms } => {
             expr_preorder_node_count(value)
                 + arms
@@ -2866,6 +2873,7 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
                 || else_block.as_ref().is_some_and(block_contains_return_stmt)
         }
         Stmt::For { body, .. }
+        | Stmt::While { body, .. }
         | Stmt::DbTransaction { body }
         | Stmt::Timeout { body, .. }
         | Stmt::Concurrent { body }

@@ -242,6 +242,10 @@ fn collect_call_targets_in_stmt(
             collect_call_targets_in_expr(iterable, known, targets);
             collect_call_targets_in_block(body, known, targets);
         }
+        Stmt::While { condition, body } => {
+            collect_call_targets_in_expr(condition, known, targets);
+            collect_call_targets_in_block(body, known, targets);
+        }
         Stmt::Match { value, arms } => {
             collect_call_targets_in_expr(value, known, targets);
             for arm in arms {

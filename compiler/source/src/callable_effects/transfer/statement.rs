@@ -107,6 +107,16 @@ impl Evaluator<'_, '_> {
                 // one-pass false negative.
                 self.mark_unsupported_loop();
             }
+            Stmt::While { condition, body } => {
+                let _ = self.eval_expr(condition, env);
+                let mut body_env = env.clone();
+                self.eval_block(body, &mut body_env);
+                join_environments(env, &body_env);
+                // A single AST traversal cannot prove cross-iteration mutation
+                // ordering. Reject the whole provenance path instead of using a
+                // one-pass false negative.
+                self.mark_unsupported_loop();
+            }
             Stmt::Match { value, arms } => {
                 let value = self.eval_expr(value, env);
                 let mut joined = env.clone();

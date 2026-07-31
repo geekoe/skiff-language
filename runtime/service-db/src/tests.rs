@@ -674,7 +674,7 @@ fn package_collection_storage_name_is_diamond_path_independent() {
 }
 
 #[test]
-fn service_db_runtime_environment_isolates_the_same_service_id() {
+fn service_db_runtime_environment_does_not_change_database_name() {
     let config = ServiceDbConfig {
         mongo_url: inert_mongo_url("environment"),
         encryption_cipher: None,
@@ -689,7 +689,10 @@ fn service_db_runtime_environment_isolates_the_same_service_id() {
     .expect("dev service database");
     let second = ServiceDbRuntime::new_with_config("prod".to_string(), service_id, config, &[])
         .expect("prod service database");
-    assert_ne!(first.database_name, second.database_name);
+    assert_eq!(
+        first.database_name, second.database_name,
+        "environment must not participate in the Mongo database name"
+    );
 }
 
 #[test]

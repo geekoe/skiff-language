@@ -463,6 +463,9 @@ impl<'a> EvalContext<'a> {
                 )
                 .await
             }
+            LinkedStmtIr::While { condition, body } => {
+                self.exec_program_while(*condition, body).await
+            }
             LinkedStmtIr::Assert { condition, message } => {
                 let condition = self.eval_program_expr_ref(*condition).await?;
                 if runtime_truthy(&condition, self.heap)? {
@@ -1098,6 +1101,33 @@ impl<'a> EvalContext<'a> {
             let control = self
                 .exec_program_for_in_body_control(item_slot, body, item_value)
                 .await?;
+            match control {
+                EvaluatorControl::Complete(Flow::Continue | Flow::LoopContinue) => {
+                    self.checkpoint_loop_backedge(0)?;
+                    continue;
+                }
+                EvaluatorControl::Complete(Flow::Break) => break,
+                EvaluatorControl::Complete(flow) => return Ok(flow.into()),
+                EvaluatorControl::TailCall(prepared) => {
+                    return Ok(EvaluatorControl::TailCall(prepared))
+                }
+            }
+        }
+        Ok(Flow::Continue.into())
+    }
+
+    async fn exec_program_while(
+        &mut self,
+        condition: ExprRefIr,
+        body: &str,
+    ) -> Result<EvaluatorControl> {
+        loop {
+            self.checkpoint_loop_condition(1)?;
+            let condition_value = self.eval_program_expr_ref(condition).await?;
+            if !runtime_truthy(&condition_value, self.heap)? {
+                return Ok(Flow::Continue.into());
+            }
+            let control = self.exec_program_block_control(body).await?;
             match control {
                 EvaluatorControl::Complete(Flow::Continue | Flow::LoopContinue) => {
                     self.checkpoint_loop_backedge(0)?;

@@ -195,6 +195,10 @@ pub enum StmtIr {
         iterable: ExprRefIr,
         body: String,
     },
+    While {
+        condition: ExprRefIr,
+        body: String,
+    },
     Match {
         value: ExprRefIr,
         arms: Vec<MatchArmIr>,
@@ -895,6 +899,7 @@ fn visit_statement_type_refs<E>(
         | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::ForIn { .. }
+        | StmtIr::While { .. }
         | StmtIr::Assert { .. }
         | StmtIr::Break
         | StmtIr::Continue

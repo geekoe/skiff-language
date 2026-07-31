@@ -263,6 +263,7 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         | StmtIr::Timeout { .. }
         | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
+        | StmtIr::While { .. }
         | StmtIr::Assert { .. }
         | StmtIr::Break
         | StmtIr::Continue

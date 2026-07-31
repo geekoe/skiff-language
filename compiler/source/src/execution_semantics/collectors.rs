@@ -180,6 +180,7 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Stmt::Assign { .. }
                 | Stmt::If { .. }
                 | Stmt::For { .. }
+                | Stmt::While { .. }
                 | Stmt::Match { .. }
                 | Stmt::DbTransaction { .. }
                 | Stmt::Throw { .. }
@@ -376,6 +377,10 @@ impl AstVisitor for ReferencedNameCollector {
                 self.visit_block(body);
                 self.bound = saved_bound;
             }
+            Stmt::While { condition, body } => {
+                self.visit_expr(condition);
+                self.visit_block(body);
+            }
             Stmt::Match { value, arms } => {
                 self.visit_expr(value);
                 for arm in arms {
@@ -456,6 +461,7 @@ pub(super) fn first_expression(statement: &Stmt) -> Option<&Expr> {
         | Stmt::DbTransaction { body } => first_expression_in_block(body),
         Stmt::If { condition, .. } => Some(condition),
         Stmt::For { iterable, .. } => Some(iterable),
+        Stmt::While { condition, .. } => Some(condition),
         Stmt::Match { value, .. } => Some(value),
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
@@ -505,6 +511,7 @@ pub(super) fn statement_kind(statement: &Stmt) -> &'static str {
         Stmt::Serial { .. } => "nested serial",
         Stmt::If { .. } => "if",
         Stmt::For { .. } => "for",
+        Stmt::While { .. } => "while",
         Stmt::Match { .. } => "match",
         Stmt::DbTransaction { .. } => "db transaction",
         Stmt::Throw { .. } => "throw",

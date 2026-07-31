@@ -1,0 +1,51 @@
+function whileCount(limit: number) -> number {
+  let count = 0
+  while count < limit {
+    count = count + 1
+  }
+  return count
+}
+
+function whileBreak(limit: number) -> number {
+  let count = 0
+  while true {
+    count = count + 1
+    if count >= limit {
+      break
+    }
+  }
+  return count
+}
+
+function whileContinue(limit: number) -> number {
+  let count = 0
+  let skipped = 0
+  while count < limit {
+    count = count + 1
+    if count == 2 {
+      continue
+    }
+    skipped = skipped + 1
+  }
+  return skipped
+}
+
+test "while false condition exits immediately without body execution" {
+  assert whileCount(0) == 0
+}
+
+test "while iterates until the condition becomes false" {
+  assert whileCount(1) == 1
+  assert whileCount(5) == 5
+}
+
+test "while break exits the loop" {
+  assert whileBreak(1) == 1
+  assert whileBreak(3) == 3
+}
+
+test "while continue skips the rest of the body" {
+  assert whileContinue(1) == 1
+  assert whileContinue(3) == 2
+  assert whileContinue(5) == 4
+}

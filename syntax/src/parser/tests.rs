@@ -68,6 +68,61 @@ fn rejects_tuple_like_for_binding_syntax() {
 }
 
 #[test]
+fn parses_while_loop_with_condition_and_block() {
+    let ast = parse_source(
+        r#"
+        function run(ready: bool) -> void {
+          while ready {
+            return
+          }
+        }
+        "#,
+    )
+    .unwrap();
+    let statements = &ast.functions[0].body.statements;
+
+    match &statements[0] {
+        Stmt::While { condition, body } => {
+            assert!(matches!(condition, Expr::Identifier(name) if name == "ready"));
+            assert_eq!(body.statements.len(), 1);
+            assert!(matches!(&body.statements[0], Stmt::Return(None)));
+        }
+        other => panic!("expected while statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_while_missing_condition_or_block() {
+    let missing_condition = parse_source(
+        r#"
+        function run() -> void {
+          while
+        }
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        missing_condition.contains("expected expression"),
+        "unexpected parse error: {missing_condition}"
+    );
+
+    let missing_block = parse_source(
+        r#"
+        function run(ready: bool) -> void {
+          while ready
+        }
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        missing_block.contains("expected symbol {"),
+        "unexpected parse error: {missing_block}"
+    );
+}
+
+#[test]
 fn parses_service_interface_metadata_without_fixture() {
     let source = r#"
         type Club {

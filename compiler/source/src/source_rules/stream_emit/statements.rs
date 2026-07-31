@@ -128,6 +128,19 @@ pub(super) fn validate_emit_usage_in_stmt(
                 violations,
             );
         }
+        Stmt::While { condition, body } => {
+            collect_emit_expression_call_violations(path, condition, violations);
+            let mut body_env = env.clone();
+            validate_emit_usage_in_block(
+                path,
+                function_name,
+                stream_chunk,
+                body,
+                function_return_types,
+                &mut body_env,
+                violations,
+            );
+        }
         Stmt::Match { value, arms } => {
             collect_emit_expression_call_violations(path, value, violations);
             for arm in arms {

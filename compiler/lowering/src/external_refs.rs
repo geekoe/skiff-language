@@ -202,6 +202,7 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
         | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }
         | StmtIr::ForIn { .. }
+        | StmtIr::While { .. }
         | StmtIr::Assert { .. }
         | StmtIr::Break
         | StmtIr::Continue

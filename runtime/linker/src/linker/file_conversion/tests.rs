@@ -155,6 +155,22 @@ fn linked_throw_statement_and_expression_preserve_exact_source_sites() {
 }
 
 #[test]
+fn linked_while_statement_preserves_condition_ref_and_body_label() {
+    let statement = linked_stmt(
+        &artifact::StmtIr::While {
+            condition: artifact::ExprRefIr { expression: 4 },
+            body: "while_body".to_string(),
+        },
+        &|_| unreachable!(),
+    )
+    .unwrap();
+    assert!(matches!(
+        statement,
+        LinkedStmtIr::While { condition, body } if condition.expression == 4 && body == "while_body"
+    ));
+}
+
+#[test]
 fn linked_throw_preserves_exact_synthetic_site() {
     let expected = artifact::InstructionSourceSite::Synthetic {
         reason: artifact::SyntheticInstructionSiteReason::RuntimeControlFlow,
