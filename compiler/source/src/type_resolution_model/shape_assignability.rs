@@ -4,7 +4,7 @@ use super::*;
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{FunctionTypeParamIr, LiteralIr};
 use skiff_compiler_core::type_ref::{
-    debug_text, is_null_type, normalize_union, substitute_type_params_in_type_ref_ref,
+    debug_text, is_null_type, normalize_union, substitute_type_params_in_type_ref_ref, BuiltinShape,
 };
 
 #[derive(Clone, Copy)]
@@ -761,10 +761,10 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> bool {
         match expected {
-            TypeRefIr::Builtin { name, .. } if name == "Json" => {
+            TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Json.name() => {
                 self.json_assignable_in_context(actual, context)
             }
-            TypeRefIr::Builtin { name, .. } if name == "JsonObject" => {
+            TypeRefIr::Builtin { name, .. } if name == BuiltinShape::JsonObject.name() => {
                 self.json_object_assignable_in_context(actual, context)
             }
             TypeRefIr::Nullable { inner } => {
@@ -797,12 +797,20 @@ impl TypeResolutionModel {
         match actual {
             TypeRefIr::Builtin { name, args } => {
                 matches!(
-                    name.as_str(),
-                    "string" | "integer" | "number" | "bool" | "null" | "Json" | "JsonObject"
-                ) || name == "Array"
+                    BuiltinShape::of_name(name),
+                    Some(
+                        BuiltinShape::String
+                            | BuiltinShape::Integer
+                            | BuiltinShape::Number
+                            | BuiltinShape::Bool
+                            | BuiltinShape::Null
+                            | BuiltinShape::Json
+                            | BuiltinShape::JsonObject
+                    )
+                ) || name == BuiltinShape::Array.name()
                     && args.len() == 1
                     && self.json_assignable_in_context_inner(&args[0], context, depth + 1)
-                    || name == "Map"
+                    || name == BuiltinShape::Map.name()
                         && args.len() == 2
                         && self.json_assignable_in_context_inner(&args[1], context, depth + 1)
             }
@@ -848,7 +856,7 @@ impl TypeResolutionModel {
             return false;
         }
         match actual {
-            TypeRefIr::Builtin { name, .. } if name == "JsonObject" => true,
+            TypeRefIr::Builtin { name, .. } if name == BuiltinShape::JsonObject.name() => true,
             TypeRefIr::Record { fields } => fields
                 .values()
                 .all(|field| self.json_assignable_in_context_inner(field, context, depth + 1)),

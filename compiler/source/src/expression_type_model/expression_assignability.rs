@@ -9,7 +9,7 @@ use super::{
 use skiff_artifact_model::{
     FunctionTypeParamIr, PackageRefIr, PackageTypeRef, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_compiler_core::type_ref::{debug_text, is_null_type};
+use skiff_compiler_core::type_ref::{debug_text, is_null_type, BuiltinShape};
 
 use crate::{
     dependency_analysis::SourceDependencyAnalysisInput,
@@ -84,7 +84,10 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             {
                 if let TypeRefIr::Builtin { name, args } = &expected.ir {
                     if args.is_empty()
-                        && matches!(name.as_str(), "Json" | "JsonObject")
+                        && matches!(
+                            BuiltinShape::of_name(name),
+                            Some(BuiltinShape::Json | BuiltinShape::JsonObject)
+                        )
                         && package_type_target_assignable(
                             actual,
                             &PackageTypeRef::Container {
@@ -102,9 +105,13 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         if self.package_json_context
             && self.dependency_analysis.is_some_and(|dependencies| {
                 matches!(&expected.ir, TypeRefIr::Builtin { name, args }
-                    if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject"))
+                    if args.is_empty()
+                        && matches!(
+                            BuiltinShape::of_name(name),
+                            Some(BuiltinShape::Json | BuiltinShape::JsonObject)
+                        ))
                     && {
-                        let object_only = matches!(&expected.ir, TypeRefIr::Builtin { name, .. } if name == "JsonObject");
+                        let object_only = matches!(&expected.ir, TypeRefIr::Builtin { name, .. } if name == BuiltinShape::JsonObject.name());
                         local_ir_json_compatible(&actual.ir, dependencies, object_only)
                             || matches!(&actual.ir, TypeRefIr::PackageSchema { .. })
                                 && self
@@ -259,11 +266,15 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             || self.package_json_context
                 && self.dependency_analysis.is_some_and(|dependencies| {
                     matches!(&expected.ir, TypeRefIr::Builtin { name, args }
-                        if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject"))
+                        if args.is_empty()
+                            && matches!(
+                                BuiltinShape::of_name(name),
+                                Some(BuiltinShape::Json | BuiltinShape::JsonObject)
+                            ))
                         && local_ir_json_compatible(
                             actual_ty,
                             dependencies,
-                            matches!(&expected.ir, TypeRefIr::Builtin { name, .. } if name == "JsonObject"),
+                            matches!(&expected.ir, TypeRefIr::Builtin { name, .. } if name == BuiltinShape::JsonObject.name()),
                         )
                 })
             || matches!(actual_ty, TypeRefIr::Record { .. })
@@ -876,24 +887,28 @@ fn non_nullable_object_target(target: &ResolvedTypeRef) -> ResolvedTypeRef {
 fn map_object_value_target(target: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
     match &target.ir {
         TypeRefIr::Builtin { name, args }
-            if name == "Map"
+            if name == BuiltinShape::Map.name()
                 && matches!(
                     args.as_slice(),
                     [TypeRefIr::Builtin { name, args: key_args }, _]
-                        if name == "string" && key_args.is_empty()
+                        if name == BuiltinShape::String.name() && key_args.is_empty()
                 ) =>
         {
             args.get(1).map(resolved_type_from_ir)
         }
         TypeRefIr::Builtin { name, args }
-            if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject") =>
+            if args.is_empty()
+                && matches!(
+                    BuiltinShape::of_name(name),
+                    Some(BuiltinShape::Json | BuiltinShape::JsonObject)
+                ) =>
         {
             Some(ResolvedTypeRef::with_text(
                 TypeRefIr::Builtin {
-                    name: "Json".to_string(),
+                    name: BuiltinShape::Json.name().to_string(),
                     args: Vec::new(),
                 },
-                "Json".to_string(),
+                BuiltinShape::Json.name().to_string(),
             ))
         }
         _ => None,

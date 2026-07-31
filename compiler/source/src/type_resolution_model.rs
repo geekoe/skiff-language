@@ -14,7 +14,7 @@ use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
     type_ref::{
         contains_type_param, debug_text, is_null_type, normalize_union, record_field_type,
-        substitute_type_params_in_type_ref_ref,
+        substitute_type_params_in_type_ref_ref, BuiltinShape,
     },
 };
 
@@ -2810,7 +2810,7 @@ impl TypeResolutionModel {
         let source_type_key = self.resolve_source_type_key(name, context);
         if source_type_key.is_none() {
             if let Some(canonical_name) = canonical_file_ir_builtin_name(name) {
-                if canonical_name == "Map"
+                if canonical_name == BuiltinShape::Map.name()
                     && resolved_args.len() == 2
                     && type_ref_contains_any_interface(&resolved_args[0])
                 {
@@ -5795,13 +5795,24 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
         return items.iter().all(|item| type_assignable(item, expected));
     }
     match expected {
-        TypeRefIr::Builtin { name, .. } if name == "unknown" => true,
-        TypeRefIr::Builtin { name, .. } if name == "void" => is_null_type(actual),
-        TypeRefIr::Builtin { name, .. } if name == "Stream" => is_null_type(actual),
-        TypeRefIr::Builtin { name, .. } if name == "Json" => json_assignable(actual),
-        TypeRefIr::Builtin { name, .. } if name == "JsonObject" => json_object_assignable(actual),
-        TypeRefIr::Builtin { name, .. } if name == "number" => {
-            matches!(actual, TypeRefIr::Builtin { name, .. } if name == "integer")
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Unknown.name() => true,
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Void.name() => {
+            is_null_type(actual)
+        }
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Stream.name() => {
+            is_null_type(actual)
+        }
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Json.name() => {
+            json_assignable(actual)
+        }
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::JsonObject.name() => {
+            json_object_assignable(actual)
+        }
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Number.name() => {
+            matches!(
+                actual,
+                TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Integer.name()
+            )
         }
         TypeRefIr::Nullable { inner } => is_null_type(actual) || type_assignable(actual, inner),
         TypeRefIr::Union { items } => items
@@ -5931,13 +5942,13 @@ fn literal_assignable_to(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
                 value: LiteralIr::String { .. },
             },
             TypeRefIr::Builtin { name, .. },
-        ) if name == "string" => true,
+        ) if name == BuiltinShape::String.name() => true,
         (
             TypeRefIr::Literal {
                 value: LiteralIr::Null,
             },
             TypeRefIr::Builtin { name, .. },
-        ) if name == "null" => true,
+        ) if name == BuiltinShape::Null.name() => true,
         _ => false,
     }
 }
@@ -5946,10 +5957,18 @@ fn json_assignable(actual: &TypeRefIr) -> bool {
     match actual {
         TypeRefIr::Builtin { name, .. } => {
             matches!(
-                name.as_str(),
-                "string" | "integer" | "number" | "bool" | "null" | "Json" | "JsonObject"
-            ) || matches!(actual, TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 && json_assignable(&args[0]))
-                || matches!(actual, TypeRefIr::Builtin { name, args } if name == "Map" && args.len() == 2 && json_assignable(&args[1]))
+                BuiltinShape::of_name(name),
+                Some(
+                    BuiltinShape::String
+                        | BuiltinShape::Integer
+                        | BuiltinShape::Number
+                        | BuiltinShape::Bool
+                        | BuiltinShape::Null
+                        | BuiltinShape::Json
+                        | BuiltinShape::JsonObject
+                )
+            ) || matches!(actual, TypeRefIr::Builtin { name, args } if name == BuiltinShape::Array.name() && args.len() == 1 && json_assignable(&args[0]))
+                || matches!(actual, TypeRefIr::Builtin { name, args } if name == BuiltinShape::Map.name() && args.len() == 2 && json_assignable(&args[1]))
         }
         TypeRefIr::Literal { value } => matches!(
             value,
@@ -5967,7 +5986,7 @@ fn json_assignable(actual: &TypeRefIr) -> bool {
 
 fn json_object_assignable(actual: &TypeRefIr) -> bool {
     match actual {
-        TypeRefIr::Builtin { name, .. } if name == "JsonObject" => true,
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::JsonObject.name() => true,
         TypeRefIr::Record { fields } => fields.values().all(json_assignable),
         _ => false,
     }

@@ -1,6 +1,7 @@
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef,
 };
+use skiff_compiler_core::type_ref::BuiltinShape;
 
 use crate::{
     contract_type_resolution::package_type_ref_from_validated_contract_ref,
@@ -213,14 +214,14 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                         let text = format!("Stream<{}>", resolved);
                         ResolvedTypeRef::with_text(
                             skiff_artifact_model::TypeRefIr::Builtin {
-                                name: "Stream".to_string(),
+                                name: BuiltinShape::Stream.name().to_string(),
                                 args: vec![resolved.ir],
                             },
                             text,
                         )
                     },
                     PackageTypeRef::Container {
-                        name: "Stream".to_string(),
+                        name: BuiltinShape::Stream.name().to_string(),
                         arguments: vec![projected],
                     },
                 ),
