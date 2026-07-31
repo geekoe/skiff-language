@@ -5,8 +5,8 @@ use skiff_artifact_model::{
     PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    contains_type_param, debug_text, is_null_type, normalize_union, package_type_ref_to_ir,
-    record_field_type, single_item,
+    contains_type_param, debug_text, is_null_type, map_entry, normalize_union,
+    package_type_ref_to_ir, record_field_type, single_item,
     substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
@@ -4781,22 +4781,16 @@ fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
 }
 
 fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTypeRef)> {
+    // Preserves the pre-existing short-name-only behavior of this wrapper:
+    // unlike the other map helpers it does not accept `std.collection.Map`.
     let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     if name != "Map" || args.len() != 2 {
         return None;
     }
-    Some((
-        ResolvedTypeRef {
-            ir: args[0].clone(),
-            source_text: debug_text(&args[0]),
-        },
-        ResolvedTypeRef {
-            ir: args[1].clone(),
-            source_text: debug_text(&args[1]),
-        },
-    ))
+    let (key, value) = map_entry(&ty.ir)?;
+    Some((resolved_type_from_ir(key), resolved_type_from_ir(value)))
 }
 
 fn single_for_item_projection(ty: &PackageTypeRef) -> Option<PackageTypeRef> {
@@ -4814,8 +4808,11 @@ fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, Package
     let PackageTypeRef::Container { name, arguments } = ty else {
         return None;
     };
-    (matches!(name.as_str(), "Map" | "std.collection.Map") && arguments.len() == 2)
-        .then(|| (arguments[0].clone(), arguments[1].clone()))
+    map_entry(&TypeRefIr::Builtin {
+        name: name.clone(),
+        args: arguments.iter().map(package_type_ref_to_ir).collect(),
+    })
+    .map(|_| (arguments[0].clone(), arguments[1].clone()))
 }
 
 fn native_return_type_context<'a>(
@@ -4996,19 +4993,11 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn map_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Builtin { name, args } = ty else {
-        return None;
-    };
-    (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
-        .then(|| args[1].clone())
+    map_entry(ty).map(|(_, value)| value.clone())
 }
 
 fn map_key_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Builtin { name, args } = ty else {
-        return None;
-    };
-    (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
-        .then(|| args[0].clone())
+    map_entry(ty).map(|(key, _)| key.clone())
 }
 
 fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {

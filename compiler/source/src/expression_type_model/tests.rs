@@ -1628,3 +1628,92 @@ fn single_for_item_wrappers_lock_container_and_local_behavior() {
         "Local-wrapped map must keep returning None"
     );
 }
+
+#[test]
+fn map_entry_wrappers_lock_full_name_and_local_behavior() {
+    let string = TypeRefIr::Builtin {
+        name: "string".to_string(),
+        args: Vec::new(),
+    };
+    let number = TypeRefIr::Builtin {
+        name: "number".to_string(),
+        args: Vec::new(),
+    };
+    let resolved = |ty: TypeRefIr| ResolvedTypeRef {
+        source_text: debug_text(&ty),
+        ir: ty,
+    };
+    let map_ir = |name: &str| TypeRefIr::Builtin {
+        name: name.to_string(),
+        args: vec![string.clone(), number.clone()],
+    };
+
+    // map_entry_types: short name only (pre-existing divergence), Map yields
+    // (key, value).
+    let (key, value) =
+        super::map_entry_types(&resolved(map_ir("Map"))).expect("short-name map should resolve");
+    assert_eq!(key.ir, string);
+    assert_eq!(value.ir, number);
+    assert_eq!(
+        super::map_entry_types(&resolved(map_ir("std.collection.Map"))),
+        None,
+        "map_entry_types must keep rejecting the std.collection.Map full name"
+    );
+    assert_eq!(
+        super::map_entry_types(&resolved(TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![string.clone()],
+        })),
+        None,
+        "wrong arity must not resolve"
+    );
+
+    // map_key_type_ir / map_value_type_ir: short and full names both resolve.
+    for name in ["Map", "std.collection.Map"] {
+        assert_eq!(super::map_key_type_ir(&map_ir(name)), Some(string.clone()));
+        assert_eq!(
+            super::map_value_type_ir(&map_ir(name)),
+            Some(number.clone())
+        );
+    }
+    assert_eq!(super::map_key_type_ir(&map_ir("other")), None);
+
+    // map_entry_projections: Container (short and full names) resolves;
+    // Local-wrapped map stays None.
+    let container = |name: &str, arguments: Vec<PackageTypeRef>| PackageTypeRef::Container {
+        name: name.to_string(),
+        arguments,
+    };
+    for name in ["Map", "std.collection.Map"] {
+        let entry = super::map_entry_projections(&container(
+            name,
+            vec![
+                PackageTypeRef::Local {
+                    local_type: string.clone(),
+                },
+                PackageTypeRef::Local {
+                    local_type: number.clone(),
+                },
+            ],
+        ))
+        .expect("container map should resolve");
+        assert_eq!(
+            entry,
+            (
+                PackageTypeRef::Local {
+                    local_type: string.clone()
+                },
+                PackageTypeRef::Local {
+                    local_type: number.clone()
+                },
+            )
+        );
+    }
+    assert_eq!(
+        super::map_entry_projections(&PackageTypeRef::Local {
+            local_type: map_ir("Map"),
+        }),
+        None,
+        "Local-wrapped map must keep returning None"
+    );
+}

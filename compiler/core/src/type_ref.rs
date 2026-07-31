@@ -415,9 +415,11 @@ pub fn single_item(ty: &TypeRefIr) -> Option<&TypeRefIr> {
 
 /// Returns `(key, value)` for a 2-argument `Map` native container.
 ///
-/// Absorbs `map_entry_types` / `map_entry_projections`
-/// (`expression_type_model.rs` 4808 / 4842), including the `std.collection.Map`
-/// full name.
+/// Absorbs the former private implementations `map_entry_types` /
+/// `map_entry_projections` / `map_key_type_ir` / `map_value_type_ir` in
+/// `expression_type_model.rs`, including the `std.collection.Map` full name.
+/// The `map_entry_types` wrapper intentionally preserves its short-name-only
+/// guard.
 pub fn map_entry(ty: &TypeRefIr) -> Option<(&TypeRefIr, &TypeRefIr)> {
     let TypeRefIr::Builtin { name, args } = ty else {
         return None;
