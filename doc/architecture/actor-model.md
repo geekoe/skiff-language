@@ -58,6 +58,7 @@ impl DocHub {
 - `actor X` 必须附着到同文件同名 `type X`；attached type 必须是非泛型 concrete record。`X` 既是字段 shape 的声明者，也是外部可持有的 actor 句柄类型。
 - v1 禁止双挂：`actor X` 与 `db object X` 不能附着到同一个 type。持久事实通过独立 type 表达（可以出现在 actor 成员中），actor type 本身不声明任何存储元数据。
 - actor 字段是易失工作内存，不自动持久化、不自动回填；持久化完全通过 impl 中的显式 db 操作表达（典型模式：create 里 `db require` / `db insert` 加载或建立，方法里 `db update` 写回）。actor type 不区分 volatile / 持久字段；成员可以是任意可编码类型，包括带 `db object` 附着的 record 类型，成员本身不产生持久化语义。一个 actor 可以拥有任意多个这类成员。
+- 推荐形态（执行器模式）：actor 类型可以只含 key 字段（例如 `ThreadActor`），持久事实放在独立 db object 类型（例如 `Thread`）中，impl 方法通过显式 db 操作访问。actor 类型与持久类型不必同名、不需要包裹关系；`actor` 声明仍然必须存在（它提供 key/create 与句柄语义），仅当 attached type 除 key 外没有其他字段时可省略 create。
 - actor 声明只描述 actor 面元数据：`key(field)` 和可选的 `create(...)`。成员方法不进 actor 声明，全部通过 `impl` 引入。
 - `key(field)` 指定 identity 字段：必须是 attached type 的字段，类型必须可稳定 canonical 编码。key 字段由平台在激活时写入（create 执行前），成员方法内只读。key 与持久状态主键的对应关系由 impl 维护，v1 编译器不强制。
 - actor 字段在实例存活期间跨调用保留；实例消亡即丢失。
