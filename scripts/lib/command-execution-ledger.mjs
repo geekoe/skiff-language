@@ -46,6 +46,16 @@ export const COMMAND_EXECUTION_LEDGER = deepFreeze([
   owner('scripts/lib/loop-risk-stress-node.mjs', 'execFile', 'execLoopRiskPgrep',
     'loop-risk-pgrep', 'findRuntimePids', 'domain-adapter',
     'explicit diagnostic pgrep preserves domain outcome semantics'),
+  {
+    path: 'scripts/check-rust-file-lines.mjs',
+    importedSymbol: 'execFileSync',
+    localAlias: 'execFileSync',
+    ownerId: 'rust-file-line-gate',
+    ownerFunction: 'runFileLineGate',
+    callCount: 2,
+    ownerClass: COMMAND_OWNER_CLASSES.DOMAIN_ADAPTER,
+    reason: 'rust file line gate runs rg and wc synchronously and preserves their output/exit semantics',
+  },
 ]);
 
 function owner(
