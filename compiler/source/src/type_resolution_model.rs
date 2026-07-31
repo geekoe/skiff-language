@@ -11,7 +11,7 @@ use skiff_artifact_model::{
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
     type_ref::{
-        contains_type_param, debug_text, is_null_type, normalize_union,
+        contains_type_param, debug_text, is_null_type, normalize_union, record_field_type,
         substitute_type_params_in_type_ref_ref,
     },
 };
@@ -5871,26 +5871,6 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
             })
         }
         _ => false,
-    }
-}
-
-fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
-    match ty {
-        TypeRefIr::Record { fields } => fields.get(field).cloned(),
-        TypeRefIr::Union { items } => {
-            let mut field_types = Vec::new();
-            for item in items {
-                field_types.push(record_field_type_from_ir(item, field)?);
-            }
-            Some(normalize_union(TypeRefIr::Union { items: field_types }))
-        }
-        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
-            match field {
-                "error" => Some(args[0].clone()),
-                _ => None,
-            }
-        }
-        _ => None,
     }
 }
 

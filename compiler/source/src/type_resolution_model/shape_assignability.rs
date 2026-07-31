@@ -1206,7 +1206,7 @@ impl TypeResolutionModel {
             return Some(field_ty);
         }
         if let Some(shape) = self.type_shape_ir(ty, context) {
-            if let Some(field_ty) = record_field_type_from_ir(&shape, field) {
+            if let Some(field_ty) = record_field_type(&shape, field) {
                 return Some(ResolvedTypeRef {
                     source_text: debug_text(&field_ty),
                     ir: field_ty,

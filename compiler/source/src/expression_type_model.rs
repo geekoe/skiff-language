@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    contains_type_param, debug_text, is_null_type, normalize_union,
+    contains_type_param, debug_text, is_null_type, normalize_union, record_field_type,
     substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
@@ -4875,43 +4875,9 @@ fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> Resolved
 }
 
 fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedTypeRef> {
-    match ty {
-        TypeRefIr::Record { fields } => fields.get(field).map(resolved_type_from_ir),
-        TypeRefIr::Union { items } => {
-            let mut field_types = Vec::new();
-            for item in items {
-                field_types.push(record_field_type_from_ir(item, field)?.ir);
-            }
-            Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
-                items: field_types,
-            })))
-        }
-        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
-            match field {
-                "tag" => Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
-                    items: vec![literal_string_type("ok"), literal_string_type("err")],
-                }))),
-                _ => None,
-            }
-        }
-        TypeRefIr::Builtin { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
-            match field {
-                "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Builtin {
-                    name: "bool".to_string(),
-                    args: Vec::new(),
-                })),
-                "value" => Some(resolved_type_from_ir(&args[0])),
-                _ => None,
-            }
-        }
-        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
-            match field {
-                "error" => Some(resolved_type_from_ir(&args[0])),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    record_field_type(ty, field)
+        .as_ref()
+        .map(resolved_type_from_ir)
 }
 
 fn receiver_call_parts(expr: &Expr) -> Option<(&Expr, &str)> {

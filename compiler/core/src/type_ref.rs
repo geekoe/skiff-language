@@ -256,11 +256,11 @@ fn nominal_base_debug_text(base: &NominalTypeRefBaseIr) -> String {
 /// Returns the type of a record/union field, including synthetic fields of
 /// the `CatchResult` / `DbUpsertResult` / `Exception` native shapes.
 ///
-/// Absorbs the union of the two private copies
-/// (`type_resolution_model.rs` `record_field_type_from_ir` and
-/// `expression_type_model.rs` `record_field_type_from_ir`): record lookup,
-/// recursive union combine via canonical `normalize_union`, plus the
-/// shape-specific fields.
+/// Absorbs the union of the former private implementations
+/// `record_field_type_from_ir` in `type_resolution_model.rs` and
+/// `expression_type_model.rs`: record lookup, recursive union combine via
+/// canonical `normalize_union`, plus the shape-specific fields. The etm copy
+/// keeps a thin `ResolvedTypeRef` wrapper at its call site.
 pub fn record_field_type(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
     match ty {
         TypeRefIr::Record { fields } => fields.get(field).cloned(),
