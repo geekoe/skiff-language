@@ -15,9 +15,9 @@ use skiff_runtime_capability_context::{
     StreamRuntimeResult, StreamSink, StreamSinkApi,
 };
 use skiff_runtime_linked_program::{
-    BlockIr, ExecutableAddr, ExecutableKind, ExternalRefTable, FileAddr, FileDeclarations,
-    FileLinkTargets, LinkOverlay, LinkedConcurrentLaneIr, LinkedConcurrentPlanIr, LinkedExecutable,
-    LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedStmtIr, LiteralIr,
+    BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExternalRefTable, FileAddr, FileDeclarations,
+    FileLinkTargets, LinkOverlay, LinkedCallTarget, LinkedConcurrentLaneIr, LinkedConcurrentPlanIr,
+    LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedStmtIr, LiteralIr,
     PublicationResourceTable, RuntimeTypeContext, ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto,
     StmtRefIr, UnitAddr,
 };
@@ -31,6 +31,7 @@ use super::*;
 use crate::{
     actor_executor_test_runtime as test_runtime,
     capabilities::TimeCapabilityContext,
+    error::unwrap_diagnostic_source_context,
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
     EvalRuntimeProgram,
 };
@@ -45,6 +46,26 @@ struct EvaluatorFixture {
 
 impl EvaluatorFixture {
     fn new(body: LinkedExecutableBody, slots: SlotLayoutIr) -> Self {
+        Self::with_additional_executables(body, slots, Vec::new())
+    }
+
+    fn with_additional_executables(
+        body: LinkedExecutableBody,
+        slots: SlotLayoutIr,
+        mut additional_executables: Vec<LinkedExecutable>,
+    ) -> Self {
+        let mut executables = vec![LinkedExecutable {
+            kind: ExecutableKind::Function,
+            symbol: "concurrentEvaluator".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: None,
+            self_type: None,
+            slots,
+            may_suspend: true,
+            body,
+        }];
+        executables.append(&mut additional_executables);
         let file = Arc::new(LinkedFileUnit {
             schema_version: "skiff-file-ir-v3".to_string(),
             file_ir_identity: FILE_ID.to_string(),
@@ -58,17 +79,7 @@ impl EvaluatorFixture {
             actor_declarations: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
-            executables: vec![LinkedExecutable {
-                kind: ExecutableKind::Function,
-                symbol: "concurrentEvaluator".to_string(),
-                type_params: Vec::new(),
-                params: Vec::new(),
-                return_type: None,
-                self_type: None,
-                slots,
-                may_suspend: true,
-                body,
-            }],
+            executables,
             external_refs: ExternalRefTable::default(),
         });
         let program = Arc::new(EvalRuntimeProgram::new(
@@ -477,6 +488,153 @@ fn first_poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
 
 fn assert_number(carrier: RuntimeValueCarrier, expected: f64) {
     assert_eq!(carrier.into_value(), RuntimeValue::Number(expected));
+}
+
+fn concurrent_exact_local_call(executable: usize) -> LinkedExprIr {
+    LinkedExprIr::Call {
+        call: CallIr {
+            target: LinkedCallTarget::Executable {
+                addr: ExecutableAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+                    executable,
+                },
+            },
+            site: site(),
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            actor_metadata: None,
+        },
+    }
+}
+
+fn concurrent_terminal_executable() -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "concurrentBarrierTerminal".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: LinkedExecutableBody {
+            blocks: vec![block("entry", &[0])],
+            statements: vec![LinkedStmtIr::Return {
+                value: Some(ExprRefIr { expression: 0 }),
+            }],
+            expressions: vec![number(41)],
+        },
+    }
+}
+
+fn assert_concurrent_program_call_depth_error(error: &RuntimeError) {
+    assert!(matches!(
+        unwrap_diagnostic_source_context(error),
+        RuntimeError::ResourceLimitExceeded {
+            resource,
+            limit: 32,
+            current: 32,
+            requested_delta: 1,
+            ..
+        } if resource == "programCallDepth"
+    ));
+}
+
+#[tokio::test]
+async fn f445h_e4r_tail_call_negative_concurrent_keeps_ordinary_depth_and_scheduler_arbitration() {
+    let plan = statement_plan(vec![
+        serial_lane(0, &[], "exact-call"),
+        serial_lane(1, &[], "same-turn-loser"),
+    ]);
+    let fixture = EvaluatorFixture::with_additional_executables(
+        LinkedExecutableBody {
+            blocks: vec![
+                block("entry", &[0]),
+                block("exact-call", &[1]),
+                block("same-turn-loser", &[2]),
+            ],
+            statements: vec![
+                LinkedStmtIr::Concurrent { plan },
+                LinkedStmtIr::Return {
+                    value: Some(ExprRefIr { expression: 0 }),
+                },
+                LinkedStmtIr::Return {
+                    value: Some(ExprRefIr { expression: 1 }),
+                },
+            ],
+            expressions: vec![concurrent_exact_local_call(1), number(17)],
+        },
+        SlotLayoutIr::default(),
+        vec![concurrent_terminal_executable()],
+    );
+    let terminal_addr = ExecutableAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+        executable: 1,
+    };
+    let LinkedExprIr::Call { call } = &fixture.file.executables[0].body.expressions[0] else {
+        panic!("concurrent barrier probe must remain an exact local call");
+    };
+    assert!(matches!(
+        &call.target,
+        LinkedCallTarget::Executable { addr } if addr == &terminal_addr
+    ));
+
+    let mut normal_heap = RequestHeap::default();
+    let mut normal_env = fixture.env();
+    let normal_context = program_context(&fixture.interpreter);
+    let normal_scope = normal_context
+        .execution()
+        .execution_scope()
+        .expect("normal outer scope");
+    let normal_lifecycle = normal_scope.lifecycle_snapshot();
+    let mut normal_eval = fixture.eval(normal_context.clone(), &mut normal_heap, &mut normal_env);
+    let normal_error = normal_eval
+        .exec_program_executable()
+        .await
+        .expect_err("successful exact call must return to the serial-lane continuation");
+    drop(normal_eval);
+    assert!(matches!(
+        unwrap_diagnostic_source_context(&normal_error),
+        RuntimeError::InvalidArtifact(message)
+            if message.contains("lane 0 produced forbidden return flow")
+    ));
+    assert_eq!(normal_scope.nesting(), 0);
+    assert_eq!(
+        normal_context
+            .execution()
+            .execution_scope()
+            .expect("restored normal scope")
+            .lifecycle_snapshot(),
+        normal_lifecycle
+    );
+
+    let mut depth_heap = RequestHeap::default();
+    let mut depth_env = fixture.env();
+    let depth_context = program_context(&fixture.interpreter).with_program_call_depth_for_test(32);
+    let depth_scope = depth_context
+        .execution()
+        .execution_scope()
+        .expect("depth outer scope");
+    let depth_lifecycle = depth_scope.lifecycle_snapshot();
+    let mut depth_eval = fixture.eval(depth_context.clone(), &mut depth_heap, &mut depth_env);
+    let depth_error = depth_eval
+        .exec_program_executable()
+        .await
+        .expect_err("serial lane exact call must retain ordinary call depth");
+    drop(depth_eval);
+    assert_concurrent_program_call_depth_error(&depth_error);
+    assert_eq!(depth_scope.nesting(), 0);
+    assert_eq!(
+        depth_context
+            .execution()
+            .execution_scope()
+            .expect("restored depth scope")
+            .lifecycle_snapshot(),
+        depth_lifecycle
+    );
 }
 
 #[tokio::test]
