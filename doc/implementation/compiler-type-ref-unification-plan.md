@@ -264,8 +264,8 @@ Record/Literal/Function/AnyInterface 成员、重复成员、`PackageTypeRef::Lo
 
 每替换一对一个 commit，每个 commit 都保持行为等价（Phase 2 已把唯一语义分歧修掉）：
 
-1. `type_ref_debug_text` ×2 → `debug_text`（先确认 trm 与 etm 版本对 nominal base 输出一致，
-   以测试为 golden）。
+1. `type_ref_debug_text` ×2 → `debug_text`（先做 core 版与两个私有副本的逐输入差分对照，
+   确认 nominal base 输出一致，以测试为 golden）。
 2. `is_null_type_ir` / `type_ir_is_null` → `is_null_type`。
 3. `generic_type_params_from_text` / `generic_type_params` → core 解析函数。
 4. `contains_type_param` 相关私有实现 → `contains_type_param`。
@@ -346,7 +346,8 @@ Record/Literal/Function/AnyInterface 成员、重复成员、`PackageTypeRef::Lo
 ## 7. 验证与验收
 
 - 每个阶段：`node scripts/verify.mjs --only compiler,rust-quality`（compiler 测试 +
-  boundaries + rustfmt + clippy；注意 `--only compiler` 本身不含 fmt/clippy）。
+  boundaries + rustfmt + 文件行数门禁；注意 `rust-quality` 不含 clippy，需要时单独跑
+  `cargo clippy`）。
 - Phase 2 额外：`node scripts/verify.mjs --only skiff-tests`。
 - Phase 4 额外：identity 差分测试 + contract fixture / boundary 相关测试
   （`contract_dependency_test_fixture`、`contract_call_typing` 测试）+ `--only skiff-tests`。
