@@ -5,8 +5,8 @@ use skiff_artifact_model::{
     PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    contains_type_param, debug_text, is_null_type, map_entry, normalize_union,
-    package_type_ref_to_ir, record_field_type, single_item,
+    catch_result_branches, contains_type_param, debug_text, is_null_type, map_entry,
+    normalize_union, package_type_ref_to_ir, record_field_type, single_item,
     substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
@@ -40,7 +40,7 @@ use contract_call_typing::{
     ContractCallOutcome, ContractCallTyping, ContractProjectionState,
 };
 use db_projection::DbProjectionTypeResolver;
-use expression_assignability::{record_type_fields, ExpressionAssignability};
+use expression_assignability::ExpressionAssignability;
 pub use object_materialization::{
     MaterializedObjectField, ObjectFieldValueSource, ObjectMaterializationKind,
     TargetTypedObjectMaterialization,
@@ -5045,7 +5045,7 @@ fn narrow_type_by_tag(
     tag_value: &str,
     include_matching: bool,
 ) -> Option<ResolvedTypeRef> {
-    let branches = discriminated_record_branches(&ty.ir)?;
+    let branches = catch_result_branches(&ty.ir)?;
     let selected = branches
         .into_iter()
         .filter(|branch| {
@@ -5054,34 +5054,6 @@ fn narrow_type_by_tag(
         .collect::<Vec<_>>();
     (!selected.is_empty())
         .then(|| resolved_type_from_ir(&normalize_union(TypeRefIr::Union { items: selected })))
-}
-
-fn discriminated_record_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
-    match ty {
-        TypeRefIr::Union { items } => Some(items.clone()),
-        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
-            Some(catch_result_branch_types(&args[0], &args[1]))
-        }
-        TypeRefIr::Record { .. } => Some(vec![ty.clone()]),
-        _ => None,
-    }
-}
-
-fn catch_result_branch_types(value: &TypeRefIr, error: &TypeRefIr) -> Vec<TypeRefIr> {
-    vec![
-        TypeRefIr::Record {
-            fields: record_type_fields([
-                ("tag", literal_string_type("ok")),
-                ("value", value.clone()),
-            ]),
-        },
-        TypeRefIr::Record {
-            fields: record_type_fields([
-                ("tag", literal_string_type("err")),
-                ("exception", exception_type_ir(error.clone())),
-            ]),
-        },
-    ]
 }
 
 fn record_tag_literal(ty: &TypeRefIr) -> Option<&str> {
@@ -5101,13 +5073,6 @@ fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
     ResolvedTypeRef {
         ir: ty.clone(),
         source_text: debug_text(ty),
-    }
-}
-
-fn exception_type_ir(error: TypeRefIr) -> TypeRefIr {
-    TypeRefIr::Builtin {
-        name: "Exception".to_string(),
-        args: vec![error],
     }
 }
 
@@ -5355,14 +5320,6 @@ fn builtin_type(name: &str) -> TypeRefIr {
     TypeRefIr::Builtin {
         name: name.to_string(),
         args: Vec::new(),
-    }
-}
-
-fn literal_string_type(value: &str) -> TypeRefIr {
-    TypeRefIr::Literal {
-        value: LiteralIr::String {
-            value: value.to_string(),
-        },
     }
 }
 

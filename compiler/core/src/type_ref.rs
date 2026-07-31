@@ -301,8 +301,9 @@ pub fn record_field_type(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
 /// single-item / null-only collapsing.
 ///
 /// This is the canonical semantics selected by the design: the trm private
-/// copy (`type_resolution_model.rs` `normalize_source_type_ref` /
-/// `normalize_source_union` / `collect_source_union_member`).
+/// copy (the former `normalize_source_type_ref` / `normalize_source_union` /
+/// `collect_source_union_member` private implementations in
+/// `type_resolution_model.rs`).
 pub fn normalize_union(ty: TypeRefIr) -> TypeRefIr {
     match ty {
         TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
@@ -439,8 +440,8 @@ pub fn exception_payload(ty: &TypeRefIr) -> Option<&TypeRefIr> {
 /// Returns the tag-branch types of a discriminated record-like shape:
 /// `Union` items, `CatchResult` ok/err records, or a single `Record`.
 ///
-/// Absorbs `discriminated_record_branches` and `catch_result_branch_types`
-/// (`expression_type_model.rs` 5154 / 5165).
+/// Absorbs the former private implementations `discriminated_record_branches`
+/// and `catch_result_branch_types` in `expression_type_model.rs`.
 pub fn catch_result_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
     match ty {
         TypeRefIr::Union { items } => Some(items.clone()),

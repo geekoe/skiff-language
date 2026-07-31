@@ -778,15 +778,6 @@ fn substitute_std_type_params_in_ir(
     }
 }
 
-pub(super) fn record_type_fields<const N: usize>(
-    fields: [(&str, TypeRefIr); N],
-) -> BTreeMap<String, TypeRefIr> {
-    fields
-        .into_iter()
-        .map(|(name, ty)| (name.to_string(), ty))
-        .collect()
-}
-
 fn object_literal_target_candidates_from_ir(
     label: &str,
     ty: &TypeRefIr,
