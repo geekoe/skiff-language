@@ -94,11 +94,30 @@ test('implementation tests expand by subject without static or live phases', asy
   ]) {
     assert.equal(plan.phases.filter((phase) => phase.id === id).length, 1, id);
   }
-  assert.ok(plan.phases.every((phase) => phase.kind.startsWith('implementation:')));
+  const compilerBoundaryPhases = plan.phases.filter(
+    (phase) => phase.id === 'checks:compiler-boundaries',
+  );
+  assert.equal(
+    compilerBoundaryPhases.length,
+    1,
+    'the compiler subject owns its canonical boundary check',
+  );
+  assert.ok(
+    plan.phases.every(
+      (phase) =>
+        phase.kind.startsWith('implementation:') ||
+        phase.id === 'checks:compiler-boundaries',
+    ),
+  );
   assert.equal(plan.phases.some((phase) => phase.id === 'skiff-tests:canonical'), false);
   assert.equal(plan.phases.some((phase) => phase.id.startsWith('rust-quality:')), false);
   assert.equal(plan.phases.some((phase) => phase.id.includes(':type-check')), false);
-  assert.equal(plan.phases.some((phase) => phase.id.startsWith('checks:')), false);
+  assert.equal(
+    plan.phases.some(
+      (phase) => phase.id.startsWith('checks:') && phase.id !== 'checks:compiler-boundaries',
+    ),
+    false,
+  );
   assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
 });
 
@@ -112,7 +131,16 @@ test('each focused implementation subject is independently usable', async () => 
     const plan = await buildVerifyPlan({ root, selectors: [selector] });
     assert.ok(plan.phases.length > 0, selector);
     assert.ok(
-      plan.phases.every((phase) => phase.kind === `implementation:${selector}`),
+      plan.phases.every(
+        (phase) =>
+          phase.kind === `implementation:${selector}` ||
+          (selector === 'compiler' && phase.id === 'checks:compiler-boundaries'),
+      ),
+      selector,
+    );
+    assert.equal(
+      plan.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+      selector === 'compiler' ? 1 : 0,
       selector,
     );
   }
