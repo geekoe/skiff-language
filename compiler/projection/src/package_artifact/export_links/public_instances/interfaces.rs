@@ -4,6 +4,7 @@ use skiff_artifact_model::{
     FileIrUnit, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef,
     ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_compiler_core::type_ref::contains_type_param;
 
 use crate::package_artifact::{
     api_exports::PackageExportPublicInstanceInterface, model::PackageExportLinkProjectionInput,
@@ -71,9 +72,7 @@ pub(super) fn resolve_receiver(
             "const receiver type does not preserve its exact nominal instantiation",
         ));
     };
-    if arguments.len() != decl.type_params.len()
-        || arguments.iter().any(type_ref_contains_type_parameter)
-    {
+    if arguments.len() != decl.type_params.len() || arguments.iter().any(contains_type_param) {
         return Err(public_instance_error(
             package,
             public_path,
@@ -105,39 +104,6 @@ fn visible_receiver_arguments<'a>(
             (symbol == expected).then_some(arguments)
         }
         _ => None,
-    }
-}
-
-fn type_ref_contains_type_parameter(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::Builtin { args, .. } => args.iter().any(type_ref_contains_type_parameter),
-        TypeRefIr::AppliedNominal { arguments, .. } => {
-            arguments.iter().any(type_ref_contains_type_parameter)
-        }
-        TypeRefIr::Record { fields } => fields.values().any(type_ref_contains_type_parameter),
-        TypeRefIr::Union { items } => items.iter().any(type_ref_contains_type_parameter),
-        TypeRefIr::Nullable { inner } => type_ref_contains_type_parameter(inner),
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(type_ref_contains_type_parameter),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|parameter| type_ref_contains_type_parameter(&parameter.ty))
-                || type_ref_contains_type_parameter(return_type)
-        }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. } => false,
     }
 }
 

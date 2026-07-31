@@ -1298,7 +1298,7 @@ fn resolved_test_interface(argument: TypeRefIr) -> ResolvedTypeRef {
         },
     };
     ResolvedTypeRef {
-        source_text: format!("I<{}>", type_ref_debug_text(&argument)),
+        source_text: format!("I<{}>", debug_text(&argument)),
         ir: TypeRefIr::AnyInterface {
             interface: interface_instantiation_ref(identity, vec![argument]),
         },
@@ -2822,5 +2822,86 @@ fn publication_type_slots_use_their_exact_owner_module() {
         model.canonicalize_type_ref_for_module("consumer", &unknown),
         unknown,
         "an unknown owner module must not fall back to the caller module"
+    );
+}
+
+#[test]
+fn record_field_type_resolves_synthetic_catch_and_upsert_fields_via_union_shapes() {
+    // Phase 3 pair 5: the unified core record_field_type adds the
+    // CatchResult/DbUpsertResult synthetic branches that the trm private copy
+    // lacked. The public model method reaches them through a Union shape
+    // (type_shape_ir returns Union shapes verbatim), so this test locks the
+    // newly observable behavior.
+    let (_parsed, model) = type_resolution("");
+    let user = TypeRefIr::Record {
+        fields: BTreeMap::from([(
+            "name".to_string(),
+            TypeRefIr::Builtin {
+                name: "string".to_string(),
+                args: Vec::new(),
+            },
+        )]),
+    };
+    let upsert = TypeRefIr::Builtin {
+        name: "DbUpsertResult".to_string(),
+        args: vec![user.clone()],
+    };
+    let catch = TypeRefIr::Builtin {
+        name: "CatchResult".to_string(),
+        args: vec![
+            user.clone(),
+            TypeRefIr::Builtin {
+                name: "Exception".to_string(),
+                args: vec![TypeRefIr::Builtin {
+                    name: "string".to_string(),
+                    args: Vec::new(),
+                }],
+            },
+        ],
+    };
+
+    let field = |ty: &TypeRefIr, name: &str| {
+        let resolved = ResolvedTypeRef {
+            source_text: debug_text(ty),
+            ir: TypeRefIr::Union {
+                items: vec![ty.clone()],
+            },
+        };
+        model
+            .record_field_type(&resolved, name, &context())
+            .expect("synthetic field should resolve through the union shape")
+            .ir
+    };
+
+    assert_eq!(
+        field(&upsert, "value"),
+        user,
+        "DbUpsertResult.value must resolve to the value argument"
+    );
+    assert_eq!(
+        field(&upsert, "inserted"),
+        TypeRefIr::Builtin {
+            name: "bool".to_string(),
+            args: Vec::new(),
+        },
+        "DbUpsertResult.inserted must resolve to bool"
+    );
+    assert_eq!(
+        field(&catch, "tag"),
+        normalize_union(TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "ok".to_string(),
+                    },
+                },
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "err".to_string(),
+                    },
+                },
+            ],
+        }),
+        "CatchResult.tag must resolve to the ok/err literal union"
     );
 }

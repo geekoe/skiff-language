@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr,
-    NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
+    PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    normalize_union, substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
+    catch_result_branches, contains_type_param, debug_text, is_null_type, map_entry,
+    normalize_union, package_type_ref_to_ir, record_field_type, single_item,
+    substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
 use crate::{
@@ -14,7 +16,7 @@ use crate::{
     semantic::impl_method_declaration_name,
     shared::ast::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
-        Expr, ForBinding, FunctionDecl, Literal, SourceFile, Stmt, TypeRef, UnaryOp,
+        Expr, ForBinding, FunctionDecl, Literal, Param, SourceFile, Stmt, TypeRef, UnaryOp,
     },
     shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
@@ -38,7 +40,7 @@ use contract_call_typing::{
     ContractCallOutcome, ContractCallTyping, ContractProjectionState,
 };
 use db_projection::DbProjectionTypeResolver;
-use expression_assignability::{record_type_fields, ExpressionAssignability};
+use expression_assignability::ExpressionAssignability;
 pub use object_materialization::{
     MaterializedObjectField, ObjectFieldValueSource, ObjectMaterializationKind,
     TargetTypedObjectMaterialization,
@@ -381,7 +383,8 @@ fn check_source(
     }
 
     for implementation in &ast.impls {
-        let inherited = generic_type_params(&implementation.target);
+        let inherited =
+            crate::shared::type_syntax::generic_type_parameter_names(&implementation.target);
         for method in &implementation.method_bodies {
             if method.is_native || method.is_provider {
                 continue;
@@ -3407,7 +3410,7 @@ impl<'a> OwnerChecker<'a> {
                 (type_params.is_empty() || type_args.is_empty())
                     .then(|| self.type_resolution.resolve_type_text(raw, context).ok())
                     .flatten()
-                    .filter(|resolved| !type_contains_type_param(&resolved.ir))
+                    .filter(|resolved| !contains_type_param(&resolved.ir))
             })
     }
 
@@ -3559,7 +3562,7 @@ impl<'a> OwnerChecker<'a> {
             let Some(actual) = actual else {
                 continue;
             };
-            if type_contains_type_param(&expected.ir) || type_contains_type_param(&actual.ir) {
+            if contains_type_param(&expected.ir) || contains_type_param(&actual.ir) {
                 continue;
             }
             let context = format!("call `{callable}` argument {}", index + 1);
@@ -3611,7 +3614,7 @@ impl<'a> OwnerChecker<'a> {
             let Some(actual) = actual else {
                 continue;
             };
-            if type_contains_type_param(&expected.ir) || type_contains_type_param(&actual.ir) {
+            if contains_type_param(&expected.ir) || contains_type_param(&actual.ir) {
                 continue;
             }
             let context = format!("call `{callable}` argument {}", index + 1);
@@ -3758,7 +3761,7 @@ impl<'a> OwnerChecker<'a> {
                 (
                     format!("arg{index}"),
                     ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&param.ty),
+                        source_text: debug_text(&param.ty),
                         ir: param.ty.clone(),
                     },
                 )
@@ -3766,7 +3769,7 @@ impl<'a> OwnerChecker<'a> {
             .collect();
         self.validate_resolved_call_params(&callable, params, args, arg_types);
         Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&return_type),
+            source_text: debug_text(&return_type),
             ir: return_type,
         })
     }
@@ -3935,7 +3938,7 @@ impl<'a> OwnerChecker<'a> {
                 (
                     format!("arg{index}"),
                     ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&param.ty),
+                        source_text: debug_text(&param.ty),
                         ir: param.ty.clone(),
                     },
                 )
@@ -3943,7 +3946,7 @@ impl<'a> OwnerChecker<'a> {
             .collect();
         self.validate_resolved_call_params(&callable, params, args, arg_types);
         Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&operation.return_type),
+            source_text: debug_text(&operation.return_type),
             ir: operation.return_type,
         })
     }
@@ -3986,7 +3989,7 @@ impl<'a> OwnerChecker<'a> {
                     (
                         format!("arg{index}"),
                         ResolvedTypeRef {
-                            source_text: type_ref_debug_text(&ty),
+                            source_text: debug_text(&ty),
                             ir: ty,
                         },
                     )
@@ -3997,7 +4000,7 @@ impl<'a> OwnerChecker<'a> {
         let return_type =
             substitute_type_params_in_ir(&operation.return_type, &substitutions.types);
         Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&return_type),
+            source_text: debug_text(&return_type),
             ir: return_type,
         })
     }
@@ -4646,7 +4649,8 @@ fn callable_signatures(
             insert_function_signature(&mut signatures, &module_path, &function.name, function, &[]);
         }
         for implementation in &parsed.ast().impls {
-            let inherited = generic_type_params(&implementation.target);
+            let inherited =
+                crate::shared::type_syntax::generic_type_parameter_names(&implementation.target);
             for method in &implementation.methods {
                 let declaration_name =
                     impl_method_declaration_name(&implementation.target, &method.name);
@@ -4688,27 +4692,28 @@ fn callable_signatures(
     signatures
 }
 
-fn insert_function_signature(
+fn insert_callable_signature_from_parts(
     signatures: &mut BTreeMap<String, CallableSignature>,
     module_path: &str,
     declaration_name: &str,
-    function: &FunctionDecl,
     inherited_type_params: &[String],
+    decl_type_params: &[String],
+    params: &[Param],
+    return_type: &TypeRef,
 ) {
     let signature = CallableSignature {
         module_path: module_path.to_string(),
         declaration_name: declaration_name.to_string(),
-        params: function
-            .params
+        params: params
             .iter()
             .map(|param| CallableParam {
                 ty: param.ty.clone(),
             })
             .collect(),
-        return_type: function.return_type.clone(),
+        return_type: return_type.clone(),
         type_params: inherited_type_params
             .iter()
-            .chain(&function.type_params)
+            .chain(decl_type_params)
             .cloned()
             .collect(),
     };
@@ -4722,24 +4727,33 @@ fn insert_operation_signature(
     operation: &crate::shared::ast::InterfaceOperation,
     inherited_type_params: &[String],
 ) {
-    let signature = CallableSignature {
-        module_path: module_path.to_string(),
-        declaration_name: declaration_name.to_string(),
-        params: operation
-            .params
-            .iter()
-            .map(|param| CallableParam {
-                ty: param.ty.clone(),
-            })
-            .collect(),
-        return_type: operation.return_type.clone(),
-        type_params: inherited_type_params
-            .iter()
-            .chain(&operation.type_params)
-            .cloned()
-            .collect(),
-    };
-    insert_callable_signature(signatures, module_path, declaration_name, signature);
+    insert_callable_signature_from_parts(
+        signatures,
+        module_path,
+        declaration_name,
+        inherited_type_params,
+        &operation.type_params,
+        &operation.params,
+        &operation.return_type,
+    );
+}
+
+fn insert_function_signature(
+    signatures: &mut BTreeMap<String, CallableSignature>,
+    module_path: &str,
+    declaration_name: &str,
+    function: &FunctionDecl,
+    inherited_type_params: &[String],
+) {
+    insert_callable_signature_from_parts(
+        signatures,
+        module_path,
+        declaration_name,
+        inherited_type_params,
+        &function.type_params,
+        &function.params,
+        &function.return_type,
+    );
 }
 
 fn insert_callable_signature(
@@ -4756,42 +4770,11 @@ fn insert_callable_signature(
         .or_insert(signature);
 }
 
-fn generic_type_params(name: &str) -> Vec<String> {
-    crate::shared::type_syntax::generic_parts(name)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .map(|arg| arg.trim())
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
-    let TypeRefIr::Builtin { name, args } = &ty.ir else {
-        return None;
-    };
-    match name.as_str() {
-        "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream" if args.len() == 1 => {
-            Some(ResolvedTypeRef {
-                ir: args[0].clone(),
-                source_text: type_ref_debug_text(&args[0]),
-            })
-        }
-        "Map" | "std.collection.Map" if args.len() == 2 => Some(ResolvedTypeRef {
-            ir: args[0].clone(),
-            source_text: type_ref_debug_text(&args[0]),
-        }),
-        _ => None,
-    }
+    single_item(&ty.ir).map(|item| ResolvedTypeRef {
+        ir: item.clone(),
+        source_text: debug_text(item),
+    })
 }
 
 fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
@@ -4803,84 +4786,43 @@ fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
         .filter(|args| args.len() == 1)
         .map(|args| ResolvedTypeRef {
             ir: args[0].clone(),
-            source_text: type_ref_debug_text(&args[0]),
+            source_text: debug_text(&args[0]),
         })
 }
 
 fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTypeRef)> {
+    // Preserves the pre-existing short-name-only behavior of this wrapper:
+    // unlike the other map helpers it does not accept `std.collection.Map`.
     let TypeRefIr::Builtin { name, args } = &ty.ir else {
         return None;
     };
     if name != "Map" || args.len() != 2 {
         return None;
     }
-    Some((
-        ResolvedTypeRef {
-            ir: args[0].clone(),
-            source_text: type_ref_debug_text(&args[0]),
-        },
-        ResolvedTypeRef {
-            ir: args[1].clone(),
-            source_text: type_ref_debug_text(&args[1]),
-        },
-    ))
+    let (key, value) = map_entry(&ty.ir)?;
+    Some((resolved_type_from_ir(key), resolved_type_from_ir(value)))
 }
 
 fn single_for_item_projection(ty: &PackageTypeRef) -> Option<PackageTypeRef> {
     let PackageTypeRef::Container { name, arguments } = ty else {
         return None;
     };
-    match name.as_str() {
-        "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream"
-            if arguments.len() == 1 =>
-        {
-            Some(arguments[0].clone())
-        }
-        "Map" | "std.collection.Map" if arguments.len() == 2 => Some(arguments[0].clone()),
-        _ => None,
-    }
+    single_item(&TypeRefIr::Builtin {
+        name: name.clone(),
+        args: arguments.iter().map(package_type_ref_to_ir).collect(),
+    })
+    .map(|_| arguments[0].clone())
 }
 
 fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, PackageTypeRef)> {
     let PackageTypeRef::Container { name, arguments } = ty else {
         return None;
     };
-    (matches!(name.as_str(), "Map" | "std.collection.Map") && arguments.len() == 2)
-        .then(|| (arguments[0].clone(), arguments[1].clone()))
-}
-
-fn type_contains_type_param(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
-            args.iter().any(type_contains_type_param)
-        }
-        TypeRefIr::AppliedNominal { arguments, .. } => {
-            arguments.iter().any(type_contains_type_param)
-        }
-        TypeRefIr::Nullable { inner } => type_contains_type_param(inner),
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(type_contains_type_param),
-        TypeRefIr::Record { fields } => fields.values().any(type_contains_type_param),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_contains_type_param(&param.ty))
-                || type_contains_type_param(return_type)
-        }
-        TypeRefIr::Literal { .. }
-        | TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. } => false,
-    }
+    map_entry(&TypeRefIr::Builtin {
+        name: name.clone(),
+        args: arguments.iter().map(package_type_ref_to_ir).collect(),
+    })
+    .map(|_| (arguments[0].clone(), arguments[1].clone()))
 }
 
 fn native_return_type_context<'a>(
@@ -4925,43 +4867,9 @@ fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> Resolved
 }
 
 fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedTypeRef> {
-    match ty {
-        TypeRefIr::Record { fields } => fields.get(field).map(resolved_type_from_ir),
-        TypeRefIr::Union { items } => {
-            let mut field_types = Vec::new();
-            for item in items {
-                field_types.push(record_field_type_from_ir(item, field)?.ir);
-            }
-            Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
-                items: field_types,
-            })))
-        }
-        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
-            match field {
-                "tag" => Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
-                    items: vec![literal_string_type("ok"), literal_string_type("err")],
-                }))),
-                _ => None,
-            }
-        }
-        TypeRefIr::Builtin { name, args } if name == "DbUpsertResult" && args.len() == 1 => {
-            match field {
-                "inserted" => Some(resolved_type_from_ir(&TypeRefIr::Builtin {
-                    name: "bool".to_string(),
-                    args: Vec::new(),
-                })),
-                "value" => Some(resolved_type_from_ir(&args[0])),
-                _ => None,
-            }
-        }
-        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
-            match field {
-                "error" => Some(resolved_type_from_ir(&args[0])),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    record_field_type(ty, field)
+        .as_ref()
+        .map(resolved_type_from_ir)
 }
 
 fn receiver_call_parts(expr: &Expr) -> Option<(&Expr, &str)> {
@@ -5095,19 +5003,11 @@ fn array_item_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
 }
 
 fn map_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Builtin { name, args } = ty else {
-        return None;
-    };
-    (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
-        .then(|| args[1].clone())
+    map_entry(ty).map(|(_, value)| value.clone())
 }
 
 fn map_key_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
-    let TypeRefIr::Builtin { name, args } = ty else {
-        return None;
-    };
-    (matches!(name.as_str(), "Map" | "std.collection.Map") && args.len() == 2)
-        .then(|| args[0].clone())
+    map_entry(ty).map(|(key, _)| key.clone())
 }
 
 fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
@@ -5120,7 +5020,7 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| type_ref_debug_text(inner));
+                .unwrap_or_else(|| debug_text(inner));
             Some(ResolvedTypeRef {
                 ir: inner.as_ref().clone(),
                 source_text,
@@ -5129,7 +5029,7 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
         TypeRefIr::Union { items } => {
             let remaining = items
                 .iter()
-                .filter(|item| !type_ir_is_null(item))
+                .filter(|item| !is_null_type(item))
                 .cloned()
                 .collect::<Vec<_>>();
             (remaining.len() != items.len()).then(|| {
@@ -5145,7 +5045,7 @@ fn narrow_type_by_tag(
     tag_value: &str,
     include_matching: bool,
 ) -> Option<ResolvedTypeRef> {
-    let branches = discriminated_record_branches(&ty.ir)?;
+    let branches = catch_result_branches(&ty.ir)?;
     let selected = branches
         .into_iter()
         .filter(|branch| {
@@ -5154,34 +5054,6 @@ fn narrow_type_by_tag(
         .collect::<Vec<_>>();
     (!selected.is_empty())
         .then(|| resolved_type_from_ir(&normalize_union(TypeRefIr::Union { items: selected })))
-}
-
-fn discriminated_record_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
-    match ty {
-        TypeRefIr::Union { items } => Some(items.clone()),
-        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
-            Some(catch_result_branch_types(&args[0], &args[1]))
-        }
-        TypeRefIr::Record { .. } => Some(vec![ty.clone()]),
-        _ => None,
-    }
-}
-
-fn catch_result_branch_types(value: &TypeRefIr, error: &TypeRefIr) -> Vec<TypeRefIr> {
-    vec![
-        TypeRefIr::Record {
-            fields: record_type_fields([
-                ("tag", literal_string_type("ok")),
-                ("value", value.clone()),
-            ]),
-        },
-        TypeRefIr::Record {
-            fields: record_type_fields([
-                ("tag", literal_string_type("err")),
-                ("exception", exception_type_ir(error.clone())),
-            ]),
-        },
-    ]
 }
 
 fn record_tag_literal(ty: &TypeRefIr) -> Option<&str> {
@@ -5200,14 +5072,7 @@ fn record_tag_literal(ty: &TypeRefIr) -> Option<&str> {
 fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
     ResolvedTypeRef {
         ir: ty.clone(),
-        source_text: type_ref_debug_text(ty),
-    }
-}
-
-fn exception_type_ir(error: TypeRefIr) -> TypeRefIr {
-    TypeRefIr::Builtin {
-        name: "Exception".to_string(),
-        args: vec![error],
+        source_text: debug_text(ty),
     }
 }
 
@@ -5332,83 +5197,10 @@ fn qualify_package_signature_type_text(
         .to_type_string()
 }
 
-fn type_ref_debug_text(ty: &TypeRefIr) -> String {
-    match ty {
-        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Builtin { name, args } => format!(
-            "{name}<{}>",
-            args.iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::Nullable { inner } => format!("{}?", type_ref_debug_text(inner)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .map(type_ref_debug_text)
-            .collect::<Vec<_>>()
-            .join(" | "),
-        TypeRefIr::Literal {
-            value: LiteralIr::String { value },
-        } => serde_json::to_string(value).unwrap_or_else(|_| "\"<string>\"".to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::Null,
-        } => "null".to_string(),
-        TypeRefIr::Literal { .. } => "<literal>".to_string(),
-        TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
-        TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => format!("{module_path}#{type_index}"),
-        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
-            symbol.symbol_path()
-        }
-        TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
-        TypeRefIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => format!("{package_id}::{stable_schema_key}"),
-        TypeRefIr::AppliedNominal { base, arguments } => format!(
-            "{}<{}>",
-            nominal_base_debug_text(base),
-            arguments
-                .iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::AnyInterface { interface } => {
-            let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-                .map_or_else(
-                    |_| interface.interface_abi_id.clone(),
-                    |identity| type_ref_debug_text(&identity),
-                );
-            if interface.canonical_type_args.is_empty() {
-                format!("any {interface_name}")
-            } else {
-                format!(
-                    "any {}<{}>",
-                    interface_name,
-                    interface
-                        .canonical_type_args
-                        .iter()
-                        .map(type_ref_debug_text)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        }
-        TypeRefIr::Record { .. } => "{}".to_string(),
-        TypeRefIr::TypeParam { name } => name.clone(),
-        TypeRefIr::Function { .. } => "fn".to_string(),
-    }
-}
-
 fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
     let ir = package_type_ref_ir(ty);
     ResolvedTypeRef {
-        source_text: type_ref_debug_text(&ir),
+        source_text: debug_text(&ir),
         ir,
     }
 }
@@ -5524,23 +5316,6 @@ fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {
     }
 }
 
-fn nominal_base_debug_text(base: &NominalTypeRefBaseIr) -> String {
-    match base {
-        NominalTypeRefBaseIr::LocalType { type_index } => format!("#{type_index}"),
-        NominalTypeRefBaseIr::PublicationType {
-            module_path,
-            type_index,
-        } => format!("{module_path}#{type_index}"),
-        NominalTypeRefBaseIr::ServiceSymbol { symbol } => symbol.symbol_path(),
-        NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
-        NominalTypeRefBaseIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => format!("{package_id}::{stable_schema_key}"),
-    }
-}
-
 fn builtin_type(name: &str) -> TypeRefIr {
     TypeRefIr::Builtin {
         name: name.to_string(),
@@ -5548,31 +5323,13 @@ fn builtin_type(name: &str) -> TypeRefIr {
     }
 }
 
-fn literal_string_type(value: &str) -> TypeRefIr {
-    TypeRefIr::Literal {
-        value: LiteralIr::String {
-            value: value.to_string(),
-        },
-    }
-}
-
 fn type_ir_is_void_or_null(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && (name == "void" || name == "null"))
-        || type_ir_is_null(ty)
+        || is_null_type(ty)
 }
 
 fn type_ir_is_never(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && name == "never")
-}
-
-fn type_ir_is_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
-        || matches!(
-            ty,
-            TypeRefIr::Literal {
-                value: LiteralIr::Null
-            }
-        )
 }
 
 fn record_field_name_source_span(

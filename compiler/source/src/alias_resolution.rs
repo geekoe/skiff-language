@@ -6,7 +6,9 @@ use crate::{
     },
     shared::ast_utils::{walk_expr_mut, walk_pattern_mut, walk_test_effect_mut, AstVisitorMut},
     shared::type_expr::{FunctionTypeParam, RecordTypeField, TypeExpr},
-    shared::type_syntax::{generic_parts, split_top_level, string_literal},
+    shared::type_syntax::{
+        generic_parts, generic_type_parameter_names, split_top_level, string_literal,
+    },
 };
 
 pub fn collect_source_alias_violations(path: &str, ast: &SourceFile, violations: &mut Vec<String>) {
@@ -174,7 +176,7 @@ impl<'a, 'b> AliasResolver<'a, 'b> {
             });
         }
         for implementation in &mut ast.impls {
-            let implementation_type_params = generic_type_params(&implementation.target);
+            let implementation_type_params = generic_type_parameter_names(&implementation.target);
             self.with_type_params(&implementation_type_params, |resolver| {
                 implementation.target =
                     resolver.expand_nominal_type_name(&implementation.target, &mut Vec::new());
@@ -540,22 +542,4 @@ fn alias_type_references(raw: &str) -> Vec<String> {
     refs.sort();
     refs.dedup();
     refs
-}
-
-fn generic_type_params(name: &str) -> Vec<String> {
-    generic_parts(name)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(|arg| (*arg).to_string())
-                .collect()
-        })
-        .unwrap_or_default()
 }

@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use super::{
     object_literal_key_text,
     object_materialization::{ObjectMaterializationKind, ObjectMaterializationPlan},
-    resolved_type_from_ir, span_label, transparent_value_target, type_ir_is_null,
-    type_ref_debug_text, ExpressionKey, ExpressionSourceMap, ResolvedTypeRef,
-    TypeResolutionContext, TypeResolutionModel,
+    resolved_type_from_ir, span_label, transparent_value_target, ExpressionKey,
+    ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_artifact_model::{
     FunctionTypeParamIr, PackageRefIr, PackageTypeRef, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_compiler_core::type_ref::{debug_text, is_null_type};
 
 use crate::{
     dependency_analysis::SourceDependencyAnalysisInput,
@@ -242,7 +242,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             target_fields.get(name).is_some_and(|expected_ty| {
                 let expected = ResolvedTypeRef {
                     ir: expected_ty.clone(),
-                    source_text: type_ref_debug_text(expected_ty),
+                    source_text: debug_text(expected_ty),
                 };
                 self.type_ir_assignable_to_resolved_expected(actual_ty, &expected)
             })
@@ -258,7 +258,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
     ) -> bool {
         let actual = ResolvedTypeRef {
             ir: actual_ty.clone(),
-            source_text: type_ref_debug_text(actual_ty),
+            source_text: debug_text(actual_ty),
         };
         self.type_resolution
             .assignable_in_context(&actual, expected, self.type_context)
@@ -482,7 +482,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                     Some(ObjectLiteralActualField {
                         ty: fields.get(&name).map(|ty| ResolvedTypeRef {
                             ir: ty.clone(),
-                            source_text: type_ref_debug_text(ty),
+                            source_text: debug_text(ty),
                         }),
                         name,
                         name_span: field_spans
@@ -778,15 +778,6 @@ fn substitute_std_type_params_in_ir(
     }
 }
 
-pub(super) fn record_type_fields<const N: usize>(
-    fields: [(&str, TypeRefIr); N],
-) -> BTreeMap<String, TypeRefIr> {
-    fields
-        .into_iter()
-        .map(|(name, ty)| (name.to_string(), ty))
-        .collect()
-}
-
 fn object_literal_target_candidates_from_ir(
     label: &str,
     ty: &TypeRefIr,
@@ -811,7 +802,7 @@ fn object_literal_target_candidates_from_ir(
             .iter()
             .flat_map(|item| {
                 object_literal_target_candidates_from_ir(
-                    &type_ref_debug_text(item),
+                    &debug_text(item),
                     item,
                     construct_target,
                     true,
@@ -825,7 +816,7 @@ fn object_literal_target_candidates_from_ir(
                 .into_iter()
                 .map(|fields| {
                     let branch = ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&TypeRefIr::Record {
+                        source_text: debug_text(&TypeRefIr::Record {
                             fields: fields.clone(),
                         }),
                         ir: TypeRefIr::Record {
@@ -885,7 +876,7 @@ fn non_nullable_object_target(target: &ResolvedTypeRef) -> ResolvedTypeRef {
         TypeRefIr::Union { items } => {
             let non_null = items
                 .iter()
-                .filter(|item| !type_ir_is_null(item))
+                .filter(|item| !is_null_type(item))
                 .collect::<Vec<_>>();
             match non_null.as_slice() {
                 [only] => resolved_type_from_ir(only),
@@ -933,7 +924,7 @@ fn resolved_fields_from_ir(
                 name.clone(),
                 ResolvedTypeRef {
                     ir: ty.clone(),
-                    source_text: type_ref_debug_text(ty),
+                    source_text: debug_text(ty),
                 },
             )
         })
@@ -942,7 +933,7 @@ fn resolved_fields_from_ir(
 
 fn type_ir_is_nullable(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Nullable { .. })
-        || matches!(ty, TypeRefIr::Union { items } if items.iter().any(type_ir_is_null))
+        || matches!(ty, TypeRefIr::Union { items } if items.iter().any(is_null_type))
 }
 
 fn object_literal_record_fields<'a>(

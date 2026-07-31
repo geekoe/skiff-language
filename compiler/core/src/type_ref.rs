@@ -164,13 +164,12 @@ pub fn contains_boundary_unsafe_type(ty: &TypeRefIr) -> bool {
 
 /// Renders the canonical debug/display text for a type ref.
 ///
-/// Absorbs the two private copies in `compiler/source`
-/// (`type_resolution_model.rs` `type_ref_debug_text` and
-/// `expression_type_model.rs` `type_ref_debug_text`). The two copies differ
-/// only in how they format an `AppliedNominal` base; this core version uses
-/// the direct nominal-base formatting variant (etm style), which is
-/// byte-identical to the trm intermediate-`TypeRefIr` variant for every
-/// nominal base.
+/// Absorbs the former private implementations in `compiler/source`
+/// (`type_resolution_model.rs` and `expression_type_model.rs`). The two
+/// copies differed only in how they formatted an `AppliedNominal` base; this
+/// core version uses the direct nominal-base formatting variant, which is
+/// byte-identical to the intermediate-`TypeRefIr` variant for every nominal
+/// base (locked by differential evidence in the Phase 3 leaf task).
 pub fn debug_text(ty: &TypeRefIr) -> String {
     match ty {
         TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
@@ -257,11 +256,11 @@ fn nominal_base_debug_text(base: &NominalTypeRefBaseIr) -> String {
 /// Returns the type of a record/union field, including synthetic fields of
 /// the `CatchResult` / `DbUpsertResult` / `Exception` native shapes.
 ///
-/// Absorbs the union of the two private copies
-/// (`type_resolution_model.rs` `record_field_type_from_ir` and
-/// `expression_type_model.rs` `record_field_type_from_ir`): record lookup,
-/// recursive union combine via canonical `normalize_union`, plus the
-/// shape-specific fields.
+/// Absorbs the union of the former private implementations
+/// `record_field_type_from_ir` in `type_resolution_model.rs` and
+/// `expression_type_model.rs`: record lookup, recursive union combine via
+/// canonical `normalize_union`, plus the shape-specific fields. The etm copy
+/// keeps a thin `ResolvedTypeRef` wrapper at its call site.
 pub fn record_field_type(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
     match ty {
         TypeRefIr::Record { fields } => fields.get(field).cloned(),
@@ -302,8 +301,9 @@ pub fn record_field_type(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
 /// single-item / null-only collapsing.
 ///
 /// This is the canonical semantics selected by the design: the trm private
-/// copy (`type_resolution_model.rs` `normalize_source_type_ref` /
-/// `normalize_source_union` / `collect_source_union_member`).
+/// copy (the former `normalize_source_type_ref` / `normalize_source_union` /
+/// `collect_source_union_member` private implementations in
+/// `type_resolution_model.rs`).
 pub fn normalize_union(ty: TypeRefIr) -> TypeRefIr {
     match ty {
         TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
@@ -396,8 +396,11 @@ fn collect_normalized_union_member(
 /// container: the sole argument for 1-argument containers, or the key type
 /// for a 2-argument `Map`.
 ///
-/// Absorbs `single_for_item_type` / `single_for_item_projection`
-/// (`expression_type_model.rs` 4776 / 4827), including the `std.*` full names.
+/// Absorbs the former private implementations `single_for_item_type` /
+/// `single_for_item_projection` in `expression_type_model.rs`, including the
+/// `std.*` full names. The projection wrapper keeps its
+/// `PackageTypeRef::Container`-only guard, so `Local`-wrapped containers
+/// still return `None`.
 pub fn single_item(ty: &TypeRefIr) -> Option<&TypeRefIr> {
     let TypeRefIr::Builtin { name, args } = ty else {
         return None;
@@ -413,9 +416,11 @@ pub fn single_item(ty: &TypeRefIr) -> Option<&TypeRefIr> {
 
 /// Returns `(key, value)` for a 2-argument `Map` native container.
 ///
-/// Absorbs `map_entry_types` / `map_entry_projections`
-/// (`expression_type_model.rs` 4808 / 4842), including the `std.collection.Map`
-/// full name.
+/// Absorbs the former private implementations `map_entry_types` /
+/// `map_entry_projections` / `map_key_type_ir` / `map_value_type_ir` in
+/// `expression_type_model.rs`, including the `std.collection.Map` full name.
+/// The `map_entry_types` wrapper intentionally preserves its short-name-only
+/// guard.
 pub fn map_entry(ty: &TypeRefIr) -> Option<(&TypeRefIr, &TypeRefIr)> {
     let TypeRefIr::Builtin { name, args } = ty else {
         return None;
@@ -435,8 +440,8 @@ pub fn exception_payload(ty: &TypeRefIr) -> Option<&TypeRefIr> {
 /// Returns the tag-branch types of a discriminated record-like shape:
 /// `Union` items, `CatchResult` ok/err records, or a single `Record`.
 ///
-/// Absorbs `discriminated_record_branches` and `catch_result_branch_types`
-/// (`expression_type_model.rs` 5154 / 5165).
+/// Absorbs the former private implementations `discriminated_record_branches`
+/// and `catch_result_branch_types` in `expression_type_model.rs`.
 pub fn catch_result_branches(ty: &TypeRefIr) -> Option<Vec<TypeRefIr>> {
     match ty {
         TypeRefIr::Union { items } => Some(items.clone()),
@@ -483,8 +488,8 @@ fn exception_type_ir(error: TypeRefIr) -> TypeRefIr {
 /// Returns whether the type is the null type (builtin `"null"` or the null
 /// literal).
 ///
-/// Absorbs `is_null_type_ir` / `type_ir_is_null`
-/// (`type_resolution_model.rs` 6235 / `expression_type_model.rs` 5572).
+/// Absorbs the former private implementations `is_null_type_ir` and
+/// `type_ir_is_null` in `compiler/source`.
 pub fn is_null_type(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
         || matches!(
@@ -497,7 +502,10 @@ pub fn is_null_type(ty: &TypeRefIr) -> bool {
 
 /// Returns whether the type contains a type parameter anywhere.
 ///
-/// Absorbs `type_contains_type_param` (`expression_type_model.rs` 4850).
+/// Absorbs the former private implementations `type_contains_type_param`,
+/// `type_contains_unresolved_param`, and
+/// `type_ref_contains_type_parameter` in `compiler/source` and
+/// `compiler/projection`.
 pub fn contains_type_param(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::TypeParam { .. } => true,

@@ -10,7 +10,10 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
-    type_ref::{normalize_union, substitute_type_params_in_type_ref_ref},
+    type_ref::{
+        contains_type_param, debug_text, is_null_type, normalize_union, record_field_type,
+        substitute_type_params_in_type_ref_ref,
+    },
 };
 
 use crate::{
@@ -24,7 +27,7 @@ use crate::{
         InterfaceSemantics, SemanticPublication, SemanticSource,
     },
     shared::{
-        ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
+        ast::{AliasDecl, FunctionDecl, InterfaceOperation, Param, SourceFile, TypeDecl, TypeRef},
         id::SKIFF_STD_PUBLICATION_ID,
         package_interface_methods::{
             instantiate_interface_method_signatures, normalize_package_interface_method_signatures,
@@ -33,7 +36,7 @@ use crate::{
         },
         prelude_registry::prelude_registry,
         type_expr::TypeExpr,
-        type_syntax::generic_parts,
+        type_syntax::generic_type_parameter_names,
     },
 };
 use compiler_input_model::PackageDependency;
@@ -1198,7 +1201,7 @@ impl TypeResolutionModel {
             }
             other => Err(format!(
                 "interface ABI id resolves to non-interface type {}",
-                type_ref_debug_text(&other)
+                debug_text(&other)
             )),
         }
     }
@@ -1355,7 +1358,7 @@ impl TypeResolutionModel {
                             Ok((
                                 name.clone(),
                                 ResolvedTypeRef {
-                                    source_text: type_ref_debug_text(&field_ty),
+                                    source_text: debug_text(&field_ty),
                                     ir: field_ty,
                                 },
                             ))
@@ -1455,7 +1458,7 @@ impl TypeResolutionModel {
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
                 let field = ResolvedTypeRef {
-                    source_text: type_ref_debug_text(&field_ty),
+                    source_text: debug_text(&field_ty),
                     ir: field_ty,
                 };
                 Ok((
@@ -1516,7 +1519,7 @@ impl TypeResolutionModel {
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
                 let field = ResolvedTypeRef {
-                    source_text: type_ref_debug_text(&field_ty),
+                    source_text: debug_text(&field_ty),
                     ir: field_ty,
                 };
                 Ok((
@@ -1575,7 +1578,7 @@ impl TypeResolutionModel {
         let payload = substitute_type_params_in_type_ref_ref(&payload, &substitutions);
         let payload = self.expand_alias_type_ref(&payload, &payload_context)?;
         let payload = ResolvedTypeRef {
-            source_text: type_ref_debug_text(&payload),
+            source_text: debug_text(&payload),
             ir: payload,
         };
         let payload = if shape.module_path == context.module_path {
@@ -1638,7 +1641,7 @@ impl TypeResolutionModel {
         if receiver_type.public_path.as_deref() != Some(source_symbol_path.as_str())
             || self.package_interfaces.contains_key(&key)
             || receiver_type.type_params.len() != arguments.len()
-            || arguments.iter().any(type_contains_unresolved_param)
+            || arguments.iter().any(contains_type_param)
         {
             return None;
         }
@@ -1662,7 +1665,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Option<LocalReceiverMethodResolution> {
         let resolved = ResolvedTypeRef {
-            source_text: type_ref_debug_text(receiver),
+            source_text: debug_text(receiver),
             ir: receiver.clone(),
         };
         let owner = self.actual_receiver_symbol(&resolved, context)?;
@@ -1675,9 +1678,7 @@ impl TypeResolutionModel {
             _ => Vec::new(),
         };
         if receiver_type.type_params.len() != receiver_type_arguments.len()
-            || receiver_type_arguments
-                .iter()
-                .any(type_contains_unresolved_param)
+            || receiver_type_arguments.iter().any(contains_type_param)
         {
             return None;
         }
@@ -1819,7 +1820,7 @@ impl TypeResolutionModel {
 
     pub fn is_nullable(&self, ty: &ResolvedTypeRef) -> bool {
         matches!(ty.ir, TypeRefIr::Nullable { .. })
-            || matches!(&ty.ir, TypeRefIr::Union { items } if items.iter().any(is_null_type_ir))
+            || matches!(&ty.ir, TypeRefIr::Union { items } if items.iter().any(is_null_type))
     }
 
     pub fn contains_interface_type(
@@ -3077,48 +3078,49 @@ impl TypeResolutionModel {
         })
     }
 
+    fn package_symbol_resolution<'a, V>(
+        &self,
+        dependency_ref: &str,
+        symbol_path: &str,
+        map: &'a BTreeMap<PackageSymbolKey, V>,
+        full: bool,
+    ) -> Option<&'a V> {
+        let key = |dependency_ref: &str| PackageSymbolKey {
+            dependency_ref: dependency_ref.to_string(),
+            symbol_path: symbol_path.to_string(),
+        };
+        map.get(&key(dependency_ref)).or_else(|| {
+            if full {
+                let canonical = self.canonical_package_dependency_ref(dependency_ref);
+                if let Some(found) = self
+                    .package_dependency_canonical_refs
+                    .iter()
+                    .filter(|(_, candidate)| candidate.as_str() == canonical)
+                    .find_map(|(alias, _)| map.get(&key(alias)))
+                {
+                    return Some(found);
+                }
+            }
+            let by_package_id = self
+                .package_dependencies
+                .get(dependency_ref)
+                .and_then(|package_id| map.get(&key(package_id)));
+            if by_package_id.is_some() || !full {
+                return by_package_id;
+            }
+            self.package_dependencies
+                .iter()
+                .filter(|(_, candidate)| candidate.as_str() == dependency_ref)
+                .find_map(|(alias, _)| map.get(&key(alias)))
+        })
+    }
+
     fn package_type_resolution(
         &self,
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&SourceTypeResolution> {
-        let direct_key = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_types
-            .get(&direct_key)
-            .or_else(|| {
-                let canonical = self.canonical_package_dependency_ref(dependency_ref);
-                self.package_dependency_canonical_refs
-                    .iter()
-                    .filter(|(_, candidate)| candidate.as_str() == canonical)
-                    .find_map(|(alias, _)| {
-                        self.package_types.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
-            .or_else(|| {
-                let package_id = self.package_dependencies.get(dependency_ref)?;
-                let package_key = PackageSymbolKey {
-                    dependency_ref: package_id.clone(),
-                    symbol_path: symbol_path.to_string(),
-                };
-                self.package_types.get(&package_key)
-            })
-            .or_else(|| {
-                self.package_dependencies
-                    .iter()
-                    .filter(|(_, package_id)| package_id.as_str() == dependency_ref)
-                    .find_map(|(alias, _)| {
-                        self.package_types.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_types, true)
     }
 
     fn package_type_resolution_for_view(
@@ -3126,17 +3128,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&SourceTypeResolution> {
-        let direct = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_types.get(&direct).or_else(|| {
-            let package_id = self.package_dependencies.get(dependency_ref)?;
-            self.package_types.get(&PackageSymbolKey {
-                dependency_ref: package_id.clone(),
-                symbol_path: symbol_path.to_string(),
-            })
-        })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_types, false)
     }
 
     /// Returns the manifest dependency's primary alias for either of its
@@ -3210,18 +3202,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&PackageCallableResolution> {
-        let direct_key = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_callables.get(&direct_key).or_else(|| {
-            let package_id = self.package_dependencies.get(dependency_ref)?;
-            let package_key = PackageSymbolKey {
-                dependency_ref: package_id.clone(),
-                symbol_path: symbol_path.to_string(),
-            };
-            self.package_callables.get(&package_key)
-        })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_callables, false)
     }
 
     fn package_interface_fact(
@@ -3229,43 +3210,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&PackageInterfaceFact> {
-        let direct_key = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_interfaces
-            .get(&direct_key)
-            .or_else(|| {
-                let canonical = self.canonical_package_dependency_ref(dependency_ref);
-                self.package_dependency_canonical_refs
-                    .iter()
-                    .filter(|(_, candidate)| candidate.as_str() == canonical)
-                    .find_map(|(alias, _)| {
-                        self.package_interfaces.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
-            .or_else(|| {
-                let package_id = self.package_dependencies.get(dependency_ref)?;
-                let package_key = PackageSymbolKey {
-                    dependency_ref: package_id.clone(),
-                    symbol_path: symbol_path.to_string(),
-                };
-                self.package_interfaces.get(&package_key)
-            })
-            .or_else(|| {
-                self.package_dependencies
-                    .iter()
-                    .filter(|(_, package_id)| package_id.as_str() == dependency_ref)
-                    .find_map(|(alias, _)| {
-                        self.package_interfaces.get(&PackageSymbolKey {
-                            dependency_ref: alias.clone(),
-                            symbol_path: symbol_path.to_string(),
-                        })
-                    })
-            })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_interfaces, true)
     }
 
     fn package_interface_fact_for_view(
@@ -3273,17 +3218,7 @@ impl TypeResolutionModel {
         dependency_ref: &str,
         symbol_path: &str,
     ) -> Option<&PackageInterfaceFact> {
-        let direct = PackageSymbolKey {
-            dependency_ref: dependency_ref.to_string(),
-            symbol_path: symbol_path.to_string(),
-        };
-        self.package_interfaces.get(&direct).or_else(|| {
-            let package_id = self.package_dependencies.get(dependency_ref)?;
-            self.package_interfaces.get(&PackageSymbolKey {
-                dependency_ref: package_id.clone(),
-                symbol_path: symbol_path.to_string(),
-            })
-        })
+        self.package_symbol_resolution(dependency_ref, symbol_path, &self.package_interfaces, false)
     }
 
     pub(crate) fn resolve_source_type_key(
@@ -5595,7 +5530,7 @@ fn package_callable_resolution(
                     impl_target_matches(&implementation.target, module_path, target)
                 })
                 .and_then(|implementation| {
-                    let inherited = generic_type_params_from_text(&implementation.target);
+                    let inherited = generic_type_parameter_names(&implementation.target);
                     implementation
                         .methods
                         .iter()
@@ -5628,11 +5563,14 @@ fn package_callable_resolution(
         })
 }
 
-fn operation_callable_resolution(
+fn callable_resolution_from_parts(
     module_path: &str,
     source_symbol: &str,
-    operation: &InterfaceOperation,
     inherited_type_params: &[String],
+    decl_type_params: &[String],
+    implicit_self: Option<&TypeRef>,
+    params: &[Param],
+    return_type: &TypeRef,
     local_type_names: &BTreeSet<String>,
 ) -> PackageCallableResolution {
     PackageCallableResolution {
@@ -5640,17 +5578,16 @@ fn operation_callable_resolution(
         source_symbol: source_symbol.to_string(),
         type_params: inherited_type_params
             .iter()
-            .chain(&operation.type_params)
+            .chain(decl_type_params)
             .cloned()
             .collect(),
         local_type_names: local_type_names.clone(),
-        params: operation
-            .implicit_self
-            .iter()
-            .chain(operation.params.iter().map(|param| &param.ty))
+        params: implicit_self
+            .into_iter()
+            .chain(params.iter().map(|param| &param.ty))
             .map(|ty| ty.name.clone())
             .collect(),
-        return_type: operation.return_type.name.clone(),
+        return_type: return_type.name.clone(),
         exact_signature: None,
     }
 }
@@ -5662,48 +5599,40 @@ fn function_callable_resolution(
     inherited_type_params: &[String],
     local_type_names: &BTreeSet<String>,
 ) -> PackageCallableResolution {
-    PackageCallableResolution {
-        module_path: module_path.to_string(),
-        source_symbol: source_symbol.to_string(),
-        type_params: inherited_type_params
-            .iter()
-            .chain(&function.type_params)
-            .cloned()
-            .collect(),
-        local_type_names: local_type_names.clone(),
-        params: function
-            .implicit_self
-            .iter()
-            .chain(function.params.iter().map(|param| &param.ty))
-            .map(|ty| ty.name.clone())
-            .collect(),
-        return_type: function.return_type.name.clone(),
-        exact_signature: None,
-    }
+    callable_resolution_from_parts(
+        module_path,
+        source_symbol,
+        inherited_type_params,
+        &function.type_params,
+        function.implicit_self.as_ref(),
+        &function.params,
+        &function.return_type,
+        local_type_names,
+    )
+}
+
+fn operation_callable_resolution(
+    module_path: &str,
+    source_symbol: &str,
+    operation: &InterfaceOperation,
+    inherited_type_params: &[String],
+    local_type_names: &BTreeSet<String>,
+) -> PackageCallableResolution {
+    callable_resolution_from_parts(
+        module_path,
+        source_symbol,
+        inherited_type_params,
+        &operation.type_params,
+        operation.implicit_self.as_ref(),
+        &operation.params,
+        &operation.return_type,
+        local_type_names,
+    )
 }
 
 fn impl_target_matches(target: &str, module_path: &str, local_target: &str) -> bool {
     let target = target.strip_prefix("root.").unwrap_or(target);
     target == local_target || target == format!("{module_path}.{local_target}")
-}
-
-fn generic_type_params_from_text(name: &str) -> Vec<String> {
-    generic_parts(name)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .map(|arg| arg.trim())
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn expand_alias_text(raw: &str, aliases: &BTreeMap<String, String>) -> Result<String, String> {
@@ -5862,14 +5791,14 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
     }
     match expected {
         TypeRefIr::Builtin { name, .. } if name == "unknown" => true,
-        TypeRefIr::Builtin { name, .. } if name == "void" => is_null_type_ir(actual),
-        TypeRefIr::Builtin { name, .. } if name == "Stream" => is_null_type_ir(actual),
+        TypeRefIr::Builtin { name, .. } if name == "void" => is_null_type(actual),
+        TypeRefIr::Builtin { name, .. } if name == "Stream" => is_null_type(actual),
         TypeRefIr::Builtin { name, .. } if name == "Json" => json_assignable(actual),
         TypeRefIr::Builtin { name, .. } if name == "JsonObject" => json_object_assignable(actual),
         TypeRefIr::Builtin { name, .. } if name == "number" => {
             matches!(actual, TypeRefIr::Builtin { name, .. } if name == "integer")
         }
-        TypeRefIr::Nullable { inner } => is_null_type_ir(actual) || type_assignable(actual, inner),
+        TypeRefIr::Nullable { inner } => is_null_type(actual) || type_assignable(actual, inner),
         TypeRefIr::Union { items } => items
             .iter()
             .any(|expected_item| type_assignable(actual, expected_item)),
@@ -5889,99 +5818,6 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
             })
         }
         _ => false,
-    }
-}
-
-fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
-    match ty {
-        TypeRefIr::Record { fields } => fields.get(field).cloned(),
-        TypeRefIr::Union { items } => {
-            let mut field_types = Vec::new();
-            for item in items {
-                field_types.push(record_field_type_from_ir(item, field)?);
-            }
-            Some(normalize_union(TypeRefIr::Union { items: field_types }))
-        }
-        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
-            match field {
-                "error" => Some(args[0].clone()),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn type_ref_debug_text(ty: &TypeRefIr) -> String {
-    match ty {
-        TypeRefIr::Builtin { name, args } if args.is_empty() => name.clone(),
-        TypeRefIr::Builtin { name, args } => format!(
-            "{name}<{}>",
-            args.iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::Nullable { inner } => format!("{}?", type_ref_debug_text(inner)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .map(type_ref_debug_text)
-            .collect::<Vec<_>>()
-            .join(" | "),
-        TypeRefIr::Literal {
-            value: LiteralIr::String { value },
-        } => serde_json::to_string(value).unwrap_or_else(|_| "\"<string>\"".to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::Null,
-        } => "null".to_string(),
-        TypeRefIr::Literal { .. } => "<literal>".to_string(),
-        TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
-        TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => format!("{module_path}#{type_index}"),
-        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
-            symbol.symbol_path()
-        }
-        TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
-        TypeRefIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => format!("{package_id}::{stable_schema_key}"),
-        TypeRefIr::AppliedNominal { base, arguments } => format!(
-            "{}<{}>",
-            type_ref_debug_text(&nominal_base_type_ref(base)),
-            arguments
-                .iter()
-                .map(type_ref_debug_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeRefIr::AnyInterface { interface } => {
-            let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-                .map_or_else(
-                    |_| interface.interface_abi_id.clone(),
-                    |identity| type_ref_debug_text(&identity),
-                );
-            if interface.canonical_type_args.is_empty() {
-                format!("any {interface_name}")
-            } else {
-                format!(
-                    "any {}<{}>",
-                    interface_name,
-                    interface
-                        .canonical_type_args
-                        .iter()
-                        .map(type_ref_debug_text)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        }
-        TypeRefIr::Record { .. } => "{}".to_string(),
-        TypeRefIr::TypeParam { name } => name.clone(),
-        TypeRefIr::Function { .. } => "fn".to_string(),
     }
 }
 
@@ -6131,16 +5967,6 @@ fn json_object_assignable(actual: &TypeRefIr) -> bool {
         TypeRefIr::Record { fields } => fields.values().all(json_assignable),
         _ => false,
     }
-}
-
-fn is_null_type_ir(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
-        || matches!(
-            ty,
-            TypeRefIr::Literal {
-                value: LiteralIr::Null
-            }
-        )
 }
 
 fn is_self_type_ref(ty: &TypeRefIr) -> bool {
@@ -6307,7 +6133,7 @@ fn nominal_base_from_type_ref(ty: TypeRefIr) -> Result<NominalTypeRefBaseIr, Str
         }
         other => Err(format!(
             "`{}` is not a legal applied nominal base",
-            type_ref_debug_text(&other)
+            debug_text(&other)
         )),
     }
 }
@@ -6339,41 +6165,6 @@ fn nominal_base_type_ref(base: &NominalTypeRefBaseIr) -> TypeRefIr {
             stable_schema_key: stable_schema_key.clone(),
             package_schema_type_id: package_schema_type_id.clone(),
         },
-    }
-}
-
-fn type_contains_unresolved_param(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::TypeParam { .. } => true,
-        TypeRefIr::AppliedNominal { arguments, .. }
-        | TypeRefIr::Builtin {
-            args: arguments, ..
-        }
-        | TypeRefIr::Union { items: arguments } => {
-            arguments.iter().any(type_contains_unresolved_param)
-        }
-        TypeRefIr::Nullable { inner } => type_contains_unresolved_param(inner),
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(type_contains_unresolved_param),
-        TypeRefIr::Record { fields } => fields.values().any(type_contains_unresolved_param),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_contains_unresolved_param(&param.ty))
-                || type_contains_unresolved_param(return_type)
-        }
-        TypeRefIr::Literal { .. }
-        | TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. } => false,
     }
 }
 
