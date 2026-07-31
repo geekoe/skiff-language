@@ -9,14 +9,7 @@ pub(crate) fn service_storage_database_name(environment: &str, service_id: &str)
     skiff_artifact_model::validate_activation_environment(environment)
         .map_err(ServiceDbError::Decode)?;
     validate_publication_id(service_id)?;
-    let mut hasher = Sha256::new();
-    hash_framed_storage_identity_part(&mut hasher, b"skiff-service-db-storage-identity-v1");
-    hash_framed_storage_identity_part(&mut hasher, environment.as_bytes());
-    hash_framed_storage_identity_part(&mut hasher, service_id.as_bytes());
-    Ok(format!(
-        "skiff_{}",
-        URL_SAFE_NO_PAD.encode(hasher.finalize())
-    ))
+    Ok(service_id.replace('.', "~").replace('/', "~~"))
 }
 
 /// Encodes one Package-owned logical collection identity into the physical

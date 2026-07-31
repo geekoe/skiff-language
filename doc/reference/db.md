@@ -69,8 +69,9 @@ dependency的logical collection分别由stable
 owner-relevant facts相同，activation将其合并为一个metadata owner；同一Package ID解析到不同build、
 logical collection identity缺失/重复或system physical-name encoding collision都必须失败。
 
-普通service同样只有一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain、
-activation environment与serviceId共同定界；不另设`platformId`。开发者不能通过`package.yml`或配置文件
+普通service同样只有一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain与
+serviceId共同定界；serviceId映射为Mongo数据库名时用`~`替换`.`与`/`（例如`agine.ai/api`映射为
+`agine~ai~~api`），不另设`platformId`。开发者不能通过`package.yml`或配置文件
 选择database/namespace；同一service中的所有Package共享该数据库，同时每个DB target继续使用精确
 PackageArtifact/File IR/type identity。不同Package可以使用相同裸collection名字而不共享storage；
 跨service数据库访问禁止。

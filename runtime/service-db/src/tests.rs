@@ -615,8 +615,10 @@ fn service_db_runtime_derives_storage_identity_from_environment_and_service_id()
         )
         .expect("service DB runtime should derive a storage-safe database name");
 
-        assert!(runtime.database_name.starts_with("skiff_"));
-        assert_eq!(runtime.database_name.len(), 49);
+        assert_eq!(
+            runtime.database_name,
+            case.canonical_id.replace('.', "~").replace('/', "~~")
+        );
     }
 
     let exact = ServiceDbRuntime::new(
@@ -628,7 +630,7 @@ fn service_db_runtime_derives_storage_identity_from_environment_and_service_id()
     .expect("exact service DB identity should build");
     assert_eq!(
         exact.database_name,
-        "skiff_bZrvSXcV9CaJIIDlqLbuQ902c3dvTWUCvrVm2ucOdEw"
+        "example~com~~service"
     );
 }
 
