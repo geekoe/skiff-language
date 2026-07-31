@@ -100,7 +100,7 @@ impl FunctionLowerer<'_> {
             ObjectMaterializationKind::DiscriminatedUnionBranch { branch } => {
                 let target = ResolvedTypeRef::with_text(
                     target,
-                    materialization.resolved_target.source_text.clone(),
+                    materialization.resolved_target.to_string(),
                 );
                 let target_shape = self
                     .type_resolution

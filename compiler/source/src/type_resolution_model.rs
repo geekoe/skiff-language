@@ -74,6 +74,12 @@ impl ResolvedTypeRef {
     }
 }
 
+impl std::fmt::Display for ResolvedTypeRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.source_text)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TypeResolutionModel {
     modules: BTreeMap<String, ModuleTypeResolution>,
@@ -1073,11 +1079,11 @@ impl TypeResolutionModel {
         let Some(interface) = self.interface_instantiation_from_resolved(resolved, context)? else {
             return Err(format!(
                 "resolved type `{}` is not an interface instantiation",
-                resolved.source_text
+                resolved
             ));
         };
         self.canonical_interface_selector_from_instantiation_resolution(
-            resolved.source_text.clone(),
+            resolved.to_string(),
             interface,
         )
     }
@@ -1348,14 +1354,14 @@ impl TypeResolutionModel {
                     else {
                         return Err(format!(
                             "constructor target `{}` is not a nominal record",
-                            target.source_text
+                            target
                         ));
                     };
                     let type_params = &schema_type.canonical_descriptor.type_params;
                     if type_params.len() != arguments.len() {
                         return Err(format!(
                             "constructor `{}` expects {} type arguments, found {}",
-                            target.source_text,
+                            target,
                             type_params.len(),
                             arguments.len()
                         ));
@@ -1406,13 +1412,13 @@ impl TypeResolutionModel {
         let named = self.resolved_named_type(&base, context).ok_or_else(|| {
             format!(
                 "constructor target `{}` is not a resolved nominal type",
-                target.source_text
+                target
             )
         })?;
         if named.resolution.type_params.len() != arguments.len() {
             return Err(format!(
                 "constructor `{}` expects {} type arguments, found {}",
-                target.source_text,
+                target,
                 named.resolution.type_params.len(),
                 arguments.len()
             ));
@@ -1425,13 +1431,13 @@ impl TypeResolutionModel {
             SourceTypeKind::Actor { .. } => {
                 return Err(format!(
                     "actor `{}` is a nominal handle and cannot be constructed directly; use std.actor.getOrCreate or std.actor.replace",
-                    target.source_text
+                    target
                 ));
             }
             _ => {
                 return Err(format!(
                     "constructor target `{}` is not a nominal record",
-                    target.source_text
+                    target
                 ));
             }
         };
@@ -1498,7 +1504,7 @@ impl TypeResolutionModel {
         if shape.type_params.len() != arguments.len() {
             return Err(format!(
                 "constructor `{}` expects {} type arguments, found {}",
-                target.source_text,
+                target,
                 shape.type_params.len(),
                 arguments.len()
             ));

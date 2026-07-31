@@ -1001,7 +1001,7 @@ impl<'a> FunctionLowerer<'a> {
                 key
             ))
         })?;
-        Ok((ty.source_text.clone(), ty.ir.clone()))
+        Ok((ty.to_string(), ty.ir.clone()))
     }
 
     fn source_instruction_site(

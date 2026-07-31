@@ -669,7 +669,7 @@ pub(super) fn resolved_contract_type(
                     "{name}<{}>",
                     arguments
                         .iter()
-                        .map(|argument| argument.source_text.as_str())
+                            .map(|argument| argument.to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -704,11 +704,12 @@ pub(super) fn resolved_contract_type(
         )),
         ContractTypeRef::Nullable { inner } => {
             let inner = resolved_contract_type(inner, alias)?;
+            let text = format!("{}?", inner);
             Ok(ResolvedTypeRef::with_text(
                 TypeRefIr::Nullable {
                     inner: Box::new(inner.ir),
                 },
-                format!("{}?", inner.source_text),
+                text,
             ))
         }
         ContractTypeRef::AnyInterface {
@@ -728,7 +729,7 @@ pub(super) fn resolved_contract_type(
                             .collect::<Result<_, _>>()?,
                     },
                 },
-                format!("any {}", interface.source_text),
+                format!("any {}", interface),
             ))
         }
         ContractTypeRef::Record { .. } => {

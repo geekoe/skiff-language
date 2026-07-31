@@ -55,7 +55,7 @@ impl FunctionLowerer<'_> {
                 object_key,
                 format!(
                     "has non-record current expression type {}",
-                    expression_fact.source_text
+                    expression_fact
                 ),
             ));
         };

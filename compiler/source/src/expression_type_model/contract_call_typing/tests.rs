@@ -55,7 +55,7 @@ fn contract_ref_materializes_as_owner_package_symbol_not_service_symbol() {
         "renamedService",
     )
     .unwrap();
-    assert_eq!(resolved.source_text, "renamedService.Payload");
+    assert_eq!(resolved.to_string(), "renamedService.Payload");
     assert!(matches!(
         resolved.ir,
         TypeRefIr::PackageSymbol { symbol }

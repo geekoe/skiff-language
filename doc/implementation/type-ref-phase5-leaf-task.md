@@ -94,6 +94,22 @@ expression_assignability 243/259/483/818 视同 debug_text 直连（818 的临�
 `CanonicalInterfaceSelectorResolution.source_text`（该结构体及其消费点代码不动，但值会随
 Display 收敛；按规则 1/2 验证测试覆盖）。
 
+### Step 2/3 修订：主 Agent 决策 B2（2026-07-31）
+
+设计文档已更新（main `31345d78`，doc-only）：§5.3 目标改为
+`pub struct ResolvedTypeRef { ir: TypeRefIr, source_text: Option<String> }`；
+`new(ir)` → None（Display 回退 debug_text）、`with_text(ir, text)` → Some(text)；
+Display 渲染 override 或 debug_text；不删除字段、不删 spelling。
+
+实施形态：
+- Step 1（`d4474d3d`，已提交）保留，仅 `new` 语义在 Step 3 由 `Some(debug_text)` 改为 None。
+- Step 2：73 读点迁移到 Display；Display 先渲染存储文本（字段仍为 `String`，逐字节不变，
+  6 个 golden 测试恢复通过）。
+- Step 3：字段 Option 化 + `new`→None + Display 渲染 override-or-debug_text；所有读点输出
+  仍逐字节不变（with_text 保留 spelling，new 的 None 回退 debug_text 与旧存储值相同）。
+
+Step 2 失败证据（修订前）已随设计 commit 31345d78 的修订原因记录，此处不再重复。
+
 ### 写集
 
 - `compiler/source/src/type_resolution_model.rs`（结构体、构造入口、读点、`.0` 迁移）

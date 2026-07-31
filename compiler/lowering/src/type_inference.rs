@@ -137,7 +137,7 @@ impl<'a> FunctionLowerer<'a> {
         let preorder_index = self.next_expression_index.checked_add(offset)?;
         let key = ExpressionKey::new(self.module_path.to_string(), owner.clone(), preorder_index);
         let ty = expression_types.fact(&key)?.ty.as_ref()?;
-        Some((ty.source_text.clone(), ty.ir.clone()))
+        Some((ty.to_string(), ty.ir.clone()))
     }
 
     pub(super) fn next_expression_type(&self) -> Option<(String, TypeRefIr)> {

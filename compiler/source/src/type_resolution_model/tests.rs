@@ -1386,11 +1386,11 @@ fn externalized_any_interface_source_text_remains_parseable() {
     let externalized = type_resolution.externalize_local_type_refs(&resolved, MODULE);
 
     assert_eq!(
-        externalized.source_text,
+        externalized.to_string(),
         "any internal.assignability.Provider"
     );
     let reparsed = type_resolution
-        .resolve_type_text(&externalized.source_text, &context)
+        .resolve_type_text(&externalized.to_string(), &context)
         .expect("externalized interface text should remain valid source syntax");
     assert_eq!(reparsed.ir, externalized.ir);
 }

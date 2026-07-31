@@ -1165,7 +1165,7 @@ impl<'a> OwnerChecker<'a> {
                             "{}: spawn target return type mismatch at {}: expected void/null, found {}",
                             self.module_path,
                             self.expression_span_label(&call_key),
-                            actual.source_text
+                            actual
                         ));
                     }
                 }
@@ -1221,7 +1221,7 @@ impl<'a> OwnerChecker<'a> {
         }
         let partial = ResolvedTypeRef::with_text(
             TypeRefIr::Record { fields: selected },
-            format!("subset<{}>", resolved.source_text),
+            format!("subset<{}>", resolved),
         );
         let key = self.peek_key();
         let actual = self.check_expr(value);
@@ -1306,7 +1306,7 @@ impl<'a> OwnerChecker<'a> {
             self.diagnostics.push(format!(
                 "{}: {construct} payload `{}` has no valid nominal catch identity at {}: {error}",
                 self.module_path,
-                actual.source_text,
+                actual,
                 self.expression_span_label(key)
             ));
         }
@@ -1320,7 +1320,7 @@ impl<'a> OwnerChecker<'a> {
             self.diagnostics.push(format!(
                 "{}: invalid rethrow operand `{}` at {}: {error}",
                 self.module_path,
-                actual.source_text,
+                actual,
                 self.expression_span_label(key)
             ));
         }
@@ -1684,7 +1684,7 @@ impl<'a> OwnerChecker<'a> {
                 "{}: {context} type mismatch at {}: expected bool, found {}",
                 self.module_path,
                 self.current_expression_span_label(),
-                actual.source_text
+                actual
             ));
         }
     }
@@ -1700,7 +1700,7 @@ impl<'a> OwnerChecker<'a> {
                         "{}: stream producer completion type mismatch at {}: expected null, found {}",
                         self.module_path,
                         self.expression_span_label(&value_key),
-                        actual.source_text
+                        actual
                     ));
                     return;
                 }
@@ -1896,7 +1896,7 @@ impl<'a> OwnerChecker<'a> {
                         "{}: interface boxing source at {} must be a concrete nominal record, found {}",
                         self.module_path,
                         self.expression_span_label(&key),
-                        value_ty.source_text
+                        value_ty
                     ));
                         return None;
                     };
@@ -1995,7 +1995,7 @@ impl<'a> OwnerChecker<'a> {
                         self.diagnostics.push(format!(
                             "{}: unknown field `{field}` on {} at {}",
                             self.module_path,
-                            object_ty.source_text,
+                            object_ty,
                             self.expression_span_label(&key)
                         ));
                     }
@@ -2131,7 +2131,7 @@ impl<'a> OwnerChecker<'a> {
                         self.diagnostics.push(format!(
                             "{}: invalid catch type `{}` at {}: {error}",
                             self.module_path,
-                            catch_ty.source_text,
+                            catch_ty,
                             self.expression_span_label(&key)
                         ));
                     }
@@ -2573,7 +2573,7 @@ impl<'a> OwnerChecker<'a> {
                 "{}: db where predicate type mismatch at {}: expected bool, found {}",
                 self.module_path,
                 self.current_expression_span_label(),
-                actual.source_text
+                actual
             ));
         }
     }
@@ -2816,8 +2816,8 @@ impl<'a> OwnerChecker<'a> {
                         "{}: equality operand type mismatch at {}: left {}, right {}",
                         self.module_path,
                         self.expression_span_label(key),
-                        left.source_text,
-                        right.source_text
+                        left,
+                        right
                     ));
                 }
             }
@@ -2893,8 +2893,8 @@ impl<'a> OwnerChecker<'a> {
                 "{}: {context} type mismatch at {}: expected {}, found {}",
                 self.module_path,
                 self.expression_span_label(key),
-                expected.source_text,
-                actual.source_text
+                expected,
+                actual
             ));
         }
     }
@@ -3334,12 +3334,13 @@ impl<'a> OwnerChecker<'a> {
                     .resolve_type_ref(ty, &self.type_context)
                     .ok()
                     .map(|item| {
+                        let text = format!("Array<{}>", item);
                         ResolvedTypeRef::with_text(
                             TypeRefIr::Builtin {
                                 name: "Array".to_string(),
                                 args: vec![item.ir],
                             },
-                            format!("Array<{}>", item.source_text),
+                            text,
                         )
                     })
             }),
@@ -3746,7 +3747,7 @@ impl<'a> OwnerChecker<'a> {
             method_name,
             &self.type_context,
         )?;
-        let callable = format!("{}.{}", receiver_ty.source_text, method_name);
+        let callable = format!("{}.{}", receiver_ty, method_name);
         if !type_args.is_empty() {
             self.diagnostics.push(format!(
                 "{}: actor method `{callable}` does not accept explicit method type arguments",
@@ -3804,7 +3805,7 @@ impl<'a> OwnerChecker<'a> {
         else {
             self.diagnostics.push(format!(
                 "{}: actor registry intrinsic `{path}` type argument `{}` is not an actor declaration",
-                self.module_path, actor_ty.source_text
+                self.module_path, actor_ty
             ));
             return None;
         };
@@ -3913,7 +3914,7 @@ impl<'a> OwnerChecker<'a> {
         let operation = self
             .type_resolution
             .any_interface_method_signature(&receiver_ty.ir, method_name)?;
-        let callable = format!("{}.{}", receiver_ty.source_text, method_name);
+        let callable = format!("{}.{}", receiver_ty, method_name);
         if !type_args.is_empty() {
             self.diagnostics.push(format!(
                 "{}: any interface method `{callable}` does not accept method type arguments",
@@ -3960,7 +3961,7 @@ impl<'a> OwnerChecker<'a> {
             .iter()
             .find(|operation| operation.name == method_name)
             .cloned()?;
-        let callable = format!("{}.{}", receiver_ty.source_text, method_name);
+        let callable = format!("{}.{}", receiver_ty, method_name);
         let substitutions =
             self.resolve_type_arg_substitutions(&callable, &operation.type_params, type_args);
         if substitutions.complete {
@@ -4123,8 +4124,8 @@ impl<'a> OwnerChecker<'a> {
                 "{}: package receiver method `{source_path}` receiver type mismatch at {}: expected {}, found {}",
                 self.module_path,
                 self.expression_span_label(&receiver_key),
-                expected_receiver.source_text,
-                receiver_ty.source_text
+                expected_receiver,
+                receiver_ty
             ));
             return None;
         }
@@ -4216,7 +4217,7 @@ impl<'a> OwnerChecker<'a> {
         {
             self.diagnostics.push(format!(
                 "{}: actor handle type `{}` cannot be used as a database object",
-                self.module_path, target.source_text
+                self.module_path, target
             ));
             return None;
         }
@@ -4600,8 +4601,8 @@ impl<'a> OwnerChecker<'a> {
             "{}: {context} type mismatch at {}: expected {}, found {}",
             self.module_path,
             span_label(span),
-            expected.source_text,
-            actual.source_text
+            expected,
+            actual
         ));
     }
 }
@@ -4825,22 +4826,24 @@ fn native_return_type_context<'a>(
 }
 
 fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeRef {
+    let text = format!("{name}<{}>", target);
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
             name: name.to_string(),
             args: vec![target.ir.clone()],
         },
-        format!("{name}<{}>", target.source_text),
+        text,
     )
 }
 
 fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> ResolvedTypeRef {
+    let text = format!("CatchResult<{}, {}>", value, error);
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
             name: "CatchResult".to_string(),
             args: vec![value.ir, error.ir],
         },
-        format!("CatchResult<{}, {}>", value.source_text, error.source_text),
+        text,
     )
 }
 
@@ -4992,7 +4995,7 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
     match &ty.ir {
         TypeRefIr::Nullable { inner } => {
             let source_text = ty
-                .source_text
+                .to_string()
                 .trim()
                 .strip_suffix('?')
                 .map(str::trim)
@@ -5049,11 +5052,12 @@ fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
 }
 
 fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
+    let text = format!("{}?", inner);
     ResolvedTypeRef::with_text(
         TypeRefIr::Nullable {
             inner: Box::new(inner.ir),
         },
-        format!("{}?", inner.source_text),
+        text,
     )
 }
 
@@ -5075,12 +5079,13 @@ fn db_lease_read_type() -> ResolvedTypeRef {
 }
 
 fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
+    let text = format!("Array<{}>", item);
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![item.ir],
         },
-        format!("Array<{}>", item.source_text),
+        text,
     )
 }
 

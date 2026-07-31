@@ -350,7 +350,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .map(|field| (field.name.clone(), value_target.clone()))
                 .collect::<BTreeMap<_, _>>();
             let candidate = ObjectLiteralTargetCandidate {
-                label: target.source_text.clone(),
+                    label: target.to_string(),
                 fields: fields.clone(),
                 kind: ObjectMaterializationKind::Map,
             };
@@ -371,7 +371,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             return Err(vec![format!(
                 "{}: {context} object literal target {} is not a record, discriminated union, Map<string, T>, JsonObject, or Json at {}",
                 self.diagnostic_path,
-                expected.source_text,
+                expected,
                 span_label(self.expression_span(value_key))
             )]);
         }
@@ -405,7 +405,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             many => Err(vec![format!(
                 "{}: {context} ambiguous object literal branch for {} at {}; matching branches: {}",
                 self.diagnostic_path,
-                expected.source_text,
+                expected,
                 span_label(self.expression_span(value_key)),
                 many.iter()
                     .map(|(candidate, _)| candidate.label.as_str())
@@ -444,8 +444,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                         self.diagnostic_path,
                         field.name,
                         span_label(field.value_span),
-                        expected.source_text,
-                        actual.source_text
+                        expected,
+                        actual
                     ));
                 }
             }
@@ -503,7 +503,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .resolve_constructor_target_text(&annotation.name, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
-                    label: target.ty.source_text.clone(),
+                    label: target.ty.to_string(),
                     fields: target.fields,
                     kind: ObjectMaterializationKind::Record {
                         construct_target: target.ty,
@@ -517,7 +517,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .resolve_constructor_target_resolved(expected, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
-                    label: target.ty.source_text.clone(),
+                    label: target.ty.to_string(),
                     fields: target.fields,
                     kind: ObjectMaterializationKind::Record {
                         construct_target: target.ty,
@@ -531,7 +531,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .type_shape_ir(expected, self.type_context)
             {
                 candidates.extend(object_literal_target_candidates_from_ir(
-                    &expected.source_text,
+                    &expected.to_string(),
                     &shape,
                     expected,
                     false,
@@ -540,7 +540,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         }
         if candidates.is_empty() {
             candidates.extend(object_literal_target_candidates_from_ir(
-                &expected.source_text,
+                &expected.to_string(),
                 &expected.ir,
                 expected,
                 false,
@@ -586,8 +586,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                         self.diagnostic_path,
                         field.name,
                         span_label(field.value_span),
-                        expected.source_text,
-                        actual.source_text
+                        expected,
+                        actual
                     ));
                 }
             }

@@ -174,12 +174,12 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 self.dependency_analysis,
             ) {
                 let expected_label = resolved_contract_type(&parameter.ty, &call.alias)
-                    .map(|ty| ty.source_text)
+                    .map(|ty| ty.to_string())
                     .unwrap_or_else(|_| format!("{:?}", parameter.ty));
                 diagnostics.push(format!(
                     "contract call `{path}` argument {} type mismatch: expected {expected_label}, found {}",
                     index + 1,
-                    actual.source_text
+                    actual
                 ));
             }
         }
@@ -209,13 +209,16 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
         match resolved_contract_type(return_type, &call.alias) {
             Ok(resolved) => Some(match call.operation.contract.stream {
                 BoundaryStreamContract::ServerStream { .. } => (
-                    ResolvedTypeRef::with_text(
+                    {
+                        let text = format!("Stream<{}>", resolved);
+                        ResolvedTypeRef::with_text(
                         skiff_artifact_model::TypeRefIr::Builtin {
                             name: "Stream".to_string(),
                             args: vec![resolved.ir],
                         },
-                        format!("Stream<{}>", resolved.source_text),
-                    ),
+                        text,
+                        )
+                    },
                     PackageTypeRef::Container {
                         name: "Stream".to_string(),
                         arguments: vec![projected],

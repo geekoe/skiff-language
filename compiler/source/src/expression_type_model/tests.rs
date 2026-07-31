@@ -1225,7 +1225,7 @@ fn constructor_validation_error_carries_structured_field_facts() {
     );
     assert_eq!(validation.missing_required_fields[0].name, "age");
     assert_eq!(validation.type_mismatches[0].name, "email");
-    assert_eq!(validation.type_mismatches[0].expected.source_text, "string");
+    assert_eq!(validation.type_mismatches[0].expected.to_string(), "string");
     assert!(
         validation.type_mismatches[0].value_span != SourceSpan::synthetic(),
         "field mismatch should retain source value span"
@@ -1508,7 +1508,7 @@ fn expression_fact_source_text(
             model
                 .fact(key)
                 .and_then(|fact| fact.ty.as_ref())
-                .map(|ty| ty.source_text.clone())
+                .map(|ty| ty.to_string())
         })
         .unwrap_or_else(|| panic!("expression `{snippet}` should have a type fact"))
 }
