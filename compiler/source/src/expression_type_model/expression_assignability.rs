@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use super::{
     object_literal_key_text,
     object_materialization::{ObjectMaterializationKind, ObjectMaterializationPlan},
-    resolved_type_from_ir, span_label, transparent_value_target, type_ir_is_null, ExpressionKey,
+    resolved_type_from_ir, span_label, transparent_value_target, ExpressionKey,
     ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_artifact_model::{
     FunctionTypeParamIr, PackageRefIr, PackageTypeRef, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_compiler_core::type_ref::debug_text;
+use skiff_compiler_core::type_ref::{debug_text, is_null_type};
 
 use crate::{
     dependency_analysis::SourceDependencyAnalysisInput,
@@ -885,7 +885,7 @@ fn non_nullable_object_target(target: &ResolvedTypeRef) -> ResolvedTypeRef {
         TypeRefIr::Union { items } => {
             let non_null = items
                 .iter()
-                .filter(|item| !type_ir_is_null(item))
+                .filter(|item| !is_null_type(item))
                 .collect::<Vec<_>>();
             match non_null.as_slice() {
                 [only] => resolved_type_from_ir(only),
@@ -942,7 +942,7 @@ fn resolved_fields_from_ir(
 
 fn type_ir_is_nullable(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Nullable { .. })
-        || matches!(ty, TypeRefIr::Union { items } if items.iter().any(type_ir_is_null))
+        || matches!(ty, TypeRefIr::Union { items } if items.iter().any(is_null_type))
 }
 
 fn object_literal_record_fields<'a>(

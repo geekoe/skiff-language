@@ -482,8 +482,8 @@ fn exception_type_ir(error: TypeRefIr) -> TypeRefIr {
 /// Returns whether the type is the null type (builtin `"null"` or the null
 /// literal).
 ///
-/// Absorbs `is_null_type_ir` / `type_ir_is_null`
-/// (`type_resolution_model.rs` 6235 / `expression_type_model.rs` 5572).
+/// Absorbs the former private implementations `is_null_type_ir` and
+/// `type_ir_is_null` in `compiler/source`.
 pub fn is_null_type(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
         || matches!(

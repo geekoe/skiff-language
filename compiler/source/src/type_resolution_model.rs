@@ -10,7 +10,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
-    type_ref::{debug_text, normalize_union, substitute_type_params_in_type_ref_ref},
+    type_ref::{debug_text, is_null_type, normalize_union, substitute_type_params_in_type_ref_ref},
 };
 
 use crate::{
@@ -1819,7 +1819,7 @@ impl TypeResolutionModel {
 
     pub fn is_nullable(&self, ty: &ResolvedTypeRef) -> bool {
         matches!(ty.ir, TypeRefIr::Nullable { .. })
-            || matches!(&ty.ir, TypeRefIr::Union { items } if items.iter().any(is_null_type_ir))
+            || matches!(&ty.ir, TypeRefIr::Union { items } if items.iter().any(is_null_type))
     }
 
     pub fn contains_interface_type(
@@ -5862,14 +5862,14 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
     }
     match expected {
         TypeRefIr::Builtin { name, .. } if name == "unknown" => true,
-        TypeRefIr::Builtin { name, .. } if name == "void" => is_null_type_ir(actual),
-        TypeRefIr::Builtin { name, .. } if name == "Stream" => is_null_type_ir(actual),
+        TypeRefIr::Builtin { name, .. } if name == "void" => is_null_type(actual),
+        TypeRefIr::Builtin { name, .. } if name == "Stream" => is_null_type(actual),
         TypeRefIr::Builtin { name, .. } if name == "Json" => json_assignable(actual),
         TypeRefIr::Builtin { name, .. } if name == "JsonObject" => json_object_assignable(actual),
         TypeRefIr::Builtin { name, .. } if name == "number" => {
             matches!(actual, TypeRefIr::Builtin { name, .. } if name == "integer")
         }
-        TypeRefIr::Nullable { inner } => is_null_type_ir(actual) || type_assignable(actual, inner),
+        TypeRefIr::Nullable { inner } => is_null_type(actual) || type_assignable(actual, inner),
         TypeRefIr::Union { items } => items
             .iter()
             .any(|expected_item| type_assignable(actual, expected_item)),
@@ -6058,16 +6058,6 @@ fn json_object_assignable(actual: &TypeRefIr) -> bool {
         TypeRefIr::Record { fields } => fields.values().all(json_assignable),
         _ => false,
     }
-}
-
-fn is_null_type_ir(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
-        || matches!(
-            ty,
-            TypeRefIr::Literal {
-                value: LiteralIr::Null
-            }
-        )
 }
 
 fn is_self_type_ref(ty: &TypeRefIr) -> bool {

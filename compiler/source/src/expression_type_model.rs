@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
-    debug_text, normalize_union,
+    debug_text, is_null_type, normalize_union,
     substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir,
 };
 
@@ -5130,7 +5130,7 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
         TypeRefIr::Union { items } => {
             let remaining = items
                 .iter()
-                .filter(|item| !type_ir_is_null(item))
+                .filter(|item| !is_null_type(item))
                 .cloned()
                 .collect::<Vec<_>>();
             (remaining.len() != items.len()).then(|| {
@@ -5469,21 +5469,11 @@ fn literal_string_type(value: &str) -> TypeRefIr {
 
 fn type_ir_is_void_or_null(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && (name == "void" || name == "null"))
-        || type_ir_is_null(ty)
+        || is_null_type(ty)
 }
 
 fn type_ir_is_never(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && name == "never")
-}
-
-fn type_ir_is_null(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Builtin { name, .. } if name == "null")
-        || matches!(
-            ty,
-            TypeRefIr::Literal {
-                value: LiteralIr::Null
-            }
-        )
 }
 
 fn record_field_name_source_span(

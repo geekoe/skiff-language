@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::*;
 use skiff_artifact_model::{FunctionTypeParamIr, LiteralIr};
 use skiff_compiler_core::type_ref::{
-    debug_text, normalize_union, substitute_type_params_in_type_ref_ref,
+    debug_text, is_null_type, normalize_union, substitute_type_params_in_type_ref_ref,
 };
 
 #[derive(Clone, Copy)]
@@ -767,7 +767,7 @@ impl TypeResolutionModel {
                 self.json_object_assignable_in_context(actual, context)
             }
             TypeRefIr::Nullable { inner } => {
-                is_null_type_ir(actual) || self.contextual_assignable_ir(actual, inner, context)
+                is_null_type(actual) || self.contextual_assignable_ir(actual, inner, context)
             }
             TypeRefIr::Union { items } => items
                 .iter()
