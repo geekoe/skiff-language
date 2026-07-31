@@ -4,7 +4,7 @@ use skiff_artifact_model::{
     FileIrUnit, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef,
     ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_compiler_core::type_ref::contains_type_param;
+use skiff_compiler_core::type_ref::{contains_type_param, package_type_ref_to_ir_exact};
 
 use crate::package_artifact::{
     api_exports::PackageExportPublicInstanceInterface, model::PackageExportLinkProjectionInput,
@@ -252,39 +252,8 @@ fn public_interface_type_ref(
     } else {
         TypeRefIr::AppliedNominal {
             base: NominalTypeRefBaseIr::PackageSymbol { symbol },
-            arguments: arguments.iter().map(package_type_ref_to_ir).collect(),
+            arguments: arguments.iter().map(package_type_ref_to_ir_exact).collect(),
         }
-    }
-}
-
-fn package_type_ref_to_ir(ty: &PackageTypeRef) -> TypeRefIr {
-    match ty {
-        PackageTypeRef::Local { local_type } => local_type.clone(),
-        PackageTypeRef::PackageSchema {
-            package_id,
-            stable_schema_key,
-            package_schema_type_id,
-        } => TypeRefIr::PackageSchema {
-            package_id: package_id.clone(),
-            stable_schema_key: stable_schema_key.clone(),
-            package_schema_type_id: package_schema_type_id.clone(),
-        },
-        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
-            name: name.clone(),
-            args: arguments.iter().map(package_type_ref_to_ir).collect(),
-        },
-        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(package_type_ref_to_ir(inner)),
-        },
-        PackageTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => TypeRefIr::AnyInterface {
-            interface: skiff_artifact_identity::interface_instantiation_ref(
-                package_type_ref_to_ir(interface),
-                arguments.iter().map(package_type_ref_to_ir).collect(),
-            ),
-        },
     }
 }
 

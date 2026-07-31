@@ -1717,3 +1717,92 @@ fn map_entry_wrappers_lock_full_name_and_local_behavior() {
         "Local-wrapped map must keep returning None"
     );
 }
+
+#[test]
+fn package_type_ref_ir_wrapper_preserves_local_internal_schema_rewrite() {
+    let schema_ir = TypeRefIr::PackageSchema {
+        package_id: "example.types".to_string(),
+        stable_schema_key: "Payload".to_string(),
+        package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId::new("type:payload"),
+    };
+    let package_symbol = TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "example.types".to_string(),
+            },
+            symbol_path: "Payload".to_string(),
+            abi_expectation: None,
+        },
+    };
+    let local = |ty: TypeRefIr| PackageTypeRef::Local { local_type: ty };
+
+    // Top-level Local keeps the historical rewrite: PackageSchema -> PackageSymbol.
+    assert_eq!(
+        super::package_type_ref_ir(&local(schema_ir.clone())),
+        package_symbol
+    );
+
+    // Nested Local inside a Container is rewritten too; core folded alone keeps
+    // the Local subtree verbatim, so the wrapper must differ from it here.
+    let nested = PackageTypeRef::Container {
+        name: "Array".to_string(),
+        arguments: vec![local(schema_ir.clone())],
+    };
+    assert_eq!(
+        super::package_type_ref_ir(&nested),
+        TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![package_symbol.clone()],
+        }
+    );
+    assert_ne!(
+        super::package_type_ref_ir(&nested),
+        skiff_compiler_core::type_ref::package_type_ref_to_ir(&nested)
+    );
+
+    // Non-Local PackageSchema folds identically to core folded.
+    let direct_schema = PackageTypeRef::PackageSchema {
+        package_id: "example.types".to_string(),
+        stable_schema_key: "Payload".to_string(),
+        package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId::new("type:payload"),
+    };
+    assert_eq!(
+        super::package_type_ref_ir(&direct_schema),
+        skiff_compiler_core::type_ref::package_type_ref_to_ir(&direct_schema)
+    );
+
+    // Local without PackageSchema stays verbatim.
+    assert_eq!(
+        super::package_type_ref_ir(&local(TypeRefIr::builtin("string"))),
+        TypeRefIr::builtin("string")
+    );
+}
+
+#[test]
+fn package_type_ref_ir_rewrites_identity_inside_local_any_interface() {
+    let any = PackageTypeRef::AnyInterface {
+        interface: Box::new(PackageTypeRef::Local {
+            local_type: TypeRefIr::PackageSchema {
+                package_id: "example.interfaces".to_string(),
+                stable_schema_key: "Reader".to_string(),
+                package_schema_type_id: skiff_artifact_model::PackageSchemaTypeId::new(
+                    "type:reader",
+                ),
+            },
+        }),
+        arguments: Vec::new(),
+    };
+    let wrapper_ir = super::package_type_ref_ir(&any);
+    let folded_ir = skiff_compiler_core::type_ref::package_type_ref_to_ir(&any);
+    assert_ne!(
+        wrapper_ir, folded_ir,
+        "Local interface identity must be rewritten by the etm wrapper"
+    );
+    let TypeRefIr::AnyInterface { interface } = &wrapper_ir else {
+        panic!("expected AnyInterface");
+    };
+    assert!(matches!(
+        serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).unwrap(),
+        TypeRefIr::PackageSymbol { .. }
+    ));
+}

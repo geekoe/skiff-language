@@ -621,8 +621,7 @@ pub fn package_type_ref_to_ir(ty: &PackageTypeRef) -> TypeRefIr {
             arguments,
         } => TypeRefIr::AnyInterface {
             interface: InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&package_type_ref_to_ir(interface))
-                    .expect("PackageTypeRef interface identity must serialize"),
+                interface_abi_id: canonical_json_key(&package_type_ref_to_ir(interface)),
                 canonical_type_args: arguments.iter().map(package_type_ref_to_ir).collect(),
             },
         },
@@ -708,8 +707,7 @@ pub fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr {
             arguments,
         } => TypeRefIr::AnyInterface {
             interface: InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir(interface))
-                    .expect("ContractTypeRef interface identity must serialize"),
+                interface_abi_id: canonical_json_key(&contract_type_ref_to_ir(interface)),
                 canonical_type_args: arguments.iter().map(contract_type_ref_to_ir).collect(),
             },
         },

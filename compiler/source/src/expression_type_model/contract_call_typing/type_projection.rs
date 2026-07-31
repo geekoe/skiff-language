@@ -1,7 +1,8 @@
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    ContractTypeRef, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef, PackageTypeRef,
-    TypeRefIr,
+    ContractTypeRef, PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
+use skiff_compiler_core::type_ref::{contract_type_ref_to_ir, package_type_ref_to_ir};
 
 pub(super) use crate::contract_type_resolution::package_type_contains_contract;
 
@@ -45,7 +46,7 @@ impl<'a, 'ctx> ContractCallTypeProjection<'a, 'ctx> {
         &self,
         ty: &ResolvedTypeRef,
     ) -> Result<PackageTypeRef, String> {
-        package_type_ref_from_resolved_ir(&ty.ir, self.dependency_analysis)
+        crate::type_projection::package_type_ref_from_ir(&ty.ir, self.dependency_analysis)
     }
 }
 
@@ -115,88 +116,6 @@ pub(crate) fn contract_source_assignability_with_projections(
     )
 }
 
-fn package_type_ref_from_resolved_ir(
-    ty: &TypeRefIr,
-    dependency_analysis: &SourceDependencyAnalysisInput,
-) -> Result<PackageTypeRef, String> {
-    match ty {
-        TypeRefIr::Builtin { name, args } => Ok(PackageTypeRef::Container {
-            name: name.clone(),
-            arguments: args
-                .iter()
-                .map(|argument| {
-                    package_type_ref_from_resolved_ir(argument, dependency_analysis)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        }),
-        TypeRefIr::Nullable { inner } => Ok(PackageTypeRef::Nullable {
-            inner: Box::new(package_type_ref_from_resolved_ir(
-                inner,
-                dependency_analysis,
-            )?),
-        }),
-        TypeRefIr::AnyInterface { interface } => Ok(PackageTypeRef::AnyInterface {
-            interface: Box::new(package_type_ref_from_resolved_ir(
-                &serde_json::from_str(&interface.interface_abi_id).map_err(|error| {
-                    format!("invalid canonical interface identity: {error}")
-                })?,
-                dependency_analysis,
-            )?),
-            arguments: interface
-                .canonical_type_args
-                .iter()
-                .map(|argument| {
-                    package_type_ref_from_resolved_ir(argument, dependency_analysis)
-                })
-                .collect::<Result<_, _>>()?,
-        }),
-        TypeRefIr::ServiceSymbol { symbol } if dependency_analysis
-            .contract_requirement(&symbol.module_path)
-            .is_ok() => {
-            let record = dependency_analysis
-                .public_package_type_by_stable_key(
-                    &symbol.module_path,
-                    &symbol.symbol,
-                )
-                .map_err(|error| error.to_string())?;
-            Ok(PackageTypeRef::PackageSchema {
-                package_id: record.package_id.clone(),
-                stable_schema_key: record.stable_schema_key.clone(),
-                package_schema_type_id: record.package_schema_type_id.clone(),
-            })
-        }
-        TypeRefIr::PackageSymbol { symbol } => {
-            let record = match &symbol.package {
-                PackageRefIr::PackageId { package_id } => dependency_analysis
-                    .package_type_by_owner_and_stable_key(package_id, &symbol.symbol_path),
-                PackageRefIr::Dependency { dependency_ref } => dependency_analysis
-                    .direct_package_type(dependency_ref, &symbol.symbol_path),
-            };
-            let Some(record) = record else {
-                return Ok(PackageTypeRef::Local {
-                    local_type: ty.clone(),
-                });
-            };
-            Ok(PackageTypeRef::PackageSchema {
-                package_id: record.package_id.clone(),
-                stable_schema_key: record.stable_schema_key.clone(),
-                package_schema_type_id: record.package_schema_type_id.clone(),
-            })
-        }
-        TypeRefIr::Record { .. }
-        | TypeRefIr::Union { .. }
-        | TypeRefIr::Function { .. }
-            if resolved_ir_contains_contract_symbol(ty, dependency_analysis) =>
-        {
-            Err("resolved inline type embeds a contract nominal but has no exact PackageTypeRef representation"
-                .to_string())
-        }
-        _ => Ok(PackageTypeRef::Local {
-            local_type: ty.clone(),
-        }),
-    }
-}
-
 pub fn package_type_ref_from_contract_type(ty: &ContractTypeRef) -> PackageTypeRef {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => PackageTypeRef::Container {
@@ -255,140 +174,6 @@ pub fn package_type_ref_from_contract_type(ty: &ContractTypeRef) -> PackageTypeR
                 },
             },
         },
-    }
-}
-
-fn contract_type_ref_to_ir(ty: &ContractTypeRef) -> TypeRefIr {
-    match package_type_ref_from_contract_type(ty) {
-        PackageTypeRef::Local { local_type } => local_type,
-        PackageTypeRef::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: PackageRefIr::PackageId { package_id },
-                symbol_path: stable_schema_key,
-                abi_expectation: None,
-            },
-        },
-        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
-            name,
-            args: arguments
-                .iter()
-                .map(|argument| contract_type_ref_to_ir_from_package(argument.clone()))
-                .collect(),
-        },
-        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(contract_type_ref_to_ir_from_package(*inner)),
-        },
-        PackageTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => TypeRefIr::AnyInterface {
-            interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir_from_package(
-                    *interface,
-                ))
-                .expect("PackageTypeRef interface identity must serialize"),
-                canonical_type_args: arguments
-                    .into_iter()
-                    .map(contract_type_ref_to_ir_from_package)
-                    .collect(),
-            },
-        },
-    }
-}
-
-fn contract_type_ref_to_ir_from_package(ty: PackageTypeRef) -> TypeRefIr {
-    match ty {
-        PackageTypeRef::Local { local_type } => local_type,
-        PackageTypeRef::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: PackageRefIr::PackageId { package_id },
-                symbol_path: stable_schema_key,
-                abi_expectation: None,
-            },
-        },
-        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
-            name,
-            args: arguments
-                .into_iter()
-                .map(contract_type_ref_to_ir_from_package)
-                .collect(),
-        },
-        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(contract_type_ref_to_ir_from_package(*inner)),
-        },
-        PackageTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => TypeRefIr::AnyInterface {
-            interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: serde_json::to_string(&contract_type_ref_to_ir_from_package(
-                    *interface,
-                ))
-                .expect("PackageTypeRef interface identity must serialize"),
-                canonical_type_args: arguments
-                    .into_iter()
-                    .map(contract_type_ref_to_ir_from_package)
-                    .collect(),
-            },
-        },
-    }
-}
-
-fn resolved_ir_contains_contract_symbol(
-    ty: &TypeRefIr,
-    dependency_analysis: &SourceDependencyAnalysisInput,
-) -> bool {
-    match ty {
-        TypeRefIr::ServiceSymbol { symbol } => dependency_analysis
-            .contract_requirement(&symbol.module_path)
-            .is_ok(),
-        TypeRefIr::AppliedNominal { base, arguments } => {
-            matches!(
-                base,
-                NominalTypeRefBaseIr::ServiceSymbol { symbol }
-                    if dependency_analysis
-                        .contract_requirement(&symbol.module_path)
-                        .is_ok()
-            ) || arguments
-                .iter()
-                .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis))
-        }
-        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => args
-            .iter()
-            .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis)),
-        TypeRefIr::Record { fields } => fields
-            .values()
-            .any(|field| resolved_ir_contains_contract_symbol(field, dependency_analysis)),
-        TypeRefIr::Nullable { inner } => {
-            resolved_ir_contains_contract_symbol(inner, dependency_analysis)
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params.iter().any(|parameter| {
-                resolved_ir_contains_contract_symbol(&parameter.ty, dependency_analysis)
-            }) || resolved_ir_contains_contract_symbol(return_type, dependency_analysis)
-        }
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis)),
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. } => false,
     }
 }
 
@@ -470,14 +255,18 @@ pub(crate) fn package_type_target_assignable(
         return true;
     }
     if let PackageTypeRef::Local { local_type } = actual {
-        if let Ok(projected) = package_type_ref_from_resolved_ir(local_type, dependency_analysis) {
+        if let Ok(projected) =
+            crate::type_projection::package_type_ref_from_ir(local_type, dependency_analysis)
+        {
             if &projected != actual {
                 return package_type_target_assignable(&projected, expected, dependency_analysis);
             }
         }
     }
     if let PackageTypeRef::Local { local_type } = expected {
-        if let Ok(projected) = package_type_ref_from_resolved_ir(local_type, dependency_analysis) {
+        if let Ok(projected) =
+            crate::type_projection::package_type_ref_from_ir(local_type, dependency_analysis)
+        {
             if &projected != expected {
                 return package_type_target_assignable(actual, &projected, dependency_analysis);
             }
@@ -565,7 +354,7 @@ pub(crate) fn package_type_target_assignable(
                 args: arguments
                     .iter()
                     .cloned()
-                    .map(contract_type_ref_to_ir_from_package)
+                    .map(|argument| package_type_ref_to_ir(&argument))
                     .collect(),
             },
         ),
@@ -930,8 +719,7 @@ pub(super) fn resolved_contract_type(
                 source_text: format!("any {}", interface.source_text),
                 ir: TypeRefIr::AnyInterface {
                     interface: skiff_artifact_model::InterfaceInstantiationRef {
-                        interface_abi_id: serde_json::to_string(&interface.ir)
-                            .map_err(|error| error.to_string())?,
+                        interface_abi_id: type_ref_abi_key(&interface.ir),
                         canonical_type_args: arguments
                             .iter()
                             .map(|argument| {

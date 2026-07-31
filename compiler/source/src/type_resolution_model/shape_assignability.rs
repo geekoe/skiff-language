@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{FunctionTypeParamIr, LiteralIr};
 use skiff_compiler_core::type_ref::{
     debug_text, is_null_type, normalize_union, substitute_type_params_in_type_ref_ref,
@@ -1122,11 +1123,7 @@ impl TypeResolutionModel {
                 let identity = recurse(&identity)?;
                 Ok(TypeRefIr::AnyInterface {
                     interface: InterfaceInstantiationRef {
-                        interface_abi_id: serde_json::to_string(&identity).map_err(|error| {
-                            format!(
-                                "dependency `{dependency_ref}` package `{package_id}` cannot encode any-interface identity: {error}"
-                            )
-                        })?,
+                        interface_abi_id: type_ref_abi_key(&identity),
                         canonical_type_args: interface
                             .canonical_type_args
                             .iter()
@@ -1846,7 +1843,7 @@ fn bind_package_type_ir_to_dependency(
         TypeRefIr::AnyInterface { interface } => {
             let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
                 .map(|identity| bind(&identity))
-                .and_then(|identity| serde_json::to_string(&identity))
+                .map(|identity| type_ref_abi_key(&identity))
                 .unwrap_or_else(|_| interface.interface_abi_id.clone());
             TypeRefIr::AnyInterface {
                 interface: InterfaceInstantiationRef {

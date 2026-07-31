@@ -39,6 +39,7 @@ pub mod source_identity;
 pub mod source_name_resolution;
 pub(crate) mod source_rules;
 mod test_rules;
+pub(crate) mod type_projection;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
 
