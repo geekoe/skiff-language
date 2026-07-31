@@ -5207,38 +5207,12 @@ fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
 }
 
 fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {
-    match ty {
-        PackageTypeRef::Local { local_type } => ordinary_package_local_type_ir(local_type),
-        PackageTypeRef::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: PackageRefIr::PackageId {
-                    package_id: package_id.clone(),
-                },
-                symbol_path: stable_schema_key.clone(),
-                abi_expectation: None,
-            },
-        },
-        PackageTypeRef::Container { name, arguments } => TypeRefIr::Builtin {
-            name: name.clone(),
-            args: arguments.iter().map(package_type_ref_ir).collect(),
-        },
-        PackageTypeRef::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(package_type_ref_ir(inner)),
-        },
-        PackageTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => TypeRefIr::AnyInterface {
-            interface: skiff_artifact_model::InterfaceInstantiationRef {
-                interface_abi_id: type_ref_abi_key(&package_type_ref_ir(interface)),
-                canonical_type_args: arguments.iter().map(package_type_ref_ir).collect(),
-            },
-        },
-    }
+    // Core folded projection keeps `Local` internals verbatim; the only
+    // remaining `PackageSchema` nodes in its output are inside `Local`
+    // subtrees, so the preserved `ordinary_package_local_type_ir` rewrite
+    // reproduces the historical etm behavior (Local-internal PackageSchema
+    // collapsed to PackageSymbol) without reimplementing the projection.
+    ordinary_package_local_type_ir(&package_type_ref_to_ir(ty))
 }
 
 fn ordinary_package_local_type_ir(ty: &TypeRefIr) -> TypeRefIr {

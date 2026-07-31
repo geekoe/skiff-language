@@ -1,4 +1,5 @@
-use skiff_artifact_model::PackageSchemaTypeId;
+use skiff_artifact_identity::type_ref_abi_key;
+use skiff_artifact_model::{PackageRefIr, PackageSchemaTypeId, PackageSymbolRef};
 
 use super::*;
 
