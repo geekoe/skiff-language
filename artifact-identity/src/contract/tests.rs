@@ -461,3 +461,4 @@ fn set_plan_lifetime(plan: &mut BoundaryValuePlan, value: BoundaryValueLifetime)
     };
     *lifetime = value;
 }
+mod suspension;

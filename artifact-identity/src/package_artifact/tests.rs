@@ -1902,3 +1902,4 @@ fn package_symbol(symbol_path: &str) -> PackageSymbolRef {
         abi_expectation: Some("model-abi".to_string()),
     }
 }
+mod public_instance;

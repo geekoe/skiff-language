@@ -9,9 +9,6 @@ use crate::program::{
     linked::*,
 };
 
-#[cfg(test)]
-mod timeout_execution_tests;
-
 pub(crate) fn linked_file_unit_from_assembly_artifact(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,

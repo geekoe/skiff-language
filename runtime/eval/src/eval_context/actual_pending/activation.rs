@@ -3,10 +3,6 @@ use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 
 use super::*;
 
-#[cfg(test)]
-#[path = "activation_tests.rs"]
-mod activation_tests;
-
 impl EvalContext<'_> {
     pub(in crate::eval_context) async fn eval_activation_relative_service_call(
         &mut self,
@@ -52,3 +48,6 @@ impl EvalContext<'_> {
         completed.finalize(self).map(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use skiff_runtime_model::request_heap::RequestHeap;
 
-use super::{
+use super::super::{
     concurrent_scheduler::run_concurrent_scheduler, concurrent_scheduler_test_support::*,
     LaneCompletion,
 };

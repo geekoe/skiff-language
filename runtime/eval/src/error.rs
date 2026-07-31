@@ -128,9 +128,6 @@ pub enum RuntimeError {
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
 
-#[cfg(test)]
-mod scope_terminal_tests;
-
 impl From<skiff_runtime_model::error::RuntimeModelError> for RuntimeError {
     fn from(error: skiff_runtime_model::error::RuntimeModelError) -> Self {
         match error {

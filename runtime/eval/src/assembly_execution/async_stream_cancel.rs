@@ -68,12 +68,6 @@ mod current_scope;
 
 static PROVIDER_STREAM_TASKS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(test)]
-#[path = "async_stream_cancel/current_scope_tests.rs"]
-mod current_scope_tests;
-#[cfg(test)]
-mod prepared_unary_tests;
-
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn provider_stream_tasks_active_for_test() -> usize {
     PROVIDER_STREAM_TASKS_ACTIVE.load(Ordering::Acquire)

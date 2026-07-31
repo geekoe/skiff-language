@@ -20,8 +20,6 @@ use crate::{
 };
 
 mod normalization;
-#[cfg(test)]
-mod suspension_tests;
 
 pub use normalization::{normalize_contract_operation_contract, normalize_contract_type_shape};
 

@@ -16,15 +16,7 @@ mod lane_state;
 mod slot_store;
 
 #[cfg(test)]
-mod concurrent_scheduler_control_tests;
-#[cfg(test)]
-mod concurrent_scheduler_plan_tests;
-#[cfg(test)]
-mod concurrent_scheduler_terminal_tests;
-#[cfg(test)]
 mod concurrent_scheduler_test_support;
-#[cfg(test)]
-mod concurrent_scheduler_tests;
 
 #[allow(unused_imports)]
 pub(crate) use concurrent_plan::{
@@ -252,3 +244,6 @@ pub fn check_cancelled(execution: &ExecutionControl<'_>, env: &Env) -> Result<()
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

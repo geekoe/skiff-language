@@ -2296,3 +2296,5 @@ fn package_call_target_alias_must_match_callee_root() {
     assert!(message.contains("typed package target names dependency `other`"));
     assert!(message.contains("callee root is `utils`"));
 }
+mod interface_execution;
+mod object_materialization;

@@ -526,3 +526,6 @@ fn outbound_request_registry_error_payload_is_internal_and_not_catchable() {
     );
     assert_eq!(duplicate.catch_projection(), None);
 }
+mod cancellation_terminal;
+mod connection_request;
+mod scoped_execution;

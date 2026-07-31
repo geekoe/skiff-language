@@ -4,9 +4,6 @@ mod linker;
 pub mod program;
 pub mod resolver;
 
-#[cfg(test)]
-mod actor_dispatch_linking_tests;
-
 pub use assembly::{
     link_runtime_assembly, AssemblyLinkedCandidate, AssemblyServiceCallError,
     LinkedActivationTemplate, LinkedContractOperation, LinkedGatewayCallable, LinkedGatewayEntry,
@@ -55,3 +52,6 @@ pub fn link_package_fixture_from_runtime_assembly(
     );
     crate::assembly_execution::link_assembly_execution_image(shared)
 }
+
+#[cfg(test)]
+mod tests;

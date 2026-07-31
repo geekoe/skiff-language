@@ -21,10 +21,6 @@ use crate::{
 mod prepared_operation;
 pub(crate) use prepared_operation::PreparedActorMethodInvocation;
 
-#[cfg(test)]
-#[path = "actor_dispatch/prepared_operation_tests.rs"]
-mod prepared_operation_tests;
-
 pub(crate) async fn dispatch_actor_method(
     context: &mut EvalContext<'_>,
     plan: &LinkedActorMethodDispatchPlan,

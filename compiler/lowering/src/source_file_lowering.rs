@@ -819,10 +819,4 @@ fn unsupported(message: impl Into<String>) -> CompileError {
 }
 
 #[cfg(test)]
-mod interface_execution_tests;
-
-#[cfg(test)]
-mod object_materialization_tests;
-
-#[cfg(test)]
 mod tests;

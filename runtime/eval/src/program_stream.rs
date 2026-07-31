@@ -52,13 +52,6 @@ use crate::{
 
 mod current_scope;
 
-#[cfg(test)]
-#[path = "program_stream/current_scope_tests.rs"]
-mod current_scope_tests;
-#[cfg(test)]
-#[path = "program_stream/supervised_executable_tests.rs"]
-mod supervised_executable_tests;
-
 impl Interpreter {
     #[allow(clippy::too_many_arguments)]
     pub async fn exec_program_stream_for_in(
@@ -1279,3 +1272,6 @@ mod prepared_stream_drain_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

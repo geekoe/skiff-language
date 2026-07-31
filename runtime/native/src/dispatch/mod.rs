@@ -33,6 +33,4 @@ pub use prepared::{
 };
 
 #[cfg(test)]
-mod prepared_tests;
-#[cfg(test)]
 mod tests;

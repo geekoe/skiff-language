@@ -19,9 +19,6 @@ mod implementation_links;
 mod projection;
 mod validation;
 
-#[cfg(test)]
-mod public_instance_tests;
-
 /// Opaque, process-local admission for one exact immutable PackageArtifact.
 ///
 /// The token owns both the typed artifact and its canonical bytes. Its fields

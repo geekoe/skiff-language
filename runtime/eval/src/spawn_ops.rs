@@ -1194,10 +1194,6 @@ mod recoverable_spawn_payload_tests {
 }
 
 #[cfg(test)]
-#[path = "spawn_ops/canonical_tests.rs"]
-mod canonical_tests;
-
-#[cfg(test)]
 mod legacy_spawn_tests {
     use std::{collections::HashMap, sync::Arc};
 
@@ -1247,3 +1243,6 @@ mod legacy_spawn_tests {
         assert_eq!(target, "package.example%2Ecom%2Fagent.runDrain");
     }
 }
+
+#[cfg(test)]
+mod tests;

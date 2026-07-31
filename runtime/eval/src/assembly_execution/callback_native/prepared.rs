@@ -287,5 +287,4 @@ fn prepare_owner_arguments(
 }
 
 #[cfg(test)]
-#[path = "prepared_state_tests.rs"]
-mod prepared_state_tests;
+mod tests;

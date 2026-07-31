@@ -187,3 +187,4 @@ fn representation_wrap_type_visitor_reaches_all_nested_arguments() {
     assert_eq!(visited[1], nested_argument);
     assert_eq!(visited[2], TypeRefIr::builtin("string"));
 }
+mod timeout_execution;

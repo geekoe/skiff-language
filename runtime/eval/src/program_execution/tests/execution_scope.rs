@@ -43,7 +43,7 @@ use skiff_runtime_native::capability::{
 use skiff_runtime_native::dispatch::{NativeDispatch, PreparedNativeCall, RuntimeNativeInvocation};
 use skiff_runtime_native_contract::{NativeBindingKey, NativeCallPlan, NativeRequiredContext};
 
-use super::{
+use super::super::{
     execution_scope::{
         deadline_after_duration_ms, EvalMonotonicClock, ExecutionCheckpoint,
         ExecutionCheckpointKind, ExecutionClock,

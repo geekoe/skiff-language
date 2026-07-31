@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
 
-use super::{
+use super::super::{
     concurrent_scheduler::run_concurrent_scheduler, concurrent_scheduler_test_support::*,
     LaneCompletion,
 };

@@ -1055,12 +1055,6 @@ mod applied_nominal_tests {
     }
 }
 
-#[cfg(test)]
-mod legacy_builtin_tests;
-
-#[cfg(test)]
-mod representation_wrap_tests;
-
 impl SourceMapDto {
     pub fn empty() -> Self {
         Self {
@@ -1070,3 +1064,6 @@ impl SourceMapDto {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

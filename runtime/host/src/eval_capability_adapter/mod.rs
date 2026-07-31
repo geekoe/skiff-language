@@ -43,8 +43,6 @@ mod actor;
 mod actor_method_adapter;
 mod assembly_execution_context;
 mod assembly_request_adapter;
-#[cfg(test)]
-mod carrier_delivery_tests;
 mod config;
 mod downcast;
 mod effects;
@@ -100,3 +98,6 @@ pub use factory::{
 };
 pub use request_contexts::effect_dispatch_context_from_request;
 pub use websocket::RuntimeOwnedWebsocketParts;
+
+#[cfg(test)]
+mod tests;

@@ -16,8 +16,8 @@ use skiff_runtime_model::value::{
     RuntimeObject, RuntimeObjectFields, RuntimeValue,
 };
 
-use super::service_linkable::*;
 use crate::request_heap::{RequestHeap, RequestHeapLimits};
+use crate::service_linkable::*;
 
 fn detached_plan(owner: BoundaryValueOwner, lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
     BoundaryValuePlan::Linkable {

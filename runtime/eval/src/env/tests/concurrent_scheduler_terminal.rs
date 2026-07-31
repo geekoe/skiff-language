@@ -20,7 +20,7 @@ use skiff_runtime_model::{
     },
 };
 
-use super::{
+use super::super::{
     concurrent_scheduler::{run_concurrent_scheduler, ConcurrentSchedulerResult},
     concurrent_scheduler_test_support::*,
     ConcurrentPlan, ConcurrentPlanKind, LaneCompletion, LaneEvaluation, LaneExecutionState,

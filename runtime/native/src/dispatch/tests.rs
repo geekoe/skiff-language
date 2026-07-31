@@ -1,3 +1,4 @@
+pub(crate) use super::*;
 use std::collections::BTreeSet;
 
 use serde_json::json;
@@ -290,3 +291,4 @@ fn http_stream_start_status_accepts_only_integer_100_through_599() {
     .expect_err("non-number status must fail");
     assert!(wrong.to_string().contains("status must be an integer"));
 }
+mod prepared;

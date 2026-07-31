@@ -39,8 +39,6 @@ pub mod source_identity;
 pub mod source_name_resolution;
 pub(crate) mod source_rules;
 mod test_rules;
-#[cfg(test)]
-mod timeout_source_semantics_tests;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
 

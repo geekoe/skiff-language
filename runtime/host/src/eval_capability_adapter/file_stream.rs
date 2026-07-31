@@ -684,10 +684,6 @@ impl capability_contract::StreamSinkApi for RuntimeStreamSink {
     }
 }
 
-#[cfg(test)]
-#[path = "file_stream_tests.rs"]
-mod file_stream_tests;
-
 #[derive(Debug)]
 pub(super) struct RuntimeStreamCancelSignal(pub(super) concrete::StreamCancelSignal);
 
@@ -696,3 +692,6 @@ impl capability_contract::StreamCancelSignalApi for RuntimeStreamCancelSignal {
         Box::pin(async move { self.0.wait_cancelled().await })
     }
 }
+
+#[cfg(test)]
+mod tests;

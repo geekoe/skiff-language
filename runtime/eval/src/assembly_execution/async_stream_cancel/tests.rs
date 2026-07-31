@@ -1119,3 +1119,5 @@ pub(super) fn activation(service: &str, package_build: &str) -> Arc<ActivationCo
     )
     .unwrap()
 }
+mod current_scope;
+mod prepared_unary;

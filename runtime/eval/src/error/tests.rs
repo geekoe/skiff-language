@@ -600,3 +600,4 @@ fn capability_context_errors_preserve_concrete_variants_payload_and_catch_projec
     assert_eq!(error.ordinary_payload(), Some(expected_payload));
     assert_eq!(error.ordinary_catch_projection(), expected_catch_projection);
 }
+mod scope_terminal;

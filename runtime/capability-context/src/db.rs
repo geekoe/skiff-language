@@ -21,7 +21,7 @@ pub use prepared_runtime::{
 };
 
 #[cfg(test)]
-mod prepared_runtime_tests;
+mod tests;
 
 macro_rules! db_wire_newtype {
     ($name:ident) => {

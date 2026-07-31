@@ -48,8 +48,6 @@ use crate::assembly_execution::{RuntimeAssemblyExecutionProjection, RuntimeExecu
 use crate::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
 
 mod execution_scope;
-#[cfg(test)]
-mod execution_scope_tests;
 mod tail_call;
 
 #[allow(unused_imports)]
@@ -1741,3 +1739,6 @@ impl Interpreter {
         attach_source_frame(error, source_id, frame)
     }
 }
+
+#[cfg(test)]
+mod tests;

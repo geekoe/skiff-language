@@ -7,7 +7,7 @@ use skiff_artifact_model::{
     ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr,
 };
 
-use super::super::{assign_package_artifact_identities, tests::two_callable_fixture};
+use super::super::{assign_package_artifact_identities, two_callable_fixture};
 
 pub(super) fn public_instance_fixture() -> PackageArtifact {
     let mut artifact = two_callable_fixture();

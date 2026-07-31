@@ -1614,8 +1614,4 @@ mod recoverable_spawn_payload_tests {
 }
 
 #[cfg(test)]
-mod stream_cleanup_tests;
-
-#[cfg(test)]
-#[path = "program_invocation/current_scope_tests.rs"]
-mod current_scope_tests;
+mod tests;

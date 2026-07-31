@@ -27,8 +27,6 @@ use crate::{
     EvalRuntimeProgram,
 };
 use sha2::{Digest, Sha256};
-
-#[path = "tests/actor_concurrent_continuation_tests.rs"]
 mod actor_concurrent_continuation;
 
 const FILE_ID: &str = "file:actor-executor";

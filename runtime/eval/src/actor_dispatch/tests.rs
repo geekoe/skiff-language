@@ -20,3 +20,4 @@ fn actor_cancel_is_terminal_while_actor_deadline_is_timeout() {
         Some(PlatformBuiltinErrorIdentity::Timeout.catch_identity())
     );
 }
+mod prepared_operation;

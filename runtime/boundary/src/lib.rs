@@ -27,8 +27,4 @@ pub use service_value_plan::{DecodedSelectedServiceValue, ServiceValueSelection}
 pub use skiff_runtime_model::{request_heap, runtime_value, runtime_value_graph};
 
 #[cfg(test)]
-mod callback_materialization_tests;
-#[cfg(test)]
-mod service_linkable_tests;
-#[cfg(test)]
-mod service_value_plan_tests;
+mod tests;

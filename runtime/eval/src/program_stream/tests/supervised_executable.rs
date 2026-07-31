@@ -25,18 +25,18 @@ use skiff_runtime_model::{
     type_plan::RuntimeTypePlan,
 };
 
-use super::super::{
-    assembly_execution::RuntimeExecutionProjection,
-    capabilities::{StreamPoll, StreamRuntime},
-    env::Env,
-    program_execution::{ProgramExecutionContext, ProgramExecutionInput},
-    EvalRuntimeProgram, Interpreter,
-};
 use super::{PreparedNativeStreamProducer, StreamProducerCall};
 use crate::error::{unwrap_diagnostic_source_context, RuntimeError};
 use crate::{
     actor_executor_test_runtime as test_runtime, capabilities::TimeCapabilityContext,
     runtime_ops::runtime_to_wire,
+};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection,
+    capabilities::{StreamPoll, StreamRuntime},
+    env::Env,
+    program_execution::{ProgramExecutionContext, ProgramExecutionInput},
+    EvalRuntimeProgram, Interpreter,
 };
 
 #[test]

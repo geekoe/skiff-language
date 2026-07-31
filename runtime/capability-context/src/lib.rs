@@ -20,13 +20,6 @@ mod telemetry;
 mod time;
 mod websocket;
 
-#[cfg(test)]
-mod cancellation_terminal_tests;
-#[cfg(test)]
-mod connection_request_tests;
-#[cfg(test)]
-mod scoped_execution_tests;
-
 pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
 };
