@@ -732,6 +732,59 @@ async fn run_explicit_illegal_flow_case() {
 async fn tail_call_negative_db_transaction() {
     let state = FakeDbState::new();
     state.begin.push_ready(Ok(()));
+    state.commit.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let exact_call_expression = fixture
+        .linked
+        .executable()
+        .body
+        .expressions
+        .iter()
+        .position(|expression| {
+            matches!(
+                expression,
+                LinkedExprIr::Call { call } if call == &fixture.linked.exact_local_call
+            )
+        })
+        .expect("shared fixture exact local call expression");
+    let mut transaction = fixture.linked.explicit_transaction.clone();
+    transaction.result = Some(ExprRefIr {
+        expression: u32::try_from(exact_call_expression).expect("exact local call expression"),
+    });
+    let mut env = Env::new();
+    let value = fixture
+        .linked
+        .interpreter
+        .eval_program_explicit_db_transaction(
+            fixture.context(frame.clone()),
+            &mut heap,
+            &mut env,
+            &fixture.linked.addr,
+            &fixture.linked.file,
+            fixture.linked.executable(),
+            &transaction,
+        )
+        .await
+        .expect("transaction result exact call must return through Commit");
+
+    assert!(
+        matches!(value.value(), RuntimeValue::Heap(_)),
+        "the exact local call must materialize its structured array result"
+    );
+    assert_heap_retained_body(&heap, checkpoint, "exact local call commit");
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Commit, PhaseExpectation::Ready),
+        ],
+    );
+    assert_actor_segment_held_then_finish(&fixture, &frame, heap).await;
+
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
     let abort_gate = state.abort.push_pending(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
     let (frame, mut heap) = fixture.actor.execution_frame().await;
