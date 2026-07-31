@@ -27,7 +27,7 @@ use crate::{
         InterfaceSemantics, SemanticPublication, SemanticSource,
     },
     shared::{
-        ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
+        ast::{AliasDecl, FunctionDecl, InterfaceOperation, Param, SourceFile, TypeDecl, TypeRef},
         id::SKIFF_STD_PUBLICATION_ID,
         package_interface_methods::{
             instantiate_interface_method_signatures, normalize_package_interface_method_signatures,
@@ -5629,11 +5629,14 @@ fn package_callable_resolution(
         })
 }
 
-fn operation_callable_resolution(
+fn callable_resolution_from_parts(
     module_path: &str,
     source_symbol: &str,
-    operation: &InterfaceOperation,
     inherited_type_params: &[String],
+    decl_type_params: &[String],
+    implicit_self: Option<&TypeRef>,
+    params: &[Param],
+    return_type: &TypeRef,
     local_type_names: &BTreeSet<String>,
 ) -> PackageCallableResolution {
     PackageCallableResolution {
@@ -5641,17 +5644,16 @@ fn operation_callable_resolution(
         source_symbol: source_symbol.to_string(),
         type_params: inherited_type_params
             .iter()
-            .chain(&operation.type_params)
+            .chain(decl_type_params)
             .cloned()
             .collect(),
         local_type_names: local_type_names.clone(),
-        params: operation
-            .implicit_self
-            .iter()
-            .chain(operation.params.iter().map(|param| &param.ty))
+        params: implicit_self
+            .into_iter()
+            .chain(params.iter().map(|param| &param.ty))
             .map(|ty| ty.name.clone())
             .collect(),
-        return_type: operation.return_type.name.clone(),
+        return_type: return_type.name.clone(),
         exact_signature: None,
     }
 }
@@ -5663,24 +5665,35 @@ fn function_callable_resolution(
     inherited_type_params: &[String],
     local_type_names: &BTreeSet<String>,
 ) -> PackageCallableResolution {
-    PackageCallableResolution {
-        module_path: module_path.to_string(),
-        source_symbol: source_symbol.to_string(),
-        type_params: inherited_type_params
-            .iter()
-            .chain(&function.type_params)
-            .cloned()
-            .collect(),
-        local_type_names: local_type_names.clone(),
-        params: function
-            .implicit_self
-            .iter()
-            .chain(function.params.iter().map(|param| &param.ty))
-            .map(|ty| ty.name.clone())
-            .collect(),
-        return_type: function.return_type.name.clone(),
-        exact_signature: None,
-    }
+    callable_resolution_from_parts(
+        module_path,
+        source_symbol,
+        inherited_type_params,
+        &function.type_params,
+        function.implicit_self.as_ref(),
+        &function.params,
+        &function.return_type,
+        local_type_names,
+    )
+}
+
+fn operation_callable_resolution(
+    module_path: &str,
+    source_symbol: &str,
+    operation: &InterfaceOperation,
+    inherited_type_params: &[String],
+    local_type_names: &BTreeSet<String>,
+) -> PackageCallableResolution {
+    callable_resolution_from_parts(
+        module_path,
+        source_symbol,
+        inherited_type_params,
+        &operation.type_params,
+        operation.implicit_self.as_ref(),
+        &operation.params,
+        &operation.return_type,
+        local_type_names,
+    )
 }
 
 fn impl_target_matches(target: &str, module_path: &str, local_target: &str) -> bool {

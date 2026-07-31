@@ -16,7 +16,7 @@ use crate::{
     semantic::impl_method_declaration_name,
     shared::ast::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
-        Expr, ForBinding, FunctionDecl, Literal, SourceFile, Stmt, TypeRef, UnaryOp,
+        Expr, ForBinding, FunctionDecl, Literal, Param, SourceFile, Stmt, TypeRef, UnaryOp,
     },
     shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
@@ -4692,27 +4692,28 @@ fn callable_signatures(
     signatures
 }
 
-fn insert_function_signature(
+fn insert_callable_signature_from_parts(
     signatures: &mut BTreeMap<String, CallableSignature>,
     module_path: &str,
     declaration_name: &str,
-    function: &FunctionDecl,
     inherited_type_params: &[String],
+    decl_type_params: &[String],
+    params: &[Param],
+    return_type: &TypeRef,
 ) {
     let signature = CallableSignature {
         module_path: module_path.to_string(),
         declaration_name: declaration_name.to_string(),
-        params: function
-            .params
+        params: params
             .iter()
             .map(|param| CallableParam {
                 ty: param.ty.clone(),
             })
             .collect(),
-        return_type: function.return_type.clone(),
+        return_type: return_type.clone(),
         type_params: inherited_type_params
             .iter()
-            .chain(&function.type_params)
+            .chain(decl_type_params)
             .cloned()
             .collect(),
     };
@@ -4726,24 +4727,33 @@ fn insert_operation_signature(
     operation: &crate::shared::ast::InterfaceOperation,
     inherited_type_params: &[String],
 ) {
-    let signature = CallableSignature {
-        module_path: module_path.to_string(),
-        declaration_name: declaration_name.to_string(),
-        params: operation
-            .params
-            .iter()
-            .map(|param| CallableParam {
-                ty: param.ty.clone(),
-            })
-            .collect(),
-        return_type: operation.return_type.clone(),
-        type_params: inherited_type_params
-            .iter()
-            .chain(&operation.type_params)
-            .cloned()
-            .collect(),
-    };
-    insert_callable_signature(signatures, module_path, declaration_name, signature);
+    insert_callable_signature_from_parts(
+        signatures,
+        module_path,
+        declaration_name,
+        inherited_type_params,
+        &operation.type_params,
+        &operation.params,
+        &operation.return_type,
+    );
+}
+
+fn insert_function_signature(
+    signatures: &mut BTreeMap<String, CallableSignature>,
+    module_path: &str,
+    declaration_name: &str,
+    function: &FunctionDecl,
+    inherited_type_params: &[String],
+) {
+    insert_callable_signature_from_parts(
+        signatures,
+        module_path,
+        declaration_name,
+        inherited_type_params,
+        &function.type_params,
+        &function.params,
+        &function.return_type,
+    );
 }
 
 fn insert_callable_signature(
