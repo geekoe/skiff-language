@@ -439,9 +439,7 @@ impl<'a> RequestClientContext<'a> {
 }
 
 trait ControlContext {
-    fn runtime_id(&self) -> &str;
     fn request_id(&self) -> &str;
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
     fn current_activation_identity(&self, target: &str) -> Result<ActivationIdentityControl>;
     fn outbound_requests(&self) -> &OutboundRequestRegistry;
     fn open_outbound_response_lease(
@@ -458,16 +456,8 @@ trait ControlContext {
 }
 
 impl ControlContext for ActorClientContext<'_> {
-    fn runtime_id(&self) -> &str {
-        self.runtime_id
-    }
-
     fn request_id(&self) -> &str {
         self.request_id
-    }
-
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        self.activation_identity
     }
 
     fn outbound_requests(&self) -> &OutboundRequestRegistry {
@@ -503,16 +493,8 @@ impl ControlContext for ActorClientContext<'_> {
 }
 
 impl ControlContext for RequestClientContext<'_> {
-    fn runtime_id(&self) -> &str {
-        self.runtime_id
-    }
-
     fn request_id(&self) -> &str {
         self.request_id
-    }
-
-    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
-        self.activation_identity
     }
 
     fn outbound_requests(&self) -> &OutboundRequestRegistry {
