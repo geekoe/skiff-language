@@ -98,7 +98,10 @@ Rust/Node 分组替代。Rust workspace package 到被测组件的唯一归属�
 `rust-quality` 分别执行 workspace rustfmt check 和 baseline-aware workspace Clippy；Clippy 当前只对
 `clippy::too_many_lines` 的 checked-in baseline 做双向门禁，其他 warning 仍为 advisory。
 
-跨语言计划只在 `scripts/verify.mjs` 中维护。可以先审计展开后的命令而不执行：
+跨语言计划只在 `scripts/verify.mjs` 中维护。`--jobs <n>` 是唯一并发参数，默认 1（串行）；
+runner 运行全部选中 task 并汇总所有失败：任一 task 的失败只计入该 task 的结果，不阻止其他
+task 启动或继续，全部结束后按 plan 顺序汇总，存在 failed/blocked/interrupted 时退出码为 1。
+可以先审计展开后的命令而不执行：
 
 ```bash
 node scripts/verify.mjs --list
@@ -129,7 +132,7 @@ loop-risk canonical selector 必须通过 `--loop-risk-config <path>` 或
 `SKIFF_LOOP_RISK_CONFIG` 传同一份 JSON config。顶层字段严格为 `healthUrl`、`runtimeIds` 和可选
 `stress`；health URL 必须精确指向 `/__router/health?detail=loop-risk`。stress selector 还要求
 `stress.wsUrl`、`stress.runtimePids` 和绝对路径 `stress.runtimeLogs`。plan/list 会校验 schema、
-前置工具/模块和 log 文件；执行任何 workload 前会再次聚合校验 log 与 PID 存活性。生成的 phase
+前置工具/模块和 log 文件；执行任何 workload 前会再次聚合校验 log 与 PID 存活性。生成的 task
 只收到绝对 `--config` 路径，不展开 target、PID 或 log 参数。canonical stress 的 health、CPU、
 log 三个 gate 必须全部返回 `checked: true`，不能传细粒度 target/env 或 `--skip-*` 绕过。
 direct CLI 只用于诊断，仍不猜 stable 4001 或默认 pgrep pattern。
@@ -138,7 +141,7 @@ direct CLI 只用于诊断，仍不猜 stable 4001 或默认 pgrep pattern。
 verify 参数是 `--runtime-live-config`、`--runtime-live-reload-url` 和
 `--runtime-live-artifact-root`，对应环境变量均以 `SKIFF_RUNTIME_LIVE_` 开头。它不会读取
 通用的 `SKIFF_DEV_RELOAD_URL`/`SKIFF_TEST_ARTIFACT_ROOT`，也不会猜测 stable 4001 或 health
-返回的 artifact root。canonical runtime live phase 固定启用 `--deny-skips --require-tests`，
+返回的 artifact root。canonical runtime live task 固定启用 `--deny-skips --require-tests`，
 因此 SKIP 和零测试都不是成功。
 
 常用聚焦测试：
