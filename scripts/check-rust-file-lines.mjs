@@ -37,6 +37,11 @@ if (failures.length > 0) {
   for (const failure of failures) {
     console.error(`FAIL ${failure}`);
   }
+  console.error(
+    'HINT Do not just split the file to get under the limit — that only hides the problem. ' +
+      'An oversized file usually signals missing abstraction, duplicated code, or unclear ' +
+      'responsibilities; investigate deeper and address the underlying issue first.',
+  );
   process.exit(1);
 }
 console.log(`Rust file line gate passed: ${files.length} files, limit ${MAX_FILE_LINES} lines.`);
