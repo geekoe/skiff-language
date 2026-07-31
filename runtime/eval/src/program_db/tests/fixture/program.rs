@@ -26,6 +26,7 @@ pub(in crate::program_db::tests) const ACTOR_SERVICE_ID: &str = "skiff.run/db-ac
 pub(in crate::program_db::tests) const ACTOR_TYPE_ID: &str = "svc.main.CheckpointActor";
 pub(in crate::program_db::tests) const BODY_CREATE_BLOCK_LABEL: &str = "body-create";
 pub(in crate::program_db::tests) const ILLEGAL_FLOW_BLOCK_LABEL: &str = "illegal-flow";
+pub(in crate::program_db::tests) const TAIL_CALL_BARRIER_BLOCK_LABEL: &str = "tail-call-barrier";
 const DB_PACKAGE_ID: &str = "skiff.run/db-actor-fixture-package";
 const DB_PACKAGE_VERSION: &str = "1.0.0";
 const DB_PACKAGE_BUILD: &str = "build:db-actor-fixture";
@@ -44,6 +45,7 @@ pub(in crate::program_db::tests) struct LinkedDbActorFixture {
     pub explicit_transaction: DbTransactionIr,
     pub claim: DbLeaseClaimIr,
     pub read: DbLeaseReadIr,
+    pub exact_local_call: CallIr,
 }
 
 impl LinkedDbActorFixture {
@@ -88,6 +90,7 @@ impl LinkedDbActorFixture {
             explicit_transaction: ir.explicit_transaction,
             claim: ir.claim,
             read: ir.read,
+            exact_local_call: ir.exact_local_call,
         }
     }
 
@@ -108,6 +111,7 @@ struct FixtureIr {
     explicit_transaction: DbTransactionIr,
     claim: DbLeaseClaimIr,
     read: DbLeaseReadIr,
+    exact_local_call: CallIr,
 }
 
 fn fixture_ir() -> FixtureIr {
@@ -120,6 +124,7 @@ fn fixture_ir() -> FixtureIr {
         explicit_transaction: explicit_transaction(),
         claim: lease_claim(),
         read: lease_read(),
+        exact_local_call: exact_local_call(),
     }
 }
 
@@ -276,6 +281,23 @@ fn lease_read() -> DbLeaseReadIr {
     }
 }
 
+fn exact_local_call() -> CallIr {
+    CallIr {
+        target: LinkedCallTarget::Executable {
+            addr: ExecutableAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+                executable: 0,
+            },
+        },
+        site: synthetic_site(),
+        args: Vec::new(),
+        type_args: BTreeMap::new(),
+        metadata: BTreeMap::new(),
+        actor_metadata: None,
+    }
+}
+
 fn synthetic_site() -> InstructionSourceSite {
     InstructionSourceSite::Synthetic {
         reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
@@ -406,7 +428,7 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                 blocks: vec![
                     BlockIr {
                         label: "entry".to_string(),
-                        statements: Vec::new(),
+                        statements: vec![StmtRefIr { statement: 3 }],
                     },
                     BlockIr {
                         label: "empty".to_string(),
@@ -420,6 +442,10 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                         label: ILLEGAL_FLOW_BLOCK_LABEL.to_string(),
                         statements: vec![StmtRefIr { statement: 1 }],
                     },
+                    BlockIr {
+                        label: TAIL_CALL_BARRIER_BLOCK_LABEL.to_string(),
+                        statements: vec![StmtRefIr { statement: 2 }],
+                    },
                 ],
                 statements: vec![
                     LinkedStmtIr::Expr {
@@ -427,6 +453,12 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                     },
                     LinkedStmtIr::Return {
                         value: Some(ExprRefIr { expression: 0 }),
+                    },
+                    LinkedStmtIr::Return {
+                        value: Some(ExprRefIr { expression: 9 }),
+                    },
+                    LinkedStmtIr::Return {
+                        value: Some(ExprRefIr { expression: 10 }),
                     },
                 ],
                 expressions: vec![
@@ -461,6 +493,17 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                     },
                     LinkedExprIr::DbLeaseRead {
                         read: ir.read.clone(),
+                    },
+                    LinkedExprIr::Call {
+                        call: ir.exact_local_call.clone(),
+                    },
+                    LinkedExprIr::ArrayLiteral {
+                        items: vec![ExprRefIr { expression: 11 }],
+                    },
+                    LinkedExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "structured-tail-result".to_string(),
+                        },
                     },
                 ],
             },

@@ -31,12 +31,14 @@ use super::*;
 use crate::{
     capabilities::{HttpRuntimeOptions, TimeCapabilityContext},
     env::{Env, Flow},
+    error::unwrap_diagnostic_source_context,
     exceptions::user_exception_for_catch,
     runtime_ops::runtime_to_wire,
     EvalRuntimeProgram, Interpreter,
 };
 
 const TRACE_ID: &str = "trace-f445h-e4r-timeout";
+const TIMEOUT_FILE_ID: &str = "file:f445h-e4r-timeout";
 
 struct LinkedTimeoutFixture {
     interpreter: Interpreter,
@@ -65,8 +67,24 @@ impl LinkedTimeoutFixture {
     fn with_body(
         expressions: Vec<LinkedExprIr>,
         statements: Vec<LinkedStmtIr>,
+        blocks: Vec<BlockIr>,
+        slots: SlotLayoutIr,
+    ) -> Self {
+        Self::with_body_and_additional_executables(
+            expressions,
+            statements,
+            blocks,
+            slots,
+            Vec::new(),
+        )
+    }
+
+    fn with_body_and_additional_executables(
+        expressions: Vec<LinkedExprIr>,
+        statements: Vec<LinkedStmtIr>,
         mut blocks: Vec<BlockIr>,
         slots: SlotLayoutIr,
+        mut additional_executables: Vec<LinkedExecutable>,
     ) -> Self {
         let entry = blocks
             .iter_mut()
@@ -79,9 +97,25 @@ impl LinkedTimeoutFixture {
                 })
                 .collect();
         }
+        let mut executables = vec![LinkedExecutable {
+            kind: ExecutableKind::Function,
+            symbol: "timeout".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: None,
+            self_type: None,
+            slots,
+            may_suspend: true,
+            body: LinkedExecutableBody {
+                blocks,
+                statements,
+                expressions,
+            },
+        }];
+        executables.append(&mut additional_executables);
         let file = Arc::new(LinkedFileUnit {
             schema_version: "skiff-file-ir-v3".to_string(),
-            file_ir_identity: "file:f445h-e4r-timeout".to_string(),
+            file_ir_identity: TIMEOUT_FILE_ID.to_string(),
             source_ast_hash: "source:f445h-e4r-timeout".to_string(),
             module_path: "f445h.e4r.timeout".to_string(),
             ir_format_version: None,
@@ -92,21 +126,7 @@ impl LinkedTimeoutFixture {
             actor_declarations: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
-            executables: vec![LinkedExecutable {
-                kind: ExecutableKind::Function,
-                symbol: "timeout".to_string(),
-                type_params: Vec::new(),
-                params: Vec::new(),
-                return_type: None,
-                self_type: None,
-                slots,
-                may_suspend: true,
-                body: LinkedExecutableBody {
-                    blocks,
-                    statements,
-                    expressions,
-                },
-            }],
+            executables,
             external_refs: ExternalRefTable::default(),
         });
         let program = Arc::new(EvalRuntimeProgram::new(
@@ -380,6 +400,180 @@ fn assert_parent_restored(control: &ScopeAwareControl) {
         ExecutionControlApi::execution_scope(control).expect("parent scope remains available");
     assert_eq!(scope.nesting(), 0);
     assert_eq!(scope.lifecycle_snapshot(), Default::default());
+}
+
+fn timeout_exact_local_call(executable: usize, site: InstructionSourceSite) -> LinkedExprIr {
+    LinkedExprIr::Call {
+        call: CallIr {
+            target: LinkedCallTarget::Executable {
+                addr: ExecutableAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::FileIrIdentity(TIMEOUT_FILE_ID.to_string()),
+                    executable,
+                },
+            },
+            site,
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            actor_metadata: None,
+        },
+    }
+}
+
+fn timeout_terminal_executable(value: &str) -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "timeoutBarrierTerminal".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: LinkedExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![return_statement(0)],
+            expressions: vec![string_expr(value)],
+        },
+    }
+}
+
+fn assert_program_call_depth_error(error: &RuntimeError) {
+    assert!(matches!(
+        unwrap_diagnostic_source_context(error),
+        RuntimeError::ResourceLimitExceeded {
+            resource,
+            limit: 32,
+            current: 32,
+            requested_delta: 1,
+            ..
+        } if resource == "programCallDepth"
+    ));
+}
+
+#[tokio::test]
+async fn f445h_e4r_tail_call_negative_timeout_keeps_ordinary_depth_and_deadline_owner() {
+    let base = Instant::now();
+    let wrapper_site = source_site(9);
+    let call_site = source_site(8);
+    let terminal_addr = ExecutableAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::FileIrIdentity(TIMEOUT_FILE_ID.to_string()),
+        executable: 1,
+    };
+    let fixture = LinkedTimeoutFixture::with_body_and_additional_executables(
+        vec![
+            timeout_exact_local_call(1, call_site),
+            LinkedExprIr::LoadSlot { slot: 0 },
+        ],
+        vec![
+            LinkedStmtIr::Timeout {
+                duration_ms: 5,
+                body: "timed".to_string(),
+                site: wrapper_site.clone(),
+            },
+            LinkedStmtIr::Let {
+                slot: 0,
+                value: ExprRefIr { expression: 0 },
+            },
+            return_statement(1),
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            },
+            BlockIr {
+                label: "timed".to_string(),
+                statements: vec![StmtRefIr { statement: 1 }, StmtRefIr { statement: 2 }],
+            },
+        ],
+        SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "result".to_string(),
+                kind: "local".to_string(),
+            }],
+            frame_size: 1,
+        },
+        vec![timeout_terminal_executable("ordinary-result")],
+    );
+    let LinkedExprIr::Call { call } = &fixture.file.executables[0].body.expressions[0] else {
+        panic!("timeout barrier probe must remain an exact local call");
+    };
+    assert!(matches!(
+        &call.target,
+        LinkedCallTarget::Executable { addr } if addr == &terminal_addr
+    ));
+
+    let (normal_cancellation, normal_root) = root_scope(None);
+    let normal_control = ScopeAwareControl::available(normal_root, normal_cancellation.token());
+    let normal = fixture
+        .execute(context_with_clock(
+            normal_control.clone(),
+            fixed_clock(base),
+        ))
+        .await
+        .result
+        .expect("ordinary exact call returns through the timeout owner");
+    assert_eq!(
+        returned_value(&normal).value(),
+        &RuntimeValue::String("ordinary-result".to_string())
+    );
+    assert_parent_restored(&normal_control);
+
+    let (depth_cancellation, depth_root) = root_scope(None);
+    let depth_control = ScopeAwareControl::available(depth_root, depth_cancellation.token());
+    let depth_run = fixture
+        .execute(
+            context_with_clock(depth_control.clone(), fixed_clock(base))
+                .with_program_call_depth_for_test(super::super::MAX_PROGRAM_CALL_DEPTH),
+        )
+        .await;
+    let depth_error = depth_run
+        .result
+        .expect_err("timeout body must use an ordinary depth-checked local call");
+    assert_program_call_depth_error(&depth_error);
+    assert_parent_restored(&depth_control);
+
+    let deadline = base + Duration::from_millis(5);
+    let deadline_calls = Arc::new(AtomicU64::new(0));
+    let (deadline_cancellation, deadline_root) = root_scope(None);
+    let deadline_control =
+        ScopeAwareControl::available(deadline_root, deadline_cancellation.token());
+    let deadline_run = fixture
+        .execute(context_with_clock(
+            deadline_control.clone(),
+            ScriptedClock::new(
+                {
+                    let mut values = vec![base; 9];
+                    values.push(deadline);
+                    values
+                },
+                Arc::clone(&deadline_calls),
+            ),
+        ))
+        .await;
+    let deadline_error = deadline_run
+        .result
+        .expect_err("deadline after the local call must remain owned by the timeout wrapper");
+    assert_timeout_exception(
+        uncaught_exception(&deadline_error),
+        &deadline_run.heap,
+        &wrapper_site,
+        &wrapper_site,
+        1,
+    );
+    assert_eq!(
+        deadline_calls.load(Ordering::Relaxed),
+        10,
+        "the deadline must cross on the timed body's post-call continuation"
+    );
+    assert_parent_restored(&deadline_control);
 }
 
 #[tokio::test]

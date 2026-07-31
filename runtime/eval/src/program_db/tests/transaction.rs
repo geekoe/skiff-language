@@ -10,7 +10,7 @@ use skiff_runtime_model::{
 
 use super::fixture::{
     db_error, first_poll, DbActorFixture, DbEventKind, DbPhase, FakeDbState, OperationMetrics,
-    BODY_CREATE_BLOCK_LABEL, ILLEGAL_FLOW_BLOCK_LABEL,
+    BODY_CREATE_BLOCK_LABEL, ILLEGAL_FLOW_BLOCK_LABEL, TAIL_CALL_BARRIER_BLOCK_LABEL,
 };
 use crate::{
     actor_executor::ActorExecutionFrame,
@@ -718,6 +718,173 @@ async fn run_explicit_illegal_flow_case() {
 
     assert_error_text(result, "return is not allowed inside db transaction blocks");
     assert_heap_rolled_back(&heap, checkpoint, "Illegal flow");
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Abort, PhaseExpectation::Ready),
+        ],
+    );
+    assert_actor_segment_held_then_finish(&fixture, &frame, heap).await;
+}
+
+#[tokio::test]
+async fn tail_call_negative_db_transaction() {
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    state.commit.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let exact_call_expression = fixture
+        .linked
+        .executable()
+        .body
+        .expressions
+        .iter()
+        .position(|expression| {
+            matches!(
+                expression,
+                LinkedExprIr::Call { call } if call == &fixture.linked.exact_local_call
+            )
+        })
+        .expect("shared fixture exact local call expression");
+    let mut transaction = fixture.linked.explicit_transaction.clone();
+    transaction.result = Some(ExprRefIr {
+        expression: u32::try_from(exact_call_expression).expect("exact local call expression"),
+    });
+    let mut env = Env::new();
+    let value = fixture
+        .linked
+        .interpreter
+        .eval_program_explicit_db_transaction(
+            fixture.context(frame.clone()),
+            &mut heap,
+            &mut env,
+            &fixture.linked.addr,
+            &fixture.linked.file,
+            fixture.linked.executable(),
+            &transaction,
+        )
+        .await
+        .expect("transaction result exact call must return through Commit");
+
+    assert!(
+        matches!(value.value(), RuntimeValue::Heap(_)),
+        "the exact local call must materialize its structured array result"
+    );
+    assert_heap_retained_body(&heap, checkpoint, "exact local call commit");
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Commit, PhaseExpectation::Ready),
+        ],
+    );
+    assert_actor_segment_held_then_finish(&fixture, &frame, heap).await;
+
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    let abort_gate = state.abort.push_pending(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let initial_heap_len = heap.len();
+    let mut transaction = fixture.linked.explicit_transaction.clone();
+    transaction.body = TAIL_CALL_BARRIER_BLOCK_LABEL.to_string();
+    let mut env = Env::new();
+    let mut evaluation = Box::pin(
+        fixture
+            .linked
+            .interpreter
+            .eval_program_explicit_db_transaction(
+                fixture.context(frame.clone()),
+                &mut heap,
+                &mut env,
+                &fixture.linked.addr,
+                &fixture.linked.file,
+                fixture.linked.executable(),
+                &transaction,
+            ),
+    );
+
+    assert!(
+        matches!(first_poll(evaluation.as_mut()), Poll::Pending),
+        "ordinary exact local call must reach the selected Abort future"
+    );
+    let mut competing = fixture
+        .actor
+        .competing_acquire()
+        .await
+        .expect("Pending Abort must release the Actor segment");
+    assert!(
+        competing.heap_mut().len() > initial_heap_len,
+        "the ordinary exact local call must materialize its structured result before Abort"
+    );
+    drop(competing);
+    abort_gate.release();
+    let ordinary_result = evaluation.as_mut().await;
+    drop(evaluation);
+
+    assert_error_text(
+        ordinary_result.map(RuntimeValueCarrier::into_value),
+        "return is not allowed inside db transaction blocks",
+    );
+    assert_heap_rolled_back(
+        &heap,
+        checkpoint,
+        "ordinary exact local call transaction barrier",
+    );
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Abort, PhaseExpectation::PendingThenReady),
+        ],
+    );
+    assert_actor_segment_held_then_finish(&fixture, &frame, heap).await;
+
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    state.abort.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let mut transaction = fixture.linked.explicit_transaction.clone();
+    transaction.body = TAIL_CALL_BARRIER_BLOCK_LABEL.to_string();
+    let mut env = Env::new();
+    let error = fixture
+        .linked
+        .interpreter
+        .eval_program_explicit_db_transaction(
+            fixture
+                .context(frame.clone())
+                .with_program_call_depth_for_test(32),
+            &mut heap,
+            &mut env,
+            &fixture.linked.addr,
+            &fixture.linked.file,
+            fixture.linked.executable(),
+            &transaction,
+        )
+        .await
+        .expect_err("seeded barrier call must retain ordinary program-call depth");
+
+    assert!(matches!(
+        error,
+        RuntimeError::ResourceLimitExceeded {
+            ref resource,
+            limit: 32,
+            current: 32,
+            requested_delta: 1,
+            ..
+        } if resource == "programCallDepth"
+    ));
+    assert_heap_rolled_back(
+        &heap,
+        checkpoint,
+        "seeded exact local call transaction barrier",
+    );
     assert_transaction_trace(
         &state,
         &[

@@ -14,11 +14,12 @@ use skiff_runtime_model::{
     runtime_value::RuntimeValue,
 };
 
-use crate::env::Env;
+use crate::{env::Env, error::RuntimeError};
 
 use super::fixture::{
     db_error, first_poll, test_lease_handle, DbActorFixture, DbPhase, FakeDbState,
     OperationMetrics, BODY_CREATE_BLOCK_LABEL, ILLEGAL_FLOW_BLOCK_LABEL,
+    TAIL_CALL_BARRIER_BLOCK_LABEL,
 };
 
 fn assert_phase_not_started(state: &FakeDbState, phase: DbPhase) {
@@ -534,6 +535,120 @@ async fn db_actor_lease_illegal_flow_still_runs_lost_and_release() {
         vec![DbPhase::Claim, DbPhase::LeaseLost, DbPhase::Release]
     );
     assert_phase_not_started(&state, DbPhase::Renew);
+}
+
+#[tokio::test]
+async fn tail_call_negative_db_lease() {
+    let state = FakeDbState::new();
+    state.claim.push_ready(Ok(Some(test_lease_handle(
+        21,
+        json!({ "owner": "ordinary-structured" }),
+        30_000,
+    ))));
+    state.lease_lost.push_ready(Ok(false));
+    state.release.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let initial_heap_len = heap.len();
+    let mut claim = fixture.linked.claim.clone();
+    claim.binding_slot = None;
+    claim.body = TAIL_CALL_BARRIER_BLOCK_LABEL.to_string();
+    let mut env = lease_env(&fixture);
+    let error = fixture
+        .linked
+        .interpreter
+        .eval_program_db_lease_claim(
+            fixture.context(frame.clone()),
+            &mut heap,
+            &mut env,
+            &fixture.linked.addr,
+            &fixture.linked.file,
+            fixture.linked.executable(),
+            &claim,
+        )
+        .await
+        .expect_err("ordinary exact local call must remain inside the claim barrier");
+
+    assert!(
+        format!("{error:?}").contains("return is not allowed inside db claim blocks"),
+        "ordinary structured result must complete before claim-flow validation: {error:?}"
+    );
+    assert!(
+        heap.len() > initial_heap_len,
+        "ordinary exact local call must materialize its structured result"
+    );
+    assert_no_lease_binding(&env);
+    assert_actor_segment_held(&fixture);
+    frame.finish(heap).expect("Actor frame must finish");
+    assert_ready_once(&state, DbPhase::Claim);
+    assert_ready_once(&state, DbPhase::LeaseLost);
+    assert_ready_once(&state, DbPhase::Release);
+    assert_phase_not_started(&state, DbPhase::Renew);
+    assert_eq!(
+        state.phases(),
+        vec![DbPhase::Claim, DbPhase::LeaseLost, DbPhase::Release],
+        "LeaseRenewOwner must stop before the held lease is released"
+    );
+
+    let state = FakeDbState::new();
+    state.claim.push_ready(Ok(Some(test_lease_handle(
+        22,
+        json!({ "owner": "seeded-depth" }),
+        30_000,
+    ))));
+    state.lease_lost.push_ready(Ok(false));
+    state.release.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let initial_heap_len = heap.len();
+    let mut claim = fixture.linked.claim.clone();
+    claim.binding_slot = None;
+    claim.body = TAIL_CALL_BARRIER_BLOCK_LABEL.to_string();
+    let mut env = lease_env(&fixture);
+    let error = fixture
+        .linked
+        .interpreter
+        .eval_program_db_lease_claim(
+            fixture
+                .context(frame.clone())
+                .with_program_call_depth_for_test(32),
+            &mut heap,
+            &mut env,
+            &fixture.linked.addr,
+            &fixture.linked.file,
+            fixture.linked.executable(),
+            &claim,
+        )
+        .await
+        .expect_err("seeded barrier call must retain ordinary program-call depth");
+
+    assert!(matches!(
+        error,
+        RuntimeError::ResourceLimitExceeded {
+            ref resource,
+            limit: 32,
+            current: 32,
+            requested_delta: 1,
+            ..
+        } if resource == "programCallDepth"
+    ));
+    assert_eq!(
+        heap.len(),
+        initial_heap_len,
+        "depth rejection must not materialize the structured callee result"
+    );
+    assert_no_lease_binding(&env);
+    assert_actor_segment_held(&fixture);
+    frame.finish(heap).expect("Actor frame must finish");
+    assert_ready_once(&state, DbPhase::Claim);
+    assert_ready_once(&state, DbPhase::LeaseLost);
+    assert_ready_once(&state, DbPhase::Release);
+    assert_phase_not_started(&state, DbPhase::Renew);
+    assert_eq!(
+        state.phases(),
+        vec![DbPhase::Claim, DbPhase::LeaseLost, DbPhase::Release],
+        "seeded depth error must still release the held lease exactly once"
+    );
 }
 
 #[tokio::test]

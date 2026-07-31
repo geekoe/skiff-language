@@ -34,7 +34,10 @@ use super::super::{
 };
 use super::{PreparedNativeStreamProducer, StreamProducerCall};
 use crate::error::{unwrap_diagnostic_source_context, RuntimeError};
-use crate::{actor_executor_test_runtime as test_runtime, capabilities::TimeCapabilityContext};
+use crate::{
+    actor_executor_test_runtime as test_runtime, capabilities::TimeCapabilityContext,
+    runtime_ops::runtime_to_wire,
+};
 
 #[test]
 fn ordinary_stream_supervision_ignores_unrelated_stream_values() {
@@ -106,6 +109,79 @@ async fn ordinary_executable_stream_consumer_natural_end_completes() {
     .expect("natural End should complete the ordinary consumer");
 
     assert_eq!(result, RuntimeValue::Null);
+}
+
+#[tokio::test]
+async fn tail_call_negative_stream_producing_argument_stays_ordinary_and_drains_owner() {
+    let error = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        execute_program_at_depth(
+            vec![
+                stream_consumer_route(),
+                draining_stream_consumer(),
+                emit_then_end_producer(),
+            ],
+            31,
+        ),
+    )
+    .await
+    .expect("the prepared producer must drain before the ordinary continuation returns")
+    .expect_err("the exact consumer call must retain its nested depth push");
+
+    assert_program_depth_error(&error);
+}
+
+#[tokio::test]
+async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit() {
+    let (interpreter, file) =
+        interpreter_with_executables(vec![stream_producer_route(1), emit_then_end_producer()]);
+    let context = execution_context(&interpreter).with_program_call_depth_for_test(31);
+    let route_addr = ExecutableAddr::service(0, 0);
+    let mut heap = RequestHeap::default();
+    let result = interpreter
+        .call_program_executable(
+            context,
+            &mut heap,
+            &Env::new(),
+            &route_addr,
+            &route_addr,
+            &Default::default(),
+            Vec::new(),
+        )
+        .await
+        .expect("a tail-position producer call must return its deferred Stream handle");
+    let stream_value =
+        runtime_to_wire(&result, &heap).expect("returned Stream handle must remain wire encodable");
+    assert!(
+        stream_id(&stream_value).is_some(),
+        "the deferred producer continuation must return a canonical Stream value"
+    );
+
+    let stream_runtime = interpreter.stream_runtime.clone();
+    let consumed_stream_value = stream_value.clone();
+    let values = interpreter
+        .drive_deferred_stream_producer(
+            execution_context(&interpreter),
+            &route_addr,
+            &stream_value,
+            |supervision| {
+                consume_deferred_stream(
+                    stream_runtime.clone(),
+                    consumed_stream_value.clone(),
+                    supervision,
+                )
+            },
+        )
+        .await
+        .expect("the parked producer must remain executable after its caller returned");
+
+    assert_eq!(values, 2, "the deferred continuation must emit both items");
+    assert_stream_closed(&stream_runtime, &stream_value).await;
+    assert_eq!(
+        file.executables[0].return_type,
+        file.executables[1].return_type,
+        "the negative case must exclude tail transfer because of stream semantics, not return-plan mismatch"
+    );
 }
 
 #[test]
@@ -277,8 +353,15 @@ async fn consume_deferred_stream(
 }
 
 async fn execute_program(executables: Vec<LinkedExecutable>) -> crate::error::Result<RuntimeValue> {
+    execute_program_at_depth(executables, 0).await
+}
+
+async fn execute_program_at_depth(
+    executables: Vec<LinkedExecutable>,
+    initial_depth: usize,
+) -> crate::error::Result<RuntimeValue> {
     let (interpreter, _) = interpreter_with_executables(executables);
-    let context = execution_context(&interpreter);
+    let context = execution_context(&interpreter).with_program_call_depth_for_test(initial_depth);
     let route_addr = ExecutableAddr::service(0, 0);
     let mut heap = RequestHeap::default();
 
@@ -327,6 +410,19 @@ fn assert_producer_error(error: &RuntimeError) {
         Some(&producer_error_identity()),
         "the original typed producer error must remain catchable: {error}"
     );
+}
+
+fn assert_program_depth_error(error: &RuntimeError) {
+    assert!(matches!(
+        unwrap_diagnostic_source_context(error),
+        RuntimeError::ResourceLimitExceeded {
+            resource,
+            limit: 32,
+            current: 32,
+            requested_delta: 1,
+            ..
+        } if resource == "programCallDepth"
+    ));
 }
 
 struct PreparedFixture {
@@ -545,6 +641,35 @@ fn file_with_executables(executables: Vec<LinkedExecutable>) -> LinkedFileUnit {
 
 fn stream_consumer_route() -> LinkedExecutable {
     stream_consumer_route_with(1, 2)
+}
+
+fn stream_producer_route(producer_index: usize) -> LinkedExecutable {
+    let mut route = executable(
+        "run",
+        Vec::new(),
+        SlotLayoutIr::default(),
+        json!({
+            "blocks": [{ "label": "entry", "statements": [{ "statement": 0 }] }],
+            "statements": [{ "kind": "return", "value": { "expression": 0 } }],
+            "expressions": [
+                {
+                    "kind": "call",
+                    "call": {
+                        "site": site(),
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(
+                                ExecutableAddr::service(0, producer_index)
+                            ).unwrap()
+                        },
+                        "args": []
+                    }
+                }
+            ]
+        }),
+    );
+    route.return_type = Some(stream_type(string_type()));
+    route
 }
 
 fn stream_consumer_route_with(consumer_index: usize, producer_index: usize) -> LinkedExecutable {
