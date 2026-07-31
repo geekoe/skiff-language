@@ -281,13 +281,6 @@ impl Interpreter {
                     "return is not allowed inside db transaction blocks".to_string(),
                 ))
             }
-            Ok(Flow::TailCall(_)) => {
-                lifecycle.abort(&program_context, heap).await?;
-                heap.rollback_to_checkpoint(checkpoint);
-                Err(RuntimeError::InvalidArtifact(
-                    "db transaction leaked an internal tail-call frame".to_string(),
-                ))
-            }
             Ok(Flow::Parked | Flow::ContinueConsumer) => {
                 lifecycle.abort(&program_context, heap).await?;
                 heap.rollback_to_checkpoint(checkpoint);
@@ -417,9 +410,6 @@ impl Interpreter {
             Ok(Flow::Continue) => Ok(RuntimeValue::Bool(true)),
             Ok(Flow::Return(_)) => Err(RuntimeError::Decode(
                 "return is not allowed inside db claim blocks".to_string(),
-            )),
-            Ok(Flow::TailCall(_)) => Err(RuntimeError::InvalidArtifact(
-                "db claim leaked an internal tail-call frame".to_string(),
             )),
             Ok(Flow::Parked | Flow::ContinueConsumer) => Err(RuntimeError::Decode(
                 "control flow is not allowed inside db claim blocks".to_string(),

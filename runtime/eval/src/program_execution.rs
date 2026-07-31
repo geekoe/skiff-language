@@ -16,6 +16,7 @@ use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{RuntimeValue, RuntimeValueCarrier},
     service_error::{ErrorCorrelation, ExceptionStackFrame},
+    type_plan::RuntimeTypePlan,
 };
 
 #[allow(unused_imports)]
@@ -30,7 +31,7 @@ use super::{
         TimeCapabilityContext, WebsocketCapabilityContext,
     },
     error::attach_source_frame,
-    eval_context::EvalContext,
+    eval_context::{promote_call_site_error, EvalContext},
     flow_completion::FlowCompletionPolicy,
     invocation::{EvalInvocation, EvalProgramProjection},
     program_ir::{
@@ -177,6 +178,63 @@ pub struct ProgramExecutionContext<'a> {
 /// The instruction budget is intentionally much larger than a safe native call
 /// stack, so it cannot be the only recursion guard.
 const MAX_PROGRAM_CALL_DEPTH: usize = 32;
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedTailCall {
+    pub(crate) caller: ExecutableAddr,
+    pub(crate) target: ExecutableAddr,
+    pub(crate) env: Env,
+    pub(crate) return_plan: Option<RuntimeTypePlan>,
+    pub(crate) tail_site: InstructionSourceSite,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum EvaluatorControl {
+    Complete(Flow),
+    TailCall(Box<PreparedTailCall>),
+}
+
+impl EvaluatorControl {
+    pub(crate) fn into_flow(self, owner: &str) -> Result<Flow> {
+        match self {
+            Self::Complete(flow) => Ok(flow),
+            Self::TailCall(_) => Err(RuntimeError::InvalidArtifact(format!(
+                "{owner} leaked an internal tail-call frame outside the evaluator trampoline"
+            ))),
+        }
+    }
+}
+
+impl From<Flow> for EvaluatorControl {
+    fn from(flow: Flow) -> Self {
+        Self::Complete(flow)
+    }
+}
+
+#[cfg(test)]
+mod tail_call_internal_control_layout_tests {
+    use super::{EvaluatorControl, Flow, PreparedTailCall};
+
+    fn baseline_public_flow_discriminant(flow: Flow) -> u8 {
+        match flow {
+            Flow::Continue => 0,
+            Flow::Return(_) => 1,
+            Flow::Break => 2,
+            Flow::LoopContinue => 3,
+            Flow::Parked => 4,
+            Flow::ContinueConsumer => 5,
+        }
+    }
+
+    #[test]
+    fn tail_call_internal_control_layout_keeps_prepared_frame_private_and_boxed() {
+        assert_eq!(baseline_public_flow_discriminant(Flow::Continue), 0);
+        assert!(
+            std::mem::size_of::<EvaluatorControl>() < std::mem::size_of::<PreparedTailCall>(),
+            "crate-private evaluator control must keep the prepared environment behind an owning indirection"
+        );
+    }
+}
 
 fn validate_activation_execution_capability_bundle(
     receiver: &ProgramExecutionContext<'_>,
@@ -1406,51 +1464,61 @@ impl Interpreter {
         executable: &LinkedExecutable,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
-        let mut flow = {
-            let mut eval = EvalContext::new_callable(
+        let projection = RuntimeExecutionProjection::for_context(self, &context)?;
+        let mut control = {
+            let mut eval = EvalContext::new_callable_with_projection(
                 self,
+                projection.clone(),
                 context.clone(),
                 heap,
                 env,
                 addr,
                 file,
                 executable,
-            )?;
-            let flow = eval.exec_program_executable().await?;
-            if let Flow::TailCall(prepared) = &flow {
+            );
+            let control = eval.exec_program_executable_control().await?;
+            if let EvaluatorControl::TailCall(prepared) = &control {
                 eval.account_tail_transfer(&prepared.tail_site)?;
             }
-            flow
+            control
         };
 
         loop {
-            let Flow::TailCall(prepared) = flow else {
-                return Ok(flow);
+            let EvaluatorControl::TailCall(prepared) = control else {
+                return control.into_flow("evaluator trampoline");
             };
-            let crate::env::PreparedTailCall {
+            let PreparedTailCall {
+                caller,
                 target: prepared_target,
                 env: mut prepared_env,
                 return_plan: _,
-                tail_site: _,
+                tail_site,
             } = *prepared;
-            let projection = RuntimeExecutionProjection::for_context(self, &context)?;
-            let resolved = projection.resolve_nested_executable(&prepared_target)?;
+            let resolved = promote_call_site_error(
+                &projection,
+                &context,
+                heap,
+                &caller,
+                projection.resolve_nested_executable(&prepared_target),
+                &tail_site,
+            )?;
             let target = resolved.addr.clone();
-            flow = {
-                let mut eval = EvalContext::new_callable(
+            control = {
+                let mut eval = EvalContext::new_callable_with_projection(
                     self,
+                    projection.clone(),
                     context.clone(),
                     heap,
                     &mut prepared_env,
                     &target,
                     resolved.file,
                     resolved.executable,
-                )?;
-                let flow = eval.exec_program_executable().await?;
-                if let Flow::TailCall(next) = &flow {
+                );
+                let control = eval.exec_tail_entry_control(&caller, &tail_site).await?;
+                if let EvaluatorControl::TailCall(next) = &control {
                     eval.account_tail_transfer(&next.tail_site)?;
                 }
-                flow
+                control
             };
         }
     }

@@ -1,7 +1,6 @@
 use skiff_runtime_model::type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan};
 
 use super::*;
-use crate::env::PreparedTailCall;
 
 fn executable_return_plan(
     projection: RuntimeExecutionProjection<'_>,
@@ -207,6 +206,7 @@ impl Interpreter {
         }
 
         Ok(Some(Box::new(PreparedTailCall {
+            caller: caller_addr.clone(),
             target,
             env,
             return_plan,

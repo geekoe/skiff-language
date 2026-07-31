@@ -340,9 +340,6 @@ impl Interpreter {
             Ok(Flow::ContinueConsumer) => Err(FlowCompletionPolicy::entry_consumer_error(
                 invocation.executable_invocation.executable,
             )),
-            Ok(Flow::TailCall(_)) => Err(FlowCompletionPolicy::entry_tail_call_error(
-                invocation.executable_invocation.executable,
-            )),
             Err(error) => Err(self.attach_program_source_context(
                 error,
                 addr,
@@ -397,9 +394,6 @@ impl Interpreter {
                 ))
             }
             Ok(Flow::ContinueConsumer) => Err(FlowCompletionPolicy::entry_consumer_error(
-                invocation.executable_invocation.executable,
-            )),
-            Ok(Flow::TailCall(_)) => Err(FlowCompletionPolicy::entry_tail_call_error(
                 invocation.executable_invocation.executable,
             )),
             Err(error) => Err(self.attach_program_source_context(
@@ -487,14 +481,6 @@ impl Interpreter {
                     )
                     .await
                 {
-                    Ok(Flow::TailCall(_)) => {
-                        sink.fail(stream_runtime_error_from_eval(
-                            FlowCompletionPolicy::entry_tail_call_error(
-                                invocation.executable_invocation.executable,
-                            ),
-                        ))
-                        .await
-                    }
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
@@ -560,13 +546,6 @@ impl Interpreter {
             Ok(Flow::ContinueConsumer) => {
                 return Err(EvalStreamExecutionError::Eval(
                     FlowCompletionPolicy::entry_consumer_error(
-                        invocation.executable_invocation.executable,
-                    ),
-                ));
-            }
-            Ok(Flow::TailCall(_)) => {
-                return Err(EvalStreamExecutionError::Eval(
-                    FlowCompletionPolicy::entry_tail_call_error(
                         invocation.executable_invocation.executable,
                     ),
                 ));
@@ -688,14 +667,6 @@ impl Interpreter {
                     )
                     .await
                 {
-                    Ok(Flow::TailCall(_)) => {
-                        sink.fail(stream_runtime_error_from_eval(
-                            FlowCompletionPolicy::entry_tail_call_error(
-                                invocation.executable_invocation.executable,
-                            ),
-                        ))
-                        .await
-                    }
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
@@ -761,13 +732,6 @@ impl Interpreter {
             Ok(Flow::ContinueConsumer) => {
                 return Err(EvalStreamExecutionError::Eval(
                     FlowCompletionPolicy::entry_consumer_error(
-                        invocation.executable_invocation.executable,
-                    ),
-                ));
-            }
-            Ok(Flow::TailCall(_)) => {
-                return Err(EvalStreamExecutionError::Eval(
-                    FlowCompletionPolicy::entry_tail_call_error(
                         invocation.executable_invocation.executable,
                     ),
                 ));
@@ -883,9 +847,6 @@ impl Interpreter {
             Ok(Flow::ContinueConsumer) => Err(FlowCompletionPolicy::entry_consumer_error(
                 invocation.executable_invocation.executable,
             )),
-            Ok(Flow::TailCall(_)) => Err(FlowCompletionPolicy::entry_tail_call_error(
-                invocation.executable_invocation.executable,
-            )),
             Err(error) => Err(self.attach_program_source_context(
                 error,
                 invocation.executable_invocation.addr,
@@ -952,14 +913,6 @@ impl Interpreter {
                     )
                     .await
                 {
-                    Ok(Flow::TailCall(_)) => {
-                        sink.fail(stream_runtime_error_from_eval(
-                            FlowCompletionPolicy::entry_tail_call_error(
-                                invocation.executable_invocation.executable,
-                            ),
-                        ))
-                        .await
-                    }
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
@@ -1025,13 +978,6 @@ impl Interpreter {
             Ok(Flow::ContinueConsumer) => {
                 return Err(EvalStreamExecutionError::Eval(
                     FlowCompletionPolicy::entry_consumer_error(
-                        invocation.executable_invocation.executable,
-                    ),
-                ));
-            }
-            Ok(Flow::TailCall(_)) => {
-                return Err(EvalStreamExecutionError::Eval(
-                    FlowCompletionPolicy::entry_tail_call_error(
                         invocation.executable_invocation.executable,
                     ),
                 ));

@@ -1,6 +1,6 @@
 use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
-    ActivationRelativeServiceCall, AssignTargetIr, CallIr, ExecutableAddr, ExprRefIr,
+    ActivationRelativeServiceCall, AssignTargetIr, BlockIr, CallIr, ExecutableAddr, ExprRefIr,
     LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable, LinkedExprIr, LinkedFileUnit,
     LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTestEffectOutcomeIr, LinkedTypeRef,
     NativeTarget, ReceiverCallAbi, UnaryOpIr,
@@ -41,7 +41,7 @@ use super::{
         resolve_config_builtin_type_arg_plan, resolve_runtime_execution_native_invocation,
     },
     program_db::{is_db_builtin_op, program_call_db_op},
-    program_execution::ProgramExecutionContext,
+    program_execution::{EvaluatorControl, ProgramExecutionContext},
     program_ir::{
         bind_program_pattern, program_binary_operator, program_block, program_call_target_kind,
         program_expression_ref, program_literal, program_pattern_matches, program_statement_ref,
@@ -99,6 +99,54 @@ pub(crate) enum TailCallContext {
     Barrier,
 }
 
+pub(crate) fn promote_call_site_error<T>(
+    projection: &RuntimeExecutionProjection<'_>,
+    context: &ProgramExecutionContext<'_>,
+    heap: &mut RequestHeap,
+    addr: &ExecutableAddr,
+    result: Result<T>,
+    site: &InstructionSourceSite,
+) -> Result<T> {
+    let Err(error) = result else {
+        return result;
+    };
+    let error = materialize_request_heap_owned_runtime_error(error, heap)?;
+    if error.is_cancellation_terminal() {
+        return Err(error);
+    }
+    if user_exception_for_catch(&error).is_some() {
+        return Err(error);
+    }
+    if let Some(exception) = request_exception_for_resource_error(
+        &error,
+        projection,
+        addr,
+        site.clone(),
+        context.exception_stack_for_site(site.clone()),
+        || context.next_exception_correlation(),
+        heap,
+    )? {
+        return Err(RuntimeError::UserException(UserException::new(exception)));
+    }
+    let Some((identity, _)) = error.ordinary_catch_projection() else {
+        return Err(error);
+    };
+    let exception = request_exception_for_catch(
+        &error,
+        std::slice::from_ref(&identity),
+        site.clone(),
+        context.exception_stack_for_site(site.clone()),
+        context.next_exception_correlation()?,
+        heap,
+    )?
+    .ok_or_else(|| {
+        RuntimeError::InvalidArtifact(
+            "platform catch projection did not match its own exact identity".to_string(),
+        )
+    })?;
+    Err(RuntimeError::UserException(UserException::new(exception)))
+}
+
 impl<'a> EvalContext<'a> {
     pub fn new(
         interpreter: &'a Interpreter,
@@ -122,25 +170,29 @@ impl<'a> EvalContext<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_callable(
+    pub(crate) fn new_callable_with_projection(
         interpreter: &'a Interpreter,
+        projection: RuntimeExecutionProjection<'a>,
         context: ProgramExecutionContext<'a>,
         heap: &'a mut RequestHeap,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
         executable: &'a LinkedExecutable,
-    ) -> Result<Self> {
-        Self::new_with_tail_call_context(
+    ) -> Self {
+        let execution = context.execution();
+        Self {
             interpreter,
+            projection,
             context,
+            execution,
             heap,
             env,
             addr,
             file,
             executable,
-            TailCallContext::Transparent,
-        )
+            tail_call_context: TailCallContext::Transparent,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -176,7 +228,10 @@ impl<'a> EvalContext<'a> {
     ) -> Result<Flow> {
         let previous = self.tail_call_context;
         self.tail_call_context = TailCallContext::Barrier;
-        let result = self.exec_program_block(label).await;
+        let result = self
+            .exec_program_block_control(label)
+            .await
+            .and_then(|control| control.into_flow("tail-call barrier"));
         self.tail_call_context = previous;
         result
     }
@@ -278,19 +333,62 @@ impl<'a> EvalContext<'a> {
     }
 
     pub async fn exec_program_executable(&mut self) -> Result<Flow> {
+        self.exec_program_executable_control()
+            .await?
+            .into_flow("EvalContext executable")
+    }
+
+    pub(crate) async fn exec_program_executable_control(&mut self) -> Result<EvaluatorControl> {
+        let block = self.prepare_program_executable_entry()?;
+        self.exec_program_block_body(block).await
+    }
+
+    pub(crate) async fn exec_tail_entry_control(
+        &mut self,
+        tail_caller: &ExecutableAddr,
+        tail_site: &InstructionSourceSite,
+    ) -> Result<EvaluatorControl> {
+        let entry = self.prepare_program_executable_entry();
+        let block = promote_call_site_error(
+            &self.projection,
+            &self.context,
+            self.heap,
+            tail_caller,
+            entry,
+            tail_site,
+        )?;
+        self.exec_program_block_body(block).await
+    }
+
+    fn prepare_program_executable_entry(&self) -> Result<&'a BlockIr> {
         self.checkpoint_function_entry()?;
-        self.exec_program_block("entry").await
+        self.prepare_program_block("entry")
     }
 
     #[async_recursion]
     pub async fn exec_program_block(&mut self, label: &str) -> Result<Flow> {
+        self.exec_program_block_control(label)
+            .await?
+            .into_flow("EvalContext block")
+    }
+
+    #[async_recursion]
+    async fn exec_program_block_control(&mut self, label: &str) -> Result<EvaluatorControl> {
+        let block = self.prepare_program_block(label)?;
+        self.exec_program_block_body(block).await
+    }
+
+    fn prepare_program_block(&self, label: &str) -> Result<&'a BlockIr> {
         self.checkpoint_function_entry()?;
-        let block = program_block(self.executable, label)?;
+        program_block(self.executable, label)
+    }
+
+    async fn exec_program_block_body(&mut self, block: &'a BlockIr) -> Result<EvaluatorControl> {
         self.env.push();
         for statement_ref in &block.statements {
             let statement = program_statement_ref(self.executable, statement_ref)?;
-            let flow = match self.exec_program_statement(statement).await {
-                Ok(flow) => flow,
+            let control = match self.exec_program_statement_control(statement).await {
+                Ok(control) => control,
                 Err(error) => {
                     self.env.pop();
                     return Err(self
@@ -298,25 +396,41 @@ impl<'a> EvalContext<'a> {
                         .attach_program_source_context(error, self.addr, self.file, None));
                 }
             };
-            if !matches!(flow, Flow::Continue) {
+            if !matches!(control, EvaluatorControl::Complete(Flow::Continue)) {
                 self.env.pop();
-                return Ok(flow);
+                return Ok(control);
             }
         }
         self.env.pop();
-        Ok(Flow::Continue)
+        Ok(Flow::Continue.into())
     }
 
     #[async_recursion]
     pub async fn exec_program_statement(&mut self, statement: &LinkedStmtIr) -> Result<Flow> {
+        self.exec_program_statement_control(statement)
+            .await?
+            .into_flow("EvalContext statement")
+    }
+
+    #[async_recursion]
+    async fn exec_program_statement_control(
+        &mut self,
+        statement: &LinkedStmtIr,
+    ) -> Result<EvaluatorControl> {
         self.checkpoint_generated_chunk(1)?;
         match statement {
             LinkedStmtIr::Timeout {
                 duration_ms,
                 body,
                 site,
-            } => self.exec_timeout_statement(*duration_ms, body, site).await,
-            LinkedStmtIr::Concurrent { plan } => self.exec_concurrent_statement(plan).await,
+            } => self
+                .exec_timeout_statement(*duration_ms, body, site)
+                .await
+                .map(EvaluatorControl::from),
+            LinkedStmtIr::Concurrent { plan } => self
+                .exec_concurrent_statement(plan)
+                .await
+                .map(EvaluatorControl::from),
             LinkedStmtIr::Let { slot, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.env.declare_binding(
@@ -324,12 +438,12 @@ impl<'a> EvalContext<'a> {
                     Some(program_u32_to_usize(*slot, "let.slot")?),
                     value,
                 )?;
-                Ok(Flow::Continue)
+                Ok(Flow::Continue.into())
             }
             LinkedStmtIr::Assign { target, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.assign_program_target(target, value).await?;
-                Ok(Flow::Continue)
+                Ok(Flow::Continue.into())
             }
             LinkedStmtIr::ForIn {
                 item_slot,
@@ -352,7 +466,7 @@ impl<'a> EvalContext<'a> {
             LinkedStmtIr::Assert { condition, message } => {
                 let condition = self.eval_program_expr_ref(*condition).await?;
                 if runtime_truthy(&condition, self.heap)? {
-                    return Ok(Flow::Continue);
+                    return Ok(Flow::Continue.into());
                 }
                 let message = match message {
                     Some(message_ref) => {
@@ -363,15 +477,15 @@ impl<'a> EvalContext<'a> {
                 };
                 Err(RuntimeError::Decode(message))
             }
-            LinkedStmtIr::Break => Ok(Flow::Break),
-            LinkedStmtIr::Continue => Ok(Flow::LoopContinue),
+            LinkedStmtIr::Break => Ok(Flow::Break.into()),
+            LinkedStmtIr::Continue => Ok(Flow::LoopContinue.into()),
             LinkedStmtIr::Spawn { call } => {
                 spawn_ops::submit_spawn_statement(self, *call).await?;
-                Ok(Flow::Continue)
+                Ok(Flow::Continue.into())
             }
             LinkedStmtIr::Expr { value } => {
                 self.eval_program_expr_ref(*value).await?;
-                Ok(Flow::Continue)
+                Ok(Flow::Continue.into())
             }
             LinkedStmtIr::Return { value } => self.exec_program_return(*value).await,
             LinkedStmtIr::If {
@@ -385,9 +499,9 @@ impl<'a> EvalContext<'a> {
                 } else if let Some(block) = else_block {
                     block
                 } else {
-                    return Ok(Flow::Continue);
+                    return Ok(Flow::Continue.into());
                 };
-                self.exec_program_block(block).await
+                self.exec_program_block_control(block).await
             }
             LinkedStmtIr::Match { value, arms } => {
                 let value = self.eval_program_expr_ref(*value).await?;
@@ -402,13 +516,15 @@ impl<'a> EvalContext<'a> {
                         self.env.pop();
                         return Err(error);
                     }
-                    let flow = self.exec_program_block(&arm.body).await;
+                    let control = self.exec_program_block_control(&arm.body).await;
                     self.env.pop();
-                    return flow;
+                    return control;
                 }
-                Ok(Flow::Continue)
+                Ok(Flow::Continue.into())
             }
-            LinkedStmtIr::Emit { value, .. } => self.exec_emit(*value).await,
+            LinkedStmtIr::Emit { value, .. } => {
+                self.exec_emit(*value).await.map(EvaluatorControl::from)
+            }
             LinkedStmtIr::TestEffectRegister {
                 target,
                 expect,
@@ -522,24 +638,30 @@ impl<'a> EvalContext<'a> {
                         outcome,
                     },
                 );
-                Ok(Flow::Continue)
+                Ok(Flow::Continue.into())
             }
             LinkedStmtIr::Throw {
                 value,
                 payload_type,
                 site,
-            } => self.eval_program_throw(*value, payload_type, site).await,
-            LinkedStmtIr::Rethrow { exception_slot } => self.interpreter.eval_program_rethrow_slot(
-                self.env,
-                program_u32_to_usize(*exception_slot, "rethrow.exceptionSlot")?,
-                self.heap,
-            ),
+            } => self
+                .eval_program_throw(*value, payload_type, site)
+                .await
+                .map(EvaluatorControl::from),
+            LinkedStmtIr::Rethrow { exception_slot } => self
+                .interpreter
+                .eval_program_rethrow_slot(
+                    self.env,
+                    program_u32_to_usize(*exception_slot, "rethrow.exceptionSlot")?,
+                    self.heap,
+                )
+                .map(EvaluatorControl::from),
         }
     }
 
-    async fn exec_program_return(&mut self, value: Option<ExprRefIr>) -> Result<Flow> {
+    async fn exec_program_return(&mut self, value: Option<ExprRefIr>) -> Result<EvaluatorControl> {
         let Some(value_ref) = value else {
-            return Ok(Flow::Return(RuntimeValue::Null.into()));
+            return Ok(Flow::Return(RuntimeValue::Null.into()).into());
         };
         if self.tail_call_context == TailCallContext::Transparent {
             let expression = program_expression_ref(self.executable, value_ref)?;
@@ -563,7 +685,7 @@ impl<'a> EvalContext<'a> {
                         );
                         let prepared = self.promote_call_site_error(prepared, &call.site)?;
                         if let Some(prepared) = prepared {
-                            return Ok(Flow::TailCall(prepared));
+                            return Ok(EvaluatorControl::TailCall(prepared));
                         }
 
                         let result = self
@@ -579,7 +701,7 @@ impl<'a> EvalContext<'a> {
                             )
                             .await;
                         let value = self.promote_call_site_error(result, &call.site)?;
-                        return Ok(Flow::Return(value));
+                        return Ok(Flow::Return(value).into());
                     }
                 }
             }
@@ -587,7 +709,7 @@ impl<'a> EvalContext<'a> {
 
         self.eval_program_expr_ref(value_ref)
             .await
-            .map(Flow::Return)
+            .map(|value| Flow::Return(value).into())
     }
 
     fn tail_call_has_stream_semantics(&mut self, call: &CallIr) -> Result<bool> {
@@ -864,14 +986,14 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub async fn exec_program_for_in(
+    async fn exec_program_for_in(
         &mut self,
         item_slot: usize,
         item_type: Option<&LinkedTypeRef>,
         value_slot: Option<usize>,
         iterable_ref: ExprRefIr,
         body: &str,
-    ) -> Result<Flow> {
+    ) -> Result<EvaluatorControl> {
         let iterable_expr = program_expression_ref(self.executable, iterable_ref)?;
         if value_slot.is_none() {
             if let Some(producer) = self.interpreter.resolve_stream_producer_call(
@@ -896,7 +1018,8 @@ impl<'a> EvalContext<'a> {
                         body,
                         producer,
                     )
-                    .await;
+                    .await
+                    .map(EvaluatorControl::from);
             }
         }
 
@@ -951,7 +1074,8 @@ impl<'a> EvalContext<'a> {
                         supervision,
                     )
                 })
-                .await;
+                .await
+                .map(EvaluatorControl::from);
         }
 
         if let Some(keys) = runtime_map_key_snapshot(&items, self.heap)? {
@@ -968,25 +1092,25 @@ impl<'a> EvalContext<'a> {
         item_slot: usize,
         body: &str,
         items: Vec<RuntimeValueCarrier>,
-    ) -> Result<Flow> {
+    ) -> Result<EvaluatorControl> {
         for item_value in items {
             self.checkpoint_loop_condition(1)?;
-            let flow = self
-                .exec_program_for_in_body(item_slot, body, item_value)
+            let control = self
+                .exec_program_for_in_body_control(item_slot, body, item_value)
                 .await?;
-            match flow {
-                Flow::Continue | Flow::LoopContinue => {
+            match control {
+                EvaluatorControl::Complete(Flow::Continue | Flow::LoopContinue) => {
                     self.checkpoint_loop_backedge(0)?;
                     continue;
                 }
-                Flow::Break => break,
-                Flow::Return(value) => return Ok(Flow::Return(value)),
-                Flow::TailCall(prepared) => return Ok(Flow::TailCall(prepared)),
-                Flow::Parked => return Ok(Flow::Parked),
-                Flow::ContinueConsumer => return Ok(Flow::ContinueConsumer),
+                EvaluatorControl::Complete(Flow::Break) => break,
+                EvaluatorControl::Complete(flow) => return Ok(flow.into()),
+                EvaluatorControl::TailCall(prepared) => {
+                    return Ok(EvaluatorControl::TailCall(prepared))
+                }
             }
         }
-        Ok(Flow::Continue)
+        Ok(Flow::Continue.into())
     }
 
     async fn exec_program_map_entry_for_in(
@@ -995,25 +1119,25 @@ impl<'a> EvalContext<'a> {
         value_slot: usize,
         body: &str,
         entries: Vec<(RuntimeValueCarrier, RuntimeValueCarrier)>,
-    ) -> Result<Flow> {
+    ) -> Result<EvaluatorControl> {
         for (key_value, entry_value) in entries {
             self.checkpoint_loop_condition(1)?;
-            let flow = self
+            let control = self
                 .exec_program_for_in_entry_body(item_slot, value_slot, body, key_value, entry_value)
                 .await?;
-            match flow {
-                Flow::Continue | Flow::LoopContinue => {
+            match control {
+                EvaluatorControl::Complete(Flow::Continue | Flow::LoopContinue) => {
                     self.checkpoint_loop_backedge(0)?;
                     continue;
                 }
-                Flow::Break => break,
-                Flow::Return(value) => return Ok(Flow::Return(value)),
-                Flow::TailCall(prepared) => return Ok(Flow::TailCall(prepared)),
-                Flow::Parked => return Ok(Flow::Parked),
-                Flow::ContinueConsumer => return Ok(Flow::ContinueConsumer),
+                EvaluatorControl::Complete(Flow::Break) => break,
+                EvaluatorControl::Complete(flow) => return Ok(flow.into()),
+                EvaluatorControl::TailCall(prepared) => {
+                    return Ok(EvaluatorControl::TailCall(prepared))
+                }
             }
         }
-        Ok(Flow::Continue)
+        Ok(Flow::Continue.into())
     }
 
     pub async fn exec_program_for_in_body(
@@ -1022,6 +1146,17 @@ impl<'a> EvalContext<'a> {
         body: &str,
         item_value: RuntimeValueCarrier,
     ) -> Result<Flow> {
+        self.exec_program_for_in_body_control(item_slot, body, item_value)
+            .await?
+            .into_flow("for-in body")
+    }
+
+    async fn exec_program_for_in_body_control(
+        &mut self,
+        item_slot: usize,
+        body: &str,
+        item_value: RuntimeValueCarrier,
+    ) -> Result<EvaluatorControl> {
         self.env.push();
         if let Err(error) = self
             .env
@@ -1030,9 +1165,9 @@ impl<'a> EvalContext<'a> {
             self.env.pop();
             return Err(error);
         }
-        let flow = self.exec_program_block(body).await;
+        let control = self.exec_program_block_control(body).await;
         self.env.pop();
-        flow
+        control
     }
 
     async fn exec_program_for_in_entry_body(
@@ -1042,7 +1177,7 @@ impl<'a> EvalContext<'a> {
         body: &str,
         key_value: RuntimeValueCarrier,
         entry_value: RuntimeValueCarrier,
-    ) -> Result<Flow> {
+    ) -> Result<EvaluatorControl> {
         self.env.push();
         if let Err(error) = self.env.declare_binding("slot", Some(item_slot), key_value) {
             self.env.pop();
@@ -1055,9 +1190,9 @@ impl<'a> EvalContext<'a> {
             self.env.pop();
             return Err(error);
         }
-        let flow = self.exec_program_block(body).await;
+        let control = self.exec_program_block_control(body).await;
         self.env.pop();
-        flow
+        control
     }
 
     async fn eval_program_construct(
@@ -1478,44 +1613,14 @@ impl<'a> EvalContext<'a> {
         result: Result<T>,
         site: &InstructionSourceSite,
     ) -> Result<T> {
-        let Err(error) = result else {
-            return result;
-        };
-        let error = materialize_request_heap_owned_runtime_error(error, self.heap)?;
-        if error.is_cancellation_terminal() {
-            return Err(error);
-        }
-        if user_exception_for_catch(&error).is_some() {
-            return Err(error);
-        }
-        if let Some(exception) = request_exception_for_resource_error(
-            &error,
+        promote_call_site_error(
             &self.projection,
+            &self.context,
+            self.heap,
             self.addr,
-            site.clone(),
-            self.context.exception_stack_for_site(site.clone()),
-            || self.context.next_exception_correlation(),
-            self.heap,
-        )? {
-            return Err(RuntimeError::UserException(UserException::new(exception)));
-        }
-        let Some((identity, _)) = error.ordinary_catch_projection() else {
-            return Err(error);
-        };
-        let exception = request_exception_for_catch(
-            &error,
-            std::slice::from_ref(&identity),
-            site.clone(),
-            self.context.exception_stack_for_site(site.clone()),
-            self.context.next_exception_correlation()?,
-            self.heap,
-        )?
-        .ok_or_else(|| {
-            RuntimeError::InvalidArtifact(
-                "platform catch projection did not match its own exact identity".to_string(),
-            )
-        })?;
-        Err(RuntimeError::UserException(UserException::new(exception)))
+            result,
+            site,
+        )
     }
 
     async fn eval_executable_call_with_stream_producer_arg(

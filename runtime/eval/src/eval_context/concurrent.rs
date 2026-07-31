@@ -289,7 +289,6 @@ fn flow_kind(flow: &Flow) -> &'static str {
         Flow::LoopContinue => "loop-continue",
         Flow::Parked => "parked",
         Flow::ContinueConsumer => "continue-consumer",
-        Flow::TailCall(_) => "tail-call",
     }
 }
 
