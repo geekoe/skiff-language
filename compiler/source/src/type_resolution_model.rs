@@ -60,6 +60,20 @@ pub struct ResolvedTypeRef {
     pub source_text: String,
 }
 
+impl ResolvedTypeRef {
+    pub fn new(ir: TypeRefIr) -> Self {
+        let source_text = debug_text(&ir);
+        Self { ir, source_text }
+    }
+
+    pub fn with_text(ir: TypeRefIr, text: String) -> Self {
+        Self {
+            ir,
+            source_text: text,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TypeResolutionModel {
     modules: BTreeMap<String, ModuleTypeResolution>,
@@ -714,7 +728,7 @@ impl TypeResolutionModel {
                     .join(", ")
             )
         };
-        Ok(ResolvedTypeRef { source_text, ir })
+        Ok(ResolvedTypeRef::with_text(ir, source_text))
     }
 
     pub fn resolve_type_text(
@@ -727,7 +741,7 @@ impl TypeResolutionModel {
         let source_text = self.expand_alias_text(raw, context)?;
         let ir = self.resolve_type_expr(&expr, context)?;
         let ir = self.expand_alias_type_ref(&ir, context)?;
-        Ok(ResolvedTypeRef { ir, source_text })
+        Ok(ResolvedTypeRef::with_text(ir, source_text))
     }
 
     /// Produces the exact semantic type represented by `ty`, recursively
@@ -1034,12 +1048,12 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
         let selector = self.resolve_canonical_interface_selector_type_ref(interface, context)?;
-        Ok(ResolvedTypeRef {
-            source_text: format!("any {}", selector.source_text),
-            ir: TypeRefIr::AnyInterface {
+        Ok(ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref,
             },
-        })
+            format!("any {}", selector.source_text),
+        ))
     }
 
     pub fn resolve_canonical_interface_selector_type_ref(
@@ -1359,10 +1373,7 @@ impl TypeResolutionModel {
                                 substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                             Ok((
                                 name.clone(),
-                                ResolvedTypeRef {
-                                    source_text: debug_text(&field_ty),
-                                    ir: field_ty,
-                                },
+                                ResolvedTypeRef::new(field_ty),
                             ))
                         })
                         .collect::<Result<_, String>>()?;
@@ -1459,10 +1470,7 @@ impl TypeResolutionModel {
                 };
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
-                let field = ResolvedTypeRef {
-                    source_text: debug_text(&field_ty),
-                    ir: field_ty,
-                };
+                let field = ResolvedTypeRef::new(field_ty);
                 Ok((
                     name.clone(),
                     if named.source_module_path == context.module_path {
@@ -1520,10 +1528,7 @@ impl TypeResolutionModel {
                 };
                 let field_ty = substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                 let field_ty = self.expand_alias_type_ref(&field_ty, &declaration_context)?;
-                let field = ResolvedTypeRef {
-                    source_text: debug_text(&field_ty),
-                    ir: field_ty,
-                };
+                let field = ResolvedTypeRef::new(field_ty);
                 Ok((
                     name.clone(),
                     if shape.module_path == context.module_path {
@@ -1579,10 +1584,7 @@ impl TypeResolutionModel {
         let payload = self.resolve_type_expr(&TypeExpr::parse(&shape.payload), &payload_context)?;
         let payload = substitute_type_params_in_type_ref_ref(&payload, &substitutions);
         let payload = self.expand_alias_type_ref(&payload, &payload_context)?;
-        let payload = ResolvedTypeRef {
-            source_text: debug_text(&payload),
-            ir: payload,
-        };
+        let payload = ResolvedTypeRef::new(payload);
         let payload = if shape.module_path == context.module_path {
             payload
         } else {
@@ -1666,10 +1668,7 @@ impl TypeResolutionModel {
         method_name: &str,
         context: &TypeResolutionContext<'_>,
     ) -> Option<LocalReceiverMethodResolution> {
-        let resolved = ResolvedTypeRef {
-            source_text: debug_text(receiver),
-            ir: receiver.clone(),
-        };
+        let resolved = ResolvedTypeRef::new(receiver.clone());
         let owner = self.actual_receiver_symbol(&resolved, context)?;
         let receiver_type = self.source_types.get(&owner)?;
         if !matches!(receiver_type.kind, SourceTypeKind::Record { .. }) {
@@ -2270,12 +2269,12 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
         let selector = self.resolve_canonical_interface_selector_expr(interface, context)?;
-        Ok(ResolvedTypeRef {
-            source_text: format!("any {}", selector.source_text),
-            ir: TypeRefIr::AnyInterface {
+        Ok(ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref,
             },
-        })
+            format!("any {}", selector.source_text),
+        ))
     }
 
     fn reject_any_interface_selector_aliases(

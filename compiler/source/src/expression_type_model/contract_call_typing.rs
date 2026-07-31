@@ -209,13 +209,13 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
         match resolved_contract_type(return_type, &call.alias) {
             Ok(resolved) => Some(match call.operation.contract.stream {
                 BoundaryStreamContract::ServerStream { .. } => (
-                    ResolvedTypeRef {
-                        source_text: format!("Stream<{}>", resolved.source_text),
-                        ir: skiff_artifact_model::TypeRefIr::Builtin {
+                    ResolvedTypeRef::with_text(
+                        skiff_artifact_model::TypeRefIr::Builtin {
                             name: "Stream".to_string(),
                             args: vec![resolved.ir],
                         },
-                    },
+                        format!("Stream<{}>", resolved.source_text),
+                    ),
                     PackageTypeRef::Container {
                         name: "Stream".to_string(),
                         arguments: vec![projected],

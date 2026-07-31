@@ -1174,10 +1174,7 @@ impl<'a> FunctionLowerer<'a> {
         let value_key = expression_key_offset(box_key, 1, "interface boxing value")?;
         let (value_source_text, concrete_type) =
             self.required_expression_type_fact(&value_key, "interface boxing value")?;
-        let actual = ResolvedTypeRef {
-            source_text: value_source_text.clone(),
-            ir: concrete_type.clone(),
-        };
+        let actual = ResolvedTypeRef::with_text(concrete_type.clone(), value_source_text.clone());
         if self
             .type_resolution
             .concrete_nominal_record_symbol(&actual, &context)
@@ -1188,12 +1185,12 @@ impl<'a> FunctionLowerer<'a> {
                 value_key, value_source_text
             )));
         }
-        let expected = ResolvedTypeRef {
-            source_text: selector.source_text.clone(),
-            ir: TypeRefIr::AnyInterface {
+        let expected = ResolvedTypeRef::with_text(
+            TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref.clone(),
             },
-        };
+            selector.source_text.clone(),
+        );
         let conformance = self
             .type_resolution
             .local_any_interface_conformance_for_boxing(&actual, &expected, &context)
@@ -1987,10 +1984,8 @@ impl<'a> FunctionLowerer<'a> {
                     .unwrap_or(target.symbol.as_str())
             ))
         })?;
-        let resolved_actor_ty = ResolvedTypeRef {
-            source_text: type_ref_ir_type_text(&actor_ty),
-            ir: actor_ty,
-        };
+        let actor_ty_text = type_ref_ir_type_text(&actor_ty);
+        let resolved_actor_ty = ResolvedTypeRef::with_text(actor_ty, actor_ty_text);
         let actor = self
             .type_resolution
             .actor_type_resolution(&resolved_actor_ty, &self.type_resolution_context())
@@ -2261,10 +2256,7 @@ impl<'a> FunctionLowerer<'a> {
         );
         self.type_resolution
             .record_field_type(
-                &ResolvedTypeRef {
-                    ir: ty.clone(),
-                    source_text: type_ref_ir_type_text(ty),
-                },
+                &ResolvedTypeRef::with_text(ty.clone(), type_ref_ir_type_text(ty)),
                 field,
                 &context,
             )

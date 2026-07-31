@@ -1297,12 +1297,13 @@ fn resolved_test_interface(argument: TypeRefIr) -> ResolvedTypeRef {
             symbol: "I".to_string(),
         },
     };
-    ResolvedTypeRef {
-        source_text: format!("I<{}>", debug_text(&argument)),
-        ir: TypeRefIr::AnyInterface {
+    let text = format!("I<{}>", debug_text(&argument));
+    ResolvedTypeRef::with_text(
+        TypeRefIr::AnyInterface {
             interface: interface_instantiation_ref(identity, vec![argument]),
         },
-    }
+        text,
+    )
 }
 
 fn object_safe_interface_source() -> &'static str {
@@ -1796,12 +1797,12 @@ fn concrete_type_conformance_requires_exact_nominal_receiver_and_interface() {
     let union = type_resolution
         .resolve_type_text("Box<string> | null", &context)
         .expect("union actual should resolve");
-    let record = ResolvedTypeRef {
-        ir: TypeRefIr::Record {
+    let record = ResolvedTypeRef::with_text(
+        TypeRefIr::Record {
             fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("string"))]),
         },
-        source_text: "{ value: string }".to_string(),
-    };
+        "{ value: string }".to_string(),
+    );
     let representation = type_resolution
         .resolve_type_text("Wrapped", &context)
         .expect("representation actual should resolve");
@@ -2525,8 +2526,8 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
     assert!(model.assignable(&role, &expected_role));
     assert!(
         !model.assignable(
-            &ResolvedTypeRef {
-                ir: TypeRefIr::PackageSymbol {
+            &ResolvedTypeRef::with_text(
+                TypeRefIr::PackageSymbol {
                     symbol: PackageSymbolRef {
                         package: PackageRefIr::PackageId {
                             package_id: "other.example/llm-api".to_string(),
@@ -2535,8 +2536,8 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         abi_expectation: None,
                     },
                 },
-                source_text: "otherRole.LlmRole".to_string(),
-            },
+                "otherRole.LlmRole".to_string(),
+            ),
             &expected_role,
         ),
         "same-shaped type from another package owner must remain nominally distinct"
@@ -2861,12 +2862,12 @@ fn record_field_type_resolves_synthetic_catch_and_upsert_fields_via_union_shapes
     };
 
     let field = |ty: &TypeRefIr, name: &str| {
-        let resolved = ResolvedTypeRef {
-            source_text: debug_text(ty),
-            ir: TypeRefIr::Union {
+        let resolved = ResolvedTypeRef::with_text(
+            TypeRefIr::Union {
                 items: vec![ty.clone()],
             },
-        };
+            debug_text(ty),
+        );
         model
             .record_field_type(&resolved, name, &context())
             .expect("synthetic field should resolve through the union shape")

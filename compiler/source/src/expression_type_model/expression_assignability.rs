@@ -240,10 +240,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
     ) -> bool {
         actual_fields.iter().all(|(name, actual_ty)| {
             target_fields.get(name).is_some_and(|expected_ty| {
-                let expected = ResolvedTypeRef {
-                    ir: expected_ty.clone(),
-                    source_text: debug_text(expected_ty),
-                };
+                let expected = ResolvedTypeRef::new(expected_ty.clone());
                 self.type_ir_assignable_to_resolved_expected(actual_ty, &expected)
             })
         }) && target_fields.iter().all(|(name, expected_ty)| {
@@ -256,10 +253,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         actual_ty: &TypeRefIr,
         expected: &ResolvedTypeRef,
     ) -> bool {
-        let actual = ResolvedTypeRef {
-            ir: actual_ty.clone(),
-            source_text: debug_text(actual_ty),
-        };
+        let actual = ResolvedTypeRef::new(actual_ty.clone());
         self.type_resolution
             .assignable_in_context(&actual, expected, self.type_context)
             || self.package_json_context
@@ -480,10 +474,9 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                     let name = object_literal_key_text(&entry.key)?;
                     let field_spans = source_fact.and_then(|fact| fact.record_fields.get(index));
                     Some(ObjectLiteralActualField {
-                        ty: fields.get(&name).map(|ty| ResolvedTypeRef {
-                            ir: ty.clone(),
-                            source_text: debug_text(ty),
-                        }),
+                        ty: fields
+                            .get(&name)
+                            .map(|ty| ResolvedTypeRef::new(ty.clone())),
                         name,
                         name_span: field_spans
                             .map(|field| field.name_span)
@@ -815,14 +808,9 @@ fn object_literal_target_candidates_from_ir(
             targets
                 .into_iter()
                 .map(|fields| {
-                    let branch = ResolvedTypeRef {
-                        source_text: debug_text(&TypeRefIr::Record {
-                            fields: fields.clone(),
-                        }),
-                        ir: TypeRefIr::Record {
-                            fields: fields.clone(),
-                        },
-                    };
+                    let branch = ResolvedTypeRef::new(TypeRefIr::Record {
+                        fields: fields.clone(),
+                    });
                     ObjectLiteralTargetCandidate {
                         label: label.to_string(),
                         fields: resolved_fields_from_ir(&fields),
@@ -902,13 +890,13 @@ fn map_object_value_target(target: &ResolvedTypeRef) -> Option<ResolvedTypeRef> 
         TypeRefIr::Builtin { name, args }
             if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject") =>
         {
-            Some(ResolvedTypeRef {
-                source_text: "Json".to_string(),
-                ir: TypeRefIr::Builtin {
+            Some(ResolvedTypeRef::with_text(
+                TypeRefIr::Builtin {
                     name: "Json".to_string(),
                     args: Vec::new(),
                 },
-            })
+                "Json".to_string(),
+            ))
         }
         _ => None,
     }
@@ -922,10 +910,7 @@ fn resolved_fields_from_ir(
         .map(|(name, ty)| {
             (
                 name.clone(),
-                ResolvedTypeRef {
-                    ir: ty.clone(),
-                    source_text: debug_text(ty),
-                },
+                ResolvedTypeRef::new(ty.clone()),
             )
         })
         .collect()

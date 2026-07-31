@@ -1219,10 +1219,10 @@ impl<'a> OwnerChecker<'a> {
             };
             selected.insert(name, ty.clone());
         }
-        let partial = ResolvedTypeRef {
-            ir: TypeRefIr::Record { fields: selected },
-            source_text: format!("subset<{}>", resolved.source_text),
-        };
+        let partial = ResolvedTypeRef::with_text(
+            TypeRefIr::Record { fields: selected },
+            format!("subset<{}>", resolved.source_text),
+        );
         let key = self.peek_key();
         let actual = self.check_expr(value);
         if let Some(actual) = actual {
@@ -1900,23 +1900,23 @@ impl<'a> OwnerChecker<'a> {
                     ));
                         return None;
                     };
-                    let expected_interface = ResolvedTypeRef {
-                        source_text: selector.source_text.clone(),
-                        ir: TypeRefIr::AnyInterface {
+                    let expected_interface = ResolvedTypeRef::with_text(
+                        TypeRefIr::AnyInterface {
                             interface: selector.instantiation_ref.clone(),
                         },
-                    };
+                        selector.source_text.clone(),
+                    );
                     match self.type_resolution.concrete_type_conforms_to_interface(
                         &value_ty,
                         &expected_interface,
                         &self.type_context,
                     ) {
-                        Ok(Some(_)) => Some(ResolvedTypeRef {
-                            source_text: format!("any {}", selector.source_text),
-                            ir: TypeRefIr::AnyInterface {
+                        Ok(Some(_)) => Some(ResolvedTypeRef::with_text(
+                            TypeRefIr::AnyInterface {
                                 interface: selector.instantiation_ref,
                             },
-                        }),
+                            format!("any {}", selector.source_text),
+                        )),
                         Ok(None) => {
                             self.diagnostics.push(format!(
                             "{}: type {} does not explicitly implement interface {} for boxing at {}",
@@ -2053,15 +2053,15 @@ impl<'a> OwnerChecker<'a> {
                             fields: source_fields,
                         },
                     );
-                    Some(ResolvedTypeRef {
-                        ir: TypeRefIr::Record {
+                    Some(ResolvedTypeRef::with_text(
+                        TypeRefIr::Record {
                             fields: fields
                                 .iter()
                                 .map(|(name, ty)| (name.clone(), ty.ir.clone()))
                                 .collect(),
                         },
-                        source_text: "{}".to_string(),
-                    })
+                        "{}".to_string(),
+                    ))
                 }
                 Expr::Patch { operations, .. } => {
                     for operation in operations {
@@ -2732,24 +2732,23 @@ impl<'a> OwnerChecker<'a> {
 
     fn literal_type(&self, literal: &Literal) -> Option<ResolvedTypeRef> {
         match literal {
-            Literal::String(value) => Some(ResolvedTypeRef {
-                ir: TypeRefIr::Literal {
+            Literal::String(value) => Some(ResolvedTypeRef::with_text(
+                TypeRefIr::Literal {
                     value: LiteralIr::String {
                         value: value.clone(),
                     },
                 },
-                source_text: serde_json::to_string(value)
-                    .unwrap_or_else(|_| "\"<string>\"".to_string()),
-            }),
+                serde_json::to_string(value).unwrap_or_else(|_| "\"<string>\"".to_string()),
+            )),
             Literal::Number(number) if number.fract() == 0.0 => self.resolve_builtin("integer"),
             Literal::Number(_) => self.resolve_builtin("number"),
             Literal::Bool(_) => self.resolve_builtin("bool"),
-            Literal::Null => Some(ResolvedTypeRef {
-                ir: TypeRefIr::Literal {
+            Literal::Null => Some(ResolvedTypeRef::with_text(
+                TypeRefIr::Literal {
                     value: LiteralIr::Null,
                 },
-                source_text: "null".to_string(),
-            }),
+                "null".to_string(),
+            )),
         }
     }
 
@@ -3334,12 +3333,14 @@ impl<'a> OwnerChecker<'a> {
                 self.type_resolution
                     .resolve_type_ref(ty, &self.type_context)
                     .ok()
-                    .map(|item| ResolvedTypeRef {
-                        ir: TypeRefIr::Builtin {
-                            name: "Array".to_string(),
-                            args: vec![item.ir],
-                        },
-                        source_text: format!("Array<{}>", item.source_text),
+                    .map(|item| {
+                        ResolvedTypeRef::with_text(
+                            TypeRefIr::Builtin {
+                                name: "Array".to_string(),
+                                args: vec![item.ir],
+                            },
+                            format!("Array<{}>", item.source_text),
+                        )
                     })
             }),
             "db.exists" => self.resolve_builtin("bool"),
@@ -3761,18 +3762,12 @@ impl<'a> OwnerChecker<'a> {
             .map(|(index, param)| {
                 (
                     format!("arg{index}"),
-                    ResolvedTypeRef {
-                        source_text: debug_text(&param.ty),
-                        ir: param.ty.clone(),
-                    },
+                    ResolvedTypeRef::new(param.ty.clone()),
                 )
             })
             .collect();
         self.validate_resolved_call_params(&callable, params, args, arg_types);
-        Some(ResolvedTypeRef {
-            source_text: debug_text(&return_type),
-            ir: return_type,
-        })
+        Some(ResolvedTypeRef::new(return_type))
     }
 
     fn actor_registry_intrinsic_call_type(
@@ -3826,16 +3821,16 @@ impl<'a> OwnerChecker<'a> {
             if needs_bootstrap {
                 params.push((
                     "bootstrap".to_string(),
-                    ResolvedTypeRef {
-                        source_text: "{}".to_string(),
-                        ir: TypeRefIr::Record {
+                    ResolvedTypeRef::with_text(
+                        TypeRefIr::Record {
                             fields: actor
                                 .fields
                                 .iter()
                                 .map(|(name, ty)| (name.clone(), ty.ir.clone()))
                                 .collect(),
                         },
-                    },
+                        "{}".to_string(),
+                    ),
                 ));
             }
             self.validate_resolved_call_params(path, params, args, arg_types);
@@ -3938,18 +3933,12 @@ impl<'a> OwnerChecker<'a> {
             .map(|(index, param)| {
                 (
                     format!("arg{index}"),
-                    ResolvedTypeRef {
-                        source_text: debug_text(&param.ty),
-                        ir: param.ty.clone(),
-                    },
+                    ResolvedTypeRef::new(param.ty.clone()),
                 )
             })
             .collect();
         self.validate_resolved_call_params(&callable, params, args, arg_types);
-        Some(ResolvedTypeRef {
-            source_text: debug_text(&operation.return_type),
-            ir: operation.return_type,
-        })
+        Some(ResolvedTypeRef::new(operation.return_type))
     }
 
     fn package_interface_receiver_call_type(
@@ -3989,10 +3978,7 @@ impl<'a> OwnerChecker<'a> {
                     let ty = substitute_type_params_in_ir(&param.ty, &substitutions.types);
                     (
                         format!("arg{index}"),
-                        ResolvedTypeRef {
-                            source_text: debug_text(&ty),
-                            ir: ty,
-                        },
+                        ResolvedTypeRef::new(ty),
                     )
                 })
                 .collect();
@@ -4000,10 +3986,7 @@ impl<'a> OwnerChecker<'a> {
         }
         let return_type =
             substitute_type_params_in_ir(&operation.return_type, &substitutions.types);
-        Some(ResolvedTypeRef {
-            source_text: debug_text(&return_type),
-            ir: return_type,
-        })
+        Some(ResolvedTypeRef::new(return_type))
     }
 
     fn package_receiver_call_type(
@@ -4772,10 +4755,7 @@ fn insert_callable_signature(
 }
 
 fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
-    single_item(&ty.ir).map(|item| ResolvedTypeRef {
-        ir: item.clone(),
-        source_text: debug_text(item),
-    })
+    single_item(&ty.ir).map(|item| ResolvedTypeRef::new(item.clone()))
 }
 
 fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
@@ -4785,10 +4765,7 @@ fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
     matches!(name.as_str(), "Stream" | "std.stream.Stream")
         .then_some(args)
         .filter(|args| args.len() == 1)
-        .map(|args| ResolvedTypeRef {
-            ir: args[0].clone(),
-            source_text: debug_text(&args[0]),
-        })
+        .map(|args| ResolvedTypeRef::new(args[0].clone()))
 }
 
 fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTypeRef)> {
@@ -4848,23 +4825,23 @@ fn native_return_type_context<'a>(
 }
 
 fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeRef {
-    ResolvedTypeRef {
-        ir: TypeRefIr::Builtin {
+    ResolvedTypeRef::with_text(
+        TypeRefIr::Builtin {
             name: name.to_string(),
             args: vec![target.ir.clone()],
         },
-        source_text: format!("{name}<{}>", target.source_text),
-    }
+        format!("{name}<{}>", target.source_text),
+    )
 }
 
 fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> ResolvedTypeRef {
-    ResolvedTypeRef {
-        ir: TypeRefIr::Builtin {
+    ResolvedTypeRef::with_text(
+        TypeRefIr::Builtin {
             name: "CatchResult".to_string(),
             args: vec![value.ir, error.ir],
         },
-        source_text: format!("CatchResult<{}, {}>", value.source_text, error.source_text),
-    }
+        format!("CatchResult<{}, {}>", value.source_text, error.source_text),
+    )
 }
 
 fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<ResolvedTypeRef> {
@@ -5022,10 +4999,7 @@ fn non_nullable_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
                 .filter(|text| !text.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| debug_text(inner));
-            Some(ResolvedTypeRef {
-                ir: inner.as_ref().clone(),
-                source_text,
-            })
+            Some(ResolvedTypeRef::with_text(inner.as_ref().clone(), source_text))
         }
         TypeRefIr::Union { items } => {
             let remaining = items
@@ -5071,19 +5045,16 @@ fn record_tag_literal(ty: &TypeRefIr) -> Option<&str> {
 }
 
 fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
-    ResolvedTypeRef {
-        ir: ty.clone(),
-        source_text: debug_text(ty),
-    }
+    ResolvedTypeRef::new(ty.clone())
 }
 
 fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
-    ResolvedTypeRef {
-        ir: TypeRefIr::Nullable {
+    ResolvedTypeRef::with_text(
+        TypeRefIr::Nullable {
             inner: Box::new(inner.ir),
         },
-        source_text: format!("{}?", inner.source_text),
-    }
+        format!("{}?", inner.source_text),
+    )
 }
 
 fn db_lease_read_type() -> ResolvedTypeRef {
@@ -5091,26 +5062,26 @@ fn db_lease_read_type() -> ResolvedTypeRef {
         name: "string".to_string(),
         args: Vec::new(),
     };
-    nullable_type(ResolvedTypeRef {
-        ir: TypeRefIr::Record {
+    nullable_type(ResolvedTypeRef::with_text(
+        TypeRefIr::Record {
             fields: BTreeMap::from([
                 ("expiresAt".to_string(), string.clone()),
                 ("owner".to_string(), string.clone()),
                 ("requestId".to_string(), string),
             ]),
         },
-        source_text: "{ expiresAt: string, owner: string, requestId: string }".to_string(),
-    })
+        "{ expiresAt: string, owner: string, requestId: string }".to_string(),
+    ))
 }
 
 fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
-    ResolvedTypeRef {
-        ir: TypeRefIr::Builtin {
+    ResolvedTypeRef::with_text(
+        TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![item.ir],
         },
-        source_text: format!("Array<{}>", item.source_text),
-    }
+        format!("Array<{}>", item.source_text),
+    )
 }
 
 fn object_literal_key_text(key: &crate::shared::ast::ObjectLiteralKey) -> Option<String> {
@@ -5200,10 +5171,7 @@ fn qualify_package_signature_type_text(
 
 fn resolved_package_type_ref(ty: &PackageTypeRef) -> ResolvedTypeRef {
     let ir = package_type_ref_ir(ty);
-    ResolvedTypeRef {
-        source_text: debug_text(&ir),
-        ir,
-    }
+    ResolvedTypeRef::new(ir)
 }
 
 fn package_type_ref_ir(ty: &PackageTypeRef) -> TypeRefIr {

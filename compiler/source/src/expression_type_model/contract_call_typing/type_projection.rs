@@ -662,32 +662,32 @@ pub(super) fn resolved_contract_type(
                 .iter()
                 .map(|argument| resolved_contract_type(argument, alias))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(ResolvedTypeRef {
-                source_text: if arguments.is_empty() {
-                    name.clone()
-                } else {
-                    format!(
-                        "{name}<{}>",
-                        arguments
-                            .iter()
-                            .map(|argument| argument.source_text.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                },
-                ir: TypeRefIr::Builtin {
+            let text = if arguments.is_empty() {
+                name.clone()
+            } else {
+                format!(
+                    "{name}<{}>",
+                    arguments
+                        .iter()
+                        .map(|argument| argument.source_text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            Ok(ResolvedTypeRef::with_text(
+                TypeRefIr::Builtin {
                     name: name.clone(),
                     args: arguments.into_iter().map(|argument| argument.ir).collect(),
                 },
-            })
+                text,
+            ))
         }
         ContractTypeRef::PackageSchema {
             package_id,
             stable_schema_key,
             ..
-        } => Ok(ResolvedTypeRef {
-            source_text: format!("{alias}.{stable_schema_key}"),
-            ir: TypeRefIr::PackageSymbol {
+        } => Ok(ResolvedTypeRef::with_text(
+            TypeRefIr::PackageSymbol {
                 symbol: PackageSymbolRef {
                     package: PackageRefIr::PackageId {
                         package_id: package_id.clone(),
@@ -696,28 +696,28 @@ pub(super) fn resolved_contract_type(
                     abi_expectation: None,
                 },
             },
-        }),
-        ContractTypeRef::TypeParam { name } => Ok(ResolvedTypeRef {
-            source_text: name.clone(),
-            ir: TypeRefIr::TypeParam { name: name.clone() },
-        }),
+            format!("{alias}.{stable_schema_key}"),
+        )),
+        ContractTypeRef::TypeParam { name } => Ok(ResolvedTypeRef::with_text(
+            TypeRefIr::TypeParam { name: name.clone() },
+            name.clone(),
+        )),
         ContractTypeRef::Nullable { inner } => {
             let inner = resolved_contract_type(inner, alias)?;
-            Ok(ResolvedTypeRef {
-                source_text: format!("{}?", inner.source_text),
-                ir: TypeRefIr::Nullable {
+            Ok(ResolvedTypeRef::with_text(
+                TypeRefIr::Nullable {
                     inner: Box::new(inner.ir),
                 },
-            })
+                format!("{}?", inner.source_text),
+            ))
         }
         ContractTypeRef::AnyInterface {
             interface,
             arguments,
         } => {
             let interface = resolved_contract_type(interface, alias)?;
-            Ok(ResolvedTypeRef {
-                source_text: format!("any {}", interface.source_text),
-                ir: TypeRefIr::AnyInterface {
+            Ok(ResolvedTypeRef::with_text(
+                TypeRefIr::AnyInterface {
                     interface: skiff_artifact_model::InterfaceInstantiationRef {
                         interface_abi_id: type_ref_abi_key(&interface.ir),
                         canonical_type_args: arguments
@@ -728,7 +728,8 @@ pub(super) fn resolved_contract_type(
                             .collect::<Result<_, _>>()?,
                     },
                 },
-            })
+                format!("any {}", interface.source_text),
+            ))
         }
         ContractTypeRef::Record { .. } => {
             Err("inline contract record has no exact source type representation".to_string())
