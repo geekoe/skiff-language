@@ -107,6 +107,23 @@ const hub = std.actor.get<DocHub>("room-1", 0)
   `spawn actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
 - 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `spawn` 目标方法。
 
+### 消费视图与验收矩阵
+
+actor 声明的权威表示是 PackageArtifact 中的 actor 元数据（key/create/方法/identity）。
+编译器、runtime linker、runtime 执行、router 与测试 harness 都从该表示消费，不得各自
+重新推导或保留第二套形态。已知消费视图：
+
+1. 生产同包路径（`root.*` 直接调用 actor 方法）——compile / link / execute；
+2. 公共 API 跨包调用方（public view）——compile / link / execute；
+3. `kind: test` service 经 `topLevelAlias` 的测试视图——compile / link / execute；
+4. router 控制面（`get` / `spawn` / owner 路由）——运行期。
+
+验收红线：actor 相关改动必须覆盖视图 1、2、3 的 compile/link/execute 与视图 4 的运行期
+路径，否则视为未闭合。历史缺口示例：视图 3 的 runtime link 曾报
+`type symbol ... is unresolved`（编译器投影已做、linker 消费缺失）；spawn 到 actor 的
+异常/trace 上下文曾未穿透 invoke 帧。二者均为“消费视图未枚举、单一事实源未落实”的
+表现，修复时须同时补对应视图的回归。
+
 registry entry 保存创建输入，不保存实例状态：
 
 - entry 是激活所需的最小事实，不是持久层；router 重启后 entry 丢失，业务在入口路径用 `get` 从业务事实重建。
