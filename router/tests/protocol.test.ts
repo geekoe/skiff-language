@@ -1673,11 +1673,43 @@ describe('runtime binary frame foundations', () => {
     }
   });
 
-  it('keeps spawn submit schema function-only', () => {
+  it('keeps spawn submit schema function/actorMethod-targeted', () => {
     const properties = runtimeFrameHeaderSchemas['spawn.submit.request'].properties;
-    expect(properties.targetKind.enum).toEqual(['function']);
+    expect(properties.targetKind.enum).toEqual(['function', 'actorMethod']);
     expect(properties).not.toHaveProperty('actorRef');
     expect(properties).not.toHaveProperty('methodName');
+    expect(properties).toHaveProperty('actorMethod');
+    const actorMethodTarget = {
+      actorRef: runtimeFrameHeaderFixtures['actor.getOrCreate.response'].actorRef,
+      declarationOwner: runtimeFrameHeaderFixtures['actor.getOrCreate.request']
+        .declarationOwner,
+      actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      actorImplementationIdentity:
+        'skiff-actor-implementation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      methodIdentity:
+        'skiff-actor-method-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    };
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+        targetKind: 'actorMethod',
+        actorMethod: actorMethodTarget
+      }).ok
+    ).toBe(true);
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+        targetKind: 'actorMethod',
+        actorMethod: {
+          ...actorMethodTarget,
+          actorRef: { ...actorMethodTarget.actorRef, epoch: undefined }
+        }
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid spawn.submit.request envelope: actorMethod.actorRef.epoch must be a positive integer'
+    });
     expect(
       validateRuntimeToRouterFrameHeader({
         ...runtimeFrameHeaderFixtures['spawn.submit.request'],

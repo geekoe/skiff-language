@@ -1,8 +1,8 @@
 pub use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
     ActorGetOrCreateControlRequest, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
-    ActorInvocationOwnerUnit, ActorKeyControlMetadata, ActorRemoveControlRequest,
-    ActorReplaceControlRequest, ConnectionRequestCancelControl, ConnectionRequestControl,
-    ConnectionSendControl, OutboundControlMessage, OutboundResponse, RequestCancelControl,
-    RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    ActorInvocationOwnerUnit, ActorKeyControlMetadata, ActorMethodSpawnTargetControl,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
+    ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
+    RequestCancelControl, RuntimeDeadlineControl, SpawnSubmitControlRequest,
 };

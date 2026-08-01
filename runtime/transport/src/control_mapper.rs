@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::Serialize;
 use skiff_runtime_request_contract::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
@@ -9,8 +10,8 @@ use skiff_runtime_request_contract::{
 
 use crate::{
     actor_method::{
-        ActorDeclarationOwnerFrameHeader, ActorMethodDeadlineFrameHeader,
-        ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
+        ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
+        ActorMethodDeadlineFrameHeader, ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
     },
     cancel_reason::{request_cancel_wire_reason_for_internal, RequestCancelReason},
     connection_protocol::{
@@ -22,7 +23,8 @@ use crate::{
         encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
         ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
         ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
-        RuntimeDeadlineFrameHeader, SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeDeadlineFrameHeader, SpawnActorMethodTargetFrameMetadata,
+        SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -257,6 +259,36 @@ fn spawn_submit_request_frame_header(
         trace_id: request.trace_id,
         caller_target: request.caller_target,
         max_queue_wait_ms: request.max_queue_wait_ms,
+        actor_method: request
+            .actor_method
+            .map(actor_method_spawn_target_frame)
+            .transpose()?,
+    })
+}
+
+fn actor_method_spawn_target_frame(
+    target: skiff_runtime_request_contract::ActorMethodSpawnTargetControl,
+) -> TransportResult<SpawnActorMethodTargetFrameMetadata> {
+    let epoch = target.actor_ref.epoch().ok_or_else(|| {
+        crate::TransportError::decode(
+            "actor method spawn target requires a pinned Actor epoch".to_string(),
+        )
+    })?;
+    Ok(SpawnActorMethodTargetFrameMetadata {
+        actor_ref: ActorLogicalRefFrameHeader {
+            service_id: target.actor_ref.service_id().to_string(),
+            actor_type_identity: target.actor_ref.actor_type_identity().to_string(),
+            actor_id_type_identity: target.actor_ref.actor_id_type_identity().to_string(),
+            actor_id_encoding_version: target.actor_ref.actor_id_encoding_version().to_string(),
+            canonical_actor_id_key_bytes_base64: base64::engine::general_purpose::STANDARD
+                .encode(target.actor_ref.canonical_actor_id_key_bytes()),
+            actor_id_hash: target.actor_ref.actor_id_hash().to_string(),
+            epoch,
+        },
+        declaration_owner: actor_declaration_owner_frame(target.declaration_owner),
+        actor_abi_identity: target.actor_abi_identity,
+        actor_implementation_identity: target.actor_implementation_identity,
+        method_identity: target.method_identity,
     })
 }
 

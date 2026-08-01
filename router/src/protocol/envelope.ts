@@ -775,7 +775,15 @@ export interface ActorRemoveResponseFrameHeader
   removed: boolean;
 }
 
-export type SpawnSubmitTargetKind = 'function';
+export type SpawnSubmitTargetKind = 'function' | 'actorMethod';
+
+export interface SpawnActorMethodTargetFrameMetadata {
+  actorRef: ActorRefFrameMetadata;
+  declarationOwner: ActorDeclarationOwnerFrameMetadata;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  methodIdentity: string;
+}
 
 export interface SpawnSubmitRequestFrameHeader
   extends RuntimeControlRequestFrameHeaderBase<'spawn.submit.request'> {
@@ -789,6 +797,7 @@ export interface SpawnSubmitRequestFrameHeader
   callerRequestId: string;
   traceId?: string;
   callerTarget?: string;
+  actorMethod?: SpawnActorMethodTargetFrameMetadata;
 }
 
 export interface SpawnSubmitResponseFrameHeader

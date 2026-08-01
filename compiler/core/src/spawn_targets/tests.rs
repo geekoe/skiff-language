@@ -2,7 +2,7 @@ use super::*;
 use skiff_artifact_model::{
     validate_file_ir_service_calls, ContractOperationId, ExecutableBody, ExecutableIr, ExprIr,
     PackageCallableId, PackageCallableRef, PackageImplementationLinks, PackageRefIr,
-    ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity, SlotLayout,
+    ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity, ServiceSymbolRef, SlotLayout,
 };
 
 #[test]
@@ -99,6 +99,41 @@ fn package_direct_calls_are_external_to_spawn_projection() {
         service_spawn_targets_with_packages(&[], std::slice::from_ref(&package), "proto-1")
             .expect("package dependency calls must not be relinked by spawn projection");
     assert!(package_targets.is_empty());
+}
+
+#[test]
+fn actor_method_spawn_targets_are_not_projected_as_function_routes() {
+    let mut unit = service_file_ir("void");
+    let ExprIr::Call { call } = &mut unit.executables[0].body.expressions[0] else {
+        panic!("fixture must contain a call expression")
+    };
+    call.target = CallTargetIr::ActorMethod {
+        actor: ServiceSymbolRef {
+            module_path: "app".to_string(),
+            symbol: "Counter".to_string(),
+        },
+        actor_abi_identity: skiff_artifact_model::ActorAbiIdentity::new(
+            "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        actor_implementation_identity:
+            skiff_artifact_model::ActorImplementationIdentity::new(
+                "skiff-actor-implementation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+        method_identity: skiff_artifact_model::ActorMethodIdentity::new(
+            "skiff-actor-method-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    };
+    call.metadata.insert(
+        SPAWN_SUBMIT_METADATA_KEY.to_string(),
+        MetadataValue::Object(BTreeMap::from([(
+            "targetKind".to_string(),
+            MetadataValue::String("actorMethod".to_string()),
+        )])),
+    );
+
+    let targets = service_spawn_targets_with_packages(std::slice::from_ref(&unit), &[], "proto-1")
+        .expect("actor method spawn metadata must not be rejected by projection");
+    assert!(targets.is_empty());
 }
 
 fn service_file_ir(return_type: &str) -> FileIrUnit {

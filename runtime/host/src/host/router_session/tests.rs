@@ -234,6 +234,7 @@ async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
                 trace_id: Some("trace-1".to_string()),
                 caller_target: Some("Caller.start".to_string()),
                 max_queue_wait_ms: Some(250.0),
+                actor_method: None,
             },
             payload: b"opaque spawn args".to_vec(),
         },

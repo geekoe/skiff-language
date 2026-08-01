@@ -120,6 +120,82 @@ export async function runActorFullChainAcceptance({
       const flakyRetry = await invokeUnaryRaw(stack.routerHttpUrl, flakyGet, signal);
       assert.notEqual(flakyRetry.status, 200, 'retained flaky entry must keep failing');
 
+      // spawn to an actor method from a plain function: the submit returns
+      // before the target method (500ms record sleep) has run, and the call is
+      // queued on the actor instance.
+      const spawnExternal = entrypoints.get('spawnExternal');
+      const externalCount = entrypoints.get('externalCount');
+      const externalHistory = entrypoints.get('externalHistory');
+      assert.ok(spawnExternal, 'Actor fixture must publish spawnExternal');
+      assert.ok(externalCount, 'Actor fixture must publish externalCount');
+      assert.ok(externalHistory, 'Actor fixture must publish externalHistory');
+      const externalStarted = Date.now();
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, spawnExternal, signal),
+        'external-submitted',
+      );
+      const externalSubmitElapsedMs = Date.now() - externalStarted;
+      assert.ok(
+        externalSubmitElapsedMs < 250,
+        `spawn submit waited for the target method: ${externalSubmitElapsedMs}ms`,
+      );
+      await waitForActorValue({
+        routerHttpUrl: stack.routerHttpUrl,
+        entrypoint: externalCount,
+        expected: 1,
+        signal,
+      });
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, externalHistory, signal),
+        'x',
+      );
+
+      // spawn self.method inside an actor method: the self message advances the
+      // same instance without nesting in the submitting method's call stack.
+      const spawnSelfKick = entrypoints.get('spawnSelfKick');
+      const selfKickCount = entrypoints.get('selfKickCount');
+      const selfKickHistory = entrypoints.get('selfKickHistory');
+      assert.ok(spawnSelfKick, 'Actor fixture must publish spawnSelfKick');
+      assert.ok(selfKickCount, 'Actor fixture must publish selfKickCount');
+      assert.ok(selfKickHistory, 'Actor fixture must publish selfKickHistory');
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, spawnSelfKick, signal),
+        'kicked',
+      );
+      await waitForActorValue({
+        routerHttpUrl: stack.routerHttpUrl,
+        entrypoint: selfKickCount,
+        expected: 1,
+        signal,
+      });
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, selfKickHistory, signal),
+        's',
+      );
+
+      // Multiple spawned self messages queue serially on the same instance and
+      // all run to completion.
+      const spawnFanout = entrypoints.get('spawnFanout');
+      const fanoutCount = entrypoints.get('fanoutCount');
+      const fanoutHistory = entrypoints.get('fanoutHistory');
+      assert.ok(spawnFanout, 'Actor fixture must publish spawnFanout');
+      assert.ok(fanoutCount, 'Actor fixture must publish fanoutCount');
+      assert.ok(fanoutHistory, 'Actor fixture must publish fanoutHistory');
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, spawnFanout, signal),
+        'fanned',
+      );
+      await waitForActorValue({
+        routerHttpUrl: stack.routerHttpUrl,
+        entrypoint: fanoutCount,
+        expected: 3,
+        signal,
+      });
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, fanoutHistory, signal),
+        'abc',
+      );
+
       const health = await readHealth(stack.controlUrl, signal);
       const replicas = health.replicas.filter(
         (replica) =>
@@ -195,6 +271,24 @@ async function waitForTwoActiveReplicas({
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   throw new Error('Actor acceptance assembly did not activate on two Runtime replicas');
+}
+
+async function waitForActorValue({
+  routerHttpUrl,
+  entrypoint,
+  expected,
+  signal,
+}) {
+  const started = Date.now();
+  while (Date.now() - started < 15_000) {
+    signal.throwIfAborted();
+    const value = await invokeUnary(routerHttpUrl, entrypoint, signal);
+    if (JSON.stringify(value) === JSON.stringify(expected)) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  throw new Error(
+    `actor value ${JSON.stringify(expected)} was not observed within 15s`,
+  );
 }
 
 async function readHealth(controlUrl, signal) {

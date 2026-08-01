@@ -1,15 +1,23 @@
 use serde_json::Value;
 use skiff_artifact_model::MetadataValue;
+use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
-use skiff_runtime_capability_context::{ActivationIdentityControl, SpawnSubmitControlRequest};
-use skiff_runtime_linked_program::{
-    CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, LinkedCallTarget, LinkedExprIr,
+use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
+use skiff_runtime_capability_context::{
+    ActivationIdentityControl, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
+    ActorInvocationOwnerUnit, ActorMethodSpawnTargetControl, SpawnSubmitControlRequest,
 };
+use skiff_runtime_linked_program::{
+    CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorMethodImplementation,
+    LinkedCallTarget, LinkedExprIr, UnitAddr,
+};
+use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
     recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue, value::HeapNode,
 };
 
 use crate::{
+    actor_instance::resolve_actor_declaration,
     assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
     invocation::EvalProgramProjection,
@@ -160,6 +168,7 @@ pub async fn submit_spawn_statement(
                 trace_id: request_context.trace_id().map(str::to_string),
                 caller_target: Some(request_context.request_target().to_string()),
                 max_queue_wait_ms: None,
+                actor_method: invocation.actor_method,
             },
             invocation.args_payload,
             execution_control,
@@ -211,6 +220,7 @@ struct SpawnEncodedCall {
     target_kind: String,
     target: String,
     args_payload: Vec<u8>,
+    actor_method: Option<ActorMethodSpawnTargetControl>,
 }
 
 async fn encode_spawn_request_payload(
@@ -221,6 +231,7 @@ async fn encode_spawn_request_payload(
     let target = spawn_submit_target(call)?;
     match target.kind.as_str() {
         "function" => encode_spawn_function_payload(context, call, projection, target).await,
+        "actorMethod" => encode_spawn_actor_method_payload(context, call, projection, target).await,
         _ => Err(RuntimeError::InvalidArtifact(format!(
             "spawnSubmit metadata targetKind {} is unsupported",
             target.kind
@@ -294,7 +305,184 @@ async fn encode_spawn_function_payload(
         target_kind: "function".to_string(),
         target: route_target,
         args_payload,
+        actor_method: None,
     })
+}
+
+async fn encode_spawn_actor_method_payload(
+    context: &mut EvalContext<'_>,
+    call: &CallIr,
+    projection: RuntimeExecutionProjection<'_>,
+    target: SpawnSubmitTarget,
+) -> Result<SpawnEncodedCall> {
+    let LinkedCallTarget::ActorDispatch { plan } = &call.target else {
+        return Err(RuntimeError::InvalidArtifact(
+            "canonical spawn actor method target is not a linked actor dispatch".to_string(),
+        ));
+    };
+    let expected_target = format!(
+        "actorMethod:{}:{}",
+        plan.declaration_owner.actor_symbol,
+        plan.method_identity.as_str()
+    );
+    if target.name != expected_target {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "spawnSubmit metadata target {} does not match linked actor method {}",
+            target.name, expected_target
+        )));
+    }
+
+    let declaration = resolve_actor_declaration(projection.type_view(), &plan.declaration_owner)?;
+    let method = exact_actor_method(&declaration.public_methods, &plan.method_identity)?;
+    let expected_arguments = method.parameters.len() + 1;
+    if call.args.len() != expected_arguments {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "spawn actor method {} expects {} argument(s) including receiver, got {}",
+            method.name,
+            expected_arguments,
+            call.args.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(call.args.len());
+    for arg in &call.args {
+        values.push(context.eval_program_expr_ref(*arg).await?);
+    }
+    let receiver = values.first().ok_or_else(|| {
+        RuntimeError::InvalidArtifact("spawn actor method call is missing its receiver".to_string())
+    })?;
+    let actor_ref = match receiver.value() {
+        RuntimeValue::ActorRef(actor_ref) => actor_ref.clone(),
+        _ => {
+            // `self` in an actor method lowers to a slot whose runtime value is
+            // not materialized as an ActorRef; derive it from the current actor
+            // execution frame. Any other non-Actor receiver is invalid.
+            context
+                .context
+                .actor_execution_frame()
+                .ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "spawn actor method receiver is not an Actor reference".to_string(),
+                    )
+                })?
+                .current_actor_ref()?
+        }
+    };
+    if actor_ref.epoch().is_none() {
+        return Err(RuntimeError::InvalidArtifact(
+            "spawn actor method receiver is missing its pinned epoch".to_string(),
+        ));
+    }
+
+    let request_context = context.context.request_context();
+    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload)
+        .with_origin_service(
+            PayloadServiceRef::new(request_context.service_id())
+                .with_version(request_context.service_version())
+                .with_build_id(request_context.request_build_id()),
+        );
+    let behavior_hooks = EvalRecoverableBehaviorHooks::new_for_execution(&projection)?;
+
+    // Recoverable policy gate: every spawn argument must survive the
+    // owner-internal recoverable boundary. The wire payload itself reuses the
+    // actor arguments encoding so the owner executor decodes it unchanged.
+    let method_addr = actor_method_executable_addr(plan, &method.implementation);
+    let resolved_method = projection.resolve_executable(&method_addr)?;
+    let recoverable_expected = executable_request_recoverable_expected_plan(
+        projection.type_view(),
+        &resolved_method.addr,
+        resolved_method.executable,
+    )?;
+    let mut gate_fields = std::collections::BTreeMap::new();
+    for (parameter, value) in method.parameters.iter().zip(values.iter().skip(1)) {
+        gate_fields.insert(parameter.name.clone(), value.clone());
+    }
+    let gate_handle = context.heap.alloc_object_carriers(gate_fields)?;
+    encode_spawn_args_payload(
+        &RuntimeValue::Heap(gate_handle),
+        &recoverable_expected,
+        &boundary,
+        context.heap,
+        &behavior_hooks,
+    )?;
+
+    let type_context = PlanContext::from_type_view(projection.type_view(), context.addr);
+    let wire_arguments = values
+        .iter()
+        .skip(1)
+        .zip(&method.parameters)
+        .enumerate()
+        .map(|(index, (value, parameter))| {
+            let type_plan = RuntimeTypePlan::from_linked(&parameter.ty, &type_context)?;
+            RuntimeBoundaryCodec::new(
+                &type_plan,
+                BoundaryUse::NativeArg,
+                format!("Actor argument {index}"),
+            )
+            .to_wire_json(value.value(), context.heap)
+            .map_err(RuntimeError::from)
+        })
+        .collect::<Result<Vec<Value>>>()?;
+    let arguments_payload = canonical_json_bytes(&Value::Array(wire_arguments))
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+
+    Ok(SpawnEncodedCall {
+        target_kind: "actorMethod".to_string(),
+        target: target.name,
+        args_payload: arguments_payload,
+        actor_method: Some(ActorMethodSpawnTargetControl {
+            actor_ref: actor_ref.clone(),
+            declaration_owner: ActorInvocationDeclarationOwner {
+                unit: match &plan.declaration_owner.unit {
+                    UnitAddr::Service => ActorInvocationOwnerUnit::Service,
+                    UnitAddr::Package(slot) => ActorInvocationOwnerUnit::Package(*slot as u64),
+                },
+                file: match &plan.declaration_owner.file {
+                    FileAddr::LoadedFileIndex(index) => {
+                        ActorInvocationOwnerFile::LoadedFileIndex(*index as u64)
+                    }
+                    FileAddr::FileIrIdentity(identity) => {
+                        ActorInvocationOwnerFile::FileIrIdentity(identity.clone())
+                    }
+                },
+                actor_symbol: plan.declaration_owner.actor_symbol.clone(),
+            },
+            actor_abi_identity: plan.actor_abi_identity.clone(),
+            actor_implementation_identity: plan.actor_implementation_identity.clone(),
+            method_identity: plan.method_identity.clone(),
+        }),
+    })
+}
+
+fn exact_actor_method<'a>(
+    methods: &'a [skiff_runtime_linked_program::LinkedActorPublicMethod],
+    identity: &skiff_artifact_model::ActorMethodIdentity,
+) -> Result<&'a skiff_runtime_linked_program::LinkedActorPublicMethod> {
+    let mut matches = methods
+        .iter()
+        .filter(|method| method.method_identity == *identity);
+    let method = matches
+        .next()
+        .ok_or_else(|| RuntimeError::InvalidArtifact("Actor method is absent".to_string()))?;
+    if matches.next().is_some() {
+        return Err(RuntimeError::InvalidArtifact(
+            "Actor method identity is ambiguous".to_string(),
+        ));
+    }
+    Ok(method)
+}
+
+fn actor_method_executable_addr(
+    plan: &skiff_runtime_linked_program::LinkedActorMethodDispatchPlan,
+    implementation: &LinkedActorMethodImplementation,
+) -> ExecutableAddr {
+    match implementation {
+        LinkedActorMethodImplementation::LocalExecutable { executable_index } => ExecutableAddr {
+            unit: plan.declaration_owner.unit.clone(),
+            file: plan.declaration_owner.file.clone(),
+            executable: *executable_index as usize,
+        },
+        LinkedActorMethodImplementation::Executable { addr } => addr.clone(),
+    }
 }
 
 fn canonical_spawn_executable_addr(call: &CallIr) -> Result<&ExecutableAddr> {
@@ -412,7 +600,7 @@ fn spawn_submit_target(call: &CallIr) -> Result<SpawnSubmitTarget> {
                 "spawnSubmit metadata targetKind must be a string".to_string(),
             )
         })?;
-    if kind != "function" {
+    if kind != "function" && kind != "actorMethod" {
         return Err(RuntimeError::InvalidArtifact(format!(
             "spawnSubmit metadata targetKind {kind} is unsupported"
         )));

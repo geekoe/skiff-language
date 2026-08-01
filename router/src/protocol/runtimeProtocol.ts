@@ -173,6 +173,8 @@ const routerToRuntimeFrameHeaderTypes = [
 
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v5:sha256:[0-9a-f]{64}$/;
+const SPAWN_SUBMIT_PROTOCOL_IDENTITY_PATTERN =
+  /^(?:skiff-service-protocol-v5|skiff-actor-abi-v1):sha256:[0-9a-f]{64}$/;
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
 const BUILD_ID_PATTERN = /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_BUILD_ID_PATTERN = /^skiff-package-test-build-v1:sha256:[0-9a-f]{64}$/;
@@ -263,7 +265,7 @@ const configShapeProtocolSchema = {
 
 const cancelReasons = REQUEST_CANCEL_REASONS satisfies readonly RequestCancelReason[];
 
-const spawnTargetKinds = ['function'] as const;
+const spawnTargetKinds = ['function', 'actorMethod'] as const;
 const dispatchModes = ['unary', 'serverStream'] as const;
 const websocketAdapterSourceKinds = [
   'websocket.connectRequest',
@@ -1228,7 +1230,41 @@ export const runtimeFrameHeaderSchemas = {
       buildId: { type: 'string' },
       callerRequestId: { type: 'string' },
       traceId: { type: 'string' },
-      callerTarget: { type: 'string' }
+      callerTarget: { type: 'string' },
+      actorMethod: {
+        type: 'object',
+        required: [
+          'actorRef',
+          'declarationOwner',
+          'actorAbiIdentity',
+          'actorImplementationIdentity',
+          'methodIdentity'
+        ],
+        properties: {
+          actorRef: {
+            type: 'object',
+            required: [
+              'serviceId',
+              'actorTypeIdentity',
+              'actorIdTypeIdentity',
+              'actorIdEncodingVersion',
+              'canonicalActorIdKeyBytesBase64',
+              'actorIdHash',
+              'epoch'
+            ],
+            properties: {
+              ...actorKeyProperties,
+              epoch: { type: 'integer', minimum: 1 }
+            },
+            additionalProperties: false
+          },
+          declarationOwner: actorDeclarationOwnerSchema,
+          actorAbiIdentity: { type: 'string' },
+          actorImplementationIdentity: { type: 'string' },
+          methodIdentity: { type: 'string' }
+        },
+        additionalProperties: false
+      }
     },
     additionalProperties: false
   },
@@ -3208,17 +3244,25 @@ function validateActorDeclarationOwner(
   envelope: Record<string, unknown>,
   envelopeType: string
 ): string | null {
-  const owner = getPathValue(envelope, 'declarationOwner');
+  return validateActorDeclarationOwnerField(envelope, envelopeType, 'declarationOwner');
+}
+
+function validateActorDeclarationOwnerField(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string
+): string | null {
+  const owner = getPathValue(envelope, field);
   if (!isRecord(owner)) {
-    return `invalid ${envelopeType} envelope: declarationOwner must be an object`;
+    return `invalid ${envelopeType} envelope: ${field} must be an object`;
   }
   return (
-    rejectUnsupportedObjectFields(owner, envelopeType, 'declarationOwner', [
+    rejectUnsupportedObjectFields(owner, envelopeType, field, [
       'unit',
       'file',
       'actorSymbol',
     ]) ??
-    requireString(envelope, envelopeType, 'declarationOwner.actorSymbol') ??
+    requireString(envelope, envelopeType, `${field}.actorSymbol`) ??
     validateActorDeclarationUnit(owner, envelopeType) ??
     validateActorDeclarationFile(owner, envelopeType)
   );
@@ -3321,12 +3365,13 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
       envelope,
       'spawn.submit.request',
       'serviceProtocolIdentity',
-      SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v5:sha256:<64 lowercase hex>'
+      SPAWN_SUBMIT_PROTOCOL_IDENTITY_PATTERN,
+      'skiff-service-protocol-v5:sha256:<64 lowercase hex> or skiff-actor-abi-v1:sha256:<64 lowercase hex>'
     ) ??
     requireString(envelope, 'spawn.submit.request', 'target') ??
     forbiddenField(envelope, 'spawn.submit.request', 'actorRef') ??
     forbiddenField(envelope, 'spawn.submit.request', 'methodName') ??
+    validateSpawnActorMethodTarget(envelope) ??
     optionalString(envelope, 'spawn.submit.request', 'spawnId') ??
     optionalStringPattern(
       envelope,
@@ -3338,6 +3383,39 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
     requireString(envelope, 'spawn.submit.request', 'callerRequestId') ??
     optionalString(envelope, 'spawn.submit.request', 'traceId') ??
     optionalString(envelope, 'spawn.submit.request', 'callerTarget')
+  );
+}
+
+function validateSpawnActorMethodTarget(envelope: Record<string, unknown>): string | null {
+  if (envelope.targetKind !== 'actorMethod') {
+    return forbiddenField(envelope, 'spawn.submit.request', 'actorMethod');
+  }
+  const target = getPathValue(envelope, 'actorMethod');
+  if (!isRecord(target)) {
+    return 'invalid spawn.submit.request envelope: actorMethod must be an object';
+  }
+  return (
+    rejectUnsupportedObjectFields(target, 'spawn.submit.request', 'actorMethod', [
+      'actorRef',
+      'declarationOwner',
+      'actorAbiIdentity',
+      'actorImplementationIdentity',
+      'methodIdentity',
+    ]) ??
+    validateActorKey(envelope, 'spawn.submit.request', 'actorMethod.actorRef', true) ??
+    requirePositiveInteger(envelope, 'spawn.submit.request', 'actorMethod.actorRef.epoch') ??
+    validateActorDeclarationOwnerField(
+      envelope,
+      'spawn.submit.request',
+      'actorMethod.declarationOwner'
+    ) ??
+    requireString(envelope, 'spawn.submit.request', 'actorMethod.actorAbiIdentity') ??
+    requireString(
+      envelope,
+      'spawn.submit.request',
+      'actorMethod.actorImplementationIdentity'
+    ) ??
+    requireString(envelope, 'spawn.submit.request', 'actorMethod.methodIdentity')
   );
 }
 

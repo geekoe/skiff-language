@@ -38,3 +38,75 @@ flakyGet:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+spawnExternal:
+  method: POST
+  path: /spawn-external
+  kind: typedJson
+  handler: main.spawnExternal
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+externalCount:
+  method: POST
+  path: /external-count
+  kind: typedJson
+  handler: main.externalCount
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+externalHistory:
+  method: POST
+  path: /external-history
+  kind: typedJson
+  handler: main.externalHistory
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+spawnSelfKick:
+  method: POST
+  path: /spawn-self-kick
+  kind: typedJson
+  handler: main.spawnSelfKick
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+selfKickCount:
+  method: POST
+  path: /self-kick-count
+  kind: typedJson
+  handler: main.selfKickCount
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+selfKickHistory:
+  method: POST
+  path: /self-kick-history
+  kind: typedJson
+  handler: main.selfKickHistory
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+spawnFanout:
+  method: POST
+  path: /spawn-fanout
+  kind: typedJson
+  handler: main.spawnFanout
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+fanoutCount:
+  method: POST
+  path: /fanout-count
+  kind: typedJson
+  handler: main.fanoutCount
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+fanoutHistory:
+  method: POST
+  path: /fanout-history
+  kind: typedJson
+  handler: main.fanoutHistory
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

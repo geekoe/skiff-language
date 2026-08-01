@@ -812,9 +812,18 @@ impl<'a> FunctionLowerer<'a> {
                 );
                 return Ok(MetadataValue::Object(metadata));
             }
+            CallTargetIr::ActorMethod {
+                actor,
+                method_identity,
+                ..
+            } => (
+                "actorMethod",
+                format!("actorMethod:{}:{}", actor.symbol, method_identity.as_str()),
+            ),
             _ => {
                 return Err(CompileError::Semantic(
-                    "spawn currently supports only function calls".to_string(),
+                    "spawn currently supports only function calls and actor method calls"
+                        .to_string(),
                 ));
             }
         };

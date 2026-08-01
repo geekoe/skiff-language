@@ -10,10 +10,10 @@ pub use envelope::{
 pub use outbound::{
     ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
     ActorGetOrCreateControlRequest, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
-    ActorInvocationOwnerUnit, ActorKeyControlMetadata, ActorRemoveControlRequest,
-    ActorReplaceControlRequest, ConnectionRequestCancelControl, ConnectionRequestControl,
-    ConnectionSendControl, OutboundControlMessage, OutboundResponse, RequestCancelControl,
-    RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    ActorInvocationOwnerUnit, ActorKeyControlMetadata, ActorMethodSpawnTargetControl,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
+    ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
+    RequestCancelControl, RuntimeDeadlineControl, SpawnSubmitControlRequest,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,

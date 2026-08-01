@@ -139,6 +139,7 @@ fn spawn_submit_request_frame_maps_header_and_opaque_payload() {
         trace_id: Some("trace-1".to_string()),
         caller_target: Some("Caller.start".to_string()),
         max_queue_wait_ms: Some(250.0),
+        actor_method: None,
     };
     let payload = b"opaque spawn args".to_vec();
 
@@ -377,6 +378,7 @@ fn spawn_submit_control_request(service_id: &str) -> SpawnSubmitControlRequest {
         trace_id: Some("trace-1".to_string()),
         caller_target: Some("Caller.start".to_string()),
         max_queue_wait_ms: Some(250.0),
+        actor_method: None,
     }
 }
 

@@ -5,7 +5,8 @@ import type {
 } from '../protocol/assemblyActivationProtocol.js';
 import type {
   ActorSpawnRuntimeRequestFrameHeader,
-  RuntimeHealthCounters
+  RuntimeHealthCounters,
+  SpawnSubmitRequestFrameHeader
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestStartFrameHeader,
@@ -25,6 +26,7 @@ import type {
   RuntimeInFlightRequest
 } from './runtimeRegistry.js';
 import type { RuntimeControlSource } from './actorSpawnRuntimeControl.js';
+import type { RuntimeSpawnParentAuthority } from './runtimeDispatcher.js';
 import {
   canonicalHttpHost,
   RouterActiveAssemblySnapshotStore,
@@ -239,6 +241,49 @@ export class AssemblyRuntimeRegistry {
       buildId: binding.packageBuildId,
       serviceProtocolIdentity: binding.serviceProtocolIdentity,
       activationIdentity: { ...header.activationIdentity }
+    };
+  }
+
+  spawnSubmitParentAuthority(
+    ws: WebSocket,
+    header: SpawnSubmitRequestFrameHeader
+  ): RuntimeSpawnParentAuthority | undefined {
+    const replicaId = this.replicaIdByConnection.get(ws);
+    const replica =
+      replicaId === undefined ? undefined : this.replicas.get(replicaId);
+    if (
+      replica === undefined ||
+      replica.ws !== ws ||
+      replica.ws.readyState !== WebSocket.OPEN ||
+      replica.state === 'disconnected' ||
+      header.runtimeId !== replica.replicaId ||
+      header.activationIdentity.runtimeReplicaId !== replica.replicaId ||
+      header.activationIdentity.assemblyIdentity !== replica.assemblyIdentity ||
+      header.activationIdentity.generation !== replica.generation ||
+      !this.replicaCanUseActivation(replica)
+    ) {
+      return undefined;
+    }
+    const binding = replica.deploymentBindingsByService.get(header.serviceId);
+    if (
+      binding === undefined ||
+      binding.deploymentRevision !==
+        header.activationIdentity.deploymentRevision
+    ) {
+      return undefined;
+    }
+    return {
+      runtimeId: replica.replicaId,
+      buildId: binding.packageBuildId,
+      serviceProtocolIdentity: binding.serviceProtocolIdentity,
+      assemblyIdentity: replica.assemblyIdentity,
+      assemblyGeneration: replica.generation,
+      deployment: {
+        serviceId: binding.serviceId,
+        contractVersion: binding.contractVersion,
+        deploymentRevision: binding.deploymentRevision,
+        deploymentArtifactIdentity: binding.deploymentArtifactIdentity,
+      },
     };
   }
 

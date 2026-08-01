@@ -369,6 +369,7 @@ fn spawn_submit_request() -> SpawnSubmitControlRequest {
         trace_id: None,
         caller_target: Some("program.test".to_string()),
         max_queue_wait_ms: None,
+        actor_method: None,
     }
 }
 

@@ -6,8 +6,10 @@ use std::{
 };
 
 use skiff_runtime_boundary::{
-    json::RuntimeBoundaryCodec, plan::BoundaryUse, request_heap::RequestHeap,
-    runtime_value::RuntimeValue,
+    json::RuntimeBoundaryCodec,
+    plan::BoundaryUse,
+    request_heap::RequestHeap,
+    runtime_value::{ActorRef, RuntimeValue},
 };
 use skiff_runtime_linked_program::{ExecutableAddr, LinkedTypeRef};
 use skiff_runtime_linked_type_plan::{
@@ -130,6 +132,23 @@ impl ActorExecutionFrame {
                 ))
             });
         value
+    }
+
+    /// The logical Actor reference of the currently executing instance. `self`
+    /// in actor methods is not materialized as an ordinary value, so spawned
+    /// self-messages derive the receiver from the active execution frame.
+    pub(crate) fn current_actor_ref(&self) -> Result<ActorRef, RuntimeError> {
+        let fence = self.suspension.shared.handle.fence();
+        let key = &fence.incarnation.logical_key;
+        Ok(ActorRef::new(
+            key.service_id.clone(),
+            key.actor_type_identity.clone(),
+            key.actor_id_type_identity.clone(),
+            key.actor_id_encoding_version.clone(),
+            key.canonical_actor_id_key_bytes.clone(),
+            key.actor_id_hash.clone(),
+            Some(fence.incarnation.epoch),
+        ))
     }
 
     pub(crate) fn write_field(

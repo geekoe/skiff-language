@@ -17,12 +17,17 @@ spawn runThreadDrain(threadId)
 ## Target 规则
 
 - target 必须是当前 service 构建内的普通 function：service 自身的任意 module，或该 service 依赖的 package 中的 function（package 代码也可以 spawn 自己的函数）。跨 service callable 不能作为 target。
+- target 也可以是当前 service 构建内的 actor 方法：`spawn actor.method(...)` 或同一 actor 实例内的
+  `spawn self.method(...)`。提交的调用是该 actor 的一次独立方法调用，按 actor identity 路由，不嵌套在
+  发起方调用栈内。
 - target 返回类型必须是 `void` / `null`；返回值没有接收方。
 - 参数必须是可恢复值。`spawn` payload 是 owner-internal recoverable boundary：plain data、可恢复 nominal object、
   durable native handle 和 `carrier = Local` 且 self payload 全可恢复的 `any I` 可以进入；callback、`Stream`、
   transaction、live connection、file descriptor、无 durable adapter 的 native handle、`carrier = Remote` 的 `any I` 等
   native/request-local resource fail closed。
 - `spawn` 不允许出现在 `db transaction` 内。
+- `spawn` 的目标方法必须在同一构建内可解析；actor 方法 receiver 必须是 actor 句柄（外部变量或 `self`）。
+  `create` 内不允许 `spawn self.method(...)`。
 
 ## 执行语义
 
@@ -43,9 +48,16 @@ spawn runThreadDrain(threadId)
   历史 build/artifact 作为 fallback。
 - 提交成功后，spawned call 与 caller request 生命周期分离；caller 后续 cancel / timeout 不影响它。
 - spawned call 在新的、独立的 runtime request frame 中执行，不继承 caller 的 request-local 状态。
+- actor 方法为 target 时，spawned call 不创建新的 service request frame：Router 把它作为该 actor 的一次
+  普通方法调用，经 actor admission（含不 live 时按 registry entry 保存的创建输入激活）派发到 owner
+  Runtime，在实例的单线程 executor 上与其他调用串行排队执行；调用方只等待“已接收”（Router 已完成
+  admission 并派发到 owner）。spawned actor 方法拥有独立于 caller 的固定 deadline（120s），不继承
+  caller 的剩余时间。
 - spawned call 的完成或失败只结束该派生 request；失败不回传给已经完成的 `spawn` 语句，也不自动重试。
 - 一次提交至多执行一次；执行失败、超时或 runtime 断连后，平台不自动重试同一次提交。
 - spawned call 的业务结果必须自行落 DB / 事件 / 文件；平台只记录执行错误。
+- actor 方法为 target 时，spawned 调用的结果/失败只结算 actor invocation ledger（并释放实例繁忙状态），
+  不会回传给提交方；同一实例的多个 spawned 调用与普通方法调用一样串行执行。
 
 测试运行可以附带平台签发的 opaque case capability，使派生 request 使用同一 case 的 inline-effect
 registry。它只存在于测试控制面和 Runtime 内存中，不是业务可构造的 request-local 值，也不改变生产
@@ -68,4 +80,3 @@ request 结束；取消测试根 request 仍不会取消这些派生 request。
 - 返回值、callback、await handle。
 - delay、retry policy、dedupe、priority、并发 key。
 - 取消已提交的 spawned call。
-- 以 actor method 作为 spawn target。

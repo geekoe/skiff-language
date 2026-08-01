@@ -1,7 +1,11 @@
 use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
-use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
+    DeploymentRevision,
+};
+use skiff_runtime_model::runtime_value::ActorRef;
 
 use crate::actor_invocation::ActorInvocationDeclarationOwner;
 
@@ -129,6 +133,20 @@ pub struct SpawnSubmitControlRequest {
     pub trace_id: Option<String>,
     pub caller_target: Option<String>,
     pub max_queue_wait_ms: Option<f64>,
+    pub actor_method: Option<ActorMethodSpawnTargetControl>,
+}
+
+/// Actor-method target facts for a `spawn.submit` whose targetKind is
+/// `actorMethod`. The receiver travels as identity metadata (never inside the
+/// recoverable args payload); the owner runtime routes by it and re-activates
+/// the instance from the registry entry when it is not live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorMethodSpawnTargetControl {
+    pub actor_ref: ActorRef,
+    pub declaration_owner: ActorInvocationDeclarationOwner,
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub method_identity: ActorMethodIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

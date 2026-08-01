@@ -186,7 +186,8 @@ await coordinator.initialize();
 const dispatcher = new RuntimeDispatcher({
   registry,
   frameSender: runtimeEndpoint,
-  maxConcurrency: config.runtimeMaxConcurrency
+  maxConcurrency: config.runtimeMaxConcurrency,
+  actorMethodSpawn: actorMethods
 });
 runtimeEndpoint.setDispatcher(dispatcher);
 const webSocketRpcBridge = new WebSocketRpcBridge({

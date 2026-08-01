@@ -41,7 +41,7 @@ pub fn service_spawn_targets_with_packages(
                 let Some(metadata) = call.metadata.get(SPAWN_SUBMIT_METADATA_KEY) else {
                     continue;
                 };
-                if !spawn_submit_is_function(metadata)? {
+                if !spawn_submit_has_projected_target(metadata)? {
                     continue;
                 }
                 let Some(target) = service_spawn_target_for_call(
@@ -69,7 +69,7 @@ pub fn service_spawn_targets_with_packages(
                     let Some(metadata) = call.metadata.get(SPAWN_SUBMIT_METADATA_KEY) else {
                         continue;
                     };
-                    if !spawn_submit_is_function(metadata)? {
+                    if !spawn_submit_has_projected_target(metadata)? {
                         continue;
                     }
                     let Some(target) = package_spawn_target_for_call(
@@ -91,19 +91,25 @@ pub fn service_spawn_targets_with_packages(
     Ok(targets.into_values().collect())
 }
 
-fn spawn_submit_is_function(metadata: &MetadataValue) -> Result<bool> {
+fn spawn_submit_has_projected_target(metadata: &MetadataValue) -> Result<bool> {
     let MetadataValue::Object(object) = metadata else {
         return Err(error("spawnSubmit metadata must be an object"));
     };
     let Some(MetadataValue::String(target_kind)) = object.get("targetKind") else {
         return Err(error("spawnSubmit metadata targetKind must be a string"));
     };
-    if target_kind != "function" {
-        return Err(error(format!(
-            "spawn target kind {target_kind} is unsupported"
-        )));
+    if target_kind == "function" {
+        return Ok(true);
     }
-    Ok(true)
+    if target_kind == "actorMethod" {
+        // Actor method spawns route by actor identity, not by executable
+        // route. They are validated at assembly link time and carry no
+        // artifact-level SpawnTargetIr.
+        return Ok(false);
+    }
+    Err(error(format!(
+        "spawn target kind {target_kind} is unsupported"
+    )))
 }
 
 fn service_spawn_target_for_call(

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 
 import {
+  ACTOR_ARGUMENTS_ENCODING_V1,
   encodeActorMethodFrame,
   type ActorMethodFrameHeader,
   type ActorMethodInvokeFrameHeader,
@@ -20,11 +21,19 @@ import type {
   ActorKey,
   ActorOwnerFence,
 } from '../actor/index.js';
+import type { SpawnSubmitRequestFrameHeader } from '../protocol/envelope.js';
+import { RUNTIME_FRAME_SCHEMA_VERSION } from '../protocol/envelope.js';
 import {
   ActorMethodDispatcher,
+  type ActorMethodDispatchResult,
   type ActorMethodCatalog,
   type ActorOwnerTransport,
 } from './actorMethodDispatcher.js';
+import {
+  type ActorMethodSpawnControl,
+  type ActorMethodSpawnSubmitResult,
+} from './runtimeDispatcher.js';
+import { ServiceProtocolBoundaryError } from './errors.js';
 import type { ActorRuntimeDisconnectController } from './actorRuntimeDisconnectController.js';
 import type { RuntimeActorMethodRouter } from './runtimeEndpoint.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
@@ -37,7 +46,7 @@ interface ActorRuntimeDirectory {
 }
 
 interface PendingActorInvocation {
-  caller: WebSocket;
+  caller: WebSocket | undefined;
   owner: WebSocket;
   invocation: ActorInvocationLedger;
   timer: NodeJS.Timeout;
@@ -71,7 +80,10 @@ export interface ProductionActorMethodRouterOptions {
   id?: () => string;
 }
 
-export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
+const ACTOR_SPAWN_TIMEOUT_MS = 120_000;
+
+export class ProductionActorMethodRouter
+  implements RuntimeActorMethodRouter, ActorMethodSpawnControl {
   private readonly pending = new Map<string, PendingActorInvocation>();
   private readonly pendingControls = new Map<string, PendingOwnerControl>();
   private readonly dispatcher: ActorMethodDispatcher;
@@ -113,7 +125,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
       throw new Error(`unknown Actor invocation ${header.invocationId}`);
     }
     if (header.type === 'actor.method.cancel') {
-      if (source !== pending.caller) {
+      if (pending.caller !== undefined && source !== pending.caller) {
         throw new Error('Actor cancellation did not come from its caller');
       }
       this.options.send(
@@ -128,10 +140,12 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
     if (source !== pending.owner) {
       throw new Error('Actor result did not come from its admitted owner');
     }
-    this.options.send(
-      pending.caller,
-      encodeActorMethodFrame(header, payloadBytes)
-    );
+    if (pending.caller !== undefined) {
+      this.options.send(
+        pending.caller,
+        encodeActorMethodFrame(header, payloadBytes)
+      );
+    }
     await this.finish(
       pending.invocation,
       header.type === 'actor.method.return' ? 'completed' : 'failed',
@@ -177,7 +191,9 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
     }
     clearTimeout(pending.timer);
     this.pending.delete(header.invocationId);
-    this.options.send(pending.caller, encodeActorOwnerFailureFrame(header));
+    if (pending.caller !== undefined) {
+      this.options.send(pending.caller, encodeActorOwnerFailureFrame(header));
+    }
     await this.finish(
       pending.invocation,
       'failed',
@@ -203,6 +219,7 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
         );
       } else if (
         pending.owner === source &&
+        pending.caller !== undefined &&
         pending.caller.readyState === WebSocket.OPEN
       ) {
         this.options.send(
@@ -279,27 +296,114 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
       }
       throw new Error(`Actor method admission rejected: ${result.reason}`);
     }
+    this.registerPendingInvocation(
+      caller,
+      header.invocationId,
+      header.cancellationCorrelation,
+      Math.max(
+        0,
+        new Date(header.deadline.expiresAt).getTime() - this.now().getTime()
+      ),
+      result
+    );
+  }
+
+  hasActiveActorInvocation(input: {
+    invocationId: string;
+    ws: WebSocket;
+    serviceId: string;
+    serviceProtocolIdentity: string;
+  }): boolean {
+    const pending = this.pending.get(input.invocationId);
+    return (
+      pending !== undefined &&
+      pending.owner === input.ws &&
+      pending.invocation.actorKey.serviceId === input.serviceId &&
+      pending.invocation.actorAbiIdentity === input.serviceProtocolIdentity
+    );
+  }
+
+  async submitSpawn(
+    header: SpawnSubmitRequestFrameHeader,
+    payloadBytes: Uint8Array
+  ): Promise<ActorMethodSpawnSubmitResult> {
+    const target = header.actorMethod;
+    if (target === undefined || typeof target.actorRef.epoch !== 'number') {
+      throw new ServiceProtocolBoundaryError(
+        'actorMethod spawn target facts are missing or incomplete'
+      );
+    }
+    const now = this.now();
+    const invocationId = `actor-spawn-${this.id()}`;
+    const cancellationCorrelation = `actor-spawn-${this.id()}:cancel`;
+    const invoke: ActorMethodInvokeFrameHeader = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'actor.method.invoke',
+      invocationId,
+      actorRef: {
+        serviceId: target.actorRef.serviceId,
+        actorTypeIdentity: target.actorRef.actorTypeIdentity,
+        actorIdTypeIdentity: target.actorRef.actorIdTypeIdentity,
+        actorIdEncodingVersion: target.actorRef.actorIdEncodingVersion,
+        canonicalActorIdKeyBytesBase64:
+          target.actorRef.canonicalActorIdKeyBytesBase64,
+        actorIdHash: target.actorRef.actorIdHash,
+        epoch: target.actorRef.epoch,
+      },
+      declarationOwner: target.declarationOwner,
+      actorAbiIdentity: target.actorAbiIdentity,
+      actorImplementationIdentity: target.actorImplementationIdentity,
+      methodIdentity: target.methodIdentity,
+      argumentsEncodingVersion: ACTOR_ARGUMENTS_ENCODING_V1,
+      deadline: {
+        timeoutMs: ACTOR_SPAWN_TIMEOUT_MS,
+        expiresAt: new Date(now.getTime() + ACTOR_SPAWN_TIMEOUT_MS).toISOString(),
+      },
+      cancellationCorrelation,
+    };
+    const result = await this.dispatcher.dispatch(invoke, payloadBytes);
+    if (!result.ok) {
+      throw new ServiceProtocolBoundaryError(
+        `actor method spawn admission rejected: ${result.reason}`
+      );
+    }
+    this.registerPendingInvocation(
+      undefined,
+      invocationId,
+      cancellationCorrelation,
+      ACTOR_SPAWN_TIMEOUT_MS,
+      result
+    );
+    return {
+      spawnId: header.spawnId ?? `spawn-${this.id()}`,
+      requestId: invocationId,
+    };
+  }
+
+  private registerPendingInvocation(
+    caller: WebSocket | undefined,
+    invocationId: string,
+    cancellationCorrelation: string,
+    remainingMs: number,
+    result: Extract<ActorMethodDispatchResult, { ok: true }>
+  ): void {
     const owner = this.runtimeDirectory().runtimeConnection(
       result.ownerFence.ownerRuntimeId
     );
     if (owner === undefined) {
       throw new Error('admitted Actor owner Runtime is disconnected');
     }
-    const remainingMs = Math.max(
-      0,
-      new Date(header.deadline.expiresAt).getTime() - this.now().getTime()
-    );
     const timer = setTimeout(() => {
-      const pending = this.pending.get(header.invocationId);
+      const pending = this.pending.get(invocationId);
       if (pending === undefined) return;
-      this.pending.delete(header.invocationId);
+      this.pending.delete(invocationId);
       this.options.send(
         pending.owner,
         encodeActorMethodFrame({
-          schemaVersion: 'skiff-runtime-frame-v3',
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
           type: 'actor.method.cancel',
-          invocationId: header.invocationId,
-          cancellationCorrelation: header.cancellationCorrelation,
+          invocationId,
+          cancellationCorrelation: pending.cancellationCorrelation,
           reason: 'deadlineExceeded',
         })
       );
@@ -310,12 +414,12 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
       );
     }, remainingMs);
     timer.unref();
-    this.pending.set(header.invocationId, {
+    this.pending.set(invocationId, {
       caller,
       owner: owner.ws,
       invocation: result.invocation,
       timer,
-      cancellationCorrelation: header.cancellationCorrelation,
+      cancellationCorrelation,
     });
     const connection =
       this.options.registry.runtimeConnectionFenceForConnection(owner.ws);

@@ -10,7 +10,9 @@ use skiff_artifact_model::{
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::RuntimeClientSessionControl;
 
-use crate::actor_method::{ActorDeclarationOwnerFrameHeader, ActorMethodDeadlineFrameHeader};
+use crate::actor_method::{
+    ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader, ActorMethodDeadlineFrameHeader,
+};
 
 pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
@@ -1008,6 +1010,18 @@ pub struct SpawnSubmitRequestFrameHeader {
     pub caller_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_queue_wait_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_method: Option<SpawnActorMethodTargetFrameMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpawnActorMethodTargetFrameMetadata {
+    pub actor_ref: ActorLogicalRefFrameHeader,
+    pub declaration_owner: ActorDeclarationOwnerFrameHeader,
+    pub actor_abi_identity: skiff_artifact_model::ActorAbiIdentity,
+    pub actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity,
+    pub method_identity: skiff_artifact_model::ActorMethodIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

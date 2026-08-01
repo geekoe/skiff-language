@@ -118,7 +118,7 @@ interface RuntimeInvocationBase<
   abortCleanup?: () => void;
 }
 
-interface RuntimeSpawnParentAuthority {
+export interface RuntimeSpawnParentAuthority {
   readonly runtimeId: string;
   readonly buildId: string;
   readonly serviceProtocolIdentity: string;
@@ -270,7 +270,37 @@ export interface RuntimeDispatcherOptions {
   frameSender: RuntimeFrameSender;
   maxConcurrency: number;
   registry: RuntimeDispatchRegistry;
+  actorMethodSpawn?: ActorMethodSpawnControl;
 }
+
+export interface ActorMethodSpawnSubmitResult {
+  spawnId: string;
+  requestId: string;
+}
+
+export interface ActorMethodSpawnControl {
+  hasActiveActorInvocation(input: {
+    invocationId: string;
+    ws: WebSocket;
+    serviceId: string;
+    serviceProtocolIdentity: string;
+  }): boolean;
+  submitSpawn(
+    header: SpawnSubmitRequestFrameHeader,
+    payloadBytes: Uint8Array
+  ): Promise<ActorMethodSpawnSubmitResult>;
+}
+
+type SpawnSubmitParent =
+  | {
+      kind: 'request';
+      request: RuntimeAssemblyRequestStartFrameWireHeader;
+      authority: RuntimeSpawnParentAuthority;
+    }
+  | {
+      kind: 'actorMethod';
+      authority: RuntimeSpawnParentAuthority;
+    };
 
 export type RuntimeSpawnSubmitResult =
   | { header: SpawnSubmitResponseFrameHeader }
@@ -298,6 +328,10 @@ export type RuntimeDispatchRegistry = Pick<
   pickAssemblyTestDispatchConnection?(
     request: RuntimeDispatchFrameHeader
   ): RuntimeDispatchConnection | GatewayError | null | undefined;
+  spawnSubmitParentAuthority?(
+    ws: WebSocket,
+    header: SpawnSubmitRequestFrameHeader
+  ): RuntimeSpawnParentAuthority | undefined;
 };
 
 export interface RuntimeDispatcherPendingCounters {
@@ -348,7 +382,33 @@ export class RuntimeDispatcher {
   ): Promise<RuntimeSpawnSubmitResult> {
     try {
       const parent = this.requireSpawnParent(ws, submit);
-      const authority = parent.spawnAuthority;
+      if (submit.targetKind === 'actorMethod') {
+        if (this.options.actorMethodSpawn === undefined) {
+          throw new ServiceProtocolBoundaryError(
+            'actor method spawn routing is not configured'
+          );
+        }
+        const result = await this.options.actorMethodSpawn.submitSpawn(
+          submit,
+          payloadBytes
+        );
+        return {
+          header: {
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'spawn.submit.response',
+            rpcId: submit.rpcId,
+            spawnId: result.spawnId,
+            requestId: result.requestId,
+            status: 'submitted'
+          }
+        };
+      }
+      if (parent.kind !== 'request') {
+        throw new ServiceProtocolBoundaryError(
+          'function spawn requires a runtime assembly request parent'
+        );
+      }
+      const authority = parent.authority;
       const requestId = `spawn-request-${randomUUID()}`;
       const spawnId = submit.spawnId ?? `spawn-${randomUUID()}`;
       const deadline = derivedSpawnDeadline(parent.request);
@@ -390,55 +450,64 @@ export class RuntimeDispatcher {
   private requireSpawnParent(
     ws: WebSocket,
     submit: SpawnSubmitRequestFrameHeader
-  ): RuntimeInvocation & {
-    request: RuntimeAssemblyRequestStartFrameWireHeader;
-    spawnAuthority: RuntimeSpawnParentAuthority;
-  } {
+  ): SpawnSubmitParent {
     const pending = this.pending.get(submit.callerRequestId);
     if (
-      pending === undefined ||
-      pending.ws !== ws ||
-      !isRuntimeAssemblyRequestDispatchHeader(pending.request)
+      pending !== undefined &&
+      pending.ws === ws &&
+      isRuntimeAssemblyRequestDispatchHeader(pending.request)
     ) {
-      throw new ServiceProtocolBoundaryError(
-        'spawn callerRequestId must identify an active request on the same runtime connection'
-      );
+      const authority = pending.spawnAuthority;
+      if (authority === undefined) {
+        throw new ServiceProtocolBoundaryError(
+          'spawn parent request is missing its immutable RuntimeAssembly authority'
+        );
+      }
+      validateSpawnSubmitAgainstAuthority(submit, authority);
+      if (
+        authority.assemblyIdentity !== pending.request.routing.assemblyIdentity ||
+        authority.assemblyGeneration !== pending.request.routing.assemblyGeneration ||
+        authority.deployment.serviceId !== pending.request.routing.deployment.serviceId ||
+        authority.deployment.contractVersion !==
+          pending.request.routing.deployment.contractVersion ||
+        authority.deployment.deploymentRevision !==
+          pending.request.routing.deployment.deploymentRevision ||
+        authority.deployment.deploymentArtifactIdentity !==
+          pending.request.routing.deployment.deploymentArtifactIdentity ||
+        pending.runtimeId !== authority.runtimeId
+      ) {
+        throw new ServiceProtocolBoundaryError(
+          'spawn parent request authority does not match its dispatch routing'
+        );
+      }
+      return {
+        kind: 'request',
+        request: pending.request as RuntimeAssemblyRequestStartFrameWireHeader,
+        authority
+      };
     }
-    const authority = pending.spawnAuthority;
-    if (authority === undefined) {
-      throw new ServiceProtocolBoundaryError(
-        'spawn parent request is missing its immutable RuntimeAssembly authority'
-      );
+    const actorParent =
+      this.options.actorMethodSpawn !== undefined &&
+      this.options.actorMethodSpawn.hasActiveActorInvocation({
+        invocationId: submit.callerRequestId,
+        ws,
+        serviceId: submit.serviceId,
+        serviceProtocolIdentity: submit.serviceProtocolIdentity
+      });
+    if (actorParent) {
+      const authority =
+        this.options.registry.spawnSubmitParentAuthority?.(ws, submit);
+      if (authority === undefined) {
+        throw new ServiceProtocolBoundaryError(
+          'spawn submit actor parent authority is unavailable'
+        );
+      }
+      validateSpawnSubmitAgainstAuthority(submit, authority, false);
+      return { kind: 'actorMethod', authority };
     }
-    const deployment = pending.request.routing.deployment;
-    const activation = submit.activationIdentity;
-    if (
-      submit.runtimeId !== authority.runtimeId ||
-      submit.runtimeId !== activation.runtimeReplicaId ||
-      pending.runtimeId !== authority.runtimeId ||
-      submit.serviceId !== deployment.serviceId ||
-      submit.serviceVersion !== deployment.contractVersion ||
-      submit.buildId !== authority.buildId ||
-      submit.serviceProtocolIdentity !== authority.serviceProtocolIdentity ||
-      authority.assemblyIdentity !== pending.request.routing.assemblyIdentity ||
-      authority.assemblyGeneration !== pending.request.routing.assemblyGeneration ||
-      authority.deployment.serviceId !== deployment.serviceId ||
-      authority.deployment.contractVersion !== deployment.contractVersion ||
-      authority.deployment.deploymentRevision !== deployment.deploymentRevision ||
-      authority.deployment.deploymentArtifactIdentity !==
-        deployment.deploymentArtifactIdentity ||
-      activation.assemblyIdentity !== authority.assemblyIdentity ||
-      activation.generation !== authority.assemblyGeneration ||
-      activation.deploymentRevision !== authority.deployment.deploymentRevision
-    ) {
-      throw new ServiceProtocolBoundaryError(
-        'spawn submit owner facts must exactly match its authenticated parent request'
-      );
-    }
-    return pending as RuntimeInvocation & {
-      request: RuntimeAssemblyRequestStartFrameWireHeader;
-      spawnAuthority: RuntimeSpawnParentAuthority;
-    };
+    throw new ServiceProtocolBoundaryError(
+      'spawn callerRequestId must identify an active request or actor invocation on the same runtime connection'
+    );
   }
 
   private dispatchDerivedSpawn(
@@ -1998,4 +2067,28 @@ function spawnSubmitError(error: unknown): {
     message: error instanceof Error ? error.message : String(error),
     status: 500
   };
+}
+
+function validateSpawnSubmitAgainstAuthority(
+  submit: SpawnSubmitRequestFrameHeader,
+  authority: RuntimeSpawnParentAuthority,
+  compareServiceProtocolIdentity = true
+): void {
+  const activation = submit.activationIdentity;
+  if (
+    submit.runtimeId !== authority.runtimeId ||
+    submit.runtimeId !== activation.runtimeReplicaId ||
+    submit.serviceId !== authority.deployment.serviceId ||
+    submit.serviceVersion !== authority.deployment.contractVersion ||
+    submit.buildId !== authority.buildId ||
+    (compareServiceProtocolIdentity &&
+      submit.serviceProtocolIdentity !== authority.serviceProtocolIdentity) ||
+    activation.assemblyIdentity !== authority.assemblyIdentity ||
+    activation.generation !== authority.assemblyGeneration ||
+    activation.deploymentRevision !== authority.deployment.deploymentRevision
+  ) {
+    throw new ServiceProtocolBoundaryError(
+      'spawn submit owner facts must exactly match its authenticated parent'
+    );
+  }
 }

@@ -68,15 +68,33 @@ fn build_spawn_routes(
                     else {
                         anyhow::bail!("spawnSubmit metadata targetKind must be a string");
                     };
+                    let Some(MetadataValue::String(metadata_target)) = metadata.get("target")
+                    else {
+                        anyhow::bail!("spawnSubmit metadata target must be a string");
+                    };
+                    if target_kind == "actorMethod" {
+                        let LinkedCallTarget::ActorDispatch { plan } = &call.target else {
+                            anyhow::bail!(
+                                "canonical spawn actor method target is not a linked actor dispatch"
+                            );
+                        };
+                        let expected_metadata_target = format!(
+                            "actorMethod:{}:{}",
+                            plan.declaration_owner.actor_symbol,
+                            plan.method_identity.as_str()
+                        );
+                        if metadata_target != &expected_metadata_target {
+                            anyhow::bail!(
+                                "spawnSubmit metadata target {metadata_target} does not match linked actor method {expected_metadata_target}"
+                            );
+                        }
+                        continue;
+                    }
                     if target_kind != "function" {
                         anyhow::bail!(
                             "spawnSubmit metadata targetKind {target_kind} is unsupported"
                         );
                     }
-                    let Some(MetadataValue::String(metadata_target)) = metadata.get("target")
-                    else {
-                        anyhow::bail!("spawnSubmit metadata target must be a string");
-                    };
                     let (addr, expected_metadata_target) = match &call.target {
                         LinkedCallTarget::Executable { addr } => {
                             let executable =

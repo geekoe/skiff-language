@@ -98,3 +98,93 @@ function flakyGet(body: null) -> string {
   const flaky = std.actor.get<Flaky>("flaky")
   return flaky.ping()
 }
+
+type Spawned {
+  id: string,
+  count: number,
+  history: string,
+}
+
+actor Spawned {
+  key(id)
+  create()
+}
+
+impl Spawned {
+  function create() -> void {
+    self.count = 0
+    self.history = ""
+  }
+
+  function record(tag: string) -> void {
+    std.time.sleep(500)
+    self.count = self.count + 1
+    self.history = self.history.concat(tag)
+  }
+
+  function count() -> number {
+    return self.count
+  }
+
+  function history() -> string {
+    return self.history
+  }
+
+  function kickSelf(tag: string) -> string {
+    spawn self.record(tag)
+    return "kicked"
+  }
+
+  function fanout() -> string {
+    spawn self.record("a")
+    spawn self.record("b")
+    spawn self.record("c")
+    return "fanned"
+  }
+}
+
+function spawnExternal(body: null) -> string {
+  const target = std.actor.get<Spawned>("external")
+  spawn target.record("x")
+  return "external-submitted"
+}
+
+function externalCount(body: null) -> number {
+  const target = std.actor.get<Spawned>("external")
+  return target.count()
+}
+
+function externalHistory(body: null) -> string {
+  const target = std.actor.get<Spawned>("external")
+  return target.history()
+}
+
+function spawnSelfKick(body: null) -> string {
+  const target = std.actor.get<Spawned>("self-kick")
+  return target.kickSelf("s")
+}
+
+function selfKickCount(body: null) -> number {
+  const target = std.actor.get<Spawned>("self-kick")
+  return target.count()
+}
+
+function selfKickHistory(body: null) -> string {
+  const target = std.actor.get<Spawned>("self-kick")
+  return target.history()
+}
+
+function spawnFanout(body: null) -> string {
+  const target = std.actor.get<Spawned>("fanout")
+  return target.fanout()
+}
+
+function fanoutCount(body: null) -> number {
+  const target = std.actor.get<Spawned>("fanout")
+  return target.count()
+}
+
+function fanoutHistory(body: null) -> string {
+  const target = std.actor.get<Spawned>("fanout")
+  return target.history()
+}
