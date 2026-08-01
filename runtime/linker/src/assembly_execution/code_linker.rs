@@ -739,29 +739,9 @@ impl<'a> AssemblyCodeLinker<'a> {
         code_slot: usize,
         symbol: &skiff_runtime_linked_program::ServiceSymbolRef,
     ) -> anyhow::Result<LinkedActorDeclaration> {
-        let mut matches = self
-            .addresses
-            .package_files(code_slot)?
-            .iter()
-            .enumerate()
-            .flat_map(|(file_index, file)| {
-                file.actor_declarations
-                    .iter()
-                    .map(move |declaration| (file_index, declaration))
-            })
-            .filter(|(_, declaration)| declaration.actor_type == *symbol);
-        let (file_index, declaration) = matches.next().ok_or_else(|| {
-            anyhow::anyhow!("actor registry T0 resolves to a type without an Actor declaration")
-        })?;
-        if matches.next().is_some() {
-            anyhow::bail!("actor registry T0 resolves to ambiguous Actor declarations");
-        }
+        let (owner, declaration) = self.addresses.actor_declaration(code_slot, symbol, None)?;
         let mut declaration = declaration.clone();
-        declaration.implementation_owner = Some(LinkedActorDeclarationOwner {
-            unit: skiff_runtime_linked_program::UnitAddr::Package(code_slot),
-            file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(file_index),
-            actor_symbol: declaration.actor_type.symbol.clone(),
-        });
+        declaration.implementation_owner = Some(owner);
         Ok(declaration)
     }
 
@@ -822,6 +802,10 @@ impl<'a> AssemblyCodeLinker<'a> {
                 if call.caller_package_build_id() != self.addresses.package_build_id(code_slot)? {
                     anyhow::bail!("package direct call caller build does not match code owner");
                 }
+                if let Some(plan) = self.addresses.actor_method_plan_for_package_direct(call)? {
+                    *target = LinkedCallTarget::ActorDispatch { plan };
+                    return Ok(());
+                }
                 self.addresses
                     .validate_executable_addr(call.executable_addr())?;
                 if let Some(receiver) = call.receiver_const() {
@@ -849,7 +833,11 @@ impl<'a> AssemblyCodeLinker<'a> {
                 actor_implementation_identity,
                 method_identity,
             } => {
-                let (owner, declaration) = self.addresses.actor_declaration(code_slot, actor)?;
+                let (owner, declaration) = self.addresses.actor_declaration(
+                    code_slot,
+                    actor,
+                    Some((actor_abi_identity, actor_implementation_identity)),
+                )?;
                 if declaration.actor_abi_identity != *actor_abi_identity {
                     anyhow::bail!(
                         "Actor method call ABI identity does not match declaration {}",

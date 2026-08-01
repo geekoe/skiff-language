@@ -32,6 +32,7 @@ test('checked-in test-service source inventory remains exact', async () => {
     .sort();
   const packageTests = [
     'alias-return-catch-once-tests/main.test.skiff',
+    'actor-cross-package-consumer-tests/main.test.skiff',
     'package-service-host/consumer-tests/main.test.skiff',
     'http-entry-test-service/active/active.test.skiff',
     'http-entry-test-service/happy/entry.test.skiff',
@@ -75,6 +76,11 @@ test('canonical registry contains the checked-in source test roots', () => {
       root: 'test-runner/fixtures/alias-return-catch-once-tests',
       subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
     },
+    {
+      id: 'actor-cross-package-top-level-alias',
+      root: 'test-runner/fixtures/actor-cross-package-consumer-tests',
+      subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
+    },
   ]);
   assert.deepEqual(
     createCanonicalSkiffSourceTestPlan({ skiffRoot: '/checkout/skiff' }),
@@ -92,6 +98,15 @@ test('canonical registry contains the checked-in source test roots', () => {
         subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
         absoluteSubjectRoot:
           '/checkout/skiff/test-runner/fixtures/alias-return-catch-once',
+      },
+      {
+        id: 'actor-cross-package-top-level-alias',
+        root: 'test-runner/fixtures/actor-cross-package-consumer-tests',
+        absoluteRoot:
+          '/checkout/skiff/test-runner/fixtures/actor-cross-package-consumer-tests',
+        subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
+        absoluteSubjectRoot:
+          '/checkout/skiff/test-runner/fixtures/actor-cross-package-provider',
       },
     ],
   );

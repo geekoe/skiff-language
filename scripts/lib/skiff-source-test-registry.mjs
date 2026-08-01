@@ -10,6 +10,11 @@ export const canonicalSkiffSourceTestRegistry = Object.freeze([
     root: 'test-runner/fixtures/alias-return-catch-once-tests',
     subjectRoot: 'test-runner/fixtures/alias-return-catch-once',
   }),
+  Object.freeze({
+    id: 'actor-cross-package-top-level-alias',
+    root: 'test-runner/fixtures/actor-cross-package-consumer-tests',
+    subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
+  }),
 ]);
 
 export function createCanonicalSkiffSourceTestPlan({
