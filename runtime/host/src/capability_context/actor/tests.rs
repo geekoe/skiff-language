@@ -5,7 +5,8 @@ use skiff_artifact_model::{
     AssemblyIdentity, DeploymentRevision, InstructionSourceSite, SyntheticInstructionSiteReason,
 };
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
+    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorInvocationDeclarationOwner,
+    ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorKeyControlMetadata,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationSource, ExecutionScope,
     OutboundResponse, ResponseError, SpawnSubmitControlRequest,
 };
@@ -394,6 +395,8 @@ fn get_or_create_request() -> ActorGetOrCreateControlRequest {
             "b".repeat(64)
         ),
         bootstrap_encoding_version: "skiff-actor-bootstrap-v1".to_string(),
+        declaration_owner: declaration_owner(),
+        deadline: None,
     }
 }
 
@@ -409,6 +412,8 @@ fn replace_request() -> ActorReplaceControlRequest {
             "b".repeat(64)
         ),
         bootstrap_encoding_version: "skiff-actor-bootstrap-v1".to_string(),
+        declaration_owner: declaration_owner(),
+        deadline: None,
     }
 }
 
@@ -499,5 +504,13 @@ impl InvalidReceipt {
                 "requestId must be an ASCII visible token"
             }
         }
+    }
+}
+
+fn declaration_owner() -> ActorInvocationDeclarationOwner {
+    ActorInvocationDeclarationOwner {
+        unit: ActorInvocationOwnerUnit::Service,
+        file: ActorInvocationOwnerFile::FileIrIdentity("file:actor-1".to_string()),
+        actor_symbol: "Counter".to_string(),
     }
 }

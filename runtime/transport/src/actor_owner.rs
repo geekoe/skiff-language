@@ -4,8 +4,8 @@ use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
 
 use crate::{
     actor_method::{
-        ActorDeclarationOwnerFrameHeader, ActorMethodInvokeFrameHeader, ActorOwnerFileFrameHeader,
-        ActorOwnerUnitFrameHeader,
+        ActorDeclarationOwnerFrameHeader, ActorMethodDeadlineFrameHeader,
+        ActorMethodInvokeFrameHeader, ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
     },
     protocol::{decode_binary_frame, encode_binary_frame, RUNTIME_FRAME_SCHEMA_VERSION},
     BinaryFrameError, TransportError,
@@ -113,6 +113,7 @@ pub enum ActorOwnerControlOperation {
     MarkUpgrading,
     Discard,
     Activate,
+    ActivateInitial,
     IdleEvict,
 }
 
@@ -128,6 +129,10 @@ pub struct ActorOwnerControlFrameHeader {
     pub fence: ActorOwnerControlFenceFrameHeader,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<ActorOwnerActivationTransitionFrameHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<ActorActivationBootstrapFrameHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<ActorMethodDeadlineFrameHeader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +145,8 @@ pub struct ActorOwnerControlAckFrameHeader {
     pub request_id: String,
     pub operation: ActorOwnerControlOperation,
     pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<ActorOwnerFailureReasonFrameHeader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +220,19 @@ pub fn encode_actor_owner_control_ack_frame(
     )?;
     validate_token(&header.runtime_id, "runtimeId")?;
     validate_token(&header.request_id, "requestId")?;
+    if header.accepted && header.reason.is_some() {
+        return Err(TransportError::decode(
+            "actor.owner.control.ack must not carry a failure reason when accepted",
+        ));
+    }
+    if let Some(reason) = &header.reason {
+        validate_token(&reason.code, "reason.code")?;
+        if reason.message.is_empty() || reason.message.len() > 4096 {
+            return Err(TransportError::decode(
+                "reason.message must contain 1..4096 bytes",
+            ));
+        }
+    }
     encode_binary_frame(header, &[])
 }
 
@@ -339,6 +359,8 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
                 .as_ref()
                 .ok_or_else(|| TransportError::decode("activate control requires transition"))?;
             if header.fence.eviction_request_id.is_some()
+                || header.bootstrap.is_some()
+                || header.deadline.is_some()
                 || transition.new_epoch != header.fence.epoch
                 || transition.old_epoch >= transition.new_epoch
                 || transition.actor_abi_identity != header.fence.actor_abi_identity
@@ -361,6 +383,11 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
                     "idleEvict control must not contain transition",
                 ));
             }
+            if header.bootstrap.is_some() || header.deadline.is_some() {
+                return Err(TransportError::decode(
+                    "idleEvict control must not contain bootstrap or deadline",
+                ));
+            }
             validate_token(
                 header.fence.eviction_request_id.as_deref().ok_or_else(|| {
                     TransportError::decode("idleEvict control requires evictionRequestId")
@@ -368,8 +395,27 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
                 "fence.evictionRequestId",
             )?;
         }
-        ActorOwnerControlOperation::MarkUpgrading | ActorOwnerControlOperation::Discard => {
+        ActorOwnerControlOperation::ActivateInitial => {
             if header.transition.is_some() || header.fence.eviction_request_id.is_some() {
+                return Err(TransportError::decode(
+                    "activateInitial control must not contain transition or evictionRequestId",
+                ));
+            }
+            let bootstrap = header.bootstrap.as_ref().ok_or_else(|| {
+                TransportError::decode("activateInitial control requires bootstrap")
+            })?;
+            bootstrap.decode_payload()?;
+            let deadline = header.deadline.as_ref().ok_or_else(|| {
+                TransportError::decode("activateInitial control requires deadline")
+            })?;
+            validate_activation_deadline(deadline)?;
+        }
+        ActorOwnerControlOperation::MarkUpgrading | ActorOwnerControlOperation::Discard => {
+            if header.transition.is_some()
+                || header.fence.eviction_request_id.is_some()
+                || header.bootstrap.is_some()
+                || header.deadline.is_some()
+            {
                 return Err(TransportError::decode(
                     "control operation contains unsupported optional fields",
                 ));
@@ -454,6 +500,22 @@ fn validate_identity(value: &str, prefix: &str, label: &str) -> Result<(), Binar
         return Err(TransportError::decode(format!(
             "{label} must contain a lowercase sha256 digest"
         )));
+    }
+    Ok(())
+}
+
+fn validate_activation_deadline(
+    deadline: &ActorMethodDeadlineFrameHeader,
+) -> Result<(), BinaryFrameError> {
+    if deadline.timeout_ms == 0 {
+        return Err(TransportError::decode(
+            "activation deadline timeoutMs must be positive",
+        ));
+    }
+    if deadline.expires_at.is_empty() {
+        return Err(TransportError::decode(
+            "activation deadline expiresAt must be non-empty",
+        ));
     }
     Ok(())
 }

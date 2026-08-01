@@ -11,9 +11,10 @@ use crate::protocol::{
 };
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_request_contract::{
-    ActivationIdentityControl, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
-    ActorReplaceControlRequest, OutboundControlMessage, RequestCancelControl,
-    SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorControlDeadline, ActorGetOrCreateControlRequest,
+    ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
+    ActorKeyControlMetadata, ActorReplaceControlRequest, OutboundControlMessage,
+    RequestCancelControl, SpawnSubmitControlRequest,
 };
 
 #[test]
@@ -50,6 +51,8 @@ fn actor_control_request_frames_map_headers_and_opaque_payloads() {
         actor_abi_identity: "actor-abi:1".to_string(),
         actor_implementation_identity: "build:1".to_string(),
         bootstrap_encoding_version: "canonical-value-v1".to_string(),
+        declaration_owner: declaration_owner_frame(),
+        deadline: Some(actor_method_deadline_frame()),
     };
     let bootstrap_payload = b"canonical actor bootstrap".to_vec();
 
@@ -72,6 +75,8 @@ fn actor_control_request_frames_map_headers_and_opaque_payloads() {
         actor_abi_identity: "actor-abi:1".to_string(),
         actor_implementation_identity: "build:2".to_string(),
         bootstrap_encoding_version: "canonical-value-v1".to_string(),
+        declaration_owner: declaration_owner_frame(),
+        deadline: Some(actor_method_deadline_frame()),
     };
     let replace_frame = actor_replace_request_frame(replace_header.clone(), &bootstrap_payload)
         .expect("replace frame encodes");
@@ -273,6 +278,8 @@ fn outbound_actor_get_or_create_and_replace_controls_have_distinct_wire_types() 
             actor_abi_identity: "actor-abi:1".to_string(),
             actor_implementation_identity: "build:1".to_string(),
             bootstrap_encoding_version: "canonical-value-v1".to_string(),
+            declaration_owner: declaration_owner(),
+            deadline: Some(actor_control_deadline()),
         },
         payload: payload.clone(),
     })
@@ -298,6 +305,8 @@ fn outbound_actor_get_or_create_and_replace_controls_have_distinct_wire_types() 
             actor_abi_identity: "actor-abi:1".to_string(),
             actor_implementation_identity: "build:2".to_string(),
             bootstrap_encoding_version: "canonical-value-v1".to_string(),
+            declaration_owner: declaration_owner(),
+            deadline: Some(actor_control_deadline()),
         },
         payload: payload.clone(),
     })
@@ -368,5 +377,37 @@ fn spawn_submit_control_request(service_id: &str) -> SpawnSubmitControlRequest {
         trace_id: Some("trace-1".to_string()),
         caller_target: Some("Caller.start".to_string()),
         max_queue_wait_ms: Some(250.0),
+    }
+}
+
+fn declaration_owner() -> ActorInvocationDeclarationOwner {
+    ActorInvocationDeclarationOwner {
+        unit: ActorInvocationOwnerUnit::Service,
+        file: ActorInvocationOwnerFile::FileIrIdentity("file:actor-1".to_string()),
+        actor_symbol: "Counter".to_string(),
+    }
+}
+
+fn actor_control_deadline() -> ActorControlDeadline {
+    ActorControlDeadline {
+        timeout_ms: 30_000,
+        expires_at: "2026-07-25T00:00:30.000Z".to_string(),
+    }
+}
+
+fn declaration_owner_frame() -> crate::actor_method::ActorDeclarationOwnerFrameHeader {
+    crate::actor_method::ActorDeclarationOwnerFrameHeader {
+        unit: crate::actor_method::ActorOwnerUnitFrameHeader::Service,
+        file: crate::actor_method::ActorOwnerFileFrameHeader::FileIrIdentity(
+            "file:actor-1".to_string(),
+        ),
+        actor_symbol: "Counter".to_string(),
+    }
+}
+
+fn actor_method_deadline_frame() -> crate::actor_method::ActorMethodDeadlineFrameHeader {
+    crate::actor_method::ActorMethodDeadlineFrameHeader {
+        timeout_ms: 30_000,
+        expires_at: "2026-07-25T00:00:30.000Z".to_string(),
     }
 }

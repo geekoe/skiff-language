@@ -1,13 +1,14 @@
 use serde::de::DeserializeOwned;
 use skiff_artifact_model::validate_activation_token;
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken, ExecutionScope,
-    ExecutionScopeLeaseTerminal, ExecutionScopeTerminal, InvocationContext, OutboundControlMessage,
-    OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,
-    OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver, RequestCancelControl,
-    RouterWriterMessage, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
+    ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    CancellationToken, ExecutionScope, ExecutionScopeLeaseTerminal, ExecutionScopeTerminal,
+    InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
+    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
+    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
 };
+use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::mpsc;
 
 use crate::error::{Result, RuntimeError};
@@ -25,6 +26,7 @@ const ACTOR_REPLACE_TARGET: &str = "actor.replace";
 const ACTOR_FIND_TARGET: &str = "actor.find";
 const ACTOR_REMOVE_TARGET: &str = "actor.remove";
 const SPAWN_SUBMIT_TARGET: &str = "spawn.submit";
+const ACTOR_GET_CREATE_DEADLINE_MS: u64 = 30_000;
 
 pub struct ActorClient<'a> {
     context: ActorClientContext<'a>,
@@ -67,6 +69,10 @@ impl<'a> ActorClient<'a> {
         request.activation_identity = self
             .context
             .current_activation_identity(ACTOR_GET_OR_CREATE_TARGET)?;
+        request.deadline = Some(actor_control_deadline(
+            scope.as_ref(),
+            std::time::Instant::now(),
+        ));
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorGetOrCreate {
             request,
@@ -824,6 +830,31 @@ fn validate_spawn_submit_identity(label: &str, value: &str) -> Result<()> {
         target: SPAWN_SUBMIT_TARGET.to_string(),
         message: format!("spawn.submit.response {message}"),
     })
+}
+
+fn actor_control_deadline(
+    scope: Option<&ExecutionScope>,
+    now: std::time::Instant,
+) -> ActorControlDeadline {
+    let timeout_ms = match scope.and_then(|scope| scope.effective_deadline()) {
+        Some(deadline) => {
+            let remaining = deadline.at().saturating_duration_since(now);
+            let remaining_ms = u64::try_from(remaining.as_millis())
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::from(remaining.subsec_nanos() % 1_000_000 != 0))
+                .max(1);
+            ACTOR_GET_CREATE_DEADLINE_MS.min(remaining_ms)
+        }
+        None => ACTOR_GET_CREATE_DEADLINE_MS,
+    };
+    let expires_at = (OffsetDateTime::now_utc()
+        + TimeDuration::milliseconds(i64::try_from(timeout_ms).unwrap_or(i64::MAX)))
+    .format(&Rfc3339)
+    .unwrap_or_else(|_| String::new());
+    ActorControlDeadline {
+        timeout_ms,
+        expires_at,
+    }
 }
 
 #[cfg(test)]

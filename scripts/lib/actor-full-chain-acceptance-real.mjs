@@ -58,6 +58,68 @@ export async function runActorFullChainAcceptance({
       assert.equal(first, 'actor-count-1');
       assert.equal(second, 'actor-count-next');
 
+      const entrypoints = new Map(
+        receipt.candidate.entrypoints.map((entrypoint) => [
+          entrypoint.gatewayEntryKey,
+          entrypoint,
+        ]),
+      );
+      const slowGet = entrypoints.get('slowGet');
+      const slowDedup = entrypoints.get('slowDedup');
+      const slowIncrement = entrypoints.get('slowIncrement');
+      const flakyGet = entrypoints.get('flakyGet');
+      assert.ok(slowGet, 'Actor fixture must publish slowGet');
+      assert.ok(slowDedup, 'Actor fixture must publish slowDedup');
+      assert.ok(slowIncrement, 'Actor fixture must publish slowIncrement');
+      assert.ok(flakyGet, 'Actor fixture must publish flakyGet');
+
+      // get waits for create: a get-only probe with a 300ms create sleep must
+      // not return before create completes.
+      const slowStarted = Date.now();
+      const slowGetBody = await invokeUnary(stack.routerHttpUrl, slowGet, signal);
+      const slowElapsedMs = Date.now() - slowStarted;
+      assert.equal(slowGetBody, 'slow-get-ok');
+      assert.ok(
+        slowElapsedMs >= 200,
+        `get returned before create completed: ${slowElapsedMs}ms`,
+      );
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, slowIncrement, signal),
+        'slow-ok',
+      );
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, slowIncrement, signal),
+        'slow-ok',
+      );
+
+      // Concurrent gets for one fresh id dedup onto a single activation and
+      // both wait for the same create. The isolated acceptance environment
+      // starts with an empty router registry, so the fixed id is a new entry.
+      const dedupStarted = Date.now();
+      const [dedupLeft, dedupRight] = await Promise.all([
+        invokeUnary(stack.routerHttpUrl, slowDedup, signal),
+        invokeUnary(stack.routerHttpUrl, slowDedup, signal),
+      ]);
+      const dedupElapsedMs = Date.now() - dedupStarted;
+      assert.equal(dedupLeft, 'slow-get-ok');
+      assert.equal(dedupRight, 'slow-get-ok');
+      assert.ok(
+        dedupElapsedMs >= 200,
+        `concurrent gets did not wait for one create: ${dedupElapsedMs}ms`,
+      );
+
+      // Create failure surfaces on get; the retained entry keeps failing on
+      // retry so the failure is observable again through the method path.
+      const flakyFirst = await invokeUnaryRaw(stack.routerHttpUrl, flakyGet, signal);
+      assert.notEqual(flakyFirst.status, 200, 'flaky get must fail');
+      assert.match(
+        flakyFirst.body,
+        /UnhandledServiceError|InternalError|ProviderUnavailable/,
+        `flaky get failure must surface as a platform error, got ${flakyFirst.body}`,
+      );
+      const flakyRetry = await invokeUnaryRaw(stack.routerHttpUrl, flakyGet, signal);
+      assert.notEqual(flakyRetry.status, 200, 'retained flaky entry must keep failing');
+
       const health = await readHealth(stack.controlUrl, signal);
       const replicas = health.replicas.filter(
         (replica) =>
@@ -79,6 +141,16 @@ export async function runActorFullChainAcceptance({
 }
 
 async function invokeUnary(routerHttpUrl, entrypoint, signal) {
+  const response = await invokeUnaryRaw(routerHttpUrl, entrypoint, signal);
+  assert.equal(
+    response.status,
+    200,
+    `Actor unary failed: ${response.body}`
+  );
+  return JSON.parse(response.body);
+}
+
+async function invokeUnaryRaw(routerHttpUrl, entrypoint, signal, bodyValue = null) {
   const { selector, deployment } = entrypoint;
   assert.equal(selector.protocol, 'http');
   const response = await new Promise((resolveResponse, rejectResponse) => {
@@ -92,17 +164,12 @@ async function invokeUnary(routerHttpUrl, entrypoint, signal) {
       signal,
     }, resolveResponse);
     request.once('error', rejectResponse);
-    request.end('null');
+    request.end(JSON.stringify(bodyValue));
   });
   const chunks = [];
   for await (const chunk of response) chunks.push(Buffer.from(chunk));
   const body = Buffer.concat(chunks);
-  assert.equal(
-    response.statusCode,
-    200,
-    `Actor unary failed: ${body.toString('utf8')}`
-  );
-  return JSON.parse(body.toString('utf8'));
+  return { status: response.statusCode, body: body.toString('utf8') };
 }
 
 async function waitForTwoActiveReplicas({

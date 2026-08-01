@@ -1,5 +1,6 @@
 use crate::error::{Result, RuntimeError};
 use crate::{boundary::NativeBoundaryAdapter, runtime_value_facade::RuntimeTypePlan};
+use skiff_runtime_capability_context::ActorInvocationDeclarationOwner;
 use skiff_runtime_model::addr::UnitAddr;
 use skiff_runtime_model::service_error::NamedUnionOwnerIdentity;
 use skiff_runtime_native_contract::{NativeCallPlan, NativeRequiredContext};
@@ -18,6 +19,7 @@ pub struct RuntimeActorNativeMetadata {
     actor_id_type_identity: String,
     actor_abi_identity: String,
     actor_implementation_identity: String,
+    declaration_owner: ActorInvocationDeclarationOwner,
 }
 
 impl RuntimeActorNativeMetadata {
@@ -26,12 +28,14 @@ impl RuntimeActorNativeMetadata {
         actor_id_type_identity: String,
         actor_abi_identity: String,
         actor_implementation_identity: String,
+        declaration_owner: ActorInvocationDeclarationOwner,
     ) -> Self {
         Self {
             actor_type_identity,
             actor_id_type_identity,
             actor_abi_identity,
             actor_implementation_identity,
+            declaration_owner,
         }
     }
 
@@ -49,6 +53,10 @@ impl RuntimeActorNativeMetadata {
 
     pub fn actor_implementation_identity(&self) -> &str {
         &self.actor_implementation_identity
+    }
+
+    pub fn declaration_owner(&self) -> &ActorInvocationDeclarationOwner {
+        &self.declaration_owner
     }
 }
 

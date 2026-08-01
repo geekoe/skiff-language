@@ -3,6 +3,8 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 
+use crate::actor_invocation::ActorInvocationDeclarationOwner;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RouterWriterMessage {
     Binary(Vec<u8>),
@@ -72,6 +74,8 @@ pub struct ActorGetOrCreateControlRequest {
     pub actor_abi_identity: String,
     pub actor_implementation_identity: String,
     pub bootstrap_encoding_version: String,
+    pub declaration_owner: ActorInvocationDeclarationOwner,
+    pub deadline: Option<ActorControlDeadline>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +87,14 @@ pub struct ActorReplaceControlRequest {
     pub actor_abi_identity: String,
     pub actor_implementation_identity: String,
     pub bootstrap_encoding_version: String,
+    pub declaration_owner: ActorInvocationDeclarationOwner,
+    pub deadline: Option<ActorControlDeadline>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorControlDeadline {
+    pub timeout_ms: u64,
+    pub expires_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

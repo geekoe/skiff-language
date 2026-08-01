@@ -25,6 +25,51 @@ impl Counter {
   }
 }
 
+type Slow {
+  id: string,
+  count: number,
+}
+
+actor Slow {
+  key(id)
+  create()
+}
+
+impl Slow {
+  function create() -> void {
+    std.time.sleep(300)
+    self.count = 0
+  }
+
+  function increment() -> string {
+    self.count = self.count + 1
+    return "slow-ok"
+  }
+}
+
+type Flaky {
+  id: string,
+}
+
+actor Flaky {
+  key(id)
+  create()
+}
+
+impl Flaky {
+  function create() -> void {
+    std.time.sleep(100)
+    throw std.service.ProtocolError {
+      target: "flaky-actor",
+      message: "create boom",
+    }
+  }
+
+  function ping() -> string {
+    return "flaky-ping"
+  }
+}
+
 function marker() -> string {
   const counter = std.actor.get<Counter>("shared")
   return counter.increment()
@@ -32,4 +77,24 @@ function marker() -> string {
 
 function __skiffHttpProbe(body: null) -> string {
   return marker()
+}
+
+function slowGetOnly(body: null) -> string {
+  const slow = std.actor.get<Slow>("slow")
+  return "slow-get-ok"
+}
+
+function slowDedup(body: null) -> string {
+  const slow = std.actor.get<Slow>("slow-dedup")
+  return "slow-get-ok"
+}
+
+function slowIncrement(body: null) -> string {
+  const slow = std.actor.get<Slow>("slow")
+  return slow.increment()
+}
+
+function flakyGet(body: null) -> string {
+  const flaky = std.actor.get<Flaky>("flaky")
+  return flaky.ping()
 }

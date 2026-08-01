@@ -29,6 +29,7 @@ import type { ActorRuntimeDisconnectController } from './actorRuntimeDisconnectC
 import type { RuntimeActorMethodRouter } from './runtimeEndpoint.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
 import type { RuntimeDispatchRuntimeIdentity } from './runtimeRegistry.js';
+import type { ActorGetCreateActivationCoordinator } from './actorGetCreateActivationCoordinator.js';
 
 interface ActorRuntimeDirectory {
   actorRuntimeCandidates(serviceId: string): RuntimeDispatchRuntimeIdentity[];
@@ -52,6 +53,10 @@ interface PendingOwnerControl {
 
 export interface ProductionActorMethodRouterOptions {
   registry: RuntimeRegistry;
+  actorGetCreateControl?: Pick<
+    ActorGetCreateActivationCoordinator,
+    'pendingInitialActivation'
+  >;
   runtimeDirectory?: ActorRuntimeDirectory;
   catalog: ActorMethodCatalog & {
     declarationOwnerFor?(input: {
@@ -73,11 +78,15 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
   private readonly ownerLeaseTtlMs: number;
   private readonly now: () => Date;
   private readonly id: () => string;
+  private readonly actorGetCreateControl:
+    | Pick<ActorGetCreateActivationCoordinator, 'pendingInitialActivation'>
+    | undefined;
 
   constructor(private readonly options: ProductionActorMethodRouterOptions) {
     this.ownerLeaseTtlMs = options.ownerLeaseTtlMs ?? 30_000;
     this.now = options.now ?? (() => new Date());
     this.id = options.id ?? randomUUID;
+    this.actorGetCreateControl = options.actorGetCreateControl;
     this.dispatcher = new ActorMethodDispatcher(
       options.registry.actorManager(),
       options.catalog,
@@ -317,6 +326,8 @@ export class ProductionActorMethodRouter implements RuntimeActorMethodRouter {
 
   private transport(): ActorOwnerTransport {
     return {
+      pendingInitialActivation: ({ actorKey }) =>
+        this.actorGetCreateControl?.pendingInitialActivation(actorKey),
       activateInitial: ({ header }) => {
         const candidates = this.runtimeDirectory().actorRuntimeCandidates(
           header.actorRef.serviceId

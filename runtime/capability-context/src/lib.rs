@@ -73,12 +73,12 @@ pub use native_projection::{
     NativeHttpResponseStreamCapabilityContext, NativeTelemetryCapabilityContext,
 };
 pub use outbound_control::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
-    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
-    OutboundControlMessage, RequestCancelControl, RouterWriterMessage, RuntimeClientSessionControl,
-    RuntimeDeadlineControl, SpawnSubmitControlRequest, WebSocketConnectionPolicyControl,
-    WebSocketConnectionPolicyOverflowControl,
+    ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
+    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorRemoveControlRequest,
+    ActorReplaceControlRequest, ConnectionRequestCancelControl, ConnectionRequestControl,
+    ConnectionSendControl, OutboundControlMessage, RequestCancelControl, RouterWriterMessage,
+    RuntimeClientSessionControl, RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{
     OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,

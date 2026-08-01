@@ -872,21 +872,51 @@ fn dispatch_actor_owner_control(
     tokio::spawn(async move {
         let accepted = match control.operation {
             ActorOwnerControlOperation::MarkUpgrading => {
-                super::actor_owner_execution::control_instance_fence(&control)
+                if super::actor_owner_execution::control_instance_fence(&control)
                     .is_ok_and(|fence| host.begin_actor_upgrade_exact(&router_session_id, &fence))
+                {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
+                } else {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
+                }
             }
             ActorOwnerControlOperation::Discard => {
-                super::actor_owner_execution::control_instance_fence(&control).is_ok_and(|fence| {
-                    host.discard_upgrading_actor_exact(&router_session_id, &fence)
-                })
+                if super::actor_owner_execution::control_instance_fence(&control).is_ok_and(
+                    |fence| host.discard_upgrading_actor_exact(&router_session_id, &fence),
+                ) {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
+                } else {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
+                }
             }
             ActorOwnerControlOperation::IdleEvict => {
-                super::actor_owner_execution::control_instance_fence(&control)
+                if super::actor_owner_execution::control_instance_fence(&control)
                     .is_ok_and(|fence| host.discard_actor_exact(&router_session_id, &fence))
+                {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
+                } else {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
+                }
             }
             ActorOwnerControlOperation::Activate => {
-                host.activate_actor_owner_control(&router_session_id, &control, &sender)
+                if host
+                    .activate_actor_owner_control(&router_session_id, &control, &sender)
                     .await
+                {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
+                } else {
+                    super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
+                }
+            }
+            ActorOwnerControlOperation::ActivateInitial => {
+                host.activate_actor_owner_initial(&router_session_id, &control, &sender)
+                    .await
+            }
+        };
+        let (accepted, reason) = match accepted {
+            super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted => (true, None),
+            super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(reason) => {
+                (false, reason)
             }
         };
         let ack = ActorOwnerControlAckFrameHeader {
@@ -896,6 +926,7 @@ fn dispatch_actor_owner_control(
             request_id: control.request_id,
             operation: control.operation,
             accepted,
+            reason,
         };
         if let Ok(frame) = encode_actor_owner_control_ack_frame(&ack) {
             let _ = sender.send(super::RouterWriterMessage::Binary(frame));

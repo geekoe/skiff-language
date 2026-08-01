@@ -20,6 +20,9 @@ import { ActorRuntimeDisconnectController } from './actorRuntimeDisconnectContro
 import { ProductionActorMethodRouter } from './productionActorMethodRouter.js';
 import { RuntimeAssemblyActorMethodCatalog } from './runtimeAssemblyActorMethodCatalog.js';
 import { ActorOwnerLeaseIdleController } from './actorOwnerLeaseIdleController.js';
+import { ActorManager } from '../actor/index.js';
+import { ActorSpawnRuntimeControl } from './actorSpawnRuntimeControl.js';
+import { ActorGetCreateActivationCoordinator } from './actorGetCreateActivationCoordinator.js';
 import { AssemblyWebSocketGateway } from '../gateway/webSocketGateway.js';
 import { WebSocketRpcBridge } from '../gateway/webSocketRpcBridge.js';
 
@@ -86,12 +89,33 @@ const activation = await connectMongoAssemblyActivationStateStore({
 await activation.store.ensureIndexes();
 const assemblyLoader = new FilesystemRuntimeAssemblySnapshotLoader(config.artifactsPath);
 const registry = new AssemblyRuntimeRegistry(snapshots);
-const runtimeRegistry = new RuntimeRegistry();
+const actorManager = new ActorManager();
+const actorSpawnControl = new ActorSpawnRuntimeControl({
+  actorManager,
+  actorOwnerLeaseTtlMs: 120_000,
+});
+const actorGetCreateControl = new ActorGetCreateActivationCoordinator({
+  actorManager,
+  runtimeDirectory: {
+    actorRuntimeCandidates: (serviceId) => registry.actorRuntimeCandidates(serviceId),
+    runtimeConnection: (runtimeId) => {
+      const ws = registry.connectionForReplica(runtimeId);
+      return ws === undefined ? undefined : { runtimeId, ws };
+    },
+  },
+  send: (ws, bytes) => ws.send(bytes),
+  ownerLeaseTtlMs: 120_000,
+});
+const runtimeRegistry = new RuntimeRegistry({
+  actorSpawnControl,
+  actorGetCreateControl,
+});
 const actorDisconnect = new ActorRuntimeDisconnectController(
   runtimeRegistry.actorManager()
 );
 const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
+  actorGetCreateControl,
   assemblyRegistry: registry,
   bootstrap: () => {
     const active = snapshots.get();
@@ -107,6 +131,7 @@ const runtimeEndpoint = new RuntimeEndpoint({
 const actorCatalog = new RuntimeAssemblyActorMethodCatalog(snapshots);
 const actorMethods = new ProductionActorMethodRouter({
     registry: runtimeRegistry,
+    actorGetCreateControl,
     runtimeDirectory: {
       actorRuntimeCandidates: (serviceId) =>
         registry.actorRuntimeCandidates(serviceId),

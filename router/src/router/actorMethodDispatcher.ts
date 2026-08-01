@@ -66,6 +66,9 @@ export interface ActorOwnerTransport {
         ownerLeaseId: string;
         ownerLeaseExpiresAt: Date;
       }>;
+  pendingInitialActivation?(input: {
+    actorKey: ReturnType<typeof makeActorKey>;
+  }): Promise<boolean> | undefined;
 }
 
 export type ActorMethodDispatchRejection =
@@ -143,6 +146,27 @@ export class ActorMethodDispatcher {
         admitted.rejection.reason === 'OwnerUnavailable' &&
         this.transport.activateInitial !== undefined
       ) {
+        const pendingInitial = this.transport.pendingInitialActivation?.({
+          actorKey,
+        });
+        if (pendingInitial !== undefined) {
+          const completed = await waitUntilDeadline(
+            pendingInitial,
+            new Date(header.deadline.expiresAt)
+          );
+          if (completed) {
+            const current = await this.actorManager.registryStore().find(actorKey);
+            if (current !== undefined && current.status === 'present') {
+              return this.dispatch(
+                {
+                  ...header,
+                  actorRef: { ...header.actorRef, epoch: current.epoch },
+                },
+                payloadBytes
+              );
+            }
+          }
+        }
         const owner = await this.transport.activateInitial({ header });
         const acquired = await this.actorManager.registryStore().acquireOwnerLease({
           actorKey,
