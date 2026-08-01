@@ -918,6 +918,11 @@ impl<'a> FunctionLowerer<'a> {
                     if let Some(field_type) =
                         self.actor_self_fields.and_then(|fields| fields.get(field))
                     {
+                        // The ActorSelfField target does not lower the object
+                        // expression, so consume the `self` identifier's
+                        // preorder expression key here to keep every later
+                        // fact lookup aligned.
+                        self.consume_expression_key();
                         return Ok(AssignTargetIr::ActorSelfField {
                             field: field.clone(),
                             field_type: field_type.clone(),
@@ -1357,6 +1362,11 @@ impl<'a> FunctionLowerer<'a> {
                         .actor_self_fields
                         .and_then(|fields| fields.get(field))
                     {
+                        // The ActorSelfField expression does not lower the
+                        // object expression, so consume the `self`
+                        // identifier's preorder expression key here to keep
+                        // every later fact lookup aligned.
+                        self.consume_expression_key();
                         ExprIr::ActorSelfField {
                             field: field.clone(),
                             field_type: field_type.clone(),
@@ -1788,6 +1798,17 @@ impl<'a> FunctionLowerer<'a> {
         } else if let Some(receiver) =
             self.exact_impl_self_edge_receiver(object, method_name, &receiver_ty)
         {
+            // The exact self edge mirrors the builder's
+            // `exact_impl_self_edge_target`, which only emits a
+            // `LocalImplMethod` fact. Actor self calls carry an
+            // `ActorMethod` fact, so yield to the actor call path instead of
+            // failing on the mismatched fact kind.
+            if !matches!(
+                expression_key.and_then(|key| self.resolved_call_targets.target(key)),
+                Some(ResolvedCallTarget::LocalImplMethod { .. })
+            ) {
+                return Ok(None);
+            }
             receiver
         } else {
             return Ok(None);

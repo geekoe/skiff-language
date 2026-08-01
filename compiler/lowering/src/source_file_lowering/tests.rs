@@ -1261,6 +1261,139 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
 }
 
 #[test]
+fn actor_self_field_access_keeps_while_body_call_targets_aligned() {
+    let units = lowered_units(vec![
+        (
+            "internal/worker.skiff",
+            "internal.worker",
+            r#"
+                  function drainStopped() -> boolean {
+                    return false
+                  }
+                "#,
+        ),
+        (
+            "internal/runner.skiff",
+            "internal.runner",
+            r#"
+                  type UserActor {
+                    id: string,
+                    displayName: string,
+                  }
+
+                  actor UserActor {
+                    key(id)
+                    create(displayName: string)
+                  }
+
+                  function isStopped() -> boolean {
+                    return false
+                  }
+
+                  impl UserActor {
+                    function create(self: UserActor, displayName: string) -> void {
+                      self.displayName = displayName
+                    }
+
+                    function run(self: UserActor, other: UserActor) -> void {
+                      let name = self.displayName
+                      self.displayName = name
+                      while root.internal.runner.isStopped() {
+                        self.displayName = other.rename(name)
+                        if root.internal.worker.drainStopped() {
+                          self.run(other)
+                          break
+                        }
+                      }
+                    }
+
+                    function rename(self: UserActor, value: string) -> string {
+                      return value
+                    }
+                  }
+                "#,
+        ),
+    ]);
+    let worker = units
+        .iter()
+        .find(|unit| unit.module_path == "internal.worker")
+        .expect("worker unit should be emitted");
+    let runner = units
+        .iter()
+        .find(|unit| unit.module_path == "internal.runner")
+        .expect("runner unit should be emitted");
+    let is_stopped_index = runner.declarations.executables["isStopped"].executable_index;
+    let drain_index = worker.declarations.executables["drainStopped"].executable_index;
+    let run = runner
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == "internal.runner.UserActor.run")
+        .expect("actor run executable should exist");
+
+    assert!(run.body.expressions.iter().any(|expression| matches!(
+        expression,
+        ExprIr::ActorSelfField { field, .. } if field == "displayName"
+    )));
+    assert!(run.body.statements.iter().any(|statement| matches!(
+        statement,
+        skiff_artifact_model::StmtIr::Assign {
+            target: skiff_artifact_model::AssignTargetIr::ActorSelfField { field, .. },
+            ..
+        } if field == "displayName"
+    )));
+    let calls = run
+        .body
+        .expressions
+        .iter()
+        .filter_map(|expression| match expression {
+            ExprIr::Call { call } => Some(call),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        calls.iter().any(|call| matches!(
+            &call.target,
+            CallTargetIr::LocalExecutable { executable_index }
+                if *executable_index == is_stopped_index
+        )),
+        "same-module root call in while condition must stay LocalExecutable: {calls:#?}"
+    );
+    assert!(
+        calls.iter().any(|call| matches!(
+            &call.target,
+            CallTargetIr::PublicationExecutable {
+                module_path,
+                executable_index,
+            } if module_path == "internal.worker" && *executable_index == drain_index
+        )),
+        "cross-module root call in while body must stay PublicationExecutable: {calls:#?}"
+    );
+    let actor_methods = calls
+        .iter()
+        .filter(|call| {
+            matches!(
+                &call.target,
+                CallTargetIr::ActorMethod {
+                    actor,
+                    ..
+                } if actor.module_path == "internal.runner" && actor.symbol == "UserActor"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actor_methods.len(),
+        2,
+        "self.run and actor handle rename must both lower to ActorMethod: {calls:#?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|call| !matches!(&call.target, CallTargetIr::Builtin { .. })),
+        "calls after self field access in a while body must not fall back to Builtin: {calls:#?}"
+    );
+}
+
+#[test]
 fn lowers_cross_module_publication_refs_to_direct_addresses() {
     let units = lowered_units(vec![
         (
