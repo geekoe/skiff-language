@@ -859,7 +859,7 @@ async fn tail_call_negative_db_transaction() {
         .eval_program_explicit_db_transaction(
             fixture
                 .context(frame.clone())
-                .with_program_call_depth_for_test(32),
+                .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH),
             &mut heap,
             &mut env,
             &fixture.linked.addr,
@@ -874,8 +874,8 @@ async fn tail_call_negative_db_transaction() {
         error,
         RuntimeError::ResourceLimitExceeded {
             ref resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"

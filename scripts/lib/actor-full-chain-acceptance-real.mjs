@@ -197,9 +197,9 @@ export async function runActorFullChainAcceptance({
       );
 
       // A chained spawn self.method: tick() spawns itself once per step for
-      // 40 steps. Queued independent invocations complete all steps serially;
+      // 160 steps. Queued independent invocations complete all steps serially;
       // nesting the spawned call in the submitting method's stack would grow
-      // programCallDepth past the runtime safety limit (32) and fail.
+      // programCallDepth past the runtime safety limit (128) and fail.
       const chainKick = entrypoints.get('chainKick');
       const chainSteps = entrypoints.get('chainSteps');
       const chainHistory = entrypoints.get('chainHistory');
@@ -219,12 +219,12 @@ export async function runActorFullChainAcceptance({
       await waitForActorValue({
         routerHttpUrl: stack.routerHttpUrl,
         entrypoint: chainSteps,
-        expected: 40,
+        expected: 160,
         signal,
       });
       assert.equal(
         await invokeUnary(stack.routerHttpUrl, chainHistory, signal),
-        'c'.repeat(40),
+        'c'.repeat(160),
       );
 
       const health = await readHealth(stack.controlUrl, signal);

@@ -535,8 +535,8 @@ fn assert_concurrent_program_call_depth_error(error: &RuntimeError) {
         unwrap_diagnostic_source_context(error),
         RuntimeError::ResourceLimitExceeded {
             resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"
@@ -614,7 +614,8 @@ async fn f445h_e4r_tail_call_negative_concurrent_keeps_ordinary_depth_and_schedu
 
     let mut depth_heap = RequestHeap::default();
     let mut depth_env = fixture.env();
-    let depth_context = program_context(&fixture.interpreter).with_program_call_depth_for_test(32);
+    let depth_context = program_context(&fixture.interpreter)
+        .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH);
     let depth_scope = depth_context
         .execution()
         .execution_scope()

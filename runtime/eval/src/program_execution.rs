@@ -176,7 +176,7 @@ pub struct ProgramExecutionContext<'a> {
 /// Skiff calls are currently represented by nested `async_recursion` futures.
 /// The instruction budget is intentionally much larger than a safe native call
 /// stack, so it cannot be the only recursion guard.
-const MAX_PROGRAM_CALL_DEPTH: usize = 32;
+pub(crate) const MAX_PROGRAM_CALL_DEPTH: usize = 128;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedTailCall {

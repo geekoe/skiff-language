@@ -31,8 +31,28 @@ pub const DEFAULT_HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// constant regardless of producer nesting. The depth dependence is gone (proven
 /// by `runtime_program_deeply_nested_stream_producers_are_stack_depth_independent`,
 /// which runs a 40+ deep chain on a 1 MiB stack). This generous size is therefore
-/// kept only as cheap defense-in-depth — 64 MiB is virtual address space committed
-/// lazily, so it costs nothing until used — and is no longer load-bearing.
+/// kept only as cheap defense-in-depth — both sizes below are virtual address
+/// space committed lazily, so they cost nothing until used — and is no longer
+/// load-bearing.
+///
+/// `MAX_PROGRAM_CALL_DEPTH` (128) is the other half of the recursion defense:
+/// ordinary non-tail calls still nest `#[async_recursion]` evaluator futures on
+/// the worker's native stack, so the guard must fire before the stack is
+/// exhausted. Measured per-layer native consumption on this codebase
+/// (non-tail countdown, one evaluator frame per logical call): release
+/// ~272 KiB/layer, debug ~1.04 MiB/layer (unoptimized frames are much larger).
+/// The worker stack therefore differs by build profile:
+///
+/// - release (production deploy profile): 64 MiB, comfortably above the
+///   ~34 MiB measured for a full 128-layer chain (see
+///   `runtime_program_non_tail_recursion_deep_chain_hits_raised_guard` tests);
+/// - debug (`debug_assertions`, used by `cargo test`, the dev instance and CI):
+///   192 MiB, so the same 128-layer chain completes instead of aborting the
+///   process at ~63 layers on the old 64 MiB size. The guard at 128 must never
+///   be the *first* native-stack boundary for an unoptimized build.
+#[cfg(debug_assertions)]
+pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 192 * 1024 * 1024;
+#[cfg(not(debug_assertions))]
 pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]

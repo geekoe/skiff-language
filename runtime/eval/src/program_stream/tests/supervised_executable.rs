@@ -121,7 +121,7 @@ async fn tail_call_negative_stream_producing_argument_stays_ordinary_and_drains_
                 draining_stream_consumer(),
                 emit_then_end_producer(),
             ],
-            31,
+            crate::program_execution::MAX_PROGRAM_CALL_DEPTH - 1,
         ),
     )
     .await
@@ -135,7 +135,8 @@ async fn tail_call_negative_stream_producing_argument_stays_ordinary_and_drains_
 async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit() {
     let (interpreter, file) =
         interpreter_with_executables(vec![stream_producer_route(1), emit_then_end_producer()]);
-    let context = execution_context(&interpreter).with_program_call_depth_for_test(31);
+    let context = execution_context(&interpreter)
+        .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH - 1);
     let route_addr = ExecutableAddr::service(0, 0);
     let mut heap = RequestHeap::default();
     let result = interpreter
@@ -417,8 +418,8 @@ fn assert_program_depth_error(error: &RuntimeError) {
         unwrap_diagnostic_source_context(error),
         RuntimeError::ResourceLimitExceeded {
             resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"

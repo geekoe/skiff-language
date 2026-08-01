@@ -157,7 +157,7 @@ explicit-self param、SelfValue slot与inherited self规则；tail replacement�
 
 ## Instruction, depth and scheduler boundaries
 
-Baseline的`MAX_PROGRAM_CALL_DEPTH = 32`作为non-tail native-stack crash fuse保留，但语义收窄为active
+当前`MAX_PROGRAM_CALL_DEPTH = 128`作为non-tail native-stack crash fuse保留，但语义收窄为active
 non-tail program frames：
 
 - 普通nested call push一次；context值传递使返回后parent depth自然恢复；
@@ -167,11 +167,30 @@ non-tail program frames：
 - continuation仍属于原native call chain时不得清零；
 - depth exhaustion保持结构化、不可catch的
   `ResourceLimitExceeded(resource = "programCallDepth")`，并报告实际limit；
-- exact值`32`不是language ABI或用户配置。不得用另一个任意常数代替TCO。
+- exact值不是language ABI或用户配置。不得用另一个任意常数代替TCO。
 
 Baseline local stream producer task已经正确重置depth；provider stream的独立spawn仍使用普通`borrow()`，
 实现阶段必须把“所有真正独立callable scheduler entry”作为有界同类搜索范围。Stream terminal error mapping
 是同一baseline中的独立修复，不属于TCO，不得无因果改写。
+
+### 原生栈配置与实测消耗
+
+non-tail普通调用仍以nested `#[async_recursion]` future在worker原生栈上执行，
+因此`MAX_PROGRAM_CALL_DEPTH = 128`必须配合足够大的worker栈，guard才有机会在
+原生栈耗尽前以结构化错误拒绝。`RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES`
+（`runtime/driver/config.rs`）按构建形态区分：
+
+- release（生产部署形态）：64 MiB。实测128层non-tail链约需34 MiB（每层上界
+  ≈272 KiB），64 MiB保留约1.9×余量；
+- debug（`debug_assertions`，`cargo test`、dev instance与CI使用）：192 MiB。
+  unoptimized evaluator帧显著更大，实测每层≈1.04 MiB（64 MiB栈在62层通过、
+  63层即原生栈溢出），128层需要超过128 MiB；192 MiB保证128层可执行到guard
+  边界且不会在63层左右直接abort进程。
+
+上述数字来自非尾countdown链（route经trampoline不占depth、每个递归调用一帧）的
+实测上界，记录见对应driver回归测试。8–16 MiB的“小栈”在release与debug下均不足以
+承载128层（release实测下限≈34 MiB），因此小栈证明只以release形态的40 MiB测试
+呈现（仍远低于生产64 MiB），debug形态用提升后的worker栈证明guard边界可达。
 
 ## Exception and call-site contract
 
@@ -211,7 +230,7 @@ telemetry sampling；不能恢复unbounded exception stack。
   generic/impl self；branch return；ordered/single argument evaluation。
 - runtime negative：binary/wrapper/call-argument/catch/timeout/concurrent/DB/stream defer/service/Actor/native
   不误转移；plan不等价回退普通调用。
-- safety：non-tail depth 32可进入、下一层以`programCallDepth`失败且runtime继续健康；现有tail-recursion
+- safety：non-tail depth 128可进入、下一层以`programCallDepth`失败且runtime继续健康；现有tail-recursion
   guard fixture改成真正non-tail recursion。
 - budget：无限tail recursion由小instruction limit终止，不返回depth error；有限tail loop的instruction
   accounting与对应普通调用逐hop一致。

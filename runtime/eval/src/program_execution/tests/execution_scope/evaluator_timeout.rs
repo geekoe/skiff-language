@@ -448,8 +448,8 @@ fn assert_program_call_depth_error(error: &RuntimeError) {
         unwrap_diagnostic_source_context(error),
         RuntimeError::ResourceLimitExceeded {
             resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"

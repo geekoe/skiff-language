@@ -9,7 +9,7 @@ use crate::error::RuntimeError;
 #[path = "tail_call_execution/carrier_materialization.rs"]
 mod carrier_materialization;
 
-const DEPTH_LIMIT_MINUS_ONE: usize = 31;
+const DEPTH_LIMIT_MINUS_ONE: usize = crate::program_execution::MAX_PROGRAM_CALL_DEPTH - 1;
 const DEEP_HOPS: i64 = 96;
 
 struct CanonicalTailCallFixture {
@@ -923,8 +923,8 @@ fn assert_program_depth_error(error: RuntimeError) {
         error,
         RuntimeError::ResourceLimitExceeded {
             ref resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"

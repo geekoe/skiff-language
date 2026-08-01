@@ -513,8 +513,8 @@ fn assert_program_depth_error(error: &RuntimeError) {
         unwrap_diagnostic_source_context(error),
         RuntimeError::ResourceLimitExceeded {
             resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"
@@ -754,7 +754,7 @@ async fn tail_call_negative_stream_real_consumer_barrier_uses_ordinary_call_and_
     let (runtime, cancellations, _) =
         ScriptedStreamRuntime::new([Ok(StreamPoll::Item(json!("item")))]);
     let context = scoped_context(&interpreter, runtime, test_runtime::execution_control())
-        .with_program_call_depth_for_test(32);
+        .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH);
 
     let error = interpreter
         .exec_program_stream_for_in(

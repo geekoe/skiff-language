@@ -190,8 +190,8 @@ function fanoutHistory(body: null) -> string {
 }
 
 // Chained self-spawn: tick spawns itself once per step. If a spawned call
-// were executed nested in the submitting method's stack, a 40-step chain
-// would overflow the runtime's programCallDepth safety limit (32); queued
+// were executed nested in the submitting method's stack, a 160-step chain
+// would exceed the runtime's programCallDepth safety limit (128); queued
 // serial execution must complete all steps without depth growth.
 type Chain {
   id: string,
@@ -211,7 +211,7 @@ impl Chain {
   }
 
   function tick(tag: string) -> void {
-    if self.steps >= 40 {
+    if self.steps >= 160 {
       return null
     }
     self.steps = self.steps + 1

@@ -24,7 +24,7 @@ use super::{
 };
 use crate::error::RuntimeError;
 
-const DEPTH_LIMIT_MINUS_ONE: usize = 31;
+const DEPTH_LIMIT_MINUS_ONE: usize = crate::program_execution::MAX_PROGRAM_CALL_DEPTH - 1;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct CanonicalNegativeFixture {
@@ -602,8 +602,8 @@ fn assert_program_depth_error(error: RuntimeError) {
         error,
         RuntimeError::ResourceLimitExceeded {
             ref resource,
-            limit: 32,
-            current: 32,
+            limit: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
+            current: crate::program_execution::MAX_PROGRAM_CALL_DEPTH,
             requested_delta: 1,
             ..
         } if resource == "programCallDepth"
