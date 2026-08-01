@@ -2,7 +2,8 @@
 
 日期：2026-08-01
 
-状态：in progress
+状态：completed；结果见
+[`rust-large-test-module-refactor-callable-result.md`](./rust-large-test-module-refactor-callable-result.md)
 
 直接父节点：[`rust-large-test-module-refactor-stage.md`](./rust-large-test-module-refactor-stage.md)。父节点继续引用唯一权威设计
 [`rust-large-test-module-refactor.md`](./rust-large-test-module-refactor.md)，引用链完整。调度信封曾误写为
