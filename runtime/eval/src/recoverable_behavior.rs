@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use skiff_artifact_identity::{abi_type_id_from_source_anchor, abi_type_id_key};
+use skiff_artifact_identity::{
+    abi_type_id_from_source_anchor, abi_type_id_key, canonical_interface_method_abi_id_from_parts,
+};
 use skiff_artifact_model::{AbiDeclarationKind, AbiSourceDeclarationAnchor};
 use skiff_runtime_boundary::{
     error::{
@@ -16,8 +18,9 @@ use skiff_runtime_boundary::{
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedBoxSourceIr, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr, LinkedNominalTypeRefBase,
-    LinkedTypeRef, ReceiverCallAbi, TypeAddr, UnitAddr,
+    LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
+    LinkedInterfaceMethodTablePlanIr, LinkedNominalTypeRefBase, LinkedTypeRef, ReceiverCallAbi,
+    TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -333,6 +336,7 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
         )?;
         Ok(Some(RecoverableRestoredLocalInterfaceSelf {
             concrete_type_identity: concrete_type_identity.clone(),
+            runtime_concrete_type_identity: entry.runtime_concrete_type_identity.clone(),
             payload,
         }))
     }
@@ -368,7 +372,7 @@ pub fn interface_method_table_from_linked(
     let slots = method_table
         .slots
         .iter()
-        .map(|slot| interface_method_slot_from_linked(owner_addr, slot))
+        .map(|slot| interface_method_slot_from_linked(owner_addr, &method_table.interface, slot))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(InterfaceMethodTable::new(
         runtime_interface_method_table_id(&interface_id, &concrete_type),
@@ -383,8 +387,16 @@ pub fn runtime_interface_method_table_id(interface_id: &str, concrete_type: &str
 
 fn interface_method_slot_from_linked(
     owner_addr: &ExecutableAddr,
+    interface: &LinkedInterfaceInstantiationRef,
     slot: &LinkedInterfaceMethodSlotPlanIr,
 ) -> Result<InterfaceMethodSlot, RuntimeError> {
+    let method_name = slot.method_name.trim();
+    if method_name.is_empty() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "interface method table slot {} is missing methodName",
+            slot.slot
+        )));
+    }
     let executable = ExecutableAddr {
         unit: owner_addr.unit.clone(),
         file: owner_addr.file.clone(),
@@ -398,7 +410,11 @@ fn interface_method_slot_from_linked(
     Ok(InterfaceMethodSlot::from_admitted_metadata(
         slot.slot,
         slot.method_name.clone(),
-        slot.method_abi_id.clone(),
+        canonical_interface_method_abi_id_from_parts(
+            &interface.interface_abi_id,
+            &interface.canonical_type_args,
+            method_name,
+        ),
         InterfaceMethodSignature::new(
             slot.signature
                 .params

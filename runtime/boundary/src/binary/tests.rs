@@ -41,6 +41,7 @@ const READER_INTERFACE: &str = "pkg.Reader";
 const READER_PROJECTION: &str = "projection:pkg.Reader:pkg.ReaderImpl";
 const READER_METHOD: &str = "method:pkg.Reader:read";
 const READER_IMPL: &str = "pkg.ReaderImpl";
+const READER_RUNTIME_IMPL: &str = "runtime:pkg.ReaderImpl";
 
 fn string_plan() -> RuntimeTypePlan {
     RuntimeTypePlan::from_descriptor(&json!({
@@ -83,7 +84,7 @@ fn local_interface_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
         heap.alloc_interface(InterfaceValue::new(
             READER_INTERFACE.to_string(),
             InterfaceCarrier::Local {
-                concrete_type: READER_IMPL.to_string(),
+                concrete_type: READER_RUNTIME_IMPL.to_string(),
                 method_table: test_method_table(READER_INTERFACE, READER_PROJECTION),
                 payload: RuntimeValue::String("Ada".to_string()),
             },
@@ -225,6 +226,7 @@ impl RecoverableBehaviorHooks for TestBehaviorHooks {
             .unwrap_or_default();
         Ok(Some(RecoverableRestoredLocalInterfaceSelf {
             concrete_type_identity: concrete_type_identity.clone(),
+            runtime_concrete_type_identity: READER_RUNTIME_IMPL.to_string(),
             payload: RuntimeValue::String(value),
         }))
     }
@@ -451,7 +453,7 @@ fn owner_internal_service_explicit_slot_roundtrips_local_interface_with_hooks() 
         panic!("decoded interface should use local carrier");
     };
     assert_eq!(interface.interface(), READER_INTERFACE);
-    assert_eq!(concrete_type, READER_IMPL);
+    assert_eq!(concrete_type, READER_RUNTIME_IMPL);
     assert_eq!(method_table.id(), READER_PROJECTION);
     assert_eq!(method_table.interface_abi_id(), READER_INTERFACE);
     assert_eq!(method_table.slots()[0].method_abi_id(), READER_METHOD);

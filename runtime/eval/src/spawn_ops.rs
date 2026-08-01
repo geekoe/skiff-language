@@ -455,26 +455,30 @@ mod recoverable_spawn_payload_tests {
     };
 
     use skiff_artifact_identity::{abi_type_id_from_source_anchor, abi_type_id_key};
-    use skiff_artifact_model::{AbiDeclarationKind, AbiSourceDeclarationAnchor};
+    use skiff_artifact_model::{
+        AbiDeclarationKind, AbiSourceDeclarationAnchor, InstructionSourceSite,
+        SyntheticInstructionSiteReason,
+    };
+    use skiff_runtime_capability_context::DbCapabilityContext;
     use skiff_runtime_boundary::{
         error::RecoverableBoundaryErrorCode,
         payload::{PayloadBoundary, PayloadBoundaryKind},
     };
     use skiff_runtime_linked_program::linked::TypeDeclarationIr;
     use skiff_runtime_linked_program::{
-        ExecutableAddr, ExecutableKind, ExprRefIr, FileDeclarations, FileLinkTargets, LinkOverlay,
-        LinkedBoxSourceIr, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-        LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
-        LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
-        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, ParamIr,
-        ReceiverCallAbi, RuntimeExecutionPackage, RuntimeTypeContext, SlotIr, SlotLayoutIr,
-        TypeAddr, TypeDeclIr, UnitAddr,
+        BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileDeclarations,
+        FileLinkTargets, LinkOverlay, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable,
+        LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
+        LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodSlotSignatureIr,
+        LinkedInterfaceMethodSlotTargetIr, LinkedInterfaceMethodTablePlanIr, LinkedStmtIr,
+        LinkedTypeDescriptor, LinkedTypeRef, ParamIr, ReceiverCallAbi, RuntimeExecutionPackage,
+        RuntimeTypeContext, SlotIr, SlotLayoutIr, StmtRefIr, TypeAddr, TypeDeclIr, UnitAddr,
     };
     use skiff_runtime_linked_type_plan::{
         linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
     };
     use skiff_runtime_model::{
-        request_heap::RequestHeap,
+        request_heap::{RequestHeap, RequestHeapLimits},
         runtime_value::{
             HeapNode, InterfaceCarrier, InterfaceMethodTarget, InterfaceReceiverCallAbi,
             InterfaceValue, RuntimeObject, RuntimeObjectFields, RuntimeValue,
@@ -483,12 +487,20 @@ mod recoverable_spawn_payload_tests {
 
     use super::encode_spawn_args_payload;
     use crate::{
+        assembly_execution::ordinary::tests::test_runtime,
+        capabilities::TimeCapabilityContext,
+        env::Env,
         error::RuntimeError,
         invocation::EvalProgramProjection,
-        recoverable_behavior::{interface_method_table_from_linked, EvalRecoverableBehaviorHooks},
+        program_execution::{ProgramExecutionContext, ProgramExecutionInput},
+        recoverable_behavior::{
+            interface_method_table_from_linked, runtime_interface_method_table_id,
+            EvalRecoverableBehaviorHooks,
+        },
         recoverable_spawn_payload::{
             decode_spawn_args_payload, executable_request_recoverable_expected_plan,
         },
+        EvalRuntimeProgram, Interpreter,
     };
 
     const ARTIFACT_IDENTITY: &str =
@@ -497,6 +509,7 @@ mod recoverable_spawn_payload_tests {
     const SERVICE_ID: &str = "skiff.test/provider";
     const INTERFACE_ABI: &str = "pkg.ToolProvider";
     const METHOD_ABI: &str = "pkg.ToolProvider.call";
+    const CANONICAL_METHOD_ABI: &str = "method:pkg.ToolProvider:call";
 
     struct TestProgram {
         service_files: Vec<Arc<LinkedFileUnit>>,
@@ -621,6 +634,7 @@ mod recoverable_spawn_payload_tests {
                 provider_method_executable(file_index),
                 spawn_target_executable(),
                 runtime_bindings_spawn_target_executable(),
+                provider_dispatch_probe_executable(),
             ],
             external_refs: Default::default(),
         }
@@ -659,9 +673,77 @@ mod recoverable_spawn_payload_tests {
             params: Vec::new(),
             return_type: Some(string_type()),
             self_type: Some(provider_concrete_type_for_file(file_index)),
-            slots: SlotLayoutIr::default(),
+            slots: SlotLayoutIr {
+                slots: vec![SlotIr {
+                    index: 0,
+                    name: "self".to_string(),
+                    kind: "selfValue".to_string(),
+                }],
+                frame_size: 1,
+            },
             may_suspend: false,
-            body: LinkedExecutableBody::default(),
+            body: LinkedExecutableBody {
+                blocks: vec![BlockIr {
+                    label: "entry".to_string(),
+                    statements: vec![StmtRefIr { statement: 0 }],
+                }],
+                statements: vec![LinkedStmtIr::Return {
+                    value: Some(ExprRefIr { expression: 0 }),
+                }],
+                expressions: vec![LinkedExprIr::LoadSlot { slot: 0 }],
+            },
+        }
+    }
+
+    fn provider_dispatch_probe_executable() -> LinkedExecutable {
+        LinkedExecutable {
+            kind: ExecutableKind::Function,
+            symbol: "providerDispatchProbe".to_string(),
+            type_params: Vec::new(),
+            params: vec![ParamIr {
+                name: "provider".to_string(),
+                slot: 0,
+                ty: provider_any_type(),
+            }],
+            return_type: Some(string_type()),
+            self_type: None,
+            slots: SlotLayoutIr {
+                slots: vec![SlotIr {
+                    index: 0,
+                    name: "provider".to_string(),
+                    kind: "param".to_string(),
+                }],
+                frame_size: 1,
+            },
+            may_suspend: false,
+            body: LinkedExecutableBody {
+                blocks: vec![BlockIr {
+                    label: "entry".to_string(),
+                    statements: vec![StmtRefIr { statement: 0 }],
+                }],
+                statements: vec![LinkedStmtIr::Return {
+                    value: Some(ExprRefIr { expression: 1 }),
+                }],
+                expressions: vec![
+                    LinkedExprIr::LoadSlot { slot: 0 },
+                    LinkedExprIr::Call {
+                        call: CallIr {
+                            target: LinkedCallTarget::InterfaceMethod {
+                                interface: tool_provider_interface(),
+                                method_abi_id: CANONICAL_METHOD_ABI.to_string(),
+                                slot: 0,
+                            },
+                            site: InstructionSourceSite::Synthetic {
+                                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                            },
+                            args: vec![ExprRefIr { expression: 0 }],
+                            type_args: BTreeMap::new(),
+                            metadata: BTreeMap::new(),
+                            actor_metadata: None,
+                        },
+                    },
+                ],
+            },
         }
     }
 
@@ -910,10 +992,16 @@ mod recoverable_spawn_payload_tests {
             panic!("{label} should decode as local carrier");
         };
         assert_eq!(provider.interface(), INTERFACE_ABI);
-        assert_eq!(concrete_type, &provider_stable_restore_key());
+        let runtime_key = linked_type_ref_runtime_key(&provider_concrete_type());
+        assert_eq!(concrete_type, &runtime_key);
+        assert_ne!(concrete_type, &provider_stable_restore_key());
         assert_eq!(payload, &RuntimeValue::String("state".to_string()));
+        assert_eq!(
+            method_table.id(),
+            runtime_interface_method_table_id(INTERFACE_ABI, &runtime_key)
+        );
         assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
-        assert_eq!(method_table.slots()[0].method_abi_id(), METHOD_ABI);
+        assert_eq!(method_table.slots()[0].method_abi_id(), CANONICAL_METHOD_ABI);
     }
 
     #[test]
@@ -1013,18 +1101,16 @@ mod recoverable_spawn_payload_tests {
             panic!("provider should decode as local carrier");
         };
         assert_eq!(provider.interface(), INTERFACE_ABI);
-        assert!(
-            concrete_type.starts_with("abi-type:"),
-            "decoded carrier concrete type should be the durable stable restore key, got {concrete_type}"
-        );
-        assert_eq!(concrete_type, &provider_stable_restore_key());
-        assert_ne!(
-            concrete_type,
-            &linked_type_ref_runtime_key(&provider_concrete_type())
-        );
+        let runtime_key = linked_type_ref_runtime_key(&provider_concrete_type());
+        assert_eq!(concrete_type, &runtime_key);
+        assert_ne!(concrete_type, &provider_stable_restore_key());
         assert_eq!(payload, &RuntimeValue::String("state".to_string()));
+        assert_eq!(
+            method_table.id(),
+            runtime_interface_method_table_id(INTERFACE_ABI, &runtime_key)
+        );
         assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
-        assert_eq!(method_table.slots()[0].method_abi_id(), METHOD_ABI);
+        assert_eq!(method_table.slots()[0].method_abi_id(), CANONICAL_METHOD_ABI);
         let InterfaceMethodTarget::LocalExecutable {
             executable,
             receiver_call_abi,
@@ -1034,6 +1120,11 @@ mod recoverable_spawn_payload_tests {
             receiver_call_abi,
             &InterfaceReceiverCallAbi::ExplicitSelfFirst
         );
+
+        let reencoded =
+            encode_spawn_args_payload(&decoded, &expected, &boundary, &decode_heap, &hooks)
+                .expect("decoded local interface should re-encode on the spawn worker");
+        assert_eq!(&reencoded[..4], b"SKRE");
     }
 
     #[test]
@@ -1116,6 +1207,105 @@ mod recoverable_spawn_payload_tests {
         assert_eq!(providers.len(), 2);
         assert_decoded_provider_value(&decode_heap, &providers[0], "providers[0]");
         assert_decoded_provider_value(&decode_heap, &providers[1], "providers[1]");
+
+        let reencoded =
+            encode_spawn_args_payload(&decoded, &expected, &boundary, &decode_heap, &hooks)
+                .expect("decoded runtime bindings should re-encode on the spawn worker");
+        assert_eq!(&reencoded[..4], b"SKRE");
+    }
+
+    fn probe_caller_addr() -> ExecutableAddr {
+        ExecutableAddr::service(0, 4)
+    }
+
+    fn probe_program_context(interpreter: &Interpreter) -> ProgramExecutionContext<'static> {
+        let stream_runtime = interpreter.stream_runtime.clone();
+        let effects = test_runtime::effects_context();
+        let execution = test_runtime::execution_control();
+        ProgramExecutionContext::new(ProgramExecutionInput {
+            execution: execution.clone(),
+            config: test_runtime::config_context(),
+            db: DbCapabilityContext::unavailable(),
+            file: test_runtime::file_context(),
+            file_source_stream: test_runtime::file_source_stream_context(stream_runtime.clone()),
+            time: TimeCapabilityContext::new(execution),
+            websocket: test_runtime::websocket_context(),
+            effects: effects.clone(),
+            http_client: effects.http_client_context(
+                interpreter.http_options.clone(),
+                stream_runtime,
+                interpreter.test_effect_double_context(),
+            ),
+            test_effect_doubles: interpreter.test_effect_double_context(),
+            actor: test_runtime::actor_context(),
+            request: test_runtime::request_context(),
+            request_heap_limits: RequestHeapLimits::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn decoded_local_interface_provider_dispatches_program_method() {
+        let program = TestProgram::with_interface_box();
+        let projection = program.projection();
+        let executable = &program.service_files[0].executables[2];
+        let expected = executable_request_recoverable_expected_plan(
+            projection.type_view(),
+            &spawn_target_addr(),
+            executable,
+        )
+        .expect("recoverable expected plan should build");
+        let hooks = EvalRecoverableBehaviorHooks::new(projection, ARTIFACT_IDENTITY, BUILD_ID)
+            .expect("production hooks should build");
+        let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
+        let mut heap = RequestHeap::default();
+        let provider = provider_value(&mut heap);
+        let value = args_record(&mut heap, "provider", provider);
+
+        let bytes = encode_spawn_args_payload(&value, &expected, &boundary, &heap, &hooks)
+            .expect("provider should encode before spawn submit");
+        let mut decode_heap = RequestHeap::default();
+        let decoded =
+            decode_spawn_args_payload(&bytes, &expected, &boundary, &mut decode_heap, &hooks)
+                .expect("provider should decode on spawn worker");
+        let RuntimeValue::Heap(args_handle) = decoded else {
+            panic!("decoded args should be a heap object");
+        };
+        let HeapNode::Object(args) = decode_heap.get(args_handle).expect("args object resolves")
+        else {
+            panic!("decoded args should be an object");
+        };
+        let decoded_provider = args
+            .fields()
+            .get("provider")
+            .cloned()
+            .expect("provider arg should exist");
+
+        let runtime_program = Arc::new(EvalRuntimeProgram {
+            service_id: SERVICE_ID.to_string(),
+            service_files: vec![Arc::clone(&program.service_files[0])],
+            packages: Vec::new(),
+            service_resources: Default::default(),
+            spawn_routes: HashMap::new(),
+            link_overlay: LinkOverlay::default(),
+            types: program.types.clone(),
+        });
+        let interpreter = Interpreter::with_program(runtime_program, test_runtime::runtime_factory());
+        let context = probe_program_context(&interpreter);
+        let caller_addr = probe_caller_addr();
+        let result = interpreter
+            .call_program_executable(
+                context,
+                &mut decode_heap,
+                &Env::new(),
+                &caller_addr,
+                &caller_addr,
+                &BTreeMap::new(),
+                vec![decoded_provider],
+            )
+            .await
+            .expect("decoded provider should dispatch through the linked program method table");
+
+        assert_eq!(result, RuntimeValue::String("state".to_string()));
     }
 
     #[test]

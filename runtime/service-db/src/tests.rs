@@ -2417,10 +2417,6 @@ fn recoverable_envelope_runtime_field_roundtrips_local_interface_with_hooks() {
     };
     assert_eq!(binary.subtype, BinarySubtype::Generic);
     assert!(!binary.bytes.is_empty());
-    assert!(
-        root_store.roots.is_empty(),
-        "LocalConcrete recoverable self nodes do not create artifact retention roots"
-    );
 
     let mut read_heap = RequestHeap::default();
     let read_context = DbRecoverableRuntimeReadContext {
@@ -2437,6 +2433,26 @@ fn recoverable_envelope_runtime_field_roundtrips_local_interface_with_hooks() {
     assert_eq!(hooks.conformance_calls.get(), 1);
     assert_eq!(hooks.table_calls.get(), 1);
     assert_decoded_provider_runtime_value(&decoded, &read_heap, "binding-1", "anthropic");
+
+    let rewritten = binding
+        .document_from_runtime_business_value(&decoded, &read_heap, Some(&mut write_context))
+        .expect("decoded local interface should re-encode through DB runtime hook outlet");
+    assert_eq!(hooks.encode_calls.get(), 2);
+    let Some(Bson::Binary(rewritten_binary)) = rewritten.get("provider") else {
+        panic!("rewritten provider should be stored as recoverable-envelope BSON binary");
+    };
+    assert_eq!(rewritten_binary.subtype, BinarySubtype::Generic);
+    assert!(!rewritten_binary.bytes.is_empty());
+    assert!(
+        root_store.roots.is_empty(),
+        "LocalConcrete recoverable self nodes do not create artifact retention roots"
+    );
+
+    let mut reread_heap = RequestHeap::default();
+    let reread = binding
+        .runtime_business_value_from_document(rewritten, &mut reread_heap, Some(&read_context))
+        .expect("rewritten local interface envelope should decode through DB runtime hook outlet");
+    assert_decoded_provider_runtime_value(&reread, &reread_heap, "binding-1", "anthropic");
 }
 
 #[test]
@@ -2565,29 +2581,21 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
     assert_eq!(page.len(), 1);
     assert_decoded_provider_runtime_value(&page[0], &page_heap, "binding-1", "openai");
 
-    let replacement_provider = local_provider_runtime_value(&mut heap, "anthropic");
-    let replacement_value = runtime_object(
-        &mut heap,
-        [
-            ("id", RuntimeValue::String("binding-1".to_string())),
-            ("provider", replacement_provider),
-        ],
-    );
     let replaced = runtime
         .replace_one_runtime(
             "ProviderBinding",
             DbOneSelector::Key(db_key(json!("binding-1"))),
-            &replacement_value,
-            &mut heap,
+            &read,
+            &mut read_heap,
             context.clone(),
             &[],
             None,
         )
         .await
-        .expect("production service DB runtime replace should encode local interface")
+        .expect("production service DB runtime replace should re-encode the decoded local interface")
         .expect("created provider binding should be replaced");
 
-    assert_decoded_provider_runtime_value(&replaced, &heap, "binding-1", "anthropic");
+    assert_decoded_provider_runtime_value(&replaced, &read_heap, "binding-1", "openai");
 
     let mut reread_heap = RequestHeap::default();
     let reread = runtime
@@ -3696,6 +3704,7 @@ const TEST_PROVIDER_INTERFACE: &str = "pkg.ToolProvider";
 const TEST_PROVIDER_PROJECTION: &str = "projection:pkg.ToolProvider:pkg.StaticProvider";
 const TEST_PROVIDER_METHOD: &str = "method:pkg.ToolProvider:complete";
 const TEST_PROVIDER_IMPL: &str = "pkg.StaticProvider";
+const TEST_PROVIDER_RUNTIME_IMPL: &str = "runtime:pkg.StaticProvider";
 const TEST_SERVICE_ARTIFACT: &str = "svc/llm";
 const TEST_SERVICE_BUILD: &str = "build-provider-a";
 
@@ -3830,7 +3839,7 @@ fn local_provider_runtime_value(heap: &mut RequestHeap, provider_name: &str) -> 
         heap.alloc_interface(InterfaceValue::new(
             TEST_PROVIDER_INTERFACE.to_string(),
             InterfaceCarrier::Local {
-                concrete_type: TEST_PROVIDER_IMPL.to_string(),
+                concrete_type: TEST_PROVIDER_RUNTIME_IMPL.to_string(),
                 method_table: test_provider_method_table(),
                 payload: RuntimeValue::String(provider_name.to_string()),
             },
@@ -3905,7 +3914,7 @@ fn assert_decoded_provider_runtime_value(
     else {
         panic!("provider should decode as a local carrier");
     };
-    assert_eq!(concrete_type, TEST_PROVIDER_IMPL);
+    assert_eq!(concrete_type, TEST_PROVIDER_RUNTIME_IMPL);
     assert_eq!(
         payload,
         &RuntimeValue::String(expected_provider_name.to_string())
@@ -3952,6 +3961,9 @@ impl RecoverableBehaviorHooks for TestDbBehaviorHooks {
         _heap: &RequestHeap,
     ) -> BoundaryResult<Option<RecoverableEncodedLocalInterfaceSelf>> {
         self.encode_calls.set(self.encode_calls.get() + 1);
+        if request.concrete_type != TEST_PROVIDER_RUNTIME_IMPL {
+            return Ok(None);
+        }
         let provider_name = match request.payload {
             RuntimeValue::String(value) => value.as_str(),
             _ => "unsupported",
@@ -3990,6 +4002,7 @@ impl RecoverableBehaviorHooks for TestDbBehaviorHooks {
             .unwrap_or_default();
         Ok(Some(RecoverableRestoredLocalInterfaceSelf {
             concrete_type_identity: concrete_type_identity.clone(),
+            runtime_concrete_type_identity: TEST_PROVIDER_RUNTIME_IMPL.to_string(),
             payload: RuntimeValue::String(provider_name),
         }))
     }

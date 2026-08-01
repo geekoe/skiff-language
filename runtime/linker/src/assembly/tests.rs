@@ -1602,7 +1602,9 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
     use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, TypeRefIr};
     use skiff_runtime_linked_program::{
         ExprRefIr, LinkedBoxSourceIr, LinkedExprIr, LinkedInterfaceInstantiationRef,
-        LinkedInterfaceMethodTablePlanIr, LinkedTypeRef,
+        LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodSlotSignatureIr,
+        LinkedInterfaceMethodSlotTargetIr, LinkedInterfaceMethodTablePlanIr, LinkedTypeRef,
+        ReceiverCallAbi,
     };
 
     let fixture = CycleFixture::new();
@@ -1647,6 +1649,7 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
             type_index: 1,
         });
     let interface_box = |interface_abi_id: String| {
+        let slot_abi_id = format!("method:{interface_abi_id}:read");
         let interface = LinkedInterfaceInstantiationRef {
             interface_abi_id,
             canonical_type_args: Vec::new(),
@@ -1659,7 +1662,22 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
                 method_table: LinkedInterfaceMethodTablePlanIr {
                     interface,
                     concrete_type: LinkedTypeRef::LocalType { type_index: 0 },
-                    slots: Vec::new(),
+                    slots: vec![LinkedInterfaceMethodSlotPlanIr {
+                        slot: 0,
+                        method_name: "read".to_string(),
+                        method_abi_id: slot_abi_id,
+                        signature: LinkedInterfaceMethodSlotSignatureIr {
+                            params: Vec::new(),
+                            return_type: LinkedTypeRef::Native {
+                                name: "string".to_string(),
+                                args: Vec::new(),
+                            },
+                        },
+                        target: LinkedInterfaceMethodSlotTargetIr {
+                            executable_index: 0,
+                            receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
+                        },
+                    }],
                 },
             },
         }
@@ -1729,6 +1747,11 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
         assert_eq!(
             method_table.interface.interface_abi_id, interface.interface_abi_id,
             "the box and its recoverable method table must share one interface identity"
+        );
+        assert_eq!(
+            method_table.slots[0].method_abi_id,
+            format!("method:{}:read", interface.interface_abi_id),
+            "method table slot abi id must follow the canonicalized interface identity"
         );
         interface.interface_abi_id.clone()
     };
