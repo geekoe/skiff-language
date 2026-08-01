@@ -1,0 +1,26 @@
+import std
+
+type ThreadActor {
+  id: string,
+  label: string,
+}
+
+actor ThreadActor {
+  key(id)
+  create()
+}
+
+impl ThreadActor {
+  function create() -> void {
+    self.label = ""
+  }
+
+  function read() -> string {
+    return self.label
+  }
+
+  function setLabel(value: string) -> string {
+    self.label = value
+    return self.label
+  }
+}

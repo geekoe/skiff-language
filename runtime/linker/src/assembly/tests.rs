@@ -10,6 +10,7 @@ use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader
 
 use super::*;
 
+mod cross_package_actor;
 mod fixtures;
 mod representation_wrap;
 mod tail_call_structure;

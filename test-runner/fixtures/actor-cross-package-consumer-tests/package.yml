@@ -1,0 +1,7 @@
+id: test.skiff/actor-cross-package-consumer-tests
+version: 1.0.0
+packages:
+  - id: test.skiff/actor-cross-package-provider
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl

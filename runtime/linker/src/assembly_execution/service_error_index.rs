@@ -432,18 +432,22 @@ impl<'a> ExactTypeCoordinateResolver<'a> {
         code_slot: usize,
         symbol: &ServiceSymbolRef,
     ) -> anyhow::Result<ResolvedServiceSymbol> {
-        let code = self
-            .shared
-            .code_slots()
-            .get(code_slot)
-            .with_context(|| format!("package code slot {code_slot} is out of bounds"))?;
-        let mut actors = code
-            .files()
-            .iter()
-            .filter(|file| file.module_path == symbol.module_path)
-            .flat_map(|file| &file.actor_declarations)
-            .filter(|declaration| declaration.abi.actor_name == symbol.symbol);
-        if actors.next().is_some() {
+        let mut actor_slots = Vec::new();
+        for (slot, code) in self.shared.code_slots().iter().enumerate() {
+            if slot != code_slot && self.actor_export_abi_identity(slot, symbol).is_none() {
+                // Cross-package actor references are only admitted through the
+                // PackageArtifact actor export metadata.
+                continue;
+            }
+            let mut actors = code
+                .files()
+                .iter()
+                .filter(|file| file.module_path == symbol.module_path)
+                .flat_map(|file| &file.actor_declarations)
+                .filter(|declaration| declaration.abi.actor_name == symbol.symbol);
+            let Some(declaration) = actors.next() else {
+                continue;
+            };
             if actors.next().is_some() {
                 anyhow::bail!(
                     "Actor type symbol {}.{} is ambiguous",
@@ -451,10 +455,44 @@ impl<'a> ExactTypeCoordinateResolver<'a> {
                     symbol.symbol
                 );
             }
+            if slot != code_slot {
+                let export_abi = self.actor_export_abi_identity(slot, symbol);
+                if export_abi != Some(&declaration.actor_abi_identity) {
+                    anyhow::bail!(
+                        "Actor declaration {}.{} in package slot {slot} disagrees with its PackageArtifact actor metadata",
+                        symbol.module_path,
+                        symbol.symbol
+                    );
+                }
+            }
+            actor_slots.push(slot);
+        }
+        if actor_slots.len() == 1 {
             return Ok(ResolvedServiceSymbol::Actor);
+        }
+        if actor_slots.len() > 1 {
+            anyhow::bail!(
+                "Actor type symbol {}.{} is ambiguous across package slots",
+                symbol.module_path,
+                symbol.symbol
+            );
         }
         self.local_symbol_type_addr(code_slot, symbol)
             .map(ResolvedServiceSymbol::Address)
+    }
+
+    fn actor_export_abi_identity(
+        &self,
+        slot: usize,
+        symbol: &ServiceSymbolRef,
+    ) -> Option<&skiff_artifact_model::ActorAbiIdentity> {
+        let key = format!("{}.{}", symbol.module_path, symbol.symbol);
+        self.shared
+            .code_slots()
+            .get(slot)
+            .and_then(|code| code.artifact().implementation_links.types.get(&key))
+            .and_then(|export| export.actor.as_ref())
+            .map(|actor| &actor.actor_abi_identity)
     }
 
     fn package_symbol_type_addr(

@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use skiff_artifact_model::{PackageBuildId, PackageRefIr};
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorImplementationIdentity, PackageBuildId, PackageRefIr,
+};
 use skiff_runtime_linked_program::{
     ConstAddr, DbObjectTargetId, ExecutableAddr, FileAddr, LinkedActorDeclaration,
-    LinkedActorDeclarationOwner, LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr,
+    LinkedActorDeclarationOwner, LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation,
+    LinkedFileUnit, LinkedPackageDirectCall, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr,
     UnitAddr,
 };
 
@@ -133,42 +136,157 @@ impl<'a> AssemblyAddressResolver<'a> {
 
     pub(super) fn actor_declaration(
         &self,
-        code_slot: usize,
+        caller_slot: usize,
         symbol: &ServiceSymbolRef,
+        expected: Option<(&ActorAbiIdentity, &ActorImplementationIdentity)>,
     ) -> anyhow::Result<(LinkedActorDeclarationOwner, &LinkedActorDeclaration)> {
-        let mut resolved = None;
-        for (file_index, file) in self.package_files(code_slot)?.iter().enumerate() {
-            if file.module_path != symbol.module_path {
+        let mut resolved = Vec::new();
+        for (slot, files) in self.files.iter().enumerate() {
+            if slot != caller_slot && self.actor_export_abi_identity(slot, symbol).is_none() {
+                // Cross-package actor references are only admitted through the
+                // PackageArtifact actor export metadata; a package that does not
+                // export the exact implementation symbol cannot own the view.
                 continue;
             }
-            for declaration in &file.actor_declarations {
-                if declaration.actor_type != *symbol {
+            for (file_index, file) in files.iter().enumerate() {
+                if file.module_path != symbol.module_path {
                     continue;
                 }
-                if resolved.is_some() {
-                    anyhow::bail!(
-                        "Actor declaration {}.{} is ambiguous",
-                        symbol.module_path,
-                        symbol.symbol
-                    );
+                for declaration in &file.actor_declarations {
+                    if declaration.actor_type != *symbol {
+                        continue;
+                    }
+                    if let Some((abi, implementation)) = expected {
+                        if declaration.actor_abi_identity != *abi
+                            || declaration.actor_implementation_identity != *implementation
+                        {
+                            continue;
+                        }
+                    }
+                    if slot != caller_slot {
+                        let export_abi = self.actor_export_abi_identity(slot, symbol);
+                        if export_abi != Some(&declaration.actor_abi_identity) {
+                            anyhow::bail!(
+                                "Actor declaration {}.{} in package slot {slot} disagrees with its PackageArtifact actor metadata",
+                                symbol.module_path,
+                                symbol.symbol
+                            );
+                        }
+                    }
+                    resolved.push((
+                        LinkedActorDeclarationOwner {
+                            unit: UnitAddr::Package(slot),
+                            file: FileAddr::LoadedFileIndex(file_index),
+                            actor_symbol: symbol.symbol.clone(),
+                        },
+                        declaration,
+                    ));
                 }
-                resolved = Some((
-                    LinkedActorDeclarationOwner {
-                        unit: UnitAddr::Package(code_slot),
-                        file: FileAddr::LoadedFileIndex(file_index),
-                        actor_symbol: symbol.symbol.clone(),
-                    },
-                    declaration,
-                ));
             }
         }
-        resolved.ok_or_else(|| {
-            anyhow::anyhow!(
+        if resolved.is_empty() {
+            anyhow::bail!(
                 "Actor method resolves to a type without an Actor declaration: {}.{}",
                 symbol.module_path,
                 symbol.symbol
-            )
-        })
+            );
+        }
+        if resolved.len() > 1 {
+            anyhow::bail!(
+                "Actor declaration {}.{} is ambiguous across package slots",
+                symbol.module_path,
+                symbol.symbol
+            );
+        }
+        Ok(resolved.pop().expect("non-empty actor matches"))
+    }
+
+    /// Resolves a package-direct call whose target executable is claimed by an
+    /// Actor declaration's public method. The declaration, method identity, and
+    /// ABI identities all come from the dependency PackageArtifact's actor
+    /// declaration (the single authoritative actor representation); ordinary
+    /// callables return `None` and keep their package-direct semantics.
+    pub(super) fn actor_method_plan_for_package_direct(
+        &self,
+        call: &LinkedPackageDirectCall,
+    ) -> anyhow::Result<Option<LinkedActorMethodDispatchPlan>> {
+        let dependency_slot = call.dependency_code_slot().index();
+        let target = call.executable_addr();
+        let UnitAddr::Package(target_slot) = target.unit else {
+            anyhow::bail!("package direct actor method target is not package-owned");
+        };
+        if target_slot != dependency_slot {
+            anyhow::bail!(
+                "package direct actor method target slot disagrees with its dependency link"
+            );
+        }
+        let FileAddr::LoadedFileIndex(target_file_index) = target.file else {
+            anyhow::bail!("package direct actor method target file is not a loaded file index");
+        };
+        let mut matches = Vec::new();
+        for (file_index, file) in self.package_files(dependency_slot)?.iter().enumerate() {
+            if file_index != target_file_index {
+                continue;
+            }
+            for declaration in &file.actor_declarations {
+                for method in &declaration.public_methods {
+                    let method_targets_executable = match &method.implementation {
+                        LinkedActorMethodImplementation::LocalExecutable { executable_index } => {
+                            *executable_index as usize == target.executable
+                        }
+                        LinkedActorMethodImplementation::Executable { addr } => {
+                            addr.unit == target.unit
+                                && addr.file == target.file
+                                && addr.executable == target.executable
+                        }
+                    };
+                    if !method_targets_executable {
+                        continue;
+                    }
+                    let callable = call.package_callable_id().as_str();
+                    if !callable.ends_with(&format!(".{}", method.name)) {
+                        anyhow::bail!(
+                            "package direct call {callable} targets Actor method executable {} but its name disagrees with the callable path",
+                            target.executable
+                        );
+                    }
+                    matches.push((declaration, method));
+                }
+            }
+        }
+        if matches.is_empty() {
+            return Ok(None);
+        }
+        if matches.len() > 1 {
+            anyhow::bail!(
+                "package direct call {} targets ambiguous Actor method executables",
+                call.package_callable_id().as_str()
+            );
+        }
+        let (declaration, method) = matches.pop().expect("single Actor method executable match");
+        Ok(Some(LinkedActorMethodDispatchPlan {
+            declaration_owner: LinkedActorDeclarationOwner {
+                unit: UnitAddr::Package(dependency_slot),
+                file: FileAddr::LoadedFileIndex(target_file_index),
+                actor_symbol: declaration.actor_type.symbol.clone(),
+            },
+            actor_abi_identity: declaration.actor_abi_identity.clone(),
+            actor_implementation_identity: declaration.actor_implementation_identity.clone(),
+            method_identity: method.method_identity.clone(),
+        }))
+    }
+
+    fn actor_export_abi_identity(
+        &self,
+        slot: usize,
+        symbol: &ServiceSymbolRef,
+    ) -> Option<&ActorAbiIdentity> {
+        let key = format!("{}.{}", symbol.module_path, symbol.symbol);
+        self.shared
+            .code_by_slot(PackageCodeSlotIndex::new(slot))
+            .and_then(|code| code.artifact().implementation_links.types.get(&key))
+            .and_then(|export| export.actor.as_ref())
+            .map(|actor| &actor.actor_abi_identity)
     }
 
     pub(super) fn actor_declaration_by_owner(
