@@ -92,6 +92,7 @@ pnpm test    # 两个测试域的完整非 live 测试，不含静态质量 gate
 pnpm verify  # 完整非 live 验证：tests + rust-quality + type-check + checks
 ```
 
+
 组件 selector 可以独立运行，但完整测试使用 `tests`，不要用 `cargo test --workspace` 或旧的
 Rust/Node 分组替代。Rust workspace package 到被测组件的唯一归属声明在
 `scripts/lib/verify-rust-subjects.mjs`；新增 workspace crate 时必须把它归入恰好一个 subject。
@@ -110,6 +111,8 @@ node scripts/verify.mjs --only skiff-tests --list
 node scripts/verify.mjs --only implementation-tests --list
 node scripts/verify.mjs --only rust-quality --list
 ```
+
+注意一点，全量verify耗时比较久，也消耗磁盘空间，应尽量避免。最好不要放在关键路径上。 
 
 默认入口不运行 live 检查；需要时显式选择 `runtime-live`、`db-encrypted-storage-live`、
 `loop-risk-health-live` 或 `loop-risk-stress-live`。compiler boundary 和受管 compiler crates
