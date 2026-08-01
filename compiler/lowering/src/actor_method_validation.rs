@@ -165,12 +165,15 @@ fn validate_create_body(
     method_names: &BTreeSet<&str>,
     non_key_fields: &[String],
 ) -> Result<()> {
-    CreateValidator {
+    let validator = CreateValidator {
         actor,
         method_names,
         non_key_fields,
+    };
+    let outcome = validator.analyze_block(block, BTreeSet::new())?;
+    if let Some(assigned) = outcome {
+        validator.require_all_assigned(&assigned)?;
     }
-    .analyze_block(block, BTreeSet::new())?;
     Ok(())
 }
 

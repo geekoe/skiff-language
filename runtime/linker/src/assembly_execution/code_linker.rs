@@ -781,10 +781,8 @@ impl<'a> AssemblyCodeLinker<'a> {
                     slot.slot
                 );
             }
-            slot.method_abi_id = canonical_linked_interface_method_abi_id(
-                &table.interface,
-                method_name,
-            );
+            slot.method_abi_id =
+                canonical_linked_interface_method_abi_id(&table.interface, method_name);
             for param in &mut slot.signature.params {
                 self.link_type_ref(code_slot, file_index, &mut param.ty)?;
             }

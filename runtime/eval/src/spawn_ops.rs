@@ -459,11 +459,11 @@ mod recoverable_spawn_payload_tests {
         AbiDeclarationKind, AbiSourceDeclarationAnchor, InstructionSourceSite,
         SyntheticInstructionSiteReason,
     };
-    use skiff_runtime_capability_context::DbCapabilityContext;
     use skiff_runtime_boundary::{
         error::RecoverableBoundaryErrorCode,
         payload::{PayloadBoundary, PayloadBoundaryKind},
     };
+    use skiff_runtime_capability_context::DbCapabilityContext;
     use skiff_runtime_linked_program::linked::TypeDeclarationIr;
     use skiff_runtime_linked_program::{
         BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileDeclarations,
@@ -734,7 +734,8 @@ mod recoverable_spawn_payload_tests {
                                 slot: 0,
                             },
                             site: InstructionSourceSite::Synthetic {
-                                reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                                reason:
+                                    SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                             },
                             args: vec![ExprRefIr { expression: 0 }],
                             type_args: BTreeMap::new(),
@@ -1001,7 +1002,10 @@ mod recoverable_spawn_payload_tests {
             runtime_interface_method_table_id(INTERFACE_ABI, &runtime_key)
         );
         assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
-        assert_eq!(method_table.slots()[0].method_abi_id(), CANONICAL_METHOD_ABI);
+        assert_eq!(
+            method_table.slots()[0].method_abi_id(),
+            CANONICAL_METHOD_ABI
+        );
     }
 
     #[test]
@@ -1110,7 +1114,10 @@ mod recoverable_spawn_payload_tests {
             runtime_interface_method_table_id(INTERFACE_ABI, &runtime_key)
         );
         assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
-        assert_eq!(method_table.slots()[0].method_abi_id(), CANONICAL_METHOD_ABI);
+        assert_eq!(
+            method_table.slots()[0].method_abi_id(),
+            CANONICAL_METHOD_ABI
+        );
         let InterfaceMethodTarget::LocalExecutable {
             executable,
             receiver_call_abi,
@@ -1289,7 +1296,8 @@ mod recoverable_spawn_payload_tests {
             link_overlay: LinkOverlay::default(),
             types: program.types.clone(),
         });
-        let interpreter = Interpreter::with_program(runtime_program, test_runtime::runtime_factory());
+        let interpreter =
+            Interpreter::with_program(runtime_program, test_runtime::runtime_factory());
         let context = probe_program_context(&interpreter);
         let caller_addr = probe_caller_addr();
         let result = interpreter

@@ -2592,7 +2592,9 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
             None,
         )
         .await
-        .expect("production service DB runtime replace should re-encode the decoded local interface")
+        .expect(
+            "production service DB runtime replace should re-encode the decoded local interface",
+        )
         .expect("created provider binding should be replaced");
 
     assert_decoded_provider_runtime_value(&replaced, &read_heap, "binding-1", "openai");

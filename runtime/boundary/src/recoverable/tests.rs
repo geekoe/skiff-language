@@ -1256,15 +1256,14 @@ fn behavior_api_roundtrips_owner_internal_local_interface_value() {
     assert_eq!(method_table.slots()[0].method_abi_id(), READER_METHOD);
     assert_eq!(payload, &RuntimeValue::String("Ada".to_string()));
 
-    let reencoded =
-        RecoverableBoundaryCodec::encode_envelope_with_behavior(
-            &decoded,
-            &expected,
-            &context,
-            &decode_heap,
-            &hooks,
-        )
-        .expect("decoded local interface should re-encode through behavior hook");
+    let reencoded = RecoverableBoundaryCodec::encode_envelope_with_behavior(
+        &decoded,
+        &expected,
+        &context,
+        &decode_heap,
+        &hooks,
+    )
+    .expect("decoded local interface should re-encode through behavior hook");
     assert_eq!(hooks.encode_calls.get(), 2);
     assert!(matches!(
         reencoded.root.state,

@@ -1261,6 +1261,119 @@ fn emits_actor_declaration_and_exact_registry_type_arguments() {
 }
 
 #[test]
+fn create_empty_body_rejects_unassigned_fields_on_implicit_end() {
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                }
+              }
+            "#,
+    )
+    .expect_err("empty create body must not fall through with unassigned fields")
+    .to_string();
+    assert!(
+        error.contains("create returns before assigning field(s): count"),
+        "unexpected create error: {error}"
+    );
+}
+
+#[test]
+fn create_conditional_assignment_rejects_unassigned_fields_on_implicit_end() {
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create(flag: bool)
+              }
+
+              impl Counter {
+                function create(self: Counter, flag: bool) -> void {
+                  if flag {
+                    self.count = 0
+                  }
+                }
+              }
+            "#,
+    )
+    .expect_err("conditional assignment must not count as definite on implicit fallthrough")
+    .to_string();
+    assert!(
+        error.contains("create returns before assigning field(s): count"),
+        "unexpected create error: {error}"
+    );
+}
+
+#[test]
+fn create_implicit_end_passes_when_all_fields_assigned() {
+    let unit = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                }
+              }
+            "#,
+    )
+    .expect("fully assigned create body should lower");
+    assert!(unit.actor_declarations[0].create_implementation.is_some());
+}
+
+#[test]
+fn create_explicit_return_before_assignment_stays_rejected() {
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  return
+                }
+              }
+            "#,
+    )
+    .expect_err("explicit return before assignment must stay rejected")
+    .to_string();
+    assert!(
+        error.contains("create returns before assigning field(s): count"),
+        "unexpected create error: {error}"
+    );
+}
+
+#[test]
 fn actor_self_field_access_keeps_while_body_call_targets_aligned() {
     let units = lowered_units(vec![
         (

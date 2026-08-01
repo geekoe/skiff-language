@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use skiff_artifact_model as artifact;
 use skiff_artifact_identity::canonical_interface_method_abi_id_from_parts;
+use skiff_artifact_model as artifact;
 
 use super::execution_validation::validate_file_ir_execution;
 use crate::program::{
