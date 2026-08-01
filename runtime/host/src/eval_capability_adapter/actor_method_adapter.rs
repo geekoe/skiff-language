@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use serde_json::{Map, Value};
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
@@ -22,6 +23,7 @@ use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistr
 pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) runtime_id: String,
     pub(crate) invocation_id: String,
+    pub(crate) trace_id: Option<String>,
     pub(crate) service_protocol_identity: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<AssemblyExecutionImage>,
@@ -101,7 +103,7 @@ impl ActorMethodEvalExecution {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
-            extra: serde_json::Map::new(),
+            extra: request_extra_with_trace_id(input.trace_id.as_deref()),
         };
         let operation = RuntimeOperation {
             operation_abi_id: None,
@@ -246,5 +248,38 @@ impl ActorMethodEvalExecution {
                 cancellation: context.execution().cancellation_token(),
             });
         Ok(context.with_activation_execution_context_rebinder(rebinder))
+    }
+}
+
+pub(crate) fn request_extra_with_trace_id(
+    trace_id: Option<&str>,
+) -> serde_json::Map<String, Value> {
+    let mut extra = Map::new();
+    let Some(trace_id) = trace_id.filter(|trace_id| !trace_id.trim().is_empty()) else {
+        return extra;
+    };
+    let mut trace = Map::new();
+    trace.insert("traceId".to_string(), Value::String(trace_id.to_string()));
+    extra.insert("trace".to_string(), Value::Object(trace));
+    extra
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_extra_with_trace_id_builds_request_mapper_trace_shape() {
+        let extra = request_extra_with_trace_id(Some("trace:spawn:1"));
+        assert_eq!(
+            extra["trace"]["traceId"],
+            Value::String("trace:spawn:1".to_string())
+        );
+    }
+
+    #[test]
+    fn request_extra_without_trace_id_remains_empty() {
+        assert!(request_extra_with_trace_id(None).is_empty());
+        assert!(request_extra_with_trace_id(Some("  ")).is_empty());
     }
 }

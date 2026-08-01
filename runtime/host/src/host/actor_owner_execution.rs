@@ -188,6 +188,12 @@ impl RuntimeHost {
         let host = self.clone();
         tokio::spawn(async move {
             let invocation_id = header.invoke.invocation_id.clone();
+            let trace_id = header
+                .invoke
+                .trace_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_string();
             let owner_runtime_id = header.owner_fence.owner_runtime_id.clone();
             let owner_lease_id = header.owner_fence.owner_lease_id.clone();
             let epoch = header.owner_fence.epoch;
@@ -200,6 +206,7 @@ impl RuntimeHost {
                 error!(
                     event = "runtime.actor_owner_invoke_failed",
                     invocation_id = %invocation_id,
+                    trace_id = %trace_id,
                     error = %failure.message
                 );
                 let bytes = if let Some(frame) = failure.terminal {
@@ -318,6 +325,7 @@ impl RuntimeHost {
         let execution = ActorMethodEvalExecution::new(ActorMethodEvalExecutionInput {
             runtime_id: self.base_runtime_id.clone(),
             invocation_id: header.invoke.invocation_id.clone(),
+            trace_id: header.invoke.trace_id.clone(),
             service_protocol_identity: header.invoke.actor_abi_identity.as_str().to_string(),
             activation: Arc::clone(route.activation()),
             execution_image: Arc::clone(route.execution_image()),
@@ -442,6 +450,7 @@ fn build_owner_control_execution(
     ActorMethodEvalExecution::new(ActorMethodEvalExecutionInput {
         runtime_id: host.base_runtime_id.clone(),
         invocation_id: control.request_id.clone(),
+        trace_id: None,
         service_protocol_identity: control.fence.actor_abi_identity.as_str().to_string(),
         activation: Arc::clone(route.activation()),
         execution_image: Arc::clone(route.execution_image()),

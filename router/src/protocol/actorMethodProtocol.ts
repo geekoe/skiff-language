@@ -44,6 +44,7 @@ export interface ActorMethodInvokeFrameHeader {
   argumentsEncodingVersion: typeof ACTOR_ARGUMENTS_ENCODING_V1;
   deadline: ActorMethodDeadlineFrameHeader;
   cancellationCorrelation: string;
+  traceId?: string;
 }
 
 export interface ActorMethodReturnFrameHeader {
@@ -109,11 +110,11 @@ export function validateActorMethodFrame(header: unknown, payloadBytes: Uint8Arr
   if (header.schemaVersion !== RUNTIME_FRAME_SCHEMA_VERSION) fail('unsupported schemaVersion');
   switch (header.type) {
     case 'actor.method.invoke':
-      exact(header, 'actor.method.invoke', [
+      exactOptional(header, 'actor.method.invoke', [
         'schemaVersion', 'type', 'invocationId', 'actorRef', 'declarationOwner',
         'actorAbiIdentity', 'actorImplementationIdentity', 'methodIdentity',
         'argumentsEncodingVersion', 'deadline', 'cancellationCorrelation'
-      ]);
+      ], ['traceId']);
       token(header.invocationId, 'invocationId');
       actorRef(header.actorRef);
       owner(header.declarationOwner);
@@ -125,6 +126,7 @@ export function validateActorMethodFrame(header: unknown, payloadBytes: Uint8Arr
       positiveInteger(header.deadline.timeoutMs, 'deadline.timeoutMs');
       nonempty(header.deadline.expiresAt, 'deadline.expiresAt');
       token(header.cancellationCorrelation, 'cancellationCorrelation');
+      if (header.traceId !== undefined) nonempty(header.traceId, 'traceId');
       return;
     case 'actor.method.return':
       exact(header, 'actor.method.return', ['schemaVersion', 'type', 'invocationId', 'returnEncodingVersion']);
@@ -207,6 +209,17 @@ function exact(value: unknown, name: string, keys: readonly string[]): asserts v
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) fail(`${name} fields must be exact`);
+}
+function exactOptional(
+  value: unknown,
+  name: string,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[]
+): asserts value is Record<string, any> {
+  if (!isRecord(value)) fail(`${name} must be an object`);
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) fail(`${name} fields must be exact`);
+  if (requiredKeys.some((key) => !(key in value))) fail(`${name} fields must be exact`);
 }
 function identity(value: unknown, prefix: string, name: string): void {
   if (typeof value !== 'string' || !new RegExp(`^${prefix}:[0-9a-f]{64}$`).test(value)) fail(`${name} is invalid`);

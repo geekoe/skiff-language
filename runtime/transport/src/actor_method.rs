@@ -61,6 +61,8 @@ pub struct ActorMethodInvokeFrameHeader {
     pub arguments_encoding_version: String,
     pub deadline: ActorMethodDeadlineFrameHeader,
     pub cancellation_correlation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -78,6 +80,8 @@ struct RawActorMethodInvokeFrameHeader {
     arguments_encoding_version: String,
     deadline: ActorMethodDeadlineFrameHeader,
     cancellation_correlation: String,
+    #[serde(default)]
+    trace_id: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for ActorMethodInvokeFrameHeader {
@@ -107,6 +111,13 @@ impl<'de> Deserialize<'de> for ActorMethodInvokeFrameHeader {
         validate_deadline(&raw.deadline).map_err(de::Error::custom)?;
         validate_token(&raw.cancellation_correlation, "cancellationCorrelation")
             .map_err(de::Error::custom)?;
+        if raw
+            .trace_id
+            .as_deref()
+            .is_some_and(|trace_id| trace_id.trim().is_empty())
+        {
+            return Err(de::Error::custom("traceId must be non-empty when present"));
+        }
         Ok(Self {
             schema_version: raw.schema_version,
             envelope_type: raw.envelope_type,
@@ -119,6 +130,7 @@ impl<'de> Deserialize<'de> for ActorMethodInvokeFrameHeader {
             arguments_encoding_version: raw.arguments_encoding_version,
             deadline: raw.deadline,
             cancellation_correlation: raw.cancellation_correlation,
+            trace_id: raw.trace_id,
         })
     }
 }
@@ -281,7 +293,15 @@ fn validate_invoke(header: &ActorMethodInvokeFrameHeader) -> Result<(), String> 
         return Err("unsupported argumentsEncodingVersion".into());
     }
     validate_deadline(&header.deadline)?;
-    validate_token(&header.cancellation_correlation, "cancellationCorrelation")
+    validate_token(&header.cancellation_correlation, "cancellationCorrelation")?;
+    if header
+        .trace_id
+        .as_deref()
+        .is_some_and(|trace_id| trace_id.trim().is_empty())
+    {
+        return Err("traceId must be non-empty when present".into());
+    }
+    Ok(())
 }
 
 fn validate_return(header: &ActorMethodReturnFrameHeader) -> Result<(), String> {

@@ -39,6 +39,7 @@ fn invoke() -> ActorMethodInvokeFrameHeader {
             expires_at: "2026-07-25T00:00:00Z".into(),
         },
         cancellation_correlation: "cancel:1".into(),
+        trace_id: None,
     }
 }
 
@@ -47,6 +48,29 @@ fn invocation_round_trips_all_identity_and_payload_fields() {
     let expected = ActorMethodFrame::Invoke(invoke(), vec![1, 2, 3]);
     let wire = encode_actor_method_frame(&expected).unwrap();
     assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);
+}
+
+#[test]
+fn invocation_round_trips_optional_trace_id() {
+    let mut with_trace = invoke();
+    with_trace.trace_id = Some("trace:spawn:1".to_string());
+    let header = serde_json::to_value(&with_trace).unwrap();
+    let expected = ActorMethodFrame::Invoke(with_trace, vec![]);
+    let wire = encode_actor_method_frame(&expected).unwrap();
+    assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);
+    assert_eq!(header["traceId"], "trace:spawn:1");
+}
+
+#[test]
+fn invocation_rejects_empty_trace_id_when_present() {
+    let mut empty_trace = invoke();
+    empty_trace.trace_id = Some("  ".to_string());
+    assert!(encode_actor_method_frame(&ActorMethodFrame::Invoke(empty_trace, vec![])).is_err());
+
+    let mut header = serde_json::to_value(invoke()).unwrap();
+    header["traceId"] = serde_json::Value::String(String::new());
+    let wire = encode_binary_frame(&header, &[]).unwrap();
+    assert!(decode_actor_method_frame(&wire).is_err());
 }
 
 #[test]

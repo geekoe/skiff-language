@@ -360,6 +360,7 @@ export class ProductionActorMethodRouter
         expiresAt: new Date(now.getTime() + ACTOR_SPAWN_TIMEOUT_MS).toISOString(),
       },
       cancellationCorrelation,
+      ...(header.traceId === undefined ? {} : { traceId: header.traceId }),
     };
     const result = await this.dispatcher.dispatch(invoke, payloadBytes);
     if (!result.ok) {

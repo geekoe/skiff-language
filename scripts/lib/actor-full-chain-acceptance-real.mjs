@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { request as requestHttp } from 'node:http';
 import { join } from 'node:path';
 
@@ -227,6 +228,34 @@ export async function runActorFullChainAcceptance({
         'c'.repeat(160),
       );
 
+      // A spawned actor method that throws a user exception must construct its
+      // request-local exception from the caller's trace id. Without spawn
+      // trace penetration the failure is reported as "request-local exception
+      // requires a non-empty request trace id".
+      const spawnThrow = entrypoints.get('spawnThrow');
+      assert.ok(spawnThrow, 'Actor fixture must publish spawnThrow');
+      const spawnThrowResponse = await invokeUnaryRaw(
+        stack.routerHttpUrl,
+        spawnThrow,
+        signal,
+        null
+      );
+      assert.equal(
+        spawnThrowResponse.status,
+        200,
+        `spawn throw submit failed: ${spawnThrowResponse.body}`
+      );
+      assert.equal(JSON.parse(spawnThrowResponse.body), 'throw-spawned');
+      await waitForSpawnThrowFailure({
+        runtimeLogPaths: [
+          join(stack.tempRoot, 'instance', 'logs', 'runtime.log'),
+          join(stack.tempRoot, 'instance', 'logs', 'runtime.err.log'),
+          join(stack.tempRoot, 'instance', 'logs', 'runtime-2.log'),
+          join(stack.tempRoot, 'instance', 'logs', 'runtime-2.err.log'),
+        ],
+        signal,
+      });
+
       const health = await readHealth(stack.controlUrl, signal);
       const replicas = health.replicas.filter(
         (replica) =>
@@ -319,6 +348,55 @@ async function waitForActorValue({
   }
   throw new Error(
     `actor value ${JSON.stringify(expected)} was not observed within 15s`,
+  );
+}
+
+async function waitForSpawnThrowFailure({
+  runtimeLogPaths,
+  signal,
+}) {
+  const started = Date.now();
+  while (Date.now() - started < 15_000) {
+    signal.throwIfAborted();
+    for (const runtimeLogPath of runtimeLogPaths) {
+      let contents;
+      try {
+        contents = await readFile(runtimeLogPath, 'utf8');
+      } catch (error) {
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      for (const failureLine of contents.split('\n')) {
+        if (!failureLine.includes('runtime.actor_owner_invoke_failed')) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(failureLine);
+        } catch {
+          continue;
+        }
+        const fields = parsed?.fields;
+        if (fields?.event !== 'runtime.actor_owner_invoke_failed') continue;
+        if (
+          typeof fields.trace_id !== 'string'
+          || fields.trace_id.trim().length === 0
+        ) {
+          continue;
+        }
+        assert.ok(
+          !failureLine.includes('requires a non-empty request trace id'),
+          `spawned actor method must not fail on a missing request trace id: ${failureLine}`
+        );
+        assert.ok(
+          String(fields.error).includes('unhandled user exception'),
+          `spawned actor method failure must surface the user exception: ${failureLine}`
+        );
+        return;
+      }
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  throw new Error(
+    'spawned actor method failure with a non-empty trace id was not observed in the runtime logs within 15s'
   );
 }
 
