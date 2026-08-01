@@ -14,7 +14,7 @@ import {
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const ASSEMBLY_IDENTITY = /^skiff-runtime-assembly-v3:sha256:([0-9a-f]{64})$/;
-const PACKAGE_ARTIFACT_SCHEMA_VERSION = 'skiff-package-artifact-v9';
+const PACKAGE_ARTIFACT_SCHEMA_VERSION = 'skiff-package-artifact-v10';
 const PACKAGE_BUILD_IDENTITY_PREFIX = 'skiff-package-build-v10:sha256:';
 
 export class FilesystemRuntimeAssemblySnapshotLoader

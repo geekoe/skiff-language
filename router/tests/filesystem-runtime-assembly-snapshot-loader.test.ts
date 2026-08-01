@@ -290,7 +290,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     }
   );
 
-  it('accepts only PackageArtifact v9 records addressed by package build v10', async () => {
+  it('accepts only PackageArtifact v10 records addressed by package build v10', async () => {
     const packageRef: PackageRefFixture = {
       packageId: 'skiff.run/echo',
       packageVersion: '1.0.0',
@@ -304,7 +304,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     currentFixture.assembly.packageLinkPlan.codeSlots = [{ package: packageRef }];
     await writeFixture(current, currentFixture);
     await writeJson(current, packagePath(packageRef), {
-      schemaVersion: 'skiff-package-artifact-v9',
+      schemaVersion: 'skiff-package-artifact-v10',
       files: []
     });
     await expect(
@@ -314,12 +314,12 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     const legacySchema = await fixtureRoot();
     await writeFixture(legacySchema, currentFixture);
     await writeJson(legacySchema, packagePath(packageRef), {
-      schemaVersion: 'skiff-package-artifact-v8',
+      schemaVersion: 'skiff-package-artifact-v9',
       files: []
     });
     await expect(
       loader(legacySchema).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
-    ).rejects.toThrow(/schemaVersion must be skiff-package-artifact-v9/);
+    ).rejects.toThrow(/schemaVersion must be skiff-package-artifact-v10/);
 
     const legacyBuild = await fixtureRoot();
     const legacyBuildFixture = canonicalFixture();

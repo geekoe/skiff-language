@@ -272,7 +272,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
       await writeFile(
         stdPath,
         `${JSON.stringify({
-          schemaVersion: 'skiff-package-artifact-v9',
+          schemaVersion: 'skiff-package-artifact-v10',
           ...bootstrap.bootstrap.std.package.artifact,
         })}\n`,
       );
