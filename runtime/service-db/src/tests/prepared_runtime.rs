@@ -1,4 +1,4 @@
-use super::*;
+use super::{super::*, recoverable_support::*, support::*};
 use skiff_runtime_capability_context::{DbCapabilityStoreApi, DbRuntimeSetOp};
 
 mod driver;
@@ -26,7 +26,7 @@ fn concrete_store() -> ServiceDbCapabilityStore {
 }
 
 fn context() -> DbRecoverableRuntimeContext {
-    production_runtime_context(Arc::new(ThreadSafeTestDbBehaviorHooks::default()))
+    production_runtime_context(Arc::new(TestDbBehaviorHooks::default()))
 }
 
 fn input_value(heap: &mut RequestHeap) -> RuntimeValue {
