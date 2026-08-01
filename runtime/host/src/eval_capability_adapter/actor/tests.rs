@@ -272,7 +272,7 @@ fn actor_invocation_fixture(
         request_service_protocol_identity: "protocol-test".to_string(),
         operation_service_protocol_identity: Some("protocol-test".to_string()),
         activation_identity: None,
-        trace_id: None,
+        trace_id: Some("trace:actor-invoke".to_string()),
         router_sender: Some(router_sender),
         outbound_requests: Arc::new(OutboundRequestRegistry::default()),
         actor_method_outbound: actor_method_outbound.clone(),
@@ -374,6 +374,11 @@ fn actor_invoke_timeout_ms(message: concrete::RouterWriterMessage) -> u64 {
     else {
         panic!("expected Actor method invoke frame")
     };
+    assert_eq!(
+        header.trace_id.as_deref(),
+        Some("trace:actor-invoke"),
+        "direct Actor invocation must preserve the caller request trace id"
+    );
     header.deadline.timeout_ms
 }
 
