@@ -11,6 +11,15 @@
 [`rust-large-test-module-refactor-stage.md`](./rust-large-test-module-refactor-stage.md)；阶段文档不得
 重定义这里的模块边界或完成标准。
 
+## 2026-08-01 用户授权修订
+
+用户明确授权为满足第 4 节第 4 项的既有 workspace rustfmt gate，仅对现有 test-only 文件
+`runtime/linker/src/assembly/tests/cross_package_actor.rs` 做一次机械 rustfmt。该文件是本设计原写集之外的
+唯一例外写集；diff 只允许 rustfmt 产生的格式变化，不得修改测试逻辑、函数、属性或任何 linker 行为。
+
+本修订只窄化覆盖第 1 节写集和第 4 节第 6 项中的“无关格式化”限制，不扩张任何其它 production、测试或
+格式化范围，也不授权顺手格式化其它文件。除此之外，本文的目标、职责、非目标和完成标准全部不变。
+
 ## 1. 目标与边界
 
 基线上的 `compiler/source/src/callable_effects/tests.rs` 为 4849 行、86 个测试，
@@ -102,7 +111,8 @@ fixture 和显式计数访问器，删除转发同一 trait 的双实现。重�
    不以启动独立 runtime/router/Mongo 代替 hermetic 验证。
 5. 集成树中所有 `.rs` 文件重新计数后，`MAX_FILE_LINES` 精确更新为当时真实最大值，注释与输出一致，
    仍保持无 allowlist/exception；两个被重构领域文件不得成为新的最大文件。
-6. diff 不含生产文件、manifest/lockfile、schema、配置或无关格式化；没有新增依赖、框架或兼容代码。
+6. 除 2026-08-01 用户授权修订中的单文件机械 rustfmt 例外外，diff 不含生产文件、manifest/lockfile、schema、
+   配置或无关格式化；没有新增依赖、框架或兼容代码。
 
 ## 5. 非目标
 

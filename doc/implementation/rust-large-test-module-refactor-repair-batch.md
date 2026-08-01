@@ -2,7 +2,7 @@
 
 日期：2026-08-01
 
-状态：repair DAG ready；R2 等待用户授权
+状态：repair DAG ready；R2 ready
 
 本批次直接承接
 [`rust-large-test-module-refactor-stage.md`](./rust-large-test-module-refactor-stage.md) 的 E → F/G 失败路径，事实输入为
@@ -22,13 +22,12 @@ R1 Service DB owner 机械修复 ───────────────�
                                              ├─> batch integration
 P1 gate 环境预检与冻结前准备 ──────────────┤       └─> combined probe
                                              │             └─> E2 freeze
-R2 无关 linker rustfmt 用户决策 ───────────┘                    ├─> 同一 F 只复验精确 blocker
-  └─ blocked；若授权才实施，若不授权则阶段保持 blocked          └─> 新 G 完整 gate
+R2 linker 单文件机械 rustfmt ──────────────┘                    ├─> 同一 F 只复验精确 blocker
+                                                               └─> 新 G 完整 gate
 ```
 
-R1 与 P1 可以并行。R2 在用户给出明确决定前保持 blocked，不启动实现 Agent。只有 R1 已合流、P1 完成、R2 获得
-必要决定且（如授权）对应修复已合流，才能运行 combined probe 并冻结 E2；如果用户不授权但 authority 仍要求
-workspace rustfmt 全绿，则不能把该状态冻结为可 release 的 E2。
+2026-08-01 用户已经明确授权 R2，授权边界已写入唯一 authority 的同日修订。该 authority 修订合流后，R1、R2
+与 P1 可以并行推进；只有 R1 和 R2 均已合流、P1 完成，才能运行 combined probe 并冻结 E2。
 
 ## R1：Service DB owner 机械修复
 
@@ -53,19 +52,23 @@ R1 自验收至少包含三个函数的唯一 owner 搜索、移动前后函数/
 
 ## R2：无关 linker baseline rustfmt
 
-状态：blocked，awaiting user authorization。
+状态：ready；2026-08-01 用户已授权。
 
-待决定的问题只有一个：是否授权格式化并提交
-`runtime/linker/src/assembly/tests/cross_package_actor.rs`。该文件不属于原阶段写集，且初始 baseline 与 E 都是 blob
-`8bbe074b19c47f6178298a5a59950e876baeea86`；baseline 归因明确，但 authority 又要求 workspace rustfmt PASS。
+唯一 authority 的 2026-08-01 用户授权修订把
+`runtime/linker/src/assembly/tests/cross_package_actor.rs` 纳入唯一例外写集。该文件是现有 test-only linker 测试，
+初始 baseline、E 与本批次当前集成 baseline `45a59a38f674bc0aa5e55f0b96c49205b73406d3` 都是 blob
+`8bbe074b19c47f6178298a5a59950e876baeea86`；本修复只为解除第 4 节第 4 项既有 workspace rustfmt blocker。
 
-任何 Agent 不得把 F/G finding、旧 task 或实现方便当成扩写授权。若用户授权，主 Agent 必须为 R2 建立最小独立
-写入 owner，只接受 rustfmt 的机械 diff、`cargo fmt --all -- --check` 和精确写集证据；不得顺手修改 linker 行为或
-其它格式文件。若用户不授权，应如实报告 strict authority blocker，不能将 rust-quality 写成 PASS。
+新的 R2 Agent 必须从派发时最新集成 baseline 做零-worktree 预检：确认精确 commit/tree、目标 blob、主工作区与
+集成 worktree 的 dirty 集合，以及运行中兄弟任务的 ownership；若目标 blob 已变化、目标文件已 dirty 或存在并发
+owner，立即停止并上报，不得覆盖他人改动。预检通过后才创建最小独立 worktree，以仓库 edition/config 对该文件
+单独运行 rustfmt。静态 diff 必须证明唯一改动文件就是该路径，且变化全部为格式；函数、属性、测试逻辑与 linker
+行为必须不变。R2 自验收包含单文件 rustfmt check、`cargo fmt --all -- --check`、`git diff --check` 和精确写集证据，
+不得顺手修改其它源码、文档或格式文件。
 
 ## P1：gate 环境预检与准备
 
-状态：ready；与 R1 并行，但不产生候选 PASS 证据。
+状态：ready；与 R1/R2 并行，但不产生候选 PASS 证据。
 
 P1 先只读确认以下事实并形成可执行准备方案：
 
@@ -79,14 +82,20 @@ P1 先只读确认以下事实并形成可执行准备方案：
 状态且严格串行的已有 Cargo 产物，或选择有明确磁盘预算的隔离 target；不得让不同 worktree/代码状态并发污染
 共享 target。node_modules 来源也必须在冻结前验证，不能等 `checks` 执行到 `local-instance` 才临时修复。
 
+2026-08-01 用户另行授权删除可重建的 `/Users/geek/workspace/skiff/target` Cargo cache，作为 P1 解除磁盘空间
+blocker 的外部 gate 环境准备路径。P1 owner 执行前仍须核对精确路径、其可重建/ignored 身份和进程占用，且不得
+触碰 stable instance 使用的 `/Users/geek/workspace/skiff/build/cargo-target`。该授权不进入 repo 写集，不是代码
+完成标准，也不能冒充 gate PASS。
+
 ## 合流、combined probe 与新稳定周期
 
-唯一集成 Agent `/root/rust_test_integrator` 串行接收 R1 和任何获授权的 R2，核对提交/tree、写集与证据后合流。
+唯一集成 Agent `/root/rust_test_integrator` 串行接收 R1 和 R2，核对提交/tree、写集与证据后合流。
 在合流后的同一精确代码状态上，由集成 owner 运行一次便宜 combined probe：
 
 1. 静态确认三个函数各自只在权威 owner 出现一次，函数名/属性/函数体双射不变；
 2. `cargo test --package skiff-runtime-service-db --lib -- --list`，确认 crate 编译、原根 102 与唯一 live ignore 身份；
-3. 若 R2 获授权并合流，执行 `cargo fmt --all -- --check`；始终执行 `git diff --check` 和阶段写集审计。
+3. R1 与 R2 均合流后执行 `cargo fmt --all -- --check`；始终执行 `git diff --check` 和阶段写集审计，并确认
+   authority 的例外写集只出现该 linker test 文件的机械格式变化。
 
 probe 失败直接退回对应修复 owner，不消耗正式 verdict。probe 通过且 P1 的环境准备固定后，集成 owner才冻结新的
 stable candidate E2，并记录精确 commit/tree。E2 建立新的 stability epoch：
