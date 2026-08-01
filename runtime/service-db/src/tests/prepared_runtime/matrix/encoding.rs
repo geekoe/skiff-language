@@ -19,7 +19,7 @@ fn recoverable_and_encrypted_writes_finish_owned_encoding_during_prepare() {
         recoverable_runtime,
         Arc::new(TokioMutex::new(DbRequestState::default())),
     ));
-    let hooks = Arc::new(ThreadSafeTestDbBehaviorHooks::default());
+    let hooks = Arc::new(TestDbBehaviorHooks::default());
     let recoverable_context = production_runtime_context(hooks);
     let mut recoverable_heap = RequestHeap::default();
     let provider = local_provider_runtime_value(&mut recoverable_heap, "openai");
