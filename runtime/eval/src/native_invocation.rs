@@ -4,6 +4,9 @@ use skiff_artifact_model::{ContractTypeRef, NativeSignatureTypeExpr};
 use skiff_runtime_boundary::{
     package_schema_records::PackageSchemaRecords, service_value_plan::ServiceValuePlan,
 };
+use skiff_runtime_capability_context::{
+    ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
+};
 use skiff_runtime_linked_program::{
     type_ref_to_value, CallIr, ExecutableAddr, FileAddr, LinkedActorDeclaration,
     LinkedActorDeclarationOwner, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget,
@@ -413,7 +416,37 @@ fn resolve_actor_native_metadata(
             .actor_implementation_identity
             .as_str()
             .to_string(),
+        invocation_declaration_owner(call.actor_metadata.as_ref(), declaration)?,
     )))
+}
+
+fn invocation_declaration_owner(
+    linked: Option<&skiff_runtime_linked_program::LinkedActorNativeMetadata>,
+    declaration: &LinkedActorDeclaration,
+) -> Result<ActorInvocationDeclarationOwner> {
+    let owner = linked
+        .map(|metadata| &metadata.declaration_owner)
+        .or(declaration.implementation_owner.as_ref())
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "actor declaration has no implementation owner for get/create routing".to_string(),
+            )
+        })?;
+    Ok(ActorInvocationDeclarationOwner {
+        unit: match owner.unit {
+            UnitAddr::Service => ActorInvocationOwnerUnit::Service,
+            UnitAddr::Package(index) => ActorInvocationOwnerUnit::Package(index as u64),
+        },
+        file: match &owner.file {
+            FileAddr::LoadedFileIndex(index) => {
+                ActorInvocationOwnerFile::LoadedFileIndex(*index as u64)
+            }
+            FileAddr::FileIrIdentity(identity) => {
+                ActorInvocationOwnerFile::FileIrIdentity(identity.clone())
+            }
+        },
+        actor_symbol: owner.actor_symbol.clone(),
+    })
 }
 
 fn actor_declaration_for_symbol<'a>(

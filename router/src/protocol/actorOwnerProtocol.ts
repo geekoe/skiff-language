@@ -18,7 +18,23 @@ export type ActorOwnerControlOperation =
   | 'markUpgrading'
   | 'discard'
   | 'activate'
+  | 'activateInitial'
   | 'idleEvict';
+
+export interface ActorOwnerActivationBootstrapFrameHeader {
+  encodingVersion: string;
+  payloadBase64: string;
+}
+
+export interface ActorOwnerActivationDeadlineFrameHeader {
+  timeoutMs: number;
+  expiresAt: string;
+}
+
+export interface ActorOwnerControlReasonFrameHeader {
+  code: string;
+  message: string;
+}
 
 export interface ActorOwnerControlFrameHeader {
   schemaVersion: 'skiff-runtime-frame-v3';
@@ -28,6 +44,8 @@ export interface ActorOwnerControlFrameHeader {
   operation: ActorOwnerControlOperation;
   fence: Record<string, unknown>;
   transition?: Record<string, unknown>;
+  bootstrap?: ActorOwnerActivationBootstrapFrameHeader;
+  deadline?: ActorOwnerActivationDeadlineFrameHeader;
 }
 
 export interface ActorOwnerControlAckFrameHeader {
@@ -37,6 +55,7 @@ export interface ActorOwnerControlAckFrameHeader {
   requestId: string;
   operation: ActorOwnerControlOperation;
   accepted: boolean;
+  reason?: ActorOwnerControlReasonFrameHeader;
 }
 
 export interface ActorOwnerFailureFrameHeader {
@@ -80,15 +99,18 @@ export function decodeActorOwnerControlAckFrame(
     throw new Error('actor owner control acknowledgement payload must be empty');
   }
   const header = frame.header;
+  const keys = Object.keys(header).sort().join(',');
   if (
-    Object.keys(header).sort().join(',') !==
-      'accepted,operation,requestId,runtimeId,schemaVersion,type' ||
+    keys !== 'accepted,operation,requestId,runtimeId,schemaVersion,type' &&
+    keys !== 'accepted,operation,reason,requestId,runtimeId,schemaVersion,type' ||
     header.schemaVersion !== 'skiff-runtime-frame-v3' ||
     header.type !== ACTOR_OWNER_CONTROL_ACK ||
     !canonicalToken(header.runtimeId) ||
     !canonicalToken(header.requestId) ||
     !controlOperation(header.operation) ||
-    typeof header.accepted !== 'boolean'
+    typeof header.accepted !== 'boolean' ||
+    (header.accepted === true && header.reason !== undefined) ||
+    (header.reason !== undefined && !validControlReason(header.reason))
   ) {
     throw new Error('invalid actor owner control acknowledgement');
   }
@@ -157,9 +179,18 @@ function validateActorOwnerFailureFrame(
 function validateActorOwnerControlFrame(
   header: ActorOwnerControlFrameHeader
 ): void {
-  const expected = header.transition === undefined
-    ? 'fence,operation,requestId,schemaVersion,targetRuntimeId,type'
-    : 'fence,operation,requestId,schemaVersion,targetRuntimeId,transition,type';
+  const present = new Set([
+    'fence',
+    'operation',
+    'requestId',
+    'schemaVersion',
+    'targetRuntimeId',
+    'type',
+    ...(header.transition === undefined ? [] : ['transition']),
+    ...(header.bootstrap === undefined ? [] : ['bootstrap']),
+    ...(header.deadline === undefined ? [] : ['deadline']),
+  ]);
+  const expected = [...present].sort().join(',');
   if (
     Object.keys(header).sort().join(',') !== expected ||
     header.schemaVersion !== 'skiff-runtime-frame-v3' ||
@@ -169,7 +200,16 @@ function validateActorOwnerControlFrame(
     !controlOperation(header.operation) ||
     typeof header.fence !== 'object' ||
     header.fence === null ||
-    (header.operation === 'activate') !== (header.transition !== undefined)
+    (header.operation === 'activate') !== (header.transition !== undefined) ||
+    (header.operation === 'activateInitial') !== (header.bootstrap !== undefined) ||
+    (header.operation === 'activateInitial') !== (header.deadline !== undefined) ||
+    ((header.operation !== 'activate' && header.transition !== undefined) ||
+      (header.operation !== 'activateInitial' &&
+        (header.bootstrap !== undefined || header.deadline !== undefined))) ||
+    (header.bootstrap !== undefined &&
+      !validActivationBootstrap(header.bootstrap)) ||
+    (header.deadline !== undefined &&
+      !validActivationDeadline(header.deadline))
   ) {
     throw new Error('invalid actor owner control frame');
   }
@@ -243,7 +283,43 @@ function controlOperation(value: unknown): value is ActorOwnerControlOperation {
     value === 'markUpgrading' ||
     value === 'discard' ||
     value === 'activate' ||
+    value === 'activateInitial' ||
     value === 'idleEvict'
+  );
+}
+
+function validActivationBootstrap(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const bootstrap = value as Record<string, unknown>;
+  return (
+    Object.keys(bootstrap).sort().join(',') === 'encodingVersion,payloadBase64' &&
+    typeof bootstrap.encodingVersion === 'string' &&
+    bootstrap.encodingVersion.length > 0 &&
+    canonicalBase64(String(bootstrap.payloadBase64))
+  );
+}
+
+function validActivationDeadline(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const deadline = value as Record<string, unknown>;
+  return (
+    Object.keys(deadline).sort().join(',') === 'expiresAt,timeoutMs' &&
+    Number.isSafeInteger(deadline.timeoutMs) &&
+    (deadline.timeoutMs as number) > 0 &&
+    typeof deadline.expiresAt === 'string' &&
+    deadline.expiresAt.length > 0
+  );
+}
+
+function validControlReason(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const reason = value as Record<string, unknown>;
+  return (
+    Object.keys(reason).sort().join(',') === 'code,message' &&
+    canonicalToken(reason.code) &&
+    typeof reason.message === 'string' &&
+    Buffer.byteLength(reason.message, 'utf8') > 0 &&
+    Buffer.byteLength(reason.message, 'utf8') <= 4096
   );
 }
 

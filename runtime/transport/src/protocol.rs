@@ -10,6 +10,8 @@ use skiff_artifact_model::{
 use skiff_runtime_model::service_error::OpaqueServiceError;
 use skiff_runtime_request_contract::RuntimeClientSessionControl;
 
+use crate::actor_method::{ActorDeclarationOwnerFrameHeader, ActorMethodDeadlineFrameHeader};
+
 pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"SKBF";
 pub const BINARY_FRAME_VERSION: u8 = 1;
 pub const BINARY_FRAME_HEADER_ENCODING_JSON: u8 = 1;
@@ -891,6 +893,9 @@ pub struct ActorGetOrCreateRequestFrameHeader {
     pub actor_abi_identity: String,
     pub actor_implementation_identity: String,
     pub bootstrap_encoding_version: String,
+    pub declaration_owner: ActorDeclarationOwnerFrameHeader,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<ActorMethodDeadlineFrameHeader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -916,6 +921,9 @@ pub struct ActorReplaceRequestFrameHeader {
     pub actor_abi_identity: String,
     pub actor_implementation_identity: String,
     pub bootstrap_encoding_version: String,
+    pub declaration_owner: ActorDeclarationOwnerFrameHeader,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<ActorMethodDeadlineFrameHeader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

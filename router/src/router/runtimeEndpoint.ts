@@ -195,6 +195,10 @@ interface RuntimeEndpointBaseOptions {
     ActorRuntimeDisconnectController,
     'handleRuntimeDisconnect'
   >;
+  actorGetCreateControl?: Pick<
+    import('./actorGetCreateActivationCoordinator.js').ActorGetCreateActivationCoordinator,
+    'handleOwnerControlAck' | 'handleRuntimeDisconnect'
+  >;
   observeConnectionSend?(observation: RuntimeConnectionSendObservation): void;
   actorMethods?: RuntimeActorMethodRouter;
 }
@@ -633,12 +637,20 @@ export class RuntimeEndpoint
     if (
       frame.header.type === ACTOR_OWNER_CONTROL_ACK
     ) {
+      const acknowledgement = decodeActorOwnerControlAckFrame(data);
+      const claimedByGetCreate =
+        this.options.actorGetCreateControl?.handleOwnerControlAck(
+          ws,
+          acknowledgement
+        ) === true;
+      if (claimedByGetCreate) {
+        return;
+      }
       const actorMethods = this.actorMethodsInstance ?? this.options.actorMethods;
       if (actorMethods?.handleOwnerControlAck === undefined) {
         throw new Error('Actor owner control routing is unavailable');
       }
       const runtimeId = this.options.registry.assertRuntimeCapabilityConnection(ws);
-      const acknowledgement = decodeActorOwnerControlAckFrame(data);
       if (acknowledgement.runtimeId !== runtimeId) {
         throw new Error('Actor owner control acknowledgement Runtime mismatch');
       }
@@ -971,6 +983,14 @@ export class RuntimeEndpoint
 
     this.connectionRequestSources.delete(ws);
     this.runtimeSessionTokens.delete(ws);
+    try {
+      this.options.actorGetCreateControl?.handleRuntimeDisconnect(ws);
+    } catch (error) {
+      console.error({
+        event: 'actor.get_create_disconnect_cleanup_error',
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
     const actorDisconnect = (
       this.actorMethodsInstance ?? this.options.actorMethods
     )?.handleRuntimeDisconnect?.(ws);

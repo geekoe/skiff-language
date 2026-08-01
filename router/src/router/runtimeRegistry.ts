@@ -20,6 +20,10 @@ import {
   type RuntimeControlSource
 } from './actorSpawnRuntimeControl.js';
 import {
+  ActorGetCreateActivationCoordinator,
+  type ActorGetCreateActivationCoordinatorOptions,
+} from './actorGetCreateActivationCoordinator.js';
+import {
   buildActivationLookup,
   type ActivationLookup
 } from '../artifacts/activationLookup.js';
@@ -32,6 +36,7 @@ import type { ActorManager } from '../actor/index.js';
 
 export interface RuntimeRegistryDependencies extends ActorSpawnRuntimeControlOptions {
   actorSpawnControl?: ActorSpawnRuntimeControl;
+  actorGetCreateControl?: ActorGetCreateActivationCoordinator;
   activationByServiceOperation?: ActivationLookup;
 }
 
@@ -202,6 +207,7 @@ export class RuntimeRegistry {
   private readonly activeRevisionByRoute = new Map<string, string>();
   private readonly roundRobinCursorByRoute = new Map<string, number>();
   private readonly actorSpawnControl: ActorSpawnRuntimeControl;
+  private readonly actorGetCreateActivationControl: ActorGetCreateActivationCoordinator;
   private connectionProvider: RuntimeConnectionProvider | undefined;
   private inFlightCounter: RuntimeInFlightCounter | undefined;
   // Authoritative version -> current buildId index, derived from on-disk
@@ -216,9 +222,29 @@ export class RuntimeRegistry {
   private activationByServiceOperation: ActivationLookup = buildActivationLookup([]);
 
   constructor(dependencies: RuntimeRegistryDependencies = {}) {
-    const { actorSpawnControl, activationByServiceOperation, ...controlOptions } = dependencies;
+    const {
+      actorSpawnControl,
+      actorGetCreateControl,
+      activationByServiceOperation,
+      ...controlOptions
+    } = dependencies;
     this.actorSpawnControl =
       actorSpawnControl ?? new ActorSpawnRuntimeControl(controlOptions);
+    this.actorGetCreateActivationControl =
+      actorGetCreateControl ??
+      new ActorGetCreateActivationCoordinator({
+        actorManager: this.actorSpawnControl.actorDispatchManager(),
+        runtimeDirectory: {
+          actorRuntimeCandidates: (serviceId) =>
+            this.actorRuntimeCandidates(serviceId),
+          runtimeConnection: (runtimeId) => this.runtimeConnection(runtimeId),
+        },
+        send: (ws, bytes) => ws.send(bytes),
+        ...actorGetCreateCoordinatorOptions(controlOptions),
+      });
+    this.actorSpawnControl.attachGetCreateCoordinator(
+      this.actorGetCreateActivationControl
+    );
     if (activationByServiceOperation !== undefined) {
       this.activationByServiceOperation = activationByServiceOperation;
     }
@@ -231,6 +257,10 @@ export class RuntimeRegistry {
 
   actorManager(): ActorManager {
     return this.actorSpawnControl.actorDispatchManager();
+  }
+
+  actorGetCreateControl(): ActorGetCreateActivationCoordinator {
+    return this.actorGetCreateActivationControl;
   }
 
   runtimeConnection(runtimeId: string): RuntimeDispatchRuntimeIdentity | undefined {
@@ -1300,4 +1330,19 @@ function actorSpawnRuntimeControlErrorType(
     case 'actor.remove.request':
       return 'actor.remove.error';
   }
+}
+
+function actorGetCreateCoordinatorOptions(
+  controlOptions: ActorSpawnRuntimeControlOptions
+): Partial<ActorGetCreateActivationCoordinatorOptions> {
+  return {
+    ...(controlOptions.actorOwnerLeaseTtlMs === undefined
+      ? {}
+      : { ownerLeaseTtlMs: controlOptions.actorOwnerLeaseTtlMs }),
+    ...(controlOptions.activationTimeoutMs === undefined
+      ? {}
+      : { activationTimeoutMs: controlOptions.activationTimeoutMs }),
+    ...(controlOptions.now === undefined ? {} : { now: controlOptions.now }),
+    ...(controlOptions.id === undefined ? {} : { id: controlOptions.id }),
+  };
 }

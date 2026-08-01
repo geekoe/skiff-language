@@ -8,11 +8,12 @@ pub use envelope::{
     RequestEffectDouble, RequestEnvelope,
 };
 pub use outbound::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
-    ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
-    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
-    OutboundControlMessage, OutboundResponse, RequestCancelControl, RuntimeDeadlineControl,
-    SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
+    ActorGetOrCreateControlRequest, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
+    ActorInvocationOwnerUnit, ActorKeyControlMetadata, ActorRemoveControlRequest,
+    ActorReplaceControlRequest, ConnectionRequestCancelControl, ConnectionRequestControl,
+    ConnectionSendControl, OutboundControlMessage, OutboundResponse, RequestCancelControl,
+    RuntimeDeadlineControl, SpawnSubmitControlRequest,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,

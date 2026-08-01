@@ -527,6 +527,43 @@ const actorKeySchema = {
   additionalProperties: false
 } as const satisfies ProtocolSchemaProperty;
 
+const actorDeclarationOwnerSchema = {
+  type: 'object',
+  required: ['unit', 'file', 'actorSymbol'],
+  properties: {
+    unit: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: { type: 'string', enum: ['service', 'package'] },
+        value: { type: 'integer', minimum: 0 }
+      },
+      additionalProperties: false
+    },
+    file: {
+      type: 'object',
+      required: ['kind', 'value'],
+      properties: {
+        kind: { type: 'string', enum: ['loadedFileIndex', 'fileIrIdentity'] },
+        value: { type: ['string', 'integer'] }
+      },
+      additionalProperties: false
+    },
+    actorSymbol: { type: 'string', minLength: 1 }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
+
+const actorMethodDeadlineSchema = {
+  type: 'object',
+  required: ['timeoutMs', 'expiresAt'],
+  properties: {
+    timeoutMs: { type: 'integer', minimum: 1 },
+    expiresAt: { type: 'string', minLength: 1 }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
+
 const actorRefSchema = {
   type: 'object',
   required: [
@@ -1006,7 +1043,8 @@ export const runtimeFrameHeaderSchemas = {
       'actorKey',
       'actorAbiIdentity',
       'actorImplementationIdentity',
-      'bootstrapEncodingVersion'
+      'bootstrapEncodingVersion',
+      'declarationOwner'
     ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
@@ -1015,7 +1053,9 @@ export const runtimeFrameHeaderSchemas = {
       actorKey: actorKeySchema,
       actorAbiIdentity: { type: 'string' },
       actorImplementationIdentity: { type: 'string' },
-      bootstrapEncodingVersion: { type: 'string' }
+      bootstrapEncodingVersion: { type: 'string' },
+      declarationOwner: actorDeclarationOwnerSchema,
+      deadline: actorMethodDeadlineSchema
     },
     additionalProperties: false
   },
@@ -1044,7 +1084,8 @@ export const runtimeFrameHeaderSchemas = {
     type: 'object',
     required: [
       'schemaVersion', 'type', 'rpcId', 'runtimeId', 'activationIdentity', 'actorKey',
-      'actorAbiIdentity', 'actorImplementationIdentity', 'bootstrapEncodingVersion'
+      'actorAbiIdentity', 'actorImplementationIdentity', 'bootstrapEncodingVersion',
+      'declarationOwner'
     ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
@@ -1053,7 +1094,9 @@ export const runtimeFrameHeaderSchemas = {
       actorKey: actorKeySchema,
       actorAbiIdentity: { type: 'string' },
       actorImplementationIdentity: { type: 'string' },
-      bootstrapEncodingVersion: { type: 'string' }
+      bootstrapEncodingVersion: { type: 'string' },
+      declarationOwner: actorDeclarationOwnerSchema,
+      deadline: actorMethodDeadlineSchema
     },
     additionalProperties: false
   },
@@ -2214,6 +2257,12 @@ const spawnFixture = {
   runtimeRequestId: 'spawn-request-fixture-1'
 } as const;
 
+const actorDeclarationOwnerFixture = {
+  unit: { kind: 'service' },
+  file: { kind: 'fileIrIdentity', value: 'file:actor-fixture' },
+  actorSymbol: 'Counter'
+} as const;
+
 export const runtimeFrameHeaderFixtures = {
   'runtime.register': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -2266,8 +2315,10 @@ export const runtimeFrameHeaderFixtures = {
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture,
     actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    actorImplementationIdentity: 'skiff-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    bootstrapEncodingVersion: 'skiff-canonical-v1'
+    actorImplementationIdentity: 'skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    bootstrapEncodingVersion: 'skiff-canonical-v1',
+    declarationOwner: actorDeclarationOwnerFixture,
+    deadline: { timeoutMs: 30_000, expiresAt: '2099-01-01T00:00:00.000Z' }
   },
   'actor.getOrCreate.response': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -2292,8 +2343,10 @@ export const runtimeFrameHeaderFixtures = {
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture,
     actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    actorImplementationIdentity: 'skiff-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    bootstrapEncodingVersion: 'skiff-canonical-v1'
+    actorImplementationIdentity: 'skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    bootstrapEncodingVersion: 'skiff-canonical-v1',
+    declarationOwner: actorDeclarationOwnerFixture,
+    deadline: { timeoutMs: 30_000, expiresAt: '2099-01-01T00:00:00.000Z' }
   },
   'actor.replace.response': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -3145,7 +3198,66 @@ function validateActorBootstrapRequest(
     validateActorKey(envelope, type, 'actorKey', false) ??
     requireString(envelope, type, 'actorAbiIdentity') ??
     requireString(envelope, type, 'actorImplementationIdentity') ??
-    requireString(envelope, type, 'bootstrapEncodingVersion')
+    requireString(envelope, type, 'bootstrapEncodingVersion') ??
+    validateActorDeclarationOwner(envelope, type) ??
+    validateDeadline(envelope, type)
+  );
+}
+
+function validateActorDeclarationOwner(
+  envelope: Record<string, unknown>,
+  envelopeType: string
+): string | null {
+  const owner = getPathValue(envelope, 'declarationOwner');
+  if (!isRecord(owner)) {
+    return `invalid ${envelopeType} envelope: declarationOwner must be an object`;
+  }
+  return (
+    rejectUnsupportedObjectFields(owner, envelopeType, 'declarationOwner', [
+      'unit',
+      'file',
+      'actorSymbol',
+    ]) ??
+    requireString(envelope, envelopeType, 'declarationOwner.actorSymbol') ??
+    validateActorDeclarationUnit(owner, envelopeType) ??
+    validateActorDeclarationFile(owner, envelopeType)
+  );
+}
+
+function validateActorDeclarationUnit(
+  owner: Record<string, unknown>,
+  envelopeType: string
+): string | null {
+  const unit = owner.unit;
+  if (!isRecord(unit)) {
+    return `invalid ${envelopeType} envelope: declarationOwner.unit must be an object`;
+  }
+  return (
+    rejectUnsupportedObjectFields(unit, envelopeType, 'declarationOwner.unit', [
+      'kind',
+      'value',
+    ]) ??
+    requireEnum(owner, envelopeType, 'unit.kind', ['service', 'package'])
+  );
+}
+
+function validateActorDeclarationFile(
+  owner: Record<string, unknown>,
+  envelopeType: string
+): string | null {
+  const file = owner.file;
+  if (!isRecord(file)) {
+    return `invalid ${envelopeType} envelope: declarationOwner.file must be an object`;
+  }
+  return (
+    rejectUnsupportedObjectFields(file, envelopeType, 'declarationOwner.file', [
+      'kind',
+      'value',
+    ]) ??
+    requireEnum(owner, envelopeType, 'file.kind', [
+      'loadedFileIndex',
+      'fileIrIdentity',
+    ])
   );
 }
 

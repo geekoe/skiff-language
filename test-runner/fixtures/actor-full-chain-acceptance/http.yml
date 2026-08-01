@@ -6,3 +6,35 @@ probe:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+slowGet:
+  method: POST
+  path: /slow-get
+  kind: typedJson
+  handler: main.slowGetOnly
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+slowDedup:
+  method: POST
+  path: /slow-dedup
+  kind: typedJson
+  handler: main.slowDedup
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+slowIncrement:
+  method: POST
+  path: /slow-increment
+  kind: typedJson
+  handler: main.slowIncrement
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+flakyGet:
+  method: POST
+  path: /flaky-get
+  kind: typedJson
+  handler: main.flakyGet
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

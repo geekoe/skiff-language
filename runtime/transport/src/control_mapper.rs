@@ -8,6 +8,10 @@ use skiff_runtime_request_contract::{
 };
 
 use crate::{
+    actor_method::{
+        ActorDeclarationOwnerFrameHeader, ActorMethodDeadlineFrameHeader,
+        ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
+    },
     cancel_reason::{request_cancel_wire_reason_for_internal, RequestCancelReason},
     connection_protocol::{
         encode_connection_request_cancel_frame, encode_connection_request_frame,
@@ -123,6 +127,8 @@ fn actor_get_or_create_request_frame_header(
         actor_abi_identity: request.actor_abi_identity,
         actor_implementation_identity: request.actor_implementation_identity,
         bootstrap_encoding_version: request.bootstrap_encoding_version,
+        declaration_owner: actor_declaration_owner_frame(request.declaration_owner),
+        deadline: request.deadline.map(actor_control_deadline_frame),
     }
 }
 
@@ -139,6 +145,41 @@ fn actor_replace_request_frame_header(
         actor_abi_identity: request.actor_abi_identity,
         actor_implementation_identity: request.actor_implementation_identity,
         bootstrap_encoding_version: request.bootstrap_encoding_version,
+        declaration_owner: actor_declaration_owner_frame(request.declaration_owner),
+        deadline: request.deadline.map(actor_control_deadline_frame),
+    }
+}
+
+fn actor_declaration_owner_frame(
+    owner: skiff_runtime_request_contract::ActorInvocationDeclarationOwner,
+) -> ActorDeclarationOwnerFrameHeader {
+    ActorDeclarationOwnerFrameHeader {
+        unit: match owner.unit {
+            skiff_runtime_request_contract::ActorInvocationOwnerUnit::Service => {
+                ActorOwnerUnitFrameHeader::Service
+            }
+            skiff_runtime_request_contract::ActorInvocationOwnerUnit::Package(index) => {
+                ActorOwnerUnitFrameHeader::Package(index)
+            }
+        },
+        file: match owner.file {
+            skiff_runtime_request_contract::ActorInvocationOwnerFile::LoadedFileIndex(index) => {
+                ActorOwnerFileFrameHeader::LoadedFileIndex(index)
+            }
+            skiff_runtime_request_contract::ActorInvocationOwnerFile::FileIrIdentity(identity) => {
+                ActorOwnerFileFrameHeader::FileIrIdentity(identity)
+            }
+        },
+        actor_symbol: owner.actor_symbol,
+    }
+}
+
+fn actor_control_deadline_frame(
+    deadline: skiff_runtime_request_contract::ActorControlDeadline,
+) -> ActorMethodDeadlineFrameHeader {
+    ActorMethodDeadlineFrameHeader {
+        timeout_ms: deadline.timeout_ms,
+        expires_at: deadline.expires_at,
     }
 }
 

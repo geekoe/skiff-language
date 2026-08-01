@@ -40,6 +40,11 @@ use super::{
     RuntimeHost,
 };
 
+pub(super) enum ActorOwnerControlAcceptance {
+    Accepted,
+    Rejected(Option<ActorOwnerFailureReasonFrameHeader>),
+}
+
 impl RuntimeHost {
     pub(super) async fn activate_actor_owner_control(
         &self,
@@ -50,48 +55,9 @@ impl RuntimeHost {
         let Some(transition) = control.transition.as_ref() else {
             return false;
         };
-        let Ok(Some(route)) = self.active_actor_execution_route(&control.fence.service_id) else {
-            return false;
-        };
-        let cancellation = skiff_runtime_capability_context::CancellationToken::new();
-        let budget = Arc::new(ExecutionBudget::new(
-            skiff_runtime_request::execution_budget::ExecutionBudgetConfig::runtime_default(),
-            None,
-        ));
-        let Ok(execution) = ActorMethodEvalExecution::new(ActorMethodEvalExecutionInput {
-            runtime_id: self.base_runtime_id.clone(),
-            invocation_id: control.request_id.clone(),
-            service_protocol_identity: transition.actor_abi_identity.as_str().to_string(),
-            activation: Arc::clone(route.activation()),
-            execution_image: Arc::clone(route.execution_image()),
-            contexts: Arc::clone(route.context_set()),
-            config_views: match route.config_views() {
-                Ok(views) => views,
-                Err(_) => return false,
-            },
-            db_source: match route.db_source() {
-                Ok(source) => source,
-                Err(_) => return false,
-            },
-            file_source: crate::capability_context::FileCapabilitySource::new(self.file_runtime()),
-            http_options: self.http_runtime_options.clone(),
-            outbound_requests: Arc::clone(&self.outbound_requests),
-            actor_method_outbound: Arc::clone(&self.actor_method_outbound),
-            telemetry_context: None,
-            router_sender: Some(sender.clone()),
-            connection_requests: Arc::clone(&self.connection_requests),
-            router_session: match skiff_runtime_capability_context::ConnectionRequestSession::new(
-                router_session_id.to_string(),
-            ) {
-                Ok(session) => session,
-                Err(_) => return false,
-            },
-            http_response_max_bytes: self.default_http_response_max_bytes,
-            cancellation,
-            execution_budget: budget,
-            request_heap_limits: self.request_heap_limits(),
-            test_http_entries: self.test_http_entries.clone(),
-        }) else {
+        let Some(execution) =
+            build_owner_control_execution(self, router_session_id, control, sender, None)
+        else {
             return false;
         };
         let Ok(context) = execution.context() else {
@@ -121,6 +87,94 @@ impl RuntimeHost {
         match self.track_actor_instance(router_session_id, handle) {
             Ok(()) => true,
             Err(error) => error.to_string().contains("already tracked"),
+        }
+    }
+
+    pub(super) async fn activate_actor_owner_initial(
+        &self,
+        router_session_id: &str,
+        control: &ActorOwnerControlFrameHeader,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> ActorOwnerControlAcceptance {
+        let Some(bootstrap) = control.bootstrap.as_ref() else {
+            return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                "actor.owner.control activateInitial requires bootstrap",
+            )));
+        };
+        let Some(deadline) = control.deadline.as_ref() else {
+            return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                "actor.owner.control activateInitial requires deadline",
+            )));
+        };
+        let Some(duration) = effective_deadline(deadline) else {
+            return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateTimeout",
+                "actor create deadline has already expired",
+            )));
+        };
+        let Some(execution) = build_owner_control_execution(
+            self,
+            router_session_id,
+            control,
+            sender,
+            Some(Instant::now() + duration),
+        ) else {
+            return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                "actor owner execution context is unavailable",
+            )));
+        };
+        let Ok(context) = execution.context() else {
+            return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                "actor owner execution context is unavailable",
+            )));
+        };
+        let Ok(bootstrap_payload) = bootstrap.decode_payload() else {
+            return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                "actor activation bootstrap payload is invalid",
+            )));
+        };
+        let fence = match control_instance_fence(control) {
+            Ok(fence) => fence,
+            Err(message) => {
+                return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                    "ActorCreateFailed",
+                    &message,
+                )))
+            }
+        };
+        let executor = ActorMethodExecutor::new(self.actor_instances.store());
+        let handle = match executor
+            .activate(
+                execution.interpreter(),
+                &context,
+                fence,
+                &bootstrap.encoding_version,
+                &bootstrap_payload,
+            )
+            .await
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                    "ActorCreateFailed",
+                    &error.to_string(),
+                )))
+            }
+        };
+        match self.track_actor_instance(router_session_id, handle) {
+            Ok(()) => ActorOwnerControlAcceptance::Accepted,
+            Err(error) if error.to_string().contains("already tracked") => {
+                ActorOwnerControlAcceptance::Accepted
+            }
+            Err(error) => ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                &error.to_string(),
+            ))),
         }
     }
 
@@ -361,6 +415,57 @@ fn bounded_failure_message(message: &str) -> String {
         end -= 1;
     }
     message[..end].to_string()
+}
+
+fn control_reason(code: &str, message: &str) -> ActorOwnerFailureReasonFrameHeader {
+    ActorOwnerFailureReasonFrameHeader {
+        code: code.to_string(),
+        message: bounded_failure_message(message),
+    }
+}
+
+fn build_owner_control_execution(
+    host: &RuntimeHost,
+    router_session_id: &str,
+    control: &ActorOwnerControlFrameHeader,
+    sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    budget_deadline: Option<Instant>,
+) -> Option<ActorMethodEvalExecution> {
+    let route = host
+        .active_actor_execution_route(&control.fence.service_id)
+        .ok()??;
+    let cancellation = skiff_runtime_capability_context::CancellationToken::new();
+    let budget = Arc::new(ExecutionBudget::new(
+        skiff_runtime_request::execution_budget::ExecutionBudgetConfig::runtime_default(),
+        budget_deadline,
+    ));
+    ActorMethodEvalExecution::new(ActorMethodEvalExecutionInput {
+        runtime_id: host.base_runtime_id.clone(),
+        invocation_id: control.request_id.clone(),
+        service_protocol_identity: control.fence.actor_abi_identity.as_str().to_string(),
+        activation: Arc::clone(route.activation()),
+        execution_image: Arc::clone(route.execution_image()),
+        contexts: Arc::clone(route.context_set()),
+        config_views: route.config_views().ok()?,
+        db_source: route.db_source().ok()?,
+        file_source: crate::capability_context::FileCapabilitySource::new(host.file_runtime()),
+        http_options: host.http_runtime_options.clone(),
+        outbound_requests: Arc::clone(&host.outbound_requests),
+        actor_method_outbound: Arc::clone(&host.actor_method_outbound),
+        telemetry_context: None,
+        router_sender: Some(sender.clone()),
+        connection_requests: Arc::clone(&host.connection_requests),
+        router_session: skiff_runtime_capability_context::ConnectionRequestSession::new(
+            router_session_id.to_string(),
+        )
+        .ok()?,
+        http_response_max_bytes: host.default_http_response_max_bytes,
+        cancellation,
+        execution_budget: budget,
+        request_heap_limits: host.request_heap_limits(),
+        test_http_entries: host.test_http_entries.clone(),
+    })
+    .ok()
 }
 
 pub(super) fn control_instance_fence(

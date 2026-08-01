@@ -86,6 +86,13 @@ fn actor_invocation(
             "number".to_string(),
             "actor-abi".to_string(),
             "actor-implementation".to_string(),
+            skiff_runtime_capability_context::ActorInvocationDeclarationOwner {
+                unit: skiff_runtime_capability_context::ActorInvocationOwnerUnit::Service,
+                file: skiff_runtime_capability_context::ActorInvocationOwnerFile::FileIrIdentity(
+                    "file:actor-1".to_string(),
+                ),
+                actor_symbol: "Counter".to_string(),
+            },
         )),
         None,
     )

@@ -102,6 +102,11 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
         "actorIdEncodingVersion": "json-v1",
         "canonicalActorIdKeyBytesBase64": "InRocmVhZC0xIg=="
     });
+    let declaration_owner = json!({
+        "unit": { "kind": "service" },
+        "file": { "kind": "fileIrIdentity", "value": "file:thread" },
+        "actorSymbol": "Thread"
+    });
     let base = json!({
         "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
         "rpcId": "rpc-activation-corpus",
@@ -116,7 +121,8 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
                 "actorKey": actor_key,
                 "actorAbiIdentity": "actor-abi:thread",
                 "actorImplementationIdentity": "build:thread:v1",
-                "bootstrapEncodingVersion": "canonical-value-v1"
+                "bootstrapEncodingVersion": "canonical-value-v1",
+                "declarationOwner": declaration_owner
             }),
         ),
         merge_json(
@@ -126,7 +132,8 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
                 "actorKey": actor_key,
                 "actorAbiIdentity": "actor-abi:thread",
                 "actorImplementationIdentity": "build:thread:v2",
-                "bootstrapEncodingVersion": "canonical-value-v1"
+                "bootstrapEncodingVersion": "canonical-value-v1",
+                "declarationOwner": declaration_owner
             }),
         ),
         merge_json(

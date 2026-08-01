@@ -15,14 +15,19 @@ import {
   type ActorSpawnRuntimeResponseFrameHeader,
   type RuntimeErrorPayload,
 } from '../protocol/envelope.js';
+import {
+  ActorGetCreateActivationCoordinator,
+} from './actorGetCreateActivationCoordinator.js';
 
 const DEFAULT_ACTOR_OWNER_LEASE_TTL_MS = 30_000;
 
 export interface ActorSpawnRuntimeControlOptions {
   actorManager?: ActorManager;
   actorOwnerLeaseTtlMs?: number;
+  activationTimeoutMs?: number;
   now?: () => Date;
   id?: () => string;
+  getCreateCoordinator?: ActorGetCreateActivationCoordinator;
 }
 
 export interface RuntimeControlSource {
@@ -49,6 +54,7 @@ export class ActorSpawnRuntimeControl {
   private readonly actorOwnerLeaseTtlMs: number;
   private readonly now: () => Date;
   private readonly id: () => string;
+  private getCreateCoordinator: ActorGetCreateActivationCoordinator | undefined;
 
   constructor(options: ActorSpawnRuntimeControlOptions = {}) {
     this.actorManager = options.actorManager ?? new ActorManager();
@@ -56,6 +62,13 @@ export class ActorSpawnRuntimeControl {
       options.actorOwnerLeaseTtlMs ?? DEFAULT_ACTOR_OWNER_LEASE_TTL_MS;
     this.now = options.now ?? (() => new Date());
     this.id = options.id ?? randomUUID;
+    this.getCreateCoordinator = options.getCreateCoordinator;
+  }
+
+  attachGetCreateCoordinator(
+    coordinator: ActorGetCreateActivationCoordinator
+  ): void {
+    this.getCreateCoordinator = coordinator;
   }
 
   actorDispatchManager(): ActorManager {
@@ -82,8 +95,19 @@ export class ActorSpawnRuntimeControl {
     try {
       assertActivationIdentity(header.activationIdentity, source.activationIdentity);
       switch (header.type) {
-        case 'actor.getOrCreate.request':
-          return await this.handleActorBootstrap('getOrCreate', header, payloadBytes, source);
+        case 'actor.getOrCreate.request': {
+          if (this.getCreateCoordinator === undefined) {
+            throw new RuntimeControlProtocolError(
+              'ActorGetOrCreateUnavailable',
+              'actor getOrCreate activation coordinator is not configured',
+              503
+            );
+          }
+          return await this.getCreateCoordinator.getOrCreate({
+            header,
+            payloadBytes,
+          });
+        }
         case 'actor.replace.request':
           return await this.handleActorBootstrap('replace', header, payloadBytes, source);
         case 'actor.find.request':

@@ -7,6 +7,7 @@ import {
 } from '../src/protocol/assemblyActivationFrame.js';
 import type { AssemblyActivationControl } from '../src/protocol/assemblyActivationProtocol.js';
 import {
+  decodeBinaryFrame,
   decodeRuntimeFrame,
   encodeBinaryFrame,
   encodeRuntimeFrame,
@@ -21,6 +22,9 @@ import {
   validateRuntimeAssemblyRequestStartFrameWireHeader
 } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyActivationCoordinator } from '../src/router/assemblyActivationCoordinator.js';
+import { ActorGetCreateActivationCoordinator } from '../src/router/actorGetCreateActivationCoordinator.js';
+import { ActorSpawnRuntimeControl } from '../src/router/actorSpawnRuntimeControl.js';
+import { ActorManager } from '../src/actor/index.js';
 import {
   initialActivationState,
   MemoryAssemblyActivationStateStore
@@ -1096,7 +1100,7 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
     const activationIdentity = activation(ASSEMBLY_A, 1);
 
-    const actorGetOrCreate = nextRuntimeFrame(ws, 'actor.getOrCreate.response');
+    const initialControl = nextBinaryMessage(ws);
     ws.send(encodeRuntimeFrame({
       ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
       rpcId: 'actor-active-put',
@@ -1104,7 +1108,25 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       activationIdentity,
       actorKey: actorKey()
     }, new Uint8Array([1, 2, 3])));
-    const created = await actorGetOrCreate;
+    const initialActivation = decodeBinaryFrame(await initialControl);
+    expect(initialActivation.header).toMatchObject({
+      type: 'actor.owner.control',
+      operation: 'activateInitial',
+      targetRuntimeId: RUNTIME_ID,
+      bootstrap: {
+        encodingVersion: 'skiff-canonical-v1',
+        payloadBase64: Buffer.from([1, 2, 3]).toString('base64')
+      }
+    });
+    ws.send(encodeBinaryFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'actor.owner.control.ack',
+      runtimeId: RUNTIME_ID,
+      requestId: initialActivation.header.requestId,
+      operation: 'activateInitial',
+      accepted: true
+    }, new Uint8Array()));
+    const created = await nextRuntimeFrame(ws, 'actor.getOrCreate.response');
     expect(created).toMatchObject({
       header: {
         type: 'actor.getOrCreate.response',
@@ -1532,9 +1554,27 @@ async function createFixture(
   const testGateway = initial.testGateway ?? false;
   const snapshots = new RouterActiveAssemblySnapshotStore();
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
-  const runtimeRegistry = new RuntimeRegistry();
+  const actorManager = new ActorManager();
+  const actorSpawnControl = new ActorSpawnRuntimeControl({ actorManager });
+  const actorGetCreateControl = new ActorGetCreateActivationCoordinator({
+    actorManager,
+    runtimeDirectory: {
+      actorRuntimeCandidates: (serviceId) =>
+        assemblyRegistry.actorRuntimeCandidates(serviceId),
+      runtimeConnection: (runtimeId) => {
+        const ws = assemblyRegistry.connectionForReplica(runtimeId);
+        return ws === undefined ? undefined : { runtimeId, ws };
+      },
+    },
+    send: (ws, bytes) => ws.send(bytes),
+  });
+  const runtimeRegistry = new RuntimeRegistry({
+    actorSpawnControl,
+    actorGetCreateControl,
+  });
   const endpoint = new RuntimeEndpoint({
     registry: runtimeRegistry,
+    actorGetCreateControl,
     assemblyRegistry,
     bootstrap: {
       artifactsPath: '/tmp/skiff-test-artifacts',

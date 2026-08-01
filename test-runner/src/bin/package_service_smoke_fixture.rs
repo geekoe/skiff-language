@@ -235,32 +235,40 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         .deployments
         .first()
         .ok_or_else(|| anyhow::anyhow!("smoke fixture case omitted its ordinary deployment"))?;
-    let probe_ingress = deployment
+    let _probe_ingress = deployment
         .ingress
         .iter()
         .find(|binding| binding.selector.path == "/probe")
         .ok_or_else(|| anyhow::anyhow!("smoke fixture service must declare /probe in http.yml"))?;
-    let probe_entry = deployment
+    let _probe_entry = deployment
         .gateway_entries
-        .get(&probe_ingress.gateway_entry_key)
+        .get(&_probe_ingress.gateway_entry_key)
         .ok_or_else(|| anyhow::anyhow!("smoke fixture /probe ingress has no gateway entry"))?;
     let deployment_ref = skiff_artifact_identity::service_deployment_ref(deployment);
-    let entrypoints = vec![
-        json!({
-            "deployment": test_entrypoint.deployment,
-            "gatewayEntryKey": test_entrypoint.gateway_entry_key,
-            "gatewayEntryIdentity": test_entrypoint.gateway_entry_identity,
-            "mode": test_entrypoint.mode,
-            "selector": test_entrypoint.selector,
-        }),
-        json!({
+    let mut entrypoints = vec![json!({
+        "deployment": test_entrypoint.deployment,
+        "gatewayEntryKey": test_entrypoint.gateway_entry_key,
+        "gatewayEntryIdentity": test_entrypoint.gateway_entry_identity,
+        "mode": test_entrypoint.mode,
+        "selector": test_entrypoint.selector,
+    })];
+    for (gateway_entry_key, gateway_entry) in &deployment.gateway_entries {
+        if gateway_entry_key == &test_entrypoint.gateway_entry_key {
+            continue;
+        }
+        let selector = deployment
+            .ingress
+            .iter()
+            .find(|binding| binding.gateway_entry_key == *gateway_entry_key)
+            .map(|binding| binding.selector.clone());
+        entrypoints.push(json!({
             "deployment": deployment_ref,
-            "gatewayEntryKey": probe_ingress.gateway_entry_key,
-            "gatewayEntryIdentity": probe_entry.gateway_entry_identity,
+            "gatewayEntryKey": gateway_entry_key,
+            "gatewayEntryIdentity": gateway_entry.gateway_entry_identity,
             "mode": GatewayDispatchMode::Unary,
-            "selector": probe_ingress.selector,
-        }),
-    ];
+            "selector": selector,
+        }));
+    }
     let contracts = fixture
         .records
         .contracts

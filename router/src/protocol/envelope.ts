@@ -697,6 +697,19 @@ export interface ActorRefFrameMetadata extends ActorKeyFrameMetadata {
   epoch?: number;
 }
 
+export interface ActorDeclarationOwnerFrameMetadata {
+  unit: { kind: 'service' } | { kind: 'package'; value: number };
+  file:
+    | { kind: 'loadedFileIndex'; value: number }
+    | { kind: 'fileIrIdentity'; value: string };
+  actorSymbol: string;
+}
+
+export interface ActorMethodDeadlineFrameMetadata {
+  timeoutMs: number;
+  expiresAt: string;
+}
+
 export interface RuntimeRpcFrameHeaderBase<TType extends RuntimeFrameHeaderName>
   extends RuntimeFrameHeaderBase<TType> {
   rpcId: string;
@@ -722,6 +735,8 @@ export interface ActorBootstrapRequestFrameHeader<
   actorAbiIdentity: string;
   actorImplementationIdentity: string;
   bootstrapEncodingVersion: string;
+  declarationOwner: ActorDeclarationOwnerFrameMetadata;
+  deadline?: ActorMethodDeadlineFrameMetadata;
 }
 
 export type ActorGetOrCreateRequestFrameHeader =

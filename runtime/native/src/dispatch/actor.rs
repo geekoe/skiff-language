@@ -46,6 +46,7 @@ impl ActorNativeDispatch {
         let actor_abi_identity = actor_metadata.actor_abi_identity().to_string();
         let actor_implementation_identity =
             actor_metadata.actor_implementation_identity().to_string();
+        let declaration_owner = actor_metadata.declaration_owner().clone();
 
         let actor_id =
             native_boundary.to_wire_arg(0, &args[0], &format!("{diagnostic_target} id"), heap)?;
@@ -95,6 +96,8 @@ impl ActorNativeDispatch {
                             actor_abi_identity,
                             actor_implementation_identity,
                             bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION.to_string(),
+                            declaration_owner,
+                            deadline: None,
                         },
                         create_args_payload,
                     )
