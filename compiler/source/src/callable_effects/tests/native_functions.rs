@@ -2,7 +2,7 @@ use super::support::*;
 
 #[test]
 fn exact_context_free_native_uses_shared_callable_semantics() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function digits(input: string) -> bool {
               return std.string.isAsciiDigits(input)
@@ -20,8 +20,8 @@ fn exact_context_free_native_uses_shared_callable_semantics() {
               return std.string.encodePath(input)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["digits", "truncate", "query", "path"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
@@ -60,14 +60,14 @@ fn exact_context_free_native_uses_shared_callable_semantics() {
 
 #[test]
 fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function fromEpoch(milliseconds: integer) -> Date {
               return Date.fromEpochMilliseconds(milliseconds)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "fromEpoch"), no_effects());
     let CallableProvenanceSummary::Analyzed {
@@ -93,17 +93,17 @@ fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
 
 #[test]
 fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function materializeCompletedResult() -> Map<string, Json> {
               const accumulator = Map.empty<string, Json>()
               return accumulator
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "responses",
-        "agine.ai/llm-api",
-    );
+    )
+    .module("responses")
+    .package("agine.ai/llm-api")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "responses", "materializeCompletedResult"),
@@ -132,7 +132,7 @@ fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
 
 #[test]
 fn json_decode_materialization_uses_exact_detached_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             type Event { id: string, values: Array<string> }
 
@@ -146,10 +146,10 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
               return decoded.value
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "responses",
-        "agine.ai/llm-api",
-    );
+    )
+    .module("responses")
+    .package("agine.ai/llm-api")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "responses", "materializeCompletedResult"),
@@ -183,16 +183,16 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
 
 #[test]
 fn json_merge_materialization_uses_exact_detached_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function applyProviderOptions(base: Json, overlay: Json) -> Json {
               return std.json.merge(base, overlay)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "internal.aihub_service",
-        "agine.ai/aihub",
-    );
+    )
+    .module("internal.aihub_service")
+    .package("agine.ai/aihub")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "internal.aihub_service", "applyProviderOptions"),
@@ -224,7 +224,7 @@ fn json_merge_materialization_uses_exact_detached_semantics() {
 
 #[test]
 fn optional_date_parse_wrapper_uses_exact_native_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function optionalInputDate(value: string?) -> Date? {
               if value == null {
@@ -237,10 +237,10 @@ fn optional_date_parse_wrapper_uses_exact_native_semantics() {
               return optionalInputDate(accessTokenExpiresAt)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "upstream_sources",
-        "agine.ai/codex-relay",
-    );
+    )
+    .module("upstream_sources")
+    .package("agine.ai/codex-relay")
+    .analyze();
 
     for callable in ["optionalInputDate", "adminUpstreamSourceCreate"] {
         assert_eq!(
@@ -277,14 +277,14 @@ fn optional_date_parse_wrapper_uses_exact_native_semantics() {
 
 #[test]
 fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function jwtPayload(value: string) -> bytes {
               return bytes.fromBase64(value)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "jwtPayload"), no_effects());
     let CallableProvenanceSummary::Analyzed {
@@ -310,14 +310,14 @@ fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
 
 #[test]
 fn bytes_from_hex_wrapper_uses_exact_native_semantics() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function exactChunk(value: string) -> bytes {
               return bytes.fromHex(value)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "exactChunk"), no_effects());
     let CallableProvenanceSummary::Analyzed {
@@ -343,7 +343,7 @@ fn bytes_from_hex_wrapper_uses_exact_native_semantics() {
 
 #[test]
 fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type MultipartPart { body: bytes }
 
@@ -358,8 +358,8 @@ fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
               return bytes.concat(chunks)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "multipartBody"), no_effects());
     let CallableProvenanceSummary::Analyzed {
@@ -385,7 +385,7 @@ fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
 
 #[test]
 fn exact_http_request_natives_transfer_through_local_helpers() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function cookieValue(request: std.http.HttpRequest) -> string? {
               return std.http.cookie(request, "session")
@@ -405,8 +405,8 @@ fn exact_http_request_natives_transfer_through_local_helpers() {
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for (callable, expected_origins) in [
         ("cookieValue", vec![ValueProvenance::Fresh]),
@@ -445,8 +445,7 @@ fn exact_http_request_natives_transfer_through_local_helpers() {
 
 #[test]
 fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request() {
-    let model = analyze(
-        r#"
+    let model = AnalysisFixture::new(r#"
             function rawRequest(input: std.http.HttpClientRequest) -> std.http.HttpClientRequest {
               return std.http.HttpClientRequest {
                 method: input.method,
@@ -460,9 +459,7 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
             function responses(input: std.http.HttpClientRequest) -> std.http.HttpClientStreamHandle {
               return std.http.stream(rawRequest(input))
             }
-        "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+        "#).analyze();
 
     assert_eq!(
         effects(&model, "rawRequest"),
@@ -494,7 +491,7 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
 
 #[test]
 fn exact_http_client_sse_is_fresh_detached_and_suspending_through_raw_request() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function rawRequest(input: std.http.HttpClientRequest) -> std.http.HttpClientRequest {
               return std.http.HttpClientRequest {
@@ -510,8 +507,8 @@ fn exact_http_client_sse_is_fresh_detached_and_suspending_through_raw_request() 
               return std.http.sse(rawRequest(input))
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "rawRequest"),
@@ -543,7 +540,7 @@ fn exact_http_client_sse_is_fresh_detached_and_suspending_through_raw_request() 
 
 #[test]
 fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function start(
               status: integer,
@@ -570,8 +567,8 @@ fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
               return std.http.streamEnd()
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["start", "chunk", "end", "safeResponses"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
@@ -608,7 +605,7 @@ fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
 
 #[test]
 fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function emit(event: std.http.HttpResponseStreamEvent) -> void {
               std.http.emitResponseStream(event)
@@ -618,8 +615,8 @@ fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() 
               std.http.emitResponseStream(std.http.streamChunk(value))
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "emit"),
@@ -658,7 +655,7 @@ fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() 
 
 #[test]
 fn std_exact_native_matrix_uses_shared_callable_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function dateNow() -> Date {
               return Date.now()
@@ -704,10 +701,10 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
               return std.time.sleep(Duration.milliseconds(0))
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     for callable in [
         "dateNow",
@@ -760,7 +757,7 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
 
 #[test]
 fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             type Payload { value: string }
 
@@ -832,10 +829,10 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
               return items.push("value")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     for callable in [
         "emptyArray",
@@ -902,7 +899,7 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
 
 #[test]
 fn config_intrinsics_are_exact_detached_sources() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Config { name: string, optional: string?, present: bool }
             function load() -> Config {
@@ -913,8 +910,8 @@ fn config_intrinsics_are_exact_detached_sources() {
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
     assert_eq!(effects(&model, "load"), no_effects());
     assert!(matches!(
         provenance(&model, "load"),
@@ -944,7 +941,7 @@ fn config_intrinsics_are_exact_detached_sources() {
 
 #[test]
 fn exact_file_creation_wrappers_are_fresh_and_only_suspend() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function createBytes(content: bytes) -> std.file.ImmutableFile {
               return std.file.create(content, null)
@@ -954,10 +951,10 @@ fn exact_file_creation_wrappers_are_fresh_and_only_suspend() {
               return std.file.createFromStream(source, null)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.file_effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.file_effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     for (callable, binding_key) in [
         ("createBytes", "std.file.create"),

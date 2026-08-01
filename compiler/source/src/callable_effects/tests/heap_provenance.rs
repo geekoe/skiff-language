@@ -2,7 +2,7 @@ use super::support::*;
 
 #[test]
 fn post_construction_store_taints_fresh_return() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Child { value: string }
             type Holder { child: Child }
@@ -13,8 +13,8 @@ fn post_construction_store_taints_fresh_return() {
               return holder
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "storeAndReturn"),
@@ -27,7 +27,7 @@ fn post_construction_store_taints_fresh_return() {
 
 #[test]
 fn post_construction_store_then_nested_mutation_fails_closed() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Child { value: string }
             type Holder { child: Child }
@@ -39,15 +39,15 @@ fn post_construction_store_then_nested_mutation_fails_closed() {
               return holder
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_heap_store_fail_closed(&model, "storeThenMutate");
 }
 
 #[test]
 fn aliased_fresh_holder_store_taints_original_return() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Child { value: string }
             type Holder { child: Child }
@@ -59,8 +59,8 @@ fn aliased_fresh_holder_store_taints_original_return() {
               return holder
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert!(effects(&model, "aliasStore").returns_caller_alias);
     assert!(matches!(
@@ -71,7 +71,7 @@ fn aliased_fresh_holder_store_taints_original_return() {
 
 #[test]
 fn fresh_store_taint_propagates_through_callers_and_scc() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Child { value: string }
             type Holder { child: Child }
@@ -95,8 +95,8 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
               return first(input, stop)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["storeLeaf", "caller", "first", "second"] {
         assert!(effects(&model, callable).returns_caller_alias, "{callable}");
@@ -109,7 +109,7 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
 
 #[test]
 fn direct_parameter_field_store_has_write_without_identity_observation() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
 
@@ -131,8 +131,8 @@ fn direct_parameter_field_store_has_write_without_identity_observation() {
               input.clear()
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["mutate", "wrapper", "Boxed.clear", "methodWrapper"] {
         assert_eq!(
@@ -152,7 +152,7 @@ fn direct_parameter_field_store_has_write_without_identity_observation() {
 
 #[test]
 fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type RelayState {
               f01: string, f02: string, f03: string, f04: string,
@@ -188,8 +188,8 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
               return state.f12
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "update"),
@@ -207,7 +207,7 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
 
 #[test]
 fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             interface Provider {
               function value(self: Self) -> string
@@ -228,8 +228,8 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
               input.value = provider.value()
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_heap_store_fail_closed(&model, "nested");
     assert_eq!(
@@ -250,7 +250,7 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
 
 #[test]
 fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fails_closed() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type State { value: string }
             type Stored { id: string, state: State }
@@ -289,8 +289,8 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
               alias.value = "ambiguous"
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["intoMap", "intoArray", "ambiguousAlias"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
@@ -304,7 +304,7 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
 
 #[test]
 fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type State { value: string }
 
@@ -344,8 +344,8 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
               return node
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "formal"),
@@ -367,7 +367,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
 
 #[test]
 fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_root() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type State { key: string, value: string }
 
@@ -391,8 +391,8 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
               return state
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "stateFor"),
@@ -411,7 +411,7 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
 
 #[test]
 fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Child { parent: Parent? }
             type Parent { child: Child }
@@ -438,8 +438,8 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
               return first
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         provenance(&model, "childOf"),
@@ -456,7 +456,7 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
 
 #[test]
 fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type RelayState { bytes: integer }
 
@@ -471,8 +471,8 @@ fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates()
               return state
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "currentBytes"), no_effects());
     assert_eq!(effects(&model, "local"), no_effects());
@@ -484,7 +484,7 @@ fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates()
 
 #[test]
 fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Wrapper { payload: JsonObject }
 
@@ -523,8 +523,8 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
               target.set("kind", "function")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         provenance(&model, "wrap"),
@@ -570,7 +570,7 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
 
 #[test]
 fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type State { key: string, value: string }
 
@@ -586,8 +586,9 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
               return state
             }
         "#,
-        container_projection_dependency(),
-    );
+    )
+    .dependency_analysis(container_projection_dependency())
+    .analyze();
 
     assert_eq!(effects(&model, "local"), suspend_only_effects());
     assert!(matches!(
@@ -598,7 +599,7 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
 
 #[test]
 fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owned() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function mutate(
               input: JsonObject
@@ -619,8 +620,9 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
               target.set("kind", "function")
             }
         "#,
-        fresh_wrapper_dependency(),
-    );
+    )
+    .dependency_analysis(fresh_wrapper_dependency())
+    .analyze();
 
     assert_eq!(
         effects(&model, "mutate"),
@@ -660,7 +662,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
 
 #[test]
 fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type StreamState {
               key: string,
@@ -695,8 +697,8 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
               return node
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(
         effects(&model, "update"),
@@ -715,7 +717,7 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
 
 #[test]
 fn recursive_scc_reaches_alias_fixed_point() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
 
@@ -728,8 +730,8 @@ fn recursive_scc_reaches_alias_fixed_point() {
               return first(input, stop)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert!(effects(&model, "first").returns_caller_alias);
     assert!(effects(&model, "second").returns_caller_alias);
@@ -737,7 +739,7 @@ fn recursive_scc_reaches_alias_fixed_point() {
 
 #[test]
 fn recursively_growing_projection_path_fails_closed_at_the_wire_limit() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Node { child: Node }
 
@@ -746,8 +748,8 @@ fn recursively_growing_projection_path_fails_closed_at_the_wire_limit() {
               return descend(node.child, true)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "descend"), all_effects());
     assert!(matches!(
@@ -758,7 +760,7 @@ fn recursively_growing_projection_path_fails_closed_at_the_wire_limit() {
 
 #[test]
 fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function withRequestCors(
               request: JsonObject,
@@ -847,8 +849,8 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               return {}
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "freshThird"), no_effects());
     let CallableProvenanceSummary::Analyzed { return_origins, .. } =

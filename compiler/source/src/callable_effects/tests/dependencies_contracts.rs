@@ -38,15 +38,16 @@ fn exact_dependency_callee_does_not_poison_known_target() {
         Vec::new(),
     )
     .unwrap();
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
             function wrapper(input: Boxed) -> Boxed {
               return dep/tools/run(input)
             }
         "#,
-        dependency_input,
-    );
+    )
+    .dependency_analysis(dependency_input)
+    .analyze();
 
     assert_eq!(
         effects(&model, "wrapper"),
@@ -129,7 +130,7 @@ fn dependency_exact_signature_controls_caller_suspension() {
         Vec::new(),
     )
     .unwrap();
-    let model = analyze_with_dependency_artifact(
+    let model = AnalysisFixture::new(
         r#"
             function exactFalse(input: string) -> string {
               return dep/exactFalse(input)
@@ -139,8 +140,10 @@ fn dependency_exact_signature_controls_caller_suspension() {
               return dep/exactTrue(input)
             }
         "#,
-        dependencies,
-    );
+    )
+    .dependency_analysis(dependencies)
+    .exact_signature_dependency()
+    .analyze();
 
     assert_eq!(effects(&model, "exactFalse"), no_effects());
     assert_eq!(effects(&model, "exactTrue"), suspend_only_effects());
@@ -148,7 +151,7 @@ fn dependency_exact_signature_controls_caller_suspension() {
 
 #[test]
 fn exact_dependency_field_callee_does_not_poison_known_target() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
 
@@ -160,8 +163,9 @@ fn exact_dependency_field_callee_does_not_poison_known_target() {
               return dep/tools.run<Boxed>(input)
             }
         "#,
-        exact_field_package_dependency(),
-    );
+    )
+    .dependency_analysis(exact_field_package_dependency())
+    .analyze();
 
     for callable in ["wrapper", "genericWrapper"] {
         assert_eq!(
@@ -236,14 +240,15 @@ fn exact_contract_field_callee_uses_detached_descriptor() {
         .next()
         .unwrap()
         .clone();
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function wrapper(input: echo.payload) -> string {
               return echo/tools.send(input)
             }
         "#,
-        SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
-    );
+    )
+    .dependency_analysis(SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap())
+    .analyze();
 
     assert_detached_contract_summary(&model, "wrapper");
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
@@ -260,14 +265,15 @@ fn exact_contract_field_callee_uses_detached_descriptor() {
 
 #[test]
 fn dependency_field_first_class_value_remains_fail_closed() {
-    let error = analyze_result(
+    let error = AnalysisFixture::new(
         r#"
             function wrapper() -> void {
               const callable = dep/tools.run
             }
         "#,
-        exact_field_package_dependency(),
     )
+    .dependency_analysis(exact_field_package_dependency())
+    .analyze_result()
     .expect_err("dependency field outside call position must remain rejected")
     .to_string();
 
@@ -304,14 +310,15 @@ fn detached_contract_target_uses_descriptor_effect_guarantees() {
         .unwrap()
         .clone();
     let dependency_input = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function wrapper(input: echo.payload) -> string {
               return echo/send(input)
             }
         "#,
-        dependency_input,
-    );
+    )
+    .dependency_analysis(dependency_input)
+    .analyze();
 
     assert_detached_contract_summary(&model, "wrapper");
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
@@ -350,14 +357,15 @@ fn missing_detached_error_or_other_guarantee_remains_fail_closed() {
             &[schema],
         )
         .unwrap();
-        let model = analyze(
+        let model = AnalysisFixture::new(
             r#"
                 function wrapper(input: echo.payload) -> void {
                   echo/send(input)
                 }
             "#,
-            SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
-        );
+        )
+        .dependency_analysis(SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap())
+        .analyze();
 
         let effects = effects(&model, "wrapper");
         assert!(effects.writes_caller_reachable, "{missing_guarantee}");
@@ -386,14 +394,16 @@ fn unknown_contract_member_fails_with_source_location_and_stable_key() {
     let dependency =
         resolved_contract_fixture("echo", "example.echo", "send", "payload", "payloadClosure");
     let dependency_input = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
-    let error = match analyze_result(
+    let error = match AnalysisFixture::new(
         r#"
             function wrapper() -> void {
               echo/missing()
             }
         "#,
-        dependency_input,
-    ) {
+    )
+    .dependency_analysis(dependency_input)
+    .analyze_result()
+    {
         Ok(_) => panic!("unknown contract member must fail source compilation"),
         Err(error) => error.to_string(),
     };

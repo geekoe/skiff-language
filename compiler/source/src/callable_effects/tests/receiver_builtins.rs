@@ -2,7 +2,7 @@ use super::support::*;
 
 #[test]
 fn receiver_effects_are_contextual_to_caller_reachable_values() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function append(items: Array<string>) -> void {
               items.push("value")
@@ -27,10 +27,10 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
               appendHop(items)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     let caller_effects = CallableMayEffects {
         writes_caller_reachable: true,
@@ -55,7 +55,7 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
 
 #[test]
 fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function setCallerOwned(object: JsonObject) -> void {
               return object.set("value", 1)
@@ -75,10 +75,10 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
               return object.set("value", value)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     let caller_effects = CallableMayEffects {
         writes_caller_reachable: true,
@@ -115,7 +115,7 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
 
 #[test]
 fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function isBefore(left: Date, right: Date) -> bool {
               return left.isBefore(right)
@@ -141,10 +141,10 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
               return value.toMilliseconds()
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     for callable in [
         "isBefore",
@@ -183,7 +183,7 @@ fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
 
 #[test]
 fn date_add_milliseconds_keeps_v1_proxy_expiry_detached() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function upstreamRecoverAt(now: Date, delayMs: integer) -> Date {
               return now.addMilliseconds(delayMs)
@@ -193,10 +193,10 @@ fn date_add_milliseconds_keeps_v1_proxy_expiry_detached() {
               return upstreamRecoverAt(now, delayMs)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "upstream_health",
-        "skiff.run/codex-relay",
-    );
+    )
+    .module("upstream_health")
+    .package("skiff.run/codex-relay")
+    .analyze();
 
     for callable in ["upstreamRecoverAt", "v1Proxy"] {
         assert_eq!(
@@ -221,7 +221,7 @@ fn date_add_milliseconds_keeps_v1_proxy_expiry_detached() {
 
 #[test]
 fn date_diff_milliseconds_keeps_interaction_duration_shape_detached() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function interactionDurationMs(startedAt: Date, completedAt: Date?) -> integer? {
               if completedAt == null {
@@ -237,10 +237,10 @@ fn date_diff_milliseconds_keeps_interaction_duration_shape_detached() {
               return interactionDurationMs(startedAt, completedAt)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "interactions",
-        "skiff.run/codex-relay",
-    );
+    )
+    .module("interactions")
+    .package("skiff.run/codex-relay")
+    .analyze();
 
     for callable in ["interactionDurationMs", "adminLlmInteractionsList"] {
         assert_eq!(
@@ -267,7 +267,7 @@ fn date_diff_milliseconds_keeps_interaction_duration_shape_detached() {
 
 #[test]
 fn nullable_date_compare_keeps_upstream_status_shape_detached() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function upstreamStatus(now: Date, fixedRecoverAt: Date?) -> string {
               if fixedRecoverAt != null && now.compare(fixedRecoverAt) < 0 {
@@ -276,10 +276,10 @@ fn nullable_date_compare_keeps_upstream_status_shape_detached() {
               return "available"
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "upstream_health",
-        "skiff.run/codex-relay",
-    );
+    )
+    .module("upstream_health")
+    .package("skiff.run/codex-relay")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "upstream_health", "upstreamStatus"),
@@ -301,16 +301,16 @@ fn nullable_date_compare_keeps_upstream_status_shape_detached() {
 
 #[test]
 fn exact_string_contains_target_is_read_only_detached_and_non_suspending() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function validEmail(value: string) -> bool {
               return value.contains("@")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "account",
-        "skiff.run/account",
-    );
+    )
+    .module("account")
+    .package("skiff.run/account")
+    .analyze();
 
     assert_eq!(effects_in(&model, "account", "validEmail"), no_effects());
     assert!(matches!(
@@ -329,16 +329,16 @@ fn exact_string_contains_target_is_read_only_detached_and_non_suspending() {
 
 #[test]
 fn exact_bytes_to_hex_target_is_read_only_detached_and_non_suspending() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function encode(value: bytes) -> string {
               return value.toHex()
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "raw_parser",
-        "skiff.run/codex-relay",
-    );
+    )
+    .module("raw_parser")
+    .package("skiff.run/codex-relay")
+    .analyze();
 
     assert_eq!(effects_in(&model, "raw_parser", "encode"), no_effects());
     assert!(matches!(
@@ -357,7 +357,7 @@ fn exact_bytes_to_hex_target_is_read_only_detached_and_non_suspending() {
 
 #[test]
 fn exact_json_object_has_target_is_read_only_detached_and_non_suspending() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function jsonObjectField(value: JsonObject, field: string) -> bool {
               return value.has(field)
@@ -367,10 +367,10 @@ fn exact_json_object_has_target_is_read_only_detached_and_non_suspending() {
               return jsonObjectField(value, "Status")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "account",
-        "skiff.run/account",
-    );
+    )
+    .module("account")
+    .package("skiff.run/account")
+    .analyze();
 
     for callable in ["jsonObjectField", "verifyDomainChallenge"] {
         assert_eq!(effects_in(&model, "account", callable), no_effects());
@@ -391,7 +391,7 @@ fn exact_json_object_has_target_is_read_only_detached_and_non_suspending() {
 
 #[test]
 fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receiver() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function deleteCallerField(value: JsonObject, field: string) -> bool {
               return value.delete(field)
@@ -402,10 +402,10 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
               return value.delete("instructions")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "responses_projection",
-        "skiff.run/codex-relay",
-    );
+    )
+    .module("responses_projection")
+    .package("skiff.run/codex-relay")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "responses_projection", "deleteCallerField"),
@@ -436,16 +436,16 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
 
 #[test]
 fn json_object_delete_semantics_do_not_generalize_to_map_delete() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function remove(value: Map<string, string>, key: string) -> bool {
               return value.delete(key)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "map_delete",
-        "skiff.run/map-delete",
-    );
+    )
+    .module("map_delete")
+    .package("skiff.run/map-delete")
+    .analyze();
 
     assert_eq!(effects_in(&model, "map_delete", "remove"), all_effects());
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
@@ -459,7 +459,7 @@ fn json_object_delete_semantics_do_not_generalize_to_map_delete() {
 
 #[test]
 fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detached() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function direct(value: JsonObject, key: string) -> Json {
               return value.get(key)
@@ -484,10 +484,10 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
               return jsonField(payload, "https://api.openai.com/profile")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "chatgpt_plan.codec",
-        "skiff.run/llm-providers",
-    );
+    )
+    .module("chatgpt_plan.codec")
+    .package("skiff.run/llm-providers")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "chatgpt_plan.codec", "direct"),
@@ -533,7 +533,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
 
 #[test]
 fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             type Item { value: string }
 
@@ -546,10 +546,10 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
               return items.get(key)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "responses",
-        "agine.ai/llm-api",
-    );
+    )
+    .module("responses")
+    .package("agine.ai/llm-api")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "responses", "direct"),
@@ -585,7 +585,7 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
 
 #[test]
 fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             type Item { value: string }
 
@@ -603,10 +603,10 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
               return items.has(key)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "responses",
-        "agine.ai/llm-api",
-    );
+    )
+    .module("responses")
+    .package("agine.ai/llm-api")
+    .analyze();
 
     assert_eq!(effects_in(&model, "responses", "inspect"), no_effects());
     assert_eq!(
@@ -644,7 +644,7 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
 
 #[test]
 fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helpers_and_scc() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function add(headers: Array<string>, request: string) -> void {
               headers.push(request)
@@ -670,10 +670,10 @@ fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helper
               recursiveAdd(headers, request, true)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "formal_write",
-        "skiff.run/formal-write",
-    );
+    )
+    .module("formal_write")
+    .package("skiff.run/formal-write")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "formal_write", "freshHeaders"),

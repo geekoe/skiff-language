@@ -124,121 +124,141 @@ pub(super) fn fresh_wrapper_dependency() -> SourceDependencyAnalysisInput {
     .unwrap()
 }
 
-pub(super) fn analyze(
-    source: &str,
-    dependency_analysis: SourceDependencyAnalysisInput,
-) -> PackageSourceModel {
-    analyze_named(
-        source,
-        dependency_analysis,
-        "api",
-        "example.com/effect-test",
-    )
+struct FixtureSource {
+    file_name: String,
+    module_path: String,
+    source: String,
 }
 
-pub(super) fn analyze_result(
-    source: &str,
+pub(super) struct AnalysisFixture {
+    sources: Vec<FixtureSource>,
     dependency_analysis: SourceDependencyAnalysisInput,
-) -> Result<PackageSourceModel, crate::SourceCompileError> {
-    analyze_named_result(
-        source,
-        dependency_analysis,
-        "api",
-        "example.com/effect-test",
-    )
+    package_id: String,
+    package_aliases: BTreeMap<String, Vec<String>>,
+    package_dependencies: Vec<PackageDependency>,
+    package_artifacts: Vec<PackageArtifact>,
 }
 
-pub(super) fn analyze_named(
-    source: &str,
-    dependency_analysis: SourceDependencyAnalysisInput,
-    module_path: &str,
-    package_id: &str,
-) -> PackageSourceModel {
-    analyze_named_result(source, dependency_analysis, module_path, package_id)
-        .expect("source model builds")
-}
+impl AnalysisFixture {
+    pub(super) fn new(source: &str) -> Self {
+        Self {
+            sources: vec![FixtureSource {
+                file_name: "api.skiff".to_string(),
+                module_path: "api".to_string(),
+                source: source.to_string(),
+            }],
+            dependency_analysis: SourceDependencyAnalysisInput::default(),
+            package_id: "example.com/effect-test".to_string(),
+            package_aliases: BTreeMap::new(),
+            package_dependencies: Vec::new(),
+            package_artifacts: Vec::new(),
+        }
+    }
 
-pub(super) fn analyze_named_result(
-    source: &str,
-    dependency_analysis: SourceDependencyAnalysisInput,
-    module_path: &str,
-    package_id: &str,
-) -> Result<PackageSourceModel, crate::SourceCompileError> {
-    analyze_named_result_with_packages(
-        source,
-        dependency_analysis,
-        module_path,
-        package_id,
-        &BTreeMap::new(),
-        &[],
-        None,
-    )
-}
+    pub(super) fn sources(sources: &[(&str, &str)]) -> Self {
+        let mut fixture = Self::new("");
+        fixture.sources = sources
+            .iter()
+            .map(|(module_path, source)| FixtureSource {
+                file_name: format!("{module_path}.skiff"),
+                module_path: (*module_path).to_string(),
+                source: (*source).to_string(),
+            })
+            .collect();
+        fixture.package_id = "skiff.run/effect-test".to_string();
+        fixture
+    }
 
-pub(super) fn analyze_with_dependency_artifact(
-    source: &str,
-    dependency_analysis: SourceDependencyAnalysisInput,
-) -> PackageSourceModel {
-    let mut dependency = PackageDependency::id("example.com/dep");
-    dependency.alias = Some("dep".to_string());
-    let artifact = exact_signature_dependency_artifact();
-    analyze_named_result_with_packages(
-        source,
-        dependency_analysis,
-        "api",
-        "example.com/effect-test",
-        &BTreeMap::from([("dep".to_string(), Vec::new())]),
-        &[dependency],
-        Some(std::slice::from_ref(&artifact)),
-    )
-    .expect("source model with exact dependency artifact builds")
-}
+    pub(super) fn dependency_analysis(
+        mut self,
+        dependency_analysis: SourceDependencyAnalysisInput,
+    ) -> Self {
+        self.dependency_analysis = dependency_analysis;
+        self
+    }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn analyze_named_result_with_packages(
-    source: &str,
-    dependency_analysis: SourceDependencyAnalysisInput,
-    module_path: &str,
-    package_id: &str,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    package_dependencies: &[PackageDependency],
-    package_artifacts: Option<&[PackageArtifact]>,
-) -> Result<PackageSourceModel, crate::SourceCompileError> {
-    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root resolves");
-    let platform_sources =
-        CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
-    initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+    pub(super) fn module(mut self, module_path: &str) -> Self {
+        assert_eq!(self.sources.len(), 1, "module config requires one source");
+        self.sources[0].module_path = module_path.to_string();
+        self
+    }
 
-    let source = CompilerSourceFile::parse(
-        PathBuf::from("api.skiff"),
-        module_path.to_string(),
-        true,
-        false,
-        source.to_string(),
-        "api.skiff",
-    )
-    .expect("fixture parses");
-    let production_sources = vec![source];
-    let parsed_sources =
-        parse_publication_sources(Path::new("/tmp/effect-provenance"), &production_sources)
+    pub(super) fn package(mut self, package_id: &str) -> Self {
+        self.package_id = package_id.to_string();
+        self
+    }
+
+    pub(super) fn package_alias(mut self, alias: &str, modules: Vec<String>) -> Self {
+        self.package_aliases.insert(alias.to_string(), modules);
+        self
+    }
+
+    pub(super) fn package_dependency(mut self, dependency: PackageDependency) -> Self {
+        self.package_dependencies.push(dependency);
+        self
+    }
+
+    pub(super) fn package_artifact(mut self, artifact: PackageArtifact) -> Self {
+        self.package_artifacts.push(artifact);
+        self
+    }
+
+    pub(super) fn exact_signature_dependency(self) -> Self {
+        let mut dependency = PackageDependency::id("example.com/dep");
+        dependency.alias = Some("dep".to_string());
+        self.package_alias("dep", Vec::new())
+            .package_dependency(dependency)
+            .package_artifact(exact_signature_dependency_artifact())
+    }
+
+    pub(super) fn analyze(self) -> PackageSourceModel {
+        self.analyze_result().expect("source model builds")
+    }
+
+    pub(super) fn analyze_result(self) -> Result<PackageSourceModel, crate::SourceCompileError> {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root resolves");
+        let platform_sources =
+            CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+
+        let production_sources = self
+            .sources
+            .into_iter()
+            .map(|source| {
+                CompilerSourceFile::parse(
+                    PathBuf::from(&source.file_name),
+                    source.module_path,
+                    true,
+                    false,
+                    source.source,
+                    source.file_name,
+                )
+                .expect("fixture parses")
+            })
+            .collect::<Vec<_>>();
+        let diagnostic_root = Path::new("/tmp/effect-provenance");
+        let parsed_sources = parse_publication_sources(diagnostic_root, &production_sources)
             .expect("fixture source facts build");
-    build_package_from_parsed_sources_with_dependency_analysis(
-        CompileParsedPackageSourcesInput {
-            parsed_sources,
-            production_sources,
-            diagnostic_root: Path::new("/tmp/effect-provenance"),
-            publication_api: None,
-            package_aliases,
-            package_dependencies,
-            package_facts: None,
-            package_artifacts,
-            policy: PackageCompilePolicy::new(package_id),
-        },
-        &dependency_analysis,
-    )
+        let package_artifacts =
+            (!self.package_artifacts.is_empty()).then_some(self.package_artifacts.as_slice());
+        build_package_from_parsed_sources_with_dependency_analysis(
+            CompileParsedPackageSourcesInput {
+                parsed_sources,
+                production_sources,
+                diagnostic_root,
+                publication_api: None,
+                package_aliases: &self.package_aliases,
+                package_dependencies: &self.package_dependencies,
+                package_facts: None,
+                package_artifacts,
+                policy: PackageCompilePolicy::new(&self.package_id),
+            },
+            &self.dependency_analysis,
+        )
+    }
 }
 
 pub(super) fn exact_signature_dependency_artifact() -> PackageArtifact {
@@ -269,56 +289,6 @@ pub(super) fn exact_signature_dependency_artifact() -> PackageArtifact {
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
     }
-}
-
-pub(super) fn analyze_sources(sources: &[(&str, &str)]) -> PackageSourceModel {
-    analyze_sources_result(sources).expect("multi-source model builds")
-}
-
-pub(super) fn analyze_sources_result(
-    sources: &[(&str, &str)],
-) -> Result<PackageSourceModel, crate::SourceCompileError> {
-    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root resolves");
-    let platform_sources =
-        CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
-    initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
-
-    let production_sources = sources
-        .iter()
-        .map(|(module_path, source)| {
-            CompilerSourceFile::parse(
-                PathBuf::from(format!("{module_path}.skiff")),
-                (*module_path).to_string(),
-                true,
-                false,
-                (*source).to_string(),
-                format!("{module_path}.skiff"),
-            )
-            .expect("fixture parses")
-        })
-        .collect::<Vec<_>>();
-    let parsed_sources =
-        parse_publication_sources(Path::new("/tmp/effect-provenance"), &production_sources)
-            .expect("fixture source facts build");
-    let package_aliases = BTreeMap::new();
-    let package_dependencies = Vec::new();
-    build_package_from_parsed_sources_with_dependency_analysis(
-        CompileParsedPackageSourcesInput {
-            parsed_sources,
-            production_sources,
-            diagnostic_root: Path::new("/tmp/effect-provenance"),
-            publication_api: None,
-            package_aliases: &package_aliases,
-            package_dependencies: &package_dependencies,
-            package_facts: None,
-            package_artifacts: None,
-            policy: PackageCompilePolicy::new("skiff.run/effect-test"),
-        },
-        &SourceDependencyAnalysisInput::default(),
-    )
 }
 
 pub(super) fn effects(model: &PackageSourceModel, symbol: &str) -> CallableMayEffects {

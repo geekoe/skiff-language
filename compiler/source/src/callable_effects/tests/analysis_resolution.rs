@@ -24,13 +24,13 @@ fn analysis_pending_is_an_explicit_diagnostic_seed_not_the_production_default() 
         })
     ));
 
-    let production = analyze(source_text, SourceDependencyAnalysisInput::default());
+    let production = AnalysisFixture::new(source_text).analyze();
     assert_eq!(effects(&production, "run"), no_effects());
 }
 
 #[test]
 fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Input { value: string }
             type Output { value: string }
@@ -43,8 +43,8 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
               return detach(input)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["detach", "wrapper"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
@@ -66,7 +66,7 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
 
 #[test]
 fn nested_local_calls_preserve_exact_effects_and_provenance() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Input { value: string }
             type Middle { value: string }
@@ -118,8 +118,8 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
               return provider.outer(inner(input))
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["nested", "nestedRecordField", "nestedCollectionElement"] {
         assert_eq!(
@@ -164,7 +164,7 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
 
 #[test]
 fn module_constant_return_keeps_exact_constant_provenance_through_local_call() {
-    let model = analyze_sources(&[
+    let model = AnalysisFixture::sources(&[
         (
             "model",
             r#"
@@ -185,7 +185,8 @@ fn module_constant_return_keeps_exact_constant_provenance_through_local_call() {
                 }
             "#,
         ),
-    ]);
+    ])
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "model", "upstreamKindApiKey"),
@@ -215,7 +216,7 @@ fn module_constant_return_keeps_exact_constant_provenance_through_local_call() {
 
 #[test]
 fn unsupported_and_cyclic_module_constants_remain_fail_closed() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             function compute() -> string { return "computed" }
 
@@ -226,8 +227,8 @@ fn unsupported_and_cyclic_module_constants_remain_fail_closed() {
             function unsupportedValue() -> string { return UNSUPPORTED }
             function cyclicValue() -> string { return CYCLE_A }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["unsupportedValue", "cyclicValue"] {
         assert!(effects(&model, callable).returns_caller_alias, "{callable}");
@@ -243,11 +244,10 @@ fn unsupported_and_cyclic_module_constants_remain_fail_closed() {
 
 #[test]
 fn unresolved_global_and_non_constant_zero_arg_return_are_not_constant_shortcuts() {
-    let unresolved = analyze_result(
-        "function unresolved() -> string { return MISSING_GLOBAL }",
-        SourceDependencyAnalysisInput::default(),
-    )
-    .expect("source analysis retains a fail-closed callable summary");
+    let unresolved =
+        AnalysisFixture::new("function unresolved() -> string { return MISSING_GLOBAL }")
+            .analyze_result()
+            .expect("source analysis retains a fail-closed callable summary");
     assert!(effects(&unresolved, "unresolved").returns_caller_alias);
     assert_eq!(
         provenance(&unresolved, "unresolved"),
@@ -256,14 +256,14 @@ fn unresolved_global_and_non_constant_zero_arg_return_are_not_constant_shortcuts
         }
     );
 
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
             function freshValue() -> Boxed { return Boxed { value: "fresh" } }
             function wrapper() -> Boxed { return freshValue() }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
     assert_eq!(effects(&model, "wrapper"), no_effects());
     let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "wrapper")
     else {
@@ -277,7 +277,7 @@ fn unresolved_global_and_non_constant_zero_arg_return_are_not_constant_shortcuts
 
 #[test]
 fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Input { value: string }
             type Output { value: string }
@@ -297,8 +297,8 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
               return null
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["rootWrapper", "catchWrapper"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
@@ -311,7 +311,7 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
 
 #[test]
 fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
             type Failure = string
@@ -364,8 +364,8 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
               return attempted.value == null
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["okEq", "okNeEarly", "nested"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
@@ -405,7 +405,7 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
 
 #[test]
 fn typed_catch_does_not_sanitize_unknown_success_provenance() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
             type Failure = string
@@ -420,8 +420,8 @@ fn typed_catch_does_not_sanitize_unknown_success_provenance() {
               return attempted.value
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert!(effects(&model, "unknown").invokes_unknown_target);
     assert!(matches!(
@@ -434,7 +434,7 @@ fn typed_catch_does_not_sanitize_unknown_success_provenance() {
 
 #[test]
 fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
-    let model = analyze_sources(&[
+    let model = AnalysisFixture::sources(&[
         (
             "relay",
             r#"
@@ -454,7 +454,8 @@ fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
                 }
             "#,
         ),
-    ]);
+    ])
+    .analyze();
 
     assert_eq!(effects_in(&model, "relay", "handler"), no_effects());
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
@@ -470,7 +471,7 @@ fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
 
 #[test]
 fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
-    let model = analyze_sources(&[
+    let model = AnalysisFixture::sources(&[
         (
             "entry",
             r#"
@@ -557,7 +558,8 @@ fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
                 }
             "#,
         ),
-    ]);
+    ])
+    .analyze();
 
     for (module, symbol) in [
         ("effects", "returnPayload"),
@@ -646,7 +648,7 @@ fn missing_and_ambiguous_cross_file_targets_remain_fail_closed() {
         "{missing}"
     );
 
-    let ambiguous = analyze_sources_result(&[
+    let ambiguous = AnalysisFixture::sources(&[
         (
             "entry",
             r#"
@@ -658,6 +660,7 @@ fn missing_and_ambiguous_cross_file_targets_remain_fail_closed() {
         ("helpers", "function run() -> void {}"),
         ("helpers", "function run() -> void {}"),
     ])
+    .analyze_result()
     .expect_err("an ambiguous publication target must not produce callable facts");
     assert!(
         ambiguous
@@ -669,7 +672,7 @@ fn missing_and_ambiguous_cross_file_targets_remain_fail_closed() {
 
 #[test]
 fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             interface Provider {
               function read(self: Self, value: string) -> string
@@ -687,8 +690,8 @@ fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
               return provider.read(value)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "wrapper"), no_effects());
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
@@ -704,7 +707,7 @@ fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
 
 #[test]
 fn generic_local_receiver_call_target_carries_exact_receiver_instantiation() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Box<T> { value: T }
 
@@ -718,8 +721,8 @@ fn generic_local_receiver_call_target_carries_exact_receiver_instantiation() {
               return box.unwrap()
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
@@ -736,7 +739,7 @@ fn generic_local_receiver_call_target_carries_exact_receiver_instantiation() {
 
 #[test]
 fn interface_conformance_accepts_non_suspending_and_suspending_implementations() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             interface Runner {
               function run(self: Self) -> void
@@ -755,8 +758,8 @@ fn interface_conformance_accepts_non_suspending_and_suspending_implementations()
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(model.interface_signatures().conformances().count(), 2);
     assert!(!effects(&model, "Immediate.run").may_suspend);
@@ -765,7 +768,7 @@ fn interface_conformance_accepts_non_suspending_and_suspending_implementations()
 
 #[test]
 fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Worker {
               id: string,
@@ -791,8 +794,8 @@ fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
               return worker.handle(value)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "wrapper"), no_effects());
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
@@ -812,7 +815,7 @@ fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
 
 #[test]
 fn ordinary_receiver_call_does_not_use_actor_method_target() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Worker { label: string }
 
@@ -826,8 +829,8 @@ fn ordinary_receiver_call_does_not_use_actor_method_target() {
               return worker.handle(value)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
@@ -846,7 +849,7 @@ fn ordinary_receiver_call_does_not_use_actor_method_target() {
 
 #[test]
 fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
             interface Provider {
@@ -887,10 +890,10 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
               return items.push("value")
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "std.effect_test",
-        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
-    );
+    )
+    .module("std.effect_test")
+    .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
+    .analyze();
 
     for callable in [
         "customNative",

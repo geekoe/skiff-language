@@ -2,7 +2,7 @@ use super::support::*;
 
 #[test]
 fn normal_return_and_wire_detached_throw_remain_independent() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
 
@@ -14,8 +14,8 @@ fn normal_return_and_wire_detached_throw_remain_independent() {
               throw input
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     let returned = effects(&model, "returnAlias");
     assert!(returned.returns_caller_alias);
@@ -32,7 +32,7 @@ fn normal_return_and_wire_detached_throw_remain_independent() {
 
 #[test]
 fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Boxed { value: string }
             type Failure { message: string }
@@ -73,8 +73,8 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in [
         "throwStatement",
@@ -107,7 +107,7 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
 
 #[test]
 fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             interface Provider {
               function name(self: Self) -> string
@@ -145,8 +145,8 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
               const boxed = input as Provider
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_escape_lane(&model, "stream", ValueEscapeLane::Stream);
     assert_escape_lane(&model, "scalarStream", ValueEscapeLane::Stream);
@@ -162,7 +162,7 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
 
 #[test]
 fn database_queries_and_detached_writes_do_not_escape_caller_values() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Payload { value: string }
             type Stored { id: string, payload: Payload }
@@ -192,8 +192,8 @@ fn database_queries_and_detached_writes_do_not_escape_caller_values() {
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["read", "history", "put", "compareAndSet"] {
         assert_eq!(
@@ -216,7 +216,7 @@ fn database_queries_and_detached_writes_do_not_escape_caller_values() {
 
 #[test]
 fn persisting_caller_owned_mutable_values_remains_a_database_escape() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Payload { value: string }
             type Stored { id: string, payload: Payload }
@@ -233,8 +233,8 @@ fn persisting_caller_owned_mutable_values_remains_a_database_escape() {
               return db update Stored(id) { payload = payload }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     for callable in ["insertOwned", "replaceOwned"] {
         let callable_effects = effects(&model, callable);
@@ -246,7 +246,7 @@ fn persisting_caller_owned_mutable_values_remains_a_database_escape() {
 
 #[test]
 fn database_value_transactions_transfer_the_exact_final_value() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             type Pointer { target: string }
             type Input { pointer: Pointer }
@@ -265,8 +265,8 @@ fn database_value_transactions_transfer_the_exact_final_value() {
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     let receipt = effects(&model, "receipt");
     assert!(receipt.may_suspend);
@@ -299,7 +299,7 @@ fn database_value_transactions_transfer_the_exact_final_value() {
 
 #[test]
 fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_values() {
-    let model = analyze(
+    let model = AnalysisFixture::new(
         r#"
             interface Provider {
               function value(self: Self) -> string
@@ -345,8 +345,8 @@ fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_val
               }
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-    );
+    )
+    .analyze();
 
     assert_eq!(effects(&model, "projected"), suspend_only_effects());
     let direct = effects(&model, "direct");
@@ -368,7 +368,7 @@ fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_val
 
 #[test]
 fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers_and_scc() {
-    let model = analyze_named(
+    let model = AnalysisFixture::new(
         r#"
             function forward(stream: bytes, state: JsonObject) -> void {
               emit(stream)
@@ -394,10 +394,10 @@ fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers
               recursiveForward(stream, state, true)
             }
         "#,
-        SourceDependencyAnalysisInput::default(),
-        "formal_escape",
-        "skiff.run/formal-escape",
-    );
+    )
+    .module("formal_escape")
+    .package("skiff.run/formal-escape")
+    .analyze();
 
     assert_eq!(
         effects_in(&model, "formal_escape", "freshStream"),
