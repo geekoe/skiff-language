@@ -29,6 +29,7 @@ fn exports_with_descriptor(descriptor: Option<TypeDescriptorIr>) -> ProjectedPac
                     descriptor,
                     type_params: Vec::new(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )]),
             ..PackageExportIndex::default()
@@ -196,6 +197,7 @@ fn package_schema_public_generic_declaration_kinds_are_uniformly_omitted() {
         descriptor: Some(descriptor),
         type_params,
         interface_methods: Vec::new(),
+        actor: None,
     };
     let mut interface = export(
         3,
@@ -363,6 +365,7 @@ fn package_schema_transitive_generic_owners_are_omitted_as_a_whole() {
                         }),
                         type_params: vec!["T".to_string()],
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -377,6 +380,7 @@ fn package_schema_transitive_generic_owners_are_omitted_as_a_whole() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -402,6 +406,7 @@ fn package_schema_transitive_generic_owners_are_omitted_as_a_whole() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -418,6 +423,7 @@ fn package_schema_transitive_generic_owners_are_omitted_as_a_whole() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -435,6 +441,7 @@ fn package_schema_transitive_generic_owners_are_omitted_as_a_whole() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
             ]),
@@ -616,6 +623,7 @@ fn record_field_contains_expanded_literal_alias_without_alias_schema() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -635,6 +643,7 @@ fn record_field_contains_expanded_literal_alias_without_alias_schema() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
             ]),
@@ -717,6 +726,7 @@ fn stream_and_actor_handle_exports_do_not_create_schema_records() {
                         descriptor: None,
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -739,6 +749,7 @@ fn stream_and_actor_handle_exports_do_not_create_schema_records() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
             ]),

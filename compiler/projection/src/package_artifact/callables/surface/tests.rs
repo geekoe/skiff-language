@@ -54,6 +54,7 @@ fn package_schema_public_generic_local_abi_keeps_declaration_kinds_and_named_bra
         descriptor: Some(descriptor),
         type_params,
         interface_methods: Vec::new(),
+        actor: None,
     };
     let interface_methods = vec![skiff_artifact_model::InterfaceMethodSignature {
         name: "read".to_string(),

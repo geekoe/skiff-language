@@ -297,6 +297,7 @@ fn convert_callable_to_public_instance_method(fixture: &mut ProjectionFixture) {
                 is_interface: false,
                 type_params: Vec::new(),
                 interface_methods: Vec::new(),
+                actor: None,
             },
         );
     fixture
@@ -315,6 +316,7 @@ fn convert_callable_to_public_instance_method(fixture: &mut ProjectionFixture) {
                 is_interface: true,
                 type_params: Vec::new(),
                 interface_methods: vec![interface_method.clone()],
+                actor: None,
             },
         );
     let source_constant_path = format!("{module_path}.worker");
@@ -347,6 +349,7 @@ fn convert_callable_to_public_instance_method(fixture: &mut ProjectionFixture) {
             }),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     fixture.implementation.implementation_links.types.insert(
@@ -359,6 +362,7 @@ fn convert_callable_to_public_instance_method(fixture: &mut ProjectionFixture) {
             descriptor: Some(TypeDescriptorIr::Interface),
             type_params: Vec::new(),
             interface_methods: vec![interface_method],
+            actor: None,
         },
     );
     fixture

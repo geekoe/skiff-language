@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    ConstDeclarationIr, ConstExport, ConstIr, ContractOperationId, ContractRequirement,
-    ExecutableBody, ExecutableDeclarationIr, ExecutableExport, ExecutableIr, ExecutableKind,
-    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
-    PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
-    PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ParamIr, ServiceCallRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, SlotLayout, TypeDeclIr,
-    TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+    ActorAbiIdentity, ActorAbiInput, ActorCreateImplementationIr, ActorCreateSignatureIr,
+    ActorDeclarationIr, ActorFieldIr, ActorImplementationIdentity, ActorMethodIdentity,
+    ActorPublicMethodIr, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+    CallableSemanticFacts, ConstDeclarationIr, ConstExport, ConstIr, ContractOperationId,
+    ContractRequirement, ExecutableBody, ExecutableDeclarationIr, ExecutableExport, ExecutableIr,
+    ExecutableKind, ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
+    InterfaceDeclIr, InterfaceOperationIr, PackageCallableParameter, PackageCallableSignature,
+    PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr,
+    PackageRequirement, PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ParamIr,
+    ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, SlotLayout,
+    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -18,9 +21,10 @@ use skiff_compiler_projection_input::{
 use crate::package_artifact::{
     api_exports::{PackageExportPublicInstance, PackageExportSymbol, PackageExports},
     export_links::{
-        PackagePublicInstanceExecutionLink, PackagePublicInstanceMethodExecutionLink,
-        ProjectedPackageExportLinks,
+        project_package_export_links, PackagePublicInstanceExecutionLink,
+        PackagePublicInstanceMethodExecutionLink, ProjectedPackageExportLinks,
     },
+    model::PackageExportLinkProjectionInput,
     projection::{project_package_artifact_facts, ProjectedPackageFacts},
 };
 
@@ -57,6 +61,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
                 }),
                 type_params: Vec::new(),
                 interface_methods: Vec::new(),
+                actor: None,
             },
         )]),
         constants: BTreeMap::from([(
@@ -515,6 +520,133 @@ pub(super) fn callable_id(
         panic!("{path} must be a callable");
     };
     callable_id.clone()
+}
+
+pub(super) fn project_actor_fixture(
+) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
+    let package_id = "example.actor.pkg";
+    let read_identity = ActorMethodIdentity::new("skiff-actor-method-v1:sha256:read");
+    let create_identity = ActorMethodIdentity::new("skiff-actor-method-v1:sha256:create");
+    let mut unit = FileIrUnit::empty("thread_actor", "source-hash");
+    unit.file_ir_identity = "file-ir:thread_actor".to_string();
+    unit.type_table.push(TypeDeclIr {
+        name: "ThreadActor".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("u64")),
+                ("label".to_string(), TypeRefIr::builtin("string")),
+            ]),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    unit.declarations.types.insert(
+        "ThreadActor".to_string(),
+        TypeDeclarationIr {
+            type_index: 0,
+            symbol: "thread_actor.ThreadActor".to_string(),
+            source_span: None,
+        },
+    );
+    unit.link_targets.types.insert(
+        "ThreadActor".to_string(),
+        skiff_artifact_model::TypeLinkTargetIr { type_index: 0 },
+    );
+    unit.actor_declarations.push(ActorDeclarationIr {
+        actor_abi_identity: ActorAbiIdentity::new("skiff-actor-abi-v1:sha256:thread-actor"),
+        actor_implementation_identity: ActorImplementationIdentity::new(
+            "skiff-actor-implementation-v1:sha256:thread-actor",
+        ),
+        abi: ActorAbiInput {
+            actor_name: "ThreadActor".to_string(),
+            actor_id_type: TypeRefIr::builtin("u64"),
+            key_field: "id".to_string(),
+            fields: vec![
+                ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("u64"),
+                    encoding: skiff_artifact_model::ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                ActorFieldIr {
+                    name: "label".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: skiff_artifact_model::ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: Some(ActorCreateSignatureIr {
+                parameters: vec![FunctionTypeParamIr {
+                    name: "label".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                }],
+            }),
+            public_methods: vec![ActorPublicMethodIr {
+                method_identity: read_identity.clone(),
+                name: "read".to_string(),
+                parameters: Vec::new(),
+                return_type: TypeRefIr::builtin("string"),
+                may_suspend: false,
+            }],
+            actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        },
+        method_implementations: BTreeMap::from([(read_identity, 0)]),
+        create_implementation: Some(ActorCreateImplementationIr {
+            identity: create_identity,
+            executable_index: 1,
+        }),
+    });
+    let api_exports = PackageExports {
+        entries: Vec::new(),
+        symbols: BTreeMap::from([(
+            "ThreadActor".to_string(),
+            PackageExportSymbol {
+                module: "thread_actor".to_string(),
+                symbol: "ThreadActor".to_string(),
+            },
+        )]),
+        public_instances: Vec::new(),
+    };
+    let file_ir_units = vec![unit];
+    let export_links = project_package_export_links(
+        &PackageExportLinkProjectionInput {
+            package_id,
+            exports: &api_exports,
+            file_ir_units: &file_ir_units,
+        },
+        &[],
+    )?;
+    let schema_types = BTreeMap::new();
+    let schema_index = skiff_artifact_model::PackageSchemaIndex {
+        package_id: package_id.to_string(),
+        package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+            package_id,
+            &schema_types,
+        )
+        .unwrap(),
+        types: schema_types,
+    };
+    let signatures = ProjectionPackageCallableSignatureFacts::try_from_entries(Vec::new()).unwrap();
+    Ok(project_package_artifact_facts(ProjectedPackageFacts {
+        package_id,
+        package_version: "1.0.0",
+        api_exports: &api_exports,
+        export_links,
+        file_ir_units,
+        resources: Vec::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
+        callable_semantic_facts: BTreeMap::new(),
+        callable_signatures: signatures,
+        package_schema_index: schema_index,
+        package_schema_type_records: BTreeMap::new(),
+        resolved_package_schema_type_records: BTreeMap::new(),
+        package_schema_refs_by_source: BTreeMap::new(),
+        resolved_package_schemas: &[],
+        service_call_refs: Vec::new(),
+    })?
+    .artifact)
 }
 
 fn file_ref() -> FileIrRef {

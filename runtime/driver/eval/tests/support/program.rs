@@ -214,6 +214,7 @@ pub(crate) fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
             is_interface: false,
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     std_package.implementation_links.types.insert(
@@ -226,6 +227,7 @@ pub(crate) fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
             descriptor: None,
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     program.packages.push(

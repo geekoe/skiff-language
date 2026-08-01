@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature,
-    NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageCallableSignature,
-    PackageLocalAbiSymbol, PackageTypeRef, PublicationResourceRef, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    NominalTypeRefBaseIr, OperationCallableKind, PackageActorAbi, PackageArtifact,
+    PackageCallableSignature, PackageLocalAbiSymbol, PackageTypeRef, PublicationResourceRef,
+    TypeDescriptorIr, TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -163,8 +163,11 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             }
             PackageLocalAbiSymbol::Type {
                 descriptor,
+                is_alias,
+                is_interface,
                 type_params,
                 interface_methods,
+                actor,
                 ..
             } => {
                 validate_type_descriptor(
@@ -177,6 +180,22 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                     type_params,
                     &format!("public type {public_path}"),
                 )?;
+                if let Some(actor) = actor {
+                    if *is_alias
+                        || *is_interface
+                        || !matches!(descriptor, TypeDescriptorIr::Record { .. })
+                    {
+                        return invalid_artifact(format!(
+                            "public actor {public_path} must attach to a nominal record declaration"
+                        ));
+                    }
+                    validate_actor_abi(
+                        public_path,
+                        "public",
+                        actor,
+                        artifact.implementation_links.types.get(public_path),
+                    )?;
+                }
             }
             PackageLocalAbiSymbol::PublicInstance {
                 instance_id,
@@ -243,10 +262,11 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
             PackageLocalAbiSymbol::Type {
                 local_type_id,
                 descriptor,
-                is_alias: _,
+                is_alias,
                 is_interface,
                 type_params,
                 interface_methods,
+                actor,
             } => {
                 validate_type_descriptor(
                     descriptor,
@@ -276,6 +296,17 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
                     return invalid_artifact(format!(
                         "package implementation type {source_path} descriptor/signature disagrees with its link"
                     ));
+                }
+                if let Some(actor) = actor {
+                    if *is_alias
+                        || *is_interface
+                        || !matches!(descriptor, TypeDescriptorIr::Record { .. })
+                    {
+                        return invalid_artifact(format!(
+                            "implementation actor {source_path} must attach to a nominal record declaration"
+                        ));
+                    }
+                    validate_actor_abi(source_path, "implementation", actor, Some(link))?;
                 }
             }
             PackageLocalAbiSymbol::Constant { const_id, ty } => {
@@ -368,6 +399,85 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
     }
     validate_public_callable_link_kinds(artifact, &public_callables, &implementation_callables)?;
     validate_implementation_link_type_refs(artifact)?;
+    Ok(())
+}
+
+fn validate_actor_abi(
+    path: &str,
+    surface: &str,
+    actor: &PackageActorAbi,
+    link: Option<&TypeExport>,
+) -> Result<()> {
+    let abi = &actor.abi;
+    if abi.actor_runtime_abi_version != skiff_artifact_model::ACTOR_RUNTIME_ABI_VERSION_V1 {
+        return invalid_artifact(format!(
+            "{surface} actor {path} has unsupported actorRuntimeAbiVersion {}",
+            abi.actor_runtime_abi_version
+        ));
+    }
+    if abi.actor_name.trim().is_empty() || abi.key_field.trim().is_empty() {
+        return invalid_artifact(format!(
+            "{surface} actor {path} has an empty actor name or key field"
+        ));
+    }
+    let Some(key_field) = abi.fields.iter().find(|field| field.name == abi.key_field) else {
+        return invalid_artifact(format!(
+            "{surface} actor {path} key field {} is absent from fields",
+            abi.key_field
+        ));
+    };
+    if key_field.ty != abi.actor_id_type {
+        return invalid_artifact(format!(
+            "{surface} actor {path} actorIdType must exactly match the key field type"
+        ));
+    }
+    let mut field_names = BTreeSet::new();
+    for field in &abi.fields {
+        if !field_names.insert(field.name.as_str()) {
+            return invalid_artifact(format!(
+                "{surface} actor {path} has duplicate field {}",
+                field.name
+            ));
+        }
+    }
+    let mut method_names = BTreeSet::new();
+    let mut method_identities = BTreeSet::new();
+    for method in &abi.public_methods {
+        if method.name == "create" {
+            return invalid_artifact(format!(
+                "{surface} actor {path} public method must not be named create"
+            ));
+        }
+        if !method_names.insert(method.name.as_str())
+            || !method_identities.insert(method.method_identity.as_str())
+        {
+            return invalid_artifact(format!(
+                "{surface} actor {path} has duplicate public method {}",
+                method.name
+            ));
+        }
+    }
+    if let Some(create) = abi.create.as_ref() {
+        let mut create_names = BTreeSet::new();
+        for parameter in &create.parameters {
+            if !create_names.insert(parameter.name.as_str()) {
+                return invalid_artifact(format!(
+                    "{surface} actor {path} has duplicate create parameter {}",
+                    parameter.name
+                ));
+            }
+        }
+    }
+    if link.is_none() {
+        return invalid_artifact(format!(
+            "{surface} actor {path} has no exact implementation link"
+        ));
+    }
+    if link.is_some_and(|link| link.actor.is_none()) {
+        return invalid_artifact(format!(
+            "{surface} actor {path} implementation link carries no actor declaration"
+        ));
+    }
     Ok(())
 }
 

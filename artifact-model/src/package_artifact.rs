@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    actor_declaration::{ActorAbiIdentity, ActorAbiInput},
     boundary::{BoundaryCallableProjection, CallableSemanticFacts},
     compile_identity::{
         PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageSchemaTypeId,
@@ -35,6 +36,17 @@ pub struct PackageCallableSignature {
     pub may_suspend: bool,
 }
 
+/// Actor facts projected from a `FileIrUnit.actor_declarations` entry onto the
+/// attached nominal type. The ABI identity is carried verbatim from the
+/// lowered declaration; the `abi` shape is normalized to the owning package's
+/// artifact view so dependents can resolve actor key/create/method surfaces.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageActorAbi {
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub abi: ActorAbiInput,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -56,6 +68,8 @@ pub enum PackageLocalAbiSymbol {
         type_params: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         interface_methods: Vec<InterfaceMethodSignature>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<PackageActorAbi>,
     },
     Callable {
         callable_id: PackageCallableId,

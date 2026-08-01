@@ -12,6 +12,7 @@ use crate::{
     publication_abi::OperationAbiRef,
     refs::FileIrRef,
     types::{FunctionTypeParamIr, TypeDescriptorIr, TypeRefIr},
+    PackageActorAbi,
 };
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -97,6 +98,8 @@ pub struct TypeExport {
     pub type_params: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interface_methods: Vec<InterfaceMethodSignature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<PackageActorAbi>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

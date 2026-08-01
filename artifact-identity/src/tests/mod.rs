@@ -11,7 +11,7 @@ fn current_identity_generations_are_atomic() {
     assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v11:sha256");
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-build-identity-v8"
+        "skiff-package-artifact-build-identity-v9"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
@@ -19,7 +19,7 @@ fn current_identity_generations_are_atomic() {
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-local-abi-identity-v5"
+        "skiff-package-artifact-local-abi-identity-v6"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,

@@ -246,6 +246,7 @@ fn resolves_package_dependency_and_records_nominal_trace() {
             descriptor: Some(package_file.type_table[0].descriptor.clone()),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     let package_source = PackageTypeSource {

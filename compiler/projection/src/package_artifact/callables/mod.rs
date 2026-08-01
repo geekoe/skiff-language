@@ -21,7 +21,7 @@ use crate::{
     package_artifact::{api_exports::PackageExports, export_links::ProjectedPackageExportLinks},
 };
 
-use super::boundary::project_boundary_callable_with_package_schemas;
+use super::{actor::project_actor_abi, boundary::project_boundary_callable_with_package_schemas};
 
 pub(super) struct ProjectedPackageCallableSurface {
     pub public_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
@@ -422,6 +422,27 @@ fn project_implementation_types(
                 )
             })?;
         let source_path = format!("{}.{}", unit.module_path, name);
+        let actor = unit
+            .actor_declarations
+            .iter()
+            .find(|declaration| declaration.abi.actor_name == *name)
+            .map(|declaration| {
+                project_actor_abi(declaration, |ty| {
+                    normalization::normalize_implementation_type(
+                        package_id,
+                        &unit.module_path,
+                        ty,
+                        units,
+                    )
+                    .map_err(|message| {
+                        projection_error(
+                            package_id,
+                            format!("implementation actor {source_path} type: {message}"),
+                        )
+                    })
+                })
+            })
+            .transpose()?;
         let descriptor = normalization::normalize_implementation_descriptor(
             package_id,
             &unit.module_path,
@@ -529,6 +550,7 @@ fn project_implementation_types(
                 is_interface: interface.is_some(),
                 type_params: ty.type_params.clone(),
                 interface_methods: interface_methods.clone(),
+                actor: actor.clone(),
             },
             package_id,
         )?;
@@ -540,6 +562,7 @@ fn project_implementation_types(
             descriptor: Some(descriptor),
             type_params: ty.type_params.clone(),
             interface_methods,
+            actor,
         };
         if let Some(existing) = links.types.get(&source_path) {
             if existing.file != link.file || existing.type_index != link.type_index {

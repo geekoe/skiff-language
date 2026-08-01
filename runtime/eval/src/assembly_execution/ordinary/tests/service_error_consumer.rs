@@ -1145,6 +1145,7 @@ fn provider_package(
                     descriptor: Some(file.type_table[*index as usize].descriptor.clone()),
                     type_params: Vec::new(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )
         })
@@ -1432,6 +1433,7 @@ fn std_package() -> PackageFixture {
                     descriptor: Some(descriptor.clone()),
                     type_params: Vec::new(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )
         })
@@ -1448,6 +1450,7 @@ fn std_package() -> PackageFixture {
                     is_interface: false,
                     type_params: Vec::new(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )
         })

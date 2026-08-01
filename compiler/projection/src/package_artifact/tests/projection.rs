@@ -13,16 +13,96 @@ use skiff_artifact_model::{
 };
 
 use super::fixtures::{
-    callable_id, exact_typed_signature, project_fixture, project_fixture_with_runtime_requirements,
-    runtime_requirements, SignatureSet,
+    callable_id, exact_typed_signature, project_actor_fixture, project_fixture,
+    project_fixture_with_runtime_requirements, runtime_requirements, SignatureSet,
 };
+
+#[test]
+fn package_actor_declarations_project_into_local_abi_and_links() {
+    let artifact = project_actor_fixture().unwrap();
+    validate_package_artifact_identities(&artifact).unwrap();
+    let PackageLocalAbiSymbol::Type {
+        actor: public_actor,
+        ..
+    } = &artifact.package_local_abi.public_symbols["ThreadActor"]
+    else {
+        panic!("public actor type must remain a typed package-local declaration");
+    };
+    let public_actor = public_actor
+        .as_ref()
+        .expect("public actor type must carry actor metadata, not a plain record");
+    assert_eq!(public_actor.abi.actor_name, "ThreadActor");
+    assert_eq!(public_actor.abi.key_field, "id");
+    assert_eq!(
+        public_actor.abi.actor_id_type,
+        skiff_artifact_model::TypeRefIr::builtin("u64")
+    );
+    assert_eq!(
+        public_actor
+            .abi
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["id", "label"]
+    );
+    let create = public_actor
+        .abi
+        .create
+        .as_ref()
+        .expect("actor create signature must project");
+    assert_eq!(create.parameters.len(), 1);
+    assert_eq!(create.parameters[0].name, "label");
+    assert_eq!(public_actor.abi.public_methods.len(), 1);
+    assert_eq!(public_actor.abi.public_methods[0].name, "read");
+    assert_eq!(
+        public_actor.abi.public_methods[0].return_type,
+        skiff_artifact_model::TypeRefIr::builtin("string")
+    );
+    assert_eq!(
+        public_actor.actor_abi_identity.as_str(),
+        "skiff-actor-abi-v1:sha256:thread-actor"
+    );
+    assert_eq!(
+        artifact.implementation_links.types["ThreadActor"]
+            .actor
+            .as_ref(),
+        Some(public_actor)
+    );
+
+    let PackageLocalAbiSymbol::Type {
+        actor: implementation_actor,
+        ..
+    } = &artifact.package_local_abi.implementation_symbols["thread_actor.ThreadActor"]
+    else {
+        panic!("implementation actor type must remain a typed package-local declaration");
+    };
+    let implementation_actor = implementation_actor
+        .as_ref()
+        .expect("implementation actor type must carry actor metadata");
+    assert_eq!(implementation_actor.abi.key_field, "id");
+    assert_eq!(
+        artifact.implementation_links.types["thread_actor.ThreadActor"]
+            .actor
+            .as_ref(),
+        Some(implementation_actor)
+    );
+
+    let wire = serde_json::to_string(&artifact).unwrap();
+    assert!(
+        wire.contains("\"actor\":{"),
+        "artifact wire must carry actor metadata"
+    );
+    assert!(wire.contains("\"actorName\":\"ThreadActor\""));
+    assert!(wire.contains("\"keyField\":\"id\""));
+}
 
 #[test]
 fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete).unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(artifact.schema_version, "skiff-package-artifact-v9");
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v10");
     assert!(artifact
         .package_build_id
         .as_str()
@@ -30,12 +110,12 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     assert_eq!(
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
             .unwrap()["schema"],
-        "skiff-package-artifact-build-identity-v8"
+        "skiff-package-artifact-build-identity-v9"
     );
     assert_eq!(
         serde_json::to_value(package_artifact_local_abi_identity_projection(&artifact).unwrap())
             .unwrap()["schema"],
-        "skiff-package-artifact-local-abi-identity-v5"
+        "skiff-package-artifact-local-abi-identity-v6"
     );
 
     let callable_paths = artifact

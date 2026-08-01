@@ -6,7 +6,13 @@ use crate::{
     source_graph::CompilerSourceFile,
     ExpressionSourceMap, PublicationTypeSymbolIndex,
 };
-use skiff_artifact_model::{InterfaceDeclIr, InterfaceOperationIr, TypeDeclIr, TypeDeclarationIr};
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorCreateSignatureIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorMethodIdentity, ActorPublicMethodIr, FileIrRef, InterfaceDeclIr, InterfaceOperationIr,
+    PackageImplementationLinks, PackageLocalAbi, PackageRuntimeRequirements,
+    PackageSchemaIndexIdentity, PackageSchemaIndexRef, TypeDeclIr, TypeDeclarationIr, TypeExport,
+    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+};
 
 use super::*;
 
@@ -559,6 +565,7 @@ fn signature_rehydration_artifact() -> PackageArtifact {
         is_interface: false,
         type_params: Vec::new(),
         interface_methods: Vec::new(),
+        actor: None,
     };
     let type_export = |type_index, symbol: &str| TypeExport {
         file: file.clone(),
@@ -568,9 +575,10 @@ fn signature_rehydration_artifact() -> PackageArtifact {
         descriptor: Some(descriptor.clone()),
         type_params: Vec::new(),
         interface_methods: Vec::new(),
+        actor: None,
     };
     PackageArtifact {
-        schema_version: "skiff-package-artifact-v9".to_string(),
+        schema_version: "skiff-package-artifact-v10".to_string(),
         package_id: "example.com/provider".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("provider-build"),
@@ -628,6 +636,7 @@ fn public_and_top_level_views_are_isolated_and_emit_one_canonical_dependency_ref
                 is_interface: false,
                 type_params: Vec::new(),
                 interface_methods: Vec::new(),
+                actor: None,
             },
         ),
         (
@@ -639,6 +648,7 @@ fn public_and_top_level_views_are_isolated_and_emit_one_canonical_dependency_ref
                 is_interface: false,
                 type_params: Vec::new(),
                 interface_methods: Vec::new(),
+                actor: None,
             },
         ),
     ]);
@@ -652,6 +662,7 @@ fn public_and_top_level_views_are_isolated_and_emit_one_canonical_dependency_ref
             descriptor: Some(descriptor),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     let model = TypeResolutionModel::build(
@@ -735,6 +746,7 @@ fn package_receiver_resolution_requires_exact_top_level_owner_and_closed_generic
             is_interface: false,
             type_params: vec!["T".to_string()],
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     artifact.implementation_links.types.insert(
@@ -747,6 +759,7 @@ fn package_receiver_resolution_requires_exact_top_level_owner_and_closed_generic
             descriptor: Some(descriptor),
             type_params: vec!["T".to_string()],
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     let model = TypeResolutionModel::build(
@@ -2323,7 +2336,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
         )]),
     };
     let artifact = PackageArtifact {
-        schema_version: "skiff-package-artifact-v9".to_string(),
+        schema_version: "skiff-package-artifact-v10".to_string(),
         package_id: "llm-api".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
@@ -2341,6 +2354,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         is_interface: true,
                         type_params: Vec::new(),
                         interface_methods: vec![method.clone()],
+                        actor: None,
                     },
                 ),
                 (
@@ -2352,6 +2366,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         is_interface: false,
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -2363,6 +2378,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         is_interface: false,
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -2374,6 +2390,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         is_interface: false,
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
             ]),
@@ -2396,6 +2413,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         descriptor: Some(descriptor),
                         type_params: Vec::new(),
                         interface_methods: vec![linked_method],
+                        actor: None,
                     },
                 ),
                 (
@@ -2408,6 +2426,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         descriptor: Some(tool_descriptor),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -2420,6 +2439,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         descriptor: Some(role_descriptor),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
                 (
@@ -2445,6 +2465,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                         }),
                         type_params: Vec::new(),
                         interface_methods: Vec::new(),
+                        actor: None,
                     },
                 ),
             ]),
@@ -2906,4 +2927,204 @@ fn record_field_type_resolves_synthetic_catch_and_upsert_fields_via_union_shapes
         }),
         "CatchResult.tag must resolve to the ok/err literal union"
     );
+}
+
+#[test]
+fn artifact_actor_facts_index_and_resolve_through_public_and_top_level_views() {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root should resolve");
+    crate::prelude_registry::initialize_prelude_registry(
+        &skiff_compiler_input::CompilerPlatformSources::new(&platform_root)
+            .expect("platform sources should load"),
+    )
+    .expect("prelude registry should initialize");
+
+    let artifact = actor_artifact();
+    let mut dependency = PackageDependency::id("example.com/actor-provider");
+    dependency.alias = Some("subject".to_string());
+    dependency.top_level_alias = Some("subjectImpl".to_string());
+    let model = TypeResolutionModel::build(
+        &parsed_sources("function noop() -> void {}"),
+        &BTreeMap::from([
+            ("subject".to_string(), vec![String::new()]),
+            ("subjectImpl".to_string(), Vec::new()),
+        ]),
+        &[dependency],
+        None,
+        Some(std::slice::from_ref(&artifact)),
+        &PublicationTypeSymbolIndex::default(),
+    )
+    .expect("artifact actor facts should build");
+
+    let public = model
+        .resolve_type_text("subject.ThreadActor", &context())
+        .expect("public actor view should resolve");
+    let actor = model
+        .actor_type_resolution(&public, &context())
+        .expect("public view actor must resolve as an actor declaration");
+    assert_eq!(actor.module_path, "thread_actor");
+    assert_eq!(actor.name, "ThreadActor");
+    assert_eq!(actor.key_field, "id");
+    assert_eq!(actor.id_type.ir, TypeRefIr::builtin("u64"));
+    assert_eq!(actor.fields.len(), 2);
+    assert!(actor.fields.contains_key("label"));
+    assert_eq!(actor.create.as_ref().map(|params| params.len()), Some(1));
+
+    let top_level = model
+        .resolve_type_text("subjectImpl/thread_actor.ThreadActor", &context())
+        .expect("top-level actor view should resolve");
+    let actor = model
+        .actor_type_resolution(&top_level, &context())
+        .expect("top-level view actor must resolve as an actor declaration");
+    assert_eq!(actor.module_path, "thread_actor");
+    assert_eq!(actor.name, "ThreadActor");
+    assert_eq!(actor.id_type.ir, TypeRefIr::builtin("u64"));
+
+    let mut tampered = artifact.clone();
+    tampered
+        .implementation_links
+        .types
+        .get_mut("thread_actor.ThreadActor")
+        .expect("top-level actor link")
+        .actor = None;
+    let error = index_artifact_package_types(
+        &tampered,
+        "subjectImpl",
+        PackageDependencyView::TopLevel,
+        ArtifactPackageTypePathMode::DeclaredPublic,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+    )
+    .expect_err("mismatched actor link facts must fail closed");
+    assert!(error.contains("actor facts disagree"), "{error}");
+}
+
+fn actor_artifact() -> PackageArtifact {
+    let file = FileIrRef::new("file-ir:thread_actor", "thread_actor");
+    let record = TypeDescriptorIr::Record {
+        fields: BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("u64")),
+            ("label".to_string(), TypeRefIr::builtin("string")),
+        ]),
+    };
+    let abi = PackageActorAbi {
+        actor_abi_identity: ActorAbiIdentity::new("skiff-actor-abi-v1:sha256:thread-actor"),
+        abi: ActorAbiInput {
+            actor_name: "ThreadActor".to_string(),
+            actor_id_type: TypeRefIr::builtin("u64"),
+            key_field: "id".to_string(),
+            fields: vec![
+                ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("u64"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                ActorFieldIr {
+                    name: "label".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: Some(ActorCreateSignatureIr {
+                parameters: vec![FunctionTypeParamIr {
+                    name: "label".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                }],
+            }),
+            public_methods: vec![ActorPublicMethodIr {
+                method_identity: ActorMethodIdentity::new("skiff-actor-method-v1:sha256:read"),
+                name: "read".to_string(),
+                parameters: Vec::new(),
+                return_type: TypeRefIr::builtin("string"),
+                may_suspend: false,
+            }],
+            actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        },
+    };
+    let mut artifact = PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: "example.com/actor-provider".to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new("build"),
+        files: vec![file.clone()],
+        static_resources: Vec::new(),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+            public_symbols: BTreeMap::from([(
+                "ThreadActor".to_string(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id: "type:ThreadActor".to_string(),
+                    descriptor: record.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                    actor: Some(abi.clone()),
+                },
+            )]),
+            implementation_symbols: BTreeMap::from([(
+                "thread_actor.ThreadActor".to_string(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id:
+                        "type:example.com/actor-provider:top-level:thread_actor.ThreadActor"
+                            .to_string(),
+                    descriptor: record.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                    actor: Some(abi.clone()),
+                },
+            )]),
+        },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.com/actor-provider".to_string(),
+            package_schema_index_identity: PackageSchemaIndexIdentity::new("schema"),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: PackageImplementationLinks {
+            types: BTreeMap::from([
+                (
+                    "ThreadActor".to_string(),
+                    TypeExport {
+                        file: file.clone(),
+                        type_index: 0,
+                        symbol: "ThreadActor".to_string(),
+                        is_interface: false,
+                        descriptor: Some(record.clone()),
+                        type_params: Vec::new(),
+                        interface_methods: Vec::new(),
+                        actor: Some(abi.clone()),
+                    },
+                ),
+                (
+                    "thread_actor.ThreadActor".to_string(),
+                    TypeExport {
+                        file,
+                        type_index: 0,
+                        symbol: "thread_actor.ThreadActor".to_string(),
+                        is_interface: false,
+                        descriptor: Some(record),
+                        type_params: Vec::new(),
+                        interface_methods: Vec::new(),
+                        actor: Some(abi),
+                    },
+                ),
+            ]),
+            ..PackageImplementationLinks::default()
+        },
+        callable_links: BTreeMap::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
+        service_call_refs: Vec::new(),
+    };
+    artifact.files[0].source_ast_hash = Some("source-hash".to_string());
+    artifact
 }

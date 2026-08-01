@@ -1615,6 +1615,7 @@ fn add_db_export(
             descriptor: Some(file.type_table[type_index as usize].descriptor.clone()),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
 }

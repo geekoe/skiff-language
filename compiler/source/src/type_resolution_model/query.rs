@@ -606,12 +606,16 @@ impl TypeResolutionModel {
         ty: &ResolvedTypeRef,
         context: &TypeResolutionContext<'_>,
     ) -> Option<ActorTypeResolution> {
+        if let Some(resolution) = self.package_actor_type_resolution(ty) {
+            return Some(resolution);
+        }
         let key = self.actual_receiver_symbol(ty, context)?;
         let resolution = self.source_types.get(&key)?;
         let SourceTypeKind::Actor {
             key_field,
             fields,
             create,
+            ..
         } = &resolution.kind
         else {
             return None;
@@ -646,6 +650,80 @@ impl TypeResolutionModel {
             name: resolution.name.clone(),
             module_path: resolution.module_path.clone(),
             id_type,
+            key_field: key_field.clone(),
+            fields,
+            create,
+        })
+    }
+
+    /// Resolves an actor declared by a package dependency through either its
+    /// public surface or its `topLevelAlias` implementation view. The exact
+    /// normalized artifact type references are recovered directly instead of
+    /// re-resolving dependency module text, and the returned owner path is the
+    /// provider's internal source path so lowering can pin the actor
+    /// declaration through a `ServiceSymbol`.
+    fn package_actor_type_resolution(&self, ty: &ResolvedTypeRef) -> Option<ActorTypeResolution> {
+        let symbol = match &ty.ir {
+            TypeRefIr::PackageSymbol { symbol } => symbol,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            } if arguments.is_empty() => symbol,
+            _ => return None,
+        };
+        let dependency_ref = match &symbol.package {
+            PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
+            PackageRefIr::PackageId { package_id } => package_id.as_str(),
+        };
+        let resolution = self
+            .package_type_resolution_for_view(dependency_ref, &symbol.symbol_path)
+            .or_else(|| self.package_type_resolution(dependency_ref, &symbol.symbol_path))?;
+        let SourceTypeKind::Actor {
+            key_field,
+            fields,
+            create,
+            canonical_id_type,
+            canonical_fields,
+            canonical_create,
+        } = &resolution.kind
+        else {
+            return None;
+        };
+        let canonical_id_type = canonical_id_type.as_ref()?;
+        let canonical_fields = canonical_fields.as_ref()?;
+        if create.is_some() != canonical_create.is_some()
+            || fields.len() != canonical_fields.len()
+            || !canonical_fields.contains_key(key_field)
+        {
+            return None;
+        }
+        let source_symbol_path =
+            self.package_receiver_source_symbol_path(dependency_ref, &symbol.symbol_path);
+        let Some((module_path, name)) = source_symbol_path.rsplit_once('.') else {
+            return None;
+        };
+        if module_path.is_empty() || name.is_empty() {
+            return None;
+        }
+        let fields = fields
+            .iter()
+            .filter_map(|(field_name, _)| {
+                canonical_fields
+                    .get(field_name)
+                    .map(|ty| (field_name.clone(), ResolvedTypeRef::new(ty.clone())))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let create = canonical_create.as_ref().map(|params| {
+            params
+                .iter()
+                .map(|(name, ty)| (name.clone(), ResolvedTypeRef::new(ty.clone())))
+                .collect()
+        });
+        Some(ActorTypeResolution {
+            ty: ty.clone(),
+            name: name.to_string(),
+            module_path: module_path.to_string(),
+            id_type: ResolvedTypeRef::new(canonical_id_type.clone()),
             key_field: key_field.clone(),
             fields,
             create,

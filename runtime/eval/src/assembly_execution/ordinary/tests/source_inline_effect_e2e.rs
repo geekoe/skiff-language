@@ -580,6 +580,7 @@ fn linked_service_effect_fixture(
             descriptor: Some(internal_error_source_descriptor()),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     )]);
     package.package_requirements = vec![PackageRequirement {
@@ -757,6 +758,7 @@ fn linked_error_dependency() -> LinkedErrorDependency {
             descriptor: Some(source_descriptor),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     )]);
     let artifact_ref = super::package_ref(&artifact);
