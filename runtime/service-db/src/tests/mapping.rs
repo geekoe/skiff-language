@@ -1,6 +1,51 @@
 use super::{super::*, support::*};
 
 #[test]
+fn skiff_file_record_document_preserves_capability_record_fields() {
+    let record = FileCapabilityRecord {
+        id: "file-1".to_string(),
+        sha256: "abc123".to_string(),
+        size: 42,
+        content_type: Some("text/plain".to_string()),
+        purpose: Some("profile".to_string()),
+        blob_key: "cas/abc123-42".to_string(),
+        created_at: "2026-07-01T00:00:00Z".to_string(),
+    };
+
+    let document = skiff_file_record_document(record.clone());
+
+    assert_eq!(
+        document,
+        doc! {
+            "_id": "file-1",
+            "id": "file-1",
+            "sha256": "abc123",
+            "size": Bson::Int64(42),
+            "content_type": "text/plain",
+            "purpose": "profile",
+            "blob_key": "cas/abc123-42",
+            "created_at": "2026-07-01T00:00:00Z",
+        }
+    );
+    assert_eq!(
+        skiff_file_record_from_document(document).expect("_skiff_file document should decode"),
+        record
+    );
+
+    let minimal = skiff_file_record_document(FileCapabilityRecord {
+        id: "file-2".to_string(),
+        sha256: "def456".to_string(),
+        size: 7,
+        content_type: None,
+        purpose: None,
+        blob_key: "cas/def456-7".to_string(),
+        created_at: "2026-07-01T00:00:01Z".to_string(),
+    });
+    assert!(!minimal.contains_key("content_type"));
+    assert!(!minimal.contains_key("purpose"));
+}
+
+#[test]
 fn page_order_maps_business_key_to_mongo_id() {
     let binding = thread_binding();
     let options = ServiceDbFindOptions {

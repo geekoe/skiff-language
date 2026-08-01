@@ -1,6 +1,33 @@
 use super::{super::*, support::*};
 
 #[test]
+fn service_db_capability_context_does_not_require_request_frame() {
+    let context = DbCapabilityContext::from_handle(ServiceDbCapabilityHandle::with_state(
+        None,
+        Arc::new(TokioMutex::new(DbRequestState::default())),
+    ));
+
+    let error = match context.require_store(
+        "db.get",
+        "serviceDb is not configured for this service activation",
+    ) {
+        Ok(_) => panic!("minimal unconfigured DB context should not create a store"),
+        Err(error) => error,
+    };
+
+    match error {
+        DbCapabilityError::ProviderUnavailable { target, reason } => {
+            assert_eq!(target, "db.get");
+            assert_eq!(
+                reason,
+                "serviceDb is not configured for this service activation"
+            );
+        }
+        other => panic!("expected ProviderUnavailable, got {other:?}"),
+    }
+}
+
+#[test]
 fn mongo_provider_builds_db_capability_source_from_valid_opaque_config() {
     let source = MongoServiceDbProviderFactory::default()
         .build(provider_input(json!({

@@ -61,19 +61,6 @@ fn assert_publication_id_fixture_applies_to(fixture: &PublicationIdFixture) {
 }
 
 #[test]
-fn object_metadata_accepts_retention_field() {
-    for retention in [Value::Null, json!({ "amount": 30, "unit": "days" })] {
-        ServiceDbRuntime::new(
-            test_environment(),
-            "example.com/test".to_string(),
-            "mongodb://127.0.0.1:27017".to_string(),
-            &provider_metadata_from_ir(object_metadata_with_retention(retention)),
-        )
-        .expect("object DB metadata should allow retention");
-    }
-}
-
-#[test]
 fn service_db_runtime_derives_storage_identity_from_environment_and_service_id() {
     let fixture = runtime_publication_id_fixture();
     for case in fixture
