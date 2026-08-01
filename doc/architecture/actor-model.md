@@ -63,8 +63,8 @@ impl DocHub {
 - v1 禁止双挂：`actor X` 与 `db object X` 不能附着到同一个 type。持久事实通过独立 type 表达（可以出现在 actor 成员中），actor type 本身不声明任何存储元数据。
 - actor 字段是易失工作内存，不自动持久化、不自动回填；持久化完全通过 impl 中的显式 db 操作表达（典型模式：create 里 `db require` / `db insert` 加载或建立，方法里 `db update` 写回）。actor type 不区分 volatile / 持久字段；成员可以是任意可编码类型，包括带 `db object` 附着的 record 类型，成员本身不产生持久化语义。一个 actor 可以拥有任意多个这类成员。
 - 推荐形态（执行器模式）：actor 类型可以只含 key 字段（例如 `ThreadActor`），持久事实放在独立 db object 类型（例如 `Thread`）中，impl 方法通过显式 db 操作访问。actor 类型与持久类型不必同名、不需要包裹关系；`actor` 声明仍然必须存在（它提供 key/create 与句柄语义），仅当 attached type 除 key 外没有其他字段时可省略 create。
-- actor 声明只描述 actor 面元数据：`key(field)`、可选的 `create(...)` 和可选的 `advance()`。成员方法不进 actor 声明，全部通过 `impl` 引入。
-- 保留方法：`create` 与 `advance` 由平台调用，不进句柄 method namespace，业务代码不能通过句柄直接调用。
+- actor 声明只描述 actor 面元数据：`key(field)` 和可选的 `create(...)`。成员方法不进 actor 声明，全部通过 `impl` 引入。
+- `create` 是平台保留方法：由平台在首次激活时调用，不进句柄 method namespace，业务代码不能通过句柄直接调用。
 - `key(field)` 指定 identity 字段：必须是 attached type 的字段，类型必须可稳定 canonical 编码。key 字段由平台在激活时写入（create 执行前），成员方法内只读。key 与持久状态主键的对应关系由 impl 维护，v1 编译器不强制。
 - actor 字段在实例存活期间跨调用保留；实例消亡即丢失。
 - 需要跨实例存活的事实必须显式写 service-owned database。
@@ -96,39 +96,16 @@ const hub = std.actor.get<DocHub>("room-1", 0)
 - create 内不能调用本实例其他方法。
 - key 字段在 create 内只读；平台在 create 执行前写入。
 
-### 保留方法 advance（有界推进）
+### spawn 到 actor 方法（自消息 / 异步推进）
 
-`advance()` 是平台保留方法，用于声明“每次外部消息处理完后推进该 actor 的有界工作”。它与
-`create` 一样：在 actor 声明中声明、在 `impl` 中实现、不进句柄 method namespace。
+`spawn` 可以以 actor 方法为 target：提交的调用作为该 actor 的一次独立方法调用，按 identity
+路由、在单线程 executor 上排队执行；调用方不等结果（fire-and-forget，只等“已接收”）。
 
-```skiff
-type ThreadActor {
-  id: string
-}
-
-actor ThreadActor {
-  key(id)
-  advance()
-}
-
-impl ThreadActor {
-  function advance(self: ThreadActor) -> void {
-    // 有界推进：无工作或等待外部结果时返回
-  }
-}
-```
-
-平台语义：
-
-- 声明了 `advance` 的 actor，每次外部方法调用正常返回后，平台在同一 executor 上排队一次
-  `advance`；`advance` 是排队执行，不嵌套在业务方法的调用栈内。
-- `advance` 本身不再触发自动 advance；同一实例未执行的 pending advance 合并为一次，避免
-  无限排队。
-- 外部异步触发（sweeper、定时器、后台事件）使用平台原语 `std.actor.wake<T>(id)`：确保实例
-  （按 entry 创建输入激活）并排队一次 `advance`。
-- 业务代码不能通过句柄调用 `advance`；需要主动推进时，通过业务方法或 `std.actor.wake` 表达。
-- `advance` 的返回值、参数与签名由声明与 impl 一致检查（与 create 相同规则）；v1 无参数、
-  返回 `void`。
+- actor 不在 live 时，spawn 按 entry 保存的创建输入激活实例后排队目标方法。
+- spawned 调用与 caller request 生命周期分离；同一实例的多个 spawned 调用串行执行。
+- 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如消息处理完成后
+  `spawn actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
+- 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `spawn` 目标方法。
 
 registry entry 保存创建输入，不保存实例状态：
 
