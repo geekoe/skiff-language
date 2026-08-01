@@ -110,3 +110,27 @@ fanoutHistory:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+chainKick:
+  method: POST
+  path: /chain-kick
+  kind: typedJson
+  handler: main.chainKick
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+chainSteps:
+  method: POST
+  path: /chain-steps
+  kind: typedJson
+  handler: main.chainSteps
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+chainHistory:
+  method: POST
+  path: /chain-history
+  kind: typedJson
+  handler: main.chainHistory
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

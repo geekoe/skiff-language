@@ -196,6 +196,37 @@ export async function runActorFullChainAcceptance({
         'abc',
       );
 
+      // A chained spawn self.method: tick() spawns itself once per step for
+      // 40 steps. Queued independent invocations complete all steps serially;
+      // nesting the spawned call in the submitting method's stack would grow
+      // programCallDepth past the runtime safety limit (32) and fail.
+      const chainKick = entrypoints.get('chainKick');
+      const chainSteps = entrypoints.get('chainSteps');
+      const chainHistory = entrypoints.get('chainHistory');
+      assert.ok(chainKick, 'Actor fixture must publish chainKick');
+      assert.ok(chainSteps, 'Actor fixture must publish chainSteps');
+      assert.ok(chainHistory, 'Actor fixture must publish chainHistory');
+      const chainStarted = Date.now();
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, chainKick, signal),
+        'chain-kicked',
+      );
+      const chainSubmitElapsedMs = Date.now() - chainStarted;
+      assert.ok(
+        chainSubmitElapsedMs < 250,
+        `spawn self submit waited for the chained target: ${chainSubmitElapsedMs}ms`,
+      );
+      await waitForActorValue({
+        routerHttpUrl: stack.routerHttpUrl,
+        entrypoint: chainSteps,
+        expected: 40,
+        signal,
+      });
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, chainHistory, signal),
+        'c'.repeat(40),
+      );
+
       const health = await readHealth(stack.controlUrl, signal);
       const replicas = health.replicas.filter(
         (replica) =>

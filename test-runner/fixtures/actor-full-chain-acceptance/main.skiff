@@ -188,3 +188,62 @@ function fanoutHistory(body: null) -> string {
   const target = std.actor.get<Spawned>("fanout")
   return target.history()
 }
+
+// Chained self-spawn: tick spawns itself once per step. If a spawned call
+// were executed nested in the submitting method's stack, a 40-step chain
+// would overflow the runtime's programCallDepth safety limit (32); queued
+// serial execution must complete all steps without depth growth.
+type Chain {
+  id: string,
+  steps: number,
+  history: string,
+}
+
+actor Chain {
+  key(id)
+  create()
+}
+
+impl Chain {
+  function create() -> void {
+    self.steps = 0
+    self.history = ""
+  }
+
+  function tick(tag: string) -> void {
+    if self.steps >= 40 {
+      return null
+    }
+    self.steps = self.steps + 1
+    self.history = self.history.concat(tag)
+    spawn self.tick(tag)
+  }
+
+  function chainKick(tag: string) -> string {
+    spawn self.tick(tag)
+    return "chain-kicked"
+  }
+
+  function steps() -> number {
+    return self.steps
+  }
+
+  function history() -> string {
+    return self.history
+  }
+}
+
+function chainKick(body: null) -> string {
+  const target = std.actor.get<Chain>("chain")
+  return target.chainKick("c")
+}
+
+function chainSteps(body: null) -> number {
+  const target = std.actor.get<Chain>("chain")
+  return target.steps()
+}
+
+function chainHistory(body: null) -> string {
+  const target = std.actor.get<Chain>("chain")
+  return target.history()
+}
