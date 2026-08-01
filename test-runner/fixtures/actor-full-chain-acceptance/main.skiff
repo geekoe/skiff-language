@@ -247,3 +247,37 @@ function chainHistory(body: null) -> string {
   const target = std.actor.get<Chain>("chain")
   return target.history()
 }
+
+// A spawned actor method that throws a user exception must still construct a
+// request-local exception from the caller's trace id. Without spawn trace
+// penetration the failure is reported as "request-local exception requires a
+// non-empty request trace id" instead of the user exception.
+type Throwing {
+  id: string,
+  history: string,
+}
+
+actor Throwing {
+  key(id)
+  create()
+}
+
+impl Throwing {
+  function create() -> void {
+    self.history = ""
+  }
+
+  function boom(tag: string) -> void {
+    self.history = tag
+    throw std.service.ProtocolError {
+      target: "throwing-actor",
+      message: "spawn boom",
+    }
+  }
+}
+
+function spawnThrow(body: null) -> string {
+  const target = std.actor.get<Throwing>("throwing")
+  spawn target.boom("t")
+  return "throw-spawned"
+}

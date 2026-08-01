@@ -48,6 +48,7 @@ fn invoke() -> ActorMethodInvokeFrameHeader {
             expires_at: "2026-07-25T00:00:00Z".into(),
         },
         cancellation_correlation: "cancel:1".into(),
+        trace_id: None,
     }
 }
 
@@ -115,12 +116,21 @@ fn external_invoke_remains_unadmitted() {
 #[test]
 fn admitted_input_retains_complete_fence_and_bootstrap() {
     let request = prepare_admitted_actor_execution("runtime-1", admitted()).unwrap();
+    assert_eq!(request.trace_id, None);
     assert_eq!(request.owner_fence.owner_lease_id, "lease-1");
     assert_eq!(request.owner_fence.epoch, 7);
     assert_eq!(
         request.activation_bootstrap.unwrap().payload,
         br#"{"count":0}"#
     );
+}
+
+#[test]
+fn admitted_input_forwards_invoke_trace_id() {
+    let mut input = admitted();
+    input.invoke.trace_id = Some("trace:actor-invoke:1".to_string());
+    let request = prepare_admitted_actor_execution("runtime-1", input).unwrap();
+    assert_eq!(request.trace_id.as_deref(), Some("trace:actor-invoke:1"));
 }
 
 #[test]

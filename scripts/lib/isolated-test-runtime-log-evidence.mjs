@@ -14,6 +14,8 @@ const LOG_FILES = Object.freeze([
   ['router', 'stderr', 'router.err.log'],
   ['runtime', 'stdout', 'runtime.log'],
   ['runtime', 'stderr', 'runtime.err.log'],
+  ['runtime', 'stdout', 'runtime-2.log'],
+  ['runtime', 'stderr', 'runtime-2.err.log'],
 ]);
 
 export async function retainIsolatedRuntimeLogEvidence(error, tempRoot, {

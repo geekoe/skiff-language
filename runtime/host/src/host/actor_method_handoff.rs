@@ -71,6 +71,7 @@ pub struct AdmittedActorMethodInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorExecutorRequest {
     pub invocation_id: String,
+    pub trace_id: Option<String>,
     pub actor_ref: ActorLogicalRefFrameHeader,
     pub owner_fence: AdmittedActorOwnerFence,
     pub method_identity: ActorMethodIdentity,
@@ -164,6 +165,7 @@ pub fn prepare_admitted_actor_execution(
 
     Ok(ActorExecutorRequest {
         invocation_id: input.invoke.invocation_id,
+        trace_id: input.invoke.trace_id.clone(),
         actor_ref: input.invoke.actor_ref,
         owner_fence: input.owner_fence,
         method_identity: input.invoke.method_identity,

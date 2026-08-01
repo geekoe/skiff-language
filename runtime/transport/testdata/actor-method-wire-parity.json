@@ -320,5 +320,67 @@
         "currentEpoch": 9007199254740992
       }
     }
+  },
+  {
+    "name": "invoke with traceId",
+    "accepted": true,
+    "payloadBase64": "AQID",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v3",
+      "type": "actor.method.invoke",
+      "invocationId": "inv:1",
+      "actorRef": {
+        "serviceId": "svc",
+        "actorTypeIdentity": "actor",
+        "actorIdTypeIdentity": "id",
+        "actorIdEncodingVersion": "v1",
+        "canonicalActorIdKeyBytesBase64": "AQ==",
+        "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "epoch": 7
+      },
+      "declarationOwner": {
+        "unit": { "kind": "service" },
+        "file": { "kind": "fileIrIdentity", "value": "file:1" },
+        "actorSymbol": "Counter"
+      },
+      "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "methodIdentity": "skiff-actor-method-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "argumentsEncodingVersion": "skiff-actor-arguments-v1",
+      "deadline": { "timeoutMs": 100, "expiresAt": "2026-07-25T00:00:00Z" },
+      "cancellationCorrelation": "cancel:1",
+      "traceId": "trace:spawn-parity"
+    }
+  },
+  {
+    "name": "invoke empty traceId",
+    "accepted": false,
+    "payloadBase64": "AQID",
+    "header": {
+      "schemaVersion": "skiff-runtime-frame-v3",
+      "type": "actor.method.invoke",
+      "invocationId": "inv:1",
+      "actorRef": {
+        "serviceId": "svc",
+        "actorTypeIdentity": "actor",
+        "actorIdTypeIdentity": "id",
+        "actorIdEncodingVersion": "v1",
+        "canonicalActorIdKeyBytesBase64": "AQ==",
+        "actorIdHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "epoch": 7
+      },
+      "declarationOwner": {
+        "unit": { "kind": "service" },
+        "file": { "kind": "fileIrIdentity", "value": "file:1" },
+        "actorSymbol": "Counter"
+      },
+      "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "methodIdentity": "skiff-actor-method-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "argumentsEncodingVersion": "skiff-actor-arguments-v1",
+      "deadline": { "timeoutMs": 100, "expiresAt": "2026-07-25T00:00:00Z" },
+      "cancellationCorrelation": "cancel:1",
+      "traceId": ""
+    }
   }
 ]

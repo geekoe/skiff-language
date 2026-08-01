@@ -134,3 +134,11 @@ chainHistory:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+spawnThrow:
+  method: POST
+  path: /spawn-throw
+  kind: typedJson
+  handler: main.spawnThrow
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

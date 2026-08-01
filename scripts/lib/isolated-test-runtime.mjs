@@ -1,5 +1,5 @@
 import { spawn as spawnAdditionalRuntimeChild } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +137,7 @@ async function startIsolatedTestRuntime({
   let ownershipReceipt;
   let supervisor;
   let additionalRuntimes = [];
+  let additionalRuntimeLogFiles = [];
   let configOwnershipRequired = false;
   let supervisorAttempted = false;
   try {
@@ -220,6 +221,18 @@ async function startIsolatedTestRuntime({
       const runtimeHome = join(tempRoot, `runtime-${replica + 1}-home`);
       const runtimeConfig = join(tempRoot, `runtime-${replica + 1}.yml`);
       await mkdir(runtimeHome, { recursive: true });
+      const logsDir = join(tempRoot, 'instance', 'logs');
+      await mkdir(logsDir, { recursive: true });
+      const stdoutLogPath = join(logsDir, `runtime-${replica + 1}.log`);
+      const stderrLogPath = join(logsDir, `runtime-${replica + 1}.err.log`);
+      const stdoutLog = await open(stdoutLogPath, 'w');
+      const stderrLog = await open(stderrLogPath, 'w');
+      additionalRuntimeLogFiles.push({
+        stdoutLogPath,
+        stderrLogPath,
+        stdoutLog,
+        stderrLog,
+      });
       await writeFile(runtimeConfig, renderRuntimeConfig({
         routerUrl: `ws://127.0.0.1:${controlPort}/runtime`,
         runtimeHome,
@@ -229,7 +242,11 @@ async function startIsolatedTestRuntime({
       const child = spawnAdditionalRuntimeChild(
         join(devHome, 'bin', runtimeBinaryName()),
         [runtimeConfig],
-        { cwd: skiffRoot, env: isolatedEnv, stdio: 'inherit' },
+        {
+          cwd: skiffRoot,
+          env: isolatedEnv,
+          stdio: ['ignore', stdoutLog.fd, stderrLog.fd],
+        },
       );
       additionalRuntimes.push(child);
     }
@@ -254,6 +271,7 @@ async function startIsolatedTestRuntime({
       ports: portLease.ports,
       supervisor,
       additionalRuntimes,
+      additionalRuntimeLogFiles,
       tempRoot,
       environment,
       instanceOwnership: ownershipReceipt,
@@ -269,6 +287,7 @@ async function startIsolatedTestRuntime({
       ports: portLease.ports,
       supervisor,
       additionalRuntimes,
+      additionalRuntimeLogFiles,
       tempRoot,
     };
     try {
@@ -288,6 +307,16 @@ async function cleanupIsolatedTestRuntime(stack, ops, testError) {
   for (const child of stack.additionalRuntimes ?? []) {
     await settleCleanupStep(errors, `stop additional Runtime ${child.pid}`, () =>
       stopAdditionalRuntime(child));
+  }
+  for (const logFile of stack.additionalRuntimeLogFiles ?? []) {
+    await settleCleanupStep(
+      errors,
+      `close additional Runtime log ${logFile.stdoutLogPath}`,
+      async () => {
+        await logFile.stdoutLog.close();
+        await logFile.stderrLog.close();
+      }
+    );
   }
   if (stack.supervisor !== undefined) {
     await settleCleanupStep(errors, 'stop supervisor', async () => {

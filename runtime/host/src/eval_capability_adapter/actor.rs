@@ -487,6 +487,7 @@ async fn invoke_actor_method(
                 expires_at,
             },
             cancellation_correlation: cancellation_correlation.clone(),
+            trace_id: None,
         },
         request.arguments_payload,
     );

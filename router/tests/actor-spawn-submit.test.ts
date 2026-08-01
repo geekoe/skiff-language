@@ -67,6 +67,7 @@ describe('actor method spawn submit', () => {
     expect(ownerFrame.header.invoke.invocationId).toBe(result.requestId);
     expect(ownerFrame.header.invoke.actorRef.epoch).toBe(actor.epoch);
     expect(ownerFrame.header.invoke.methodIdentity).toBe(METHOD);
+    expect(ownerFrame.header.invoke.traceId).toBeUndefined();
     expect(Array.from(ownerFrame.payloadBytes)).toEqual([91, 49, 93]);
 
     left.send(encodeActorMethodFrame({
@@ -85,6 +86,26 @@ describe('actor method spawn submit', () => {
     await expect(
       registry.actorManager().registryStore().actorInvocation(result.requestId)
     ).resolves.not.toBeUndefined();
+  });
+
+  it('forwards the submit traceId into the dispatched actor method invoke', async () => {
+    const { actorMethods, registry, left } = await spawnHarness();
+    const actor = await registry
+      .actorManager()
+      .getOrCreate(actorBootstrap());
+    const submit = spawnSubmit({
+      runtimeId: 'runtime-a',
+      callerRequestId: 'trace-parent-invoke-1',
+      actor,
+      traceId: 'trace:spawn-submit-1',
+    });
+    const result = await actorMethods.submitSpawn(submit, Buffer.from('[4]'));
+
+    const ownerFrame = decodeActorOwnerInvokeFrame(
+      await nextBinary(left)
+    );
+    expect(ownerFrame.header.invoke.invocationId).toBe(result.requestId);
+    expect(ownerFrame.header.invoke.traceId).toBe('trace:spawn-submit-1');
   });
 
   it('activates a not-live actor from its saved entry before queuing the spawn', async () => {
@@ -244,12 +265,14 @@ function spawnSubmit({
   runtimeId,
   callerRequestId,
   actor,
+  traceId,
 }: {
   runtimeId: string;
   callerRequestId: string;
   actor: Awaited<
     ReturnType<ReturnType<RuntimeRegistry['actorManager']>['getOrCreate']>
   >;
+  traceId?: string;
 }): SpawnSubmitRequestFrameHeader {
   return {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -270,6 +293,7 @@ function spawnSubmit({
     spawnId: 'spawn-1',
     buildId: BUILD,
     callerRequestId,
+    ...(traceId === undefined ? {} : { traceId }),
     actorMethod: {
       actorRef: {
         serviceId: actor.serviceId,
