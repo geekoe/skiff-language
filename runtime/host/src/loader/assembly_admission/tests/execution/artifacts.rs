@@ -1768,6 +1768,7 @@ fn implementation_package(
                     descriptor: Some(declaration.descriptor.clone()),
                     type_params: declaration.type_params.clone(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )
         })

@@ -205,6 +205,7 @@ impl CycleFixture {
                 is_interface: true,
                 type_params: Vec::new(),
                 interface_methods: helper_interface_methods.clone(),
+                actor: None,
             },
         );
         helper.implementation_links.types.insert(
@@ -217,6 +218,7 @@ impl CycleFixture {
                 descriptor: Some(TypeDescriptorIr::Interface),
                 type_params: Vec::new(),
                 interface_methods: helper_interface_methods,
+                actor: None,
             },
         );
         helper.implementation_links.types.insert(
@@ -231,6 +233,7 @@ impl CycleFixture {
                 }),
                 type_params: Vec::new(),
                 interface_methods: Vec::new(),
+                actor: None,
             },
         );
         let helper_resource: Arc<[u8]> = Arc::from(b"shared helper resource".as_slice());

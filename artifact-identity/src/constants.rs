@@ -7,9 +7,9 @@ pub const ACTOR_IMPLEMENTATION_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-actor-implementation-identity-v1";
 pub const ACTOR_IMPLEMENTATION_IDENTITY_PREFIX: &str = "skiff-actor-implementation-v1:sha256";
 pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER: &str =
-    "skiff-package-artifact-build-identity-v8";
+    "skiff-package-artifact-build-identity-v9";
 pub const PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str =
-    "skiff-package-artifact-local-abi-identity-v5";
+    "skiff-package-artifact-local-abi-identity-v6";
 pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v10:sha256";
 pub const PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX: &str = "skiff-package-local-abi-v7:sha256";
 pub const PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER: &str =

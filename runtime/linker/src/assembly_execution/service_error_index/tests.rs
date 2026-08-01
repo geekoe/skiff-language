@@ -576,6 +576,7 @@ fn http_client_request_package() -> PackageFixture {
             }),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     artifact.package_schema_index.package_schema_index_identity =
@@ -741,6 +742,7 @@ fn package(
                     descriptor: Some(source_descriptor),
                     type_params,
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )]),
             ..PackageImplementationLinks::default()

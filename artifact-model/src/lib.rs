@@ -151,8 +151,8 @@ pub use native_signature::{
     NativeSignatureTypeExpr, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 pub use package_artifact::{
-    PackageArtifact, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageLocalAbi, PackageLocalAbiSymbol,
+    PackageActorAbi, PackageArtifact, PackageCallableLinkFact, PackageCallableParameter,
+    PackageCallableSignature, PackageLocalAbi, PackageLocalAbiSymbol,
 };
 pub use package_unit::{
     ConfigAndEffectMetadata, ConstExport, ExecutableExport, InterfaceMethodSignature,

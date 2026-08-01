@@ -1,3 +1,4 @@
+mod actor;
 mod api_exports;
 mod assets;
 mod boundary;

@@ -103,7 +103,7 @@ fn any_interface_wire_rejects_missing_or_opaque_interface_target() {
 #[test]
 fn package_artifact_wire_rejects_legacy_aggregate_fields() {
     let value = json!({
-        "schemaVersion": "skiff-package-artifact-v9",
+        "schemaVersion": "skiff-package-artifact-v10",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",

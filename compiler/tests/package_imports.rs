@@ -7,7 +7,7 @@ use common::{
     package_project::{compile_package_project, compile_service_package_project},
     TestDir,
 };
-use skiff_artifact_model::PackageLocalAbiSymbol;
+use skiff_artifact_model::{PackageLocalAbiSymbol, TypeRefIr};
 use skiff_compiler_input::package_config::read_user_package_manifest;
 use skiff_syntax::parser::parse_source;
 
@@ -717,6 +717,175 @@ impl Box {
                             if dependency_ref == "subject"
                     )
             }));
+    }
+
+    #[test]
+    fn test_service_top_level_alias_resolves_dependency_actor_for_registry_get() {
+        let temp = TestDir::new("skiff-compiler", "top-level-alias-actor-registry-get");
+        fs::write(
+            temp.path().join("package.yml"),
+            r#"id: example.com/actor-subject-tests
+version: 1.0.0
+packages:
+  - id: example.com/actor-subject
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl
+"#,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("service.yml"),
+            "id: example.com/actor-subject-tests\nkind: test\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("api.yml"), "{}\n").unwrap();
+        fs::write(
+            temp.path().join("main.skiff"),
+            r#"
+import std
+import subjectImpl
+
+function run() -> string {
+  const actor = std.actor.get<subjectImpl/thread_actor.ThreadActor>("id")
+  return actor.read()
+}
+"#,
+        )
+        .unwrap();
+
+        let dependency = temp
+            .path()
+            .join(".skiff-packages/example~com~~actor-subject/1.0.0");
+        fs::create_dir_all(&dependency).unwrap();
+        fs::write(
+            dependency.join("package.yml"),
+            "id: example.com/actor-subject\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(dependency.join("api.yml"), "{}\n").unwrap();
+        fs::write(
+            dependency.join("thread_actor.skiff"),
+            r#"
+type ThreadActor {
+  id: string,
+  label: string,
+}
+
+actor ThreadActor {
+  key(id)
+  create()
+}
+
+impl ThreadActor {
+  function create() -> void {
+    self.label = ""
+  }
+
+  function read() -> string {
+    return self.label
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let provider = compile_package_project(&dependency)
+            .expect("provider package with an actor should compile independently");
+        let PackageLocalAbiSymbol::Type {
+            actor: provider_actor,
+            ..
+        } = &provider
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols["thread_actor.ThreadActor"]
+        else {
+            panic!("provider implementation ABI must contain ThreadActor as a type");
+        };
+        let provider_actor = provider_actor
+            .as_ref()
+            .expect("provider actor must be projected as an actor declaration, not a plain record");
+        assert_eq!(provider_actor.abi.key_field, "id");
+        assert_eq!(
+            provider_actor.abi.actor_id_type,
+            skiff_artifact_model::TypeRefIr::builtin("string")
+        );
+        assert_eq!(provider_actor.abi.public_methods.len(), 1);
+        assert_eq!(provider_actor.abi.public_methods[0].name, "read");
+        assert_eq!(
+            provider_actor
+                .abi
+                .create
+                .as_ref()
+                .expect("actor create signature must project")
+                .parameters
+                .len(),
+            0
+        );
+        assert!(
+            provider.package.artifact.implementation_links.types["thread_actor.ThreadActor"]
+                .actor
+                .is_some()
+        );
+
+        let (project, _) = compile_service_package_project(temp.path())
+            .expect("top-level actor registry get should compile");
+        let file = module_artifact(&project.package, "main");
+        let run = file
+            .unit
+            .executables
+            .iter()
+            .find(|executable| executable.symbol.ends_with(".run"))
+            .expect("run executable should be lowered");
+        let registry_call = run
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| {
+                let skiff_artifact_model::ExprIr::Call { call } = expression else {
+                    return None;
+                };
+                match &call.target {
+                    skiff_artifact_model::CallTargetIr::Native { target, .. } => {
+                        (target.binding_key.as_deref() == Some("std.actor.get")).then_some(call)
+                    }
+                    skiff_artifact_model::CallTargetIr::PackageCallable {
+                        package_callable_id,
+                        ..
+                    } => package_callable_id
+                        .as_str()
+                        .ends_with(":std.actor.get")
+                        .then_some(call),
+                    _ => None,
+                }
+            })
+            .expect("std.actor.get must lower to the exact native registry call");
+        let TypeRefIr::ServiceSymbol { symbol } = &registry_call.type_args["T0"] else {
+            panic!("actor registry T0 must pin the actor declaration owner");
+        };
+        assert_eq!(symbol.module_path, "thread_actor");
+        assert_eq!(symbol.symbol, "ThreadActor");
+        assert_eq!(
+            registry_call.type_args["T1"],
+            skiff_artifact_model::TypeRefIr::builtin("string")
+        );
+        assert!(file.unit.executables.iter().any(|executable| executable
+            .body
+            .expressions
+            .iter()
+            .any(|expression| {
+                let skiff_artifact_model::ExprIr::Call { call } = expression else {
+                    return false;
+                };
+                matches!(
+                    &call.target,
+                    skiff_artifact_model::CallTargetIr::PackageCallable {
+                        package_callable_id,
+                        ..
+                    } if package_callable_id.as_str().ends_with("thread_actor.ThreadActor.read")
+                )
+            })));
     }
 
     #[test]

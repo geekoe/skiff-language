@@ -234,6 +234,7 @@ fn std_duration_package() -> (artifact::PackageArtifact, artifact::FileIrUnit) {
             is_interface: false,
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     package.implementation_links.types.insert(
@@ -246,6 +247,7 @@ fn std_duration_package() -> (artifact::PackageArtifact, artifact::FileIrUnit) {
             descriptor: Some(descriptor),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)

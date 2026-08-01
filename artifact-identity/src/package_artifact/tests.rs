@@ -1,16 +1,18 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryImplementationRequirements,
-    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, CallableSemanticFacts, ConstExport, ContractOperationId,
-    ContractRequirement, ContractTypeRef, ExecutableExport, ExecutableSignatureIr, FileIrRef,
-    FunctionTypeParamIr, InterfaceMethodSignature, NominalTypeRefBaseIr, OperationCallableKind,
-    OperationTargetRef, PackageCallableLinkFact, PackageCallableParameter,
-    PackageCallableSignature, PackageConfigAccess, PackageConfigRequirement,
-    PackageImplementationLinks, PackageRefIr, PackageRequirement, PackageSymbolRef, PackageTypeRef,
-    ParamIr, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr,
-    TypeExport, TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    ActorAbiIdentity, ActorAbiInput, ActorCreateSignatureIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorMethodIdentity, ActorPublicMethodIr, BoundaryCallbackContract, BoundaryEffectGuarantee,
+    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryParameter,
+    BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    ConstExport, ContractOperationId, ContractRequirement, ContractTypeRef, ExecutableExport,
+    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
+    NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageActorAbi,
+    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
+    PackageConfigAccess, PackageConfigRequirement, PackageImplementationLinks, PackageRefIr,
+    PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -74,6 +76,82 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
         validate_package_artifact_identities(&stale_build),
         Err(ArtifactIdentityError::PackageArtifactBuildIdentityMismatch { .. })
     ));
+}
+
+#[test]
+fn actor_metadata_tampering_changes_local_abi_and_build_identity() {
+    let artifact = actor_fixture();
+    let base_local = package_artifact_local_abi_identity(&artifact).unwrap();
+    let base_build = package_artifact_build_identity(&artifact).unwrap();
+
+    let mut tampered_key = artifact.clone();
+    let PackageLocalAbiSymbol::Type { actor, .. } = tampered_key
+        .package_local_abi
+        .public_symbols
+        .get_mut("ThreadActor")
+        .expect("public actor symbol")
+    else {
+        panic!("public actor must remain a Type symbol");
+    };
+    let actor = actor
+        .as_mut()
+        .expect("public actor must carry actor metadata");
+    actor.abi.key_field = "label".to_string();
+    actor.abi.actor_id_type = TypeRefIr::builtin("string");
+    assert_ne!(
+        package_artifact_local_abi_identity(&tampered_key).unwrap(),
+        base_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&tampered_key).unwrap(),
+        base_build
+    );
+
+    let mut tampered_create = artifact.clone();
+    let PackageLocalAbiSymbol::Type { actor, .. } = tampered_create
+        .package_local_abi
+        .public_symbols
+        .get_mut("ThreadActor")
+        .expect("public actor symbol")
+    else {
+        panic!("public actor must remain a Type symbol");
+    };
+    let actor = actor
+        .as_mut()
+        .expect("public actor must carry actor metadata");
+    actor.abi.create.as_mut().unwrap().parameters[0].name = "title".to_string();
+    assert_ne!(
+        package_artifact_local_abi_identity(&tampered_create).unwrap(),
+        base_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&tampered_create).unwrap(),
+        base_build
+    );
+
+    let mut tampered_method = artifact.clone();
+    let PackageLocalAbiSymbol::Type { actor, .. } = tampered_method
+        .package_local_abi
+        .public_symbols
+        .get_mut("ThreadActor")
+        .expect("public actor symbol")
+    else {
+        panic!("public actor must remain a Type symbol");
+    };
+    let actor = actor
+        .as_mut()
+        .expect("public actor must carry actor metadata");
+    actor.abi.public_methods[0].name = "fetch".to_string();
+    actor.abi.public_methods[0].method_identity =
+        ActorMethodIdentity::new("skiff-actor-method-v1:sha256:fetch");
+    assert_ne!(
+        package_artifact_local_abi_identity(&tampered_method).unwrap(),
+        base_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&tampered_method).unwrap(),
+        base_build
+    );
 }
 
 #[test]
@@ -182,7 +260,7 @@ fn package_artifact_build_v10_preimage_excludes_service_selection() {
         build["schema"],
         crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
     );
-    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v8");
+    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v9");
     assert!(build.get("serviceCallRoots").is_none());
     assert!(wire.get("serviceCallRoots").is_none());
     assert_eq!(build["serviceCallRefs"], serde_json::json!([]));
@@ -194,7 +272,7 @@ fn package_artifact_build_v10_preimage_excludes_service_selection() {
 
     assert_eq!(
         local["schema"],
-        "skiff-package-artifact-local-abi-identity-v5"
+        "skiff-package-artifact-local-abi-identity-v6"
     );
     assert!(local.get("serviceCallRoots").is_none());
     assert!(artifact
@@ -1269,6 +1347,112 @@ fn fixture() -> PackageArtifact {
     artifact
 }
 
+fn actor_fixture() -> PackageArtifact {
+    let mut artifact = fixture();
+    let file = FileIrRef::new(
+        "skiff-file-ir-v11:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "thread_actor",
+    );
+    artifact.files.push(file.clone());
+    let abi = actor_abi();
+    let record = TypeDescriptorIr::Record {
+        fields: BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("u64")),
+            ("label".to_string(), TypeRefIr::builtin("string")),
+        ]),
+    };
+    artifact.package_local_abi.public_symbols.insert(
+        "ThreadActor".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:ThreadActor".to_string(),
+            descriptor: record.clone(),
+            is_alias: false,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: Some(abi.clone()),
+        },
+    );
+    artifact.package_local_abi.implementation_symbols.insert(
+        "thread_actor.ThreadActor".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:example.identity:top-level:thread_actor.ThreadActor".to_string(),
+            descriptor: record.clone(),
+            is_alias: false,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: Some(abi.clone()),
+        },
+    );
+    let public_link = TypeExport {
+        file: file.clone(),
+        type_index: 0,
+        symbol: "ThreadActor".to_string(),
+        is_interface: false,
+        descriptor: Some(record.clone()),
+        type_params: Vec::new(),
+        interface_methods: Vec::new(),
+        actor: Some(abi.clone()),
+    };
+    artifact
+        .implementation_links
+        .types
+        .insert("ThreadActor".to_string(), public_link);
+    artifact.implementation_links.types.insert(
+        "thread_actor.ThreadActor".to_string(),
+        TypeExport {
+            file,
+            type_index: 0,
+            symbol: "thread_actor.ThreadActor".to_string(),
+            is_interface: false,
+            descriptor: Some(record),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: Some(abi),
+        },
+    );
+    assign_package_artifact_identities(&mut artifact).unwrap();
+    artifact
+}
+
+fn actor_abi() -> PackageActorAbi {
+    PackageActorAbi {
+        actor_abi_identity: ActorAbiIdentity::new("skiff-actor-abi-v1:sha256:thread-actor"),
+        abi: ActorAbiInput {
+            actor_name: "ThreadActor".to_string(),
+            actor_id_type: TypeRefIr::builtin("u64"),
+            key_field: "id".to_string(),
+            fields: vec![
+                ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("u64"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                ActorFieldIr {
+                    name: "label".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: Some(ActorCreateSignatureIr {
+                parameters: vec![FunctionTypeParamIr {
+                    name: "label".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                }],
+            }),
+            public_methods: vec![ActorPublicMethodIr {
+                method_identity: ActorMethodIdentity::new("skiff-actor-method-v1:sha256:read"),
+                name: "read".to_string(),
+                parameters: Vec::new(),
+                return_type: TypeRefIr::builtin("string"),
+                may_suspend: false,
+            }],
+            actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        },
+    }
+}
+
 fn callable_fixture() -> PackageArtifact {
     let mut artifact = fixture();
     let callable_id = PackageCallableId::new("pkg-callable:example.identity:run");
@@ -1493,6 +1677,7 @@ fn implementation_only_impl_callable_fixture(
             is_interface: false,
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     artifact.package_local_abi.implementation_symbols.insert(
@@ -1504,6 +1689,7 @@ fn implementation_only_impl_callable_fixture(
             is_interface: true,
             type_params: Vec::new(),
             interface_methods: interface_methods.clone(),
+            actor: None,
         },
     );
     artifact.package_local_abi.implementation_symbols.insert(
@@ -1527,6 +1713,7 @@ fn implementation_only_impl_callable_fixture(
             }),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     artifact.implementation_links.types.insert(
@@ -1539,6 +1726,7 @@ fn implementation_only_impl_callable_fixture(
             descriptor: Some(TypeDescriptorIr::Interface),
             type_params: Vec::new(),
             interface_methods: interface_methods,
+            actor: None,
         },
     );
     artifact.implementation_links.constants.insert(

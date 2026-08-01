@@ -1890,6 +1890,7 @@ fn package(package_id: &str, types: Vec<PublicType>) -> PackageFixture {
                     descriptor: Some(ty.source.clone()),
                     type_params: ty.type_params.clone(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )
         })

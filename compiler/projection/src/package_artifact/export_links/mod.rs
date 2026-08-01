@@ -23,7 +23,10 @@ use crate::{
     },
 };
 
-use super::{assets::file_ir_refs_from_units, model::PackageExportLinkProjectionInput};
+use super::{
+    actor::project_actor_abi, assets::file_ir_refs_from_units,
+    model::PackageExportLinkProjectionInput,
+};
 
 pub(super) use public_instances::PackagePublicInstanceExecutionLink;
 #[cfg(test)]
@@ -104,6 +107,16 @@ pub(super) fn project_package_export_links(
                     )
                 })
                 .collect();
+            let actor = file_unit
+                .actor_declarations
+                .iter()
+                .find(|declaration| declaration.abi.actor_name == ty.name)
+                .map(|declaration| {
+                    project_actor_abi(declaration, |ty| {
+                        Ok(projection_visible_type_ref(module, ty, &package_type_names))
+                    })
+                })
+                .transpose()?;
             exports.types.insert(
                 package_symbol.clone(),
                 TypeExport {
@@ -118,6 +131,7 @@ pub(super) fn project_package_export_links(
                     )),
                     type_params: ty.type_params.clone(),
                     interface_methods,
+                    actor,
                 },
             );
             continue;

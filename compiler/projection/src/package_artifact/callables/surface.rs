@@ -98,6 +98,7 @@ fn project_non_callable_symbols(
                 is_interface: export.is_interface,
                 type_params: export.type_params.clone(),
                 interface_methods: export.interface_methods.clone(),
+                actor: export.actor.clone(),
             },
         )?;
     }

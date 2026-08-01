@@ -4,11 +4,12 @@ use skiff_artifact_identity::{
     canonical_interface_method_abi_id, interface_instantiation_ref, type_ref_abi_key,
 };
 use skiff_artifact_model::{
+    ActorAbiInput, ActorCreateSignatureIr, ActorFieldIr, ActorPublicMethodIr,
     ContractTypeDescriptor, ContractTypeRef, FileIrUnit, FunctionTypeParamIr,
     InterfaceInstantiationRef, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr,
-    PackageArtifact, PackageBuildId, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSchemaTypeRecord, PackageSymbolRef, PackageTypeRef, ServiceSymbolRef, TypeDescriptorIr,
-    TypeRefIr,
+    PackageActorAbi, PackageArtifact, PackageBuildId, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeRecord, PackageSymbolRef, PackageTypeRef,
+    ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_core::{
     prelude_registry::canonical_file_ir_builtin_name,
@@ -151,6 +152,11 @@ enum SourceTypeKind {
         key_field: String,
         fields: BTreeMap<String, String>,
         create: Option<Vec<(String, String)>>,
+        /// Exact normalized artifact type references for a package actor.
+        /// Source actors keep these `None` and resolve field text lazily.
+        canonical_id_type: Option<TypeRefIr>,
+        canonical_fields: Option<BTreeMap<String, TypeRefIr>>,
+        canonical_create: Option<Vec<(String, TypeRefIr)>>,
     },
     Representation {
         target: String,
@@ -521,6 +527,7 @@ fn index_artifact_package_types(
             is_interface,
             type_params,
             interface_methods,
+            actor,
         } = symbol
         else {
             continue;
@@ -561,6 +568,86 @@ fn index_artifact_package_types(
                 artifact.package_id, selected_path
             )
         })?;
+        let kind = match actor {
+            Some(actor) => {
+                if *is_alias || *is_interface {
+                    return Err(format!(
+                        "package {} actor type {} cannot be an alias or interface declaration",
+                        artifact.package_id, selected_path
+                    ));
+                }
+                if !matches!(descriptor, TypeDescriptorIr::Record { .. }) {
+                    return Err(format!(
+                        "package {} actor type {} must attach to a record declaration",
+                        artifact.package_id, selected_path
+                    ));
+                }
+                let normalized = normalize_artifact_actor_abi(
+                    &artifact.package_id,
+                    &type_symbols,
+                    &export.file.module_path,
+                    selected_path,
+                    actor,
+                )?;
+                let key_field = normalized.abi.key_field.clone();
+                let fields = normalized
+                    .abi
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        Ok((
+                            field.name.clone(),
+                            artifact_type_text(&artifact.package_id, &field.ty, &symbolic_types)?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, String>>()?;
+                let create = normalized
+                    .abi
+                    .create
+                    .as_ref()
+                    .map(|create| {
+                        create
+                            .parameters
+                            .iter()
+                            .map(|parameter| {
+                                Ok((
+                                    parameter.name.clone(),
+                                    artifact_type_text(
+                                        &artifact.package_id,
+                                        &parameter.ty,
+                                        &symbolic_types,
+                                    )?,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    })
+                    .transpose()?;
+                let canonical_fields = Some(
+                    normalized
+                        .abi
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.clone()))
+                        .collect::<BTreeMap<_, _>>(),
+                );
+                let canonical_create = normalized.abi.create.as_ref().map(|create| {
+                    create
+                        .parameters
+                        .iter()
+                        .map(|parameter| (parameter.name.clone(), parameter.ty.clone()))
+                        .collect::<Vec<_>>()
+                });
+                SourceTypeKind::Actor {
+                    key_field,
+                    fields,
+                    create,
+                    canonical_id_type: Some(normalized.abi.actor_id_type),
+                    canonical_fields,
+                    canonical_create,
+                }
+            }
+            None => kind,
+        };
         let resolution = SourceTypeResolution {
             name: name.to_string(),
             type_params: type_params.clone(),
@@ -858,6 +945,7 @@ fn artifact_symbolic_type_index(
             is_interface,
             type_params,
             interface_methods,
+            actor,
             ..
         } = symbol
         else {
@@ -919,6 +1007,37 @@ fn artifact_symbolic_type_index(
         {
             return Err(format!(
                 "package {} selected type {} interface facts disagree with its implementation link",
+                artifact.package_id, selected_path
+            ));
+        }
+        let implementation_actor = actor
+            .as_ref()
+            .map(|actor| {
+                normalize_artifact_actor_abi(
+                    &artifact.package_id,
+                    type_symbols,
+                    &export.file.module_path,
+                    selected_path,
+                    actor,
+                )
+            })
+            .transpose()?;
+        let linked_actor = export
+            .actor
+            .as_ref()
+            .map(|actor| {
+                normalize_artifact_actor_abi(
+                    &artifact.package_id,
+                    type_symbols,
+                    &export.file.module_path,
+                    selected_path,
+                    actor,
+                )
+            })
+            .transpose()?;
+        if linked_actor != implementation_actor {
+            return Err(format!(
+                "package {} selected type {} actor facts disagree with its implementation link",
                 artifact.package_id, selected_path
             ));
         }
@@ -1022,6 +1141,92 @@ fn normalize_artifact_type_descriptor(
         }),
         TypeDescriptorIr::Interface => Ok(TypeDescriptorIr::Interface),
     }
+}
+
+fn normalize_artifact_actor_abi(
+    package_id: &str,
+    type_symbols: &PackageTypeSymbolIndex,
+    module_path: &str,
+    selected_path: &str,
+    actor: &PackageActorAbi,
+) -> Result<PackageActorAbi, String> {
+    let normalize = |ty: &TypeRefIr, context: &str| {
+        let context = format!("actor {selected_path} {context}");
+        let normalized = normalize_package_interface_type_ref(
+            package_id,
+            type_symbols,
+            module_path,
+            ty,
+            &context,
+        )?;
+        normalize_artifact_interface_identities(
+            package_id,
+            type_symbols,
+            module_path,
+            normalized,
+            &context,
+        )
+    };
+    let normalize_parameters =
+        |parameters: &[FunctionTypeParamIr]| -> Result<Vec<FunctionTypeParamIr>, String> {
+            parameters
+                .iter()
+                .map(|parameter| {
+                    Ok(FunctionTypeParamIr {
+                        name: parameter.name.clone(),
+                        ty: normalize(&parameter.ty, &format!("parameter {}", parameter.name))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        };
+    Ok(PackageActorAbi {
+        actor_abi_identity: actor.actor_abi_identity.clone(),
+        abi: ActorAbiInput {
+            actor_name: actor.abi.actor_name.clone(),
+            actor_id_type: normalize(&actor.abi.actor_id_type, "id type")?,
+            key_field: actor.abi.key_field.clone(),
+            fields: actor
+                .abi
+                .fields
+                .iter()
+                .map(|field| {
+                    Ok(ActorFieldIr {
+                        name: field.name.clone(),
+                        ty: normalize(&field.ty, &format!("field {}", field.name))?,
+                        encoding: field.encoding,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            create: actor
+                .abi
+                .create
+                .as_ref()
+                .map(|create| -> Result<ActorCreateSignatureIr, String> {
+                    Ok(ActorCreateSignatureIr {
+                        parameters: normalize_parameters(&create.parameters)?,
+                    })
+                })
+                .transpose()?,
+            public_methods: actor
+                .abi
+                .public_methods
+                .iter()
+                .map(|method| {
+                    Ok(ActorPublicMethodIr {
+                        method_identity: method.method_identity.clone(),
+                        name: method.name.clone(),
+                        parameters: normalize_parameters(&method.parameters)?,
+                        return_type: normalize(
+                            &method.return_type,
+                            &format!("method {}", method.name),
+                        )?,
+                        may_suspend: method.may_suspend,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            actor_runtime_abi_version: actor.abi.actor_runtime_abi_version.clone(),
+        },
+    })
 }
 
 fn normalize_artifact_interface_methods(
@@ -1580,6 +1785,9 @@ fn index_source_types(
                             .map(|param| (param.name.clone(), param.ty.name.clone()))
                             .collect::<Vec<_>>()
                     }),
+                    canonical_id_type: None,
+                    canonical_fields: None,
+                    canonical_create: None,
                 },
                 module_path: module_path.to_string(),
                 public_path: None,

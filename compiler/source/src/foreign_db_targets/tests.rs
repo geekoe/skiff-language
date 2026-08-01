@@ -199,6 +199,7 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
                     is_interface: false,
                     type_params: Vec::new(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )]),
         },
@@ -218,6 +219,7 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
                     descriptor: Some(descriptor),
                     type_params: Vec::new(),
                     interface_methods: Vec::new(),
+                    actor: None,
                 },
             )]),
             ..PackageImplementationLinks::default()

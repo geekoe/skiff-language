@@ -44,6 +44,7 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
             is_interface: false,
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     artifact.package_local_abi.implementation_symbols.insert(
@@ -55,6 +56,7 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
             is_interface: true,
             type_params: Vec::new(),
             interface_methods: interface_methods.clone(),
+            actor: None,
         },
     );
     artifact.package_local_abi.implementation_symbols.insert(
@@ -78,6 +80,7 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
             }),
             type_params: Vec::new(),
             interface_methods: Vec::new(),
+            actor: None,
         },
     );
     artifact.implementation_links.types.insert(
@@ -90,6 +93,7 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
             descriptor: Some(TypeDescriptorIr::Interface),
             type_params: Vec::new(),
             interface_methods: interface_methods.clone(),
+            actor: None,
         },
     );
     artifact.implementation_links.constants.insert(
