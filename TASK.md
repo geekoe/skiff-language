@@ -1,79 +1,71 @@
-# 叶子任务合同：修复 recoverable interface 再编码与 interface 方法不可调度
+# Leaf task: make whole-assembly admission failures visible and non-overflowing
 
-## 父任务
+## Parent
 
-`/root/skiff_fix_recoverable`（主 Agent 派发，A+B 双基线缺陷）。
+`/root/runtime_admission_fix`（主 Agent 派发：定位并修复新 runtime 加载完整 dev assembly 时
+admission 阶段 tokio worker stack overflow / abort）。
 
-## 基线
+## Baseline
 
-- Repo：`/Users/geek/workspace/skiff`
-- 基线 commit/tree：`1532bd7b`（integration/actor-wave-a HEAD，`git rev-parse` 已验证）
-- 分支：`dev/fix-recoverable-interface`
-- worktree：`/Users/geek/workspace/wt-skiff-fix-recoverable`
+- Repo：`/Users/geek/workspace/skiff`，main @ `ff03ec0f`（主 worktree 已检出）。
+- 分支：`dev/fix-runtime-admission-overflow`。
+- Worktree：`/Users/geek/workspace/wt-skiff-fix-admission`，独立
+  `CARGO_TARGET_DIR=/Users/geek/workspace/wt-skiff-fix-admission/target`。
 
-## 写集边界
+## Fault facts（主 Agent 提供，调查后修正）
 
-允许写：
+- 新 runtime binary（`dev-home/bin/skiff-runtime`，sha256 `c87ec34e…`）连 stable router 后
+  `runtime.assembly_admission_failed stage=admission`，错误只有
+  `whole-assembly activation context construction failed`；`runtime.err.log` 有历史
+  stack overflow 记录（Jul 31，旧会话）。
+- dev assembly `e9a18a5d…`（15 package，ThreadActor、ToolProvider/LlmClient interface、
+  recoverable codec 等）此前在 stable 上反复 admission 失败；小 assembly PASS。
 
-- `runtime/boundary/src/recoverable.rs`
-- `runtime/eval/src/recoverable_behavior.rs`
-- `runtime/linker/src/assembly_execution/code_linker.rs`
-- `runtime/linker/src/linker/file_conversion.rs`
-- `runtime/linker/src/linker/link_diagnostics.rs`（仅可见性 `pub(super)` -> `pub(crate)`）
-- 测试：`runtime/service-db/src/tests.rs`、`runtime/boundary/src/recoverable/tests.rs`、
-  `runtime/boundary/src/binary/tests.rs`（新字段编译必需）、`runtime/eval/src/spawn_ops.rs`、
-  `runtime/linker/src/assembly/tests.rs`
+## 调查结论（证据见自验收矩阵）
 
-禁止：`router/src`、`runtime/host` actor 路径、`runtime/transport`、集成分支
-`integration/actor-wave-a`、main、push。共享 target：
-`CARGO_TARGET_DIR=/Users/geek/workspace/skiff/target`。
+1. 当前代码（ff03ec0f）+ 当前 artifacts 能正常 admission dev assembly：
+   - 隔离 stack（动态端口 46xxx、独立 Mongo、完整 artifacts 拷贝）中，新构建 runtime
+     `c2402cce` 与 stable 二进制 `c87ec34e` 都成功 admission 并注册 healthy replica。
+   - 恢复 stable 三个 service DB（mongodump/restore）后仍成功 admission。
+   - `c87ec34e` 与 fresh build 符号集完全一致（34441 个 T 符号逐一匹配），仅 canonical-json
+     debug 路径不同；机器码一致，无行为差异。
+2. stable 实例在 03:18–03:20Z 的失败是配置快照错配的瞬时状态；03:22Z 起 router committed
+   tuple 更新为 generation 1 + snapshot `9afb6df8`，同一二进制已 healthy 至今。
+3. 真正的可复现缺陷是**错误根因不可见**：
+   - 本仓库 anyhow（1.0.10x）的 `Display` 只打印最外层 context；`reconnect_loop` 用
+     `%error`，因此 `whole-assembly activation context construction failed` 背后的真实原因
+     （例如 `whole-assembly service DB index provisioning failed: ... no service DB encryption
+     keyring`）完全不出现。prepare/commit reject 路径已经用 `{:#}`，recovery 路径漏了。
+   - `active_assembly_context` 有 4 处 `anyhow::anyhow!(error.to_string())`，Opaque wire
+     payload 的 Display 为空时会把根因压成空错误，admission 链变成无内因的
+     `whole-assembly activation context construction failed`。
+4. 当前代码上没有可复现的 stack overflow（deep-JSON 探针在 2000 层正常；dev assembly 各
+   记录 depth 远低于 tokio 64MiB worker stack 阈值）。历史 overflow 属于旧会话二进制，不在
+   本修复范围内。
 
-## A：解码 interface 值不可再编码
+## 写集
 
-根因：`restore_local_interface_self` 返回的 `concrete_type_identity` 是 durable
-`LocalConcreteRestoreKey`（`abi-type:...`），decode 时被写成
-`InterfaceCarrier::Local.concrete_type`；而 encode 侧 `entry_for_runtime_table` 按 runtime
-concrete key（`linked_type_ref_runtime_key`）匹配，导致 decode 后的值无法再 encode。
+- `runtime/host/src/host/lifecycle.rs`：`runtime.router_connection_error` 改用
+  `{:#}` 输出完整 anyhow 链（与 `assembly_prepare_rejected`/`commit_rejected` 对齐）。
+- `runtime/host/src/loader/active_assembly_context.rs`：新增 `provider_error()` 辅助函数，
+  替换 4 处 `anyhow!(error.to_string())`；Display 为空时回退 `Debug`，保证根因永不消失。
+- `runtime/host/src/loader/assembly_admission/tests/full_chain/db_index_provisioning.rs`：
+  新增回归测试 `provisioning_root_cause_stays_visible_in_recovery_error_chain`。
+- `TASK.md`：本任务合同与结果。
 
-修复：
+禁止为旧 schema 加兼容层；未改动。
 
-1. `RecoverableRestoredLocalInterfaceSelf` 新增 `runtime_concrete_type_identity` 字段。
-2. decode 构造 carrier 时用 `restored.runtime_concrete_type_identity`。
-3. eval `restore_local_interface_self` 返回 `entry.runtime_concrete_type_identity`。
-4. 同步测试 hook：
-   - `runtime/boundary/src/recoverable/tests.rs`：hook 返回 runtime key；encode hook 校验
-     carrier runtime key；roundtrip 断言 runtime key 并追加第二次 encode。
-   - `runtime/service-db/src/tests.rs`：同上（新增 `TEST_PROVIDER_RUNTIME_IMPL`），
-     追加 write→read→write。
-   - `runtime/eval/src/spawn_ops.rs`：断言 decoded carrier concrete_type ==
-     `linked_type_ref_runtime_key(...)`、`method_table.id()` 指向当前 program table；
-     追加 decode 后再次 encode。
-   - `runtime/boundary/src/binary/tests.rs`：新字段编译同步。
+## 自验收矩阵
 
-## B：interface 方法不可调度
-
-根因：`link_method_table` 只 canonicalize `table.interface`，未重算每个 slot 的
-`method_abi_id`；普通 interface call 侧重新 canonicalize，dispatch 时拼写不一致。
-
-修复：
-
-1. `link_method_table`：`link_interface` 后对每个 slot 用
-   `canonical_linked_interface_method_abi_id(&table.interface, &slot.method_name)` 重算
-   `method_abi_id`，method_name 缺失 fail closed。
-2. `file_conversion.rs` legacy `linked_interface_method_slot_plan` 同步重算（同样 fail
-   closed），返回 `anyhow::Result`。
-3. eval `interface_method_slot_from_linked` 防御性重算（method_name 缺失 fail closed）。
-4. 测试：linker 层“非 canonical slot id -> link 后 canonical”；eval 层
-   “decode 出的 provider 可实际 dispatch”（ToolProvider providerName 探针）。
-
-## 自验收
-
-- `cargo test -p skiff-runtime-boundary -p skiff-runtime-eval -p skiff-runtime-linker -p skiff-runtime-service-db`
-  （聚焦相关包；若包名不同按 workspace 实际包名）
-- `node scripts/verify.mjs` 基线 36/36 全绿
-- 报告精确命令、结果、写集
+| 项 | 结果 |
+| --- | --- |
+| 新回归测试（修复前） | FAIL（空 Display 根因被吞） |
+| 新回归测试（修复后） | PASS |
+| `cargo test -p skiff-runtime-host --lib`（相关 crate） | 见 commit message / 交接 |
+| dev assembly 隔离 admission（worktree 自建 runtime） | 成功 |
+| stable 二进制 `c87ec34e` 同场景 | 成功（现状 healthy） |
 
 ## 交接
 
-- 集成 Agent：`skiff_integration`（branch/worktree/commit/tree/写集/自验收矩阵/越界声明）
-- 同时通知主 Agent
+- 集成 Agent：`skiff_integration`。
+- 不 merge、不 push、不碰集成分支。

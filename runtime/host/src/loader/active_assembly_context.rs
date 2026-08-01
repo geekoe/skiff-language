@@ -14,13 +14,25 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
-    DbCapabilitySource, DbCapabilityTarget, DbCapabilityTargetId, DbProviderBuildInput,
-    DbProviderConfig, DbProviderSource, DbProviderTargetMetadata,
+    DbCapabilityError, DbCapabilitySource, DbCapabilityTarget, DbCapabilityTargetId,
+    DbProviderBuildInput, DbProviderConfig, DbProviderSource, DbProviderTargetMetadata,
 };
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
 
 use super::config_snapshot::{materialize_snapshot_config, ActivationConfigViews};
+
+/// Converts a capability/provider error into an anyhow error without dropping the root
+/// cause. Opaque wire payloads can Display as an empty string; fall back to `Debug` so
+/// whole-assembly admission failures always name the underlying provider rejection.
+fn provider_error(error: DbCapabilityError) -> anyhow::Error {
+    let message = error.to_string();
+    if message.trim().is_empty() {
+        anyhow::anyhow!("{error:?}")
+    } else {
+        anyhow::anyhow!(message)
+    }
+}
 
 /// Immutable activation owners and canonical target facts published with one assembly generation.
 #[derive(Debug)]
@@ -77,7 +89,7 @@ impl ActiveAssemblyContextSet {
             db_provider
                 .provision(db_inputs)
                 .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))
+                .map_err(provider_error)
                 .context("whole-assembly service DB index provisioning failed")?;
         }
         let mut db_sources = BTreeMap::new();
@@ -143,10 +155,10 @@ impl ActiveAssemblyContextSet {
                         environment: environment.to_string(),
                         service_id: deployment.service_id.clone(),
                         config: DbProviderConfig::mongo(provider.mongo_url.as_str())
-                            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+                            .map_err(provider_error)?,
                         runtime_program_db,
                     })
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                    .map_err(provider_error)?
             };
             for (operation, linked_operation) in linked.operations() {
                 if operation_targets
@@ -329,8 +341,7 @@ fn candidate_db_provider_inputs(
         inputs.push(DbProviderBuildInput {
             environment: environment.to_string(),
             service_id: deployment.service_id.clone(),
-            config: DbProviderConfig::mongo(provider.mongo_url.as_str())
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            config: DbProviderConfig::mongo(provider.mongo_url.as_str()).map_err(provider_error)?,
             runtime_program_db,
         });
     }

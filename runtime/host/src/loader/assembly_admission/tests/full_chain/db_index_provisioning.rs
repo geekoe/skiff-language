@@ -288,3 +288,46 @@ async fn every_runtime_replica_runs_the_idempotent_whole_candidate_gate() {
         "every replica must independently await the provider's idempotent gate"
     );
 }
+
+#[tokio::test]
+async fn provisioning_root_cause_stays_visible_in_recovery_error_chain() {
+    let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
+    let provider = AdmissionGateDbProvider::default();
+    // Opaque provider failures can Display as an empty string; the whole-candidate
+    // recovery error must never collapse to an empty root cause.
+    provider.fail_with("");
+    let controller = AssemblyAdmissionController::new(
+        "runtime-chain-root-cause",
+        DbProviderSource::new(provider.clone()),
+    );
+
+    let error = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &reference,
+            &config_snapshot,
+            &fixture.resolver,
+            &config_resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect_err("whole-candidate provisioning failure must reject cold recovery");
+
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains("whole-assembly activation context construction failed"),
+        "outer admission context must remain in the chain: {chain}"
+    );
+    assert!(
+        chain.contains("whole-assembly service DB index provisioning failed"),
+        "provisioning context must remain in the chain: {chain}"
+    );
+    assert!(
+        chain.contains("Decode"),
+        "empty-Display provider failure must stay visible through the Debug fallback: {chain}"
+    );
+}

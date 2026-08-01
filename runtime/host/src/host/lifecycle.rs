@@ -26,7 +26,7 @@ impl RuntimeHost {
                 Err(error) => {
                     warn!(
                         event = "runtime.router_connection_error",
-                        error = %error,
+                        error = %format_args!("{error:#}"),
                         reconnect_in_ms = backoff.as_millis() as u64
                     );
                 }
@@ -76,7 +76,7 @@ impl RuntimeHost {
             .await
             .map_err(|error| {
                 RuntimeError::invalid_artifact(format!(
-                    "committed assembly admission failed: {error}"
+                    "committed assembly admission failed: {error:#}"
                 ))
             })?;
         Ok(())
