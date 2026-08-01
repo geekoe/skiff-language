@@ -19,13 +19,16 @@ const skiffRoot = resolve(testDir, '..', '..');
 const instanceScript = join(skiffRoot, 'scripts', 'skiff-instance.mjs');
 
 test('instance config defaults environment to dev and exposes it in the summary', () => {
+  const configPath = '/tmp/skiff-instance/config.yml';
   const config = defaultInstanceConfig({
-    configPath: '/tmp/skiff-instance/config.yml',
+    configPath,
     repoRoot: skiffRoot,
   });
 
   assert.match(defaultInstanceConfigText(), /^environment: dev$/m);
+  assert.match(defaultInstanceConfigText(), /^cargoTargetDir: \.\.\/build\/cargo-target$/m);
   assert.equal(config.environment, 'dev');
+  assert.equal(config.paths.cargoTargetDir, resolve(dirname(configPath), '../build/cargo-target'));
   assert.equal(instanceSummary(config).environment, 'dev');
 });
 

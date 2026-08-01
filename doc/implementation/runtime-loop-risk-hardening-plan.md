@@ -731,10 +731,8 @@ Router focused tests：
 
 Integration / smoke：
 
-- Rebuild dev runtime when runtime code changes:
-  `node scripts/build-dev-runtime.mjs`
-- Restart stable runtime:
-  `node scripts/skiff.mjs instance restart .skiff-instance/config.yml runtime`
+- Build, install, and reconcile the stable runtime when runtime code changes:
+  `node scripts/skiff.mjs instance up .skiff-instance/config.yml`
 - Read raw loop-risk health when diagnosing the stable instance:
   `curl 'http://127.0.0.1:4001/__router/health?detail=loop-risk'`
 - Run Agine smoke:

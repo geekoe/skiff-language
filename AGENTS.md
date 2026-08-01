@@ -62,11 +62,9 @@ node scripts/skiff.mjs instance down .skiff-instance/config.yml
 node scripts/skiff.mjs instance up .skiff-instance/config.yml
 ```
 
-`node scripts/build-dev-runtime.mjs` 默认读取同一 instance config，安装 binary 后自动执行
-`instance refresh-binaries`。自定义 instance 应传 `--config <path>` 和匹配的 `--dev-home <dir>`。
-只有明确需要纯 build/install 时才传 `--no-refresh`；输出会标记 active runtime 可能 stale，并给出
-`instance refresh-binaries <config>` 恢复命令。`instance build` 同样保留 build-only 语义，但会报告
-仍在运行旧 binary 的 PID 和恢复命令。
+只有明确需要纯 build/install 时才使用 `instance build <config>`；它会报告仍在运行旧 binary
+的 PID 和 `instance refresh-binaries <config>` 恢复命令。正常本地开发使用 `instance up <config>`，
+由同一份 instance config 完成构建、安装和运行状态收敛。
 
 纯编译和单元验证不需要启动 instance：
 

@@ -40,7 +40,7 @@ export function defaultInstanceConfigText() {
     '# This file is separate from service/package skiff.yml configuration.',
     'environment: dev',
     'devHome: dev-home',
-    'cargoTargetDir: ~/.cache/skiff/cargo-target',
+    'cargoTargetDir: ../build/cargo-target',
     '',
     'packageDirs:',
     '  # - ../skiff-packages',
@@ -156,11 +156,10 @@ function normalizeInstanceConfig(raw, context) {
     context.instanceRoot,
     readString(raw.devHome, 'devHome', 'dev-home'),
   );
-  const cargoTargetDir = resolveHome(readString(
-    raw.cargoTargetDir,
-    'cargoTargetDir',
-    '~/.cache/skiff/cargo-target',
-  ));
+  const cargoTargetDir = resolveConfigPath(
+    context.instanceRoot,
+    readString(raw.cargoTargetDir, 'cargoTargetDir', '../build/cargo-target'),
+  );
   const ports = normalizePorts(raw.ports);
   const http = normalizeHttp(raw.http);
   const activation = normalizeActivation(raw.activation);

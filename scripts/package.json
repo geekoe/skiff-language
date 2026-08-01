@@ -12,7 +12,6 @@
     "dev-sync": "node skiff-dev-sync.mjs",
     "dev-sync:check": "node skiff-dev-sync.mjs --check --root ../compiler/tests/fixtures/router-websocket-fixture",
     "dev-sync:check-sync": "node verify.mjs --only scripts-dev-sync",
-    "build-dev-runtime": "node build-dev-runtime.mjs",
     "type-check": "node verify.mjs --only scripts-syntax",
     "test": "node verify.mjs --only scripts",
     "websocket-fixture:smoke": "node ../runtime/scripts/websocket-fixture-smoke-playwright.mjs"

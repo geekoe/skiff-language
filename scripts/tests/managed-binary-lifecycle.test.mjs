@@ -12,7 +12,6 @@ import { installManagedBinary } from '../lib/managed-binary.mjs';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..', '..');
 const skiffCli = join(scriptDir, '..', 'skiff.mjs');
-const buildDevRuntime = join(scriptDir, '..', 'build-dev-runtime.mjs');
 
 test('same-content managed install repairs executable mode atomically', {
   skip: process.platform === 'win32',
@@ -56,10 +55,6 @@ test('managed runtime binary identity restarts only the matching stale instance'
   await writeFakePnpm(join(fakeBin, 'pnpm'));
 
   try {
-    assert.match(
-      await runCapture('node', [buildDevRuntime, '--help'], { env }),
-      /--config <path>.*--no-refresh/,
-    );
     await initializeFixture(configA, baseA, cargoTargetDir, env);
     await initializeFixture(configB, baseB, cargoTargetDir, env);
 
@@ -118,57 +113,50 @@ test('managed runtime binary identity restarts only the matching stale instance'
     assert.equal((await componentStatus(configA, 'router', env)).pid, initialRouterA.pid, 'runtime refresh must not restart another component');
     assert.equal((await runtimeStatus(configB, env)).pid, initialB.pid, 'another instance must not be restarted');
 
-    const devHomeA = dirname(dirname((await runtimeStatus(configA, env)).managedBinary.path));
     await rm(pathsA.ecosystemStoreCli);
-    await run(
+    const compilerRebuildOutput = JSON.parse(await runCapture(
       'node',
-      [
-        buildDevRuntime,
-        '--config',
-        configA,
-        '--dev-home',
-        devHomeA,
-      ],
+      [skiffCli, 'instance', 'build', configA],
       { env: { ...env, FAKE_RUNTIME_VERSION: 'a3' } },
-    );
+    ));
+    assert.deepEqual(compilerRebuildOutput.staleProcesses, [{ name: 'runtime', pid: restartedA.pid }]);
     const compilerAfterBuildDev = await stat(pathsA.ecosystemStoreCli);
     assert.equal(compilerAfterBuildDev.isFile(), true);
     if (process.platform !== 'win32') {
       assert.notEqual(
         compilerAfterBuildDev.mode & 0o111,
         0,
-        'build-dev-runtime must reinstall the managed compiler as executable',
+        'instance build must reinstall the managed compiler as executable',
       );
     }
+    await run('node', [skiffCli, 'instance', 'refresh-binaries', configA], { env });
     const refreshedA = await runtimeStatus(configA, env);
     assert.equal(refreshedA.category, 'running');
     assert.notEqual(refreshedA.pid, restartedA.pid, 'standard build/install must reconcile the active runtime');
     assert.equal((await runtimeStatus(configB, env)).pid, initialB.pid, 'build/install refresh must stay config-scoped');
 
-    const noRefreshOutput = JSON.parse(await runCapture(
+    const buildOnlyOutput = JSON.parse(await runCapture(
       'node',
-      [buildDevRuntime, '--config', configA, '--dev-home', devHomeA, '--no-refresh'],
+      [skiffCli, 'instance', 'build', configA],
       { env: { ...env, FAKE_RUNTIME_VERSION: 'a4' } },
     ));
-    assert.deepEqual(noRefreshOutput.refresh, {
-      action: 'skipped-explicitly',
-      activeRuntimeMayBeStale: true,
-      recovery: `node scripts/skiff.mjs instance refresh-binaries ${configA}`,
-    });
+    assert.deepEqual(buildOnlyOutput.staleProcesses, [{ name: 'runtime', pid: refreshedA.pid }]);
+    assert.equal(
+      buildOnlyOutput.recovery,
+      `node scripts/skiff.mjs instance refresh-binaries ${configA}`,
+    );
     const explicitlyStaleA = await runtimeStatus(configA, env);
     assert.equal(explicitlyStaleA.category, 'stale-binary');
-    assert.equal(explicitlyStaleA.pid, refreshedA.pid, '--no-refresh must preserve build-only behavior');
+    assert.equal(explicitlyStaleA.pid, refreshedA.pid, 'instance build must preserve build-only behavior');
     await run('node', [skiffCli, 'instance', 'refresh-binaries', configA], { env });
     const explicitlyRefreshedA = await runtimeStatus(configA, env);
     assert.equal(explicitlyRefreshedA.category, 'running');
     assert.notEqual(explicitlyRefreshedA.pid, refreshedA.pid);
     assert.equal((await runtimeStatus(configB, env)).pid, initialB.pid);
 
-    await run(
-      'node',
-      [buildDevRuntime, '--config', configA, '--dev-home', devHomeA, '--no-refresh'],
-      { env: { ...env, FAKE_RUNTIME_VERSION: 'a5' } },
-    );
+    await run('node', [skiffCli, 'instance', 'build', configA], {
+      env: { ...env, FAKE_RUNTIME_VERSION: 'a5' },
+    });
     const beforeRepairA = await runtimeStatus(configA, env);
     assert.equal(beforeRepairA.category, 'stale-binary');
     await run('node', [skiffCli, 'instance', 'repair', configA], {
@@ -200,7 +188,7 @@ async function initializeFixture(configPath, basePort, cargoTargetDir, env) {
   await writeFile(
     configPath,
     source
-      .replace('cargoTargetDir: ~/.cache/skiff/cargo-target', `cargoTargetDir: ${cargoTargetDir}`)
+      .replace('cargoTargetDir: ../build/cargo-target', `cargoTargetDir: ${cargoTargetDir}`)
       .replace('  base: 4100', `  base: ${basePort}`)
       .replace('  telemetry: managed', '  telemetry: disabled'),
   );
