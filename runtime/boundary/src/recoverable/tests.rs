@@ -256,6 +256,7 @@ const READER_METHOD: &str = "method:pkg.Reader:read";
 const WRITER_INTERFACE: &str = "pkg.Writer";
 const WRITER_PROJECTION: &str = "projection:pkg.Writer:pkg.ReaderImpl";
 const READER_IMPL: &str = "pkg.ReaderImpl";
+const READER_RUNTIME_IMPL: &str = "runtime:pkg.ReaderImpl";
 const SERVICE_ARTIFACT: &str = "svc/account";
 
 fn any_reader_expected() -> RuntimeRecoverableExpectedTypePlan {
@@ -293,7 +294,7 @@ fn local_interface_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
     let interface = InterfaceValue::new(
         READER_INTERFACE.to_string(),
         InterfaceCarrier::Local {
-            concrete_type: READER_IMPL.to_string(),
+            concrete_type: READER_RUNTIME_IMPL.to_string(),
             method_table: test_method_table(READER_INTERFACE, READER_PROJECTION),
             payload: RuntimeValue::String("Ada".to_string()),
         },
@@ -430,6 +431,9 @@ impl RecoverableBehaviorHooks for TestBehaviorHooks {
         if !self.encode_available {
             return Ok(None);
         }
+        if request.concrete_type != READER_RUNTIME_IMPL {
+            return Ok(None);
+        }
         let value = match request.payload {
             RuntimeValue::String(value) => value.as_str(),
             RuntimeValue::Null => "null",
@@ -477,6 +481,7 @@ impl RecoverableBehaviorHooks for TestBehaviorHooks {
             .unwrap_or_default();
         Ok(Some(RecoverableRestoredLocalInterfaceSelf {
             concrete_type_identity: concrete_type_identity.clone(),
+            runtime_concrete_type_identity: READER_RUNTIME_IMPL.to_string(),
             payload: RuntimeValue::String(value),
         }))
     }
@@ -1245,11 +1250,26 @@ fn behavior_api_roundtrips_owner_internal_local_interface_value() {
     else {
         panic!("decoded interface should use local carrier");
     };
-    assert_eq!(concrete_type, READER_IMPL);
+    assert_eq!(concrete_type, READER_RUNTIME_IMPL);
     assert_eq!(method_table.id(), READER_PROJECTION);
     assert_eq!(method_table.interface_abi_id(), READER_INTERFACE);
     assert_eq!(method_table.slots()[0].method_abi_id(), READER_METHOD);
     assert_eq!(payload, &RuntimeValue::String("Ada".to_string()));
+
+    let reencoded =
+        RecoverableBoundaryCodec::encode_envelope_with_behavior(
+            &decoded,
+            &expected,
+            &context,
+            &decode_heap,
+            &hooks,
+        )
+        .expect("decoded local interface should re-encode through behavior hook");
+    assert_eq!(hooks.encode_calls.get(), 2);
+    assert!(matches!(
+        reencoded.root.state,
+        RecoverableState::InterfaceValue(InterfaceValueState::Local { .. })
+    ));
 
     let durable_policy_hooks = TestBehaviorHooks::default();
     let mut decode_heap = RequestHeap::default();

@@ -58,6 +58,7 @@ pub struct RecoverableLocalInterfaceRestoreRequest<'a> {
 
 pub struct RecoverableRestoredLocalInterfaceSelf {
     pub concrete_type_identity: String,
+    pub runtime_concrete_type_identity: String,
     pub payload: RuntimeValue,
 }
 
@@ -1010,6 +1011,14 @@ fn decode_local_interface_node_with_behavior(
             root_expected,
         ));
     }
+    if restored.runtime_concrete_type_identity.is_empty() {
+        return Err(code_identity_missing_error(
+            "local InterfaceValue restore hook returned an empty runtime concrete type identity",
+            path,
+            context,
+            root_expected,
+        ));
+    }
 
     let conforms = behavior_hooks.concrete_type_conforms_to_interface(
         RecoverableInterfaceConformanceRequest {
@@ -1071,7 +1080,7 @@ fn decode_local_interface_node_with_behavior(
         InterfaceValue::new(
             expected_any.interface_identity.clone(),
             InterfaceCarrier::Local {
-                concrete_type: restored.concrete_type_identity,
+                concrete_type: restored.runtime_concrete_type_identity,
                 method_table,
                 payload: restored.payload,
             },

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::Context;
 use skiff_artifact_model as artifact;
+use skiff_artifact_identity::canonical_interface_method_abi_id_from_parts;
 
 use super::execution_validation::validate_file_ir_execution;
 use crate::program::{
@@ -958,7 +959,7 @@ fn linked_expr(
         } => LinkedExprIr::InterfaceBox {
             value: linked_expr_ref(value),
             interface: linked_interface_instantiation_ref(interface),
-            source: linked_box_source(source),
+            source: linked_box_source(source)?,
         },
         artifact::ExprIr::MapLiteral { entries } => LinkedExprIr::MapLiteral {
             entries: linked_expr_ref_map(entries),
@@ -1517,26 +1518,26 @@ fn linked_interface_instantiation_ref(
     }
 }
 
-fn linked_box_source(source: &artifact::BoxSourceIr) -> LinkedBoxSourceIr {
+fn linked_box_source(source: &artifact::BoxSourceIr) -> anyhow::Result<LinkedBoxSourceIr> {
     match source {
         artifact::BoxSourceIr::Local {
             concrete_type,
             method_table,
-        } => LinkedBoxSourceIr::Local {
+        } => Ok(LinkedBoxSourceIr::Local {
             concrete_type: linked_type_ref(concrete_type),
-            method_table: linked_interface_method_table_plan(method_table),
-        },
+            method_table: linked_interface_method_table_plan(method_table)?,
+        }),
         artifact::BoxSourceIr::Remote {
             dependency_ref,
             public_instance_key,
             operations,
             callee_protocol_identity,
-        } => LinkedBoxSourceIr::Remote {
+        } => Ok(LinkedBoxSourceIr::Remote {
             dependency_ref: dependency_ref.clone(),
             public_instance_key: public_instance_key.clone(),
             operations: linked_remote_operation_table_plan(operations),
             callee_protocol_identity: callee_protocol_identity.clone(),
-        },
+        }),
     }
 }
 
@@ -1577,25 +1578,37 @@ fn linked_remote_operation_slot_plan(
 
 fn linked_interface_method_table_plan(
     plan: &artifact::InterfaceMethodTablePlanIr,
-) -> LinkedInterfaceMethodTablePlanIr {
-    LinkedInterfaceMethodTablePlanIr {
+) -> anyhow::Result<LinkedInterfaceMethodTablePlanIr> {
+    Ok(LinkedInterfaceMethodTablePlanIr {
         interface: linked_interface_instantiation_ref(&plan.interface),
         concrete_type: linked_type_ref(&plan.concrete_type),
         slots: plan
             .slots
             .iter()
-            .map(linked_interface_method_slot_plan)
-            .collect(),
-    }
+            .map(|slot| linked_interface_method_slot_plan(&plan.interface, slot))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    })
 }
 
 fn linked_interface_method_slot_plan(
+    interface: &artifact::InterfaceInstantiationRef,
     slot: &artifact::InterfaceMethodSlotPlanIr,
-) -> LinkedInterfaceMethodSlotPlanIr {
-    LinkedInterfaceMethodSlotPlanIr {
+) -> anyhow::Result<LinkedInterfaceMethodSlotPlanIr> {
+    let method_name = slot.method_name.trim();
+    if method_name.is_empty() {
+        anyhow::bail!(
+            "interface method table slot {} is missing methodName",
+            slot.slot
+        );
+    }
+    Ok(LinkedInterfaceMethodSlotPlanIr {
         slot: slot.slot,
         method_name: slot.method_name.clone(),
-        method_abi_id: slot.method_abi_id.clone(),
+        method_abi_id: canonical_interface_method_abi_id_from_parts(
+            &interface.interface_abi_id,
+            &interface.canonical_type_args,
+            method_name,
+        ),
         signature: LinkedInterfaceMethodSlotSignatureIr {
             params: slot
                 .signature
@@ -1612,7 +1625,7 @@ fn linked_interface_method_slot_plan(
             executable_index: slot.target.executable_index,
             receiver_call_abi: slot.target.receiver_call_abi,
         },
-    }
+    })
 }
 
 #[cfg(test)]

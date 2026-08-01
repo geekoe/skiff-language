@@ -13,6 +13,7 @@ use super::{
     address_resolver::AssemblyAddressResolver,
     call_semantics::{exact_interface_owner, AssemblyCallSemanticDelegate},
 };
+use crate::linker::canonical_linked_interface_method_abi_id;
 
 fn actor_registry_target_name(target: &LinkedCallTarget) -> Option<String> {
     let LinkedCallTarget::Native { target } = target else {
@@ -773,6 +774,17 @@ impl<'a> AssemblyCodeLinker<'a> {
         self.link_interface(code_slot, file_index, &mut table.interface)?;
         self.link_type_ref(code_slot, file_index, &mut table.concrete_type)?;
         for slot in &mut table.slots {
+            let method_name = slot.method_name.trim();
+            if method_name.is_empty() {
+                anyhow::bail!(
+                    "interface method table slot {} is missing methodName",
+                    slot.slot
+                );
+            }
+            slot.method_abi_id = canonical_linked_interface_method_abi_id(
+                &table.interface,
+                method_name,
+            );
             for param in &mut slot.signature.params {
                 self.link_type_ref(code_slot, file_index, &mut param.ty)?;
             }

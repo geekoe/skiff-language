@@ -469,7 +469,7 @@ pub(super) fn is_linked_self_type(type_ref: &LinkedTypeRef) -> bool {
     }
 }
 
-pub(super) fn canonical_linked_interface_method_abi_id(
+pub(crate) fn canonical_linked_interface_method_abi_id(
     interface: &crate::program::LinkedInterfaceInstantiationRef,
     method_name: &str,
 ) -> String {
