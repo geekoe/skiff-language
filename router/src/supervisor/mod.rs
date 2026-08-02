@@ -1,0 +1,407 @@
+//! Production Router composition (W-composition; plan §3.2/§5.5/§7).
+//!
+//! [`RouterSupervisor`] is the only lifecycle owner: config, component
+//! construction, listener/task join and shutdown. [`RouterComponents`] is the
+//! stable component manifest consumed by the supervisor; each installed
+//! session-keyed component appears in the static `SessionLayer` consumer
+//! manifest, and the installed lane sinks are injected through the session
+//! inbound sink bundle (plan §5.5) before any listener starts.
+
+pub mod actor;
+pub mod http;
+pub mod session_ports;
+pub mod sinks;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::activation::{
+    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorOptions,
+    ActivationCoordinatorPorts, ActivationStateRepository, BlockingLoaderCandidatePort,
+    EpochStorePublishPort, MongoActivationStateRepository, MongoActivationStateRepositoryOptions,
+    NoopHealthSink, RoutingCandidateQueryPortAdapter, SystemClock,
+};
+use crate::bootstrap::{
+    ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
+};
+use crate::config::RouterConfig;
+use crate::dispatch::{ActorMethodSpawnControl, RequestDispatcher, RuntimeDispatcherOptions};
+use crate::http::dispatch::HttpDispatchPort;
+use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
+use crate::http::server::{start_http_gateway, HttpGatewayServer, HttpGatewayServerOptions};
+use crate::listener::{
+    start_runtime_control_listener, ListenerError, ListenerHandle, ListenerStartOptions,
+};
+use crate::session::consumer::{ConsumerKind, ConsumerManifest};
+use crate::session::demux::InboundSinkSet;
+use crate::session::health::RuntimeHealthLedger;
+use crate::session::layer::{SessionLayer, SessionLayerError, SessionLayerOptions};
+use crate::session::SessionConsumer;
+use crate::ws::types::EmptyMethodCatalog;
+use crate::ws::{
+    AllowAnyPendingAdmission, NoopNotificationObserver, WebSocketLane, WebSocketLaneOptions,
+};
+
+use self::actor::{assemble_actor_components, ActorComponents};
+use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
+use self::session_ports::{
+    ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
+    LayerSessionAbort, SessionCandidateViewSource, SessionHandle, SessionRuntimePeer,
+    SessionRuntimeViolationSink, StoreRoutingEpochSource, UnsupportedDispatchInbound,
+    WsRuntimeGenerationPeer, WsRuntimeSessionClose,
+};
+use self::sinks::{ActivationTransactionSink, ConnectionFrameSink};
+
+/// Fail-closed supervisor assembly errors; no listener is started and owned
+/// bootstrap state is shut down before the error is returned.
+#[derive(Debug, thiserror::Error)]
+pub enum SupervisorError {
+    #[error("router config environment is required")]
+    EnvironmentMissing,
+    #[error("activation state repository connect failed: {0}")]
+    Repository(String),
+    #[error("bootstrap assembly failed: {0}")]
+    Bootstrap(#[from] BootstrapAssemblyError),
+    #[error("HTTP surface load failed: {0}")]
+    Surface(String),
+    #[error("actor assembly failed: {0}")]
+    Actor(String),
+    #[error("dispatcher assembly failed: {0}")]
+    Dispatcher(String),
+    #[error("session layer assembly failed: {0}")]
+    Session(#[from] SessionLayerError),
+}
+
+/// Stable component manifest (plan §3.2/§5.5). Holds every production owner
+/// and the port adapters that wire them together.
+#[derive(Debug)]
+pub struct RouterComponents {
+    pub config: RouterConfig,
+    pub assembly: Arc<RouterBootstrapAssembly>,
+    pub epoch: Arc<RoutingEpoch>,
+    pub epoch_store: Arc<ActiveRoutingEpochStore>,
+    pub session: Arc<SessionLayer>,
+    pub dispatcher: Arc<RequestDispatcher>,
+    pub pending_http: Arc<PendingHttpRouter>,
+    pub ws_lane: Arc<WebSocketLane>,
+    pub coordinator: ActivationCoordinatorHandle,
+    pub actor: Arc<ActorComponents>,
+    pub http_dispatcher: Arc<DispatcherHttpPort>,
+    pub surface_view: Arc<HttpGatewaySurfaceView>,
+    pub request_sink: Arc<RequestFrameSink>,
+    pub connection_sink: Arc<ConnectionFrameSink>,
+    pub activation_sink: Arc<ActivationTransactionSink>,
+}
+
+impl RouterComponents {
+    /// Production entry: connects the Mongo activation repository and runs
+    /// the full bootstrap + component assembly.
+    pub async fn assemble(config: &RouterConfig) -> Result<Arc<Self>, SupervisorError> {
+        let environment = config
+            .environment
+            .clone()
+            .ok_or(SupervisorError::EnvironmentMissing)?;
+        let repository = Arc::new(
+            MongoActivationStateRepository::connect(
+                &config.service_db.mongo_url,
+                MongoActivationStateRepositoryOptions::default(),
+                Arc::new(SystemClock),
+            )
+            .await
+            .map_err(|error| SupervisorError::Repository(error.to_string()))?,
+        ) as Arc<dyn crate::activation::ActivationStateRepository>;
+        Self::assemble_with(config, &environment, repository).await
+    }
+
+    /// Assembly with an injected repository (tests use the memory fake).
+    pub async fn assemble_with(
+        config: &RouterConfig,
+        environment: &str,
+        repository: Arc<dyn ActivationStateRepository>,
+    ) -> Result<Arc<Self>, SupervisorError> {
+        let assembly = Arc::new(
+            RouterBootstrapAssembly::assemble_with(config, environment, repository).await?,
+        );
+        match Self::assemble_components(config, Arc::clone(&assembly)).await {
+            Ok(components) => Ok(components),
+            Err(error) => {
+                // Fail closed: drain the blocking loader and close the
+                // repository before returning; no listener was started.
+                assembly.shutdown().await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn assemble_components(
+        config: &RouterConfig,
+        assembly: Arc<RouterBootstrapAssembly>,
+    ) -> Result<Arc<Self>, SupervisorError> {
+        let epoch = assembly.epoch().clone();
+        let epoch_store = assembly.epoch_store();
+        let surface_view = Arc::new(
+            self::http::load_http_surface_view(&config.artifacts_path, &epoch)
+                .map_err(SupervisorError::Surface)?,
+        );
+        let session_handle = SessionHandle::new();
+        let actor = assemble_actor_components(
+            Arc::clone(&epoch),
+            Arc::clone(&epoch_store),
+            session_handle.clone(),
+        )
+        .map_err(SupervisorError::Actor)?;
+
+        let dispatcher = Arc::new(
+            RequestDispatcher::new(
+                RuntimeDispatcherOptions::new(
+                    usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
+                    Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
+                    Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
+                    Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
+                    Arc::new(SessionRuntimePeer::new(session_handle.clone())),
+                    Arc::new(LayerSessionAbort::new(session_handle.clone())),
+                    Arc::clone(&actor.actor_lane_spawn_control) as Arc<dyn ActorMethodSpawnControl>,
+                )
+                .map_err(SupervisorError::Dispatcher)?,
+            )
+            .map_err(SupervisorError::Dispatcher)?,
+        );
+
+        let ws_lane = WebSocketLane::new(
+            WebSocketLaneOptions::default(),
+            Arc::new(WsRuntimeGenerationPeer::new(session_handle.clone())),
+            Arc::new(WsRuntimeSessionClose::new(session_handle.clone())),
+            Arc::new(AllowAnyPendingAdmission),
+            Arc::new(EmptyMethodCatalog),
+            Arc::new(NoopNotificationObserver),
+            Arc::new(SessionRuntimeViolationSink::new(session_handle.clone())),
+            Arc::new(UnsupportedDispatchInbound),
+        );
+
+        let coordinator_ports = ActivationCoordinatorPorts {
+            repository: assembly.repository(),
+            loader: Arc::new(BlockingLoaderCandidatePort::new(
+                assembly.loader(),
+                assembly.strict_loader(),
+                assembly.actor_projection(),
+            )),
+            candidates: Arc::new(RoutingCandidateQueryPortAdapter::new(
+                Arc::clone(&epoch_store),
+                Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
+            )),
+            sessions: Arc::new(ActivationSessionEnqueuePort::new(session_handle.clone())),
+            publish: Arc::new(EpochStorePublishPort::new(Arc::clone(&epoch_store))),
+            health: Arc::new(NoopHealthSink),
+        };
+        let coordinator = ActivationCoordinator::spawn(
+            coordinator_ports,
+            ActivationCoordinatorOptions {
+                mailbox_capacity: 64,
+                ack_deadline: Duration::from_millis(config.activation_prepare_timeout_ms),
+                service_db_mongo_url: Some(config.service_db.mongo_url.clone()),
+            },
+        );
+
+        let session = Arc::new(
+            SessionLayer::with_options(
+                config.clone(),
+                SessionLayerOptions {
+                    committed_epoch: None,
+                    pending_epoch: None,
+                    manifest: ConsumerManifest::installed([
+                        ConsumerKind::HealthLedger,
+                        ConsumerKind::RequestDispatcher,
+                        ConsumerKind::RuntimeGenerationPinLedger,
+                        ConsumerKind::WebSocketRequestBroker,
+                        ConsumerKind::ActivationCoordinator,
+                    ]),
+                    consumers: {
+                        let consumers: Vec<
+                            Arc<dyn crate::session::consumer::SessionConsumer>,
+                        > = vec![
+                            Arc::new(RuntimeHealthLedger::new()),
+                            Arc::new(DispatcherSessionConsumer::new(Arc::clone(&dispatcher))),
+                            Arc::clone(&ws_lane.ledger) as Arc<dyn SessionConsumer>,
+                            Arc::clone(&ws_lane.broker) as Arc<dyn SessionConsumer>,
+                            Arc::new(coordinator.clone()) as Arc<dyn SessionConsumer>,
+                        ];
+                        consumers
+                    },
+                    timing: Default::default(),
+                    budgets: Default::default(),
+                    writer_delay: None,
+                },
+            )
+            .map_err(SupervisorError::Session)?,
+        );
+        session.attach_epoch_store(Arc::clone(&epoch_store));
+        session_handle.set(Arc::clone(&session));
+
+        let pending_http = Arc::new(PendingHttpRouter::new());
+        let request_sink = Arc::new(RequestFrameSink::new(
+            Arc::clone(&dispatcher),
+            Arc::clone(&pending_http),
+        ));
+        let connection_sink = Arc::new(ConnectionFrameSink::new(
+            Arc::clone(&ws_lane),
+            session_handle.clone(),
+        ));
+        let activation_sink = Arc::new(ActivationTransactionSink::new(coordinator.clone()));
+        let sinks =
+            InboundSinkSet {
+                request: Some(
+                    Arc::clone(&request_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
+                ),
+                connection: Some(Arc::clone(&connection_sink)
+                    as Arc<dyn crate::session::demux::InboundFrameSink>),
+                activation_transaction: Some(Arc::clone(&activation_sink)
+                    as Arc<dyn crate::session::demux::InboundFrameSink>),
+                actor: None,
+                spawn: None,
+            };
+        session.install_inbound_sinks(Arc::new(sinks));
+
+        let http_dispatcher = Arc::new(DispatcherHttpPort::new(
+            Arc::clone(&dispatcher),
+            Arc::clone(&pending_http),
+            Duration::from_millis(config.request_timeout_ms),
+        ));
+
+        Ok(Arc::new(Self {
+            config: config.clone(),
+            assembly: Arc::clone(&assembly),
+            epoch,
+            epoch_store,
+            session,
+            dispatcher,
+            pending_http,
+            ws_lane,
+            coordinator,
+            actor,
+            http_dispatcher,
+            surface_view,
+            request_sink,
+            connection_sink,
+            activation_sink,
+        }))
+    }
+}
+
+/// Running supervisor listeners: the public HTTP gateway (production
+/// `HttpDispatchPort`) plus the shared runtime/control listener.
+pub struct SupervisorListeners {
+    pub public_http: HttpGatewayServer,
+    pub runtime_control: ListenerHandle,
+    pub session: Arc<SessionLayer>,
+}
+
+impl SupervisorListeners {
+    /// C-process-lifecycle order: stop public accept, stop control accept,
+    /// drain the session barrier, then join the control listener.
+    pub async fn shutdown(self) -> Result<(), ListenerError> {
+        let Self {
+            public_http,
+            runtime_control,
+            session,
+        } = self;
+        let http_result = public_http.shutdown().await;
+        runtime_control.begin_shutdown();
+        let session_result = session.shutdown().await;
+        let control_result = runtime_control.join_shutdown().await;
+        let mut errors = Vec::new();
+        if let Err(error) = http_result {
+            errors.push(format!("public http: {error}"));
+        }
+        if let Err(error) = session_result {
+            errors.push(format!("session: {error}"));
+        }
+        if let Err(error) = control_result {
+            errors.push(format!("runtime-control: {error}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ListenerError::FailStop(errors.join("; ")))
+        }
+    }
+}
+
+/// Unique lifecycle owner (plan §3.2): config, construction, listener/task
+/// join and shutdown. Owns no business mutable state.
+#[derive(Debug)]
+pub struct RouterSupervisor {
+    components: Arc<RouterComponents>,
+}
+
+impl RouterSupervisor {
+    pub async fn assemble(config: &RouterConfig) -> Result<Self, SupervisorError> {
+        let components = RouterComponents::assemble(config).await?;
+        Ok(Self { components })
+    }
+
+    pub async fn assemble_with(
+        config: &RouterConfig,
+        environment: &str,
+        repository: Arc<dyn ActivationStateRepository>,
+    ) -> Result<Self, SupervisorError> {
+        let components = RouterComponents::assemble_with(config, environment, repository).await?;
+        Ok(Self { components })
+    }
+
+    pub fn components(&self) -> &Arc<RouterComponents> {
+        &self.components
+    }
+
+    /// Starts the public HTTP gateway and the runtime/control listener
+    /// against the assembled components.
+    pub async fn start_listeners(
+        &self,
+        options: &ListenerStartOptions,
+    ) -> Result<SupervisorListeners, ListenerError> {
+        let components = Arc::clone(&self.components);
+        let public_addr = match options.public_bind {
+            Some(addr) => addr,
+            None => crate::listener::resolve_listener_addr(
+                &components.config.host,
+                components.config.http_port,
+            )?,
+        };
+        let http_options = HttpGatewayServerOptions::new(
+            public_addr,
+            usize::try_from(components.config.http_max_request_bytes).unwrap_or(usize::MAX),
+            usize::try_from(components.config.http_max_response_bytes).unwrap_or(usize::MAX),
+        );
+        let http_options = HttpGatewayServerOptions {
+            request_timeout: Duration::from_millis(components.config.request_timeout_ms),
+            ..http_options
+        };
+        let resolver = Arc::new(EpochHttpIngressResolver::new(Arc::clone(
+            &components.surface_view,
+        )));
+        let public_http = start_http_gateway(
+            http_options,
+            Arc::clone(&components.epoch),
+            resolver,
+            Arc::clone(&components.http_dispatcher) as Arc<dyn HttpDispatchPort>,
+        )
+        .await
+        .map_err(|error| ListenerError::Http(error.to_string()))?;
+        let runtime_control = start_runtime_control_listener(
+            &components.config,
+            options,
+            Arc::clone(&components.session),
+        )
+        .await?;
+        Ok(SupervisorListeners {
+            public_http,
+            runtime_control,
+            session: Arc::clone(&components.session),
+        })
+    }
+
+    /// Shuts down the bootstrap assembly (loader drain + repository close)
+    /// after the listeners/sessions have shut down.
+    pub async fn shutdown(&self) {
+        self.components.assembly.shutdown().await;
+    }
+}

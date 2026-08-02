@@ -36,6 +36,11 @@ pub enum OutboundFrameId {
     Bootstrap,
     RegisteredAck,
     Close,
+    /// Arbitrary business frame enqueued by an installed lane port through
+    /// the composition outbound-writer seam. Writer failure terminates the
+    /// exact session like a disconnect (C-session §5.3); the enqueue caller
+    /// already observed the non-blocking queue-full result synchronously.
+    Business,
 }
 
 #[derive(Debug)]

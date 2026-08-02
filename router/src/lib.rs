@@ -11,8 +11,16 @@ pub mod http;
 pub mod listener;
 pub mod routing;
 pub mod session;
+pub mod supervisor;
 pub mod ws;
 
+pub use activation::{
+    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorHealth,
+    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationParticipantBinding,
+    ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort, CandidateEpochRefs,
+    CoordinatorError, EnqueueResult, PublishCommittedEpochPort, RecoveryTransaction,
+    RuntimeCandidateQueryPort, SessionEnqueuePort,
+};
 pub use actor::{
     ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay, ActorLaneSpawnControl,
     ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorMethodSpawnExecutionSink,
@@ -51,13 +59,6 @@ pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
     RouterListeners,
 };
-pub use activation::{
-    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorHealth,
-    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationParticipantBinding,
-    ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort, CandidateEpochRefs,
-    CoordinatorError, EnqueueResult, PublishCommittedEpochPort, RecoveryTransaction,
-    RuntimeCandidateQueryPort, SessionEnqueuePort,
-};
 pub use routing::{
     CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
     DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
@@ -67,6 +68,7 @@ pub use session::{
     ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,
     SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
 };
+pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
 pub use ws::{
     AllowAnyPendingAdmission, BrokerConnectionGeneration, BrokerGenerationAdapter,
     BrokerGenerationPort, BrokerHealthSnapshot, BrokerRuntimeResponse, BrokerRuntimeSource,

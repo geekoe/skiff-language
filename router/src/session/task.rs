@@ -13,10 +13,13 @@ use std::time::Duration;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use hyper_util::rt::TokioIo;
+use skiff_runtime_transport::protocol::RuntimeDispatchModeCapability;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep_until, timeout, Instant};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+
+use crate::routing::DispatchCapabilities;
 
 use super::budget::{OutboundFrameId, OutboundQueue, QueuedFrame, WriterError};
 use super::demux::{DemuxEvent, DemuxOutcome};
@@ -24,7 +27,7 @@ use super::handshake::{
     CapabilitiesEvent, HandshakePhase, HandshakeState, HealthEvent, TerminalKind, TimeoutKind,
 };
 use super::identity::{RuntimeConnectionEpoch, RuntimeSessionEpoch};
-use super::layer::{SessionCloseReason, SessionLayer};
+use super::layer::{SessionCloseReason, SessionFrameWriter, SessionLayer};
 
 pub type RuntimeSocket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 pub type RuntimeSocketRead = SplitStream<RuntimeSocket>;
@@ -116,7 +119,7 @@ pub(crate) async fn run_session_task(
                             machine.terminal_with(TerminalKind::IngressBudgetExceeded);
                             continue;
                         }
-                        let outcome = layer.demux().classify(&bytes);
+                        let outcome = layer.demux().classify_with_sinks(&bytes, &layer.inbound_sinks());
                         match outcome {
                             DemuxOutcome::Terminal(kind) => {
                                 machine.terminal_with(kind);
@@ -160,20 +163,20 @@ pub(crate) async fn run_session_task(
                 close_reason = Some(SessionCloseReason::Shutdown);
                 break;
             }
-            error = writer_error_rx.recv() => {
-                match error {
-                    Some(error) => {
-                        match error.frame_id {
-                            OutboundFrameId::Bootstrap => {
-                                machine.on_bootstrap_write_failed();
-                            }
-                            OutboundFrameId::RegisteredAck => {
-                                machine.on_ack_write_failed();
-                            }
-                            OutboundFrameId::Close => {
-                                machine.on_disconnect();
-                            }
-                        }
+                            error = writer_error_rx.recv() => {
+                                match error {
+                                    Some(error) => {
+                                        match error.frame_id {
+                                            OutboundFrameId::Bootstrap => {
+                                                machine.on_bootstrap_write_failed();
+                                            }
+                                            OutboundFrameId::RegisteredAck => {
+                                                machine.on_ack_write_failed();
+                                            }
+                                            OutboundFrameId::Close | OutboundFrameId::Business => {
+                                                machine.on_disconnect();
+                                            }
+                                        }
                     }
                     None => {
                         machine.on_disconnect();
@@ -218,6 +221,10 @@ pub(crate) async fn run_session_task(
         }
     }
 
+    if let Some(session) = &bound_session {
+        layer.unregister_frame_writer(session);
+        layer.remove_dispatch_capabilities(session);
+    }
     close_session(
         &layer,
         &connection_id,
@@ -259,6 +266,25 @@ fn process_event(
                     connection_generation: connection_epoch.generation,
                 };
                 layer.bind_session(&connection_epoch.opaque_connection_id, session.clone());
+                layer.register_frame_writer(
+                    &session,
+                    Arc::new(QueueFrameWriter {
+                        outbound: outbound.clone(),
+                    }),
+                );
+                layer.record_dispatch_capabilities(
+                    &session,
+                    DispatchCapabilities {
+                        unary: header
+                            .capabilities
+                            .dispatch_modes
+                            .iter()
+                            .any(|mode| matches!(mode, RuntimeDispatchModeCapability::Unary)),
+                        server_stream: header.capabilities.dispatch_modes.iter().any(|mode| {
+                            matches!(mode, RuntimeDispatchModeCapability::ServerStream)
+                        }),
+                    },
+                );
                 *bound_session = Some(session);
                 *phase_started_at = Instant::now();
             }
@@ -311,9 +337,42 @@ fn process_event(
         DemuxEvent::LegacyRegister => {
             machine.on_legacy_register();
         }
+        DemuxEvent::Sink { family, raw } => {
+            let Some(session) = bound_session.clone() else {
+                machine.terminal_with(TerminalKind::WrongOrder);
+                return;
+            };
+            let sinks = layer.inbound_sinks();
+            match sinks.sink_for(family) {
+                Some(sink) => {
+                    if let Err(kind) = sink.handle(&session, &raw) {
+                        machine.terminal_with(kind);
+                    }
+                }
+                None => {
+                    machine.terminal_with(TerminalKind::UnimplementedFamily);
+                }
+            }
+        }
         DemuxEvent::Unimplemented { .. } => {
             machine.terminal_with(TerminalKind::UnimplementedFamily);
         }
+    }
+}
+
+/// Queue-backed [`SessionFrameWriter`] registered by the session task. The
+/// `OutboundQueue` remains owned by this task; lane ports only enqueue
+/// bounded, non-blocking frames through the layer registry.
+#[derive(Debug, Clone)]
+struct QueueFrameWriter {
+    outbound: OutboundQueue,
+}
+
+impl SessionFrameWriter for QueueFrameWriter {
+    fn enqueue(&self, bytes: Vec<u8>) -> Result<(), String> {
+        self.outbound
+            .try_send(OutboundFrameId::Business, bytes, None)
+            .map_err(|_| "session outbound queue full".to_string())
     }
 }
 
