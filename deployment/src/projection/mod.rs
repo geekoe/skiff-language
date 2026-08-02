@@ -8,6 +8,8 @@ mod operations;
 mod package_closure;
 mod requirements;
 
+pub mod actor_routing;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::ValidatedPackageArtifact;
