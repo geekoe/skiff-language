@@ -7,6 +7,7 @@ pub mod artifact;
 pub mod bootstrap;
 pub mod config;
 pub mod dispatch;
+pub mod health;
 pub mod http;
 pub mod listener;
 pub mod routing;
@@ -48,6 +49,13 @@ pub use dispatch::{
     RuntimeDispatcherOptions, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, SpawnHealth,
     SpawnRejectReason, SpawnSubmit, SpawnSubmitResult, SpawnTargetKind, SubmitRejectReason,
     SubmitResult, TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
+};
+pub use health::{
+    project_capability_connections, project_loop_risk_runtimes, project_replicas, render_base,
+    session_facts, ActiveAssemblyProjection, CapabilitiesProjection,
+    CapabilityConnectionProjection, HealthAggregator, HealthCounters, LoopRiskDispatcherProjection,
+    LoopRiskHttpStreamProjection, LoopRiskProjection, LoopRiskRouterProjection,
+    LoopRiskRuntimeProjection, ReplicaProjection, SessionFacts,
 };
 pub use http::{
     CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,

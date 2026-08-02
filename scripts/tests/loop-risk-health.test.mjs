@@ -165,6 +165,8 @@ test('shared health poller covers convergence, timeout, transport/schema errors,
   nonzero.loopRisk.router.dispatcher.pendingUnary = 1;
   const missingRuntime = structuredClone(zero);
   missingRuntime.loopRisk.runtimes = [];
+  const missingHttpStreamWaiters = structuredClone(zero);
+  delete missingHttpStreamWaiters.loopRisk.router.httpStream.backpressureWaiters;
 
   const converged = await pollWithResponses([nonzero, zero]);
   assert.equal(converged.ok, true);
@@ -185,6 +187,10 @@ test('shared health poller covers convergence, timeout, transport/schema errors,
   const disappeared = await pollWithResponses([missingRuntime]);
   assert.equal(disappeared.ok, false);
   assert.match(disappeared.reasons.join('\n'), /disappeared/);
+
+  const missingField = await pollWithResponses([missingHttpStreamWaiters]);
+  assert.equal(missingField.ok, false);
+  assert.match(missingField.reasons.join('\n'), /backpressureWaiters/);
 });
 
 test('importing loop-risk CLIs and health library performs no main execution', async () => {
