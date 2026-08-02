@@ -14,6 +14,12 @@
 //! `skiff-artifact-identity` (`actor_abi_identity`, `actor_method_identity`,
 //! `actor_implementation_identity`); this module only carries the generated
 //! framed identities and validates their shape.
+//!
+//! A1 additionally owns the deployment-side producer: it consumes a source-free
+//! typed input that carries only generated framed identities and emits the
+//! frozen projection. The producer never reads File IR records, source text or
+//! executable payloads; the compiler side is responsible for supplying the
+//! typed facts (see the A1 leaf task).
 
 use std::collections::BTreeSet;
 
@@ -123,6 +129,128 @@ impl ActorRoutingProjection {
     }
 }
 
+/// Frozen schema version of the source-free producer input.
+pub const ACTOR_ROUTING_PRODUCER_INPUT_SCHEMA_VERSION: &str =
+    "skiff-actor-routing-producer-input-v1";
+
+/// Complete typed, source-free input for the actor routing projection producer.
+///
+/// Carries only generated framed identity strings: no module path, actor name,
+/// method name, executable coordinates or source facts are admitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorRoutingProducerInput {
+    pub schema_version: String,
+    pub deployment: ServiceDeploymentRef,
+    pub packages: Vec<ActorRoutingPackageInput>,
+}
+
+/// One owning package's actor routing facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorRoutingPackageInput {
+    pub package: PackageArtifactRef,
+    pub actors: Vec<ActorRoutingActorInput>,
+}
+
+/// Source-free actor facts for one package actor declaration.
+///
+/// `methods` are the public method admission identities; the create
+/// implementation is not a method catalog entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorRoutingActorInput {
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub methods: Vec<ActorMethodIdentity>,
+}
+
+/// Projects typed actor routing facts into the frozen projection.
+///
+/// Each public method identity expands to one `ActorRoutingMethod` entry bound
+/// to the exact deployment and owning package. The frozen
+/// `ActorRoutingProjection::new` performs the shared ordering, uniqueness and
+/// identity validation; producer input checks fail closed before expansion.
+pub fn project_actor_routing(
+    input: ActorRoutingProducerInput,
+) -> Result<ActorRoutingProjection, ActorRoutingProjectionError> {
+    if input.schema_version != ACTOR_ROUTING_PRODUCER_INPUT_SCHEMA_VERSION {
+        return Err(
+            ActorRoutingProjectionError::ProducerUnsupportedSchemaVersion(input.schema_version),
+        );
+    }
+    validate_deployment_ref(&input.deployment)?;
+
+    let mut methods = Vec::new();
+    for package in &input.packages {
+        validate_package_ref(&package.package)?;
+        let mut actor_keys = BTreeSet::new();
+        for actor in &package.actors {
+            let key = (
+                actor.actor_abi_identity.clone(),
+                actor.actor_implementation_identity.clone(),
+            );
+            if !actor_keys.insert(key) {
+                return Err(ActorRoutingProjectionError::ProducerDuplicateActor);
+            }
+            if actor.methods.is_empty() {
+                return Err(ActorRoutingProjectionError::ProducerActorWithoutMethods);
+            }
+            let mut seen_methods = BTreeSet::new();
+            for method_identity in &actor.methods {
+                if !seen_methods.insert(method_identity.clone()) {
+                    return Err(ActorRoutingProjectionError::ProducerDuplicateActorMethod);
+                }
+                methods.push(ActorRoutingMethod {
+                    actor: ActorRoutingRef {
+                        service_id: input.deployment.service_id.clone(),
+                        actor_abi_identity: actor.actor_abi_identity.clone(),
+                    },
+                    actor_implementation_identity: actor.actor_implementation_identity.clone(),
+                    method_identity: method_identity.clone(),
+                    deployment: input.deployment.clone(),
+                    package: package.package.clone(),
+                });
+            }
+        }
+    }
+    ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)
+}
+
+fn validate_deployment_ref(
+    deployment: &ServiceDeploymentRef,
+) -> Result<(), ActorRoutingProjectionError> {
+    validate_nonempty(&deployment.service_id, "deployment.serviceId")?;
+    validate_nonempty(
+        deployment.contract_version.as_str(),
+        "deployment.contractVersion",
+    )?;
+    validate_nonempty(
+        deployment.deployment_revision.as_str(),
+        "deployment.deploymentRevision",
+    )?;
+    validate_framed(
+        deployment.deployment_artifact_identity.as_str(),
+        DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
+        "deployment.deploymentArtifactIdentity",
+    )
+}
+
+fn validate_package_ref(package: &PackageArtifactRef) -> Result<(), ActorRoutingProjectionError> {
+    validate_nonempty(&package.package_id, "package.packageId")?;
+    validate_nonempty(&package.package_version, "package.packageVersion")?;
+    validate_framed(
+        package.package_build_id.as_str(),
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        "package.packageBuildId",
+    )?;
+    validate_framed(
+        package.package_local_abi_identity.as_str(),
+        PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+        "package.packageLocalAbiIdentity",
+    )
+}
+
 fn validate_method(method: &ActorRoutingMethod) -> Result<(), ActorRoutingProjectionError> {
     validate_nonempty(&method.actor.service_id, "actor.serviceId")?;
     if method.actor.service_id != method.deployment.service_id {
@@ -212,12 +340,20 @@ fn validate_nonempty(value: &str, field: &'static str) -> Result<(), ActorRoutin
 pub enum ActorRoutingProjectionError {
     #[error("unsupported actor routing projection schemaVersion {0:?}")]
     UnsupportedSchemaVersion(String),
+    #[error("unsupported actor routing producer input schemaVersion {0:?}")]
+    ProducerUnsupportedSchemaVersion(String),
     #[error("invalid actor routing projection field {field}: {value:?}")]
     InvalidIdentity { field: &'static str, value: String },
     #[error("actor routing ref serviceId must match its deployment serviceId")]
     ServiceIdMismatch,
     #[error("actor routing projection contains duplicate method entries")]
     DuplicateMethod,
+    #[error("actor routing producer input package declares duplicate actor facts")]
+    ProducerDuplicateActor,
+    #[error("actor routing producer input actor declares no methods")]
+    ProducerActorWithoutMethods,
+    #[error("actor routing producer input actor declares duplicate method identities")]
+    ProducerDuplicateActorMethod,
 }
 
 #[cfg(test)]

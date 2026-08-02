@@ -393,8 +393,8 @@
       "id": "payload-non-empty-rejected",
       "expectReject": true,
       "enforcedBy": "W-model-bootstrap-wire",
-      "currentEnforced": false,
-      "note": "router.bootstrap payload must be empty per Session family rule; W-model-bootstrap-wire must add frame-level enforcement and flip currentEnforced"
+      "currentEnforced": true,
+      "note": "router.bootstrap payload must be empty per Session family rule; W-model-bootstrap-wire added frame-level enforcement in decode_router_bootstrap_frame"
     }
   ]
 }

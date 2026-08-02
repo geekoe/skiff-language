@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "invoke-duplicate-settle-rejected",
+  "domain": "invocation",
+  "events": [
+    { "op": "invoke", "caller": "c1", "invocationId": "inv:1", "ownerRuntimeId": "runtime-b", "epoch": 7, "correlation": "cancel:1" },
+    { "op": "ownerReturn", "runtimeId": "runtime-b", "invocationId": "inv:1", "epoch": 7 },
+    { "op": "ownerReturn", "runtimeId": "runtime-b", "invocationId": "inv:1", "epoch": 7, "reject": true, "reason": "duplicate settle" }
+  ],
+  "expect": {
+    "pending": 0,
+    "settled": 1,
+    "rejected": 1,
+    "terminals": 0,
+    "tombstones": 1
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "missing-caller-kind-legacy-cut-rejected",
+  "parents": {
+    "request": [ { "id": "parent-1", "runtimeId": "runtime-a", "connection": "conn-a", "assemblyGeneration": 42, "testCaseCapability": null } ],
+    "actorInvocation": []
+  },
+  "events": [
+    { "op": "submit", "legacy": true, "callerRequestId": "parent-1", "targetKind": "function", "connection": "conn-a" }
+  ],
+  "expect": {
+    "accepted": [],
+    "rejected": [ "legacy:parent-1" ],
+    "errors": { "legacy:parent-1": "CallerKindRejected" }
+  }
+}

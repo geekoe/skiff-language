@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "scenario": "get-or-create-ack-timeout-aborts-token",
+  "domain": "activation",
+  "actorKey": "example.com/docs|CounterActor|CounterId|sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "epoch": 1,
+  "events": [
+    { "op": "getOrCreate", "caller": "c1", "rpcId": "rpc:1", "lineage": "ordinary" },
+    { "op": "getOrCreate", "caller": "c2", "rpcId": "rpc:2", "lineage": "ordinary" },
+    { "op": "disconnect", "runtimeId": "runtime-b" },
+    { "op": "timeout", "now": 40000 }
+  ],
+  "expect": {
+    "outcomes": { "rpc:1": "failed:ActivationTimeout", "rpc:2": "failed:ActivationTimeout" },
+    "claims": 0,
+    "reservations": 0,
+    "commits": 0,
+    "aborts": 1,
+    "lineageConflicts": 0,
+    "owner": null
+  }
+}

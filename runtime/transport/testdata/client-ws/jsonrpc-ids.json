@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "corpus": "jsonrpc-peer-id-v1",
+  "cases": [
+    {
+      "name": "string id is preserved",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":\"peer-1\",\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "string",
+      "id": "peer-1",
+      "peerKey": "s:peer-1"
+    },
+    {
+      "name": "1e0 canonicalizes to 1",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1e0,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "safeInteger",
+      "id": "1",
+      "peerKey": "n:1"
+    },
+    {
+      "name": "-0 canonicalizes to 0",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":-0,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "safeInteger",
+      "id": "0",
+      "peerKey": "n:0"
+    },
+    {
+      "name": "-0.0e+3 canonicalizes to 0",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":-0.0e+3,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "safeInteger",
+      "id": "0",
+      "peerKey": "n:0"
+    },
+    {
+      "name": "1.000e2 canonicalizes to 100",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1.000e2,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "safeInteger",
+      "id": "100",
+      "peerKey": "n:100"
+    },
+    {
+      "name": "1E+2 canonicalizes to 100",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1E+2,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "safeInteger",
+      "id": "100",
+      "peerKey": "n:100"
+    },
+    {
+      "name": "max safe integer is accepted",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":9007199254740991,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "request",
+      "idKind": "safeInteger",
+      "id": "9007199254740991",
+      "peerKey": "n:9007199254740991"
+    },
+    {
+      "name": "1.5 is rejected as invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "-0.5 is rejected as invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":-0.5,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "9007199254740992 is rejected as invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":9007199254740992,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "1e-324 is rejected as invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1e-324,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "1.0000000000000000001 is rejected as invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1.0000000000000000001,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "1e21 is rejected as invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1e21,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "empty string id is rejected",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":\"\",\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "null id is rejected",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "leading-zero number is a parse error",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":01,\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "parse"
+    },
+    {
+      "name": "duplicate member is invalidRequest",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"id\":\"b\",\"method\":\"status.get\",\"params\":[]}",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "batch array is invalidRequest",
+      "frame": "[1]",
+      "kind": "platformError",
+      "id": null,
+      "errorKind": "invalidRequest"
+    },
+    {
+      "name": "notification has no id",
+      "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"chat.event\",\"params\":{}}",
+      "kind": "notification",
+      "method": "chat.event"
+    },
+    {
+      "name": "response string id is accepted",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":\"peer-a\",\"result\":null}",
+      "kind": "response",
+      "idKind": "string",
+      "id": "peer-a"
+    },
+    {
+      "name": "response numeric id is rejected with close 1002",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}",
+      "kind": "close",
+      "code": 1002
+    },
+    {
+      "name": "response with extra field is rejected with close 1002",
+      "frame": "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"result\":null,\"extra\":true}",
+      "kind": "close",
+      "code": 1002
+    }
+  ]
+}

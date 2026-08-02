@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "invoke-cancel-correlation",
+  "domain": "invocation",
+  "events": [
+    { "op": "invoke", "caller": "c1", "invocationId": "inv:1", "ownerRuntimeId": "runtime-b", "epoch": 7, "correlation": "cancel:1" },
+    { "op": "callerCancel", "caller": "c1", "invocationId": "inv:1", "correlation": "cancel:1" },
+    { "op": "callerCancel", "caller": "c1", "invocationId": "inv:1", "correlation": "cancel:1", "reject": true, "reason": "already settled" }
+  ],
+  "expect": {
+    "pending": 0,
+    "settled": 1,
+    "rejected": 1,
+    "terminals": 0,
+    "tombstones": 1
+  }
+}

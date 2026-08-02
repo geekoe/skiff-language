@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "scenario": "08-slow-client-saturation",
+  "limits": { "connectionLimit": 4, "slowClientBudgetBytes": 1024, "perGenerationCapacity": 2 },
+  "events": [
+    { "kind": "acceptConnection", "connection": "c1" },
+    { "kind": "attach", "connection": "c1", "socketGeneration": "g1", "runtime": "r1" },
+    { "kind": "slowClient", "connection": "c1", "bytes": 2048 }
+  ],
+  "expect": {
+    "terminals": { "c1": "SlowClient" },
+    "connectionCount": 0,
+    "generationCount": 0,
+    "outboundPending": 0,
+    "inboundPending": 0,
+    "tombstones": 0,
+    "pinsAcquired": 0,
+    "pinsPendingRelease": 0,
+    "releaseAcks": 0,
+    "finalizerCount": 1,
+    "runtimeClosed": false,
+    "failStop": false,
+    "openConnections": []
+  }
+}

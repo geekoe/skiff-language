@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "request-cancel-router-to-runtime",
+  "events": [
+    { "kind": "start", "requestId": "req-1", "mode": "unary" },
+    { "kind": "cancel", "requestId": "req-1", "direction": "routerToRuntime", "frame": "cancel.req1.timeout" }
+  ],
+  "expect": {
+    "outcomes": { "req-1": "cancelled" },
+    "terminalSources": { "req-1": "router_cancel" },
+    "chunks": {},
+    "payload": {},
+    "protocolErrors": 0,
+    "ignoredStale": 0
+  }
+}

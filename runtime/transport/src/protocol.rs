@@ -37,12 +37,18 @@ pub use request::{
     ValidatedResponseErrorFrame,
 };
 pub use session::{
-    decode_router_bootstrap_frame_header, RouterBootstrapActivationFrameHeader,
+    decode_router_bootstrap_frame, decode_router_bootstrap_frame_header,
+    decode_runtime_capabilities_frame, decode_runtime_health_frame,
+    decode_runtime_registered_frame, encode_router_bootstrap_frame,
+    encode_runtime_capabilities_frame, encode_runtime_health_frame,
+    encode_runtime_registered_frame, CapturedBootstrapEpoch, RouterBootstrapActivationFrameHeader,
     RouterBootstrapFrameHeader, RouterBootstrapHttpFrameHeader,
-    RouterBootstrapServiceDbFrameHeader, RuntimeCapabilitiesFrameHeader,
-    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability,
-    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeRegisterEnvelope,
-    RuntimeRegisterFrameHeader, RuntimeRegisteredFrameHeader,
+    RouterBootstrapServiceDbFrameHeader, RouterBootstrapSource, RuntimeBootstrapProvider,
+    RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
+    RuntimeDispatchModeCapability, RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
+    RuntimeRegisterEnvelope, RuntimeRegisterFrameHeader, RuntimeRegisteredFrameHeader,
+    StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
+    RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
 pub use spawn::{
     ActorSpawnRuntimeErrorFrameHeader, SpawnActorMethodTargetFrameMetadata,

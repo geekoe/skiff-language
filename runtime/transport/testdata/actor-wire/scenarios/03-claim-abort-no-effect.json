@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "scenario": "claim-abort-no-effect",
+  "domain": "ownership",
+  "actorKey": "example.com/docs|CounterActor|CounterId|sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "epoch": 1,
+  "events": [
+    { "op": "reserve", "caller": "c1", "expectedEpoch": 1 },
+    { "op": "abort", "caller": "c1", "now": 1000 },
+    { "op": "reserve", "caller": "c2", "expectedEpoch": 1 }
+  ],
+  "expect": {
+    "reservations": 1,
+    "commits": 0,
+    "aborts": 1,
+    "conflicts": 0,
+    "renewals": 0,
+    "releases": 0,
+    "expired": 0,
+    "epochMismatches": 0,
+    "rejectedCommits": 0,
+    "rejectedAborts": 0,
+    "owner": null
+  }
+}

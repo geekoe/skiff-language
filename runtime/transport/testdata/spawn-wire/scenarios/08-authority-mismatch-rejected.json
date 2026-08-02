@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "authority-mismatch-rejected",
+  "parents": {
+    "request": [],
+    "actorInvocation": [ { "id": "inv-parent-1", "runtimeId": "runtime-a", "connection": "conn-a", "assemblyGeneration": 42, "testCaseCapability": null } ]
+  },
+  "events": [
+    { "op": "submit", "callerKind": "actorInvocation", "callerRequestId": "inv-parent-1", "targetKind": "actorMethod", "actorMethod": true, "connection": "conn-a", "assemblyGeneration": 41 }
+  ],
+  "expect": {
+    "accepted": [],
+    "rejected": [ "actorInvocation:inv-parent-1" ],
+    "errors": { "actorInvocation:inv-parent-1": "AuthorityMismatch" }
+  }
+}
