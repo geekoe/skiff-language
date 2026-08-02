@@ -214,6 +214,11 @@ function actorBootstrapInput(
     actorAbiIdentity: 'actor-abi:ThreadActor:v1',
     actorImplementationIdentity:
       overrides.actorImplementationIdentity ?? 'implementation:chat:v1',
+    declarationOwner: {
+      unit: { kind: 'service' as const },
+      file: { kind: 'loadedFileIndex' as const, value: 0 },
+      actorSymbol: 'ThreadActor',
+    },
     bootstrapEncodingVersion: 'skiff-canonical-v1',
     encodedBootstrapBytes: overrides.encodedBootstrapBytes ?? new Uint8Array([1, 2, 3]),
     now: overrides.now ?? baseTime,

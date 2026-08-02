@@ -157,6 +157,7 @@ export class ActorSpawnRuntimeControl {
       actorKey: decodeActorKey(header.actorKey),
       actorAbiIdentity: header.actorAbiIdentity,
       actorImplementationIdentity: header.actorImplementationIdentity,
+      declarationOwner: header.declarationOwner,
       bootstrapEncodingVersion: header.bootstrapEncodingVersion,
       encodedBootstrapBytes: payloadBytes,
       now: this.now(),

@@ -19,6 +19,11 @@ const actorAbi = identity('skiff-actor-abi-v1:sha256', 'a');
 const implementation = identity('skiff-actor-implementation-v1:sha256', 'b');
 const methodIdentity = identity('skiff-actor-method-v1:sha256', 'c');
 const start = Date.parse('2026-07-25T00:00:00.000Z');
+const DECLARATION_OWNER = {
+  unit: { kind: 'service' as const },
+  file: { kind: 'loadedFileIndex' as const, value: 0 },
+  actorSymbol: 'Counter',
+};
 
 describe('Actor owner lease and idle TTL', () => {
   it('keeps the owner lease live through the full spawned actor deadline', async () => {
@@ -211,6 +216,7 @@ async function liveFixture(options: { leaseTtlMs?: number; idleTtlMs?: number } 
     actorKey,
     actorAbiIdentity: actorAbi,
     actorImplementationIdentity: implementation,
+    declarationOwner: DECLARATION_OWNER,
     bootstrapEncodingVersion: 'skiff-canonical-v1',
     encodedBootstrapBytes: new Uint8Array([1, 2, 3]),
     now: clock.date(),

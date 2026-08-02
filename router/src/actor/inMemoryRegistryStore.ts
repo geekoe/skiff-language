@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import type { ActorDeclarationOwnerFrameHeader } from '../protocol/actorMethodProtocol.js';
 import {
   actorLogicalKey,
   cloneActorKey,
@@ -70,6 +71,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       actorIdTypeIdentity: input.actorKey.actorIdTypeIdentity,
       actorAbiIdentity: input.actorAbiIdentity,
       actorImplementationIdentity: input.actorImplementationIdentity,
+      declarationOwner: cloneDeclarationOwner(input.declarationOwner),
       retiredImplementationIdentities: [],
       lifecycleState: 'inactive',
       bootstrapEncodingVersion: input.bootstrapEncodingVersion,
@@ -839,6 +841,7 @@ function cloneEntry(entry: ActorRegistryEntry): ActorRegistryEntry {
   return {
     ...entry,
     actorKey: cloneActorKey(entry.actorKey),
+    declarationOwner: cloneDeclarationOwner(entry.declarationOwner),
     encodedBootstrapBytes: new Uint8Array(entry.encodedBootstrapBytes),
     ownerLeaseExpiresAt:
       entry.ownerLeaseExpiresAt === undefined ? undefined : new Date(entry.ownerLeaseExpiresAt),
@@ -879,9 +882,20 @@ function ownerFence(entry: ActorRegistryEntry) {
     actorKey: cloneActorKey(entry.actorKey),
     epoch: entry.epoch,
     implementationIdentity: entry.actorImplementationIdentity,
+    declarationOwner: cloneDeclarationOwner(entry.declarationOwner),
     ownerRuntimeId: entry.ownerRuntimeId,
     ownerLeaseId: entry.ownerLeaseId,
     ownerLeaseExpiresAt: new Date(entry.ownerLeaseExpiresAt),
+  };
+}
+
+function cloneDeclarationOwner(
+  owner: ActorDeclarationOwnerFrameHeader
+): ActorDeclarationOwnerFrameHeader {
+  return {
+    unit: { ...owner.unit },
+    file: { ...owner.file },
+    actorSymbol: owner.actorSymbol,
   };
 }
 

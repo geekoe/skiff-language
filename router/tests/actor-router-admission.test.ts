@@ -19,6 +19,11 @@ const implementationUnknown = identity('skiff-actor-implementation-v1:sha256', '
 const methodIdentity = identity('skiff-actor-method-v1:sha256', 'e');
 const unknownMethod = identity('skiff-actor-method-v1:sha256', 'f');
 const baseTime = new Date('2026-07-25T00:00:00.000Z');
+const DECLARATION_OWNER = {
+  unit: { kind: 'service' as const },
+  file: { kind: 'loadedFileIndex' as const, value: 0 },
+  actorSymbol: 'Counter',
+};
 
 describe('Actor Router admission and owner state machine', () => {
   it('atomically grants at most one unexpired owner and fences renew/release', async () => {
@@ -419,6 +424,7 @@ async function actorFixture() {
     actorKey,
     actorAbiIdentity: actorAbi,
     actorImplementationIdentity: implementationV1,
+    declarationOwner: DECLARATION_OWNER,
     bootstrapEncodingVersion: 'skiff-canonical-v1',
     encodedBootstrapBytes: new Uint8Array([1]),
     now: baseTime,

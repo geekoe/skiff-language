@@ -9,7 +9,6 @@ import {
   type ActorUpgradeTransition,
 } from '../actor/index.js';
 import {
-  type ActorDeclarationOwnerFrameHeader,
   type ActorMethodErrorFrameHeader,
   type ActorMethodInvokeFrameHeader,
   type ActorMethodFrameHeader,
@@ -20,7 +19,7 @@ import type WebSocket from 'ws';
 
 export interface ActorMethodCatalog {
   hasMethod(input: {
-    declarationOwner: ActorDeclarationOwnerFrameHeader;
+    serviceId: string;
     actorAbiIdentity: string;
     actorImplementationIdentity: string;
     methodIdentity: string;
@@ -197,7 +196,7 @@ export class ActorMethodDispatcher {
     }
 
     const methodKnown = await this.catalog.hasMethod({
-      declarationOwner: header.declarationOwner,
+      serviceId: header.actorRef.serviceId,
       actorAbiIdentity: header.actorAbiIdentity,
       actorImplementationIdentity: header.actorImplementationIdentity,
       methodIdentity: header.methodIdentity,
@@ -429,6 +428,7 @@ export class ActorMethodDispatcher {
           actorKey: current.actorKey,
           epoch: current.epoch,
           implementationIdentity: current.actorImplementationIdentity,
+          declarationOwner: current.declarationOwner,
           ownerRuntimeId: current.ownerRuntimeId,
           ownerLeaseId: current.ownerLeaseId,
           ownerLeaseExpiresAt: current.ownerLeaseExpiresAt,

@@ -243,9 +243,20 @@ describe('compiler generated HTTP gateway compatibility', () => {
         );
         expect(loaded.actorMethods).toEqual([
           expect.objectContaining({
-            declarationOwner: expect.objectContaining({
-              actorSymbol: 'Counter',
+            actor: expect.objectContaining({
+              serviceId: generated.receipt.deployments.consumer.serviceId,
+              actorAbiIdentity: expect.stringMatching(
+                /^skiff-actor-abi-v1:sha256:[0-9a-f]{64}$/
+              ),
             }),
+            actorImplementationIdentity: expect.stringMatching(
+              /^skiff-actor-implementation-v1:sha256:[0-9a-f]{64}$/
+            ),
+            methodIdentity: expect.stringMatching(
+              /^skiff-actor-method-v1:sha256:[0-9a-f]{64}$/
+            ),
+            deployment: generated.receipt.deployments.consumer,
+            package: generated.receipt.packages.consumer,
           }),
         ]);
         expect(
@@ -278,6 +289,27 @@ describe('compiler generated HTTP gateway compatibility', () => {
               'skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d',
           },
         ]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    120_000
+  );
+
+  it(
+    'fails closed without the canonical actor routing projection record',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'skiff-router-no-projection-'));
+      try {
+        const generated =
+          await writeCurrentScopeCompilerGeneratedArtifactRoot(root, {
+            writeActorProjection: false,
+          });
+        await expect(
+          new FilesystemRuntimeAssemblySnapshotLoader(root).load(
+            generated.receipt.baseAssembly
+          )
+        ).rejects.toThrow(/actor routing projection record is unavailable/);
       } finally {
         await rm(root, { recursive: true, force: true });
       }

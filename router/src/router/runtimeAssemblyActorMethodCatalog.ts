@@ -4,28 +4,24 @@ import type { RouterActiveAssemblySnapshotStore } from './runtimeAssemblySnapsho
 export class RuntimeAssemblyActorMethodCatalog implements ActorMethodCatalog {
   constructor(private readonly snapshots: RouterActiveAssemblySnapshotStore) {}
 
-  hasMethod(input: Parameters<ActorMethodCatalog['hasMethod']>[0]): boolean {
-    return (this.snapshots.get().actorMethods ?? []).some((method) =>
-      method.actorAbiIdentity === input.actorAbiIdentity &&
-      method.actorImplementationIdentity ===
-        input.actorImplementationIdentity &&
-      method.methodIdentity === input.methodIdentity &&
-      JSON.stringify(method.declarationOwner) ===
-        JSON.stringify(input.declarationOwner)
-    );
-  }
-
-  declarationOwnerFor(input: {
+  /**
+   * Exact typed-key admission aligned with the Rust `ActorMethodCatalogView`
+   * `CatalogQuery` (C-model-actor §3): `{service_id, actor_abi_identity,
+   * actor_implementation_identity, method_identity}`. `declarationOwner` is a
+   * wire-level fact and never participates in catalog admission.
+   */
+  hasMethod(input: {
+    serviceId: string;
     actorAbiIdentity: string;
     actorImplementationIdentity: string;
-  }) {
-    const owners = (this.snapshots.get().actorMethods ?? [])
-      .filter((method) =>
-        method.actorAbiIdentity === input.actorAbiIdentity &&
-        method.actorImplementationIdentity === input.actorImplementationIdentity
-      )
-      .map((method) => method.declarationOwner);
-    const unique = new Map(owners.map((owner) => [JSON.stringify(owner), owner]));
-    return unique.size === 1 ? unique.values().next().value : undefined;
+    methodIdentity: string;
+  }): boolean {
+    return (this.snapshots.get().actorMethods ?? []).some((method) =>
+      method.actor.serviceId === input.serviceId &&
+      method.actor.actorAbiIdentity === input.actorAbiIdentity &&
+      method.actorImplementationIdentity ===
+        input.actorImplementationIdentity &&
+      method.methodIdentity === input.methodIdentity
+    );
   }
 }

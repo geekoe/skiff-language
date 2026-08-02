@@ -99,16 +99,22 @@ export interface RuntimeAssemblyGatewayIngressDeclaration {
 }
 
 export interface RuntimeAssemblyActorMethod {
-  declarationOwner: {
-    unit: { kind: 'service' } | { kind: 'package'; value: number };
-    file:
-      | { kind: 'loadedFileIndex'; value: number }
-      | { kind: 'fileIrIdentity'; value: string };
-    actorSymbol: string;
+  /** Stable actor ref: home service + canonical ABI identity (A0 §2). */
+  actor: {
+    serviceId: string;
+    actorAbiIdentity: string;
   };
-  actorAbiIdentity: string;
   actorImplementationIdentity: string;
   methodIdentity: string;
+  /** Exact deployment binding (A0 §5). */
+  deployment: RuntimeAssemblyDeploymentRef;
+  /** Owning immutable package artifact binding (A0 §5). */
+  package: {
+    packageId: string;
+    packageVersion: string;
+    packageBuildId: string;
+    packageLocalAbiIdentity: string;
+  };
 }
 
 export interface RuntimeAssemblySnapshotLoader {

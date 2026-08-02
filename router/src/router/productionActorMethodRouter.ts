@@ -101,12 +101,7 @@ export interface ProductionActorMethodRouterOptions {
     'pendingInitialActivation'
   >;
   runtimeDirectory?: ActorRuntimeDirectory;
-  catalog: ActorMethodCatalog & {
-    declarationOwnerFor?(input: {
-      actorAbiIdentity: string;
-      actorImplementationIdentity: string;
-    }): ActorMethodInvokeFrameHeader['declarationOwner'] | undefined;
-  };
+  catalog: ActorMethodCatalog;
   disconnectController: ActorRuntimeDisconnectController;
   send(ws: WebSocket, bytes: Buffer): void;
   ownerLeaseTtlMs?: number;
@@ -228,6 +223,7 @@ export class ProductionActorMethodRouter
       actorKey: entry.actorKey,
       epoch: entry.epoch,
       implementationIdentity: entry.actorImplementationIdentity,
+      declarationOwner: entry.declarationOwner,
       ownerRuntimeId: entry.ownerRuntimeId,
       ownerLeaseId: entry.ownerLeaseId,
       ownerLeaseExpiresAt: entry.ownerLeaseExpiresAt,
@@ -442,13 +438,6 @@ export class ProductionActorMethodRouter
     const entry = await this.options.registry.actorManager().registryStore()
       .find(fence.actorKey);
     if (entry === undefined) throw new Error('idle Actor disappeared');
-    const declarationOwner = this.options.catalog.declarationOwnerFor?.({
-      actorAbiIdentity: entry.actorAbiIdentity,
-      actorImplementationIdentity: fence.implementationIdentity,
-    });
-    if (declarationOwner === undefined) {
-      throw new Error('idle Actor declaration owner is ambiguous or unavailable');
-    }
     const owner = this.exactBoundOwnerConnection(fence);
     if (owner === undefined) {
       throw new Error('idle Actor owner is not bound to its Runtime session');
@@ -461,7 +450,7 @@ export class ProductionActorMethodRouter
         epoch: fence.epoch,
         actorAbiIdentity: entry.actorAbiIdentity,
         actorImplementationIdentity: fence.implementationIdentity,
-        declarationOwner,
+        declarationOwner: fence.declarationOwner,
         ownerLeaseId: fence.ownerLeaseId,
         evictionRequestId: fence.evictionRequestId,
       },

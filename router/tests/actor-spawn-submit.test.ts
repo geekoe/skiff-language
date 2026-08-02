@@ -114,11 +114,6 @@ describe('actor method spawn submit', () => {
       disconnectController: disconnect,
       catalog: {
         hasMethod: () => true,
-        declarationOwnerFor: () => ({
-          unit: { kind: 'service' as const },
-          file: { kind: 'loadedFileIndex' as const, value: 0 },
-          actorSymbol: 'example.Counter',
-        }),
       },
       send: (ws, bytes) => ws.send(bytes),
       id: () => 'lease',

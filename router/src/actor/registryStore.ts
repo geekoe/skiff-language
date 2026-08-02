@@ -1,4 +1,5 @@
 import type { ActorKey } from './identity.js';
+import type { ActorDeclarationOwnerFrameHeader } from '../protocol/actorMethodProtocol.js';
 
 export type ActorRegistryStatus = 'present' | 'removing' | 'removed';
 export type ActorLifecycleState = 'inactive' | 'activating' | 'live' | 'upgrading';
@@ -18,6 +19,8 @@ export interface ActorRegistryEntry {
   actorIdTypeIdentity: string;
   actorAbiIdentity: string;
   actorImplementationIdentity: string;
+  /** Wire-level declaration ownership captured at activation (C-actor §3.2). */
+  declarationOwner: ActorDeclarationOwnerFrameHeader;
   retiredImplementationIdentities: string[];
   lifecycleState: ActorLifecycleState;
   targetImplementationIdentity?: string | undefined;
@@ -39,6 +42,7 @@ export interface ActorBootstrapInput {
   actorKey: ActorKey;
   actorAbiIdentity: string;
   actorImplementationIdentity: string;
+  declarationOwner: ActorDeclarationOwnerFrameHeader;
   bootstrapEncodingVersion: string;
   encodedBootstrapBytes: Uint8Array;
   now?: Date | undefined;
@@ -100,6 +104,7 @@ export interface ActorOwnerFence {
   actorKey: ActorKey;
   epoch: number;
   implementationIdentity: string;
+  declarationOwner: ActorDeclarationOwnerFrameHeader;
   ownerRuntimeId: string;
   ownerLeaseId: string;
   ownerLeaseExpiresAt: Date;

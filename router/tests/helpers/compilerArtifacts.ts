@@ -1,8 +1,14 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+
+import {
+  ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+  ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+  canonicalJsonBytes,
+} from '../../src/router/actorRoutingProjection.js';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -17,6 +23,13 @@ const testRunnerManifestPath = join(repoRoot, 'test-runner/Cargo.toml');
 interface ObjectReceipt {
   recordPath: string;
   [key: string]: unknown;
+}
+
+interface PackageArtifactRefLike {
+  packageId: string;
+  packageVersion: string;
+  packageBuildId: string;
+  packageLocalAbiIdentity: string;
 }
 
 export interface CompilerGeneratedArtifactRoot {
@@ -100,6 +113,11 @@ export async function writeCompilerGeneratedFixtureArtifactRoot(
     'runtimeAssemblyReceipt'
   ) as CompilerGeneratedArtifactRoot['runtimeAssembly'];
 
+  await writeActorRoutingProjection(root, {
+    schemaVersion: ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+    methods: [],
+  });
+
   return {
     root,
     packageArtifact,
@@ -114,7 +132,8 @@ export async function writeCompilerGeneratedFixtureArtifactRoot(
 }
 
 export async function writeCurrentScopeCompilerGeneratedArtifactRoot(
-  root: string
+  root: string,
+  options: { writeActorProjection?: boolean } = {}
 ): Promise<CurrentScopeCompilerGeneratedArtifactRoot> {
   await mkdir(root, { recursive: true });
   const environment = 'current-scope';
@@ -152,7 +171,147 @@ export async function writeCurrentScopeCompilerGeneratedArtifactRoot(
   ) {
     throw new Error('current-scope compiler fixture returned an invalid receipt');
   }
+  if (options.writeActorProjection !== false) {
+    await writeCurrentScopeActorRoutingProjection(root, receipt);
+  }
   return { root, receipt };
+}
+
+async function writeCurrentScopeActorRoutingProjection(
+  root: string,
+  receipt: CurrentScopeCompilerGeneratedArtifactRoot['receipt']
+): Promise<void> {
+  const methods: Array<{
+    actor: { serviceId: string; actorAbiIdentity: string };
+    actorImplementationIdentity: string;
+    methodIdentity: string;
+    deployment: Record<string, string>;
+    package: PackageArtifactRefLike;
+  }> = [];
+  for (const [packageName, deploymentName] of [
+    ['consumer', 'consumer'],
+    ['provider', 'provider'],
+  ] as const) {
+    const packageRef = receipt.packages[packageName]! as unknown as PackageArtifactRefLike;
+    const deployment = receipt.deployments[deploymentName]!;
+    const packageValue = await readRecord(
+      root,
+      { recordPath: packageRecordPath(packageRef) }
+    );
+    const files = Array.isArray(packageValue.files) ? packageValue.files : [];
+    for (const rawFile of files as Array<Record<string, unknown>>) {
+      const fileIrIdentity = rawFile.fileIrIdentity;
+      if (typeof fileIrIdentity !== 'string') continue;
+      const fileValue = await readRecord(root, {
+        recordPath: fileIrRecordPath(packageRef, fileIrIdentity),
+      });
+      const actors = Array.isArray(fileValue.actorDeclarations)
+        ? fileValue.actorDeclarations
+        : [];
+      for (const rawActor of actors as Array<Record<string, unknown>>) {
+        const implementations = rawActor.methodImplementations;
+        if (
+          typeof rawActor.actorAbiIdentity !== 'string' ||
+          typeof rawActor.actorImplementationIdentity !== 'string' ||
+          implementations === null ||
+          typeof implementations !== 'object' ||
+          Array.isArray(implementations)
+        ) {
+          continue;
+        }
+        for (const methodIdentity of Object.keys(
+          implementations as Record<string, unknown>
+        )) {
+          methods.push({
+            actor: {
+              serviceId: deployment.serviceId!,
+              actorAbiIdentity: rawActor.actorAbiIdentity,
+            },
+            actorImplementationIdentity:
+              rawActor.actorImplementationIdentity,
+            methodIdentity,
+            deployment,
+            package: packageRef,
+          });
+        }
+      }
+    }
+  }
+  methods.sort((left, right) =>
+    fullTypedKey(left).localeCompare(fullTypedKey(right))
+  );
+  await writeActorRoutingProjection(root, {
+    schemaVersion: ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+    methods,
+  });
+}
+
+function fullTypedKey(method: {
+  actor: { serviceId: string; actorAbiIdentity: string };
+  actorImplementationIdentity: string;
+  methodIdentity: string;
+  deployment: Record<string, string>;
+  package: PackageArtifactRefLike;
+}): string {
+  const actor = method.actor;
+  const deployment = method.deployment;
+  const packageRef = method.package;
+  return [
+    actor.serviceId,
+    actor.actorAbiIdentity,
+    method.actorImplementationIdentity,
+    method.methodIdentity,
+    deployment.serviceId,
+    deployment.contractVersion,
+    deployment.deploymentRevision,
+    deployment.deploymentArtifactIdentity,
+    packageRef.packageId,
+    packageRef.packageVersion,
+    packageRef.packageBuildId,
+    packageRef.packageLocalAbiIdentity,
+  ].join('\u0000');
+}
+
+async function writeActorRoutingProjection(
+  root: string,
+  projection: { schemaVersion: string; methods: unknown[] }
+): Promise<void> {
+  const bytes = canonicalJsonBytes(projection);
+  const target = join(root, ACTOR_ROUTING_PROJECTION_RECORD_PATH);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, bytes);
+}
+
+function packageRecordPath(packageRef: PackageArtifactRefLike): string {
+  return [
+    'records/package-artifacts',
+    encodeCoordinate(packageRef.packageId),
+    packageRef.packageVersion,
+    identityHash(packageRef.packageBuildId),
+    'package.json',
+  ].join('/');
+}
+
+function fileIrRecordPath(
+  packageRef: PackageArtifactRefLike,
+  fileIrIdentity: string
+): string {
+  return [
+    'records/package-artifacts',
+    encodeCoordinate(packageRef.packageId),
+    packageRef.packageVersion,
+    identityHash(packageRef.packageBuildId),
+    'file-ir',
+    `${identityHash(fileIrIdentity)}.json`,
+  ].join('/');
+}
+
+function encodeCoordinate(value: string): string {
+  return value.replaceAll('.', '~d').replaceAll('/', '~s');
+}
+
+function identityHash(value: string): string {
+  return value.slice(value.lastIndexOf(':') + 1);
 }
 
 async function runPackageServiceFixture(args: string[]): Promise<void> {

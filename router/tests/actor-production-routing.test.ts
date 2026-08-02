@@ -28,6 +28,11 @@ import {
 
 const sockets: WebSocket[] = [];
 const endpoints: RuntimeEndpoint[] = [];
+const DECLARATION_OWNER = {
+  unit: { kind: 'service' as const },
+  file: { kind: 'loadedFileIndex' as const, value: 0 },
+  actorSymbol: 'example.Counter',
+};
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.close();
@@ -43,11 +48,6 @@ describe('production Actor WebSocket routing', () => {
       actorRuntimeDisconnect: disconnect,
     });
     endpoints.push(endpoint);
-    const declarationOwner = {
-      unit: { kind: 'service' as const },
-      file: { kind: 'loadedFileIndex' as const, value: 0 },
-      actorSymbol: 'example.Counter',
-    };
     const actorMethods = new ProductionActorMethodRouter({
       registry,
       actorOwnerRouteAuthority: ({ serviceId }) =>
@@ -61,7 +61,6 @@ describe('production Actor WebSocket routing', () => {
       disconnectController: disconnect,
       catalog: {
         hasMethod: () => true,
-        declarationOwnerFor: () => declarationOwner,
       },
       send: (ws, bytes) => ws.send(bytes),
       id: () => 'lease',
@@ -84,6 +83,7 @@ describe('production Actor WebSocket routing', () => {
         'skiff-actor-implementation-v1:sha256',
         'b'
       ),
+      declarationOwner: DECLARATION_OWNER,
       bootstrapEncodingVersion: 'skiff-canonical-v1',
       encodedBootstrapBytes: Buffer.from('{}'),
     });
@@ -165,6 +165,7 @@ describe('production Actor WebSocket routing', () => {
       actorKey: live.actorKey,
       epoch: live.epoch,
       implementationIdentity: live.actorImplementationIdentity,
+      declarationOwner: live.declarationOwner,
       ownerRuntimeId: live.ownerRuntimeId,
       ownerLeaseId: live.ownerLeaseId,
       ownerLeaseExpiresAt: live.ownerLeaseExpiresAt,
@@ -240,11 +241,6 @@ describe('production Actor WebSocket routing', () => {
       disconnectController: disconnect,
       catalog: {
         hasMethod: () => true,
-        declarationOwnerFor: () => ({
-          unit: { kind: 'service' },
-          file: { kind: 'loadedFileIndex', value: 0 },
-          actorSymbol: 'example.Counter',
-        }),
       },
       send: (ws, bytes) => ws.send(bytes),
       id: () => 'session-fenced-activate',
@@ -267,6 +263,7 @@ describe('production Actor WebSocket routing', () => {
         'skiff-actor-implementation-v1:sha256',
         'b'
       ),
+      declarationOwner: DECLARATION_OWNER,
       bootstrapEncodingVersion: 'skiff-canonical-v1',
       encodedBootstrapBytes: Buffer.from('{}'),
     });
