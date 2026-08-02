@@ -24,8 +24,13 @@ pub use frame::{
     BINARY_FRAME_VERSION, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 pub use request::{
-    decode_response_error_frame, validate_response_error_frame, ConnectionSendFrameHeader,
-    PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
+    decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
+    decode_response_error_frame, decode_response_start_frame, encode_request_cancel_frame,
+    encode_response_chunk_frame, encode_response_end_frame, encode_response_start_frame,
+    request_frame_rule, validate_request_cancel_frame, validate_response_chunk_frame,
+    validate_response_end_frame_wire, validate_response_error_frame, validate_response_start_frame,
+    ConnectionSendFrameHeader, PackageTestStartFrameHeader, RequestCancelFrameHeader,
+    RequestFrameKind, RequestFramePayloadPresence, RequestFrameRule, RequestStartFrameHeader,
     RequestTestEffectDouble, ResponseChunkFrameHeader, ResponseEndFrameHeader,
     ResponseEndFrameMetadata, ResponseErrorFrameHeader, ResponseStartFrameHeader,
     RuntimeCallerFrameHeader, RuntimeDeadlineFrameHeader, RuntimeErrorFramePayload,
@@ -34,7 +39,9 @@ pub use request::{
     RuntimeHttpAdapterFrameHeader, RuntimeHttpAdapterKindFrameHeader,
     RuntimeHttpAdapterSourceFrameHeader, RuntimeHttpNameValueFrameHeader,
     RuntimeHttpRequestFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeTraceContextFrameHeader,
-    ValidatedResponseErrorFrame,
+    ValidatedResponseErrorFrame, REQUEST_CANCEL_FRAME_TYPE, REQUEST_START_FRAME_TYPE,
+    RESPONSE_CHUNK_FRAME_TYPE, RESPONSE_END_FRAME_TYPE, RESPONSE_ERROR_FRAME_TYPE,
+    RESPONSE_START_FRAME_TYPE,
 };
 pub use session::{
     decode_router_bootstrap_frame, decode_router_bootstrap_frame_header,
