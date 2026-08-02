@@ -104,9 +104,15 @@ function runSelfTest() {
     dispatcher: { pendingUnary: 0, pendingStream: 0 },
     httpStream: { backpressureWaiters: 0, backpressureCancels: 0 },
   };
+  const connectedZero = {
+    runtimeId: 'runtime-a',
+    connected: true,
+    fresh: true,
+    counters: zeroCounters,
+  };
   const healthy = {
     router: zeroRouter,
-    runtimes: [{ runtimeId: 'runtime-a', connected: true, fresh: true, counters: zeroCounters }],
+    runtimes: [connectedZero],
   };
   assert.equal(
     evaluateLoopRiskHealth(healthy, { touchedRuntimeIds: ['runtime-a'] }).ok,
@@ -114,6 +120,41 @@ function runSelfTest() {
   );
   assert.equal(
     evaluateLoopRiskHealth(healthy, { touchedRuntimeIds: ['runtime-missing'] }).ok,
+    false,
+  );
+  // The canonical AssemblyControlPlane projection retains disconnected replica
+  // records with their last health counters. Zero disconnected sessions must
+  // stay acceptable, while disconnected nonzero leaks must keep failing.
+  const withDisconnectedZero = {
+    router: zeroRouter,
+    runtimes: [
+      connectedZero,
+      {
+        runtimeId: 'runtime-disconnected',
+        connected: false,
+        fresh: false,
+        counters: zeroCounters,
+      },
+    ],
+  };
+  assert.equal(
+    evaluateLoopRiskHealth(withDisconnectedZero, { touchedRuntimeIds: [] }).ok,
+    true,
+  );
+  const withDisconnectedNonzero = {
+    router: zeroRouter,
+    runtimes: [
+      connectedZero,
+      {
+        runtimeId: 'runtime-disconnected',
+        connected: false,
+        fresh: false,
+        counters: { ...zeroCounters, outboundRequestsPending: 1 },
+      },
+    ],
+  };
+  assert.equal(
+    evaluateLoopRiskHealth(withDisconnectedNonzero, { touchedRuntimeIds: [] }).ok,
     false,
   );
   console.log(JSON.stringify({ ok: true, selfTest: 'check-loop-risk-health' }));

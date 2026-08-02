@@ -229,6 +229,7 @@ const httpGateway = new AssemblyHttpGateway({
   maxRequestBytes: config.httpMaxRequestBytes,
   maxResponseBytes: config.httpMaxResponseBytes
 });
+controlPlane.setHttpStreamCounterSource(() => httpGateway.streamLifecycleCounters());
 const httpServer = await httpGateway.listen();
 const webSocketGateway = new AssemblyWebSocketGateway({
   server: httpServer.server,
