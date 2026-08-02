@@ -6,6 +6,7 @@ pub mod artifact;
 pub mod bootstrap;
 pub mod config;
 pub mod listener;
+pub mod routing;
 pub mod session;
 
 pub use bootstrap::{
@@ -20,6 +21,11 @@ pub use config::{
 pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
     RouterListeners,
+};
+pub use routing::{
+    CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
+    DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
+    RuntimeCandidateQuery, SessionCancellation,
 };
 pub use session::{
     ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,
