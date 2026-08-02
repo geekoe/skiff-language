@@ -2,10 +2,12 @@
 
 日期：2026-08-01
 
-状态：draft v5（多轮 first-principles review 修订，待实施）
+状态：complete（实施完成，长期架构见 `doc/architecture/router-rust.md`）
 
-本文是迁移实施计划，不是长期架构规范。目标是把 `skiff/router` 从 TypeScript 迁移为独立 Rust binary，
-让 Router 与 Runtime 直接复用 canonical Rust artifact/wire model，同时保持两个独立进程和现有可观察语义。
+本文是迁移实施计划，不是长期架构规范。实施已完成，长期架构见
+`doc/architecture/router-rust.md`；本文不充当第二份架构规范。原目标是把
+`skiff/router` 从 TypeScript 迁移为独立 Rust binary，让 Router 与 Runtime
+直接复用 canonical Rust artifact/wire model，同时保持两个独立进程和现有可观察语义。
 
 本计划的组织原则：
 

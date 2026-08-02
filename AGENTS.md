@@ -10,8 +10,9 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 - 语言规范：`doc/reference/`。
 - 长期架构契约：`doc/architecture/`。
 - CLI 入口：`scripts/skiff.mjs`。
-- Rust workspace：仓库根 `Cargo.toml`。
-- TypeScript packages：`router/`、`telemetry/`、`scripts/`、`vscode/`。
+- Rust workspace：仓库根 `Cargo.toml`；`router/` 是 Rust workspace crate
+  `skiff-router`。
+- TypeScript packages：`telemetry/`、`scripts/`、`vscode/`。
 - Skiff 标准库源码：`std/` 和 `prelude/`。
 
 ## 开发约定
@@ -81,7 +82,8 @@ cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
    test-runner 编译测试，并在同一套件内复用一个真实 runtime 进程执行，不为每个 fixture
    单独启动 runtime。
 2. `implementation-tests` 测试 Skiff 实现，按 `foundation`、`compiler`、`runtime`、
-   `test-runner`、`router`、`telemetry` 和 `tooling` 被测组件展开。
+   `test-runner`、`router`、`telemetry` 和 `tooling` 被测组件展开；`router` 即
+   Rust workspace crate `skiff-router`，没有 TypeScript Router 测试入口。
 
 仓库根的权威组合入口是：
 
@@ -126,7 +128,7 @@ schema/data、跨 registry catalog 校验、live plan/precondition 与普通 sel
 `runtime-live` 是 `external`，只要求 PATH 中存在 `cargo`/`node`；
 `db-encrypted-storage-live` 是 `managed`，要求 `node`、`cargo`、`pnpm`、`mongod` 和 `mongosh`，
 并继续只使用临时目录与 `45000`–`45999` 动态端口。两个 loop-risk selector 也是 `external`：
-health 要求 `node`，stress 要求 `node`、`ps` 和从 `router/package.json` 解析的 `ws` 模块。四者
+health 要求 `node`，stress 要求 `node`、`ps` 和从 `scripts/package.json` 解析的 `ws` 模块。四者
 tier 均为 `live/manual`，默认 verify、`pnpm test`、Cargo workspace 和 CI 都不展开它们。
 
 loop-risk canonical selector 必须通过 `--loop-risk-config <path>` 或
@@ -157,8 +159,6 @@ node scripts/verify.mjs --only telemetry
 node scripts/verify.mjs --only tooling
 node scripts/verify.mjs --only type-check
 node scripts/verify.mjs --only checks
-pnpm --filter @skiff/router type-check
-pnpm --filter @skiff/router test
 pnpm --filter @skiff/telemetry type-check
 pnpm --filter @skiff/telemetry test
 pnpm --dir scripts type-check

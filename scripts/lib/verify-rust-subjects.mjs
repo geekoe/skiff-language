@@ -65,9 +65,9 @@ const rustImplementationSubjects = [
     ],
   },
   {
-    selector: 'router-rust',
-    leafSelector: 'router-rust-contracts',
-    taskId: 'router-rust:contracts',
+    selector: 'router',
+    leafSelector: 'router-contracts',
+    taskId: 'router:contracts',
     packages: [
       rustPackage('router', 'skiff-router'),
     ],
