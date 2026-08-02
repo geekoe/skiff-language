@@ -231,7 +231,7 @@ export const LIVE_REGISTRY = deepFreeze([
         ownership: LIVE_OWNERSHIP.MANAGED,
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [],
-        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh'],
+        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh', 'python3'],
         requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
         canonicalPolicy: {
           forbidSkips: false,

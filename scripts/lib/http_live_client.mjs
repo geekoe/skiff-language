@@ -151,6 +151,10 @@ export class HttpLiveStream {
     this.req.destroy();
   }
 
+  setRecvBufferSize(size) {
+    this.res.socket?.setRecvBufferSize(size);
+  }
+
   settle(value) {
     while (this.pending.length > 0) {
       const waiter = this.pending.shift();

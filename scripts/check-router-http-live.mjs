@@ -54,7 +54,11 @@ import {
   writeHttpLiveRouterConfig,
   writeHttpLiveRuntimeConfig,
 } from './lib/http_live_process.mjs';
-import { runFullSuite, runRollbackSuite } from './lib/http_live_suite.mjs';
+import {
+  runBackpressureSuite,
+  runFullSuite,
+  runRollbackSuite,
+} from './lib/http_live_suite.mjs';
 import { createRuntimeRelay } from './lib/router-differential/relay.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -82,7 +86,12 @@ try {
   tempRoot = await mkdtemp(join(tmpdir(), 'skiff-router-http-live-'));
   const sourceRoot = join(tempRoot, 'src');
   console.log('router-live:http: writing real HTTP service source');
-  await writeHttpLiveServiceSource(sourceRoot);
+  // The burst sleep is platform-adaptive: on Linux CI the request must stay
+  // active past the router's 10s drain deadline so the `backpressure` cancel
+  // wins; on OS-absorption hosts (macOS) a short burst keeps the session
+  // under the 64-frame inbound budget while the boundary is recorded.
+  const burstSleepMs = process.platform === 'linux' ? 20_000 : 2_000;
+  await writeHttpLiveServiceSource(sourceRoot, { burstSleepMs });
 
   const artifactRoot = join(tempRoot, 'artifacts');
   await mkdir(artifactRoot, { recursive: true });
@@ -206,6 +215,40 @@ try {
     runtimeConfigPath,
   });
 
+  // Backpressure is untriggerable under the strict 4096-byte response
+  // ceiling used by the ceiling cases (the Runtime rejects the burst before
+  // the HTTP writer can stall), so it runs in its own Rust-only phase with a
+  // 16 MiB ceiling over the same artifact and committed tuple.
+  const backpressureConfigPath = join(devHome, 'router-backpressure.yml');
+  await writeHttpLiveRouterConfig(
+    backpressureConfigPath,
+    renderHttpLiveRouterConfig({
+      environment: HTTP_LIVE_ENVIRONMENT,
+      artifactsPath: artifactRoot,
+      httpPort,
+      runtimePort,
+      mongoUrl,
+      httpMaxResponseBytes: 16 * 1024 * 1024,
+      requestTimeoutMs: 30_000,
+    }),
+  );
+  await runRouterPhase({
+    phase: 'rust-bp',
+    implementation: 'rust',
+    invocation: {
+      command: evidence.manifests.rust.rust_binary_path,
+      args: [backpressureConfigPath],
+    },
+    httpPort,
+    runtimePort,
+    relayPort,
+    suite: 'backpressure',
+    full: false,
+    routerLogsDir: join(tempRoot, 'phase-rust-bp'),
+    runtimeBin,
+    runtimeConfigPath,
+  });
+
   // Phase 3: TS Router again (rollback to the immutable TS process command).
   await runRouterPhase({
     phase: 'ts-2',
@@ -291,6 +334,7 @@ async function runRouterPhase({
   runtimePort,
   relayPort,
   full,
+  suite,
   routerLogsDir,
   runtimeBin,
   runtimeConfigPath,
@@ -304,7 +348,7 @@ async function runRouterPhase({
   });
   let relay;
   let runtime;
-  let suite;
+  let suiteResult;
   let phaseError;
   try {
     await waitForListeners({
@@ -337,9 +381,13 @@ async function runRouterPhase({
       relay,
       phase,
     };
-    suite = full ? await runFullSuite(ctx) : await runRollbackSuite(ctx);
-    evidence.suite.push({ phase, cases: suite });
-    console.log(`router-live:http: ${phase} phase passed (${suite.length} cases)`);
+    if (suite === 'backpressure') {
+      suiteResult = await runBackpressureSuite(ctx);
+    } else {
+      suiteResult = full ? await runFullSuite(ctx) : await runRollbackSuite(ctx);
+    }
+    evidence.suite.push({ phase, cases: suiteResult });
+    console.log(`router-live:http: ${phase} phase passed (${suiteResult.length} cases)`);
   } catch (error) {
     phaseError = error;
     if (relay !== undefined) {
@@ -400,16 +448,18 @@ async function runRouterPhase({
   if (phaseError !== undefined) {
     throw phaseError;
   }
-  return suite;
+  return suiteResult;
 }
 
 function assertRollbackRoundtrip(evidence, committed) {
-  if (evidence.bootstrapTuples.length !== 3) {
+  const rollbackTuples = evidence.bootstrapTuples.filter((entry) =>
+    ['ts-1', 'rust', 'ts-2'].includes(entry.phase));
+  if (rollbackTuples.length !== 3) {
     throw new Error(
-      `rollback roundtrip requires three phases, got ${evidence.bootstrapTuples.length}`,
+      `rollback roundtrip requires three phases, got ${rollbackTuples.length}`,
     );
   }
-  const [ts1, rust, ts2] = evidence.bootstrapTuples.map((entry) => entry.tuple);
+  const [ts1, rust, ts2] = rollbackTuples.map((entry) => entry.tuple);
   assertDeepEqual(ts1, rust, 'TS-1 and Rust bootstrap tuples');
   assertDeepEqual(rust, ts2, 'Rust and TS-2 bootstrap tuples');
   assertEqual(ts1.environment, committed.environment, 'bootstrap environment');

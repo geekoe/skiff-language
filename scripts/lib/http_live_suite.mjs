@@ -9,6 +9,11 @@
 // every race asserting one external terminal, at most one cancel frame and a
 // successful follow-up unary (pending/permit/timer residue proxy).
 
+import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+
 import {
   HTTP_LIVE_SERVICE_ID,
   HTTP_LIVE_VERSION,
@@ -46,6 +51,11 @@ export async function runFullSuite(ctx) {
   await caseDeadlineUnary(ctx, evidence);
   await caseDeadlineStream(ctx, evidence);
   await caseDisconnectStream(ctx, evidence);
+  return evidence;
+}
+
+export async function runBackpressureSuite(ctx) {
+  const evidence = [];
   await caseBackpressure(ctx, evidence);
   return evidence;
 }
@@ -223,7 +233,18 @@ async function caseUnaryCeiling(ctx, evidence) {
     headers: serviceHeaders(ctx),
     body: Buffer.alloc(8192, 'e'),
   });
-  assertJsonError(response, 502, 'ResponseTooLarge', 'unary response ceiling');
+  // The real Runtime enforces the request's httpResponseMaxBytes before the
+  // Router's fallback 502 path: it returns a control error
+  // `ResourceLimitExceeded`, which both TS and Rust map to 500 (the Router
+  // 502 `ResponseTooLarge` is the fake/non-conforming-runtime fallback).
+  assertEqual(response.status, 500, 'unary response ceiling status');
+  const body = parseJson(response.body);
+  assertEqual(body?.error?.code, 'ResourceLimitExceeded', 'unary response ceiling code');
+  assert(
+    typeof body?.error?.message === 'string'
+      && body.error.message.includes('4096'),
+    `unary response ceiling message must mention 4096 bytes, got ${JSON.stringify(body)}`,
+  );
   const records = newRecords(ctx.relay, before);
   const requestId = latestRequestId(records);
   assertCancelReasons(records, requestId, [], 'unary ceiling cancels');
@@ -255,11 +276,12 @@ async function caseStreamCeiling(ctx, evidence) {
   const records = newRecords(ctx.relay, before);
   const requestId = latestRequestId(records);
   const reasons = cancelReasons(records, requestId);
-  assert(
-    reasons.length === 1 && reasons[0] === 'protocol_error',
-    `stream ceiling must cancel exactly once with protocol_error, got ${JSON.stringify(reasons)}`,
-  );
-  evidence.push({ phase: ctx.phase, name: 'stream-ceiling', bodyLength });
+  // The Runtime enforces the cumulative stream ceiling and sends a control
+  // `response.error`; a runtime-initiated error terminal sends no
+  // Router->Runtime cancel frame.
+  assertEqual(reasons, [], 'stream ceiling cancels');
+  await assertFollowUpUnary(ctx, 'stream-ceiling');
+  evidence.push({ phase: ctx.phase, name: 'stream-ceiling', bodyLength, reasons });
 }
 
 async function caseServiceError(ctx, evidence) {
@@ -272,24 +294,44 @@ async function caseServiceError(ctx, evidence) {
   });
   assertEqual(response.status, 500, 'service error status');
   const body = parseJson(response.body);
-  assertEqual(body?.error?.code, 'FixedServiceError', 'service error code');
-  assertEqual(body?.error?.message, 'Service request failed', 'service error message');
-  assert(
-    typeof body?.error?.details?.traceId === 'string'
-      && body.error.details.traceId.length > 0,
-    'service error details must carry traceId',
+  // A user `throw` in the real Runtime projects as the control
+  // `UnhandledServiceError` (status 500, details hidden by the >=500 HTTP
+  // policy, TS parity); `FixedServiceError` is the boundary-failure
+  // projection, not the user-exception path.
+  assertEqual(body?.error?.code, 'UnhandledServiceError', 'service error code');
+  assertEqual(
+    body?.error?.message,
+    'unhandled request-local user exception',
+    'service error message',
   );
-  assert(
-    typeof body?.error?.details?.errorId === 'string'
-      && body.error.details.errorId.length > 0,
-    'service error details must carry errorId',
-  );
-  assertSingleDispatch(newRecords(ctx.relay, before), {
+  const records = newRecords(ctx.relay, before);
+  const requestId = assertSingleDispatch(records, {
     path: '/error',
     mode: 'unary',
     serviceId: ctx.serviceId,
     version: ctx.version,
   });
+  const errorFrames = records.filter(
+    (record) => record.type === 'response.error' && record.header?.requestId === requestId,
+  );
+  assert(
+    errorFrames.length === 1,
+    `service error must settle with exactly one response.error, got ${errorFrames.length}`,
+  );
+  const errorHeader = errorFrames[0].header;
+  assertEqual(errorHeader.errorKind, 'control', 'service error frame kind');
+  assertEqual(errorHeader.error?.code, 'UnhandledServiceError', 'service error frame code');
+  assert(
+    typeof errorHeader.error?.details?.traceId === 'string'
+      && errorHeader.error.details.traceId.length > 0,
+    'service error frame details must carry traceId',
+  );
+  assert(
+    typeof errorHeader.error?.details?.errorId === 'string'
+      && errorHeader.error.details.errorId.length > 0,
+    'service error frame details must carry errorId',
+  );
+  assertCancelReasons(records, requestId, [], 'service error cancels');
   evidence.push({ phase: ctx.phase, name: 'service-error', status: response.status });
 }
 
@@ -411,27 +453,129 @@ async function caseDisconnectStream(ctx, evidence) {
 
 async function caseBackpressure(ctx, evidence) {
   const before = snapshot(ctx.relay);
-  const stream = await openHttpLiveStream({
-    port: ctx.port,
-    method: 'POST',
-    path: '/burst',
-    headers: serviceHeaders(ctx),
-  });
-  assertEqual(stream.status, 200, 'backpressure head status');
-  // Deliberately do not read the body: the bounded stream channel fills and
-  // the drain deadline produces the backpressure terminal.
-  const records = newRecords(ctx.relay, before);
-  const requestId = latestRequestId(records);
-  const reasons = await waitForCancelFrame(ctx.relay, before.index, requestId, {
-    timeoutMs: 35_000,
-  });
-  stream.destroy();
-  assert(
-    reasons.length === 1 && reasons[0] === 'backpressure',
-    `backpressure must cancel exactly once with backpressure, got ${JSON.stringify(reasons)}`,
+  // A paused client stalls the Router's HTTP writer only when the OS receive
+  // window is smaller than the burst. The frozen production constants (64
+  // frames / 1 MiB session inbound budget, 32-slot stream channel, 10s drain,
+  // 1s runtime health) cap the burst at ~47 x 21 KiB, which is reachable on
+  // Linux CI (~200 KiB windows) but not on hosts whose kernel autotunes past
+  // ~800 KiB (macOS): there the burst completes into the socket and the
+  // harness asserts the no-leak boundary instead of the drain terminal.
+  const helperPath = join(dirname(fileURLToPath(import.meta.url)), 'http_live_slow_client.py');
+  const helper = spawn(
+    'python3',
+    [helperPath, String(ctx.port), '/burst', ctx.serviceId, ctx.version, '120'],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
   );
-  await assertFollowUpUnary(ctx, 'backpressure');
-  evidence.push({ phase: ctx.phase, name: 'backpressure', cancel: reasons[0] });
+  let statusLine;
+  try {
+    statusLine = await waitForHelperHead(helper);
+  } catch (error) {
+    helper.kill('SIGTERM');
+    throw error;
+  }
+  assert(
+    /^HTTP\/1\.[01] 200/.test(statusLine),
+    `backpressure head status must be 200, got ${JSON.stringify(statusLine)}`,
+  );
+  try {
+    const records = newRecords(ctx.relay, before);
+    const requestId = latestRequestId(records);
+    const outcome = await waitForBackpressureOutcome(
+      ctx.relay,
+      before.index,
+      requestId,
+    );
+    if (outcome.reason === 'backpressure') {
+      assertEqual(
+        outcome.cancels,
+        ['backpressure'],
+        'backpressure must cancel exactly once with backpressure',
+      );
+    } else if (outcome.reason === 'completed') {
+      if (process.platform === 'linux') {
+        throw new Error(
+          'backpressure drain must fire before response.end on Linux; '
+          + `observed ${JSON.stringify(outcome.cancels)} cancels`,
+        );
+      }
+      console.log(
+        `router-live:http: backpressure OS-absorption boundary on ${process.platform} `
+        + '(burst completed into socket buffers; no-leak assertions follow)',
+      );
+    } else {
+      throw new Error(`backpressure terminal missing: ${JSON.stringify(outcome)}`);
+    }
+    await assertFollowUpUnary(ctx, 'backpressure');
+    evidence.push({
+      phase: ctx.phase,
+      name: 'backpressure',
+      outcome: outcome.reason,
+      cancels: outcome.cancels,
+    });
+  } finally {
+    helper.kill('SIGTERM');
+  }
+}
+
+async function waitForBackpressureOutcome(relay, fromIndex, requestId, {
+  timeoutMs = 35_000,
+} = {}) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const cancels = relay.records
+      .slice(fromIndex)
+      .filter((record) => record.type === 'request.cancel'
+        && record.header?.requestId === requestId)
+      .map((record) => record.header?.reason);
+    if (cancels.length > 0) {
+      return {
+        reason: cancels[0] === 'backpressure' ? 'backpressure' : 'cancel',
+        cancels,
+      };
+    }
+    const completed = relay.records
+      .slice(fromIndex)
+      .some((record) => (record.type === 'response.end' || record.type === 'response.error')
+        && record.header?.requestId === requestId);
+    if (completed) {
+      return { reason: 'completed', cancels };
+    }
+    await delay(50);
+  }
+  return { reason: 'none', cancels: [] };
+}
+
+function waitForHelperHead(helper) {
+  return new Promise((resolvePromise, reject) => {
+    let buffer = '';
+    const timer = setTimeout(() => {
+      helper.kill('SIGTERM');
+      reject(new Error(`slow client did not return a response head within 15s: ${JSON.stringify(buffer)}`));
+    }, 15_000);
+    helper.stdout.setEncoding('utf8');
+    helper.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline !== -1) {
+        clearTimeout(timer);
+        resolvePromise(buffer.slice(0, newline).trim());
+      }
+    });
+    helper.stderr.setEncoding('utf8');
+    helper.stderr.on('data', (chunk) => {
+      buffer += `[stderr] ${chunk}`;
+    });
+    helper.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    helper.once('exit', (code, signal) => {
+      if (code !== 0 && code !== null) {
+        clearTimeout(timer);
+        reject(new Error(`slow client exited ${code ?? signal} before the head: ${JSON.stringify(buffer)}`));
+      }
+    });
+  });
 }
 
 async function assertFollowUpUnary(ctx, label) {

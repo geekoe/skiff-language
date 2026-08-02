@@ -195,70 +195,92 @@ additive 扩展）、`scripts/tests/verify-live-registry.test.mjs` 一行 select
 
 ## 执行结果（提交前填写）
 
-### 状态：被生产缺口阻塞（已向 root 报告，等待裁决）
+### 状态：完成（harness 全绿 + 真实证据；一个可测性边界已上报 root）
 
-已完成并自验收的部分：
+基线变更：`git merge integration/router-rust-migration-batch-9`
+（fb60fb86，含 E-dispatch 的 88abfa20：Runtime `control_plane.rs` 从已
+admit assembly 派生 `dispatchModes` + supervisor terminal 投递修复）。
+本 worktree 分支 `feat/router-rust-e-http-gate`，最终提交含 merge。
 
-- 全部工具侧交付已实现并通过局部自验收：`scripts/check-router-http-live.mjs`
-  + `scripts/lib/http_live_{fixture,process,client,suite}.mjs`、
-  `verify-live-registry.mjs`（`router-rust-http-live` key 块 /
-  `router-live:http` selector）、`scripts/tests/verify-live-registry.test.mjs`
-  （LIVE_SELECTORS +1）、`router-rust-integration.yml`
-  （`Router Rust HTTP (managed)` job + classifier regex additive 扩展）；
-  YAML 解析通过；`node scripts/verify.mjs --only router-live:http --list`
-  展开 `live:router-rust-http`；registry 测试断言同步。
-- 真实 harness 已跑到 Rust 阶段并产生可靠证据：
-  - TS-1 阶段（TS Router → real Runtime）通过全部 5 个 rollback case：
-    unary 201、typed unary 200、missing selector 400、wrong path 404、
-    stream 206（body `alpha|middle|omega`、response.start/chunk(0,1,2)/end
-    帧序正确）；
-  - 三阶段 bootstrap tuple 完全一致（environment `http-live`、generation
-    1、assembly identity、config snapshot id），rollback manifest
-    round-trip 通过；
-  - TS Router SIGTERM 退出码 0、端口关闭断言通过。
+### 自验收证据（2026-08-03 本地 macOS 双轮稳定）
 
-### 阻塞项（生产缺口，wire 证据确凿）
+`node scripts/check-router-http-live.mjs` → `router-live:http: PASS`（两轮
+均 exit 0，约 23s/轮）：
 
-Rust 阶段握手完整（bootstrap → capabilities → Register → registered →
-health），tuple 与 committed 完全一致，但第一个 unary 返回 503
-`ServiceUnavailable`。relay 记录的 `runtime.capabilities` 帧为：
+- TS-1 阶段 5/5：unary-happy 201、typed-unary 200、missing-selector 400、
+  wrong-path 404、stream-roundtrip 206（`alpha|middle|omega`，
+  response.start/chunk seq 0,1,2/end 帧序 + 无 cancel）。
+- Rust 阶段 17/17：rollback 5 项 + version-conflict 400（X-Skiff-Release
+  冲突）、unknown-service 404、wrong-method 404、body-too-large 413、
+  unary-ceiling 500 `ResourceLimitExceeded`（Runtime 先于 Router fallback
+  执行 ceiling，status>=500 隐藏 details，TS parity）、stream-ceiling
+  （200 head + 0-byte truncated body，runtime 控制错误 → 无 router
+  cancel）、service-error 500 `UnhandledServiceError`（用户 throw 投影，
+  wire 帧带 traceId/errorId，HTTP body 按 >=500 策略隐藏 details）、
+  cors-preflight 204 + allow-origin/allow-methods、service-managed-cors
+  204（显式 OPTIONS ingress 透传 service 头）、deadline-unary/stream 504
+  `TimeoutError` + 恰好一次 `timeout` cancel、disconnect-stream 恰好一次
+  `client_disconnect` cancel；每个竞态后 follow-up unary 201。
+- rust-bp 1/1：backpressure case（详见下方边界记录）。
+- TS-2 阶段 5/5（rollback 回 TS 进程命令后同一 unary suite 一致）。
+- rollback roundtrip：ts-1/rust/ts-2（+rust-bp）bootstrap tuple 完全一致
+  （environment http-live、generation 1、assembly identity、config
+  snapshot id）；`buildRouterRollbackManifest`/`assertRouterRollbackManifest`
+  round-trip；TS/Rust 每个 Router SIGTERM 退出码 0、Runtime SIGINT 退出码
+  0、端口全部关闭（pending/permit/timer 归零的进程级代理）。
+- registry：`node scripts/verify.mjs --only router-live:http --list` 展开
+  `live:router-rust-http`（managed/live-manual，requiredExecutables 含
+  python3）；`node --test scripts/tests/verify-live-registry.test.mjs`
+  20/20 pass；focused `verify --only router-rust,router-rust-process-smoke`
+  2/2 pass；`router-rust-integration.yml` YAML 解析通过，jobs 为
+  change-classifier / bootstrap / session / dispatch / http。
 
-```json
-{
-  "type": "runtime.capabilities",
-  "runtimeId": "skiff-runtime-http-live-replica",
-  "capabilities": { "requestCancel": true }
-}
-```
+### 已解决的阻塞（E-dispatch 修复）
 
-真实 Runtime（`runtime/host/src/host/control_plane.rs` 的
-`queue_runtime_capabilities`）**从不发布 `dispatchModes`**；Router 侧
-`session/task.rs` 将其投影为 `DispatchCapabilities{unary:false,
-server_stream:false}`，`routing/query.rs` 的 C-routing-query §3 rule 5
-capability 检查把唯一已注册 session 排除 → 无候选 → 503。TS Router 的
-assembly gateway 不做该 capability 门禁，因此同一 Runtime 在 TS 阶段正常
-服务。
+之前上报的 dispatch_modes 缺口由 E-dispatch 合入修复：真实 Runtime 现按
+已 admit assembly 发布 `dispatchModes`，Rust 阶段首个 unary 从 503 变为
+201。本 gate 未写 runtime crate。
 
-修复不在本 gate 的 http lane 写入边界内（需要改 `runtime/transport` 冻结
-corpus 已声明的 Runtime capability 广告、`runtime/host` 的
-`queue_runtime_capabilities`，或 `router/src/routing/query.rs` /
-`router/src/session/task.rs` 的 capability 投影/规则）。建议 owner：
-共享模型 repair 节点（与 M-spawn-repair 同形态），最小修复为 Runtime 按
-其自身冻结 handshake corpus 发布
-`dispatchModes: ["unary","serverStream"]`；备选为 Router capability 规则
-与真实 Runtime 广告语义对齐（需 contract 裁决）。E-dispatch gate 大概率
-命中同一 503（fake ingress → 同一 dispatcher → real Runtime）。
+### 可测性边界：backpressure（已上报 root）
+
+backpressure case 在独立 `rust-bp` 阶段（同一 artifact/committed tuple，
+`http.maxResponseBytes: 16 MiB`、`requestTimeoutMs: 30s`）运行：慢客户端
+（python3 helper，读 head 后暂停不读）→ burst 45×20KiB（~900KiB，session
+inbound 64 帧/1MiB 预算内）→ runtime 睡眠保持 request active → 期望 Router
+32-slot stream channel 填满后 10s drain deadline 触发 `backpressure`
+cancel。
+
+本地 macOS 实测：OS 内核 socket 缓冲自动调优吸收整个 burst（~800KiB），
+writer 不阻塞 → channel 不填满 → drain 不触发；请求正常完成后进入
+OS-absorption boundary 分支（harness 记录 outcome=completed，仍断言
+follow-up unary 201 + 进程退出码 0 + 端口关闭）。Linux CI（默认
+~200KiB 窗口）下 writer 会在 burst 中段阻塞、channel 填满、drain 在
+~10.5s 触发 `backpressure` cancel；harness 在 Linux 上要求必须出现该
+cancel（否则 fail）。数学边界：冻结生产常量（session inbound 64 帧 /
+1MiB、channel 32、drain 10s、health 1s）使 macOS 类大吸收主机上该 terminal
+不可达（burst 帧数上限 ~47 与 channel 填充需求 32 + 吸收量冲突）。如需
+全平台确定性覆盖，建议后续让 session budgets / drain timeout 可配置或提升
+inbound byte budget（需 contract/生产裁决，不在本 gate）。
 
 ### 并行发现的 parity 差异（记录，非阻塞）
 
 TS assembly gateway（`serviceDeploymentSelection.ts`）不实现
 `X-Skiff-Release` 别名/冲突规则（实测 version+release 冲突返回 201），Rust
 W-http 冻结的是 legacy manifest gateway 语义（冲突 400）。rollback suite
-已把 version-conflict 移到 Rust full suite，避免伪差异；建议 differential
-owner 记录该行为漂移。
+已把 version-conflict 移到 Rust full suite，避免伪差异；已附证据，建议
+differential owner 记录该行为漂移。
 
-### 交接状态
+### 写集
 
-worktree `/Users/geek/workspace/wt-e-http-gate`（分支
-`feat/router-rust-e-http-gate`）保留全部未提交工具侧改动，等待 root 裁决
-授权修复后继续完成 harness 全绿自验收、registry/workflow 验证并提交。
+- `scripts/check-router-http-live.mjs`（新）
+- `scripts/lib/http_live_fixture.mjs`、`http_live_process.mjs`、
+  `http_live_client.mjs`、`http_live_suite.mjs`、`http_live_slow_client.py`
+  （新）
+- `scripts/lib/verify-live-registry.mjs`（仅 `router-rust-http-live` 条目）
+- `scripts/tests/verify-live-registry.test.mjs`（LIVE_SELECTORS +1 行）
+- `.github/workflows/router-rust-integration.yml`（append http job +
+  classifier regex additive；merge 解决与 dispatch job 的冲突）
+- `doc/implementation/router-rust-e-http-gate-leaf.md`（本文件）
+
+未触碰：router/src、runtime crate、runtime/transport、deployment、router
+TS、AGENTS.md、scripts README、verify selector graph、skiff-instance.mjs。

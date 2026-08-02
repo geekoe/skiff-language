@@ -38,9 +38,16 @@ const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json
 const ACTOR_ROUTING_PROJECTION_CONTENT =
   '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}';
 
-const BURST_CHUNK = 'B'.repeat(32 * 1024);
+// Backpressure needs the bounded stream channel to fill while the HTTP
+// writer is blocked on a full socket buffer, but the whole burst must stay
+// under the Router session inbound byte budget (1 MiB, C-session §5.3) or
+// the exact session aborts before the 10s drain deadline. 20 KiB x 40
+// (~800 KiB) fills the 32-slot channel, stalls the paused client's socket,
+// and leaves the session alive; the 20s sleep after the burst keeps the
+// request active until the drain fires.
+const BURST_CHUNK = 'B'.repeat(20 * 1024);
 const BURST_EMITS = Array.from(
-  { length: 40 },
+  { length: 45 },
   () => '  emit(std.http.streamChunk(chunk))',
 ).join('\n');
 
@@ -51,7 +58,9 @@ export function httpLiveMongoUrl(mongoPort) {
   );
 }
 
-export async function writeHttpLiveServiceSource(sourceRoot) {
+export async function writeHttpLiveServiceSource(sourceRoot, {
+  burstSleepMs = 20_000,
+} = {}) {
   await mkdir(sourceRoot, { recursive: true });
   await writeFile(
     join(sourceRoot, 'package.yml'),
@@ -229,6 +238,10 @@ export async function writeHttpLiveServiceSource(sourceRoot) {
       `  const chunk = bytes.fromUtf8(${JSON.stringify(BURST_CHUNK)})`,
       '  emit(std.http.streamStart(200, headers()))',
       BURST_EMITS,
+      // Keep the request active past the router's 10s drain deadline on
+      // drain-capable hosts (Linux); short bursts keep the session under the
+      // 64-frame inbound budget on OS-absorption hosts (macOS boundary).
+      `  std.time.sleep(Duration.milliseconds(${burstSleepMs}))`,
       '  emit(std.http.streamEnd())',
       '  return null',
       '}',
