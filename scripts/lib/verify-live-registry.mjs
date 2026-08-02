@@ -163,6 +163,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-dispatch-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-dispatch-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:dispatch',
+        description:
+          'real production Router composition + real Rust Runtime process: fake ingress through the production HttpDispatchPort -> epoch capture -> exact candidate -> permit -> revalidate -> enqueue -> terminal; missing/invalid selector, wrong deployment/entry, duplicate id, timeout, disconnect and selection/replacement races fail closed with exact pending/permit zeroing (managed CI, isolated instance + explicit Rust process)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-dispatch',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-differential-live',
     source: {
       type: 'script',
