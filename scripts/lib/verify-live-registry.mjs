@@ -241,6 +241,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-http-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-http-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:http',
+        description:
+          'real HTTP->Router->Runtime unary/stream with trusted selectors, service-scoped ingress, typed/raw opaque payloads, stream sequencing, cumulative response ceiling, backpressure, disconnect/cancel/deadline, CORS preflight/service-managed and platform errors; every race one external terminal with at most one cancel and zero residue, plus the first TS->Rust->TS unary rollback roundtrip through the canonical RouterProcessSpec (managed CI, isolated instance + explicit process commands)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-http',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh', 'python3'],
+        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',

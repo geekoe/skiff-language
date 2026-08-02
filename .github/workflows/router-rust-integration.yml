@@ -41,7 +41,7 @@ jobs:
             echo "related=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/check-router-session-live\.mjs|scripts/check-router-dispatch-live\.mjs|scripts/check-router-activation-live\.mjs|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/|runtime/(driver|host|loader)/)'; then
+          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/check-router-session-live\.mjs|scripts/check-router-dispatch-live\.mjs|scripts/check-router-activation-live\.mjs|scripts/check-router-http-live\.mjs|scripts/lib/http_live_|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/|runtime/(driver|host|loader)/)'; then
             echo "related=true" >> "$GITHUB_OUTPUT"
           else
             echo "related=false" >> "$GITHUB_OUTPUT"
@@ -263,3 +263,66 @@ jobs:
       - name: Run router-live:activation-full-chain managed gate
         if: needs.change-classifier.outputs.related == 'true'
         run: node scripts/check-router-activation-live.mjs
+
+  # Stable required-check name: `Router Rust HTTP (managed)`. Same
+  # classifier semantics as the other managed jobs: the job always exists and
+  # always succeeds (explicit skip for unrelated PRs), so the required check
+  # can never be missing. Related PRs run real HTTP through real Router
+  # (TS -> Rust -> TS rollback roundtrip) and real Runtime against an
+  # isolated temporary Mongo replica set.
+  router-rust-http-managed:
+    name: Router Rust HTTP (managed)
+    needs: change-classifier
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Skip unrelated change
+        if: needs.change-classifier.outputs.related == 'false'
+        run: echo "Unrelated change; router-live:http managed gate skipped (required check succeeds)"
+
+      - name: Set up Node.js
+        if: needs.change-classifier.outputs.related == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Set up pnpm
+        if: needs.change-classifier.outputs.related == 'true'
+        run: npm install --global pnpm@10.29.2
+
+      - name: Set up Rust
+        if: needs.change-classifier.outputs.related == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Install MongoDB server and shell
+        if: needs.change-classifier.outputs.related == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg lsb-release
+          CODENAME="$(lsb_release -cs)"
+          case "$CODENAME" in
+            jammy|noble) ;;
+            *) CODENAME=jammy ;;
+          esac
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-org-server mongodb-mongosh
+
+      - name: Install TS router dependencies (rollback roundtrip process)
+        if: needs.change-classifier.outputs.related == 'true'
+        run: pnpm --dir router install --frozen-lockfile
+
+      - name: Run router-live:http managed gate
+        if: needs.change-classifier.outputs.related == 'true'
+        run: node scripts/check-router-http-live.mjs
