@@ -76,6 +76,16 @@ pub enum RuntimeRequestOutcome {
     TransportUnavailable,
 }
 
+/// Outcome of one Runtime `connection.send` (C-model-connection / TS parity).
+/// `DeliveryMiss` is non-fatal (warn and continue); `ProtocolViolation`
+/// terminates the exact Runtime session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeSendOutcome {
+    Delivered,
+    DeliveryMiss { reason: String },
+    ProtocolViolation { reason: String },
+}
+
 /// Outcome of one peer text/binary frame; `Close` must be routed into the
 /// connection finalizer by the lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,6 +533,69 @@ impl WebSocketRequestBroker {
             .expect("outbound owner");
         self.detach_outbound(&mut inner, &entry);
         true
+    }
+
+    /// Runtime `connection.send` (server->client business message, TS
+    /// parity). Delivers exactly one generation by `connection_id`; a missing
+    /// or closed generation is a delivery miss (non-fatal, TS parity), while
+    /// metadata mismatch or an unsupported payload kind is a protocol
+    /// violation (the exact Runtime session terminates, TS parity).
+    pub fn handle_runtime_send(
+        &self,
+        connection_id: &str,
+        service_id: &str,
+        websocket_entry_id: &str,
+        payload_kind: &str,
+        payload: &[u8],
+    ) -> RuntimeSendOutcome {
+        let inner = self.lock();
+        let Some(state) = inner.generations.get(connection_id) else {
+            return RuntimeSendOutcome::DeliveryMiss {
+                reason: format!("connection {connection_id} is not attached"),
+            };
+        };
+        if !state.open {
+            return RuntimeSendOutcome::DeliveryMiss {
+                reason: format!("connection {connection_id} is not open"),
+            };
+        }
+        if state.handle.service_id != service_id
+            || state.handle.websocket_entry_id != websocket_entry_id
+        {
+            return RuntimeSendOutcome::ProtocolViolation {
+                reason: format!(
+                    "connection.send metadata mismatch for {connection_id}: expected service {} entry {}, got {service_id} / {websocket_entry_id}",
+                    state.handle.service_id, state.handle.websocket_entry_id
+                ),
+            };
+        }
+        let writer = Arc::clone(&state.writer);
+        drop(inner);
+        let result = match payload_kind {
+            "text" => {
+                let text = match std::str::from_utf8(payload) {
+                    Ok(text) => text,
+                    Err(_) => {
+                        return RuntimeSendOutcome::ProtocolViolation {
+                            reason: "connection.send text payload is not UTF-8".to_string(),
+                        };
+                    }
+                };
+                writer.write_text(text.to_string())
+            }
+            "binary" => writer.write_binary(payload.to_vec()),
+            other => {
+                return RuntimeSendOutcome::ProtocolViolation {
+                    reason: format!("connection.send payloadKind {other} is unsupported"),
+                };
+            }
+        };
+        match result {
+            Ok(()) => RuntimeSendOutcome::Delivered,
+            Err(error) => RuntimeSendOutcome::DeliveryMiss {
+                reason: format!("connection.send write failed: {error}"),
+            },
+        }
     }
 
     /// Runtime disconnect: detach every outbound for this sender+session
@@ -1450,5 +1523,165 @@ impl SessionConsumer for WebSocketRequestBroker {
     fn on_session_closed(&self, session: &RuntimeSessionEpoch) -> Result<(), String> {
         self.runtime_disconnected_sender(session);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
+
+    use super::*;
+    use crate::ws::types::{
+        BrokerConnectionGeneration, EmptyMethodCatalog, InboundDispatchAction,
+        NoopNotificationObserver, NoopRuntimeViolationSink, SystemClock,
+    };
+
+    #[derive(Debug, Default)]
+    struct RecordingWriter {
+        text: Mutex<Vec<String>>,
+        binary: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl PeerWriter for RecordingWriter {
+        fn write_text(&self, frame: String) -> Result<(), String> {
+            self.text
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(frame);
+            Ok(())
+        }
+
+        fn write_binary(&self, payload: Vec<u8>) -> Result<(), String> {
+            self.binary
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(payload);
+            Ok(())
+        }
+
+        fn buffered_bytes(&self) -> u64 {
+            0
+        }
+
+        fn close(&self, _code: u16, _reason: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn terminate(&self) {}
+    }
+
+    #[derive(Debug)]
+    struct NoopDispatchInbound;
+
+    impl DispatchInbound for NoopDispatchInbound {
+        fn dispatch(&self, _action: InboundDispatchAction) -> Result<(), String> {
+            Err("noop dispatch".to_string())
+        }
+    }
+
+    fn test_broker() -> WebSocketRequestBroker {
+        WebSocketRequestBroker::with_clock(
+            Arc::new(EmptyMethodCatalog),
+            Arc::new(NoopNotificationObserver),
+            Arc::new(NoopRuntimeViolationSink),
+            Arc::new(NoopDispatchInbound),
+            WebSocketRequestBrokerOptions::default(),
+            Arc::new(SystemClock),
+        )
+    }
+
+    fn handle(connection_id: &str) -> BrokerConnectionGeneration {
+        BrokerConnectionGeneration {
+            connection_id: connection_id.to_string(),
+            socket_generation: "1".to_string(),
+            service_id: "test.skiff/chat".to_string(),
+            websocket_entry_id: "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            profile: WebSocketRpcProfile::JsonRpc2_0Text,
+        }
+    }
+
+    #[test]
+    fn runtime_send_delivers_text_to_attached_generation() {
+        let broker = test_broker();
+        let writer = Arc::new(RecordingWriter::default());
+        broker
+            .attach_generation(handle("c1"), Arc::clone(&writer) as Arc<dyn PeerWriter>, 1)
+            .expect("attach");
+        let outcome = broker.handle_runtime_send(
+            "c1",
+            "test.skiff/chat",
+            "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "text",
+            br#"{"eventName":"chat/text-delta"}"#,
+        );
+        assert_eq!(outcome, RuntimeSendOutcome::Delivered);
+        let text = writer
+            .text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(text.as_slice(), [r#"{"eventName":"chat/text-delta"}"#]);
+    }
+
+    #[test]
+    fn runtime_send_delivers_binary_to_attached_generation() {
+        let broker = test_broker();
+        let writer = Arc::new(RecordingWriter::default());
+        broker
+            .attach_generation(handle("c1"), Arc::clone(&writer) as Arc<dyn PeerWriter>, 1)
+            .expect("attach");
+        let outcome = broker.handle_runtime_send(
+            "c1",
+            "test.skiff/chat",
+            "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "binary",
+            &[1, 2, 3],
+        );
+        assert_eq!(outcome, RuntimeSendOutcome::Delivered);
+        let binary = writer
+            .binary
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(binary.as_slice(), [vec![1, 2, 3]]);
+    }
+
+    #[test]
+    fn runtime_send_delivery_miss_for_unknown_or_closed_connection() {
+        let broker = test_broker();
+        let outcome = broker.handle_runtime_send(
+            "missing",
+            "test.skiff/chat",
+            "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "text",
+            b"x",
+        );
+        assert!(matches!(outcome, RuntimeSendOutcome::DeliveryMiss { .. }));
+    }
+
+    #[test]
+    fn runtime_send_protocol_violation_on_metadata_mismatch_and_unknown_kind() {
+        let broker = test_broker();
+        let writer = Arc::new(RecordingWriter::default());
+        broker
+            .attach_generation(handle("c1"), Arc::clone(&writer) as Arc<dyn PeerWriter>, 1)
+            .expect("attach");
+        let entry = "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let mismatch = broker.handle_runtime_send("c1", "other.service", entry, "text", b"x");
+        assert!(matches!(
+            mismatch,
+            RuntimeSendOutcome::ProtocolViolation { .. }
+        ));
+        let unknown_kind = broker.handle_runtime_send("c1", "test.skiff/chat", entry, "xml", b"x");
+        assert!(matches!(
+            unknown_kind,
+            RuntimeSendOutcome::ProtocolViolation { .. }
+        ));
+        let bad_utf8 = broker.handle_runtime_send("c1", "test.skiff/chat", entry, "text", &[0xff]);
+        assert!(matches!(
+            bad_utf8,
+            RuntimeSendOutcome::ProtocolViolation { .. }
+        ));
     }
 }

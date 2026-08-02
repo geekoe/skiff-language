@@ -11,7 +11,8 @@ use crate::session::identity::RuntimeSessionEpoch;
 
 use super::broker::{
     BrokerHealthSnapshot, InboundCompletionOutcome, PeerTextOutcome, RuntimeRequest,
-    RuntimeRequestOutcome, WebSocketRequestBroker, WebSocketRequestBrokerOptions,
+    RuntimeRequestOutcome, RuntimeSendOutcome, WebSocketRequestBroker,
+    WebSocketRequestBrokerOptions,
 };
 use super::index::{
     AdmissionOutcome, AttachMeta, BrokerGenerationPort, ClientConnectionIndex,
@@ -257,6 +258,65 @@ impl WebSocketLane {
 
     pub fn handle_runtime_cancel(&self, source: &BrokerRuntimeSource, request_id: &str) -> bool {
         self.broker.handle_runtime_cancel(source, request_id)
+    }
+
+    /// Runtime `connection.send` (server->client business message, TS
+    /// parity). `connectionId` targets one exact generation; `businessIdentity`
+    /// targets every admitted connection for that business key. At least one
+    /// of the two targets must be present (never both).
+    pub fn handle_runtime_send(
+        &self,
+        connection_id: Option<&str>,
+        business_identity: Option<&str>,
+        service_id: &str,
+        websocket_entry_id: &str,
+        payload_kind: &str,
+        payload: &[u8],
+    ) -> RuntimeSendOutcome {
+        match (connection_id, business_identity) {
+            (Some(connection_id), None) => self.broker.handle_runtime_send(
+                connection_id,
+                service_id,
+                websocket_entry_id,
+                payload_kind,
+                payload,
+            ),
+            (None, Some(business_identity)) => {
+                let connection_ids = self.index.connections_for_business_identity(
+                    service_id,
+                    websocket_entry_id,
+                    business_identity,
+                );
+                if connection_ids.is_empty() {
+                    return RuntimeSendOutcome::DeliveryMiss {
+                        reason: format!(
+                            "no admitted connection for business identity {business_identity}"
+                        ),
+                    };
+                }
+                let mut outcome = RuntimeSendOutcome::DeliveryMiss {
+                    reason: "no delivery attempted".to_string(),
+                };
+                for connection_id in connection_ids {
+                    outcome = self.broker.handle_runtime_send(
+                        &connection_id,
+                        service_id,
+                        websocket_entry_id,
+                        payload_kind,
+                        payload,
+                    );
+                    if matches!(outcome, RuntimeSendOutcome::ProtocolViolation { .. }) {
+                        return outcome;
+                    }
+                }
+                outcome
+            }
+            _ => RuntimeSendOutcome::ProtocolViolation {
+                reason:
+                    "connection.send must target exactly one of connectionId or businessIdentity"
+                        .to_string(),
+            },
+        }
     }
 
     pub fn complete_inbound(

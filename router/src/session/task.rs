@@ -45,6 +45,19 @@ async fn completed(receiver: &mut Option<oneshot::Receiver<()>>) -> bool {
     }
 }
 
+fn debug_frame_type(raw: &[u8]) -> String {
+    skiff_runtime_transport::protocol::decode_binary_frame(raw)
+        .ok()
+        .and_then(|frame| {
+            frame
+                .header
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "<undecodable>".to_string())
+}
+
 pub(crate) async fn run_session_task(
     layer: Arc<SessionLayer>,
     connection_epoch: RuntimeConnectionEpoch,
@@ -52,7 +65,13 @@ pub(crate) async fn run_session_task(
     mut shutdown_rx: watch::Receiver<()>,
     mut cancel_rx: watch::Receiver<Option<SessionCloseReason>>,
 ) {
+    let session_debug = std::env::var("SKIFF_ROUTER_SESSION_DEBUG").is_ok();
     let connection_id = connection_epoch.opaque_connection_id.clone();
+    let debug = |message: String| {
+        if session_debug {
+            eprintln!("[session-debug] {connection_id}: {message}");
+        }
+    };
     let (write_half, mut read_half) = socket.split();
     let (outbound, outbound_rx) = OutboundQueue::new(layer.budgets);
     let (writer_error_tx, mut writer_error_rx) = mpsc::channel::<WriterError>(1);
@@ -122,6 +141,11 @@ pub(crate) async fn run_session_task(
                         let outcome = layer.demux().classify_with_sinks(&bytes, &layer.inbound_sinks());
                         match outcome {
                             DemuxOutcome::Terminal(kind) => {
+                                debug(format!(
+                                    "inbound frame terminal {}: {:?}",
+                                    debug_frame_type(&bytes),
+                                    kind
+                                ));
                                 machine.terminal_with(kind);
                             }
                             DemuxOutcome::Handled(event) => {
@@ -140,32 +164,38 @@ pub(crate) async fn run_session_task(
                         }
                     }
                     Some(Ok(Message::Text(_))) => {
+                        debug("inbound text frame terminal MalformedFrame".to_string());
                         machine.terminal_with(TerminalKind::MalformedFrame);
                     }
                     Some(Ok(Message::Close(_))) | None => {
+                        debug("inbound Close/EOF on_disconnect".to_string());
                         machine.on_disconnect();
                     }
                     Some(Ok(Message::Ping(_)))
                     | Some(Ok(Message::Pong(_)))
                     | Some(Ok(Message::Frame(_))) => {}
                     Some(Err(_)) => {
+                        debug("inbound read error on_disconnect".to_string());
                         machine.on_disconnect();
                     }
                 }
             }
             _ = cancel_rx.changed() => {
                 if let Some(reason) = *cancel_rx.borrow() {
+                    debug(format!("cancel_rx request_close: {reason:?}"));
                     close_reason = Some(reason);
                     break;
                 }
             }
             _ = shutdown_rx.changed() => {
+                debug("shutdown_rx close".to_string());
                 close_reason = Some(SessionCloseReason::Shutdown);
                 break;
             }
                             error = writer_error_rx.recv() => {
                                 match error {
                                     Some(error) => {
+                                        debug(format!("writer error {:?}: {error:?}", error.frame_id));
                                         match error.frame_id {
                                             OutboundFrameId::Bootstrap => {
                                                 machine.on_bootstrap_write_failed();
@@ -212,6 +242,10 @@ pub(crate) async fn run_session_task(
                 if deadline.is_some() =>
             {
                 if machine.phase() == HandshakePhase::RegisterValidated {
+                    debug(format!(
+                        "ack deadline expired ({}ms)",
+                        layer.timing.ack_write.as_millis()
+                    ));
                     machine.on_ack_write_failed();
                 } else {
                     let kind = match machine.phase() {
@@ -220,12 +254,19 @@ pub(crate) async fn run_session_task(
                         HandshakePhase::CapabilitiesBound => TimeoutKind::Register,
                         _ => TimeoutKind::Register,
                     };
+                    debug(format!("handshake deadline expired: {kind:?}"));
                     machine.on_timeout(kind);
                 }
             }
         }
     }
 
+    debug(format!(
+        "session closing phase={:?} terminal={:?} close_reason={:?}",
+        machine.phase(),
+        machine.terminal(),
+        close_reason
+    ));
     if let Some(session) = &bound_session {
         layer.unregister_frame_writer(session);
         layer.remove_dispatch_capabilities(session);
@@ -343,6 +384,11 @@ fn process_event(
             machine.on_legacy_register();
         }
         DemuxEvent::Sink { family, raw } => {
+            let debug = |message: String| {
+                if std::env::var("SKIFF_ROUTER_SESSION_DEBUG").is_ok() {
+                    eprintln!("[session-debug] sink family={family:?}: {message}");
+                }
+            };
             let Some(session) = bound_session.clone() else {
                 machine.terminal_with(TerminalKind::WrongOrder);
                 return;
@@ -351,15 +397,25 @@ fn process_event(
             match sinks.sink_for(family) {
                 Some(sink) => {
                     if let Err(kind) = sink.handle(&session, &raw) {
+                        debug(format!(
+                            "sink {:?} rejected frame {}: {:?}",
+                            family,
+                            debug_frame_type(&raw),
+                            kind
+                        ));
                         machine.terminal_with(kind);
                     }
                 }
                 None => {
+                    debug(format!("no sink for frame {}", debug_frame_type(&raw)));
                     machine.terminal_with(TerminalKind::UnimplementedFamily);
                 }
             }
         }
         DemuxEvent::Unimplemented { .. } => {
+            if std::env::var("SKIFF_ROUTER_SESSION_DEBUG").is_ok() {
+                eprintln!("[session-debug] demux unimplemented family terminal");
+            }
             machine.terminal_with(TerminalKind::UnimplementedFamily);
         }
     }

@@ -21,6 +21,7 @@ use skiff_runtime_transport::websocket_generation_lifecycle::{
 #[derive(Debug, Default)]
 struct FakePeerWriterInner {
     writes: Vec<String>,
+    binary_writes: Vec<Vec<u8>>,
     close: Option<(u16, String)>,
     terminated: bool,
     fail_next: bool,
@@ -67,6 +68,16 @@ impl PeerWriter for FakePeerWriter {
             return Err("injected writer failure".to_string());
         }
         inner.writes.push(frame);
+        Ok(())
+    }
+
+    fn write_binary(&self, payload: Vec<u8>) -> Result<(), String> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.fail_next {
+            inner.fail_next = false;
+            return Err("injected writer failure".to_string());
+        }
+        inner.binary_writes.push(payload);
         Ok(())
     }
 

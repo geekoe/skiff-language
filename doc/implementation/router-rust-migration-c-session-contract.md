@@ -106,8 +106,19 @@ SessionRecord {
 - pre-auth permit 在 registered ACK 写出后释放；timeout/disconnect/terminal
   同样释放。
 - bootstrap / capabilities / register 各有独立总 deadline（默认：
-  bootstrap 10s、capabilities 10s、register 30s；均为进程级常量，W-session
+  bootstrap 30s、capabilities 30s、register 30s；均为进程级常量，W-session
   可用 FakeClock 注入）；超时关闭 exact connection，不发布任何状态。
+- deadline 只度量到 session 成为 `Registered` 为止；registered 之后不再有
+  任何握手 deadline，health/业务帧不会重新启动握手窗口（E-chat 回归：
+  `handshake_deadline_does_not_fire_after_registration`）。
+- 冷启动窗口理由（E-chat 实测，2026-08-03）：全新 Runtime 在发送
+  `runtime.capabilities` 前需要完成 whole-assembly service DB index
+  provisioning（真实 agine stack 实测 10-21s）。TS Router 对 Runtime 注册
+  没有分阶段握手 deadline；Rust 早期默认 bootstrap/capabilities 10s 会在
+  冷启动期间误杀首次连接。为保持 TS parity 并把超时保留为 fail-closed
+  边界，bootstrap/capabilities 默认放宽到 30s（与 register 一致），
+  冷启动窗口内不误杀（`cold_start_capabilities_within_window_registers`），
+  超时仍然关闭 exact connection。
 
 ## 5. cancellation / reserved terminal / consumer manifest / barrier
 
