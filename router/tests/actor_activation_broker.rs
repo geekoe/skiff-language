@@ -401,4 +401,77 @@ mod tests {
         assert_eq!(broker.health().pending_claims, 0);
         assert_eq!(broker.health().tombstones, 1);
     }
+
+    #[test]
+    fn owner_lease_id_is_minted_once_and_reused_at_commit() {
+        // E-actor-parity reconciliation: the broker mints one lease id per
+        // activation admission; the same id reaches the activateInitial
+        // control request (whose facts the production control port writes
+        // into the wire fence) and the committed registry fence.
+        let (registry, broker, control) = broker_pair(None);
+        let outcome = broker.get_or_create(&get_or_create_request("c1", "rpc:1", "ordinary", 0));
+        let GetOrCreateOutcome::StartedActivation { request_id } = outcome else {
+            panic!("expected started activation");
+        };
+        let sent = control
+            .sent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(sent.len(), 1);
+        let wire_lease_id = sent[0].facts.owner_lease_id.clone();
+        assert!(
+            wire_lease_id.starts_with("owner-lease-"),
+            "broker mint must use the canonical owner-lease-<n> shape: {wire_lease_id}"
+        );
+        drop(sent);
+
+        assert!(matches!(
+            broker.on_activation_ack(&request_id, "runtime-b", "conn-b", true, 1000),
+            ActivationAckOutcome::Committed { epoch: 1, .. }
+        ));
+        let committed = registry
+            .current_owner(&actor_key())
+            .expect("committed owner");
+        assert_eq!(
+            committed.owner_lease_id, wire_lease_id,
+            "wire activateInitial lease id must equal the committed registry fence lease id"
+        );
+
+        // A second activation (after release) mints a distinct lease id so
+        // the old fence identity never aliases the new owner.
+        registry
+            .release(
+                &actor_key(),
+                &committed,
+                skiff_router::actor::OwnerReleaseReason::Evicted,
+            )
+            .expect("release for second activation");
+        let outcome = broker.get_or_create(&get_or_create_request("c2", "rpc:2", "ordinary", 0));
+        let GetOrCreateOutcome::StartedActivation { request_id } = outcome else {
+            panic!("expected second started activation");
+        };
+        let sent = control
+            .sent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let second_lease_id = sent
+            .last()
+            .expect("second request")
+            .facts
+            .owner_lease_id
+            .clone();
+        drop(sent);
+        assert_ne!(second_lease_id, wire_lease_id);
+        assert!(matches!(
+            broker.on_activation_ack(&request_id, "runtime-b", "conn-b", true, 2000),
+            ActivationAckOutcome::Committed { epoch: 1, .. }
+        ));
+        assert_eq!(
+            registry
+                .current_owner(&actor_key())
+                .expect("second owner")
+                .owner_lease_id,
+            second_lease_id
+        );
+    }
 }

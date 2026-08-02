@@ -346,9 +346,27 @@ impl ActorInvocationRelay {
     pub fn parent_snapshot(&self, invocation_id: &str) -> Option<SpawnParentSnapshot> {
         let inner = self.lock();
         let pending = inner.pending.get(invocation_id)?;
+        // C-spawn §4.2 / E-actor-parity: an actor-method invocation's spawn
+        // parent authority is the runtime connection where the method
+        // executes (the owner). The original caller may differ when the
+        // Router pins the owner to another replica; the spawned method's
+        // `spawn.submit.request` then arrives from the owner connection and
+        // must resolve against it. Test-capability lineages keep the caller
+        // origin (the capability parent), matching the TS dispatcher.
+        let (runtime_id, connection) = if pending.test_case_capability.is_some() {
+            (
+                pending.caller_runtime_id.clone(),
+                pending.caller_connection.clone(),
+            )
+        } else {
+            (
+                pending.owner_fence.owner_runtime_id.clone(),
+                pending.owner_connection.clone(),
+            )
+        };
         Some(SpawnParentSnapshot {
-            runtime_id: pending.caller_runtime_id.clone(),
-            connection: pending.caller_connection.clone(),
+            runtime_id,
+            connection,
             assembly_generation: pending.route_authority.assembly_generation,
             test_case_capability: pending.test_case_capability.clone(),
             active: true,

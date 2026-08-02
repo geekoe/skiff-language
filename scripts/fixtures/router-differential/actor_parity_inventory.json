@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "skiff-router-differential-inventory-v1",
+  "baseline": "edc111f888a70743a8ecadc3bdbcb6b4ae2fd54a",
+  "scenarios": [
+    {
+      "id": "actor_parity_full_chain",
+      "status": "runnable",
+      "lane": "actor",
+      "description": "Two-replica actor get-or-create/invoke/owner-control/spawn full chain over real HTTP: isolated TS and Rust Router sides each consume the same canonical actor-routing projection, drive the identical actor-full-chain-acceptance service through real HTTP into two real Runtime replicas (test-only relays), and must produce identical HTTP step results, projected semantic frame sequences (ephemeral correlation ids tokenized per key, timestamps normalized, payloads hashed, handshake/health frames excluded), seeded Mongo state/audit and terminal behavior.",
+      "observationTypes": ["http", "runtimeFrames", "health", "mongoState", "mongoAudit", "terminal", "logs"],
+      "normalizations": [],
+      "compare": {
+        "equal": [
+          { "path": "http.steps" },
+          { "path": "http.controlHealthStatus" },
+          { "path": "frameEvents.actor-parity-replica-1" },
+          { "path": "frameEvents.actor-parity-replica-2" },
+          { "path": "mongo.state" },
+          { "path": "mongo.auditCount" },
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.runtimeOneExitCode" },
+          { "path": "terminal.runtimeTwoExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [],
+        "recordOnly": [
+          { "path": "http.publicStatus" },
+          { "path": "http.controlHealthBody" },
+          { "path": "timings" },
+          { "path": "rawFrames" },
+          { "path": "logs" }
+        ]
+      }
+    }
+  ]
+}

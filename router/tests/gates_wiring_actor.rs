@@ -21,6 +21,11 @@ use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::ws::types::SystemClock;
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
+use skiff_runtime_transport::actor_method::{
+    encode_actor_method_frame, ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
+    ActorMethodDeadlineFrameHeader, ActorMethodFrame, ActorMethodInvokeFrameHeader,
+    ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
+};
 use skiff_runtime_transport::actor_owner::{
     encode_actor_owner_control_frame, ActorOwnerControlFenceFrameHeader,
     ActorOwnerControlFrameHeader, ActorOwnerControlOperation, ActorOwnerRouteAuthorityFrameHeader,
@@ -372,5 +377,62 @@ mod tests {
         let result = sink.handle(&runtime(), &bytes);
         assert!(result.is_err());
         assert!(writer.frames.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn actor_method_invoke_unknown_projection_method_fails_closed_without_error_frame() {
+        // E-actor-parity: actor method invocation admission reads the A0
+        // projection catalog (A2 hard cut / C-actor §3.1). A miss must fail
+        // closed exactly like the TS dispatcher's UnknownMethod rejection:
+        // no synthetic error frame, no owner forward, no session terminal.
+        let (sink, writer, _) = sink();
+        let key = actor_key();
+        let invoke = ActorMethodInvokeFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.method.invoke".to_string(),
+            invocation_id: "invoke-unknown".to_string(),
+            actor_ref: ActorLogicalRefFrameHeader {
+                service_id: key.service_id,
+                actor_type_identity: key.actor_type_identity,
+                actor_id_type_identity: key.actor_id_type_identity,
+                actor_id_encoding_version: key.actor_id_encoding_version,
+                canonical_actor_id_key_bytes_base64: key.canonical_actor_id_key_bytes_base64,
+                actor_id_hash: format!("sha256:{}", digest("hash")),
+                epoch: 1,
+            },
+            declaration_owner: ActorDeclarationOwnerFrameHeader {
+                unit: ActorOwnerUnitFrameHeader::Service,
+                file: ActorOwnerFileFrameHeader::LoadedFileIndex(0),
+                actor_symbol: "main".to_string(),
+            },
+            actor_abi_identity: skiff_artifact_model::ActorAbiIdentity::new(format!(
+                "skiff-actor-abi-v1:sha256:{}",
+                digest("abi")
+            )),
+            actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity::new(
+                format!("skiff-actor-implementation-v1:sha256:{}", digest("impl")),
+            ),
+            method_identity: skiff_artifact_model::ActorMethodIdentity::new(format!(
+                "skiff-actor-method-v1:sha256:{}",
+                digest("method")
+            )),
+            arguments_encoding_version: "skiff-actor-arguments-v1".to_string(),
+            deadline: ActorMethodDeadlineFrameHeader {
+                timeout_ms: 30_000,
+                expires_at: "2099-01-01T00:00:00.000Z".to_string(),
+            },
+            cancellation_correlation: "invoke-unknown:cancel".to_string(),
+            trace_id: None,
+            test_case_capability: None,
+            test_case_parent_request_id: None,
+        };
+        let bytes = encode_actor_method_frame(&ActorMethodFrame::Invoke(invoke, Vec::new()))
+            .expect("encode invoke");
+        let result = sink.handle(&runtime(), &bytes);
+        assert!(result.is_ok());
+        assert!(
+            writer.frames.lock().unwrap().is_empty(),
+            "unknown projection method must not produce a synthetic error or forward"
+        );
     }
 }

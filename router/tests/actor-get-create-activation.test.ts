@@ -243,6 +243,34 @@ describe('Actor getOrCreate activation contract', () => {
     });
   });
 
+  it('reconciles one owner lease id across the wire frame and the registry entry', async () => {
+    // E-actor-parity: the TS coordinator mints the owner lease id exactly
+    // once at activation; the activateInitial wire fence, the registry entry
+    // and the post-ACK mark-live state all carry the same id.
+    const manager = new ActorManager();
+    const { coordinator, sockets } = coordinatorFor(manager);
+    const pending = coordinator.getOrCreate({
+      header: requestHeader(actorKeyInput()),
+      payloadBytes: new Uint8Array([1, 2, 3]),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const frame = decodeBinaryFrame(sockets[0]!.sent[0]!) as unknown as {
+      header: ActorOwnerControlFrameHeader;
+    };
+    const wireLeaseId = (frame.header.fence as { ownerLeaseId: string }).ownerLeaseId;
+    expect(wireLeaseId).toMatch(/^actor-owner-/);
+    const entry = await manager.entry(actorKeyInput());
+    expect(entry?.ownerLeaseId).toBe(wireLeaseId);
+
+    ack(coordinator, sockets[0]!, frame.header, true);
+    await expect(pending).resolves.toMatchObject({
+      header: { type: 'actor.getOrCreate.response' },
+    });
+    const after = await manager.entry(actorKeyInput());
+    expect(after?.ownerLeaseId).toBe(wireLeaseId);
+  });
+
   it('rejects a forged capability before registry mutation or owner send', async () => {
     const manager = new ActorManager();
     const { coordinator, sockets } = coordinatorFor(manager);

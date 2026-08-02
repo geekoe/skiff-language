@@ -558,30 +558,6 @@ impl SessionConsumer for DispatcherSessionConsumer {
     }
 }
 
-/// Composition-level lease-id mint for `activateInitial` control frames.
-///
-/// The canonical corpus mints `owner-lease-<n>` at activation time; the
-/// registry mints the committed fence lease id independently at commit.
-/// Reconciliating these two mints is an E-actor-rust/E-actor-parity item;
-/// this mint keeps the composition wire-constructible and documented.
-#[derive(Debug, Clone, Default)]
-pub struct LeaseIdMint {
-    next: Arc<AtomicU64>,
-}
-
-impl LeaseIdMint {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn mint(&self) -> String {
-        format!(
-            "owner-lease-{}",
-            self.next.fetch_add(1, Ordering::Relaxed) + 1
-        )
-    }
-}
-
 /// Snapshot accessor used by tests and health projections.
 pub fn capabilities_by_session(
     layer: &SessionLayer,
