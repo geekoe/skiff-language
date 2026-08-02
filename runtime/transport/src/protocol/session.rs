@@ -1,14 +1,23 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
-    validate_activation_environment, validate_activation_generation, RuntimeAssemblyRef,
-    RuntimeConfigSnapshotRef,
+    validate_activation_environment, validate_activation_generation,
+    validate_runtime_assembly_identity, validate_runtime_config_snapshot_id, AssemblyIdentity,
+    RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
 };
 
 use crate::{
-    protocol::{frame::RUNTIME_FRAME_SCHEMA_VERSION, request::is_false},
+    protocol::{
+        decode_typed_binary_frame, encode_binary_frame, frame::RUNTIME_FRAME_SCHEMA_VERSION,
+        request::is_false,
+    },
     BinaryFrameError, TransportError,
 };
+
+pub const ROUTER_BOOTSTRAP_FRAME_TYPE: &str = "router.bootstrap";
+pub const RUNTIME_CAPABILITIES_FRAME_TYPE: &str = "runtime.capabilities";
+pub const RUNTIME_REGISTERED_FRAME_TYPE: &str = "runtime.registered";
+pub const RUNTIME_HEALTH_FRAME_TYPE: &str = "runtime.health";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -145,7 +154,7 @@ pub fn decode_router_bootstrap_frame_header(
             "invalid router.bootstrap frame header: schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
         )));
     }
-    if header.envelope_type != "router.bootstrap" {
+    if header.envelope_type != ROUTER_BOOTSTRAP_FRAME_TYPE {
         return Err(TransportError::decode(
             "invalid router.bootstrap frame header: type must be router.bootstrap",
         ));
@@ -185,6 +194,250 @@ fn is_normalized_absolute_artifacts_path(value: &str) -> bool {
         || value[1..]
             .split('/')
             .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+/// Captured activation tuple used to construct the `router.bootstrap` frame
+/// (§3.3/§3.5, C-model-bootstrap-wire §2.3). W-bootstrap later maps the
+/// durable `RoutingEpoch` onto this wire-facing view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedBootstrapEpoch {
+    pub environment: String,
+    pub generation: u64,
+    pub assembly: RuntimeAssemblyRef,
+    pub config_snapshot: RuntimeConfigSnapshotRef,
+}
+
+impl CapturedBootstrapEpoch {
+    /// Strict constructor: every wire-visible field is validated the same way
+    /// the typed bootstrap header Deserialize path validates it.
+    pub fn new(
+        environment: impl Into<String>,
+        generation: u64,
+        assembly_identity: impl Into<String>,
+        config_snapshot_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let environment = environment.into();
+        validate_activation_environment(&environment)?;
+        validate_activation_generation(generation, "generation")?;
+        let assembly_identity = assembly_identity.into();
+        validate_runtime_assembly_identity(&assembly_identity)?;
+        let config_snapshot_id = config_snapshot_id.into();
+        validate_runtime_config_snapshot_id(&config_snapshot_id)?;
+        Ok(Self {
+            environment,
+            generation,
+            assembly: RuntimeAssemblyRef {
+                assembly_identity: AssemblyIdentity::new(assembly_identity),
+            },
+            config_snapshot: RuntimeConfigSnapshotRef {
+                snapshot_id: RuntimeConfigSnapshotId::parse(config_snapshot_id)
+                    .map_err(|error| error.to_string())?,
+            },
+        })
+    }
+
+    pub fn to_activation_header(&self) -> RouterBootstrapActivationFrameHeader {
+        RouterBootstrapActivationFrameHeader {
+            environment: self.environment.clone(),
+            generation: self.generation,
+            assembly: self.assembly.clone(),
+            config_snapshot: self.config_snapshot.clone(),
+        }
+    }
+}
+
+/// Captured router config + activation tuple from which a stateless provider
+/// constructs the one-shot `router.bootstrap` frame (plan §5.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterBootstrapSource {
+    pub artifacts_path: String,
+    pub service_db: RouterBootstrapServiceDbFrameHeader,
+    pub http: RouterBootstrapHttpFrameHeader,
+    pub activation: CapturedBootstrapEpoch,
+}
+
+impl RouterBootstrapSource {
+    /// Validates the full header through the canonical strict decoder and
+    /// returns the typed frame header (payload is always empty).
+    pub fn to_frame_header(&self) -> Result<RouterBootstrapFrameHeader, BinaryFrameError> {
+        let header = RouterBootstrapFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: ROUTER_BOOTSTRAP_FRAME_TYPE.to_string(),
+            artifacts_path: self.artifacts_path.clone(),
+            service_db: self.service_db.clone(),
+            http: self.http.clone(),
+            activation: self.activation.to_activation_header(),
+        };
+        let value = serde_json::to_value(&header).map_err(|error| {
+            TransportError::decode(format!(
+                "invalid router.bootstrap frame header: serialization failed: {error}"
+            ))
+        })?;
+        decode_router_bootstrap_frame_header(value)?;
+        Ok(header)
+    }
+}
+
+/// Router→Runtime bootstrap provider port (C-model-bootstrap-wire §5/§6).
+///
+/// The frozen contract signature references `RoutingEpoch`, which is a
+/// W-bootstrap production type not present in this batch; transport owns the
+/// wire-facing captured view (`RouterBootstrapSource`) until W-bootstrap maps
+/// `RoutingEpoch` onto it.
+pub trait RuntimeBootstrapProvider: Send + Sync {
+    fn bootstrap_frame(
+        &self,
+        source: &RouterBootstrapSource,
+    ) -> Result<RouterBootstrapFrameHeader, BinaryFrameError>;
+}
+
+/// Default stateless provider: validates the captured source and produces the
+/// canonical `router.bootstrap` header (plan §5.5).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StatelessRuntimeBootstrapProvider;
+
+impl RuntimeBootstrapProvider for StatelessRuntimeBootstrapProvider {
+    fn bootstrap_frame(
+        &self,
+        source: &RouterBootstrapSource,
+    ) -> Result<RouterBootstrapFrameHeader, BinaryFrameError> {
+        source.to_frame_header()
+    }
+}
+
+pub fn encode_router_bootstrap_frame(
+    header: &RouterBootstrapFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_router_bootstrap_frame(header, &[])?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn decode_router_bootstrap_frame(
+    frame: &[u8],
+) -> Result<RouterBootstrapFrameHeader, BinaryFrameError> {
+    let (header, payload): (RouterBootstrapFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(frame)?;
+    validate_router_bootstrap_frame(&header, &payload)?;
+    Ok(header)
+}
+
+fn validate_router_bootstrap_frame(
+    header: &RouterBootstrapFrameHeader,
+    payload: &[u8],
+) -> Result<(), BinaryFrameError> {
+    let value = serde_json::to_value(header).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid router.bootstrap frame header: serialization failed: {error}"
+        ))
+    })?;
+    decode_router_bootstrap_frame_header(value)?;
+    if !payload.is_empty() {
+        return Err(TransportError::decode(
+            "router.bootstrap frame payload must be empty",
+        ));
+    }
+    Ok(())
+}
+
+pub fn encode_runtime_capabilities_frame(
+    header: &RuntimeCapabilitiesFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_empty_session_frame(
+        &header.schema_version,
+        &header.envelope_type,
+        RUNTIME_CAPABILITIES_FRAME_TYPE,
+        &[],
+    )?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn decode_runtime_capabilities_frame(
+    frame: &[u8],
+) -> Result<RuntimeCapabilitiesFrameHeader, BinaryFrameError> {
+    let (header, payload): (RuntimeCapabilitiesFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(frame)?;
+    validate_empty_session_frame(
+        &header.schema_version,
+        &header.envelope_type,
+        RUNTIME_CAPABILITIES_FRAME_TYPE,
+        &payload,
+    )?;
+    Ok(header)
+}
+
+pub fn encode_runtime_registered_frame(
+    header: &RuntimeRegisteredFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_empty_session_frame(
+        &header.schema_version,
+        &header.envelope_type,
+        RUNTIME_REGISTERED_FRAME_TYPE,
+        &[],
+    )?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn decode_runtime_registered_frame(
+    frame: &[u8],
+) -> Result<RuntimeRegisteredFrameHeader, BinaryFrameError> {
+    let (header, payload): (RuntimeRegisteredFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(frame)?;
+    validate_empty_session_frame(
+        &header.schema_version,
+        &header.envelope_type,
+        RUNTIME_REGISTERED_FRAME_TYPE,
+        &payload,
+    )?;
+    Ok(header)
+}
+
+pub fn encode_runtime_health_frame(
+    header: &RuntimeHealthFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_empty_session_frame(
+        &header.schema_version,
+        &header.envelope_type,
+        RUNTIME_HEALTH_FRAME_TYPE,
+        &[],
+    )?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn decode_runtime_health_frame(
+    frame: &[u8],
+) -> Result<RuntimeHealthFrameHeader, BinaryFrameError> {
+    let (header, payload): (RuntimeHealthFrameHeader, Vec<u8>) = decode_typed_binary_frame(frame)?;
+    validate_empty_session_frame(
+        &header.schema_version,
+        &header.envelope_type,
+        RUNTIME_HEALTH_FRAME_TYPE,
+        &payload,
+    )?;
+    Ok(header)
+}
+
+fn validate_empty_session_frame(
+    schema_version: &str,
+    envelope_type: &str,
+    expected_type: &str,
+    payload: &[u8],
+) -> Result<(), BinaryFrameError> {
+    if schema_version != RUNTIME_FRAME_SCHEMA_VERSION {
+        return Err(TransportError::decode(format!(
+            "{expected_type} frame schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
+        )));
+    }
+    if envelope_type != expected_type {
+        return Err(TransportError::decode(format!(
+            "{expected_type} frame type must be {expected_type}"
+        )));
+    }
+    if !payload.is_empty() {
+        return Err(TransportError::decode(format!(
+            "{expected_type} frame payload must be empty"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -237,3 +490,7 @@ impl From<RuntimeRegisterEnvelope> for RuntimeRegisterFrameHeader {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session/tests.rs"]
+mod tests;

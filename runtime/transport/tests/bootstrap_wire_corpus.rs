@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_presence_is_frozen_empty_and_w_model_enforcement_is_declared() {
+    fn payload_presence_is_frozen_empty_and_w_model_enforcement_is_active() {
         let corpus = corpus();
         assert!(
             !corpus.payload_presence.is_empty(),
@@ -236,9 +236,10 @@ mod tests {
             assert!(case.expect_reject, "{} must expect rejection", case.id);
             assert_eq!(case.enforced_by, "W-model-bootstrap-wire");
             assert!(!case.note.is_empty(), "{} must carry a rationale", case.id);
-            // The enforcement lands with W-model-bootstrap-wire; until then the
-            // contract only freezes the rule and the registry-backed presence.
-            assert!(!case.current_enforced);
+            // W-model-bootstrap-wire has landed frame-level enforcement in
+            // `decode_router_bootstrap_frame`; the contract now requires the
+            // corpus flag to stay flipped on.
+            assert!(case.current_enforced);
         }
     }
 }
