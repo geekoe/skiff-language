@@ -253,19 +253,6 @@ export class HttpGateway {
       return;
     }
 
-    if (url.pathname === '/__skiff/reload-artifacts') {
-      this.writeGatewayError(
-        response,
-        new GatewayError(
-          404,
-          'ControlEndpointNotFound',
-          'router control endpoints are served by the runtime/control listener'
-        ),
-        telemetry
-      );
-      return;
-    }
-
     if (url.pathname === '/favicon.ico') {
       telemetry.routeKind = 'gateway';
       response.statusCode = 204;

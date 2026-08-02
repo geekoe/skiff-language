@@ -5,7 +5,6 @@ import type {
 } from '../../src/protocol/envelope.js';
 import {
   RouterActiveSnapshotStore,
-  type RouterActiveSnapshot
 } from '../../src/router/activeSnapshot.js';
 import { RouterControlPlane } from '../../src/router/controlPlane.js';
 import {
@@ -237,16 +236,4 @@ export class RouterHarness {
     return await requestHttp(request);
   }
 
-  createControlPlane(input: {
-    reloadArtifacts?: () => Promise<RouterActiveSnapshot>;
-    snapshotStore: RouterActiveSnapshotStore;
-  }): RouterControlPlane {
-    return new RouterControlPlane({
-      controlBroadcaster: this.endpoint,
-      dispatcher: this.dispatcher,
-      registry: this.registry,
-      snapshotStore: input.snapshotStore,
-      ...(input.reloadArtifacts ? { reloadArtifacts: input.reloadArtifacts } : {})
-    });
-  }
 }

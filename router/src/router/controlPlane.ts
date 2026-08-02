@@ -6,7 +6,6 @@ import {
   type DispatchMode,
   type PackageTestStartFrameHeader,
   type RouterControlEnvelope,
-  type RuntimeServiceDbConfigInput,
   type RequestStartFrameHeader
 } from '../protocol/envelope.js';
 import { validateRouterToRuntimeFrameHeader } from '../protocol/runtimeProtocol.js';
@@ -23,7 +22,6 @@ import type {
   RuntimeRegistry
 } from './runtimeRegistry.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
-import type { HttpStreamLifecycleCounters } from './httpGateway.js';
 
 export interface RuntimeControlBroadcaster {
   broadcastControl(control: Omit<RouterControlEnvelope, 'type'>): void;
@@ -32,21 +30,9 @@ export interface RuntimeControlBroadcaster {
 export interface ControlPlaneOptions {
   controlBroadcaster: RuntimeControlBroadcaster;
   dispatcher: RuntimeDispatcher;
-  loopRiskCounters?: RouterLoopRiskCounterSources;
   registry: RuntimeRegistry;
-  reloadArtifacts?: (overrides?: ReloadArtifactsOverrides) => Promise<RouterActiveSnapshot>;
   requestTimeoutMs?: number;
   snapshotStore: RouterActiveSnapshotStore;
-}
-
-export interface RouterLoopRiskCounterSources {
-  httpStream?: () => HttpStreamLifecycleCounters;
-}
-
-export interface ReloadArtifactsOverrides {
-  artifactRoots?: string[];
-  configProfile?: string;
-  serviceDb?: RuntimeServiceDbConfigInput;
 }
 
 type TestEffectDoubles = Record<string, Array<{
@@ -102,7 +88,6 @@ interface PruneRuntimesRequest {
 
 export class RouterControlPlane {
   private readonly requestTimeoutMs: number;
-  private reloadInFlight: Promise<RouterActiveSnapshot> | undefined;
 
   constructor(private readonly options: ControlPlaneOptions) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 2000;
@@ -114,26 +99,11 @@ export class RouterControlPlane {
   ): Promise<boolean> {
     const url = requestUrl(request);
     if (url.pathname === '/__router/health') {
-      const payload = {
+      this.writeJson(response, 200, {
         ok: true,
         ...summarizeRouterActiveSnapshot(this.options.snapshotStore.get()),
         runtimes: this.options.registry.snapshot()
-      };
-      this.writeJson(
-        response,
-        200,
-        url.searchParams.get('detail') === 'loop-risk'
-          ? {
-              ...payload,
-              loopRisk: this.loopRiskHealthSnapshot()
-            }
-          : payload
-      );
-      return true;
-    }
-
-    if (url.pathname === '/__skiff/reload-artifacts') {
-      await this.handleReloadArtifacts(request, response);
+      });
       return true;
     }
 
@@ -163,69 +133,6 @@ export class RouterControlPlane {
       });
       return true;
     }
-  }
-
-  setLoopRiskCounterSources(sources: RouterLoopRiskCounterSources): void {
-    this.options.loopRiskCounters = sources;
-  }
-
-  private loopRiskHealthSnapshot(): {
-    observedAt: string;
-    router: {
-      dispatcher: ReturnType<RuntimeDispatcher['pendingLifecycleCounters']>;
-      httpStream: {
-        backpressureWaiters: number;
-        backpressureCancels: number;
-      };
-    };
-    runtimes: ReturnType<RuntimeRegistry['loopRiskRuntimeHealthSnapshot']>;
-  } {
-    const observedAt = new Date();
-    const httpStream = this.options.loopRiskCounters?.httpStream?.();
-    return {
-      observedAt: observedAt.toISOString(),
-      router: {
-        dispatcher: this.options.dispatcher.pendingLifecycleCounters(),
-        httpStream: {
-          backpressureWaiters: httpStream?.backpressureWaiters ?? 0,
-          backpressureCancels: httpStream?.backpressureCancels ?? 0
-        }
-      },
-      runtimes: this.options.registry.loopRiskRuntimeHealthSnapshot(observedAt.getTime())
-    };
-  }
-
-  private async handleReloadArtifacts(
-    request: IncomingMessage,
-    response: ServerResponse
-  ): Promise<void> {
-    if (request.method !== 'POST') {
-      response.setHeader('allow', 'POST');
-      this.writeJson(response, 405, {
-        error: {
-          code: 'MethodNotAllowed',
-          message: 'reload artifacts requires POST'
-        }
-      });
-      return;
-    }
-    const overrides = await readOptionalReloadArtifactsOverrides(request);
-    if (!this.options.reloadArtifacts) {
-      this.writeJson(response, 409, {
-        error: {
-          code: 'ArtifactReloadUnavailable',
-          message: 'router was not started with artifact roots'
-        }
-      });
-      return;
-    }
-
-    const snapshot = await this.reloadArtifactsOnce(overrides);
-    this.writeJson(response, 200, {
-      ok: true,
-      ...summarizeRouterActiveSnapshot(snapshot),
-      runtimes: this.options.registry.snapshot()
-    });
   }
 
   private async handlePruneRuntimes(
@@ -469,47 +376,6 @@ export class RouterControlPlane {
     };
   }
 
-  private reloadArtifactsOnce(
-    overrides?: ReloadArtifactsOverrides
-  ): Promise<RouterActiveSnapshot> {
-    if (!this.options.reloadArtifacts) {
-      throw new GatewayError(409, 'ArtifactReloadUnavailable', 'router was not started with artifact roots');
-    }
-    if (overrides !== undefined) {
-      return this.reloadArtifacts(overrides);
-    }
-    if (this.reloadInFlight) {
-      return this.reloadInFlight;
-    }
-    const reload = this.reloadArtifacts()
-      .finally(() => {
-        if (this.reloadInFlight === reload) {
-          this.reloadInFlight = undefined;
-        }
-      });
-    this.reloadInFlight = reload;
-    return reload;
-  }
-
-  private async reloadArtifacts(
-    overrides?: ReloadArtifactsOverrides
-  ): Promise<RouterActiveSnapshot> {
-    if (!this.options.reloadArtifacts) {
-      throw new GatewayError(409, 'ArtifactReloadUnavailable', 'router was not started with artifact roots');
-    }
-    const snapshot = await this.options.reloadArtifacts(overrides);
-    this.options.snapshotStore.replace(snapshot);
-    // Keep cross-service version addressing pointed at the freshly loaded
-    // service-version pointer records so a reload that publishes a new build for
-    // a version immediately routes to it.
-    this.options.registry.setServiceVersionIndex(snapshot.versionByService);
-    this.options.registry.setActivationLookup(snapshot.activationByServiceOperation);
-    if (snapshot.control) {
-      this.options.controlBroadcaster.broadcastControl(snapshot.control);
-    }
-    return snapshot;
-  }
-
   private writeJson(response: ServerResponse, statusCode: number, value: unknown): void {
     if (response.headersSent) {
       response.end();
@@ -519,127 +385,6 @@ export class RouterControlPlane {
     response.setHeader('content-type', 'application/json; charset=utf-8');
     response.end(JSON.stringify(value));
   }
-}
-
-async function readOptionalReloadArtifactsOverrides(
-  request: IncomingMessage
-): Promise<ReloadArtifactsOverrides | undefined> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-    size += buffer.byteLength;
-    if (size > 1024 * 1024) {
-      throw new GatewayError(413, 'RequestTooLarge', 'reload artifacts request body is too large');
-    }
-    chunks.push(buffer);
-  }
-  const text = Buffer.concat(chunks).toString('utf8').trim();
-  if (text.length === 0) {
-    return undefined;
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      `request body is not valid JSON: ${message}`
-    );
-  }
-  if (!isRecord(value)) {
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      'request body must be a JSON object'
-    );
-  }
-  const artifactRoots = optionalReloadBodyStringArray(value, 'artifactRoots');
-  if (Object.prototype.hasOwnProperty.call(value, 'artifactRoot')) {
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      'artifactRoot is no longer supported; use artifactRoots'
-    );
-  }
-  const configProfile = optionalReloadBodyString(value, 'configProfile');
-  const serviceDb = optionalReloadServiceDb(value.serviceDb);
-  return artifactRoots === undefined && configProfile === undefined && serviceDb === undefined
-    ? undefined
-    : {
-        ...(artifactRoots !== undefined ? { artifactRoots } : {}),
-        ...(configProfile !== undefined ? { configProfile } : {}),
-        ...(serviceDb !== undefined ? { serviceDb } : {})
-      };
-}
-
-function optionalReloadServiceDb(value: unknown): RuntimeServiceDbConfigInput | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      'serviceDb must be an object'
-    );
-  }
-  const mongoUrl = value.mongoUrl;
-  if (typeof mongoUrl !== 'string' || mongoUrl.length === 0) {
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      'serviceDb.mongoUrl must be a non-empty string'
-    );
-  }
-  return { mongoUrl };
-}
-
-function optionalReloadBodyString(
-  value: Record<string, unknown>,
-  field: string
-): string | undefined {
-  const raw = value[field];
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (typeof raw !== 'string' || raw.trim().length === 0) {
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      `${field} must be a non-empty string`
-    );
-  }
-  return raw.trim();
-}
-
-function optionalReloadBodyStringArray(
-  value: Record<string, unknown>,
-  field: string
-): string[] | undefined {
-  const raw = value[field];
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new GatewayError(
-      400,
-      'InvalidArtifactReloadRequest',
-      `${field} must be a non-empty string array`
-    );
-  }
-  return raw.map((item, index) => {
-    if (typeof item !== 'string' || item.trim().length === 0) {
-      throw new GatewayError(
-        400,
-        'InvalidArtifactReloadRequest',
-        `${field}[${index}] must be a non-empty string`
-      );
-    }
-    return item.trim();
-  });
 }
 
 async function readOptionalPruneRuntimesJson(
