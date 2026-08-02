@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scenario": "17-four-way-shutdown-then-peer-close",
+  "limits": { "connectionLimit": 4, "slowClientBudgetBytes": 1024, "perGenerationCapacity": 2 },
+  "events": [
+    { "kind": "acceptConnection", "connection": "c1" },
+    { "kind": "attach", "connection": "c1", "socketGeneration": "g1", "runtime": "r1" },
+    { "kind": "acquirePin", "connection": "c1", "runtime": "r1" },
+    { "kind": "shutdown" },
+    { "kind": "releasePin", "connection": "c1", "mode": "ack" },
+    { "kind": "peerClose", "connection": "c1" }
+  ],
+  "expect": {
+    "terminals": { "c1": "Shutdown" },
+    "connectionCount": 0,
+    "generationCount": 0,
+    "outboundPending": 0,
+    "inboundPending": 0,
+    "tombstones": 0,
+    "pinsAcquired": 0,
+    "pinsPendingRelease": 0,
+    "releaseAcks": 1,
+    "finalizerCount": 1,
+    "runtimeClosed": false,
+    "failStop": false,
+    "openConnections": []
+  }
+}

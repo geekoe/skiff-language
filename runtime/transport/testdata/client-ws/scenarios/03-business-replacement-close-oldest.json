@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "scenario": "03-business-replacement-close-oldest",
+  "limits": { "connectionLimit": 4, "slowClientBudgetBytes": 1024, "perGenerationCapacity": 2 },
+  "events": [
+    { "kind": "acceptConnection", "connection": "c1", "businessKey": "b1", "maxConnections": 1, "overflow": "close-oldest" },
+    { "kind": "attach", "connection": "c1", "socketGeneration": "g1", "runtime": "r1" },
+    { "kind": "acceptConnection", "connection": "c2", "businessKey": "b1", "maxConnections": 1, "overflow": "close-oldest" },
+    { "kind": "attach", "connection": "c2", "socketGeneration": "g2", "runtime": "r1" },
+    { "kind": "acquirePin", "connection": "c2", "runtime": "r1" },
+    { "kind": "releasePin", "connection": "c2", "mode": "initiate" },
+    { "kind": "releasePin", "connection": "c2", "mode": "ack" },
+    { "kind": "peerClose", "connection": "c2" }
+  ],
+  "expect": {
+    "terminals": { "c1": "Replacement", "c2": "PeerClose" },
+    "connectionCount": 0,
+    "generationCount": 0,
+    "outboundPending": 0,
+    "inboundPending": 0,
+    "tombstones": 0,
+    "pinsAcquired": 0,
+    "pinsPendingRelease": 0,
+    "releaseAcks": 1,
+    "finalizerCount": 2,
+    "runtimeClosed": false,
+    "failStop": false,
+    "openConnections": []
+  }
+}
