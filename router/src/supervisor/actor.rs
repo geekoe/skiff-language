@@ -33,7 +33,7 @@ use crate::dispatch::RequestDispatcher;
 use crate::session::consumer::{ConsumerKind, SessionConsumer};
 use crate::session::identity::RuntimeSessionEpoch;
 
-use super::session_ports::{LeaseIdMint, SessionHandle};
+use super::session_ports::SessionHandle;
 
 /// Fully assembled W-actor lane (composition owner; E-actor-rust adds the
 /// inbound actor frame sink and the real spawn execution owner).
@@ -203,25 +203,18 @@ pub fn assemble_actor_components(
 /// writes it to the exact owner runtime session through the session
 /// outbound registry.
 ///
-/// Alignment seams (documented for E-actor-rust/E-actor-parity): the fence
-/// epoch resolves from the ownership registry entry at activation time, and
-/// the wire `ownerLeaseId` is minted composition-side (the canonical corpus
-/// mints it at activation; the Rust registry independently mints the
-/// committed fence lease id at commit).
+/// E-actor-parity: the wire `ownerLeaseId` is the broker-minted lease id
+/// carried on the control request facts (identical to the committed registry
+/// fence lease id; single mint per activation).
 #[derive(Debug, Clone)]
 pub struct ActorActivationControlPort {
     session: SessionHandle,
     registry: Arc<ActorOwnershipRegistry>,
-    lease_mint: LeaseIdMint,
 }
 
 impl ActorActivationControlPort {
     pub fn new(session: SessionHandle, registry: Arc<ActorOwnershipRegistry>) -> Self {
-        Self {
-            session,
-            registry,
-            lease_mint: LeaseIdMint::new(),
-        }
+        Self { session, registry }
     }
 }
 
@@ -245,7 +238,7 @@ impl ActivationControlPort for ActorActivationControlPort {
             actor_abi_identity: request.facts.actor_abi_identity.clone(),
             actor_implementation_identity: request.facts.actor_implementation_identity.clone(),
             declaration_owner: request.facts.declaration_owner.clone(),
-            owner_lease_id: self.lease_mint.mint(),
+            owner_lease_id: request.facts.owner_lease_id.clone(),
             eviction_request_id: None,
         };
         let header = ActorOwnerControlFrameHeader {

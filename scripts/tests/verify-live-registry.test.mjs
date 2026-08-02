@@ -145,6 +145,34 @@ test('live registry is the single declaration for current selectors, policies, a
     forbidUnchecked: true,
   });
 
+  const actor = invocation('router-live:actor');
+  assert.equal(actor.entry.key, 'router-rust-actor-live');
+  assert.equal(actor.entry.source.type, 'script');
+  assert.equal(
+    actor.entry.source.path,
+    'scripts/check-router-actor-live.mjs',
+  );
+  assert.equal(actor.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(actor.value.id, 'live:router-rust-actor');
+  assert.equal(actor.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(actor.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.match(actor.value.description, /TS\/Rust differential actor full chain/);
+  assert.deepEqual(actor.value.requiredInputs, []);
+  assert.deepEqual(actor.value.requiredExecutables, [
+    'node',
+    'pnpm',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(actor.value.requiredModules, [
+    { specifier: 'ws', from: 'router/package.json' },
+  ]);
+  assert.deepEqual(actor.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
   const healthSelfTest = invocation('checks-default');
   assert.equal(healthSelfTest.entry.source.path, 'scripts/check-loop-risk-health.mjs');
   assert.equal(healthSelfTest.value.id, 'checks:loop-risk-health:self-test');

@@ -31,7 +31,6 @@ use futures_util::{SinkExt, StreamExt};
 use skiff_artifact_model::{
     AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
-use skiff_canonical_json::canonical_json_bytes;
 use skiff_deployment::activation_state::EnvironmentActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -400,20 +399,27 @@ fn assert_ports_closed(live: &LiveEnvironment) {
 }
 
 fn materialize_projection(live: &LiveEnvironment) {
-    let projection_directory = live.artifact_root.join("records/actor-routing");
-    std::fs::create_dir_all(&projection_directory).expect("create projection directory");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty projection");
-    let bytes = canonical_json_bytes(&projection).expect("canonical projection bytes");
-    std::fs::write(
-        live.artifact_root
-            .join(ACTOR_ROUTING_PROJECTION_RECORD_PATH),
-        bytes,
-    )
-    .expect("write projection record");
+    // E-actor-parity: the harness writes the canonical actor-routing
+    // projection record (test-side A1 producer) before invoking this probe.
+    // The probe must consume that exact record rather than overwrite it with
+    // an empty projection, otherwise the Rust router would no longer match
+    // the TS A2 hard-cut admission semantics.
+    let path = live
+        .artifact_root
+        .join(ACTOR_ROUTING_PROJECTION_RECORD_PATH);
+    let bytes = std::fs::read(&path).unwrap_or_else(|error| {
+        panic!("actor routing projection record missing at {path:?}: {error}")
+    });
+    let projection: ActorRoutingProjection =
+        serde_json::from_slice(&bytes).expect("projection record must decode");
+    assert_eq!(
+        projection.schema_version,
+        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION
+    );
+    assert!(
+        !projection.methods.is_empty(),
+        "actor routing projection must carry the fixture actor methods"
+    );
 }
 
 fn frame_type(bytes: &[u8]) -> String {

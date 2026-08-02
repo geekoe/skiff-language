@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// `router-live:actor` managed harness (E-actor-rust gate, plan §7/§8).
+// `router-live:actor` managed harness (E-actor-rust + E-actor-parity gates,
+// plan §7/§8).
 //
-// Two real Runtime replicas full-chain: real compiler artifact
+// Phase 1 (Rust-only regression layer): real compiler artifact
 // (`skiff-package-service-smoke-fixture` over the actor-full-chain-acceptance
 // fixture), isolated temporary Mongo replica set, explicit `skiff-router`
 // Rust binary and two explicit `runtime` Rust binaries with independent
@@ -16,6 +17,15 @@
 //   - exercises disconnect/replacement/concurrent claim/lease race/spawn
 //     mismatch fail closed and asserts invocation/control/lease/timer zero
 //     residue through frame pairing and graceful shutdown.
+//
+// Phase 2 (E-actor-parity differential, the parity evidence): the identical
+// actor artifact (both sides consume the same canonical actor-routing
+// projection record) is copied into independent TS/Rust artifact roots; each
+// side runs an isolated two-replica Router + real Runtime stack and executes
+// the identical real-HTTP actor full chain (get-or-create/invoke/owner
+// control/lease/function spawn/actor-method spawn). The normalized HTTP
+// steps, projected Runtime frame sequences, Mongo state/audit and terminal
+// behavior must match with no unexplained differences.
 //
 // The harness never touches the stable instance, stable Mongo, PM2 or the
 // fixed 4004-4007 ports. Router/relay ports are leased in 45000-45999 and
@@ -36,13 +46,12 @@ import {
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
+import { synthesizeActorRoutingProjection } from './lib/router-differential/actor_parity_projection.mjs';
+import { runActorParityDifferential } from './lib/router-differential/actor_parity_runner.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ENVIRONMENT = 'actor-live';
 const GENERATION = 1;
-const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
-const ACTOR_ROUTING_PROJECTION_CONTENT =
-  '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}';
 const FORBIDDEN_PORTS = new Set([
   27017,
   ...range(4000, 4007),
@@ -99,12 +108,11 @@ try {
     }),
   );
 
-  const projectionDirectory = join(artifactRoot, 'records/actor-routing');
-  await mkdir(projectionDirectory, { recursive: true });
-  await writeFile(
-    join(artifactRoot, ACTOR_ROUTING_PROJECTION_RECORD_PATH),
-    ACTOR_ROUTING_PROJECTION_CONTENT,
-  );
+  console.log('router-live:actor: synthesizing canonical actor routing projection (test-side A1 producer)');
+  await synthesizeActorRoutingProjection({
+    artifactRoot,
+    deploymentRecord,
+  });
 
   console.log('router-live:actor: starting isolated Mongo replica set');
   harness = await ActivationStateMongoHarness.create({ repoRoot });
@@ -169,10 +177,33 @@ try {
       },
     },
   );
+  console.log('router-live:actor: running TS/Rust actor parity differential full-chain');
+  const parityReport = await runActorParityDifferential({
+    repoRoot,
+    sourceArtifactRoot: artifactRoot,
+    assemblyIdentity,
+    configSnapshotId,
+    deploymentRecord,
+    runtimeBin,
+    routerBinary: join(targetDir, 'debug', 'skiff-router'),
+    environment: ENVIRONMENT,
+  });
+  if (parityReport.failures.length > 0) {
+    throw new Error(
+      `router-live:actor actor parity differential failed: ${parityReport.failures.join('; ')}`,
+    );
+  }
+  console.log('router-live:actor: actor parity differential PASS');
   console.log('router-live:actor: PASS');
 } catch (error) {
   process.stdout.write(error?.stdout ?? '');
   process.stderr.write(error?.stderr ?? '');
+  if (error?.actorParityEvidence !== undefined) {
+    process.stderr.write(`\n${error.actorParityEvidence}\n`);
+  }
+  if (error?.actorParityFrames !== undefined) {
+    process.stderr.write(`\nactor parity error frames: ${JSON.stringify(error.actorParityFrames, null, 2)}\n`);
+  }
   if (tempRoot !== undefined) {
     const logPaths = [
       join(tempRoot, 'runtime-one.stderr.log'),

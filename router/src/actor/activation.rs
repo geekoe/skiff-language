@@ -22,7 +22,7 @@ use super::health::ActivationHealth;
 use super::ownership::{ActorOwnershipRegistry, OwnershipError};
 use super::types::{
     ActorClaimToken, ActorLineage, ActorLogicalKey, ActorOwnerRouteAuthority, ActorRef,
-    CommitFenceFacts, DEFAULT_ACTIVATION_DEADLINE_MS, DEFAULT_ACTOR_PENDING_BUDGET,
+    CommitFenceFacts, LeaseIdMint, DEFAULT_ACTIVATION_DEADLINE_MS, DEFAULT_ACTOR_PENDING_BUDGET,
     DEFAULT_ACTOR_TOMBSTONE_BUDGET, DEFAULT_OWNER_LEASE_TTL_MS,
 };
 
@@ -177,6 +177,7 @@ pub struct ActorActivationRequestBroker {
     control: Arc<dyn ActivationControlPort>,
     options: ActorActivationBrokerOptions,
     inner: Arc<Mutex<ActivationInner>>,
+    lease_mint: LeaseIdMint,
 }
 
 impl ActorActivationRequestBroker {
@@ -190,6 +191,7 @@ impl ActorActivationRequestBroker {
             control,
             options,
             inner: Arc::new(Mutex::new(ActivationInner::default())),
+            lease_mint: LeaseIdMint::new(),
         }
     }
 
@@ -265,6 +267,7 @@ impl ActorActivationRequestBroker {
         };
 
         let request_id = token.claim_id.as_str().to_string();
+        let owner_lease_id = self.lease_mint.mint();
         let deadline_at = request
             .now
             .saturating_add(self.options.activation_deadline_ms);
@@ -274,6 +277,7 @@ impl ActorActivationRequestBroker {
                 actor_abi_identity: request.actor_abi_identity.clone(),
                 actor_implementation_identity: request.actor_implementation_identity.clone(),
                 declaration_owner: request.declaration_owner.clone(),
+                owner_lease_id: owner_lease_id.clone(),
             },
             lineage,
             owner_connection: request.owner_connection.clone(),
@@ -292,6 +296,7 @@ impl ActorActivationRequestBroker {
                 actor_abi_identity: request.actor_abi_identity.clone(),
                 actor_implementation_identity: request.actor_implementation_identity.clone(),
                 declaration_owner: request.declaration_owner.clone(),
+                owner_lease_id: owner_lease_id.clone(),
             },
             owner_runtime_id: request.owner_runtime_id.clone(),
             owner_connection: request.owner_connection.clone(),

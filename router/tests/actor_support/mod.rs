@@ -105,6 +105,7 @@ pub fn fence_facts() -> CommitFenceFacts {
         actor_abi_identity: abi(),
         actor_implementation_identity: actor_implementation_identity(),
         declaration_owner: declaration_owner(),
+        owner_lease_id: "owner-lease-test".to_string(),
     }
 }
 

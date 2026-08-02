@@ -11,6 +11,8 @@ use skiff_runtime_transport::actor_method::{
 };
 use skiff_runtime_transport::actor_owner::ActorOwnerRouteAuthorityFrameHeader;
 use skiff_runtime_transport::protocol::{ActorKeyFrameMetadata, ActorRefFrameMetadata};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Default activation wait deadline (C-actor §6): 30s.
 pub const DEFAULT_ACTIVATION_DEADLINE_MS: u64 = 30_000;
@@ -158,6 +160,32 @@ impl ActorClaimId {
     }
 }
 
+/// Router-local owner lease id mint (E-actor-parity reconciliation).
+///
+/// The canonical corpus mints `owner-lease-<n>` exactly once per activation
+/// admission. The same minted id is carried on the `activateInitial` wire
+/// fence and into the committed registry fence (and every later
+/// renew/mark-live/release), matching the TS coordinator single-mint
+/// semantics. The broker owns the mint; the registry never mints a second,
+/// independent lease id at commit.
+#[derive(Debug, Clone, Default)]
+pub struct LeaseIdMint {
+    next: Arc<AtomicU64>,
+}
+
+impl LeaseIdMint {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn mint(&self) -> String {
+        format!(
+            "owner-lease-{}",
+            self.next.fetch_add(1, Ordering::Relaxed) + 1
+        )
+    }
+}
+
 /// Authoritative claim token issued by `ActorOwnershipRegistry` (C-actor
 /// §4.1). Reserve/commit/abort is the only transition channel for first-owner
 /// activation; brokers hold the token but never a second claim truth.
@@ -171,11 +199,16 @@ pub struct ActorClaimToken {
 }
 
 /// Fence facts supplied at claim commit (C-actor §3.2 `CommitClaim`).
+///
+/// `owner_lease_id` is minted once by the activation broker when the claim
+/// starts and is the single lease identity for the wire `activateInitial`
+/// fence and the committed registry fence (E-actor-parity).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitFenceFacts {
     pub actor_abi_identity: ActorAbiIdentity,
     pub actor_implementation_identity: ActorImplementationIdentity,
     pub declaration_owner: ActorDeclarationOwnerFrameHeader,
+    pub owner_lease_id: String,
 }
 
 /// Current owner fence (C-actor §3.2).

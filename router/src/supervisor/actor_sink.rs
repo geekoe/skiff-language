@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, encode_actor_method_frame, ActorMethodCancelFrameHeader,
@@ -38,10 +39,10 @@ use skiff_runtime_transport::protocol::{
 
 use crate::actor::{
     ActivationAckOutcome, ActorGetOrCreateRequest, ActorInvokeInput, ActorLogicalKey,
-    ActorMethodSpawnExecutionSink, ActorOwnerFence, ActorOwnerRouteAuthority, GetOrCreateOutcome,
-    InvocationError, OwnerReleaseReason, OwnerSettleKind, SpawnErrorCode, SpawnSubmitAcceptance,
-    SpawnSubmitError, DEFAULT_OWNER_LEASE_TTL_MS, SPAWNED_ACTOR_METHOD_DEADLINE_MS,
-    SPAWNED_ACTOR_METHOD_LEASE_MS,
+    ActorMethodSpawnExecutionSink, ActorOwnerFence, ActorOwnerRouteAuthority, CatalogQuery,
+    GetOrCreateOutcome, InvocationError, OwnerReleaseReason, OwnerSettleKind, SpawnErrorCode,
+    SpawnSubmitAcceptance, SpawnSubmitError, DEFAULT_OWNER_LEASE_TTL_MS,
+    SPAWNED_ACTOR_METHOD_DEADLINE_MS, SPAWNED_ACTOR_METHOD_LEASE_MS,
 };
 use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::dispatch::{
@@ -172,7 +173,44 @@ impl ActorFrameSink {
             decode_typed_binary_frame::<ActorGetOrCreateRequestFrameHeader>(raw)
                 .map_err(|_| TerminalKind::MalformedFrame)?;
         let actor_key = ActorLogicalKey::from_wire(&header.actor_key);
-        let owner_connection = Self::session_token(session);
+        // E-actor-parity owner selection: the Router pins the owner runtime
+        // deterministically over the registered session candidates with
+        // `sha256(actorIdHash) % candidates.len()` (TS coordinator parity).
+        // The wire `runtimeId` is the caller, not an owner preference; using
+        // the first caller as owner would make concurrent creates
+        // nondeterministic and diverge from the TS two-replica full chain.
+        let owner = {
+            let Some(layer) = self.session.layer() else {
+                let bytes = self.error_frame(
+                    "actor.getOrCreate.error",
+                    &header.rpc_id,
+                    "OwnerUnavailable",
+                    "no Runtime is available to own the Actor",
+                )?;
+                return self.write(session, bytes);
+            };
+            let Some(epoch) = self.epoch_store.capture() else {
+                let bytes = self.error_frame(
+                    "actor.getOrCreate.error",
+                    &header.rpc_id,
+                    "OwnerUnavailable",
+                    "no active routing epoch is available to select an Actor owner",
+                )?;
+                return self.write(session, bytes);
+            };
+            let candidates = layer.candidates(&epoch.registered_tuple());
+            let Some(owner) = pick_owner_candidate(&candidates, &actor_key.actor_id_hash) else {
+                let bytes = self.error_frame(
+                    "actor.getOrCreate.error",
+                    &header.rpc_id,
+                    "OwnerUnavailable",
+                    "no Runtime is available to own the Actor",
+                )?;
+                return self.write(session, bytes);
+            };
+            owner.clone()
+        };
+        let owner_connection = Self::session_token(&owner);
         let route_authority = ActorOwnerRouteAuthority {
             assembly_identity: header.activation_identity.assembly_identity.clone(),
             assembly_generation: header.activation_identity.generation,
@@ -186,7 +224,7 @@ impl ActorFrameSink {
             ),
             declaration_owner: header.declaration_owner.clone(),
             bootstrap_bytes: payload,
-            owner_runtime_id: header.runtime_id.clone(),
+            owner_runtime_id: owner.replica_id.clone(),
             owner_connection: owner_connection.clone(),
             route_authority: route_authority.clone(),
             deadline: header.deadline.clone(),
@@ -665,6 +703,21 @@ impl ActorFrameSink {
         match frame {
             ActorMethodFrame::Invoke(header, payload) => {
                 let key = ActorLogicalKey::from_actor_ref(&header.actor_ref);
+                // Canonical projection admission (A2 hard cut / C-actor §3.1,
+                // E-actor-parity): the router admits actor method invocations
+                // exclusively through the A0 projection catalog. A miss fails
+                // closed exactly like the TS dispatcher's UnknownMethod
+                // rejection: no synthetic error frame is written; the caller
+                // observes the relay deadline / provider-unavailable terminal.
+                let query = CatalogQuery::new(
+                    header.actor_ref.service_id.clone(),
+                    header.actor_abi_identity.clone(),
+                    header.actor_implementation_identity.clone(),
+                    header.method_identity.clone(),
+                );
+                if !self.components.catalog_view.has_method(&query) {
+                    return Ok(());
+                }
                 let Some(fence) = self.components.registry.current_owner(&key) else {
                     // TS parity: OwnerUnavailable produces no error frame; the
                     // caller observes the relay deadline.
@@ -979,6 +1032,64 @@ impl ActorMethodSpawnExecutionSink for ActorFrameSink {
             .spawn_wire_store
             .set_outcome(&acceptance.spawn_id, outcome);
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_owner_candidate;
+    use crate::session::identity::RuntimeSessionEpoch;
+
+    #[test]
+    fn owner_selection_pins_ts_hash_modulo_candidates() {
+        // E-actor-parity: the Router pins the owner with
+        // sha256(actorIdHash) big-endian first 4 bytes modulo the sorted
+        // candidate count (TS coordinator pickOwner parity).
+        let session = |replica: &str| RuntimeSessionEpoch {
+            replica_id: replica.to_string(),
+            connection_generation: 1,
+        };
+        let first = session("actor-parity-replica-1");
+        let second = session("actor-parity-replica-2");
+        let candidates = [first.clone(), second.clone()];
+        let aaa = format!("sha256:{}", "a".repeat(64));
+        let bbb = format!("sha256:{}", "b".repeat(64));
+        assert_eq!(
+            pick_owner_candidate(&candidates, &aaa).expect("owner"),
+            &second
+        );
+        assert_eq!(
+            pick_owner_candidate(&candidates, &bbb).expect("owner"),
+            &first
+        );
+        assert_eq!(
+            pick_owner_candidate(&candidates, &aaa).expect("owner"),
+            pick_owner_candidate(&candidates, &aaa).expect("owner")
+        );
+        assert_eq!(pick_owner_candidate(&[], &aaa), None);
+        let three = [first, second.clone(), session("actor-parity-replica-3")];
+        assert_eq!(pick_owner_candidate(&three, &bbb).expect("owner"), &second);
+    }
+}
+
+/// Deterministic router-side owner selection (E-actor-parity, TS coordinator
+/// parity): `sha256(actorIdHash)` big-endian first four bytes modulo the
+/// sorted registered candidate count. The candidates come from the session
+/// admission pool for the captured committed tuple (routable, current,
+/// non-cancelled, sorted by replica id), matching the TS
+/// `actorRuntimeCandidates` ordering.
+fn pick_owner_candidate<'a>(
+    candidates: &'a [RuntimeSessionEpoch],
+    actor_id_hash: &str,
+) -> Option<&'a RuntimeSessionEpoch> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(actor_id_hash.as_bytes());
+    let digest = hasher.finalize();
+    let index = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize
+        % candidates.len();
+    candidates.get(index)
 }
 
 /// Production `spawn.submit.request` inbound sink (E-actor-rust). Installed

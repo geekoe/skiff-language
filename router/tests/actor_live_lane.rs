@@ -143,6 +143,7 @@ mod tests {
                             file: skiff_runtime_transport::actor_method::ActorOwnerFileFrameHeader::LoadedFileIndex(0),
                             actor_symbol: "Actor".to_string(),
                         },
+                    owner_lease_id: "owner-lease-live".to_string(),
                 },
                 0,
                 100_000,

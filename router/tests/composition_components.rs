@@ -1058,6 +1058,7 @@ mod tests {
                 actor_abi_identity: abi,
                 actor_implementation_identity: implementation,
                 declaration_owner: declaration,
+                owner_lease_id: "owner-lease-1".to_string(),
             },
             owner_runtime_id: "runtime-a".to_string(),
             owner_connection: "conn-a".to_string(),
@@ -1082,6 +1083,8 @@ mod tests {
             ActorOwnerControlOperation::ActivateInitial
         );
         assert_eq!(header.fence.epoch, facts.epoch);
+        // E-actor-parity: the wire fence uses the broker-minted lease id
+        // carried on the control request facts (single mint per activation).
         assert_eq!(header.fence.owner_lease_id, "owner-lease-1");
         let bootstrap = header.bootstrap.expect("bootstrap present");
         assert_eq!(

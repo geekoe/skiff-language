@@ -99,7 +99,6 @@ struct OwnershipCounters {
 struct OwnershipInner {
     entries: BTreeMap<ActorLogicalKey, ActorEntry>,
     next_claim_seq: u64,
-    next_lease_seq: u64,
     counters: OwnershipCounters,
 }
 
@@ -213,7 +212,10 @@ impl ActorOwnershipRegistry {
     }
 
     /// Commits a reservation into the current owner fence (epoch monotonic
-    /// per incarnation; lease id minted here). The token is invalidated.
+    /// per incarnation; the lease id is the broker-minted
+    /// `facts.owner_lease_id`, identical to the `activateInitial` wire
+    /// fence — E-actor-parity single-mint reconciliation). The token is
+    /// invalidated.
     pub fn commit(
         &self,
         token: &ActorClaimToken,
@@ -222,8 +224,6 @@ impl ActorOwnershipRegistry {
         lease_ttl_ms: u64,
     ) -> Result<ActorOwnerFence, OwnershipError> {
         let mut inner = self.lock();
-        let lease_seq = inner.next_lease_seq;
-        inner.next_lease_seq += 1;
         let entry = inner
             .entries
             .get_mut(&token.actor_key)
@@ -246,7 +246,7 @@ impl ActorOwnershipRegistry {
         let fence = ActorOwnerFence {
             epoch: token.expected_epoch,
             owner_runtime_id: token.owner_runtime_id.clone(),
-            owner_lease_id: format!("owner-lease-{lease_seq}"),
+            owner_lease_id: facts.owner_lease_id.clone(),
             lease_expires_at: now.saturating_add(lease_ttl_ms),
             actor_abi_identity: facts.actor_abi_identity.clone(),
             actor_implementation_identity: facts.actor_implementation_identity.clone(),

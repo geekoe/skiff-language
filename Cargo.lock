@@ -2408,6 +2408,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
