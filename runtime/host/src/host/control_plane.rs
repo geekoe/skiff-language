@@ -4,9 +4,12 @@ use std::{collections::HashSet, sync::Arc};
 use serde_json::Value;
 #[cfg(any())]
 use serde_json::{json, Map};
-use skiff_artifact_model::AssemblyActivationControl;
 #[cfg(any())]
 use skiff_artifact_model::ConfigShape;
+use skiff_artifact_model::{
+    AssemblyActivationControl, GatewayDispatchMode, GatewayEntryProtocolSurface,
+    GatewayProtocolSurface,
+};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
 #[cfg(any())]
 use skiff_runtime_transport::protocol::{
@@ -16,8 +19,8 @@ use skiff_runtime_transport::{
     assembly_activation::{encode_assembly_activation_frame, AssemblyActivationFrameDirection},
     protocol::{
         encode_binary_frame, RuntimeCapabilitiesFrameHeader,
-        RuntimeCapabilitiesFrameHeaderMetadata, TelemetryEvent, TelemetrySource, TelemetryTopic,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability, TelemetryEvent,
+        TelemetrySource, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 use tokio::sync::mpsc;
@@ -115,11 +118,29 @@ impl RuntimeHost {
         &self,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<()> {
+        // Capability advertisement is derived from the already-admitted whole
+        // assembly (router.bootstrap performs `recover_durable_committed`
+        // before capabilities are queued): HTTP gateway surfaces advertise
+        // exactly the dispatch modes they project. No admitted assembly
+        // means no dispatch capability (fail closed).
+        let dispatch_modes = match self
+            .active_runtime_assembly()
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?
+        {
+            Some(active) => dispatch_modes_from_gateway_entries(
+                active
+                    .candidate()
+                    .gateway_entries()
+                    .map(|(_, entry)| entry.protocol_surface()),
+            ),
+            None => Vec::new(),
+        };
         let header = RuntimeCapabilitiesFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "runtime.capabilities".to_string(),
             runtime_id: self.base_runtime_id.clone(),
             capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
+                dispatch_modes,
                 package_test_dispatch: false,
                 request_cancel: true,
                 ..RuntimeCapabilitiesFrameHeaderMetadata::default()
@@ -224,4 +245,153 @@ impl RuntimeHost {
 
 fn apply_request_trace_fields(event: &mut TelemetryEvent, request: &RequestEnvelope) {
     request_trace::RequestTraceFields::from_request(request).apply_to_event(event);
+}
+
+/// Projection of the advertised dispatch-mode capability list from the
+/// admitted assembly's gateway entry surfaces.
+///
+/// Only HTTP protocol surfaces contribute (`dispatch_mode` unary /
+/// serverStream); WebSocket connect/JSON-RPC surfaces never imply an
+/// ordinary dispatch capability. Order is fixed: `[unary, serverStream]`.
+fn dispatch_modes_from_gateway_entries<'a>(
+    entries: impl IntoIterator<Item = &'a GatewayEntryProtocolSurface>,
+) -> Vec<RuntimeDispatchModeCapability> {
+    let mut unary = false;
+    let mut server_stream = false;
+    for surface in entries {
+        if let GatewayProtocolSurface::Http(http) = &surface.protocol {
+            match http.dispatch_mode {
+                GatewayDispatchMode::Unary => unary = true,
+                GatewayDispatchMode::ServerStream => server_stream = true,
+            }
+        }
+    }
+    let mut modes = Vec::new();
+    if unary {
+        modes.push(RuntimeDispatchModeCapability::Unary);
+    }
+    if server_stream {
+        modes.push(RuntimeDispatchModeCapability::ServerStream);
+    }
+    modes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::runtime_host::RuntimeConfig;
+    use skiff_artifact_model::{
+        GatewayAdapterKind, GatewayExternalErrorProjection, GatewayHttpProtocolSurface,
+        GatewayWebSocketConnectProtocolSurface, GatewayWebSocketShapeVersion,
+    };
+
+    fn http_surface(mode: GatewayDispatchMode) -> GatewayEntryProtocolSurface {
+        GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+                adapter_kind: GatewayAdapterKind::TypedJson,
+                dispatch_mode: mode,
+                external_sources: Vec::new(),
+                request_body_schema: None,
+                response_schema: None,
+                stream_item_schema: None,
+            }),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        }
+    }
+
+    fn websocket_surface() -> GatewayEntryProtocolSurface {
+        GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::WebSocketConnect(
+                GatewayWebSocketConnectProtocolSurface {
+                    connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                    connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                    connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                    external_sources: Vec::new(),
+                    downlink_frames: Vec::new(),
+                    rpc_profiles: Vec::new(),
+                },
+            ),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        }
+    }
+
+    #[test]
+    fn dispatch_modes_are_empty_without_gateway_surfaces() {
+        assert_eq!(
+            dispatch_modes_from_gateway_entries(std::iter::empty()),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn dispatch_modes_are_empty_for_websocket_only_surfaces() {
+        assert_eq!(
+            dispatch_modes_from_gateway_entries([websocket_surface()].iter()),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn dispatch_modes_advertise_unary_surface() {
+        assert_eq!(
+            dispatch_modes_from_gateway_entries([http_surface(GatewayDispatchMode::Unary)].iter()),
+            vec![RuntimeDispatchModeCapability::Unary]
+        );
+    }
+
+    #[test]
+    fn dispatch_modes_advertise_server_stream_surface() {
+        assert_eq!(
+            dispatch_modes_from_gateway_entries(
+                [http_surface(GatewayDispatchMode::ServerStream)].iter()
+            ),
+            vec![RuntimeDispatchModeCapability::ServerStream]
+        );
+    }
+
+    #[test]
+    fn dispatch_modes_advertise_both_in_fixed_order() {
+        assert_eq!(
+            dispatch_modes_from_gateway_entries(
+                [
+                    http_surface(GatewayDispatchMode::ServerStream),
+                    websocket_surface(),
+                    http_surface(GatewayDispatchMode::Unary),
+                ]
+                .iter()
+            ),
+            vec![
+                RuntimeDispatchModeCapability::Unary,
+                RuntimeDispatchModeCapability::ServerStream,
+            ]
+        );
+    }
+
+    #[test]
+    fn capabilities_frame_stays_empty_without_admitted_assembly() {
+        let host = RuntimeHost::new(RuntimeConfig {
+            db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
+            router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+            base_runtime_id: "runtime-no-admit".to_string(),
+            runtime_home: std::env::temp_dir().join("skiff-runtime-no-admit-home"),
+            environment: "test".to_string(),
+            http_response_max_bytes: 1024,
+            http_egress_proxy: None,
+        })
+        .expect("runtime host");
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        host.queue_runtime_capabilities(sender)
+            .expect("queue capabilities");
+        let message = receiver.blocking_recv().expect("capabilities frame");
+        let RouterWriterMessage::Binary(bytes) = message else {
+            panic!("capabilities must be a binary frame");
+        };
+        let (header, _) = skiff_runtime_transport::protocol::decode_typed_binary_frame::<
+            RuntimeCapabilitiesFrameHeader,
+        >(&bytes)
+        .expect("decode capabilities frame");
+        assert_eq!(header.runtime_id, "runtime-no-admit");
+        assert!(header.capabilities.dispatch_modes.is_empty());
+        assert!(header.capabilities.request_cancel);
+    }
 }
