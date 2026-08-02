@@ -60,6 +60,8 @@ pub struct RouterBootstrapAssembly {
     epoch: Arc<RoutingEpoch>,
     epoch_store: Arc<ActiveRoutingEpochStore>,
     loader: Arc<BlockingLoader>,
+    strict_loader: Arc<BootstrapStrictLoader>,
+    actor_projection: ActorRoutingProjectionRef,
     runner: BootstrapRunner,
     repository: Arc<dyn ActivationStateRepository>,
 }
@@ -72,6 +74,8 @@ impl fmt::Debug for RouterBootstrapAssembly {
             .field("epoch", &self.epoch)
             .field("epoch_store", &self.epoch_store)
             .field("loader", &self.loader)
+            .field("strict_loader", &self.strict_loader)
+            .field("actor_projection", &self.actor_projection)
             .field("runner", &self.runner)
             .field("repository", &"<activation state repository>")
             .finish()
@@ -136,7 +140,7 @@ impl RouterBootstrapAssembly {
         let epoch_store = Arc::new(ActiveRoutingEpochStore::new());
         let runner = BootstrapRunner::new(
             reader,
-            strict_loader,
+            Arc::clone(&strict_loader),
             Arc::clone(&loader),
             Arc::clone(&epoch_store),
         );
@@ -153,6 +157,8 @@ impl RouterBootstrapAssembly {
             epoch,
             epoch_store,
             loader,
+            strict_loader,
+            actor_projection,
             runner,
             repository,
         })
@@ -168,6 +174,22 @@ impl RouterBootstrapAssembly {
 
     pub fn epoch(&self) -> &Arc<RoutingEpoch> {
         &self.epoch
+    }
+
+    pub fn loader(&self) -> Arc<BlockingLoader> {
+        Arc::clone(&self.loader)
+    }
+
+    pub fn strict_loader(&self) -> Arc<BootstrapStrictLoader> {
+        Arc::clone(&self.strict_loader)
+    }
+
+    pub fn actor_projection(&self) -> ActorRoutingProjectionRef {
+        self.actor_projection.clone()
+    }
+
+    pub fn repository(&self) -> Arc<dyn ActivationStateRepository> {
+        Arc::clone(&self.repository)
     }
 
     pub fn health(&self) -> BootstrapHealthSnapshot {

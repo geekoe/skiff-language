@@ -180,3 +180,57 @@ worktree 与本地 main。
 实际写集、自验收矩阵与已知延迟 seam（actor inbound sink、WS client
 listener、spawn execution owner、`PendingAdmissionSender` 真实 pending
 池），并通知 root。
+
+## 执行结果（2026-08-03 提交前填写）
+
+### 交付
+
+- session additive seam：`OutboundFrameId::Business`；`SessionFrameWriter`
+  registry（register/unregister/write_session_frame/has_frame_writer）；
+  `InboundSinkSet` / `InboundFrameSink`（含 `accepts_frame_type` 注入点，
+  覆盖 closed family registry 无法分类的 `response.*` 与
+  `websocket.generation.lifecycle` 帧；无 sink 时保持原 MalformedFrame /
+  Unimplemented）；`DemuxEvent::Sink`；session task 的 writer 注册/注销、
+  capabilities 保留、sink 分发、Business writer error 按 disconnect。
+- supervisor：`RouterComponents`（dispatcher/admission、WS lane、
+  coordinator、actor lane、HTTP adapter、sink bundle、consumer manifest）、
+  `RouterSupervisor`（唯一 lifecycle owner）、`SupervisorListeners`；
+  `DispatcherHttpPort`（DispatchRequest → DispatchSubmit、timeout/cancel、
+  reject/terminal 映射、unary/stream round-trip）、`PendingHttpRouter`、
+  `RequestFrameSink`、`ActivationTransactionSink`、`ConnectionFrameSink`、
+  `SessionCandidateViewSource`/`DirectoryLeaseRevalidate`/
+  `SessionRuntimePeer`/`ActivationSessionEnqueuePort`/WS peer/responder/
+  close/violation、actor ActivationControlPort/IdleEvictControlPort/
+  spawn execution sink；`HttpGatewaySurfaceView` 从 deployment records
+  只读构造；listener.rs `start_runtime_control_listener` /
+  `resolve_listener_addr` / `ListenerHandle::{begin_shutdown,join_shutdown}`；
+  run_router 经 supervisor 装配。
+- 测试：`composition_session_seams.rs`（3）、`composition_components.rs`
+  （10）、`composition_supervisor.rs`（2）。
+
+### 自验收
+
+| 项 | 结果 |
+| --- | --- |
+| seam 单测（outbound registry、sink 注入、Unimplemented/MalformedFrame 保留） | `cargo test -p skiff-router --test composition_session_seams` 3 passed |
+| 公共 composition test | `composition_components` 10 passed + `composition_supervisor` 2 passed |
+| 既有 session 测试零回归 | `cargo test -p skiff-router session` 全绿；全 crate 全绿 |
+| 全 crate 回归 | `cargo test -p skiff-router --no-fail-fast` 全绿（0 failed；live probe 为 ignored） |
+| 聚焦 verify | `node scripts/verify.mjs --only router-rust,router-rust-process-smoke` 2/2 passed |
+| 真实 binary session roundtrip | `node scripts/check-router-session-live.mjs` PASS（真实 Router + Runtime + 临时 Mongo，握手/reconnect/替换/shutdown 无回归） |
+| 格式 | 触碰文件 `rustfmt --edition 2021` 通过 |
+| clippy | `cargo clippy -p skiff-router --all-targets` 本节点文件零 warning/error（剩余均为 baseline 依赖 crate warning） |
+| 写集 | 仅叶子声明文件 + `Cargo.lock`（base64 additive） |
+
+### 已知延迟 seam（E-gate 补齐）
+
+- actor inbound sink（`InboundSinkSet.actor = None`；E-actor-rust）；
+- `SpawnSubmitRouter` 的 function-parent lookup 与 `RuntimePeer::send_spawn_submit`
+  wire 映射（E-actor-rust）；actor spawn 执行 owner
+  （`RecordingActorMethodSpawnExecutionSink` 为 composition 占位）；
+- `ActivationControlPort` 的 ownerLeaseId mint 与 registry commit mint 的
+  reconciliation（E-actor-parity）；
+- WS client listener（`/ws`）与 `DispatchInbound`/`MethodCatalog`/
+  `PendingAdmissionSender` 真实 pending 池（E-ws）；
+- HTTP surface 仅消费 committed epoch 的 deployment records；A1 合流前
+  deployment records 必须存在，否则 supervisor fail closed（显式 seam）。

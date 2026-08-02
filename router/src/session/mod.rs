@@ -22,6 +22,7 @@ pub mod task;
 pub use consumer::{
     ConsumerKind, ConsumerManifest, FailStop, RuntimeSessionClosed, SessionConsumer,
 };
+pub use demux::{InboundFrameSink, InboundSinkSet};
 pub use directory::{RuntimeRegistrationDirectory, TransitionOutcome};
 pub use handshake::{HandshakePhase, HandshakeState, TerminalKind};
 pub use identity::{
@@ -29,5 +30,6 @@ pub use identity::{
     RuntimeSessionEpoch,
 };
 pub use layer::{
-    SessionHealthSnapshot, SessionLayer, SessionLayerError, SessionLayerOptions, SessionTiming,
+    SessionFrameWriter, SessionHealthSnapshot, SessionLayer, SessionLayerError,
+    SessionLayerOptions, SessionTiming,
 };

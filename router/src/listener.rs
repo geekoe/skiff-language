@@ -36,7 +36,6 @@ use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::WebSocketStream;
 
-use crate::bootstrap::RouterBootstrapAssembly;
 use crate::config::RouterConfig;
 use crate::session::SessionLayer;
 
@@ -57,6 +56,7 @@ pub enum ListenerError {
     Resolve(String),
     Join(String),
     FailStop(String),
+    Http(String),
 }
 
 impl fmt::Display for ListenerError {
@@ -68,6 +68,7 @@ impl fmt::Display for ListenerError {
             }
             ListenerError::Join(message) => write!(formatter, "listener join error: {message}"),
             ListenerError::FailStop(message) => write!(formatter, "listener fail-stop: {message}"),
+            ListenerError::Http(message) => write!(formatter, "http gateway error: {message}"),
         }
     }
 }
@@ -112,6 +113,18 @@ impl ListenerHandle {
 
     pub async fn shutdown(self) -> Result<(), JoinError> {
         let _ = self.shutdown_tx.send(());
+        self.task.await
+    }
+
+    /// Stops accepting new connections without joining the task (used by the
+    /// supervisor shutdown order: stop accept, drain the session barrier,
+    /// then join).
+    pub fn begin_shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
+    }
+
+    /// Joins the listener task after `begin_shutdown`.
+    pub async fn join_shutdown(self) -> Result<(), JoinError> {
         self.task.await
     }
 }
@@ -178,49 +191,25 @@ pub async fn start_listeners(
     start_listeners_with_session(config, options, Arc::new(SessionLayer::new(config.clone()))).await
 }
 
-/// Listener construction with an explicitly assembled session layer (tests
-/// inject the corpus committed epoch, timing and fake consumer manifests).
-pub async fn start_listeners_with_session(
+/// Starts only the shared runtime/control listener (supervisor composition
+/// runs the public HTTP gateway separately through `start_http_gateway`).
+pub async fn start_runtime_control_listener(
     config: &RouterConfig,
     options: &ListenerStartOptions,
     session_layer: Arc<SessionLayer>,
-) -> Result<RouterListeners, ListenerError> {
-    let public_addr = match options.public_bind {
-        Some(addr) => addr,
-        None => resolve_bind_addr(&config.host, config.http_port)?,
-    };
+) -> Result<ListenerHandle, ListenerError> {
     let runtime_control_addr = match options.runtime_control_bind {
         Some(addr) => addr,
-        None => resolve_bind_addr(&config.host, config.runtime_port)?,
+        None => resolve_listener_addr(&config.host, config.runtime_port)?,
     };
-
-    let public_listener = TcpListener::bind(public_addr)
-        .await
-        .map_err(ListenerError::Io)?;
-    let public_addr = public_listener.local_addr().map_err(ListenerError::Io)?;
     let runtime_control_listener = TcpListener::bind(runtime_control_addr)
         .await
         .map_err(ListenerError::Io)?;
     let runtime_control_addr = runtime_control_listener
         .local_addr()
         .map_err(ListenerError::Io)?;
-
-    let (public_shutdown_tx, public_shutdown_rx) = watch::channel(());
     let (runtime_control_shutdown_tx, runtime_control_shutdown_rx) = watch::channel(());
-
-    let public = ListenerHandle {
-        name: "public",
-        addr: public_addr,
-        shutdown_tx: public_shutdown_tx,
-        task: tokio::spawn(serve_listener(
-            public_listener,
-            Arc::new(Semaphore::new(DEFAULT_PUBLIC_MAX_CONNECTIONS)),
-            ListenerKind::Public,
-            public_shutdown_rx,
-            options.drain_deadline,
-        )),
-    };
-    let runtime_control = ListenerHandle {
+    Ok(ListenerHandle {
         name: "runtime-control",
         addr: runtime_control_addr,
         shutdown_tx: runtime_control_shutdown_tx,
@@ -236,7 +225,42 @@ pub async fn start_listeners_with_session(
             runtime_control_shutdown_rx,
             options.drain_deadline,
         )),
+    })
+}
+
+/// Listener construction with an explicitly assembled session layer (tests
+/// inject the corpus committed epoch, timing and fake consumer manifests).
+pub async fn start_listeners_with_session(
+    config: &RouterConfig,
+    options: &ListenerStartOptions,
+    session_layer: Arc<SessionLayer>,
+) -> Result<RouterListeners, ListenerError> {
+    let public_addr = match options.public_bind {
+        Some(addr) => addr,
+        None => resolve_listener_addr(&config.host, config.http_port)?,
     };
+
+    let public_listener = TcpListener::bind(public_addr)
+        .await
+        .map_err(ListenerError::Io)?;
+    let public_addr = public_listener.local_addr().map_err(ListenerError::Io)?;
+
+    let (public_shutdown_tx, public_shutdown_rx) = watch::channel(());
+
+    let public = ListenerHandle {
+        name: "public",
+        addr: public_addr,
+        shutdown_tx: public_shutdown_tx,
+        task: tokio::spawn(serve_listener(
+            public_listener,
+            Arc::new(Semaphore::new(DEFAULT_PUBLIC_MAX_CONNECTIONS)),
+            ListenerKind::Public,
+            public_shutdown_rx,
+            options.drain_deadline,
+        )),
+    };
+    let runtime_control =
+        start_runtime_control_listener(config, options, Arc::clone(&session_layer)).await?;
 
     Ok(RouterListeners {
         public,
@@ -247,34 +271,31 @@ pub async fn start_listeners_with_session(
 
 /// Runs the listeners until SIGINT/SIGTERM, then shuts them down gracefully.
 pub async fn run_router(config: RouterConfig) -> Result<(), ListenerError> {
-    // E-bootstrap readiness: the committed epoch must be published before any
-    // public/runtime listener binds. Any fail-closed outcome exits before
-    // binding and the repository is closed by the assembly.
-    let assembly = RouterBootstrapAssembly::assemble(&config)
+    // W-composition: the supervisor owns the full production assembly
+    // (bootstrap epoch, dispatcher/admission, WS lane, activation coordinator,
+    // actor lane, HTTP gateway) and the lifecycle.
+    let supervisor = crate::supervisor::RouterSupervisor::assemble(&config)
         .await
-        .map_err(|error| ListenerError::FailStop(format!("bootstrap failed closed: {error}")))?;
-    let session_layer = Arc::new(SessionLayer::new(config.clone()));
-    session_layer.attach_epoch_store(assembly.epoch_store());
-    let listeners = match start_listeners_with_session(
-        &config,
-        &ListenerStartOptions::default(),
-        session_layer,
-    )
-    .await
-    {
-        Ok(listeners) => listeners,
-        Err(error) => {
-            assembly.shutdown().await;
-            return Err(error);
-        }
-    };
+        .map_err(|error| {
+            let message = match &error {
+                crate::supervisor::SupervisorError::EnvironmentMissing
+                | crate::supervisor::SupervisorError::Bootstrap(_) => {
+                    format!("bootstrap failed closed: {error}")
+                }
+                _ => format!("router composition failed: {error}"),
+            };
+            ListenerError::FailStop(message)
+        })?;
+    let listeners = supervisor
+        .start_listeners(&ListenerStartOptions::default())
+        .await?;
     let mut fail_stop_rx = listeners.session.fail_stop_subscribe();
     tokio::select! {
         _ = wait_for_shutdown_signal() => {}
         _ = fail_stop_rx.changed() => {}
     }
     let shutdown_result = listeners.shutdown().await;
-    assembly.shutdown().await;
+    supervisor.shutdown().await;
     shutdown_result
 }
 
@@ -295,7 +316,9 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-fn resolve_bind_addr(host: &str, port: u16) -> Result<SocketAddr, ListenerError> {
+/// Resolves the bind address for one configured host/port pair (public
+/// composition seam).
+pub fn resolve_listener_addr(host: &str, port: u16) -> Result<SocketAddr, ListenerError> {
     (host, port)
         .to_socket_addrs()
         .map_err(|error| ListenerError::Resolve(format!("{host}:{port}: {error}")))?
