@@ -10,20 +10,23 @@ use crate::session::identity::RuntimeSessionEpoch;
 
 use super::candidate::dispatch_mode_from_wire;
 
-/// Ordinary unary/stream request entering the admission pipeline.
+/// Internal ordinary unary/stream admission envelope.
 ///
 /// `header` must already be codec-validated (C-model-request §3.2); the
-/// dispatcher never re-parses wire bytes.
+/// dispatcher never re-parses wire bytes. This is the dispatcher-internal
+/// submit shape, not a public contract: the crate-root `DispatchRequest`
+/// (C-dispatch §7.2 `{ header, payload_bytes, timeout, cancel_signal }`) is
+/// owned by W-http, and E-http converts it into this envelope (including the
+/// `prefer_session` selection hint, which ordinary HTTP admission leaves
+/// `None`).
 #[derive(Debug, Clone)]
-pub struct DispatchRequest {
+pub struct DispatchSubmit {
     pub header: RuntimeAssemblyRequestStartFrameHeader,
     pub payload_bytes: Vec<u8>,
-    /// Selection hint. Reserved for tests and future ingress pinning;
-    /// ordinary HTTP admission leaves it `None`.
     pub prefer_session: Option<RuntimeSessionEpoch>,
 }
 
-impl DispatchRequest {
+impl DispatchSubmit {
     pub fn request_id(&self) -> &str {
         &self.header.request_id
     }

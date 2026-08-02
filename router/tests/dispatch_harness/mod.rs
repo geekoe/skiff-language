@@ -23,7 +23,7 @@ use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::dispatch::{
     capabilities_from_wire_names, ActorMethodSpawnControl, ActorMethodSpawnDispatch,
-    CandidateViewSource, DispatchRequest, LeaseRevalidate, RequestAuthority, RevalidateOutcome,
+    CandidateViewSource, DispatchSubmit, LeaseRevalidate, RequestAuthority, RevalidateOutcome,
     RoutingEpochSource, RuntimePeer, SessionAbortControl, SpawnSubmit,
 };
 use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
@@ -173,7 +173,7 @@ impl RuntimePeer for FakeRuntimePeer {
     fn send_request_start(
         &self,
         _session: &RuntimeSessionEpoch,
-        request: &DispatchRequest,
+        request: &DispatchSubmit,
     ) -> Result<(), String> {
         let mut record = self.record.lock().unwrap();
         if record.fail_start {
@@ -431,8 +431,8 @@ pub fn request_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestSta
 }
 
 /// Fixed corpus-shaped request (no deadline, no preference).
-pub fn request(request_id: &str, mode: &str) -> DispatchRequest {
-    DispatchRequest {
+pub fn request(request_id: &str, mode: &str) -> DispatchSubmit {
+    DispatchSubmit {
         header: request_header(request_id, mode),
         payload_bytes: Vec::new(),
         prefer_session: None,

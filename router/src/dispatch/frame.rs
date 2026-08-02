@@ -7,7 +7,7 @@ use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use crate::session::identity::RuntimeSessionEpoch;
 
-use super::types::{ActorMethodSpawnDispatch, DispatchRequest, RequestDeadline, SpawnSubmit};
+use super::types::{ActorMethodSpawnDispatch, DispatchSubmit, RequestDeadline, SpawnSubmit};
 
 /// Runtime-to-Router response/cancel frame already decoded and validated by
 /// the shared codec (C-model-request §2/§5). The dispatcher only enforces
@@ -62,7 +62,7 @@ pub trait RuntimePeer: Send + Sync + fmt::Debug {
     fn send_request_start(
         &self,
         session: &RuntimeSessionEpoch,
-        request: &DispatchRequest,
+        request: &DispatchSubmit,
     ) -> Result<(), String>;
     fn send_request_cancel(
         &self,

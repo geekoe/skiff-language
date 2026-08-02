@@ -22,7 +22,7 @@ use crate::routing::{
     RegisteredSessionLease,
 };
 
-use super::types::DispatchRequest;
+use super::types::DispatchSubmit;
 
 /// Wire `request.start` mode mapping (C-model-request §3.1). The codec already
 /// rejects other values; this stays fallible so the dispatcher can fail
@@ -55,7 +55,7 @@ pub fn capabilities_from_wire_names(names: &[String]) -> DispatchCapabilities {
 
 /// Builds the canonical query input for one admission from the validated
 /// `request.start` header (C-routing-query §2.1: mode + exact deployment).
-pub fn candidate_query_from_request(request: &DispatchRequest) -> CandidateQuery {
+pub fn candidate_query_from_request(request: &DispatchSubmit) -> CandidateQuery {
     CandidateQuery {
         mode: request.mode(),
         deployment: request.header.routing.deployment.clone(),

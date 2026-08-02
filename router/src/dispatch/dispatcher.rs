@@ -30,7 +30,7 @@ use super::health::{
     TerminalSource,
 };
 use super::types::{
-    ActorMethodSpawnDispatch, DerivedSpawnResult, DispatchRequest, RequestAuthority,
+    ActorMethodSpawnDispatch, DerivedSpawnResult, DispatchSubmit, RequestAuthority,
     RequestDeadline, SpawnSubmit, SpawnTargetKind,
 };
 
@@ -160,7 +160,7 @@ impl RequestDispatcher {
     /// Fail-closed rejections never enqueue and never leak a permit; a permit
     /// reserved before the enqueue-time deadline recheck is released and
     /// counted.
-    pub fn submit(&self, request: DispatchRequest) -> SubmitResult {
+    pub fn submit(&self, request: DispatchSubmit) -> SubmitResult {
         let request_id = request.request_id().to_string();
         let deadline = request.deadline();
         let mut inner = self.lock();
@@ -272,7 +272,7 @@ impl RequestDispatcher {
     fn enqueue_locked(
         &self,
         inner: &mut DispatcherInner,
-        request: DispatchRequest,
+        request: DispatchSubmit,
         selected: SelectedLease,
         epoch: Arc<RoutingEpoch>,
     ) -> SubmitResult {

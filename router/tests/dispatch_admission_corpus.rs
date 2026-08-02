@@ -14,7 +14,7 @@ use skiff_artifact_model::{
     RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
 use skiff_router::dispatch::{
-    CancelFrame, DispatchRequest, PendingTerminal, RequestAuthority, RequestDispatcher,
+    CancelFrame, DispatchSubmit, PendingTerminal, RequestAuthority, RequestDispatcher,
     RevalidateOutcome, RuntimeDispatcherOptions, RuntimeResponseFrame, SpawnSubmit,
     SpawnSubmitResult, SpawnTargetKind, SubmitResult,
 };
@@ -552,10 +552,10 @@ impl Harness {
         request_id: &str,
         mode: &str,
         prefer_session: Option<RuntimeSessionEpoch>,
-    ) -> DispatchRequest {
+    ) -> DispatchSubmit {
         let epoch = &self.scenario.epoch;
         let deployment = scenario_deployment_ref(epoch);
-        DispatchRequest {
+        DispatchSubmit {
             header: RuntimeAssemblyRequestStartFrameHeader {
                 schema_version: "skiff-runtime-frame-v3".to_string(),
                 frame_type: "request.start".to_string(),

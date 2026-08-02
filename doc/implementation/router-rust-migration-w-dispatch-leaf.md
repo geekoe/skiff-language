@@ -253,3 +253,54 @@ hash、测试命令与结果、seam 清单（`RuntimeCandidateQuery`（canonical
 | `node scripts/verify.mjs --only router-rust` | passed |
 | `cargo fmt -p skiff-router -- --check` + clippy | 通过 / router 零警告 |
 | rg 负例 | dispatch 内无 `CandidateQueryInput` / `ServiceDeploymentQuery` / 重复 canonical 类型定义 |
+
+## Rework 2（主 Agent 第二轮裁决：内部 submit envelope 命名）
+
+日期：2026-08-02（原任务窄范围返工之二；继续在
+`feat/router-rust-w-dispatch-rework` 上追加 commit，未新建分支）
+
+基线：集成分支 `integration/router-rust-migration-batch-6` @ `f7a72b63`
+（含第一轮 rework 合并 `28e3419a`、E-bootstrap gate、H-spawn-parent-cut；
+本分支已 fast-forward 到该 head）。
+
+### 裁决内容
+
+W-http 的 `DispatchRequest { header, payload_bytes, timeout, cancel_signal }`
+与 C-dispatch §7.2 冻结的端口输入形状一致，作为 crate 根唯一 re-export 的
+公共 `DispatchRequest` 保留；W-dispatch 的内部 submit envelope
+（`prefer_session` 形状）不是公共契约，改名并撤下 root re-export。
+
+### 变更
+
+1. `router/src/dispatch/types.rs` 内部 envelope 改名 `DispatchSubmit`
+   （保持 `header`/`payload_bytes`/`prefer_session` 形状与
+   `request_id`/`mode`/`deadline`/`authority` 方法不变）。
+2. `router/src/dispatch/{candidate,frame,dispatcher,mod}.rs` 同步换名；
+   `RequestDispatcher::submit` / `RuntimePeer::send_request_start` /
+   `candidate_query_from_request` 使用 `DispatchSubmit`。
+3. `router/src/lib.rs` 撤下 `DispatchRequest`（root 不再导出该名；W-http
+   合入后由其提供契约形状的 root `DispatchRequest`）。`DispatchSubmit`
+   只从 `router/src/dispatch` 模块路径导出，不进 root。
+4. 测试（`dispatch_harness` / `dispatch_admission_corpus` /
+   `dispatch_invariants`）改经模块路径消费 `DispatchSubmit`。
+5. 未改 http 模块（W-http 尚未合入本分支）、未改 C-dispatch 契约、未改
+   其他节点文件；E-http 接线时由适配层把契约形状
+   `DispatchRequest` 转换为 `DispatchSubmit`（不属本节点）。
+
+### Rework 2 写集
+
+- `router/src/dispatch/{types,candidate,frame,dispatcher,mod}.rs`
+- `router/src/lib.rs`（仅删除 `DispatchRequest` re-export）
+- `router/tests/dispatch_harness/mod.rs`、
+  `router/tests/dispatch_admission_corpus.rs`（换名）
+- 本叶子文件
+
+### Rework 2 自验收
+
+| 项 | 结果 |
+| --- | --- |
+| `cargo test -p skiff-router dispatch` | 19 场景 corpus + 22 invariants 全绿 |
+| `cargo test -p skiff-router` | 全量无回归 |
+| `node scripts/verify.mjs --only router-rust` | passed |
+| `cargo fmt -p skiff-router -- --check` + clippy | 通过 / router 零警告 |
+| rg 负例 | root re-export 无 `DispatchRequest`（无重复）；dispatch 模块内无旧名类型引用 |
