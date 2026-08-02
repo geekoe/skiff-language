@@ -47,7 +47,6 @@ describe('Runtime capability connection session fences', () => {
     expect(registry.runtimeConnectionFenceForConnection(first)).toEqual(firstFence);
 
     registry.registerRuntime(first, {
-      type: 'runtime.register',
       runtimeId: RUNTIME_ID,
       serviceId: 'example.com/session-fence',
       revisionId: 'revision-1',
@@ -121,7 +120,7 @@ describe('Runtime capability connection session fences', () => {
     await until(() => assemblyRegistry.connectionForReplica(RUNTIME_ID) !== undefined);
 
     // This is the production Assembly Host shape: capabilities + activation,
-    // with no legacy runtime.register record.
+    // with no legacy registration record.
     expect(runtimeRegistry.snapshot()).toEqual([]);
     const serverConnection = assemblyRegistry.connectionForReplica(RUNTIME_ID)!;
     const fence = runtimeRegistry.runtimeConnectionFenceForConnection(serverConnection);

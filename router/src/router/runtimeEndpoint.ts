@@ -28,7 +28,8 @@ import {
   type RouterBootstrapEnvelope,
   type RouterControlEnvelope,
   type RouterControlFrameHeader,
-  type RouterToRuntimeFrameHeader
+  type RouterToRuntimeFrameHeader,
+  type RuntimeRegisteredFrameHeader
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestStartFrameWireHeader
@@ -76,6 +77,15 @@ import {
   type ActorOwnerControlAckFrameHeader,
   type ActorOwnerFailureFrameHeader,
 } from '../protocol/actorOwnerProtocol.js';
+import {
+  RUNTIME_HANDSHAKE_TIMEOUTS,
+  RuntimeHandshakeState,
+  runtimeHandshakeTerminalDescription,
+  type RuntimeHandshakeEpochContext,
+  type RuntimeHandshakeRegisterControl,
+  type RuntimeHandshakeTerminalKind,
+  type RuntimeHandshakeTimeoutKind
+} from './runtimeHandshake.js';
 
 const CONNECTION_SEND_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 const CONNECTION_REQUEST_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
@@ -232,14 +242,30 @@ export type RuntimeEndpointOptions = RuntimeEndpointBaseOptions & (
       bootstrap:
         | Omit<RouterBootstrapEnvelope, 'type'>
         | (() => Omit<RouterBootstrapEnvelope, 'type'>);
+      /**
+       * Pre-auth connection cap (C-session §4). Defaults to no independent
+       * cap for endpoints without `assemblyRegistry`; production passes
+       * `runtime.maxConcurrency`.
+       */
+      preAuthMaxConcurrency?: number;
+      handshakeTimeouts?: Partial<typeof RUNTIME_HANDSHAKE_TIMEOUTS>;
     }
   | {
       assemblyRegistry?: undefined;
       bootstrap?:
         | Omit<RouterBootstrapEnvelope, 'type'>
         | (() => Omit<RouterBootstrapEnvelope, 'type'>);
+      preAuthMaxConcurrency?: number;
+      handshakeTimeouts?: Partial<typeof RUNTIME_HANDSHAKE_TIMEOUTS>;
     }
 );
+
+interface RuntimeHandshakeConnection {
+  state: RuntimeHandshakeState;
+  phaseTimer: NodeJS.Timeout | undefined;
+  ackTimer: NodeJS.Timeout | undefined;
+  preAuthCounted: boolean;
+}
 
 export class RuntimeEndpoint
   implements
@@ -260,6 +286,11 @@ export class RuntimeEndpoint
   private readonly connectionSendHandlers = new Set<ConnectionSendHandler>();
   private readonly disconnectedRuntimeConnections = new WeakSet<WebSocket>();
   private readonly runtimeSessionTokens = new WeakMap<WebSocket, string>();
+  private readonly handshakeByConnection = new WeakMap<
+    WebSocket,
+    RuntimeHandshakeConnection
+  >();
+  private handshakeConnectionCount = 0;
   private nextRuntimeSessionToken = 1;
   private coordinator: AssemblyActivationCoordinator | undefined;
   private actorMethodsInstance: RuntimeActorMethodRouter | undefined;
@@ -334,20 +365,68 @@ export class RuntimeEndpoint
     });
 
     webSocketServer.on('connection', (ws) => {
+      const preAuthLimit = this.options.preAuthMaxConcurrency;
+      if (
+        preAuthLimit !== undefined &&
+        this.handshakeConnectionCount >= preAuthLimit
+      ) {
+        // PreAuthLimitRejected: refused before the handshake starts.
+        ws.close(1008, 'pre-auth connection limit reached');
+        return;
+      }
       this.runtimeSessionTokens.set(
         ws,
         `skiff-runtime-session-v1:opaque:${this.nextRuntimeSessionToken++}`
       );
+      const handshake: RuntimeHandshakeConnection = {
+        state: new RuntimeHandshakeState(),
+        phaseTimer: undefined,
+        ackTimer: undefined,
+        preAuthCounted: true
+      };
+      this.handshakeByConnection.set(ws, handshake);
+      this.handshakeConnectionCount += 1;
       if (this.options.bootstrap !== undefined) {
         const bootstrap =
           typeof this.options.bootstrap === 'function'
             ? this.options.bootstrap()
             : this.options.bootstrap;
-        this.sendFrame(ws, {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'router.bootstrap',
-          ...bootstrap
-        });
+        // Advance to BootstrapSent when the write is initiated: inbound
+        // capabilities may arrive before the asynchronous send callback
+        // fires, and the corpus/order semantics treat the queued bootstrap
+        // as already written (writer-queue ordering, W-session task.rs).
+        const terminal = handshake.state.onBootstrapWritten();
+        if (terminal !== undefined) {
+          this.terminateHandshake(ws, terminal);
+          return;
+        }
+        if (this.strictHandshake()) {
+          this.startPhaseTimer(ws, 'capabilities');
+        }
+        this.sendFrame(
+          ws,
+          {
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'router.bootstrap',
+            ...bootstrap
+          },
+          undefined,
+          (error) => {
+            if (error != null) {
+              const current = this.handshakeByConnection.get(ws);
+              if (current === undefined) {
+                return;
+              }
+              this.terminateHandshake(
+                ws,
+                current.state.onBootstrapWriteFailed()
+              );
+              return;
+            }
+          }
+        );
+      } else if (this.strictHandshake()) {
+        this.startPhaseTimer(ws, 'bootstrap');
       }
       if (this.control) {
         this.sendFrame(ws, routerControlFrameHeader(this.control));
@@ -621,12 +700,38 @@ export class RuntimeEndpoint
 
   private async handleBinaryMessage(ws: WebSocket, data: WebSocket.RawData): Promise<void> {
     const frame = decodeBinaryFrame(data);
+    if (frame.header.type === 'runtime.register') {
+      // Legacy inbound registration is not a target handshake frame:
+      // strict terminal (`LegacyRegisterRejected`), no ACK, no residue.
+      const machine = this.handshakeByConnection.get(ws)?.state;
+      this.terminateHandshake(
+        ws,
+        machine === undefined ? 'LegacyRegisterRejected' : machine.onLegacyRegister()
+      );
+      return;
+    }
     if (frame.header.type === ASSEMBLY_ACTIVATION_FRAME_TYPE) {
       this.handleAssemblyControl(
         ws,
         decodeAssemblyActivationFrame('runtimeToRouter', data)
       );
       return;
+    }
+    if (this.strictHandshake()) {
+      const machine = this.handshakeByConnection.get(ws)?.state;
+      const isHandshakeFrame =
+        frame.header.type === 'runtime.capabilities' ||
+        frame.header.type === 'runtime.health';
+      if (
+        machine === undefined ||
+        (machine.phase() !== 'registered' && !isHandshakeFrame)
+      ) {
+        this.terminateHandshake(
+          ws,
+          machine === undefined ? 'WrongOrder' : machine.terminalWith('WrongOrder')
+        );
+        return;
+      }
     }
     if (frame.header.type === WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE) {
       const lifecycle = this.generationLifecycle;
@@ -729,25 +834,32 @@ export class RuntimeEndpoint
       );
     }
     switch (header.type) {
-      case 'runtime.register':
-        if (frame.payloadBytes.byteLength !== 0) {
-          throw new Error('runtime.register binary frame payload must be empty');
-        }
-        this.sendFrame(
-          ws,
-          this.options.registry.registerRuntime(ws, {
-            ...header,
-            type: 'runtime.register'
-          })
-        );
-        return;
       case 'runtime.capabilities':
         if (frame.payloadBytes.byteLength !== 0) {
           throw new Error('runtime.capabilities binary frame payload must be empty');
         }
+        if (this.strictHandshake()) {
+          const machine = this.handshakeByConnection.get(ws)?.state;
+          if (machine === undefined) {
+            this.terminateHandshake(ws, 'WrongOrder');
+            return;
+          }
+          const event = machine.onCapabilities(header.runtimeId);
+          if (event.kind === 'terminal') {
+            this.terminateHandshake(ws, event.terminal);
+            return;
+          }
+          this.options.registry.registerRuntimeCapabilities(ws, {
+            ...header,
+            type: 'runtime.capabilities'
+          });
+          this.coordinator?.handleParticipantConnected(header.runtimeId);
+          this.startPhaseTimer(ws, 'register');
+          return;
+        }
         if (
-          this.options.assemblyRegistry !== undefined &&
-          this.options.registry.runtimeCapabilityIdentityForConnection(ws) !== undefined
+          this.options.registry.runtimeCapabilityIdentityForConnection(ws) !==
+          undefined
         ) {
           throw new Error('runtime.capabilities must be the first frame on a runtime connection');
         }
@@ -760,6 +872,29 @@ export class RuntimeEndpoint
       case 'runtime.health':
         if (frame.payloadBytes.byteLength !== 0) {
           throw new Error('runtime.health binary frame payload must be empty');
+        }
+        if (this.strictHandshake()) {
+          const machine = this.handshakeByConnection.get(ws)?.state;
+          if (machine === undefined) {
+            this.terminateHandshake(ws, 'WrongOrder');
+            return;
+          }
+          const event = machine.onHealth(header.runtimeId);
+          if (event.kind === 'terminal') {
+            this.terminateHandshake(ws, event.terminal);
+            return;
+          }
+          if (event.kind === 'observed') {
+            this.options.assemblyRegistry?.recordHealth(
+              ws,
+              header.runtimeId,
+              header.observedAt,
+              header.counters
+            );
+          }
+          // droppedBeforeAck is counted by the machine and never becomes a
+          // registered observation.
+          return;
         }
         if (this.options.assemblyRegistry?.replicaIdForConnection(ws) !== undefined) {
           this.options.assemblyRegistry.recordHealth(
@@ -1003,6 +1138,13 @@ export class RuntimeEndpoint
     if (this.disconnectedRuntimeConnections.has(ws)) {
       return;
     }
+    const handshake = this.handshakeByConnection.get(ws);
+    if (handshake !== undefined) {
+      if (!handshake.state.isClosed()) {
+        handshake.state.onDisconnect();
+      }
+      this.finishHandshakeCleanup(ws, handshake);
+    }
     this.disconnectedRuntimeConnections.add(ws);
 
     const source = this.connectionRequestSources.get(ws);
@@ -1067,23 +1209,266 @@ export class RuntimeEndpoint
   }
 
   private handleAssemblyControl(ws: WebSocket, control: AssemblyActivationControl): void {
-    const registry = this.options.assemblyRegistry;
-    if (registry === undefined) {
-      throw new Error('assembly activation is not accepted by this runtime endpoint');
-    }
-    this.options.registry.assertRuntimeCapabilityConnection(ws, control.replicaId);
     if (control.type === 'register') {
-      registry.register(ws, control);
+      if (!this.strictHandshake()) {
+        const machine = this.handshakeByConnection.get(ws)?.state;
+        this.terminateHandshake(
+          ws,
+          machine === undefined
+            ? 'RegistrationRefused'
+            : machine.terminalWith('RegistrationRefused')
+        );
+        return;
+      }
+      this.handleAssemblyRegistration(ws, control);
       return;
     }
     if (control.type !== 'prepared' && control.type !== 'reject') {
       throw new Error(`runtime must not send assembly activation ${control.type}`);
+    }
+    if (this.strictHandshake()) {
+      const machine = this.handshakeByConnection.get(ws)?.state;
+      if (machine === undefined || machine.phase() !== 'registered') {
+        this.terminateHandshake(
+          ws,
+          machine === undefined ? 'WrongOrder' : machine.terminalWith('WrongOrder')
+        );
+        return;
+      }
     }
     const coordinator = this.coordinator;
     if (coordinator === undefined) {
       throw new Error('assembly activation coordinator is unavailable');
     }
     coordinator.handleRuntimeControl(ws, control);
+  }
+
+  private handleAssemblyRegistration(
+    ws: WebSocket,
+    control: Extract<AssemblyActivationControl, { type: 'register' }>
+  ): void {
+    const machine = this.handshakeByConnection.get(ws)?.state;
+    if (machine === undefined) {
+      this.terminateHandshake(ws, 'WrongOrder');
+      return;
+    }
+    this.options.registry.assertRuntimeCapabilityConnection(ws, control.replicaId);
+    const register: RuntimeHandshakeRegisterControl = {
+      environment: control.environment,
+      generation: control.generation,
+      assembly: { ...control.assembly },
+      configSnapshot: { ...control.configSnapshot },
+      replicaId: control.replicaId
+    };
+    const event = machine.onRegister(register, this.epochContext());
+    if (event.kind === 'terminal') {
+      this.terminateHandshake(ws, event.terminal);
+      return;
+    }
+    if (event.kind === 'validated') {
+      try {
+        this.options.assemblyRegistry?.publishPending(ws, control);
+      } catch {
+        this.terminateHandshake(ws, machine.terminalWith('DuplicateRegister'));
+        return;
+      }
+      this.startAckWrite(ws, control.replicaId, 'register');
+      return;
+    }
+    if (event.kind === 'transition') {
+      // Post-commit re-register on the same physical session: publish the new
+      // revision and ACK again (W-session task semantics).
+      try {
+        this.options.assemblyRegistry?.transition(ws, control);
+      } catch {
+        this.terminateHandshake(ws, machine.terminalWith('StaleRegister'));
+        return;
+      }
+      this.startAckWrite(ws, control.replicaId, 'transition');
+      return;
+    }
+    // Idempotent exact duplicate after ACK: no revision bump, no ACK.
+  }
+
+  private epochContext(): RuntimeHandshakeEpochContext {
+    const context: RuntimeHandshakeEpochContext = {};
+    const current = this.options.assemblyRegistry?.committedTuple();
+    const pending = this.coordinator?.pendingActivationTuple();
+    if (current !== undefined) {
+      context.current = current;
+    }
+    if (pending !== undefined) {
+      context.pending = pending;
+    }
+    return context;
+  }
+
+  private strictHandshake(): boolean {
+    return this.options.assemblyRegistry !== undefined;
+  }
+
+  private handshakeTimeouts(): typeof RUNTIME_HANDSHAKE_TIMEOUTS {
+    return {
+      ...RUNTIME_HANDSHAKE_TIMEOUTS,
+      ...this.options.handshakeTimeouts
+    };
+  }
+
+  private startPhaseTimer(
+    ws: WebSocket,
+    kind: RuntimeHandshakeTimeoutKind
+  ): void {
+    const handshake = this.handshakeByConnection.get(ws);
+    if (handshake === undefined) {
+      return;
+    }
+    if (handshake.phaseTimer !== undefined) {
+      clearTimeout(handshake.phaseTimer);
+    }
+    const timeouts = this.handshakeTimeouts();
+    const delayMs =
+      kind === 'bootstrap'
+        ? timeouts.bootstrapMs
+        : kind === 'capabilities'
+          ? timeouts.capabilitiesMs
+          : timeouts.registerMs;
+    handshake.phaseTimer = setTimeout(() => {
+      const current = this.handshakeByConnection.get(ws);
+      if (current === undefined) {
+        return;
+      }
+      current.phaseTimer = undefined;
+      const terminal = current.state.onTimeout(kind);
+      this.terminateHandshake(ws, terminal);
+    }, delayMs);
+  }
+
+  private startAckWrite(
+    ws: WebSocket,
+    replicaId: string,
+    kind: 'register' | 'transition'
+  ): void {
+    const handshake = this.handshakeByConnection.get(ws);
+    if (handshake === undefined) {
+      return;
+    }
+    if (handshake.phaseTimer !== undefined) {
+      clearTimeout(handshake.phaseTimer);
+      handshake.phaseTimer = undefined;
+    }
+    const ackHeader: RuntimeRegisteredFrameHeader = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'runtime.registered',
+      runtimeId: replicaId
+    };
+    const timeouts = this.handshakeTimeouts();
+    handshake.ackTimer = setTimeout(() => {
+      const current = this.handshakeByConnection.get(ws);
+      if (current === undefined) {
+        return;
+      }
+      current.ackTimer = undefined;
+      const machine = current.state;
+      const terminal =
+        machine.phase() === 'register-validated'
+          ? machine.onAckWriteFailed()
+          : machine.terminalWith('AckLoss');
+      this.terminateHandshake(ws, terminal);
+    }, timeouts.ackWriteMs);
+    this.sendFrame(ws, ackHeader, undefined, (error) => {
+      const current = this.handshakeByConnection.get(ws);
+      if (current === undefined) {
+        return;
+      }
+      if (current.ackTimer !== undefined) {
+        clearTimeout(current.ackTimer);
+        current.ackTimer = undefined;
+      }
+      if (error != null) {
+        const machine = current.state;
+        const terminal =
+          machine.phase() === 'register-validated'
+            ? machine.onAckWriteFailed()
+            : machine.terminalWith('AckLoss');
+        this.terminateHandshake(ws, terminal);
+        return;
+      }
+      if (kind === 'register') {
+        const machine = current.state;
+        const terminal = machine.onAckWritten();
+        if (terminal !== undefined) {
+          this.terminateHandshake(ws, terminal);
+          return;
+        }
+        try {
+          this.options.assemblyRegistry?.commitPending(ws);
+        } catch {
+          this.terminateHandshake(ws, machine.terminalWith('AckLoss'));
+          return;
+        }
+        this.releasePreAuth(ws);
+      }
+      // Transition ACK: the machine stays Registered; the revision was
+      // already published by `transition`.
+    });
+  }
+
+  private releasePreAuth(ws: WebSocket): void {
+    const handshake = this.handshakeByConnection.get(ws);
+    if (handshake !== undefined && handshake.preAuthCounted) {
+      handshake.preAuthCounted = false;
+      this.handshakeConnectionCount -= 1;
+    }
+  }
+
+  private finishHandshakeCleanup(
+    ws: WebSocket,
+    handshake: RuntimeHandshakeConnection
+  ): void {
+    if (handshake.phaseTimer !== undefined) {
+      clearTimeout(handshake.phaseTimer);
+      handshake.phaseTimer = undefined;
+    }
+    if (handshake.ackTimer !== undefined) {
+      clearTimeout(handshake.ackTimer);
+      handshake.ackTimer = undefined;
+    }
+    if (handshake.preAuthCounted) {
+      handshake.preAuthCounted = false;
+      this.handshakeConnectionCount -= 1;
+    }
+    this.handshakeByConnection.delete(ws);
+    this.options.assemblyRegistry?.rollbackPending(ws);
+  }
+
+  private terminateHandshake(
+    ws: WebSocket,
+    terminal: RuntimeHandshakeTerminalKind
+  ): void {
+    const handshake = this.handshakeByConnection.get(ws);
+    if (handshake === undefined) {
+      return;
+    }
+    if (!handshake.state.isClosed()) {
+      handshake.state.terminalWith(terminal);
+    }
+    this.finishHandshakeCleanup(ws, handshake);
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close(
+          1008,
+          runtimeHandshakeTerminalDescription(terminal).slice(0, 120)
+        );
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        ws.terminate();
+      }
+    } catch {
+      try {
+        ws.terminate();
+      } catch {
+        // The exact runtime source is already disconnected and deindexed.
+      }
+    }
   }
 }
 

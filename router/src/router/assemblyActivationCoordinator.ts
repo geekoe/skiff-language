@@ -8,6 +8,7 @@ import type {
 } from '../protocol/assemblyActivationProtocol.js';
 import type { AssemblyActivationStateStore } from './assemblyActivationStateStore.js';
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
+import type { RuntimeRegisteredAssemblyTuple } from './runtimeHandshake.js';
 import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activationTimeout.js';
 import {
   RouterActiveAssemblySnapshotStore,
@@ -267,6 +268,24 @@ export class AssemblyActivationCoordinator {
   activationState(): EnvironmentActivationState {
     this.assertInitialized();
     return structuredClone(this.state!);
+  }
+
+  /**
+   * The activation epoch currently pending durable commit/swap (None when no
+   * activation transaction is in flight). Used by the Runtime handshake to
+   * classify `new-generation-before-epoch-swap` registrations.
+   */
+  pendingActivationTuple(): RuntimeRegisteredAssemblyTuple | undefined {
+    const pending = this.transaction?.pending;
+    if (pending === undefined) {
+      return undefined;
+    }
+    return {
+      environment: this.options.environment,
+      generation: pending.candidateGeneration,
+      assembly: { ...pending.assembly },
+      configSnapshot: { ...pending.configSnapshot }
+    };
   }
 
   private installTransaction(

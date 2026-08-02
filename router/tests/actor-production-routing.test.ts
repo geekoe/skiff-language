@@ -68,8 +68,8 @@ describe('production Actor WebSocket routing', () => {
     });
     endpoint.setActorMethods(actorMethods);
     const listening = await endpoint.listen({ port: 0 });
-    const left = await runtime(listening.url, 'runtime-a');
-    const right = await runtime(listening.url, 'runtime-b');
+    const left = await runtime(listening.url, 'runtime-a', registry);
+    const right = await runtime(listening.url, 'runtime-b', registry);
     const actorKey = {
       serviceId: 'example.com/actor',
       actorTypeIdentity: 'actor.example.Counter',
@@ -251,7 +251,7 @@ describe('production Actor WebSocket routing', () => {
     });
     endpoint.setActorMethods(actorMethods);
     const listening = await endpoint.listen({ port: 0 });
-    const first = await runtime(listening.url, 'runtime-a');
+    const first = await runtime(listening.url, 'runtime-a', registry);
     const firstServerConnection = registry.runtimeConnection('runtime-a')!.ws;
     const actorKey = makeActorKey({
       serviceId: 'example.com/actor',
@@ -309,7 +309,7 @@ describe('production Actor WebSocket routing', () => {
 
     void activation.catch(() => undefined);
     registry.removeRuntimeConnection(firstServerConnection);
-    const second = await runtime(listening.url, 'runtime-a');
+    const second = await runtime(listening.url, 'runtime-a', registry);
     expect(registry.runtimeConnection('runtime-a')?.ws).not.toBe(
       firstServerConnection
     );
@@ -328,7 +328,11 @@ describe('production Actor WebSocket routing', () => {
   });
 });
 
-async function runtime(url: string, runtimeId: string): Promise<WebSocket> {
+async function runtime(
+  url: string,
+  runtimeId: string,
+  registry: RuntimeRegistry
+): Promise<WebSocket> {
   const socket = new WebSocket(url);
   sockets.push(socket);
   await new Promise<void>((resolve, reject) => {
@@ -341,9 +345,15 @@ async function runtime(url: string, runtimeId: string): Promise<WebSocket> {
     runtimeId,
     capabilities: { runtimeProgram: true },
   }));
-  socket.send(encodeRuntimeFrame({
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'runtime.register',
+  const deadline = Date.now() + 2_000;
+  while (registry.runtimeConnection(runtimeId) === undefined) {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for capability connection ${runtimeId}`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const serverSide = registry.runtimeConnection(runtimeId)!.ws;
+  registry.registerRuntime(serverSide, {
     runtimeId,
     serviceId: 'example.com/actor',
     revisionId: 'a'.repeat(64),
@@ -353,8 +363,7 @@ async function runtime(url: string, runtimeId: string): Promise<WebSocket> {
       'd'
     ),
     targets: ['actor.example.Counter.increment'],
-  }));
-  await nextBinary(socket);
+  });
   return socket;
 }
 

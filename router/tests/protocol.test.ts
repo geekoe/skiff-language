@@ -36,7 +36,6 @@ import {
 import type { JsonSchema } from '../src/manifest/types.js';
 
 const runtimeFrameHeaderTypes = [
-  'runtime.register',
   'runtime.capabilities',
   'runtime.health',
   'actor.getOrCreate.request',
@@ -71,7 +70,6 @@ const runtimeFrameHeaderTypes = [
 ] as const satisfies readonly RuntimeProtocolFrameHeaderName[];
 
 const runtimeToRouterFrameHeaderTypes = [
-  'runtime.register',
   'runtime.capabilities',
   'runtime.health',
   'actor.getOrCreate.request',
@@ -889,7 +887,7 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(validateRuntimeToRouterFrameHeader({ type: 'not.real' })).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, request.start, request.cancel, connection.send, connection.request, connection.request.cancel, response.start, response.chunk, response.end, response.error'
+        'invalid runtime frame header envelope: type must be one of runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, request.start, request.cancel, connection.send, connection.request, connection.request.cancel, response.start, response.chunk, response.end, response.error'
     });
   });
 
@@ -1011,95 +1009,15 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('accepts exact current ServiceProtocolIdentity v5 and rejects legacy v4/v3 registration', () => {
-    const currentRegistration = {
-      ...runtimeFrameHeaderFixtures['runtime.register'],
-      serviceProtocolIdentity:
-        'skiff-service-protocol-v5:sha256:2222222222222222222222222222222222222222222222222222222222222222'
-    };
-    expect(validateRuntimeToRouterFrameHeader(currentRegistration)).toEqual({
-      ok: true,
-      envelope: currentRegistration
-    });
-
+  it('rejects the legacy runtime.register frame type after H-registration-cut', () => {
     expect(
       validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        serviceProtocolIdentity:
-          'skiff-service-protocol-v3:sha256:2222222222222222222222222222222222222222222222222222222222222222'
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'runtime.register',
+        runtimeId: 'runtime-fixture-1'
       })
-    ).toEqual({
-      ok: false,
-      error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
-    });
-
-    expect(
-      validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        serviceProtocolIdentity: 'skiff-protocol-v1:sha256:not-a-real-hash'
-      })
-    ).toEqual({
-      ok: false,
-      error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
-    });
-
-    expect(
-      validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        serviceProtocolIdentity:
-          'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111'
-      })
-    ).toEqual({
-      ok: false,
-      error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v5:sha256:<64 lowercase hex>'
-    });
-
-    expect(
-      validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        protocolVersion: 'skiff-protocol-v1'
-      })
-    ).toEqual({
-      ok: false,
-      error: 'invalid runtime.register frame header envelope: protocolVersion is not supported'
-    });
-
-    expect(
-      validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        gatewayEntryIdentities: ['gateway-entry']
-      })
-    ).toEqual({
-      ok: false,
-      error:
-        'invalid runtime.register envelope: gatewayEntryIdentities items must be skiff-gateway-v1:sha256:<64 lowercase hex>'
-    });
-  });
-
-  it('rejects runtime registrations with raw service or gateway target components', () => {
-    expect(
-      validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        targets: ['service.example.com/hello.HelloApi.hello']
-      })
-    ).toEqual({
-      ok: false,
-      error:
-        'invalid runtime.register envelope: targets items must use service.example~com~~hello.<target suffix>'
-    });
-
-    expect(
-      validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['runtime.register'],
-        targets: ['gateway.example.com/hello.http.raw']
-      })
-    ).toEqual({
-      ok: false,
-      error:
-        'invalid runtime.register envelope: targets items must use gateway.example~com~~hello.<target suffix>'
+    ).toMatchObject({
+      ok: false
     });
   });
 
@@ -1988,9 +1906,8 @@ describe('runtime binary frame foundations', () => {
     });
   });
 
-  it('allows header-only register, control, cancel, and error frames', () => {
+  it('allows header-only control, cancel, health, and error frames', () => {
     const runtimeToRouterHeaderOnly = [
-      'runtime.register',
       'runtime.health',
       'request.cancel',
       'response.error'

@@ -1,8 +1,5 @@
 import type { LoadedManifest } from '../../src/manifest/types.js';
-import type {
-  RuntimeCapabilitiesMetadata,
-  RuntimeRegisterEnvelope
-} from '../../src/protocol/envelope.js';
+import type { RuntimeCapabilitiesMetadata } from '../../src/protocol/envelope.js';
 import {
   RouterActiveSnapshotStore,
 } from '../../src/router/activeSnapshot.js';
@@ -32,7 +29,8 @@ import {
   MockRuntime,
   createRuntimeRouter,
   trackResource,
-  type RuntimeRouter
+  type RuntimeRouter,
+  type RuntimeTestRegisterInput
 } from './runtime.js';
 
 export class RouterHarness {
@@ -169,8 +167,7 @@ export class RouterHarness {
     if (!this.registryListen) {
       throw new Error('runtime registry is not listening');
     }
-    const register: RuntimeRegisterEnvelope = {
-      type: 'runtime.register',
+    const register: RuntimeTestRegisterInput = {
       runtimeId: input.runtimeId,
       serviceId: input.serviceId ?? this.manifest.service.id,
       revisionId: input.revisionId ?? this.manifest.service.revisionId,
@@ -200,7 +197,12 @@ export class RouterHarness {
     if (input.capabilities !== undefined) {
       register.capabilities = input.capabilities;
     }
-    return await MockRuntime.register(this.registryListen.url, register, this.manifest);
+    return await MockRuntime.register(
+      this.registryListen.url,
+      register,
+      this.registry,
+      this.manifest
+    );
   }
 
   httpUrl(path: string): string {

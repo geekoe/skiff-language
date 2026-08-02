@@ -13,9 +13,7 @@ import {
   type WebSocketContextCodecFrameMetadata,
   type RuntimeBinaryFrame,
   type RuntimeCapabilitiesEnvelope,
-  type RuntimeCapabilitiesFrameHeader,
-  type RuntimeRegisterFrameHeader,
-  type RuntimeRegisterEnvelope
+  type RuntimeCapabilitiesFrameHeader
 } from '../../src/protocol/envelope.js';
 import {
   decodeOperationPayload,
@@ -37,6 +35,36 @@ import { DEFAULT_TEST_BUILD_ID } from './manifests.js';
 
 const resources: Array<{ close(): Promise<void> | void }> = [];
 const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
+
+/**
+ * Structural input for the in-process legacy registration helper. The wire
+ * `runtime.register` frame is not a target handshake frame
+ * (H-registration-cut); legacy dispatch fixtures register directly through
+ * `RuntimeRegistry.registerRuntime` after sending `runtime.capabilities`.
+ */
+export interface RuntimeTestRegisterInput {
+  runtimeId: string;
+  serviceId: string;
+  version?: string;
+  revisionId: string;
+  activationIdentity?: string;
+  buildId: string;
+  serviceProtocolIdentity: string;
+  targets: string[];
+  runtimeVersion?: string;
+  codeRevisionId?: string;
+  artifactIdentity?: string;
+  gatewayEntryIdentities?: string[];
+  capabilities?: RuntimeCapabilitiesEnvelope['capabilities'];
+}
+
+function defaultTestCapabilities(): RuntimeCapabilitiesEnvelope['capabilities'] {
+  // Bind-only capabilities: the legacy dispatch fixtures carry their own
+  // capability semantics inside the in-process registration input, so the
+  // wire capabilities frame must not advertise capabilities the test did not
+  // request (e.g. packageTestDispatch).
+  return {};
+}
 
 export type RuntimeRequestFrame = RuntimeBinaryFrame<RequestStartFrameHeader>;
 
@@ -97,31 +125,47 @@ export async function closeTrackedResources(): Promise<void> {
 
 export async function openRegisteredRuntime(
   registryUrl: string,
-  register: RuntimeRegisterEnvelope
+  register: RuntimeTestRegisterInput,
+  registry: RuntimeRegistry
 ): Promise<WebSocket> {
-  return await openBinaryRegisteredRuntime(registryUrl, register);
+  return await openBinaryRegisteredRuntime(registryUrl, register, registry);
 }
 
 export async function openBinaryRegisteredRuntime(
   registryUrl: string,
-  register: RuntimeRegisterEnvelope
+  register: RuntimeTestRegisterInput,
+  registry: RuntimeRegistry
 ): Promise<WebSocket> {
   const ws = new WebSocket(registryUrl);
   trackResource({ close: () => ws.close() });
   await onceWithTimeout(ws, 'open', `${register.runtimeId} socket open`);
-  const registered = waitForBinaryRuntimeRegistered(ws, register.runtimeId);
   const normalizedRegister = {
     ...register,
     revisionId: canonicalTestRevisionId(register.revisionId)
   };
-  const { type: _type, ...metadata } = normalizedRegister;
-  const header: RuntimeRegisterFrameHeader = {
+  const capabilitiesHeader: RuntimeCapabilitiesFrameHeader = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'runtime.register',
-    ...metadata
+    type: 'runtime.capabilities',
+    runtimeId: register.runtimeId,
+    capabilities: register.capabilities ?? defaultTestCapabilities()
   };
-  ws.send(encodeRuntimeFrame(header));
-  await registered;
+  ws.send(encodeRuntimeFrame(capabilitiesHeader));
+  // The registry must own the server-side socket for the connection, not the
+  // client-side test socket; otherwise wire dispatch frames travel in the
+  // wrong direction. Capabilities bind the runtimeId first, then the legacy
+  // in-process registration installs the service-level record on the exact
+  // server-side connection.
+  const deadline = Date.now() + 2_000;
+  while (registry.runtimeConnection(register.runtimeId) === undefined) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out waiting for capability connection ${register.runtimeId}`
+      );
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const serverSide = registry.runtimeConnection(register.runtimeId)!.ws;
+  registry.registerRuntime(serverSide, normalizedRegister);
   return ws;
 }
 
@@ -173,10 +217,14 @@ export class MockRuntime {
 
   static async register(
     registryUrl: string,
-    register: RuntimeRegisterEnvelope,
+    register: RuntimeTestRegisterInput,
+    registry: RuntimeRegistry,
     manifest?: LoadedManifest
   ): Promise<MockRuntime> {
-    return new MockRuntime(await openRegisteredRuntime(registryUrl, register), manifest);
+    return new MockRuntime(
+      await openRegisteredRuntime(registryUrl, register, registry),
+      manifest
+    );
   }
 
   static async capabilities(
