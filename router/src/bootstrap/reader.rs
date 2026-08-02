@@ -4,8 +4,11 @@
 //! The reader is the read-only repository port: it consumes the
 //! W-activation-state `ActivationStateRepository` read side, projects a
 //! durable `CommittedActivation` into shared refs, and fail-closes on
-//! missing/malformed/pending/identity-mismatch/repository failures. It never
-//! writes, CASes or stages; complete recovery belongs to E-activation.
+//! missing/malformed/identity-mismatch/repository failures. A durable
+//! pending activation is no longer a bootstrap failure (plan §4.2): the
+//! reader reports it alongside the validated committed refs so the assembly
+//! publishes the committed epoch first and E-activation installs the
+//! recovery transaction. The reader never writes, CASes or stages.
 
 use std::fmt;
 use std::path::Path;
@@ -13,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
+use skiff_deployment::activation_state::PendingActivation;
 use skiff_deployment::storage::{CanonicalArtifactStore, CommittedActivation};
 
 use crate::activation::{ActivationStateRepository, RepositoryError};
@@ -51,8 +55,9 @@ pub enum BootstrapReadOutcome {
         assembly: RuntimeAssemblyRef,
         config_snapshot: RuntimeConfigSnapshotRef,
     },
-    FailClosedPending {
-        activation_id: String,
+    CommittedWithPending {
+        refs: CommittedBootstrapRefs,
+        pending: PendingActivation,
     },
     FailClosedMissing,
     FailClosedMalformed {
@@ -82,6 +87,7 @@ impl BootstrapReadOutcome {
                 assembly: assembly.clone(),
                 config_snapshot: config_snapshot.clone(),
             }),
+            Self::CommittedWithPending { refs, .. } => Some(refs.clone()),
             _ => None,
         }
     }
@@ -93,8 +99,12 @@ impl fmt::Display for BootstrapReadOutcome {
             Self::StableCommitted { generation, .. } => {
                 write!(formatter, "stable committed generation {generation}")
             }
-            Self::FailClosedPending { activation_id } => {
-                write!(formatter, "fail closed: pending activation {activation_id}")
+            Self::CommittedWithPending { refs, pending } => {
+                write!(
+                    formatter,
+                    "committed generation {} with pending activation {}",
+                    refs.generation, pending.activation_id
+                )
             }
             Self::FailClosedMissing => write!(formatter, "fail closed: activation state missing"),
             Self::FailClosedMalformed { message } => {
@@ -214,13 +224,8 @@ impl CommittedActivationBootstrapReader {
                 };
             }
         };
-        if let Some(pending) = &state.pending {
-            self.pending.fetch_add(1, Ordering::Relaxed);
-            return BootstrapReadOutcome::FailClosedPending {
-                activation_id: pending.activation_id.clone(),
-            };
-        }
         let refs = CommittedBootstrapRefs::project_committed(&state.committed);
+        let pending = state.pending.clone();
         let validator = Arc::clone(&self.validator);
         let validator_refs = refs.clone();
         let validation = self
@@ -228,10 +233,16 @@ impl CommittedActivationBootstrapReader {
             .run(move || validator.validate_committed(&validator_refs))
             .await;
         match validation {
-            Ok(()) => BootstrapReadOutcome::StableCommitted {
-                generation: refs.generation,
-                assembly: refs.assembly,
-                config_snapshot: refs.config_snapshot,
+            Ok(()) => match pending {
+                Some(pending) => {
+                    self.pending.fetch_add(1, Ordering::Relaxed);
+                    BootstrapReadOutcome::CommittedWithPending { refs, pending }
+                }
+                None => BootstrapReadOutcome::StableCommitted {
+                    generation: refs.generation,
+                    assembly: refs.assembly,
+                    config_snapshot: refs.config_snapshot,
+                },
             },
             Err(BlockingLoaderError::Operation(message)) => {
                 self.identity_mismatch.fetch_add(1, Ordering::Relaxed);

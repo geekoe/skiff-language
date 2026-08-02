@@ -16,6 +16,7 @@ pub mod handshake;
 pub mod health;
 pub mod identity;
 pub mod layer;
+pub mod observer;
 pub mod pre_auth;
 pub mod task;
 
@@ -33,3 +34,4 @@ pub use layer::{
     SessionFrameWriter, SessionHealthSnapshot, SessionLayer, SessionLayerError,
     SessionLayerOptions, SessionTiming,
 };
+pub use observer::RegistrationObserver;

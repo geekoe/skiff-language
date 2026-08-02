@@ -156,6 +156,36 @@ async fn raw_get(addr: std::net::SocketAddr, path: &str) -> (String, String) {
     (status, text)
 }
 
+async fn raw_request(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> (String, String) {
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect to listener");
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    if !body.is_empty() {
+        stream.write_all(body).await.expect("write request body");
+    }
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .expect("read response");
+    let text = String::from_utf8_lossy(&response).to_string();
+    let status = text.lines().next().unwrap_or_default().to_string();
+    (status, text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +278,101 @@ mod tests {
             result.is_err(),
             "missing durable committed state must fail closed"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_control_serves_activation_http_route_additively() {
+        let chain = materialize("prod");
+        let repository = Arc::new(MemoryActivationStateRepository::new());
+        repository
+            .initialize(&committed_state(&chain))
+            .await
+            .expect("seed committed state");
+        let config = config(chain._root.path());
+        let supervisor = RouterSupervisor::assemble_with(
+            &config,
+            "prod",
+            Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
+        )
+        .await
+        .expect("production composition must assemble");
+        let listeners = supervisor
+            .start_listeners(&ListenerStartOptions::default())
+            .await
+            .expect("listeners start");
+        let control_addr = listeners.runtime_control.addr();
+
+        // GET on the activation endpoint -> 405 with allow: POST (TS parity).
+        let (status, body) =
+            raw_request(control_addr, "GET", "/__skiff/activate-assembly", b"").await;
+        assert!(
+            status.contains("405"),
+            "expected 405 for non-POST activation request, got {status:?}"
+        );
+        assert!(
+            body.to_ascii_lowercase().contains("allow: post"),
+            "405 must advertise POST, got {body:?}"
+        );
+        assert!(body.contains("MethodNotAllowed"));
+
+        // Malformed JSON -> 400 with the TS error shape.
+        let (status, body) = raw_request(
+            control_addr,
+            "POST",
+            "/__skiff/activate-assembly",
+            b"{not json",
+        )
+        .await;
+        assert!(
+            status.contains("400"),
+            "expected 400 for malformed activation body, got {status:?}"
+        );
+        assert!(body.contains("AssemblyActivationRejected"));
+
+        // Strict decode rejects unknown fields.
+        let unknown = br#"{
+            "schemaVersion": "skiff-assembly-activation-request-v2",
+            "environment": "prod",
+            "activationId": "activation-8",
+            "expectedGeneration": 7,
+            "assembly": {"assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "configSnapshot": {"snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+            "unexpectedField": true
+        }"#;
+        let (status, body) =
+            raw_request(control_addr, "POST", "/__skiff/activate-assembly", unknown).await;
+        assert!(
+            status.contains("400"),
+            "expected 400 for unknown activation field, got {status:?}"
+        );
+        assert!(body.contains("unknown field"));
+
+        // Body cap (1 MiB) -> TS classifyActivationError status 409.
+        let oversized = vec![b' '; 1024 * 1024 + 1];
+        let (status, body) = raw_request(
+            control_addr,
+            "POST",
+            "/__skiff/activate-assembly",
+            &oversized,
+        )
+        .await;
+        assert!(
+            status.contains("409"),
+            "expected 409 for oversized activation body, got {status:?}"
+        );
+        assert!(body.contains("1 MiB"));
+
+        // Unrelated control paths keep the legacy empty 200 behavior.
+        let (status, _) = raw_request(control_addr, "GET", "/__router/health", b"").await;
+        assert!(
+            status.contains("200"),
+            "unrelated control path must keep the legacy empty 200, got {status:?}"
+        );
+
+        listeners
+            .shutdown()
+            .await
+            .expect("listeners shut down cleanly");
+        supervisor.shutdown().await;
     }
 }

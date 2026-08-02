@@ -19,9 +19,10 @@ use std::time::Duration;
 
 use crate::activation::{
     ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorOptions,
-    ActivationCoordinatorPorts, ActivationStateRepository, BlockingLoaderCandidatePort,
-    EpochStorePublishPort, MongoActivationStateRepository, MongoActivationStateRepositoryOptions,
-    NoopHealthSink, RoutingCandidateQueryPortAdapter, SystemClock,
+    ActivationCoordinatorPorts, ActivationHttpHandler, ActivationStateRepository,
+    BlockingLoaderCandidatePort, EpochStorePublishPort, MongoActivationStateRepository,
+    MongoActivationStateRepositoryOptions, NoopHealthSink, RoutingCandidateQueryPortAdapter,
+    SystemClock,
 };
 use crate::bootstrap::{
     ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
@@ -35,7 +36,7 @@ use crate::http::server::{
     HttpGatewayServerOptions,
 };
 use crate::listener::{
-    start_runtime_control_listener, ClientWsContext, ListenerError, ListenerHandle,
+    start_runtime_control_listener_with_control, ClientWsContext, ListenerError, ListenerHandle,
     ListenerStartOptions, WsTaskRegistry,
 };
 use crate::session::consumer::{ConsumerKind, ConsumerManifest};
@@ -82,6 +83,8 @@ pub enum SupervisorError {
     Dispatcher(String),
     #[error("session layer assembly failed: {0}")]
     Session(#[from] SessionLayerError),
+    #[error("activation recovery start failed: {0}")]
+    Recovery(String),
 }
 
 /// Stable component manifest (plan §3.2/§5.5). Holds every production owner
@@ -285,6 +288,17 @@ impl RouterComponents {
         );
         session.attach_epoch_store(Arc::clone(&epoch_store));
         session_handle.set(Arc::clone(&session));
+        session.set_registration_observer(Arc::new(coordinator.clone()));
+
+        // Plan §4.2: a durable pending observed at startup becomes a recovery
+        // transaction after the committed epoch is published. The listener
+        // starts normally; expected replica registrations rebind through the
+        // registration observer above.
+        if assembly.pending_recovery().is_some() {
+            coordinator
+                .start_recovery(assembly.environment().to_string())
+                .map_err(|error| SupervisorError::Recovery(error.to_string()))?;
+        }
 
         let pending_http = Arc::new(PendingHttpRouter::new());
         pending_http_handle.set(Arc::clone(&pending_http));
@@ -464,10 +478,19 @@ impl RouterSupervisor {
         )
         .await
         .map_err(|error| ListenerError::Http(error.to_string()))?;
-        let runtime_control = start_runtime_control_listener(
+        let activation_deadline =
+            Duration::from_millis(components.config.activation_prepare_timeout_ms)
+                .saturating_mul(2)
+                .max(Duration::from_secs(30));
+        let activation_http = Arc::new(ActivationHttpHandler::with_deadline(
+            components.coordinator.clone(),
+            activation_deadline,
+        ));
+        let runtime_control = start_runtime_control_listener_with_control(
             &components.config,
             options,
             Arc::clone(&components.session),
+            Some(activation_http),
         )
         .await?;
         Ok(SupervisorListeners {

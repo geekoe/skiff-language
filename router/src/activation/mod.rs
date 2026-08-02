@@ -10,6 +10,7 @@
 pub mod coordinator;
 pub mod error;
 pub mod health;
+pub mod http;
 pub mod index;
 pub mod memory;
 pub mod recovery;
@@ -27,6 +28,9 @@ pub use coordinator::{
 };
 pub use error::{RepositoryError, RepositoryErrorClass};
 pub use health::ActivationRepositoryHealth;
+pub use http::{
+    ActivationHttpHandler, ACTIVATION_REQUEST_BODY_CAP, ASSEMBLY_ACTIVATION_CONTROL_PATH,
+};
 pub use recovery::{CandidateEpochRefs, RecoveryTransaction};
 pub use repository::{
     AbortInput, ActivationStateRepository, CommitInput, MongoActivationStateRepository,

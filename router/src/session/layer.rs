@@ -36,6 +36,7 @@ use super::directory::RuntimeRegistrationDirectory;
 use super::handshake::EpochContext;
 use super::health::RuntimeHealthLedger;
 use super::identity::{RegisteredAssemblyTuple, RuntimeConnectionEpoch, RuntimeSessionEpoch};
+use super::observer::RegistrationObserver;
 use super::pre_auth::PreAuthPool;
 use super::task::{run_session_task, RuntimeSocket};
 
@@ -165,6 +166,7 @@ pub struct SessionLayer {
     frame_writers: Mutex<HashMap<RuntimeSessionEpoch, Arc<dyn SessionFrameWriter>>>,
     inbound_sinks: Mutex<Arc<InboundSinkSet>>,
     dispatch_capabilities: Mutex<HashMap<RuntimeSessionEpoch, DispatchCapabilities>>,
+    registration_observer: Mutex<Option<Arc<dyn RegistrationObserver>>>,
 }
 
 impl SessionLayer {
@@ -239,7 +241,32 @@ impl SessionLayer {
             frame_writers: Mutex::new(HashMap::new()),
             inbound_sinks: Mutex::new(Arc::new(InboundSinkSet::default())),
             dispatch_capabilities: Mutex::new(HashMap::new()),
+            registration_observer: Mutex::new(None),
         })
+    }
+
+    /// Installs the registration observer (plan §4.2 cold recovery seam).
+    /// Additive: an absent observer is a no-op and the session state machine
+    /// never depends on the callback.
+    pub fn set_registration_observer(&self, observer: Arc<dyn RegistrationObserver>) {
+        *self
+            .registration_observer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(observer);
+    }
+
+    /// Notifies the installed observer that a session became routable. Used
+    /// by the session task right after `mark_registered`; failures inside the
+    /// observer are non-blocking by contract and never fail-stop the session.
+    pub(crate) fn notify_session_registered(&self, session: &RuntimeSessionEpoch) {
+        if let Some(observer) = self
+            .registration_observer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            observer.on_session_registered(session);
+        }
     }
 
     /// The current committed tuple: from the epoch store when wired, else the
