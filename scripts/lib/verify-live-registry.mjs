@@ -163,6 +163,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-differential-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-differential-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:differential',
+        description:
+          'implementation-neutral differential harness: isolated TS/Rust Router instances with independent ports/artifact roots/runtime homes/Mongo namespaces, real Runtime per side through a test-only relay; compares HTTP/Runtime frames/Mongo state+audit/terminal with uuid/timestamp/ephemeral-port/log-order normalization only (managed, explicit selector)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-differential',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'pnpm', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',

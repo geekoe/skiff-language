@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "skiff-router-differential-inventory-v1",
+  "baseline": "d228b613eafeba5e2275bf830f5770f21b931e81",
+  "scenarios": [
+    {
+      "id": "session-handshake-basic",
+      "status": "runnable",
+      "lane": "session",
+      "description": "Real Runtime bootstrap/capabilities/Register/registered/health handshake through a test-only relay, HTTP health status, seeded Mongo state/audit and SIGTERM/SIGINT terminal parity between isolated TS and Rust Router instances.",
+      "observationTypes": ["http", "runtimeFrames", "mongoState", "mongoAudit", "terminal", "logs"],
+      "normalizations": [
+        {
+          "kind": "timestamp",
+          "path": "runtimeFrames.*.header.observedAt"
+        }
+      ],
+      "compare": {
+        "equal": [
+          { "path": "http.controlHealthStatus" },
+          {
+            "path": "runtimeFrames",
+            "exclude": [
+              "runtimeFrames.0.header.artifactsPath",
+              "runtimeFrames.0.header.serviceDb.mongoUrl"
+            ]
+          },
+          { "path": "mongo.state" },
+          { "path": "mongo.auditCount" },
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.runtimeExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [
+          { "path": "runtimeFrames.0.header.artifactsPath", "sideKey": "artifactsPath" },
+          { "path": "runtimeFrames.0.header.serviceDb.mongoUrl", "sideKey": "mongoUrl" }
+        ],
+        "recordOnly": [
+          { "path": "http.publicStatus" },
+          { "path": "http.controlHealthBody" },
+          { "path": "logs.routerStdout" },
+          { "path": "logs.routerStderr" },
+          { "path": "logs.runtimeStdout" },
+          { "path": "logs.runtimeStderr" }
+        ]
+      }
+    },
+    {
+      "id": "http-health-basic",
+      "status": "planned",
+      "lane": "http",
+      "description": "Health JSON parity: activeAssembly tuple, replicas and capabilityConnections must deep-equal after timestamp normalization. Blocked on the Rust production health endpoint (W-composition/E-http); the Rust listener currently returns a 200 empty placeholder.",
+      "blockedOn": "W-composition / E-http (Rust /__router/health JSON)",
+      "observationTypes": ["http", "health", "terminal"],
+      "normalizations": [
+        { "kind": "timestamp", "path": "health.observedAt" }
+      ],
+      "compare": {
+        "equal": [
+          { "path": "health.activeAssembly.environment" },
+          { "path": "health.activeAssembly.generation" },
+          { "path": "health.activeAssembly.assemblyIdentity" },
+          { "path": "health.activeAssembly.configSnapshotId" },
+          { "path": "health.replicas" },
+          { "path": "health.capabilityConnections" }
+        ],
+        "sideExpected": [],
+        "recordOnly": [
+          { "path": "health" }
+        ]
+      }
+    },
+    {
+      "id": "http-unary-roundtrip",
+      "status": "planned",
+      "lane": "http",
+      "description": "Real HTTP unary request through trusted selectors to the real Runtime and back; status, platform error shape and terminal counters must match. Blocked on the Rust HTTP dispatch composition (E-http).",
+      "blockedOn": "W-composition / E-http (Rust HTTP -> dispatcher -> real Runtime)",
+      "observationTypes": ["http", "runtimeFrames", "terminal"],
+      "normalizations": [],
+      "compare": {
+        "equal": [
+          { "path": "http.unaryStatus" },
+          { "path": "http.unaryBody" },
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [],
+        "recordOnly": [
+          { "path": "runtimeFrames" }
+        ]
+      }
+    },
+    {
+      "id": "client-ws-roundtrip",
+      "status": "planned",
+      "lane": "ws",
+      "description": "Client WebSocket JSON-RPC roundtrip through the broker to the real Runtime; id lexeme canonicalization, result/error payloads and generation lifecycle must match. Blocked on the Rust client WS composition (E-ws).",
+      "blockedOn": "W-composition / E-ws (Rust client WS gateway + broker)",
+      "observationTypes": ["clientWs", "runtimeFrames", "terminal"],
+      "normalizations": [],
+      "compare": {
+        "equal": [
+          { "path": "clientWs.frames" },
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [],
+        "recordOnly": [
+          { "path": "runtimeFrames" }
+        ]
+      }
+    },
+    {
+      "id": "activation-mongo-transition",
+      "status": "planned",
+      "lane": "activation",
+      "description": "POST /__skiff/activate-assembly prepare/commit/abort transition parity: Mongo state revision, pending/committed tuple and audit entries must deep-equal after UUID normalization. Blocked on the Rust activation coordinator wiring (E-activation).",
+      "blockedOn": "W-composition / E-activation (Rust ActivationCoordinator + repository wiring)",
+      "observationTypes": ["http", "mongoState", "mongoAudit", "terminal"],
+      "normalizations": [
+        { "kind": "uuid", "path": "mongo.audit.*.activationId" }
+      ],
+      "compare": {
+        "equal": [
+          { "path": "http.activationStatus" },
+          { "path": "mongo.state" },
+          { "path": "mongo.audit" },
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [],
+        "recordOnly": []
+      }
+    },
+    {
+      "id": "actor-two-replica",
+      "status": "planned",
+      "lane": "actor",
+      "description": "Two-replica actor get-or-create/invoke/owner-control chain parity including claim, lease and spawn outcomes. Blocked on the Rust actor composition (E-actor-rust).",
+      "blockedOn": "W-composition / E-actor-rust (Rust actor owners + spawn composition)",
+      "observationTypes": ["clientWs", "runtimeFrames", "terminal"],
+      "normalizations": [],
+      "compare": {
+        "equal": [
+          { "path": "clientWs.frames" },
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [],
+        "recordOnly": [
+          { "path": "runtimeFrames" }
+        ]
+      }
+    },
+    {
+      "id": "terminal-counters-drain",
+      "status": "planned",
+      "lane": "terminal",
+      "description": "After HTTP/WS traffic and shutdown, per-owner counters must be zero and identical across implementations. Blocked on health JSON parity and the traffic lanes that exercise non-zero counters.",
+      "blockedOn": "http-health-basic + http-unary-roundtrip + client-ws-roundtrip",
+      "observationTypes": ["health", "terminal"],
+      "normalizations": [],
+      "compare": {
+        "equal": [
+          { "path": "terminal.routerExitCode" },
+          { "path": "terminal.portsClosed" }
+        ],
+        "sideExpected": [],
+        "recordOnly": [
+          { "path": "health" }
+        ]
+      }
+    }
+  ]
+}
