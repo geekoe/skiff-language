@@ -202,6 +202,125 @@ fn concurrent_serial_and_concurrent_value_are_rejected_in_v1() {
 }
 
 #[test]
+fn db_transaction_is_rejected_directly_in_actor_methods_and_create() {
+    let error = build_error(
+        r#"
+            type Counter { id: string, count: number }
+
+            actor Counter {
+              key(id)
+              create()
+            }
+
+            impl Counter {
+              function create() -> void {
+                self.count = 0
+              }
+
+              function run() -> void {
+                db transaction { }
+              }
+            }
+        "#,
+    );
+    assert!(
+        error.contains("db transaction is not supported inside actor methods in v1"),
+        "actor method produced unexpected diagnostic:\n{error}"
+    );
+
+    let error = build_error(
+        r#"
+            type Counter { id: string, count: number }
+
+            actor Counter {
+              key(id)
+              create()
+            }
+
+            impl Counter {
+              function create() -> void {
+                db transaction { }
+                self.count = 0
+              }
+            }
+        "#,
+    );
+    assert!(
+        error.contains("db transaction is not supported inside actor methods in v1"),
+        "actor create produced unexpected diagnostic:\n{error}"
+    );
+}
+
+#[test]
+fn db_transaction_is_rejected_through_local_helpers_but_not_ordinary_callers_or_spawn_targets() {
+    let error = build_error(
+        r#"
+            type Counter { id: string, count: number }
+
+            actor Counter {
+              key(id)
+              create()
+            }
+
+            impl Counter {
+              function create() -> void {
+                self.count = 0
+              }
+
+              function run() -> void {
+                helper()
+              }
+            }
+
+            function helper() -> void {
+              db transaction { }
+            }
+        "#,
+    );
+    assert!(
+        error.contains("db transaction is not supported inside actor methods in v1"),
+        "transitive local helper produced unexpected diagnostic:\n{error}"
+    );
+
+    build_ok(
+        r#"
+            function helper() -> void {
+              db transaction { }
+            }
+
+            function run() -> void {
+              helper()
+            }
+        "#,
+    );
+
+    build_ok(
+        r#"
+            type Counter { id: string, count: number }
+
+            actor Counter {
+              key(id)
+              create()
+            }
+
+            impl Counter {
+              function create() -> void {
+                self.count = 0
+              }
+
+              function run() -> void {
+                spawn helper()
+              }
+            }
+
+            function helper() -> void {
+              db transaction { }
+            }
+        "#,
+    );
+}
+
+#[test]
 fn ordinary_sources_without_concurrent_surface_still_compile() {
     build_ok("function run() -> number {\n  const value = 1\n  return value\n}\n");
 }

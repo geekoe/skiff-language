@@ -162,37 +162,6 @@ impl ActorExecutionFrame {
         Ok(())
     }
 
-    /// Runs one transaction rollback projection while retaining the Actor
-    /// continuation lease and field locks in that order. `None` means the
-    /// continuation has already lost its lease (for example because resume
-    /// selected `InstanceReplaced`). The callback receives `None` in that case
-    /// so it can apply the selected terminal-error precedence without moving
-    /// its other rollback owners before the lease state is known.
-    pub(crate) fn with_transaction_live_fields<T>(
-        &self,
-        project: impl FnOnce(Option<&mut Vec<ActorFieldValue>>) -> Result<T, RuntimeError>,
-    ) -> Result<T, RuntimeError> {
-        let lease = self
-            .suspension
-            .lease
-            .lock()
-            .expect("actor suspension lease lock poisoned");
-        let Some(lease) = lease.as_ref() else {
-            return project(None);
-        };
-        self.suspension
-            .shared
-            .store
-            .validate_current_execution_lease(&self.suspension.shared.handle, lease)
-            .map_err(store_error)?;
-        if lease.instance_identity() != self.suspension.shared.fence.instance_identity {
-            return Err(store_error(ActorInstanceStoreError::InstanceReplaced));
-        }
-        let fields = lease.fields();
-        let mut fields = fields.lock().expect("actor execution fields lock poisoned");
-        project(Some(&mut fields))
-    }
-
     /// Materializes exactly the persistent Actor field roots into a fresh heap.
     ///
     /// The evaluator heap also owns invocation arguments, local bindings, and

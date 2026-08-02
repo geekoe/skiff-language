@@ -174,13 +174,8 @@ impl Interpreter {
         match result {
             Ok(value) => {
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    let error = rollback::rollback_transaction_live_roots(
-                        &program_context,
-                        heap,
-                        env,
-                        checkpoint,
-                        error,
-                    )?;
+                    let error =
+                        rollback::rollback_transaction_live_roots(heap, env, checkpoint, error)?;
                     return Err(error);
                 }
                 Ok(value.into_value())
@@ -290,13 +285,8 @@ impl Interpreter {
                     }
                 };
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    let error = rollback::rollback_transaction_live_roots(
-                        &program_context,
-                        heap,
-                        env,
-                        checkpoint,
-                        error,
-                    )?;
+                    let error =
+                        rollback::rollback_transaction_live_roots(heap, env, checkpoint, error)?;
                     return Err(error);
                 }
                 Ok(result)
@@ -528,7 +518,7 @@ async fn abort_transaction_and_rollback(
         Ok(()) => original_error,
         Err(abort_error) => abort_error,
     };
-    rollback::rollback_transaction_live_roots(program_context, heap, env, checkpoint, error)
+    rollback::rollback_transaction_live_roots(heap, env, checkpoint, error)
 }
 
 fn require_db_store(db_context: &DbCapabilityContext, target: &str) -> Result<DbCapabilityStore> {

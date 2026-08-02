@@ -142,29 +142,6 @@ impl ActorFixture {
             store.acquire_execution(&authority, &handle).await
         }
     }
-
-    pub(in crate::program_db::tests) fn replace_same_epoch_while_leased(
-        &self,
-        linked: &LinkedDbActorFixture,
-    ) -> ActorInstanceHandle {
-        assert!(
-            self.store.discard_exact(&self.handle),
-            "fixture must discard the exact leased instance"
-        );
-        let replacement = self
-            .store
-            .activate(ActorActivationRequest {
-                fence: self.handle.fence().clone(),
-                bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: br#"[]"#,
-                program: linked.program.projection().type_view(),
-            })
-            .expect("same-epoch fixture replacement");
-        self.store
-            .mark_admitted(&ActorExecutorAuthority::new(), &replacement)
-            .expect("same-epoch replacement admission");
-        replacement
-    }
 }
 
 pub(in crate::program_db::tests) struct DbActorFixture {
@@ -191,26 +168,31 @@ impl DbActorFixture {
         &self,
         frame: ActorExecutionFrame,
     ) -> ProgramExecutionContext<'static> {
-        self.context_with_request(frame, test_runtime::request_context())
+        self.context_with_request(Some(frame), test_runtime::request_context())
     }
 
-    pub(in crate::program_db::tests) fn context_with_trace(
+    pub(in crate::program_db::tests) fn ordinary_context(
         &self,
-        frame: ActorExecutionFrame,
+    ) -> ProgramExecutionContext<'static> {
+        self.context_with_request(None, test_runtime::request_context())
+    }
+
+    pub(in crate::program_db::tests) fn ordinary_context_with_trace(
+        &self,
         trace_id: &'static str,
     ) -> ProgramExecutionContext<'static> {
-        self.context_with_request(frame, test_runtime::request_context_with_trace(trace_id))
+        self.context_with_request(None, test_runtime::request_context_with_trace(trace_id))
     }
 
     fn context_with_request(
         &self,
-        frame: ActorExecutionFrame,
+        frame: Option<ActorExecutionFrame>,
         request: skiff_runtime_capability_context::RequestCapabilityContext<'static>,
     ) -> ProgramExecutionContext<'static> {
         let execution = test_runtime::execution_control();
         let effects = test_runtime::effects_context();
         let actor = test_runtime::actor_context();
-        ProgramExecutionContext::new(ProgramExecutionInput {
+        let mut context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: test_runtime::config_context(),
             db: DbCapabilityContext::new(self.db.clone()),
@@ -230,8 +212,11 @@ impl DbActorFixture {
             actor: actor.clone(),
             request,
             request_heap_limits: RequestHeapLimits::default(),
-        })
-        .with_actor_execution_frame(frame)
+        });
+        if let Some(frame) = frame {
+            context = context.with_actor_execution_frame(frame);
+        }
+        context
     }
 }
 

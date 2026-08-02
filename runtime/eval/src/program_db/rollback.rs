@@ -4,13 +4,11 @@ use skiff_runtime_model::{
 };
 
 use crate::{
-    actor_instance::ActorFieldValue,
     env::{Env, EnvRollbackCheckpoint},
     error::{
         rebind_runtime_error_request_heap_root, runtime_error_request_heap_root, Result,
         RuntimeError,
     },
-    program_execution::ProgramExecutionContext,
 };
 
 pub(super) struct TransactionRollbackCheckpoint {
@@ -28,23 +26,18 @@ impl TransactionRollbackCheckpoint {
 }
 
 /// Rolls back one transaction while rebasing every live request-heap owner in
-/// one graph operation. Candidate error, Env and Actor field state are built
-/// before the prepared heap is installed; after that install, publishing those
-/// owners consists only of infallible assignments while their mutable access is
-/// retained.
+/// one graph operation. Candidate error and Env state are built before the
+/// prepared heap is installed; after that install, publishing those owners
+/// consists only of infallible assignments while their mutable access is
+/// retained. Actor field rollback was removed in v1: `db transaction` is
+/// rejected inside actor methods at compile time.
 pub(super) fn rollback_transaction_live_roots(
-    context: &ProgramExecutionContext<'_>,
     heap: &mut RequestHeap,
     env: &mut Env,
     checkpoint: TransactionRollbackCheckpoint,
     error: RuntimeError,
 ) -> Result<RuntimeError> {
-    match context.actor_execution_frame() {
-        Some(frame) => frame.with_transaction_live_fields(|fields| {
-            prepare_and_publish(heap, env, checkpoint, error, fields)
-        }),
-        None => prepare_and_publish(heap, env, checkpoint, error, None),
-    }
+    prepare_and_publish(heap, env, checkpoint, error)
 }
 
 fn prepare_and_publish(
@@ -52,29 +45,15 @@ fn prepare_and_publish(
     env: &mut Env,
     checkpoint: TransactionRollbackCheckpoint,
     error: RuntimeError,
-    fields: Option<&mut Vec<ActorFieldValue>>,
 ) -> Result<RuntimeError> {
     let error_root = runtime_error_request_heap_root(&error).cloned();
     let env_roots = env.rollback_root_carriers(&checkpoint.env)?;
-    let actor_roots = fields
-        .as_deref()
-        .map(|fields| {
-            fields
-                .iter()
-                .enumerate()
-                .filter(|(_, field)| field.assigned)
-                .map(|(index, field)| (index, field.value.clone()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
 
     // Root order is part of this coordinator's internal mapping contract:
-    // selected error, entry-live Env slots, then assigned Actor fields.
-    let mut roots =
-        Vec::with_capacity(usize::from(error_root.is_some()) + env_roots.len() + actor_roots.len());
+    // selected error first, then entry-live Env slots.
+    let mut roots = Vec::with_capacity(usize::from(error_root.is_some()) + env_roots.len());
     roots.extend(error_root.iter().map(|carrier| carrier.value().clone()));
     roots.extend(env_roots.iter().map(|(_, carrier)| carrier.value().clone()));
-    roots.extend(actor_roots.iter().map(|(_, value)| value.clone()));
 
     let prepared = match heap.prepare_rollback_rebase(checkpoint.heap, &roots) {
         Ok(prepared) => prepared,
@@ -113,10 +92,6 @@ fn prepare_and_publish(
         .collect::<Vec<(usize, RuntimeValueCarrier)>>();
     let candidate_env = env.rebased_for_rollback(&checkpoint.env, &candidate_env_roots)?;
 
-    let candidate_actor_roots = actor_roots
-        .iter()
-        .map(|(index, _)| (*index, take_rebased(&rebased, &mut cursor)))
-        .collect::<Vec<_>>();
     if cursor != rebased.len() {
         return Err(RuntimeError::InvalidArtifact(format!(
             "transaction rollback consumed {cursor} of {} prepared roots",
@@ -126,11 +101,6 @@ fn prepare_and_publish(
 
     heap.commit_prepared_rollback_rebase(prepared);
     *env = candidate_env;
-    if let Some(fields) = fields {
-        for (index, value) in candidate_actor_roots {
-            fields[index].value = value;
-        }
-    }
     Ok(candidate_error)
 }
 

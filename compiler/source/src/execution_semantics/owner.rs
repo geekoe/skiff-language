@@ -7,11 +7,12 @@ use crate::{
         error::SourceSpan,
     },
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, ResolvedCallTarget,
-    ResolvedCallTargetFacts, SourceCallableEffectFacts,
+    ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey,
 };
 
 use super::{
     collectors::{expr_address, pattern_bindings, LocalNameCollector},
+    effects::CallableEffectProfile,
     model::{ExecutionSourceSite, SourceExecutionSemantics, TimeoutSourcePlan},
     mutation::{binding_root_for_value, BindingRoot, Scope},
 };
@@ -20,11 +21,14 @@ use super::{
 pub(super) struct OwnerAnalyzer<'a> {
     module_path: &'a str,
     owner: ExpressionOwnerKey,
+    source_key: SourceSymbolKey,
+    actor_context: bool,
     function: &'a FunctionDecl,
     expression_sources: &'a ExpressionSourceMap,
     pub(super) expression_keys: &'a BTreeMap<usize, ExpressionKey>,
     pub(super) resolved_targets: &'a ResolvedCallTargetFacts,
     pub(super) callable_effects: &'a SourceCallableEffectFacts,
+    callable_profiles: &'a BTreeMap<SourceSymbolKey, CallableEffectProfile>,
     pub(super) semantics: &'a mut SourceExecutionSemantics,
     diagnostics: &'a mut Vec<String>,
     all_local_names: BTreeSet<String>,
@@ -36,11 +40,14 @@ impl<'a> OwnerAnalyzer<'a> {
     pub(super) fn new(
         module_path: &'a str,
         owner: ExpressionOwnerKey,
+        source_key: SourceSymbolKey,
+        actor_context: bool,
         function: &'a FunctionDecl,
         expression_sources: &'a ExpressionSourceMap,
         expression_keys: &'a BTreeMap<usize, ExpressionKey>,
         resolved_targets: &'a ResolvedCallTargetFacts,
         callable_effects: &'a SourceCallableEffectFacts,
+        callable_profiles: &'a BTreeMap<SourceSymbolKey, CallableEffectProfile>,
         top_level_value_names: BTreeSet<String>,
         semantics: &'a mut SourceExecutionSemantics,
         diagnostics: &'a mut Vec<String>,
@@ -50,11 +57,14 @@ impl<'a> OwnerAnalyzer<'a> {
         Self {
             module_path,
             owner,
+            source_key,
+            actor_context,
             function,
             expression_sources,
             expression_keys,
             resolved_targets,
             callable_effects,
+            callable_profiles,
             semantics,
             diagnostics,
             all_local_names: local_names.names,
@@ -71,6 +81,15 @@ impl<'a> OwnerAnalyzer<'a> {
             .collect::<Scope>();
         if self.function.implicit_self.is_some() {
             scope.insert("self".to_string(), BindingRoot::Outer);
+        }
+        if self.actor_context {
+            let banned = self
+                .callable_profiles
+                .get(&self.source_key)
+                .is_some_and(|profile| profile.uses_db_transaction);
+            if banned {
+                self.diagnostic("db transaction is not supported inside actor methods in v1");
+            }
         }
         self.validate_block(
             &self.function.body,
