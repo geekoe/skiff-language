@@ -8,9 +8,11 @@
 //! inbound sink bundle (plan §5.5) before any listener starts.
 
 pub mod actor;
+pub mod actor_sink;
 pub mod http;
 pub mod session_ports;
 pub mod sinks;
+pub mod ws;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,29 +30,39 @@ use crate::config::RouterConfig;
 use crate::dispatch::{ActorMethodSpawnControl, RequestDispatcher, RuntimeDispatcherOptions};
 use crate::http::dispatch::HttpDispatchPort;
 use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
-use crate::http::server::{start_http_gateway, HttpGatewayServer, HttpGatewayServerOptions};
+use crate::http::server::{
+    start_http_gateway, GatewayUpgradeHandler, GatewayUpgradeOptions, HttpGatewayServer,
+    HttpGatewayServerOptions,
+};
 use crate::listener::{
-    start_runtime_control_listener, ListenerError, ListenerHandle, ListenerStartOptions,
+    start_runtime_control_listener, ClientWsContext, ListenerError, ListenerHandle,
+    ListenerStartOptions, WsTaskRegistry,
 };
 use crate::session::consumer::{ConsumerKind, ConsumerManifest};
 use crate::session::demux::InboundSinkSet;
 use crate::session::health::RuntimeHealthLedger;
 use crate::session::layer::{SessionLayer, SessionLayerError, SessionLayerOptions};
 use crate::session::SessionConsumer;
-use crate::ws::types::EmptyMethodCatalog;
+use crate::ws::types::SystemClock as WsSystemClock;
 use crate::ws::{
-    AllowAnyPendingAdmission, NoopNotificationObserver, WebSocketLane, WebSocketLaneOptions,
+    NoopNotificationObserver, WebSocketLane, WebSocketLaneOptions, WebSocketRequestBrokerOptions,
 };
 
 use self::actor::{assemble_actor_components, ActorComponents};
+use self::actor_sink::ActorFrameSink;
 use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
     ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
     LayerSessionAbort, SessionCandidateViewSource, SessionHandle, SessionRuntimePeer,
-    SessionRuntimeViolationSink, StoreRoutingEpochSource, UnsupportedDispatchInbound,
-    WsRuntimeGenerationPeer, WsRuntimeSessionClose,
+    SessionRuntimeViolationSink, StoreRoutingEpochSource, WsRuntimeGenerationPeer,
+    WsRuntimeSessionClose,
 };
 use self::sinks::{ActivationTransactionSink, ConnectionFrameSink};
+use self::ws::{
+    load_ws_surface_view, LayerWsSessionWriter, ProductionWsConnectSelector, WsConnectSelector,
+    WsDispatchStore, WsGatewaySurfaceView, WsInboundDispatch, WsLaneHandle, WsLaneSessionConsumer,
+    WsMethodCatalog, WsPendingAdmissionSender, WsSessionWriter,
+};
 
 /// Fail-closed supervisor assembly errors; no listener is started and owned
 /// bootstrap state is shut down before the error is returned.
@@ -91,6 +103,10 @@ pub struct RouterComponents {
     pub request_sink: Arc<RequestFrameSink>,
     pub connection_sink: Arc<ConnectionFrameSink>,
     pub activation_sink: Arc<ActivationTransactionSink>,
+    pub ws_surface: Arc<WsGatewaySurfaceView>,
+    pub ws_store: Arc<WsDispatchStore>,
+    pub ws_selector: Arc<dyn WsConnectSelector>,
+    pub client_ws: Arc<ClientWsContext>,
 }
 
 impl RouterComponents {
@@ -143,6 +159,8 @@ impl RouterComponents {
             self::http::load_http_surface_view(&config.artifacts_path, &epoch)
                 .map_err(SupervisorError::Surface)?,
         );
+        let ws_surface = load_ws_surface_view(&config.artifacts_path, &epoch)
+            .map_err(SupervisorError::Surface)?;
         let session_handle = SessionHandle::new();
         let actor = assemble_actor_components(
             Arc::clone(&epoch),
@@ -167,16 +185,39 @@ impl RouterComponents {
             .map_err(SupervisorError::Dispatcher)?,
         );
 
+        let session_writer: Arc<dyn WsSessionWriter> =
+            Arc::new(LayerWsSessionWriter::new(session_handle.clone()));
+        let ws_lane_handle = WsLaneHandle::new();
+        let production_selector = Arc::new(ProductionWsConnectSelector::new(
+            Arc::clone(&epoch_store),
+            Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
+            usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
+        ));
+        let ws_pool = production_selector.pool();
+        let ws_store = WsDispatchStore::new(
+            ws_lane_handle.clone(),
+            Arc::clone(&session_writer),
+            ws_pool,
+            config.request_timeout_ms,
+        );
+        let ws_selector: Arc<dyn WsConnectSelector> = production_selector;
         let ws_lane = WebSocketLane::new(
-            WebSocketLaneOptions::default(),
+            WebSocketLaneOptions {
+                broker: WebSocketRequestBrokerOptions {
+                    inbound_timeout_ms: config.request_timeout_ms,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             Arc::new(WsRuntimeGenerationPeer::new(session_handle.clone())),
             Arc::new(WsRuntimeSessionClose::new(session_handle.clone())),
-            Arc::new(AllowAnyPendingAdmission),
-            Arc::new(EmptyMethodCatalog),
+            Arc::new(WsPendingAdmissionSender::new(Arc::clone(&ws_store))),
+            Arc::new(WsMethodCatalog::new(Arc::clone(&ws_surface))),
             Arc::new(NoopNotificationObserver),
             Arc::new(SessionRuntimeViolationSink::new(session_handle.clone())),
-            Arc::new(UnsupportedDispatchInbound),
+            Arc::new(WsInboundDispatch::new(Arc::clone(&ws_store))),
         );
+        ws_lane_handle.set(Arc::clone(&ws_lane));
 
         let coordinator_ports = ActivationCoordinatorPorts {
             repository: assembly.repository(),
@@ -222,7 +263,11 @@ impl RouterComponents {
                             Arc::new(RuntimeHealthLedger::new()),
                             Arc::new(DispatcherSessionConsumer::new(Arc::clone(&dispatcher))),
                             Arc::clone(&ws_lane.ledger) as Arc<dyn SessionConsumer>,
-                            Arc::clone(&ws_lane.broker) as Arc<dyn SessionConsumer>,
+                            Arc::new(WsLaneSessionConsumer::new(
+                                Arc::clone(&ws_lane),
+                                Arc::clone(&ws_store),
+                                Arc::clone(&ws_lane.broker) as Arc<dyn SessionConsumer>,
+                            )) as Arc<dyn SessionConsumer>,
                             Arc::new(coordinator.clone()) as Arc<dyn SessionConsumer>,
                         ];
                         consumers
@@ -238,15 +283,23 @@ impl RouterComponents {
         session_handle.set(Arc::clone(&session));
 
         let pending_http = Arc::new(PendingHttpRouter::new());
-        let request_sink = Arc::new(RequestFrameSink::new(
+        let request_sink = Arc::new(RequestFrameSink::new_with_ws(
             Arc::clone(&dispatcher),
             Arc::clone(&pending_http),
+            Some(Arc::clone(&ws_store)),
         ));
         let connection_sink = Arc::new(ConnectionFrameSink::new(
             Arc::clone(&ws_lane),
             session_handle.clone(),
         ));
         let activation_sink = Arc::new(ActivationTransactionSink::new(coordinator.clone()));
+        let actor_sink = Arc::new(ActorFrameSink::new(
+            Arc::clone(&actor),
+            session_handle.clone(),
+            Arc::clone(&epoch_store),
+            Arc::clone(&session_writer),
+            Arc::new(WsSystemClock),
+        ));
         let sinks =
             InboundSinkSet {
                 request: Some(
@@ -256,7 +309,7 @@ impl RouterComponents {
                     as Arc<dyn crate::session::demux::InboundFrameSink>),
                 activation_transaction: Some(Arc::clone(&activation_sink)
                     as Arc<dyn crate::session::demux::InboundFrameSink>),
-                actor: None,
+                actor: Some(actor_sink as Arc<dyn crate::session::demux::InboundFrameSink>),
                 spawn: None,
             };
         session.install_inbound_sinks(Arc::new(sinks));
@@ -266,6 +319,15 @@ impl RouterComponents {
             Arc::clone(&pending_http),
             Duration::from_millis(config.request_timeout_ms),
         ));
+        let client_ws = ClientWsContext::new(
+            Arc::clone(&ws_surface),
+            Arc::clone(&ws_lane),
+            Arc::clone(&ws_store),
+            Arc::clone(&ws_selector),
+            Arc::clone(&epoch_store),
+            config.websocket_path.clone(),
+            config.request_timeout_ms,
+        );
 
         Ok(Arc::new(Self {
             config: config.clone(),
@@ -283,6 +345,10 @@ impl RouterComponents {
             request_sink,
             connection_sink,
             activation_sink,
+            ws_surface,
+            ws_store,
+            ws_selector,
+            client_ws,
         }))
     }
 }
@@ -293,6 +359,7 @@ pub struct SupervisorListeners {
     pub public_http: HttpGatewayServer,
     pub runtime_control: ListenerHandle,
     pub session: Arc<SessionLayer>,
+    pub ws_tasks: Arc<WsTaskRegistry>,
 }
 
 impl SupervisorListeners {
@@ -303,11 +370,13 @@ impl SupervisorListeners {
             public_http,
             runtime_control,
             session,
+            ws_tasks,
         } = self;
         let http_result = public_http.shutdown().await;
         runtime_control.begin_shutdown();
         let session_result = session.shutdown().await;
         let control_result = runtime_control.join_shutdown().await;
+        ws_tasks.abort_all();
         let mut errors = Vec::new();
         if let Err(error) = http_result {
             errors.push(format!("public http: {error}"));
@@ -373,6 +442,10 @@ impl RouterSupervisor {
         );
         let http_options = HttpGatewayServerOptions {
             request_timeout: Duration::from_millis(components.config.request_timeout_ms),
+            websocket_upgrade: Some(GatewayUpgradeOptions {
+                path: components.config.websocket_path.clone(),
+                handler: Arc::clone(&components.client_ws) as Arc<dyn GatewayUpgradeHandler>,
+            }),
             ..http_options
         };
         let resolver = Arc::new(EpochHttpIngressResolver::new(Arc::clone(
@@ -396,6 +469,7 @@ impl RouterSupervisor {
             public_http,
             runtime_control,
             session: Arc::clone(&components.session),
+            ws_tasks: Arc::clone(&components.client_ws.tasks),
         })
     }
 

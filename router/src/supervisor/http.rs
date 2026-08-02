@@ -18,6 +18,12 @@ use skiff_runtime_transport::protocol::{
     decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
     decode_response_error_frame, decode_response_start_frame, RuntimeHttpResponseFrameHeader,
 };
+use skiff_runtime_transport::runtime_assembly_request::{
+    decode_runtime_assembly_websocket_connect_response_end_frame,
+    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
+    RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
+};
 use tokio::sync::mpsc;
 
 use crate::bootstrap::RoutingEpoch;
@@ -34,6 +40,8 @@ use crate::http::stream::{HttpStreamError, HttpStreamSink};
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
+use crate::supervisor::ws::{ConnectOutcome, WsDispatchStore};
+use crate::ws::OverflowPolicy;
 
 /// Default per-request dispatch event channel capacity. The inbound runtime
 /// frame budget is 64 frames per session (C-session §5.3), so a channel that
@@ -139,11 +147,26 @@ impl PendingHttpRouter {
 pub struct RequestFrameSink {
     dispatcher: Arc<RequestDispatcher>,
     router: Arc<PendingHttpRouter>,
+    ws: Option<Arc<WsDispatchStore>>,
 }
 
 impl RequestFrameSink {
     pub fn new(dispatcher: Arc<RequestDispatcher>, router: Arc<PendingHttpRouter>) -> Self {
-        Self { dispatcher, router }
+        Self::new_with_ws(dispatcher, router, None)
+    }
+
+    /// E-ws additive constructor: additionally routes websocketConnect /
+    /// websocketJsonRpc response frames through the WS dispatch store.
+    pub fn new_with_ws(
+        dispatcher: Arc<RequestDispatcher>,
+        router: Arc<PendingHttpRouter>,
+        ws: Option<Arc<WsDispatchStore>>,
+    ) -> Self {
+        Self {
+            dispatcher,
+            router,
+            ws,
+        }
     }
 }
 
@@ -160,7 +183,92 @@ impl InboundFrameSink for RequestFrameSink {
     }
 
     fn handle(&self, session: &RuntimeSessionEpoch, raw: &[u8]) -> Result<(), TerminalKind> {
+        if let Some(ws) = &self.ws {
+            // WS connect admission response (E-ws): settle the connect
+            // correlation; no ordinary dispatcher pending is involved.
+            if let Ok(header) = decode_runtime_assembly_websocket_connect_response_end_frame(raw) {
+                let outcome = match header.websocket_connect {
+                    RuntimeAssemblyWebSocketConnectResponseFrameHeader::Accept {
+                        business_identity,
+                        admission_rank,
+                        connection_policy,
+                    } => {
+                        let (max_connections, overflow, close_code, close_reason) =
+                            match connection_policy {
+                                Some(policy) => (
+                                    policy.max_connections.get(),
+                                    match policy.overflow {
+                                        RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader::CloseOldest => {
+                                            OverflowPolicy::CloseOldest
+                                        }
+                                        RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader::RejectNew => {
+                                            OverflowPolicy::RejectNew
+                                        }
+                                    },
+                                    policy.close_code,
+                                    policy.close_reason,
+                                ),
+                                None => (
+                                    u32::MAX,
+                                    OverflowPolicy::RejectNew,
+                                    None,
+                                    None,
+                                ),
+                            };
+                        ConnectOutcome::Accepted {
+                            business_identity,
+                            admission_rank,
+                            max_connections,
+                            overflow,
+                            close_code,
+                            close_reason,
+                        }
+                    }
+                    RuntimeAssemblyWebSocketConnectResponseFrameHeader::Reject { code, reason } => {
+                        ConnectOutcome::Rejected { code, reason }
+                    }
+                };
+                ws.connect_response(&header.request_id, outcome);
+                return Ok(());
+            }
+            // WS inbound JSON-RPC response (E-ws): the broker owns the peer
+            // terminal; the store owns the runtime correlation.
+            if let Ok((header, payload)) =
+                decode_runtime_assembly_websocket_jsonrpc_response_end_frame(raw)
+            {
+                ws.on_inbound_response(
+                    &header.request_id,
+                    header.websocket_json_rpc.outcome,
+                    payload,
+                );
+                return Ok(());
+            }
+        }
         let (frame, http) = decode_request_family_frame(raw)?;
+        let request_id = frame.request_id().to_string();
+        if let Some(ws) = &self.ws {
+            match &frame {
+                RuntimeResponseFrame::Error { .. } => {
+                    if ws.has_inbound(&request_id) {
+                        ws.on_inbound_terminal(
+                            &request_id,
+                            crate::ws::InboundDispatchResult::InternalError,
+                        );
+                        return Ok(());
+                    }
+                }
+                RuntimeResponseFrame::Cancel { .. } => {
+                    if ws.has_inbound(&request_id) {
+                        ws.on_inbound_terminal(
+                            &request_id,
+                            crate::ws::InboundDispatchResult::RuntimeUnavailable,
+                        );
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
         let outcome = self.dispatcher.on_frame(session, frame);
         for dispatched in outcome.frames {
             let request_id = dispatched.request_id().to_string();
