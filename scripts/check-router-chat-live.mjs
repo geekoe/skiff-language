@@ -14,8 +14,11 @@
 //     `skiff-router` Rust binary and the explicit `runtime` Rust binary,
 //     seeds the committed activation state, spawns both real processes and
 //     loads the pinned manifest artifacts (release mode);
-//   - starts a local ingress mapping 127.0.0.1 -> agine.ai/api 0.1.0 and runs
-//     `npm run e2e:chat-smoke` in internals/agine pointed at that ingress;
+//   - starts a local ingress mapping 127.0.0.1 -> agine.ai/api 0.1.0, waits
+//     for a real `/session` roundtrip through the Router/Runtime, then runs
+//     `npm run e2e:chat-smoke` in internals/agine pointed at that ingress
+//     (the documented local command; aihub's deepseek apiKey comes from the
+//     pinned service config snapshot, no user credential is injected);
 //   - requires PASS and writes the manifest evidence record.
 //
 // The harness never touches the stable instance, stable Mongo, PM2, or the
@@ -109,6 +112,7 @@ const BUILD_ROOTS = [
 ];
 
 const PREFLIGHT = process.argv.includes('--preflight');
+const KEEP_ON_FAILURE = process.env.SKIFF_ROUTER_CHAT_LIVE_KEEP_ON_FAILURE === '1';
 
 let harness;
 let portLease;
@@ -117,7 +121,7 @@ let children = [];
 let logFiles = [];
 let tempRoot;
 let manifestBase;
-let smokeSecretPath;
+let runFailed = false;
 
 async function main() {
 try {
@@ -187,7 +191,7 @@ try {
     rangeEnd: 45999,
     count: 3,
   });
-  portLease = { release };
+  portLease = { ports, release };
   const [httpPort, runtimePort, ingressPort] = ports;
   for (const port of ports) {
     assertNotForbidden(port);
@@ -261,16 +265,6 @@ try {
   );
   children.push(runtime);
 
-  console.log('router-live:chat: waiting for isolated Router/Runtime readiness');
-  await waitForChatLiveReady({
-    controlUrl: `http://127.0.0.1:${runtimePort}`,
-    environment: ENVIRONMENT,
-    generation: GENERATION,
-    assemblyIdentity,
-    configSnapshotId,
-    children,
-  });
-
   console.log('router-live:chat: starting isolated local ingress');
   const ingressConfig = {
     listen: { host: '127.0.0.1', port: ingressPort },
@@ -281,12 +275,13 @@ try {
   };
   ingressServer = await startLocalIngress(ingressConfig);
 
-  smokeSecretPath = join(tempRoot, 'chat-smoke-secret.yml');
-  await writeSmokeSecret({
-    secretPath: smokeSecretPath,
-    aihubServiceRoot,
-    env: process.env,
+  console.log('router-live:chat: waiting for isolated Router/Runtime readiness');
+  await waitForChatLiveReady({
+    ingressBase: `http://127.0.0.1:${ingressPort}`,
+    children,
   });
+
+  await assertAihubDeepseekKeyConfigured(aihubServiceRoot);
 
   manifestBase = {
     schemaVersion: routerChatLiveManifestSchemaVersion(),
@@ -335,7 +330,6 @@ try {
     env: {
       ...process.env,
       AGINE_E2E_INGRESS_HTTP_BASE: manifestBase.smoke.ingressBase,
-      AGINE_E2E_PROVIDER_SECRET_CONFIG: smokeSecretPath,
       AGINE_E2E_PROVIDER_ID: 'aihub',
       AGINE_E2E_MODEL_ID: 'deepseek-v4-flash',
     },
@@ -357,55 +351,65 @@ try {
   }));
   console.log('router-live:chat: PASS');
 } catch (error) {
+  runFailed = true;
   process.stdout.write(error?.stdout ?? '');
   process.stderr.write(error?.stderr ?? '');
   if (tempRoot !== undefined) {
-    await dumpManagedLogs(tempRoot);
+    await dumpManagedLogs(tempRoot, harness);
   }
   throw error;
 } finally {
-  const errors = [];
-  for (const child of children.reverse()) {
-    await settleCleanupStep(errors, `stop ${child.label}`, () => stopManagedChild(child));
+  const keepDebug = KEEP_ON_FAILURE && runFailed;
+  if (keepDebug) {
+    console.log(
+      `router-live:chat: KEEP_ON_FAILURE preserving temp workspace ${tempRoot} `
+      + '(processes, ingress, mongo and ports are left running for diagnosis)',
+    );
   }
-  for (const logFile of logFiles) {
-    await settleCleanupStep(errors, `close ${logFile.path}`, async () => {
-      await logFile.handle.close();
-    });
-  }
-  if (ingressServer !== undefined) {
-    await settleCleanupStep(errors, 'close local ingress', async () => {
-      await new Promise((resolvePromise) => ingressServer.close(resolvePromise));
-    });
-  }
-  if (harness !== undefined) {
-    try {
-      await harness.cleanup();
-    } catch (error) {
-      errors.push(error);
+  if (!keepDebug) {
+    const errors = [];
+    for (const child of children.reverse()) {
+      await settleCleanupStep(errors, `stop ${child.label}`, () => stopManagedChild(child));
     }
-  }
-  if (portLease !== undefined) {
-    try {
-      await assertPortsClosed(portLease.ports);
-    } catch (error) {
-      errors.push(error);
+    for (const logFile of logFiles) {
+      await settleCleanupStep(errors, `close ${logFile.path}`, async () => {
+        await logFile.handle.close();
+      });
     }
-    try {
-      await portLease.release();
-    } catch (error) {
-      errors.push(error);
+    if (ingressServer !== undefined) {
+      await settleCleanupStep(errors, 'close local ingress', async () => {
+        await new Promise((resolvePromise) => ingressServer.close(resolvePromise));
+      });
     }
-  }
-  if (tempRoot !== undefined) {
-    try {
-      await rm(tempRoot, { recursive: true, force: true });
-    } catch (error) {
-      errors.push(error);
+    if (harness !== undefined) {
+      try {
+        await harness.cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
     }
-  }
-  if (errors.length > 0) {
-    throw new AggregateError(errors, 'router-live:chat cleanup failed');
+    if (portLease !== undefined) {
+      try {
+        await assertPortsClosed(portLease.ports);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await portLease.release();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (tempRoot !== undefined) {
+      try {
+        await rm(tempRoot, { recursive: true, force: true });
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'router-live:chat cleanup failed');
+    }
   }
 }
 }
@@ -602,40 +606,23 @@ async function seedCommittedActivationState({
   );
 }
 
-async function writeSmokeSecret({ secretPath, aihubServiceRoot, env }) {
-  const apiKey = env.SKIFF_ROUTER_CHAT_LIVE_AIHUB_API_KEY
-    || await readDeepseekApiKey(aihubServiceRoot);
-  if (typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-    throw new Error(
-      'router-live:chat requires an aihub deepseek API key: set '
-      + 'SKIFF_ROUTER_CHAT_LIVE_AIHUB_API_KEY or provide '
-      + `${join(aihubServiceRoot, 'config.dev.secret.yml')} with a deepseek.apiKey`,
-    );
-  }
-  const contents = [
-    'service:',
-    '  aihub:',
-    `    apiKey: ${JSON.stringify(apiKey.trim())}`,
-    '',
-  ].join('\n');
-  await writeFile(secretPath, contents, { encoding: 'utf8', mode: 0o600 });
-}
-
-async function readDeepseekApiKey(aihubServiceRoot) {
+async function assertAihubDeepseekKeyConfigured(aihubServiceRoot) {
   const secretPath = join(aihubServiceRoot, 'config.dev.secret.yml');
   let source;
   try {
     source = await readFile(secretPath, 'utf8');
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      return null;
+      throw new Error(
+        `router-live:chat requires ${secretPath} with a deepseek.apiKey; `
+        + 'the aihub service config supplies the key used by the smoke',
+      );
     }
     throw error;
   }
   let inDeepseek = false;
   for (const rawLine of source.split(/\r?\n/)) {
     if (/^\s*(?:#.*)?$/.test(rawLine)) continue;
-    const indent = rawLine.match(/^\s*/)?.[0].length || 0;
     const line = rawLine.trim();
     if (line === 'deepseek:') {
       inDeepseek = true;
@@ -646,13 +633,14 @@ async function readDeepseekApiKey(aihubServiceRoot) {
     const match = /^apiKey:\s*(.*)$/.exec(line);
     if (!match) continue;
     const value = match[1].trim();
-    if (value.startsWith('"')) return JSON.parse(value);
-    if (value.startsWith("'") && value.endsWith("'")) {
-      return value.slice(1, -1).replaceAll("''", "'");
+    if (value.length > 0 && value !== 'null') {
+      return;
     }
-    return value.replace(/\s+#.*$/, '').trim();
   }
-  return null;
+  throw new Error(
+    `router-live:chat requires a deepseek.apiKey in ${secretPath}; `
+    + 'the aihub service config supplies the key used by the smoke',
+  );
 }
 
 async function spawnManaged(label, command, args, { cwd, tempRoot }) {
@@ -689,15 +677,10 @@ async function stopManagedChild(managed) {
 }
 
 async function waitForChatLiveReady({
-  controlUrl,
-  environment,
-  generation,
-  assemblyIdentity,
-  configSnapshotId,
+  ingressBase,
   children,
 }) {
   const startedAt = Date.now();
-  let lastError;
   while (Date.now() - startedAt < 120_000) {
     for (const managed of children) {
       if (managed.child.exitCode !== null || managed.child.signalCode !== null) {
@@ -707,41 +690,26 @@ async function waitForChatLiveReady({
       }
     }
     try {
-      const response = await fetch(`${controlUrl}/__router/health`);
+      const response = await fetch(`${ingressBase}/session`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
       if (response.ok) {
-        const health = await response.json();
-        const active = health?.activeAssembly;
-        const replicas = Array.isArray(health?.replicas) ? health.replicas : [];
-        const connections = Array.isArray(health?.capabilityConnections)
-          ? health.capabilityConnections
-          : [];
-        const epochMatches = active?.environment === environment
-          && active?.generation === generation
-          && active?.assemblyIdentity === assemblyIdentity
-          && active?.configSnapshotId === configSnapshotId;
-        const replica = replicas.find((candidate) =>
-          candidate?.connected === true
-          && candidate?.state === 'healthy'
-          && candidate?.environment === environment
-          && candidate?.generation === generation
-          && candidate?.assemblyIdentity === assemblyIdentity);
-        if (
-          epochMatches
-          && replica !== undefined
-          && connections.some((connection) =>
-            connection?.connected === true
-            && connection?.runtimeId === replica.replicaId)
-        ) {
+        const setCookies = typeof response.headers.getSetCookie === 'function'
+          ? response.headers.getSetCookie()
+          : [response.headers.get('set-cookie')].filter(Boolean);
+        if (setCookies.some((value) => typeof value === 'string' && value.includes('='))) {
           return;
         }
       }
-    } catch (error) {
-      lastError = error;
+    } catch {
+      // Router/Runtime are still starting; retry.
     }
     await delay(100);
   }
   throw new Error(
-    `isolated Router/Runtime did not become ready at ${controlUrl} with assembly ${assemblyIdentity}`,
+    `isolated Router/Runtime did not complete a /session roundtrip at ${ingressBase} within 120s`,
   );
 }
 
@@ -777,7 +745,7 @@ async function gitDirtyFingerprint(root) {
   return { paths, sha256 };
 }
 
-async function dumpManagedLogs(tempRoot) {
+async function dumpManagedLogs(tempRoot, harness) {
   const logPaths = [];
   try {
     const entries = await readdir(tempRoot);
@@ -788,6 +756,9 @@ async function dumpManagedLogs(tempRoot) {
     }
   } catch {
     // temp root may be gone
+  }
+  if (harness !== undefined) {
+    logPaths.push(join(harness.tempRoot, 'mongod.log'));
   }
   for (const logPath of logPaths.sort()) {
     try {
@@ -841,14 +812,7 @@ async function preflight() {
   const skiffSha = await gitRevParse(repoRoot);
   const internalsSha = await gitRevParse(internalsRoot);
   const skiffPackagesSha = await gitRevParse(skiffPackagesRoot);
-  const apiKey = process.env.SKIFF_ROUTER_CHAT_LIVE_AIHUB_API_KEY
-    || await readDeepseekApiKey(aihubServiceRoot);
-  if (typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-    throw new Error(
-      'router-live:chat preflight: no aihub deepseek apiKey; set '
-      + 'SKIFF_ROUTER_CHAT_LIVE_AIHUB_API_KEY or provide the aihub secret config',
-    );
-  }
+  await assertAihubDeepseekKeyConfigured(aihubServiceRoot);
   for (const executable of ['cargo', 'node', 'npm', 'mongod', 'mongosh', 'git']) {
     const outcome = await captureCheckedCommand(
       executable === 'git' ? 'which' : 'which',

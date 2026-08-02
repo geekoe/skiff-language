@@ -45,37 +45,45 @@ pub enum HttpAdapterKind {
     RawHttp,
 }
 
-/// Typed HTTP gateway surface for one gateway entry key.
+/// Typed HTTP gateway surface for one deployment gateway entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpGatewaySurface {
     pub mode: HttpDispatchMode,
     pub adapter_kind: HttpAdapterKind,
 }
 
-/// Immutable view of HTTP gateway surfaces keyed by gateway entry key.
+/// Immutable view of HTTP gateway surfaces keyed by deployment and gateway
+/// entry key.
 ///
 /// Constructed from canonical deployment gateway entries
 /// (`skiff-artifact-model::DeploymentGatewayEntry`); the HTTP layer never
-/// reads deployment files itself.
+/// reads deployment files itself. The same gateway entry key may exist in
+/// multiple deployments (for example aihub and codex-relay both publish
+/// `v1ModelsGet`); surfaces are therefore deployment-scoped and resolved
+/// together with the exact service selector binding.
 #[derive(Debug, Clone, Default)]
 pub struct HttpGatewaySurfaceView {
-    surfaces: BTreeMap<GatewayEntryKey, HttpGatewaySurface>,
+    surfaces: BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), HttpGatewaySurface>,
 }
 
 impl HttpGatewaySurfaceView {
     pub fn from_deployment_gateway_entries(
-        entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
+        entries: &BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), DeploymentGatewayEntry>,
     ) -> Result<Self, String> {
         let mut surfaces = BTreeMap::new();
-        for (key, entry) in entries {
+        for ((deployment, key), entry) in entries {
             let surface = http_surface(&entry.protocol_surface, key.as_str())?;
-            surfaces.insert(key.clone(), surface);
+            surfaces.insert((deployment.clone(), key.clone()), surface);
         }
         Ok(Self { surfaces })
     }
 
-    pub fn get(&self, key: &GatewayEntryKey) -> Option<&HttpGatewaySurface> {
-        self.surfaces.get(key)
+    pub fn get(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        key: &GatewayEntryKey,
+    ) -> Option<&HttpGatewaySurface> {
+        self.surfaces.get(&(deployment.clone(), key.clone()))
     }
 
     pub fn len(&self) -> usize {
@@ -248,12 +256,15 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
             ));
         }
         let surfaces = self.current_surfaces()?;
-        let surface = surfaces.get(&binding.gateway_entry_key).ok_or_else(|| {
-            HttpError::internal(format!(
-                "RuntimeAssembly HTTP ingress is missing its gateway surface for {}",
-                binding.gateway_entry_key.as_str()
-            ))
-        })?;
+        let surface = surfaces
+            .get(&binding.deployment, &binding.gateway_entry_key)
+            .ok_or_else(|| {
+                HttpError::internal(format!(
+                    "RuntimeAssembly HTTP ingress is missing its gateway surface for {} {}",
+                    binding.deployment.service_id,
+                    binding.gateway_entry_key.as_str()
+                ))
+            })?;
         if surface.mode == HttpDispatchMode::ServerStream
             && surface.adapter_kind != HttpAdapterKind::RawHttp
         {
@@ -307,12 +318,7 @@ fn http_surface_view_from_epoch(
             ) {
                 continue;
             }
-            if entries.insert(key.clone(), entry.clone()).is_some() {
-                return Err(format!(
-                    "duplicate HTTP gateway entry key {} across epoch deployments",
-                    key.as_str()
-                ));
-            }
+            entries.insert((deployment.clone(), key.clone()), entry.clone());
         }
     }
     HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)

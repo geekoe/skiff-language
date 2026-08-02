@@ -1,8 +1,11 @@
 # Router Rust Migration Batch 10 — E-chat leaf（router-live:chat 本地等价）
 
 日期：2026-08-03
-状态：execution leaf（一次性有界会话）→ **TASK_SCOPE_EXPANDED**（被 Rust Router
-HTTP surface 生产缺口阻塞；本地等价 gate 无法 PASS，详见「阻塞项与证据」）
+状态：execution leaf（一次性有界会话）→ **TASK_SCOPE_EXPANDED（第二轮）**
+
+第一轮阻塞（HTTP surface 重复 gateway entry key）已按 root 授权修复并通过自验收；
+本地等价 gate 仍被第二个生产缺口阻塞（Runtime 注册后 ~1.35s 被 Router 关闭），
+详见「阻塞项与证据」。
 
 ## 引用链
 
@@ -154,20 +157,61 @@ schema。真实 CI 的 private workflow 归 internals 仓库；本节点只交�
 
 ### 结论
 
-`npm run e2e:chat-smoke` 无法在 isolated Rust Router 实例上运行：真实 agine
-stack 的 RuntimeAssembly 中，`agine.ai/aihub` 与 `agine.ai/codex-relay` 都发布
-`v1ModelsGet`（`GET /v1/models`）网关入口；Rust Router 的 HTTP surface 以
-`GatewayEntryKey` 为唯一键，组合 epoch 时 fail closed：
+#### 已修复：HTTP surface 重复 gateway entry key（root 授权，已完成）
+
+真实 agine stack 中 `agine.ai/aihub` 与 `agine.ai/codex-relay` 都发布
+`v1ModelsGet`（`GET /v1/models`）。按 canonical model（`ServiceIngressKey {
+deployment, selector }`）把 HTTP surface 视图键改为
+`(ServiceDeploymentRef, GatewayEntryKey)`：
+
+- `router/src/http/ingress.rs`：`HttpGatewaySurfaceView` 以
+  `(deployment, gatewayEntryKey)` 为键；`resolve()` 用
+  `binding.deployment + gateway_entry_key` 查 surface；epoch 视图构建不再
+  fail closed 于跨 deployment 重复 key。
+- `router/src/supervisor/http.rs`：`load_http_surface_view` 同步（同键可跨
+  deployment 合法存在，每个 deployment 记录内部 key 仍唯一）。
+- 回归测试 `router/tests/ws_live_surface.rs`：
+  `duplicate_gateway_entry_key_across_deployments_is_deployment_scoped` ——
+  两个 deployment 同发 `v1ModelsGet`（GET /v1/models），surface 正常加载
+  （len=2）且按 service selector 各自解析到正确 deployment；不匹配 path
+  fail closed。
+- 自验收：`cargo test -p skiff-router` 全绿（含既有 HTTP/WS/actor/differential
+  suites，live probes 预期 ignored）；`ws_live_surface` 3/3。
+
+#### 仍然阻塞：Runtime 首次注册后 ~1.35s 被 Router 关闭（新缺口，超出本轮授权）
+
+修复第一缺口后，真实链路已跑通到 chat 执行前：session、provider list、
+WebSocket、agents/create、chat/create 全部经 Rust Router + 真实 Runtime
+成功；`npm run e2e:chat-smoke` 在 `chat/send` 处失败：
 
 ```text
-skiff-router: listener fail-stop: router composition failed: HTTP surface load failed:
-duplicate HTTP gateway entry key v1ModelsGet across epoch deployments
+[agine:e2e] chat ok id=chat_...
+[agine:e2e] failed: ChatSmokePrimaryAndCleanupError: chat/send failed:
+Runtime request runtime_disconnect: runtime_disconnect
 ```
 
-这属于 `router/src` 生产缺口（本叶子禁止写入），不是 internals 或 harness 可绕过
-的问题（assembly resolver 会把 aihub 的 service 依赖 codex-relay 传递性拉入
-epoch，无法通过裁剪 root deployment 消除重复）。真实 CI 的 private workflow 同样
-会被该缺口阻塞，E-cutover 前需要 router owner 修复。
+证据链（KEEP_ON_FAILURE 保留实例 + RUST_LOG=debug 复现）：
+
+- Router 对 Runtime 发送**空 Close 帧**（runtime debug log：
+  `Received close frame: None`），Router stderr 无任何输出；Runtime
+  随后 `runtime.router_disconnected` + 重连。
+- 时序与 chat/send **无关**：每次全新 isolated instance 都是
+  “Runtime 注册成功 → ~1.35s 后被关 → 重连再注册后稳定”。smoke 的
+  chat/send 恰好落在这个窗口所以失败；等待 >2min 后手动执行
+  session/provider/WS/agents/create/chat/create/chat/send 全部成功。
+- 排除项：无 client WS 时 chat/send 同样杀会话；subagentsEnabled=false
+  同样杀会话；deepseek API key 直连有效（200）；aihub 的
+  `/v1/chat/completions` 经 Router 直调成功且会话存活；裸 WS 保持 6s
+  正常；首次注册后的第二次注册稳定不再被杀。
+- 另一独立现象：Runtime 冷启动时 whole-assembly service DB index
+  provisioning 需 ~10-21s，超过 session handshake 的
+  `bootstrap: 10s` 时限时第一次连接被关（随后重连复用缓存完成注册）。
+
+疑似 owner（需 router 侧诊断日志定位，本叶子禁止写这些模块）：
+`router/src/session/*`（handshake/ack barrier、`SessionTiming`）、
+`router/src/activation/coordinator.rs`（cold recovery rebind 观察路径）、
+或 `router/src/dispatch|ws` 的 abort/violation 路径。修复后重跑
+`node scripts/check-router-chat-live.mjs` 即可继续。
 
 ### 运行证据（harness `scripts/check-router-chat-live.mjs`）
 
@@ -188,30 +232,16 @@ epoch，无法通过裁剪 root deployment 消除重复）。真实 CI 的 priva
   artifact identities 已按 `skiff-router-chat-live-manifest-v1` schema 校验通过
   （`scripts/lib/router-chat-live-manifest.mjs`，示例数据 services=3 /
   packages=8 验证 PASS）。
-
-### 根因定位（供 router owner 参考，未改代码）
-
-- `router/src/http/ingress.rs`：`HttpGatewaySurfaceView` 的 `surfaces` 以
-  `GatewayEntryKey` 为键；`http_surface_view_from_epoch` 在
-  `entries.insert(key, ...).is_some()` 时返回
-  `duplicate HTTP gateway entry key ... across epoch deployments`。
-- `router/src/supervisor/http.rs` 同逻辑（同一 fail-stop 路径）。
-- 路由解析本身已是 service-scoped（`resolve()` 按
-  `selector.service_id + contract_version + method + path` 匹配），与计划 §7
-  “trusted selector、service-scoped ingress”一致；canonical assembly 模型也用
-  `ServiceIngressKey { deployment, selector }` 作为 assembly-scoped 键
-  （`artifact-model/src/runtime_assembly.rs`）。
-- 修复方向（由 router owner 决定）：HTTP surface 键改为
-  `(deployment, gatewayEntryKey)`（或按 canonical `ServiceIngressKey`），
-  `resolve()` 已能按 deployment 找到唯一 binding；并补 multi-service 重复
-  `v1ModelsGet` 的回归测试（真实 agine stack 或等价双服务 fixture）。
-- 另一个可能 owner 是 internals（重命名 codex-relay 的 `v1ModelsGet`），但
-  与 canonical assembly 的 per-deployment ingress 语义不一致，建议优先修 router。
+- 注意：第二轮起 Skiff SHA 为分支头 `f140ee8d…`（含 HTTP surface 修复）。
 
 ### 已交付（本分支）
 
 - `scripts/check-router-chat-live.mjs`（isolated 实例 harness + `--preflight`）
 - `scripts/lib/router-chat-live-manifest.mjs`（manifest schema 严格校验）
+- `router/src/http/ingress.rs` + `router/src/supervisor/http.rs`（HTTP
+  surface per-deployment 键修复，root 授权）
+- `router/tests/ws_live_surface.rs`（重复 gateway entry key 回归测试 + API
+  适配）
 - `scripts/lib/verify-live-registry.mjs` 的 `router-live:chat` 条目
 - `scripts/tests/verify-live-registry.test.mjs` LIVE_SELECTORS 同步
 - `.github/workflows/router-rust-integration.yml` CI 占位 job（注明 trusted
@@ -219,7 +249,7 @@ epoch，无法通过裁剪 root deployment 消除重复）。真实 CI 的 priva
 - 本叶子文档与阻塞证据
 
 gate 未 PASS，`scripts/fixtures/router-chat-live/manifest.json` 未生成（harness
-只在 smoke PASS 时写 evidence manifest）；集成 Agent 在 router 缺口修复后重跑
+只在 smoke PASS 时写 evidence manifest）；集成 Agent 在第二个缺口修复后重跑
 `node scripts/check-router-chat-live.mjs` 即可产出并提交该 fixture。
 
 <!-- 运行结果由 harness 填充后回填 -->

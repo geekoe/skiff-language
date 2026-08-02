@@ -390,7 +390,10 @@ impl DispatchedFrame {
 /// files are written). Only entries with an HTTP protocol surface are
 /// projected; WebSocket entries belong to the WS surface view
 /// (`load_ws_surface_view`), mirroring the TS HTTP/WebSocket surface split.
-/// Duplicate HTTP gateway entry keys across deployments fail closed.
+/// Surfaces are keyed by (deployment, gateway entry key): the same gateway
+/// entry key may legally exist in multiple deployments (for example
+/// `v1ModelsGet` in both agine.ai/aihub and agine.ai/codex-relay), and each
+/// request resolves its surface through the exact service selector binding.
 pub fn load_http_surface_view(
     artifact_root: &Path,
     epoch: &RoutingEpoch,
@@ -412,12 +415,7 @@ pub fn load_http_surface_view(
             ) {
                 continue;
             }
-            if entries.insert(key.clone(), entry.clone()).is_some() {
-                return Err(format!(
-                    "duplicate HTTP gateway entry key {} across epoch deployments",
-                    key.as_str()
-                ));
-            }
+            entries.insert((deployment.clone(), key.clone()), entry.clone());
         }
     }
     HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)

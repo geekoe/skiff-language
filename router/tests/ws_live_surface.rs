@@ -15,8 +15,8 @@ use skiff_artifact_model::{
     DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision,
     GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
-    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface,
-    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayIngressBinding,
+    GatewayProtocolSurface, GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
     GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector, PackageArtifactRef,
     PackageBuildId, PackageLocalAbiIdentity, ServiceContractRef, ServiceDeployment,
@@ -29,6 +29,7 @@ use skiff_deployment::projection::actor_routing::{
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
+use skiff_router::http::HttpIngressResolver;
 use skiff_router::supervisor::http::load_http_surface_view;
 use skiff_router::supervisor::ws::load_ws_surface_view;
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot as RuntimeConfigSnapshotValue;
@@ -298,21 +299,21 @@ mod tests {
             .expect("write mixed deployment");
         drop(store);
 
-        let epoch = epoch_with_deployment(reference);
+        let epoch = epoch_with_deployment(reference.clone());
 
         // HTTP surface: only the HTTP entry, no fail-closed on WS entries.
         let http = load_http_surface_view(&artifact_root, &epoch).expect("HTTP surface loads");
         assert_eq!(http.len(), 1, "HTTP view contains only the HTTP entry");
         assert!(
-            http.get(&entry_key("health")).is_some(),
+            http.get(&reference, &entry_key("health")).is_some(),
             "HTTP view keeps the HTTP entry"
         );
         assert!(
-            http.get(&entry_key("websocket")).is_none(),
+            http.get(&reference, &entry_key("websocket")).is_none(),
             "HTTP view must not contain the websocketConnect entry"
         );
         assert!(
-            http.get(&entry_key("chat.send")).is_none(),
+            http.get(&reference, &entry_key("chat.send")).is_none(),
             "HTTP view must not contain the websocketJsonRpc entry"
         );
 
@@ -361,14 +362,204 @@ mod tests {
             .expect("write http-only deployment");
         drop(store);
 
-        let epoch = epoch_with_deployment(reference);
+        let epoch = epoch_with_deployment(reference.clone());
         let http = load_http_surface_view(&artifact_root, &epoch).expect("HTTP surface loads");
         assert_eq!(http.len(), 1);
-        assert!(http.get(&entry_key("health")).is_some());
+        assert!(http.get(&reference, &entry_key("health")).is_some());
         let ws = load_ws_surface_view(&artifact_root, &epoch).expect("empty WS surface loads");
         assert_eq!(ws.len(), 0, "HTTP-only deployment has no WS binding");
 
         drop(epoch);
         drop(guard);
+    }
+
+    #[test]
+    fn duplicate_gateway_entry_key_across_deployments_is_deployment_scoped() {
+        // Real agine stack regression (E-chat gate): agine.ai/aihub and
+        // agine.ai/codex-relay both publish `v1ModelsGet` (GET /v1/models).
+        // The HTTP surface must be keyed by (deployment, gateway entry key)
+        // so Router composition succeeds and each service selector resolves
+        // its own binding.
+        const AIHUB_SERVICE: &str = "test.skiff/aihub";
+        const RELAY_SERVICE: &str = "test.skiff/codex-relay";
+
+        let aihub = models_deployment(AIHUB_SERVICE);
+        let relay = models_deployment(RELAY_SERVICE);
+        let aihub_ref = skiff_artifact_identity::service_deployment_ref(&aihub);
+        let relay_ref = skiff_artifact_identity::service_deployment_ref(&relay);
+        let (artifact_root, guard) = temp_artifact_root();
+        let store = CanonicalArtifactStore::create(&artifact_root).expect("create artifact store");
+        store
+            .write_service_deployment(&aihub)
+            .expect("write aihub deployment");
+        store
+            .write_service_deployment(&relay)
+            .expect("write relay deployment");
+        drop(store);
+
+        let epoch = epoch_with_models_deployments(
+            "surface-dup",
+            &aihub_ref,
+            &relay_ref,
+            aihub
+                .gateway_entries
+                .get(&entry_key("v1ModelsGet"))
+                .expect("aihub entry")
+                .gateway_entry_identity
+                .clone(),
+            relay
+                .gateway_entries
+                .get(&entry_key("v1ModelsGet"))
+                .expect("relay entry")
+                .gateway_entry_identity
+                .clone(),
+        );
+
+        let http = load_http_surface_view(&artifact_root, &epoch)
+            .expect("HTTP surface loads with duplicate gateway entry keys");
+        assert_eq!(
+            http.len(),
+            2,
+            "HTTP view keeps both deployments for the shared key"
+        );
+        assert!(
+            http.get(&aihub_ref, &entry_key("v1ModelsGet")).is_some(),
+            "aihub surface exists"
+        );
+        assert!(
+            http.get(&relay_ref, &entry_key("v1ModelsGet")).is_some(),
+            "relay surface exists"
+        );
+
+        let resolver = skiff_router::http::EpochHttpIngressResolver::new(Arc::new(http));
+        let aihub_selector = skiff_router::http::selector::ServiceDeploymentSelector {
+            service_id: AIHUB_SERVICE.to_string(),
+            contract_version: CONTRACT_VERSION.to_string(),
+        };
+        let relay_selector = skiff_router::http::selector::ServiceDeploymentSelector {
+            service_id: RELAY_SERVICE.to_string(),
+            contract_version: CONTRACT_VERSION.to_string(),
+        };
+        let aihub_binding = resolver
+            .resolve(&epoch, &aihub_selector, "GET", "/v1/models")
+            .expect("aihub selector resolves the shared key");
+        assert_eq!(aihub_binding.deployment.service_id, AIHUB_SERVICE);
+        assert_eq!(aihub_binding.gateway_entry_key.as_str(), "v1ModelsGet");
+
+        let relay_binding = resolver
+            .resolve(&epoch, &relay_selector, "GET", "/v1/models")
+            .expect("relay selector resolves the shared key");
+        assert_eq!(relay_binding.deployment.service_id, RELAY_SERVICE);
+        assert_eq!(relay_binding.gateway_entry_key.as_str(), "v1ModelsGet");
+
+        assert!(
+            resolver
+                .resolve(&epoch, &aihub_selector, "GET", "/v1/other")
+                .is_err(),
+            "unmatched path still fails closed"
+        );
+
+        drop(epoch);
+        drop(guard);
+    }
+
+    fn models_deployment(service_id: &str) -> ServiceDeployment {
+        let mut deployment = ServiceDeployment {
+            schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+            contract: ServiceContractRef {
+                service_id: service_id.to_string(),
+                contract_version: CONTRACT_VERSION.to_string(),
+                service_protocol_identity: ServiceProtocolIdentity::new("protocol"),
+            },
+            deployment_revision: DeploymentRevision::new("1"),
+            deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
+                "placeholder",
+            ),
+            implementation: PackageArtifactRef {
+                package_id: service_id.to_string(),
+                package_version: "0.1.0".to_string(),
+                package_build_id: PackageBuildId::new("build"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+            },
+            operation_bindings: Vec::new(),
+            package_bindings: Vec::new(),
+            service_selectors: Vec::new(),
+            gateway_entries: BTreeMap::from([(entry_key("v1ModelsGet"), http_entry())]),
+            ingress: vec![DeploymentIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("GET".to_string()),
+                    path: "/v1/models".to_string(),
+                },
+                gateway_entry_key: entry_key("v1ModelsGet"),
+            }],
+            diagnostic_text: DeploymentDiagnosticText {
+                display_name: "duplicate-v1ModelsGet".to_string(),
+                notes: BTreeMap::new(),
+            },
+        };
+        assign_service_deployment_identity(&mut deployment).expect("assign deployment identity");
+        deployment
+    }
+
+    fn epoch_with_models_deployments(
+        environment: &str,
+        aihub_ref: &skiff_artifact_model::ServiceDeploymentRef,
+        relay_ref: &skiff_artifact_model::ServiceDeploymentRef,
+        aihub_identity: skiff_artifact_model::GatewayEntryIdentity,
+        relay_identity: skiff_artifact_model::GatewayEntryIdentity,
+    ) -> Arc<RoutingEpoch> {
+        let mut assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
+        assembly.roots = vec![aihub_ref.clone(), relay_ref.clone()];
+        assembly.resolved_deployments = vec![aihub_ref.clone(), relay_ref.clone()];
+        assembly.gateway_ingress = vec![
+            GatewayIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("GET".to_string()),
+                    path: "/v1/models".to_string(),
+                },
+                deployment: aihub_ref.clone(),
+                gateway_entry_key: entry_key("v1ModelsGet"),
+                gateway_entry_identity: aihub_identity,
+            },
+            GatewayIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("GET".to_string()),
+                    path: "/v1/models".to_string(),
+                },
+                deployment: relay_ref.clone(),
+                gateway_entry_key: entry_key("v1ModelsGet"),
+                gateway_entry_identity: relay_identity,
+            },
+        ];
+        let snapshot = RuntimeConfigSnapshotValue::new(
+            environment,
+            skiff_artifact_model::RuntimeConfigSnapshotRef {
+                snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
+                    "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("snapshot id"),
+            },
+            Vec::new(),
+        )
+        .expect("snapshot fixture");
+        let projection = ActorRoutingProjection::new(
+            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
+            Vec::new(),
+        )
+        .expect("empty projection");
+        let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
+        Arc::new(
+            RoutingEpoch::new(
+                environment,
+                1,
+                Arc::new(assembly),
+                Arc::new(snapshot),
+                catalog,
+            )
+            .expect("epoch fixture"),
+        )
     }
 }
