@@ -1,0 +1,24 @@
+probe:
+  method: POST
+  path: /probe
+  kind: typedJson
+  handler: main.marker
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+slow-get:
+  method: POST
+  path: /slow-get
+  kind: typedJson
+  handler: main.slowGetOnly
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+slow-increment:
+  method: POST
+  path: /slow-increment
+  kind: typedJson
+  handler: main.slowIncrement
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

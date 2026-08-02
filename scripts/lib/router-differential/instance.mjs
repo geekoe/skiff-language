@@ -66,6 +66,7 @@ export async function createSideContext({
   environment = ENVIRONMENT,
   generation = GENERATION,
   replicaId = REPLICA_ID,
+  websocketPath,
 }) {
   const [httpPort, runtimePort, relayPort] = ports;
   const sideRoot = join(tempRoot, implementation);
@@ -117,6 +118,7 @@ export async function createSideContext({
     ports,
     runtimeBin,
     routerSourceBinary,
+    websocketPath,
     routerConfigPath: join(devHome, 'router.yml'),
     runtimeConfigPath: join(sideRoot, 'runtime.yml'),
     routerLogs: {
@@ -150,6 +152,7 @@ export async function startDifferentialSide(side) {
     replicaId,
     state,
     runtimeBin,
+    websocketPath,
     routerConfigPath,
     runtimeConfigPath,
     routerLogs,
@@ -175,7 +178,10 @@ export async function startDifferentialSide(side) {
     runtimeMaxConcurrency: 128,
     serviceDbMongoUrl: mongoUrl,
   });
-  await writeFile(routerConfigPath, routerConfig, {
+  const routerConfigText = websocketPath === undefined
+    ? routerConfig
+    : `${routerConfig}\nwebsocket:\n  path: ${websocketPath}\n`;
+  await writeFile(routerConfigPath, routerConfigText, {
     encoding: 'utf8',
     flag: 'wx',
     mode: 0o600,

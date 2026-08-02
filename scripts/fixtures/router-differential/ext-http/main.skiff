@@ -1,0 +1,46 @@
+import std
+
+function headers() -> Array<std.http.HttpHeader> {
+  const result = Array.empty<std.http.HttpHeader>()
+  result.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  return result
+}
+
+function textResponse(status: integer, body: bytes) -> std.http.HttpResponse {
+  return std.http.HttpResponse {
+    status: status,
+    headers: headers(),
+    body: body,
+  }
+}
+
+function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return textResponse(201, bytes.fromUtf8("unary:".concat(request.body.toUtf8String())))
+}
+
+function typedUnary(body: string) -> string {
+  return "typed:".concat(body)
+}
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit(std.http.streamStart(206, headers()))
+  emit(std.http.streamChunk(bytes.fromUtf8("alpha|")))
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamChunk(bytes.fromUtf8("|omega")))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function fail(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  throw std.service.ProtocolError {
+    target: "test.skiff/router-rust-differential-ext-http",
+    message: "intentional service failure",
+  }
+}
+
+function cors(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const corsHeaders = Array.empty<std.http.HttpHeader>()
+  corsHeaders.push(std.http.HttpHeader { name: "access-control-allow-origin", value: "https://service.example" })
+  corsHeaders.push(std.http.HttpHeader { name: "access-control-allow-methods", value: "OPTIONS, POST" })
+  return std.http.HttpResponse { status: 204, headers: corsHeaders, body: bytes.fromUtf8("") }
+}

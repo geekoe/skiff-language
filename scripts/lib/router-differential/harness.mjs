@@ -4,11 +4,12 @@
 
 import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { ActivationStateMongoHarness } from '../activation-state-live-harness.mjs';
 import { cargoTargetDir } from '../cargo-target-dir.mjs';
 import { captureCheckedCommand } from '../command-execution.mjs';
+import { ensureTsRouterDependencies } from '../http_live_process.mjs';
 import { leaseConsecutiveLocalPorts } from '../local-port-lease.mjs';
 import {
   runCompilerAuthoring,
@@ -35,6 +36,11 @@ import {
   assertSelectedScenarioRunnable,
   loadScenarioInventory,
 } from './scenarios.mjs';
+import { runDifferentialExt } from './differential_ext_registry.mjs';
+import {
+  canonicalProjectionJson,
+  deriveActorRoutingProjection,
+} from './differential_ext_projection.mjs';
 import {
   captureDifferentialSide,
   createSideContext,
@@ -59,6 +65,7 @@ export async function runDifferentialHarness({
 
   const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-router-differential-'));
   const targetDir = cargoTargetDir(repoRoot);
+  await ensureTsRouterDependencies({ repoRoot });
   const binaries = await buildExplicitBinaries({ repoRoot, targetDir });
   const resources = {
     tempRoot,
@@ -81,8 +88,12 @@ export async function runDifferentialHarness({
         repoRoot,
         artifactRoot: sourceArtifactRoot,
         environment: ENVIRONMENT,
+        scenario,
       });
-      for (const implementation of selectedOnly ?? implementations) {
+      const selectedImplementations = selectedOnly === undefined
+        ? implementations
+        : [selectedOnly];
+      for (const implementation of selectedImplementations) {
         const artifactRoot = join(tempRoot, `${scenario.id}-${implementation}-artifacts`);
         await cp(sourceArtifactRoot, artifactRoot, { recursive: true });
         const lease = await leaseConsecutiveLocalPorts({
@@ -108,10 +119,12 @@ export async function runDifferentialHarness({
           routerSourceBinary: binaries.routerBinary,
           environment: ENVIRONMENT,
           generation: GENERATION,
+          websocketPath: scenario.wsPath,
         });
         resources.sides.push(side);
         console.log(`router-live:differential: starting ${implementation} side for ${scenario.id}`);
         await startDifferentialSide(side);
+        side.extObservation = await runDifferentialExt({ side, scenario, resources });
         side.capture = await captureDifferentialSide(side);
         await stopDifferentialSide(side);
         side.logs = await readSideLogs(side);
@@ -153,8 +166,13 @@ export async function runDifferentialHarness({
       inventory: inventory.scenarios.map(({ id, status, lane }) => ({ id, status, lane })),
     };
   } catch (error) {
-    error.differentialEvidence = await collectFailureEvidence(resources);
-    throw error;
+    if (error !== null && typeof error === 'object') {
+      error.differentialEvidence = await collectFailureEvidence(resources);
+      throw error;
+    }
+    const wrapped = new Error(`differential harness failed with non-object error: ${String(error)}`);
+    wrapped.differentialEvidence = await collectFailureEvidence(resources);
+    throw wrapped;
   } finally {
     const cleanupErrors = await cleanupResources(resources, { keepTemp });
     if (cleanupErrors.length > 0) {
@@ -199,6 +217,7 @@ function buildObservation(side) {
     mongo: side.capture.mongo,
     terminal: terminalObservation(side),
     logs: side.logs,
+    ...(side.extObservation ?? {}),
   };
 }
 
@@ -226,8 +245,17 @@ async function authorArtifact({
   repoRoot,
   artifactRoot,
   environment,
+  scenario,
 }) {
-  const sourceRoot = fixtureServicePath(repoRoot);
+  const sourceRoot = scenarioFixturePath(repoRoot, scenario);
+  if (scenario?.fixture !== undefined) {
+    return await authorGatewayArtifact({
+      repoRoot,
+      artifactRoot,
+      environment,
+      sourceRoot,
+    });
+  }
   await runCompilerAuthoring({
     skiffRoot: repoRoot,
     kind: 'package',
@@ -269,6 +297,101 @@ async function authorArtifact({
     join(artifactRoot, ACTOR_ROUTING_PROJECTION_RECORD_PATH),
     ACTOR_ROUTING_PROJECTION_CONTENT,
     { encoding: 'utf8', flag: 'wx' },
+  );
+  return { assemblyIdentity, configSnapshotId };
+}
+
+function scenarioFixturePath(repoRoot, scenario) {
+  if (scenario?.fixture === undefined) {
+    return fixtureServicePath(repoRoot);
+  }
+  return resolve(
+    repoRoot,
+    'scripts',
+    'fixtures',
+    'router-differential',
+    scenario.fixture,
+  );
+}
+
+// Gateway-entry services (http.yml / websocket.yml / actor declarations)
+// author against the canonical skiff.run/std PackageArtifact records: seed
+// the bootstrap records first, then build package/assembly with the exact
+// ServiceDeploymentRef and produce the config snapshot from the real service
+// source. Same sequence as the E-http/E-ws/E-actor-rust live harnesses.
+async function authorGatewayArtifact({
+  repoRoot,
+  artifactRoot,
+  environment,
+  sourceRoot,
+}) {
+  await captureCheckedCommand(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--locked',
+      '--manifest-path',
+      join(repoRoot, 'test-runner', 'Cargo.toml'),
+      '--bin',
+      'skiff-package-service-smoke-fixture',
+      '--',
+      '--bootstrap-only',
+      '--artifact-root',
+      artifactRoot,
+      '--environment',
+      environment,
+      '--platform-source-root',
+      repoRoot,
+    ],
+    { cwd: repoRoot },
+  );
+  const packageReceipt = await runCompilerAuthoring({
+    skiffRoot: repoRoot,
+    kind: 'package',
+    action: 'build',
+    root: sourceRoot,
+    artifactRoot,
+    environment,
+  });
+  const deployment = packageReceipt?.serviceDeploymentReceipt?.deployment;
+  if (deployment === null || typeof deployment !== 'object' || Array.isArray(deployment)) {
+    throw new Error('gateway fixture package build returned no exact ServiceDeployment reference');
+  }
+  const assemblyReceipt = await runCompilerAuthoring({
+    skiffRoot: repoRoot,
+    kind: 'assembly',
+    action: 'build',
+    artifactRoot,
+    environment,
+    rootDeployments: [deployment],
+  });
+  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
+  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
+  const assemblyIdentity = assembly?.assemblyIdentity;
+  if (typeof assemblyIdentity !== 'string' || typeof recordPath !== 'string') {
+    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
+  }
+  const snapshotReceipt = await runConfigSnapshotAuthoring({
+    skiffRoot: repoRoot,
+    artifactRoot,
+    environment,
+    profile: 'dev',
+    assemblyRecord: recordPath,
+    sources: [{ root: sourceRoot, deployment }],
+  });
+  const configSnapshotId =
+    snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
+  if (typeof configSnapshotId !== 'string') {
+    throw new Error('config snapshot production returned no exact snapshot reference');
+  }
+  const projectionDirectory = join(artifactRoot, 'records', 'actor-routing');
+  await mkdir(projectionDirectory, { recursive: true });
+  const projection = await deriveActorRoutingProjection({ artifactRoot, deployment });
+  await writeFile(
+    join(artifactRoot, ACTOR_ROUTING_PROJECTION_RECORD_PATH),
+    projection === null ? ACTOR_ROUTING_PROJECTION_CONTENT : canonicalProjectionJson(projection),
+    { encoding: 'utf8' },
   );
   return { assemblyIdentity, configSnapshotId };
 }
