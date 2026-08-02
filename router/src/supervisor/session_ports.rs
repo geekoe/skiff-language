@@ -22,12 +22,18 @@ use skiff_runtime_transport::protocol::{
     encode_binary_frame, encode_request_cancel_frame, RequestCancelFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
+use skiff_runtime_transport::runtime_assembly_request::{
+    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
+    RuntimeAssemblySpawnInvocationFrameHeader, RuntimeAssemblySpawnRequestCallerFrameHeader,
+    RuntimeAssemblySpawnRequestRoutingFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+};
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleControl,
     WebSocketGenerationLifecycleDirection,
 };
 
 use crate::activation::{ActivationParticipantBinding, EnqueueResult, SessionEnqueuePort};
+use crate::actor::SpawnWireStore;
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::dispatch::{
     CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
@@ -45,6 +51,8 @@ use crate::ws::{
     BrokerRuntimeResponse, DispatchInbound, InboundDispatchAction, RuntimeGenerationPeer,
     RuntimeResponder, RuntimeSessionClose, RuntimeViolationSink,
 };
+
+use super::http::{HttpDispatchEvent, PendingHttpRouter};
 
 /// Deferred reference to the process `SessionLayer` (composition seam).
 ///
@@ -72,6 +80,38 @@ impl SessionHandle {
 
     pub fn layer(&self) -> Option<Arc<SessionLayer>> {
         self.layer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Deferred reference to the composition `PendingHttpRouter`.
+///
+/// The dispatcher session consumer is constructed before the HTTP
+/// correlation router exists (the session layer requires its consumers at
+/// construction); the supervisor sets the router right after it is created.
+/// Until then, close terminals have no HTTP phase to deliver to and are
+/// safely dropped (the dispatcher already released the permit).
+#[derive(Debug, Clone, Default)]
+pub struct PendingHttpHandle {
+    router: Arc<Mutex<Option<Arc<PendingHttpRouter>>>>,
+}
+
+impl PendingHttpHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, router: Arc<PendingHttpRouter>) {
+        *self
+            .router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(router);
+    }
+
+    fn router(&self) -> Option<Arc<PendingHttpRouter>> {
+        self.router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -186,11 +226,22 @@ impl SessionAbortControl for LayerSessionAbort {
 #[derive(Debug, Clone)]
 pub struct SessionRuntimePeer {
     session: SessionHandle,
+    spawn_wire_store: Option<Arc<SpawnWireStore>>,
 }
 
 impl SessionRuntimePeer {
     pub fn new(session: SessionHandle) -> Self {
-        Self { session }
+        Self {
+            session,
+            spawn_wire_store: None,
+        }
+    }
+
+    /// E-actor-rust: the derived function-spawn trace (and opaque spawn wire
+    /// facts) are correlated through the actor lane wire store.
+    pub fn with_spawn_wire_store(mut self, store: Arc<SpawnWireStore>) -> Self {
+        self.spawn_wire_store = Some(store);
+        self
     }
 }
 
@@ -224,15 +275,70 @@ impl RuntimePeer for SessionRuntimePeer {
 
     fn send_spawn_submit(
         &self,
-        _session: &RuntimeSessionEpoch,
-        _spawn: &SpawnSubmit,
+        session: &RuntimeSessionEpoch,
+        spawn: &SpawnSubmit,
     ) -> Result<(), String> {
-        // The canonical `spawn.submit.request` wire mapping (activation
-        // identity / service protocol identity fields) is owned by the
-        // E-actor-rust gate; until then derived function spawns fail closed
-        // at the enqueue boundary instead of fabricating wire fields.
-        Err("spawn.submit wire mapping is not wired until E-actor-rust".to_string())
+        // Derived function spawn execution frame (TS `derivedSpawnRequest`
+        // parity): the dispatcher owns the derived pending; this port maps
+        // it onto the canonical `runtimeAssembly spawn request.start` wire.
+        let wire_trace_id = self
+            .spawn_wire_store
+            .as_ref()
+            .and_then(|store| store.get(&spawn.spawn_request_id))
+            .and_then(|wire| wire.frame.header.trace_id.clone());
+        let span_id = format!(
+            "{:016x}",
+            now_nanos().wrapping_add(SPAWN_SPAN_SEQUENCE.fetch_add(1, Ordering::Relaxed))
+        );
+        let header = RuntimeAssemblySpawnRequestStartFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            frame_type: "request.start".to_string(),
+            request_id: spawn.spawn_request_id.clone(),
+            mode: "unary".to_string(),
+            caller: RuntimeAssemblySpawnRequestCallerFrameHeader {
+                kind: "service".to_string(),
+            },
+            routing: RuntimeAssemblySpawnRequestRoutingFrameHeader {
+                kind: "runtimeAssembly".to_string(),
+                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
+                    spawn.authority.assembly_identity.clone(),
+                ),
+                assembly_generation: spawn.authority.assembly_generation,
+                deployment: spawn.authority.deployment.clone(),
+            },
+            invocation: RuntimeAssemblySpawnInvocationFrameHeader {
+                kind: "spawn".to_string(),
+                target_kind: "function".to_string(),
+                target: spawn.target.clone(),
+            },
+            deadline: spawn.deadline.as_ref().map(|deadline| {
+                RuntimeAssemblyRequestDeadlineFrameHeader {
+                    timeout_ms: deadline.timeout_ms,
+                    expires_at: deadline.expires_at.clone(),
+                }
+            }),
+            trace: RuntimeAssemblyRequestTraceFrameHeader {
+                trace_id: wire_trace_id.unwrap_or_else(|| format!("spawn-trace-{span_id}")),
+                span_id,
+                parent_span_id: None,
+                sampled: None,
+            },
+            test_effects_enabled: false,
+            test_case_capability: None,
+        };
+        let bytes = encode_binary_frame(&header, &[])
+            .map_err(|error| format!("derived spawn request.start encode failed: {error}"))?;
+        write_session_frame(&self.session, session, bytes)
     }
+}
+
+static SPAWN_SPAN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 fn write_session_frame(
@@ -423,11 +529,12 @@ impl DispatchInbound for UnsupportedDispatchInbound {
 #[derive(Debug, Clone)]
 pub struct DispatcherSessionConsumer {
     dispatcher: Arc<RequestDispatcher>,
+    router: PendingHttpHandle,
 }
 
 impl DispatcherSessionConsumer {
-    pub fn new(dispatcher: Arc<RequestDispatcher>) -> Self {
-        Self { dispatcher }
+    pub fn new(dispatcher: Arc<RequestDispatcher>, router: PendingHttpHandle) -> Self {
+        Self { dispatcher, router }
     }
 }
 
@@ -438,7 +545,15 @@ impl SessionConsumer for DispatcherSessionConsumer {
 
     fn on_session_closed(&self, session: &RuntimeSessionEpoch) -> Result<(), String> {
         let terminals = self.dispatcher.on_session_closed(session);
-        let _ = terminals;
+        if let Some(router) = self.router.router() {
+            for terminal in terminals {
+                let request_id = terminal.request_id.clone();
+                // The HTTP phase may already be gone (client abandoned the
+                // correlation); the dispatcher already released the permit,
+                // so a failed delivery is a no-op, never a panic or retry.
+                let _ = router.deliver(&request_id, HttpDispatchEvent::Terminal { terminal });
+            }
+        }
         Ok(())
     }
 }

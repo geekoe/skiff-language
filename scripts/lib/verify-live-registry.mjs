@@ -163,6 +163,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-dispatch-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-dispatch-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:dispatch',
+        description:
+          'real production Router composition + real Rust Runtime process: fake ingress through the production HttpDispatchPort -> epoch capture -> exact candidate -> permit -> revalidate -> enqueue -> terminal; missing/invalid selector, wrong deployment/entry, duplicate id, timeout, disconnect and selection/replacement races fail closed with exact pending/permit zeroing (managed CI, isolated instance + explicit Rust process)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-dispatch',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-activation-full-chain-live',
     source: {
       type: 'script',
@@ -175,6 +201,58 @@ export const LIVE_REGISTRY = deepFreeze([
           'real Router + temporary Mongo replica set + real compiler artifact + real Runtime: activate HTTP -> durable prepare -> real Runtime prepared -> durable commit -> epoch swap -> Runtime commit -> same-session re-register -> new-generation HTTP request; old captured-epoch request under its original lease; pre-decision disconnect abort / post-decision durable reconcile; cold recovery committed-first + rebind + candidate-load failure durable abort; audit/CAS/retry non-duplication (managed CI, isolated instance + explicit Rust processes)',
         plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
         id: 'live:router-rust-activation-full-chain',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-ws-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-ws-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:ws',
+        description:
+          'real client WebSocket -> real Rust Router binary -> real Rust Runtime process: generation acquire/release, business replacement, JSON-RPC id lexeme corpus, slow-client/frame budget, disconnect races and zero residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-ws',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-actor-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-actor-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:actor',
+        description:
+          'two real Runtime replicas + real Rust Router binary + real compiler artifact: actor claim token/activation broker/invocation/owner control/lease scheduler full chain, function spawn and actor-method spawn parent authority, disconnect/replacement/concurrent claim/lease race/spawn mismatch fail closed, and zero actor invocation/control/lease/timer residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-actor',
         args: [],
         ownership: LIVE_OWNERSHIP.MANAGED,
         tier: LIVE_TIERS.LIVE_MANUAL,
@@ -206,6 +284,32 @@ export const LIVE_REGISTRY = deepFreeze([
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [],
         requiredExecutables: ['node', 'pnpm', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-http-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-http-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:http',
+        description:
+          'real HTTP->Router->Runtime unary/stream with trusted selectors, service-scoped ingress, typed/raw opaque payloads, stream sequencing, cumulative response ceiling, backpressure, disconnect/cancel/deadline, CORS preflight/service-managed and platform errors; every race one external terminal with at most one cancel and zero residue, plus the first TS->Rust->TS unary rollback roundtrip through the canonical RouterProcessSpec (managed CI, isolated instance + explicit process commands)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-http',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh', 'python3'],
         requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
         canonicalPolicy: {
           forbidSkips: false,

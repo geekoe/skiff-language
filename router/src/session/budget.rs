@@ -25,7 +25,12 @@ impl Default for SessionBudgets {
         Self {
             outbound_frames: 256,
             outbound_bytes: 4 * 1024 * 1024,
-            inbound_frames: 64,
+            // E-actor-rust migration correction (2026-08-03, root authorized):
+            // 64 cumulative inbound frames aborts a long-lived business
+            // session (health every ~1s plus actor/spawn/request traffic)
+            // before a two-replica full-chain can complete. Still bounded and
+            // fail-closed; saturation tests inject explicit low budgets.
+            inbound_frames: 4096,
             inbound_bytes: 1024 * 1024,
         }
     }

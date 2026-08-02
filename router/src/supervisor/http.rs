@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use skiff_artifact_model::GatewayProtocolSurface;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
@@ -386,8 +387,10 @@ impl DispatchedFrame {
 
 /// Builds the typed HTTP surface view from the deployment records referenced
 /// by the captured epoch (deployment crate consumed read-only; no deployment
-/// files are written). Duplicate gateway entry keys across deployments fail
-/// closed.
+/// files are written). Only entries with an HTTP protocol surface are
+/// projected; WebSocket entries belong to the WS surface view
+/// (`load_ws_surface_view`), mirroring the TS HTTP/WebSocket surface split.
+/// Duplicate HTTP gateway entry keys across deployments fail closed.
 pub fn load_http_surface_view(
     artifact_root: &Path,
     epoch: &RoutingEpoch,
@@ -403,9 +406,15 @@ pub fn load_http_surface_view(
             )
         })?;
         for (key, entry) in &record.gateway_entries {
+            if !matches!(
+                entry.protocol_surface.protocol,
+                GatewayProtocolSurface::Http(_)
+            ) {
+                continue;
+            }
             if entries.insert(key.clone(), entry.clone()).is_some() {
                 return Err(format!(
-                    "duplicate gateway entry key {} across epoch deployments",
+                    "duplicate HTTP gateway entry key {} across epoch deployments",
                     key.as_str()
                 ));
             }

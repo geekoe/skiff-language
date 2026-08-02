@@ -344,7 +344,7 @@ impl RuntimeGenerationPinLedger {
                 "connection is not pending admission",
             );
         };
-        if expected != tuple {
+        if !matches_expectation(expected, tuple) {
             return self.acquire_reject(
                 request,
                 WebSocketGenerationLifecycleRejectionCode::TupleMismatch,
@@ -764,6 +764,26 @@ fn request_tuple(
         | WebSocketGenerationLifecycleControl::Ack { tuple, .. }
         | WebSocketGenerationLifecycleControl::Reject { tuple, .. } => tuple,
     }
+}
+
+/// TS parity `matchesExpectation`: the admission expectation is matched on
+/// the selected RuntimeAssembly ingress fields only (service/assembly/entry/
+/// connection). `routerSessionId` is excluded because the Runtime mints its
+/// own opaque router session id and never echoes the Router-side token
+/// (E-gates wiring leaf, known ledger item; TS
+/// `webSocketGenerationLifecycleRouter.ts` `matchesExpectation`).
+///
+/// Cached-acquire and acquired-pin checks keep full tuple equality
+/// (`tuplesEqual` parity); this helper is only for the expectation.
+fn matches_expectation(
+    expected: &WebSocketGenerationLifecycleTuple,
+    tuple: &WebSocketGenerationLifecycleTuple,
+) -> bool {
+    expected.service_id == tuple.service_id
+        && expected.assembly_identity == tuple.assembly_identity
+        && expected.assembly_generation == tuple.assembly_generation
+        && expected.websocket_entry_id == tuple.websocket_entry_id
+        && expected.connection_id == tuple.connection_id
 }
 
 impl SessionConsumer for RuntimeGenerationPinLedger {

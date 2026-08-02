@@ -45,8 +45,12 @@ test('live registry is the single declaration for current selectors, policies, a
     'db-encrypted-storage-live',
     'router-live:bootstrap',
     'router-live:session',
+    'router-live:dispatch',
     'router-live:activation-full-chain',
+    'router-live:ws',
+    'router-live:actor',
     'router-live:differential',
+    'router-live:http',
     'loop-risk-health-live',
     'loop-risk-stress-live',
   ]);
@@ -94,6 +98,49 @@ test('live registry is the single declaration for current selectors, policies, a
     'mongosh',
   ]);
   assert.deepEqual(database.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const dispatch = invocation('router-live:dispatch');
+  assert.equal(dispatch.entry.key, 'router-rust-dispatch-live');
+  assert.equal(dispatch.entry.source.type, 'script');
+  assert.equal(
+    dispatch.entry.source.path,
+    'scripts/check-router-dispatch-live.mjs',
+  );
+  assert.equal(dispatch.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(dispatch.value.id, 'live:router-rust-dispatch');
+  assert.equal(dispatch.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(dispatch.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.deepEqual(dispatch.value.requiredInputs, []);
+  assert.deepEqual(dispatch.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(dispatch.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const ws = invocation('router-live:ws');
+  assert.equal(ws.entry.key, 'router-rust-ws-live');
+  assert.equal(ws.entry.source.type, 'script');
+  assert.equal(ws.entry.source.path, 'scripts/check-router-ws-live.mjs');
+  assert.equal(ws.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(ws.value.id, 'live:router-rust-ws');
+  assert.equal(ws.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(ws.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.deepEqual(ws.value.requiredInputs, []);
+  assert.deepEqual(ws.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(ws.value.canonicalPolicy, {
     forbidSkips: false,
     forbidUnchecked: true,
   });

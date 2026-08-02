@@ -217,17 +217,18 @@ mod tests {
                 skiff_router::session::ConsumerKind::RequestDispatcher,
                 skiff_router::session::ConsumerKind::RuntimeGenerationPinLedger,
                 skiff_router::session::ConsumerKind::WebSocketRequestBroker,
+                skiff_router::session::ConsumerKind::ActorSessionOwner,
                 skiff_router::session::ConsumerKind::ActivationCoordinator,
             ]
         );
-        // Installed sink bundle: request/connection/activation/actor wired;
-        // spawn remains unimplemented (M-spawn-repair shared-model node).
+        // Installed sink bundle: request/connection/activation/actor/spawn
+        // all wired (E-actor-rust installed the real spawn inbound sink).
         let sinks = components.session.inbound_sinks();
         assert!(sinks.request.is_some());
         assert!(sinks.connection.is_some());
         assert!(sinks.activation_transaction.is_some());
         assert!(sinks.actor.is_some());
-        assert!(sinks.spawn.is_none());
+        assert!(sinks.spawn.is_some());
 
         // Components are live and empty.
         assert_eq!(components.dispatcher.pending_count(), 0);
