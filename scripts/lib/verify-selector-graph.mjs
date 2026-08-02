@@ -69,7 +69,6 @@ const selectorGraph = {
     scripts: ['scripts-tests', 'scripts-dev-sync'],
     vscode: ['vscode-grammar'],
     'type-check': [
-      'router-type-check',
       'telemetry-type-check',
       'scripts-syntax',
       'vscode-type-check',

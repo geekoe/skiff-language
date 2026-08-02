@@ -50,6 +50,17 @@ test('ordinary selectors expose the two test domains and implementation subjects
     'telemetry',
     'tooling',
   ]);
+  assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions['type-check'], [
+    'telemetry-type-check',
+    'scripts-syntax',
+    'vscode-type-check',
+  ]);
+  assert.equal(
+    Object.values(VERIFY_SELECTOR_GRAPH.expansions).some((children) =>
+      children.includes('router-type-check'),
+    ),
+    false,
+  );
 });
 
 test('Skiff source tests have one canonical command and remain deduplicated', async () => {

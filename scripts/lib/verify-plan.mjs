@@ -278,9 +278,6 @@ function taskBuilders({
       ]),
       ...await checkerTasks(root, 'rust-quality'),
     ],
-    'router-type-check': async () => [
-      packageTask(root, 'router:type-check', 'router', 'router', ['run', 'type-check']),
-    ],
     'router-rust-process-smoke': async () => [
       task(root, 'router-rust:process-smoke', 'implementation:router', 'node', [
         'scripts/run-router-process-smoke.mjs',
