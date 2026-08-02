@@ -45,6 +45,7 @@ use crate::bootstrap::{
 use crate::dispatch::CandidateViewSource;
 use crate::routing::{CandidateQuery, DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery};
 use crate::session::identity::RuntimeSessionEpoch;
+use crate::session::observer::RegistrationObserver;
 use crate::session::{ConsumerKind, SessionConsumer};
 
 use super::recovery::{project_recovery, CandidateEpochRefs};
@@ -915,6 +916,21 @@ impl SessionConsumer for ActivationCoordinatorHandle {
     fn on_session_closed(&self, session: &RuntimeSessionEpoch) -> Result<(), String> {
         self.notify_session_closed(session)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// Cold recovery rebind seam (plan §4.2): the session layer notifies the
+/// coordinator when a Runtime registration becomes routable. The coordinator
+/// binds expected replicas into the recovery transaction (non-expected
+/// replicas are ignored by `on_register`); the callback is non-blocking and
+/// mailbox saturation only affects recovery health, never the session.
+impl RegistrationObserver for ActivationCoordinatorHandle {
+    fn on_session_registered(&self, session: &RuntimeSessionEpoch) {
+        let binding = ActivationParticipantBinding {
+            replica_id: session.replica_id.clone(),
+            session_epoch: session.clone(),
+        };
+        let _ = self.register_recovery_session(binding);
     }
 }
 

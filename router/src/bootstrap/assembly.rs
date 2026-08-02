@@ -4,13 +4,16 @@
 //! repository (W-activation-state `ActivationStateRepository` read side) →
 //! `CommittedActivationBootstrapReader` → strict loader →
 //! `ActiveRoutingEpochStore`. The committed epoch must be published before the
-//! listeners are started; pending / missing / malformed / identity mismatch /
-//! loader failures all fail closed with no listener and no partial epoch.
-//! Full cold recovery belongs to E-activation.
+//! listeners are started; missing / malformed / identity mismatch / loader
+//! failures all fail closed with no listener and no partial epoch. A durable
+//! pending activation is surfaced to the activation coordinator, which
+//! installs the recovery transaction after the committed epoch is published
+//! (plan §4.2).
 
 use std::{fmt, sync::Arc};
 
 use skiff_artifact_identity::ArtifactRelativePath;
+use skiff_deployment::activation_state::PendingActivation;
 
 use crate::activation::{
     ActivationStateRepository, MongoActivationStateRepository,
@@ -58,6 +61,7 @@ pub enum BootstrapAssemblyError {
 pub struct RouterBootstrapAssembly {
     environment: String,
     epoch: Arc<RoutingEpoch>,
+    pending_recovery: Option<PendingActivation>,
     epoch_store: Arc<ActiveRoutingEpochStore>,
     loader: Arc<BlockingLoader>,
     strict_loader: Arc<BootstrapStrictLoader>,
@@ -151,10 +155,11 @@ impl RouterBootstrapAssembly {
             )
             .map_err(|error| BootstrapAssemblyError::ActorProjectionPath(error.to_string()))?,
         );
-        let epoch = runner.run_initial(environment, &actor_projection).await?;
+        let outcome = runner.run_initial(environment, &actor_projection).await?;
         Ok(Self {
             environment: environment.to_string(),
-            epoch,
+            epoch: outcome.epoch,
+            pending_recovery: outcome.pending,
             epoch_store,
             loader,
             strict_loader,
@@ -174,6 +179,13 @@ impl RouterBootstrapAssembly {
 
     pub fn epoch(&self) -> &Arc<RoutingEpoch> {
         &self.epoch
+    }
+
+    /// Durable pending activation observed at startup (plan §4.2). The
+    /// supervisor installs it as a recovery transaction through the
+    /// activation coordinator; `None` means a stable committed-only state.
+    pub fn pending_recovery(&self) -> Option<&PendingActivation> {
+        self.pending_recovery.as_ref()
     }
 
     pub fn loader(&self) -> Arc<BlockingLoader> {

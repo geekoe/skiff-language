@@ -197,7 +197,12 @@ pub(crate) async fn run_session_task(
                     machine.terminal_with(kind);
                 } else {
                     if let Some(session) = &bound_session {
-                        layer.directory_lock().mark_registered(session);
+                        if layer.directory_lock().mark_registered(session) {
+                            // Cold recovery rebind seam (plan §4.2): the
+                            // activation coordinator observes routable
+                            // registrations to bind expected replicas.
+                            layer.notify_session_registered(session);
+                        }
                     }
                     layer.release_pre_auth(&connection_id);
                     pre_auth_released = true;

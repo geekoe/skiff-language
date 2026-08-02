@@ -189,6 +189,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-activation-full-chain-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-activation-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:activation-full-chain',
+        description:
+          'real Router + temporary Mongo replica set + real compiler artifact + real Runtime: activate HTTP -> durable prepare -> real Runtime prepared -> durable commit -> epoch swap -> Runtime commit -> same-session re-register -> new-generation HTTP request; old captured-epoch request under its original lease; pre-decision disconnect abort / post-decision durable reconcile; cold recovery committed-first + rebind + candidate-load failure durable abort; audit/CAS/retry non-duplication (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-activation-full-chain',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-differential-live',
     source: {
       type: 'script',
