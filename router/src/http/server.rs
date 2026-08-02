@@ -26,7 +26,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::bootstrap::RoutingEpoch;
+use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 
 use super::cors;
 use super::dispatch::{
@@ -202,16 +202,42 @@ impl Counters {
 
 struct GatewayContext {
     epoch: Arc<RoutingEpoch>,
+    /// E-activation §8: when present, every request resolves the ingress and
+    /// routing identity against the live active epoch (activation swap
+    /// visibility); absent keeps the pre-seam static-epoch behavior.
+    epoch_store: Option<Arc<ActiveRoutingEpochStore>>,
     resolver: Arc<dyn HttpIngressResolver>,
     dispatcher: Arc<dyn HttpDispatchPort>,
     options: HttpGatewayServerOptions,
     counters: Arc<Counters>,
 }
 
+impl GatewayContext {
+    fn current_epoch(&self) -> Arc<RoutingEpoch> {
+        self.epoch_store
+            .as_ref()
+            .and_then(|store| store.capture())
+            .unwrap_or_else(|| Arc::clone(&self.epoch))
+    }
+}
+
 /// Binds and starts the public HTTP gateway on a real socket.
 pub async fn start_http_gateway(
     options: HttpGatewayServerOptions,
     epoch: Arc<RoutingEpoch>,
+    resolver: Arc<dyn HttpIngressResolver>,
+    dispatcher: Arc<dyn HttpDispatchPort>,
+) -> Result<HttpGatewayServer, HttpServerError> {
+    start_http_gateway_with_epoch_store(options, epoch, None, resolver, dispatcher).await
+}
+
+/// Binds and starts the public HTTP gateway against a live active epoch
+/// store (E-activation §8: the gateway follows activation swaps). `None`
+/// keeps the static-epoch behavior of the 4-argument seam.
+pub async fn start_http_gateway_with_epoch_store(
+    options: HttpGatewayServerOptions,
+    epoch: Arc<RoutingEpoch>,
+    epoch_store: Option<Arc<ActiveRoutingEpochStore>>,
     resolver: Arc<dyn HttpIngressResolver>,
     dispatcher: Arc<dyn HttpDispatchPort>,
 ) -> Result<HttpGatewayServer, HttpServerError> {
@@ -224,6 +250,7 @@ pub async fn start_http_gateway(
     let counters = Arc::new(Counters::new());
     let context = Arc::new(GatewayContext {
         epoch,
+        epoch_store,
         resolver,
         dispatcher,
         options,
@@ -409,10 +436,11 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             .await;
         }
     };
-    let service_manages_cors =
-        context
-            .resolver
-            .has_explicit_options_ingress(&context.epoch, &selector, &target.path);
+    let service_manages_cors = context.resolver.has_explicit_options_ingress(
+        &context.current_epoch(),
+        &selector,
+        &target.path,
+    );
     if service_manages_cors {
         context
             .counters
@@ -454,7 +482,7 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             )
             .await;
         }
-        if !has_http_ingress_path(&context.epoch, &selector, &target.path) {
+        if !has_http_ingress_path(&context.current_epoch(), &selector, &target.path) {
             context.counters.bump(&context.counters.ingress_misses);
             context.counters.bump(&context.counters.platform_errors);
             cancel_on_drop.defuse();
@@ -492,27 +520,28 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             return Ok(error_response(error, &cors_headers));
         }
     };
-    let binding =
-        match context
-            .resolver
-            .resolve(&context.epoch, &selector, &method_str, &target.path)
-        {
-            Ok(binding) => binding,
-            Err(error) => {
-                if error.status == 404 {
-                    context.counters.bump(&context.counters.ingress_misses);
-                }
-                context.counters.bump(&context.counters.platform_errors);
-                cancel_on_drop.defuse();
-                return early_error_response(
-                    request,
-                    error,
-                    &cors_headers,
-                    context.options.max_request_bytes,
-                )
-                .await;
+    let binding = match context.resolver.resolve(
+        &context.current_epoch(),
+        &selector,
+        &method_str,
+        &target.path,
+    ) {
+        Ok(binding) => binding,
+        Err(error) => {
+            if error.status == 404 {
+                context.counters.bump(&context.counters.ingress_misses);
             }
-        };
+            context.counters.bump(&context.counters.platform_errors);
+            cancel_on_drop.defuse();
+            return early_error_response(
+                request,
+                error,
+                &cors_headers,
+                context.options.max_request_bytes,
+            )
+            .await;
+        }
+    };
     let metadata = build_http_request_metadata(&method, &target, request.headers());
     let body = match read_request_body(request.into_body(), context.options.max_request_bytes).await
     {
@@ -527,7 +556,7 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
         }
     };
     let header = match build_request_start_header(
-        &context.epoch,
+        &context.current_epoch(),
         &binding,
         new_request_id(),
         context.options.request_timeout,

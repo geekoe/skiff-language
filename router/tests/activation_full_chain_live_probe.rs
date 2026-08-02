@@ -565,12 +565,15 @@ async fn pump_one<R, W>(
 }
 
 async fn wait_for_handshake(state: &Arc<RelayState>, connection: u64) -> Vec<RelayRecord> {
-    const SEQUENCE: [&str; 5] = [
+    // Registration prefix; the first runtime.health may be interleaved by a
+    // recovery Prepare (cold recovery rebinds immediately after the ACK), so
+    // the prefix window is the four registration frames and health is
+    // required anywhere after it.
+    const SEQUENCE: [&str; 4] = [
         "router.bootstrap",
         "runtime.capabilities",
         "assembly.activation",
         "runtime.registered",
-        "runtime.health",
     ];
     let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;
     loop {
@@ -587,7 +590,12 @@ async fn wait_for_handshake(state: &Arc<RelayState>, connection: u64) -> Vec<Rel
                     .map(|record| frame_type(&record.bytes))
                     .collect::<Vec<_>>();
                 if types == SEQUENCE {
-                    return window.iter().map(|record| (*record).clone()).collect();
+                    let has_health = frames[start + SEQUENCE.len()..]
+                        .iter()
+                        .any(|record| frame_type(&record.bytes) == "runtime.health");
+                    if has_health {
+                        return window.iter().map(|record| (*record).clone()).collect();
+                    }
                 }
             }
         }
@@ -1000,7 +1008,7 @@ mod tests {
         let (mut runtime, connection_1) =
             spawn_runtime_await_handshake(&live, &relay_state, &runtime_config).await;
         let handshake = wait_for_handshake(&relay_state, connection_1).await;
-        assert_eq!(handshake.len(), 5);
+        assert_eq!(handshake.len(), 4);
         for record in &handshake {
             let direction = if record.direction == Direction::ToRouter {
                 AssemblyActivationFrameDirection::RuntimeToRouter
@@ -1066,7 +1074,10 @@ mod tests {
         assert!(old_body.contains("late"), "old request body: {old_body:?}");
 
         let (new_status, new_body) = http_service_request(&live, "/unary-new", "0.1.1").await;
-        assert_eq!(new_status, 200, "new-generation request must succeed");
+        assert_eq!(
+            new_status, 200,
+            "new-generation request must succeed: {new_body:?}"
+        );
         assert!(
             new_body.contains("pong-new"),
             "new request body: {new_body:?}"
@@ -1210,17 +1221,12 @@ mod tests {
         let mut router = spawn_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
         assert_bootstrap_tuple(&live, 3).await;
-        let recovery_state = Arc::new(RelayState::new());
-        let recovery_relay_task = tokio::spawn(relay_listen(
-            live.relay_port,
-            live.router_runtime_url(),
-            Arc::clone(&recovery_state),
-        ));
+        // The phase-1 relay listener is still bound on the leased port; the
+        // restarted router accepts the Runtime's new connection through it.
         let (mut runtime, recovery_connection) =
-            spawn_runtime_await_handshake(&live, &recovery_state, &runtime_config).await;
+            spawn_runtime_await_handshake(&live, &relay_state, &runtime_config).await;
         let controls =
-            wait_for_activation_sequence(&recovery_state, recovery_connection, "recovery-4", 4)
-                .await;
+            wait_for_activation_sequence(&relay_state, recovery_connection, "recovery-4", 4).await;
         assert_eq!(controls.len(), 4);
         assert_register_control(&live, &controls[3], 4);
         let durable = wait_for_durable(&live, &repository, |state| {
@@ -1287,7 +1293,6 @@ mod tests {
         assert!(status.success(), "router exit {status}; {stderr}");
         assert_ports_closed(&live);
         relay_task.abort();
-        recovery_relay_task.abort();
 
         eprintln!("router-live:activation-full-chain probe: PASS");
     }

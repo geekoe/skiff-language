@@ -188,6 +188,19 @@ impl ClientHandshake {
                 self.phase = ClientHandshakePhase::Registered;
                 Ok(())
             }
+            // E-activation §4.1 step 9/§8: a post-commit same-session
+            // re-register sends a fresh Register and receives a second
+            // `runtime.registered` ACK while the session is already
+            // Registered; the repeated ACK for the same replica identity is
+            // idempotent. A mismatched identity stays a strict terminal.
+            ClientHandshakePhase::Registered => {
+                if ack_runtime_id != expected_runtime_id {
+                    let terminal = ClientTerminalKind::IdentityChange;
+                    self.set_terminal(terminal);
+                    return Err(terminal);
+                }
+                Ok(())
+            }
             _ => {
                 let terminal = ClientTerminalKind::WrongOrder;
                 self.set_terminal(terminal);
@@ -249,5 +262,39 @@ impl ClientHandshake {
 impl Default for ClientHandshake {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_phase_repeat_ack_same_runtime_is_idempotent() {
+        let mut handshake = ClientHandshake::registered();
+        handshake
+            .on_registered("runtime-base", "runtime-base")
+            .expect("post-commit same-session re-register ACK must be accepted");
+        assert_eq!(handshake.phase, ClientHandshakePhase::Registered);
+        assert!(handshake.terminal.is_none());
+    }
+
+    #[test]
+    fn registered_phase_repeat_ack_wrong_runtime_is_terminal() {
+        let mut handshake = ClientHandshake::registered();
+        let error = handshake
+            .on_registered("runtime-other", "runtime-base")
+            .expect_err("mismatched re-register ACK identity must fail");
+        assert!(matches!(error, ClientTerminalKind::IdentityChange));
+        assert_eq!(handshake.phase, ClientHandshakePhase::Closed);
+    }
+
+    #[test]
+    fn waiting_bootstrap_ack_remains_wrong_order() {
+        let mut handshake = ClientHandshake::new();
+        let error = handshake
+            .on_registered("runtime-base", "runtime-base")
+            .expect_err("ACK before register must remain wrong order");
+        assert!(matches!(error, ClientTerminalKind::WrongOrder));
     }
 }
