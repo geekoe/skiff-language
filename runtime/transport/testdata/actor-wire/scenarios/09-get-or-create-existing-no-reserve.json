@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "scenario": "get-or-create-existing-no-reserve",
+  "domain": "activation",
+  "actorKey": "example.com/docs|CounterActor|CounterId|sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "epoch": 1,
+  "initialOwner": { "runtimeId": "runtime-b", "epoch": 1, "leaseExpiresAt": 31000, "now": 1000 },
+  "events": [
+    { "op": "getOrCreate", "caller": "c1", "rpcId": "rpc:1", "lineage": "ordinary" }
+  ],
+  "expect": {
+    "outcomes": { "rpc:1": "resolved:1" },
+    "claims": 0,
+    "reservations": 0,
+    "commits": 0,
+    "aborts": 0,
+    "lineageConflicts": 0,
+    "owner": { "runtimeId": "runtime-b", "epoch": 1, "leaseExpiresAt": 31000 }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "control-ack-exact-correlation",
+  "domain": "control",
+  "events": [
+    { "op": "sendControl", "requestId": "req:1", "operation": "activateInitial", "runtimeId": "runtime-b" },
+    { "op": "ack", "runtimeId": "runtime-b", "requestId": "req:1", "operation": "activateInitial", "accepted": true }
+  ],
+  "expect": {
+    "pending": 0,
+    "accepted": 1,
+    "rejected": 0,
+    "lateAcks": 0,
+    "timeouts": 0,
+    "outcomes": { "req:1": "accepted" }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "scenario": "get-or-create-lineage-conflict",
+  "domain": "activation",
+  "actorKey": "example.com/docs|CounterActor|CounterId|sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "epoch": 1,
+  "events": [
+    { "op": "getOrCreate", "caller": "c1", "rpcId": "rpc:1", "lineage": "ordinary" },
+    { "op": "getOrCreate", "caller": "c3", "rpcId": "rpc:3", "lineage": "test:cap-1", "reject": true, "reason": "ActorCreateLineageConflict" },
+    { "op": "ack", "runtimeId": "runtime-b", "accepted": true, "now": 2000 }
+  ],
+  "expect": {
+    "outcomes": { "rpc:1": "resolved:1", "rpc:3": "failed:ActorCreateLineageConflict" },
+    "claims": 0,
+    "reservations": 0,
+    "commits": 1,
+    "aborts": 0,
+    "lineageConflicts": 1,
+    "owner": { "runtimeId": "runtime-b", "epoch": 1, "leaseExpiresAt": 32000 }
+  }
+}

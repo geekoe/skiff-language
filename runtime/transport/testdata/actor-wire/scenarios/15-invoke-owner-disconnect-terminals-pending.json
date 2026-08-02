@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "invoke-owner-disconnect-terminals-pending",
+  "domain": "invocation",
+  "events": [
+    { "op": "invoke", "caller": "c1", "invocationId": "inv:1", "ownerRuntimeId": "runtime-b", "epoch": 7, "correlation": "cancel:1" },
+    { "op": "invoke", "caller": "c2", "invocationId": "inv:2", "ownerRuntimeId": "runtime-b", "epoch": 7, "correlation": "cancel:2" },
+    { "op": "ownerDisconnect", "runtimeId": "runtime-b" }
+  ],
+  "expect": {
+    "pending": 0,
+    "settled": 0,
+    "rejected": 0,
+    "terminals": 2,
+    "tombstones": 2
+  }
+}

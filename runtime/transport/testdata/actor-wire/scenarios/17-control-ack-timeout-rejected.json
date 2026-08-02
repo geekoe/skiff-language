@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "scenario": "control-ack-timeout-rejected",
+  "domain": "control",
+  "events": [
+    { "op": "sendControl", "requestId": "req:1", "operation": "activateInitial", "runtimeId": "runtime-b" },
+    { "op": "timeout", "requestId": "req:1" },
+    { "op": "ack", "runtimeId": "runtime-b", "requestId": "req:1", "operation": "activateInitial", "accepted": true, "reject": true, "reason": "late ACK" }
+  ],
+  "expect": {
+    "pending": 0,
+    "accepted": 0,
+    "rejected": 1,
+    "lateAcks": 1,
+    "timeouts": 1,
+    "outcomes": { "req:1": "rejected" }
+  }
+}
