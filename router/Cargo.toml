@@ -16,6 +16,7 @@ skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }
 skiff-canonical-json = { path = "../canonical-json" }
 skiff-deployment = { path = "../deployment" }
+skiff-runtime-config-snapshot = { path = "../runtime-config-snapshot" }
 skiff-runtime-request-contract = { path = "../runtime/request-contract" }
 skiff-runtime-transport = { path = "../runtime/transport" }
 

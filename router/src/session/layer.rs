@@ -21,6 +21,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::timeout;
 
+use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
 
 use super::bootstrap::RuntimeBootstrapProvider;
@@ -128,6 +129,7 @@ struct SessionTaskHandle {
 pub struct SessionLayer {
     bootstrap_provider: RuntimeBootstrapProvider,
     committed_epoch: Option<RegisteredAssemblyTuple>,
+    epoch_store: Mutex<Option<Arc<ActiveRoutingEpochStore>>>,
     pending_epoch: Option<RegisteredAssemblyTuple>,
     manifest: ConsumerManifest,
     directory: Mutex<RuntimeRegistrationDirectory>,
@@ -198,6 +200,7 @@ impl SessionLayer {
         Ok(Self {
             bootstrap_provider,
             committed_epoch: options.committed_epoch,
+            epoch_store: Mutex::new(None),
             pending_epoch: options.pending_epoch,
             manifest: options.manifest,
             directory: Mutex::new(directory),
@@ -219,14 +222,39 @@ impl SessionLayer {
         })
     }
 
+    /// The current committed tuple: from the epoch store when wired, else the
+    /// static test seam. This is the W-bootstrap seam; session state-machine
+    /// logic is unchanged.
+    fn current_tuple(&self) -> Option<RegisteredAssemblyTuple> {
+        if let Some(store) = self
+            .epoch_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            return store.capture().map(|epoch| epoch.registered_tuple());
+        }
+        self.committed_epoch.clone()
+    }
+
+    /// W-bootstrap seam: attach the single-authority epoch store. Subsequent
+    /// bootstrap bytes and register-validation contexts capture the current
+    /// epoch from the store; no session state-machine logic is touched.
+    pub fn attach_epoch_store(&self, store: Arc<ActiveRoutingEpochStore>) {
+        *self
+            .epoch_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(store);
+    }
+
     pub fn bootstrap_bytes(&self) -> Option<Vec<u8>> {
-        let epoch = self.committed_epoch.as_ref()?;
-        self.bootstrap_provider.build(epoch).ok()
+        let epoch = self.current_tuple()?;
+        self.bootstrap_provider.build(&epoch).ok()
     }
 
     pub fn epoch_context(&self) -> EpochContext {
         EpochContext {
-            current: self.committed_epoch.clone(),
+            current: self.current_tuple(),
             pending: self.pending_epoch.clone(),
         }
     }
