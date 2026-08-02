@@ -345,6 +345,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-rollback-final-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-rollback-final.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:rollback-final',
+        description:
+          'immutable TS rollback unit + clean-host release-candidate rehearsal (fresh temp dir offline TS unit with pinned Node runtime, materialized dependencies, package/lockfile, process spec and full file/source identity; four-phase ts-workspace->ts-unit->rust->ts-unit-relocated swap with stop-admission/SIGTERM/port-exit/Runtime-reconnect/committed-tuple-parity/unary smoke; clean-host bundle starts without pnpm/tsx PATH; local macOS equivalent of plan §11.2/§8, real Linux/PM2 clean-host gate remains tooling/release owned)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-rollback-final',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh', 'git'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',
