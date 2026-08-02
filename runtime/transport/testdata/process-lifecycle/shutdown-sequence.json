@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "contract": "c-process-lifecycle-v1",
+  "steps": [
+    {
+      "id": "stop-public-control-admission",
+      "deadlineMs": 5000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "public-listener-stop-accept",
+        "control-listener-stop-accept"
+      ]
+    },
+    {
+      "id": "stop-new-activation-reconcile-durable",
+      "deadlineMs": 10000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "no-new-activation",
+        "durable-decision-reconciled"
+      ]
+    },
+    {
+      "id": "drain-http-client-ws-finalizers",
+      "deadlineMs": 15000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "http-finalizers-drained",
+        "client-ws-finalizers-drained"
+      ]
+    },
+    {
+      "id": "terminal-dispatcher-broker-actor-pending",
+      "deadlineMs": 10000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "dispatcher-pending-zero",
+        "broker-pending-zero",
+        "actor-pending-zero"
+      ]
+    },
+    {
+      "id": "release-runtime-generation-leases",
+      "deadlineMs": 10000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "generation-leases-zero"
+      ]
+    },
+    {
+      "id": "close-runtime-sessions-barrier",
+      "deadlineMs": 20000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "session-barrier-all-acked",
+        "directory-empty"
+      ]
+    },
+    {
+      "id": "join-blocking-loader-tasks-timers",
+      "deadlineMs": 15000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "blocking-loader-joined",
+        "tasks-joined",
+        "timers-joined"
+      ]
+    },
+    {
+      "id": "close-mongo",
+      "deadlineMs": 10000,
+      "failStopOnTimeout": true,
+      "sideEffects": [
+        "mongo-closed"
+      ]
+    }
+  ]
+}
