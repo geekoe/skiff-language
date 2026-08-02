@@ -12,7 +12,8 @@ pub mod session;
 
 pub use bootstrap::{
     ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
-    BootstrapStrictLoader, CommittedActivationBootstrapReader, RoutingEpoch,
+    BootstrapStrictLoader, CommittedActivationBootstrapReader, RouterBootstrapAssembly,
+    RoutingEpoch, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
 };
 pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,

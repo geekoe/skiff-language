@@ -7,6 +7,11 @@
 //! assembled here: empty HTTP responses, a health placeholder and the
 //! `/runtime` WebSocket upgrade handed to `SessionLayer` (W-session). No
 //! request dispatch, WS broker or activation transaction business exists.
+//!
+//! `run_router` additionally owns the E-bootstrap wiring: the committed epoch
+//! must be assembled and published before any listener is bound, and the
+//! session layer receives the epoch store as its epoch source (plan §7
+//! E-bootstrap, C-bootstrap §2.5 readiness).
 
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -31,6 +36,7 @@ use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::WebSocketStream;
 
+use crate::bootstrap::RouterBootstrapAssembly;
 use crate::config::RouterConfig;
 use crate::session::SessionLayer;
 
@@ -241,13 +247,35 @@ pub async fn start_listeners_with_session(
 
 /// Runs the listeners until SIGINT/SIGTERM, then shuts them down gracefully.
 pub async fn run_router(config: RouterConfig) -> Result<(), ListenerError> {
-    let listeners = start_listeners(&config, &ListenerStartOptions::default()).await?;
+    // E-bootstrap readiness: the committed epoch must be published before any
+    // public/runtime listener binds. Any fail-closed outcome exits before
+    // binding and the repository is closed by the assembly.
+    let assembly = RouterBootstrapAssembly::assemble(&config)
+        .await
+        .map_err(|error| ListenerError::FailStop(format!("bootstrap failed closed: {error}")))?;
+    let session_layer = Arc::new(SessionLayer::new(config.clone()));
+    session_layer.attach_epoch_store(assembly.epoch_store());
+    let listeners = match start_listeners_with_session(
+        &config,
+        &ListenerStartOptions::default(),
+        session_layer,
+    )
+    .await
+    {
+        Ok(listeners) => listeners,
+        Err(error) => {
+            assembly.shutdown().await;
+            return Err(error);
+        }
+    };
     let mut fail_stop_rx = listeners.session.fail_stop_subscribe();
     tokio::select! {
         _ = wait_for_shutdown_signal() => {}
         _ = fail_stop_rx.changed() => {}
     }
-    listeners.shutdown().await
+    let shutdown_result = listeners.shutdown().await;
+    assembly.shutdown().await;
+    shutdown_result
 }
 
 async fn wait_for_shutdown_signal() {

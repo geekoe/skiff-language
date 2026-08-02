@@ -111,6 +111,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-bootstrap-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-bootstrap-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:bootstrap',
+        description:
+          'real compiler artifact through committed reader to initial epoch; missing/malformed/pending/identity mismatch/loader saturation/shutdown fail closed (managed CI, isolated instance + explicit Rust process)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-bootstrap',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',
