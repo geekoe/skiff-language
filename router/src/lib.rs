@@ -2,6 +2,7 @@
 //! final listener skeleton assembled from the C-net mechanism.
 
 pub mod activation;
+pub mod actor;
 pub mod artifact;
 pub mod bootstrap;
 pub mod config;
@@ -11,6 +12,12 @@ pub mod listener;
 pub mod routing;
 pub mod session;
 
+pub use actor::{
+    ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay, ActorLaneSpawnControl,
+    ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorMethodSpawnExecutionSink,
+    ActorOwnerControlBroker, ActorOwnershipRegistry, ActorSpawnParentResolver,
+    FunctionSpawnParentResolver, RelaySpawnParentLookup, SpawnSubmitRouter,
+};
 pub use bootstrap::{
     ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
     BootstrapStrictLoader, CommittedActivationBootstrapReader, RouterBootstrapAssembly,
