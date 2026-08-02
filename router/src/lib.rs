@@ -5,6 +5,7 @@ pub mod activation;
 pub mod artifact;
 pub mod bootstrap;
 pub mod config;
+pub mod http;
 pub mod listener;
 pub mod session;
 
@@ -16,6 +17,13 @@ pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,
     FileBackendOssConfig, RouterConfig, RouterConfigError, RouterRewriteRule, ServiceDbConfig,
     TelemetryConfig, ROUTER_CONFIG_REDACTED_VALUE,
+};
+pub use http::{
+    CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
+    HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
+    HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
+    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
+    HttpStreamSink, UnaryHttpResponse,
 };
 pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
