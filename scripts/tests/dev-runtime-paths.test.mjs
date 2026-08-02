@@ -21,21 +21,20 @@ test('devRuntimePaths exposes the router binary dev path', () => {
   assert.equal(paths.routerConfig, join(devHome, 'router.yml'));
 });
 
-test('resolveRouterProcessSpec derives the canonical TS spec', () => {
+test('resolveRouterProcessSpec derives the canonical Rust spec by default', () => {
   const spec = resolveRouterProcessSpec({
     devHome,
-    implementation: 'ts',
     repoRoot,
   });
   assert.deepEqual(spec, {
-    implementation: 'ts',
+    implementation: 'rust',
     config_path: join(devHome, 'router.yml'),
-    ts_source_root: join(repoRoot, 'router'),
+    rust_binary_path: join(devHome, 'bin', routerBinaryName()),
   });
   assertRouterProcessSpec(spec);
 });
 
-test('resolveRouterProcessSpec derives the canonical Rust spec', () => {
+test('resolveRouterProcessSpec accepts an explicit rust implementation', () => {
   const spec = resolveRouterProcessSpec({
     devHome,
     implementation: 'rust',
@@ -49,52 +48,31 @@ test('resolveRouterProcessSpec derives the canonical Rust spec', () => {
   assertRouterProcessSpec(spec);
 });
 
-test('resolveRouterProcessSpec requires an explicit implementation and devHome', () => {
+test('resolveRouterProcessSpec rejects the retired TS implementation and missing devHome', () => {
   assert.throws(
-    () => resolveRouterProcessSpec({ devHome }),
-    /exactly "ts" or "rust"/,
+    () => resolveRouterProcessSpec({ devHome, implementation: 'ts' }),
+    /no longer selectable/,
   );
   assert.throws(
-    () => resolveRouterProcessSpec({ implementation: 'ts' }),
+    () => resolveRouterProcessSpec({}),
     /explicit devHome/,
   );
   assert.throws(
     () => resolveRouterProcessSpec({ devHome, implementation: 'node' }),
-    /exactly "ts" or "rust"/,
+    /no longer selectable/,
   );
 });
 
-test('assertRouterImplementation accepts only the migration values', () => {
-  assert.equal(assertRouterImplementation('ts'), 'ts');
+test('assertRouterImplementation accepts only rust', () => {
   assert.equal(assertRouterImplementation('rust'), 'rust');
   assert.throws(
-    () => assertRouterImplementation('python'),
-    /exactly "ts" or "rust"/,
+    () => assertRouterImplementation('ts'),
+    /no longer selectable/,
   );
 });
 
-test('routerProcessInvocation derives TS and Rust commands from the spec', () => {
-  const ts = resolveRouterProcessSpec({
-    devHome,
-    implementation: 'ts',
-    repoRoot,
-  });
-  assert.deepEqual(routerProcessInvocation(ts), {
-    command: 'pnpm',
-    args: [
-      '--dir',
-      join(repoRoot, 'router'),
-      'dev',
-      '--config',
-      join(devHome, 'router.yml'),
-    ],
-  });
-
-  const rust = resolveRouterProcessSpec({
-    devHome,
-    implementation: 'rust',
-    repoRoot,
-  });
+test('routerProcessInvocation derives the Rust command from the spec', () => {
+  const rust = resolveRouterProcessSpec({ devHome, repoRoot });
   assert.deepEqual(routerProcessInvocation(rust), {
     command: join(devHome, 'bin', routerBinaryName()),
     args: [join(devHome, 'router.yml')],
@@ -102,33 +80,28 @@ test('routerProcessInvocation derives TS and Rust commands from the spec', () =>
 });
 
 test('assertRouterProcessSpec enforces exact fields and absolute paths', () => {
-  const ts = resolveRouterProcessSpec({
-    devHome,
-    implementation: 'ts',
-    repoRoot,
-  });
+  const rust = resolveRouterProcessSpec({ devHome, repoRoot });
   assert.throws(
     () => assertRouterProcessSpec({
-      ...ts,
-      rust_binary_path: join(devHome, 'bin', routerBinaryName()),
-    }),
-    /must contain exactly/,
-  );
-  assert.throws(
-    () => assertRouterProcessSpec({ ...ts, ts_source_root: 'router' }),
-    /absolute path/,
-  );
-  assert.throws(
-    () => assertRouterProcessSpec({ ...ts, config_path: 'router.yml' }),
-    /absolute path/,
-  );
-  assert.throws(
-    () => assertRouterProcessSpec({
-      implementation: 'rust',
-      config_path: join(devHome, 'router.yml'),
-      rust_binary_path: join(devHome, 'bin', routerBinaryName()),
+      ...rust,
       ts_source_root: join(repoRoot, 'router'),
     }),
     /must contain exactly/,
+  );
+  assert.throws(
+    () => assertRouterProcessSpec({ ...rust, rust_binary_path: 'router' }),
+    /absolute path/,
+  );
+  assert.throws(
+    () => assertRouterProcessSpec({ ...rust, config_path: 'router.yml' }),
+    /absolute path/,
+  );
+  assert.throws(
+    () => assertRouterProcessSpec({
+      implementation: 'ts',
+      config_path: join(devHome, 'router.yml'),
+      rust_binary_path: join(devHome, 'bin', routerBinaryName()),
+    }),
+    /no longer selectable/,
   );
 });

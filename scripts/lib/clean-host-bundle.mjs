@@ -24,9 +24,21 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
+function execFileAsync(command, args, options) {
+  return new Promise((resolve, reject) => {
+    // child-process-owner: clean-host-exec-file
+    execFile(command, args, options, (error, stdout, stderr) => {
+      if (error !== null) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
 
 export const CLEAN_HOST_BUNDLE_SCHEMA = 'skiff-router-clean-host-bundle-v1';
 export const CLEAN_HOST_BUNDLE_MANIFEST_FILE = 'bundle-manifest.json';

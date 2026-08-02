@@ -86,11 +86,11 @@ test('CI runs canonical test domains plus a distinct quality/check scope', async
   assert.deepEqual(commands, [
     'node scripts/verify.mjs --only skiff-tests',
     'node scripts/verify.mjs --only implementation-tests',
-    'node scripts/verify.mjs --only router-rust,router-rust-process-smoke',
+    'node scripts/verify.mjs --only router,router-rust-process-smoke',
     'node scripts/verify.mjs --only rust-quality,type-check,checks',
   ]);
   assert.equal(
-    commands.filter((command) => command.includes('router-rust')).length,
+    commands.filter((command) => command.includes('router-rust-process-smoke')).length,
     1,
   );
   assert.equal(
@@ -103,7 +103,7 @@ test('CI runs canonical test domains plus a distinct quality/check scope', async
   const installedPackages = [
     ...workflow.matchAll(/pnpm --dir (\S+) install --frozen-lockfile/g),
   ].map((match) => match[1]);
-  assert.deepEqual(installedPackages, ['router', 'telemetry', 'scripts', 'vscode']);
+  assert.deepEqual(installedPackages, ['telemetry', 'scripts', 'vscode']);
   assert.match(workflow, /uses: actions\/checkout@v6\n\s+with:\n\s+persist-credentials: false/);
   assert.match(workflow, /uses: actions\/setup-node@v6/);
   assert.match(workflow, /package-manager-cache: false/);

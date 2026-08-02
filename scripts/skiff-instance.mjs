@@ -259,9 +259,7 @@ async function buildInstance(rawArgs, configPath) {
   } else {
     output.runtime = { path: config.paths.runtimeBinary };
     output.ecosystemStoreCli = { path: config.paths.ecosystemStoreCli };
-    if (config.routerProcessSpec.implementation === 'rust') {
-      output.router = { path: config.routerProcessSpec.rust_binary_path };
-    }
+    output.router = { path: config.routerProcessSpec.rust_binary_path };
   }
   console.log(JSON.stringify(output, null, 2));
 }
@@ -473,9 +471,11 @@ function routerImplementationFromInstanceConfig(source, label) {
   if (router !== undefined && !isPlainRecord(router)) {
     throw new Error(`${label}: router must be a mapping`);
   }
-  const implementation = router?.implementation ?? 'ts';
-  if (implementation !== 'ts' && implementation !== 'rust') {
-    throw new Error(`${label}: router.implementation must be exactly "ts" or "rust"`);
+  const implementation = router?.implementation ?? 'rust';
+  if (implementation !== 'rust') {
+    throw new Error(
+      `${label}: router.implementation is no longer selectable; the Router is always the Rust binary`,
+    );
   }
   return implementation;
 }
@@ -561,9 +561,6 @@ async function buildComponentBinaries(config, { only } = {}) {
   if (only !== undefined && only !== 'router') {
     throw new Error(`instance build --only supports exactly "router", got ${JSON.stringify(only)}`);
   }
-  if (only === 'router' && config.routerProcessSpec.implementation !== 'rust') {
-    throw new Error('instance build --only router requires router.implementation: rust');
-  }
   if (only !== 'router') {
     await buildRustBinary({
       manifest: join(skiffRoot, 'runtime', 'Cargo.toml'),
@@ -586,19 +583,17 @@ async function buildComponentBinaries(config, { only } = {}) {
     });
   }
 
-  if (config.routerProcessSpec.implementation === 'rust') {
-    await buildRustBinary({
-      manifest: join(skiffRoot, 'router', 'Cargo.toml'),
-      bin: 'skiff-router',
-      source: join(
-        config.paths.cargoTargetDir,
-        'debug',
-        process.platform === 'win32' ? 'skiff-router.exe' : 'skiff-router',
-      ),
-      destination: config.routerProcessSpec.rust_binary_path,
-      config,
-    });
-  }
+  await buildRustBinary({
+    manifest: join(skiffRoot, 'router', 'Cargo.toml'),
+    bin: 'skiff-router',
+    source: join(
+      config.paths.cargoTargetDir,
+      'debug',
+      process.platform === 'win32' ? 'skiff-router.exe' : 'skiff-router',
+    ),
+    destination: config.routerProcessSpec.rust_binary_path,
+    config,
+  });
 }
 
 async function buildRustBinary({ manifest, bin, source, destination, config }) {
@@ -682,9 +677,7 @@ function routerManagedProcessSpec(config) {
     args: invocation.args,
     cwd: skiffRoot,
     ports: [config.ports.routerHttp, config.ports.routerControl],
-    ...(spec.implementation === 'rust'
-      ? { managedBinary: spec.rust_binary_path }
-      : {}),
+    managedBinary: spec.rust_binary_path,
   };
 }
 
@@ -1424,22 +1417,14 @@ function commandMatchesComponent(config, spec, tokens) {
 }
 
 function commandMatchesRouterProcess(spec, tokens) {
-  if (spec.implementation === 'ts') {
-    return commandLooksLikePnpmDev(tokens, spec.ts_source_root, spec.config_path)
-      || commandLooksLikeTsxService(
-        tokens,
-        join(spec.ts_source_root, 'src', 'router', 'server.ts'),
-        'src/router/server.ts',
-        spec.config_path,
-      );
-  }
   return commandLooksLikeRouterRust(tokens, spec);
 }
 
 function commandLooksLikeRouterRust(tokens, spec) {
-  return tokens[0] !== undefined
-    && pathTokenMatches(tokens[0], spec.rust_binary_path)
-    && tokens.slice(1).some((token) => pathTokenMatches(token, spec.config_path));
+  const commandIndex = nodeWrapperScriptIndex(tokens);
+  return commandIndex !== null
+    && pathTokenMatches(tokens[commandIndex], spec.rust_binary_path)
+    && tokens.some((token, index) => index !== commandIndex && pathTokenMatches(token, spec.config_path));
 }
 
 function commandLooksLikePnpmDev(tokens, projectDir, configPath) {

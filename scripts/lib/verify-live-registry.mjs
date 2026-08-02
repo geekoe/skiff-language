@@ -250,41 +250,15 @@ export const LIVE_REGISTRY = deepFreeze([
       {
         selector: 'router-live:actor',
         description:
-          'TS/Rust differential actor full chain: both Router implementations consume the same canonical actor-routing projection and drive the identical two-real-Runtime replica actor get-or-create/invoke/owner-control/lease/function-spawn/actor-method-spawn chain through real HTTP with no unexplained differences (HTTP steps, projected Runtime frames, Mongo state/audit, terminal); two recorded accepted failure-path differences (flaky retained-entry stage + rejected-activation error code; both fail closed with identical HTTP observables) are declared in the actor parity inventory; plus the Rust-only disconnect/replacement/claim-race/spawn-mismatch fail-closed and zero-residue regression layer (managed CI, isolated instances + explicit processes)',
+          'Rust-only two-replica actor full chain: canonical actor-routing projection, two real Runtime replicas through test-only relays, real HTTP get-or-create/invoke/owner-control/lease/function-spawn/actor-method-spawn, plus disconnect/replacement/claim-race/spawn-mismatch fail-closed and zero-residue regression layer (managed CI, isolated instance + explicit Rust processes)',
         plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
         id: 'live:router-rust-actor',
         args: [],
         ownership: LIVE_OWNERSHIP.MANAGED,
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [],
-        requiredExecutables: ['node', 'pnpm', 'cargo', 'mongod', 'mongosh'],
-        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
-        canonicalPolicy: {
-          forbidSkips: false,
-          forbidUnchecked: true,
-        },
-      },
-    ],
-  },
-  {
-    key: 'router-rust-differential-live',
-    source: {
-      type: 'script',
-      path: 'scripts/check-router-differential-live.mjs',
-    },
-    invocations: [
-      {
-        selector: 'router-live:differential',
-        description:
-          'implementation-neutral differential harness: isolated TS/Rust Router instances with independent ports/artifact roots/runtime homes/Mongo namespaces, real Runtime per side through a test-only relay; compares HTTP/Runtime frames/Mongo state+audit/terminal with uuid/timestamp/ephemeral-port/log-order normalization only (managed, explicit selector)',
-        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
-        id: 'live:router-rust-differential',
-        args: [],
-        ownership: LIVE_OWNERSHIP.MANAGED,
-        tier: LIVE_TIERS.LIVE_MANUAL,
-        requiredInputs: [],
-        requiredExecutables: ['node', 'pnpm', 'cargo', 'mongod', 'mongosh'],
-        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
         canonicalPolicy: {
           forbidSkips: false,
           forbidUnchecked: true,
@@ -309,8 +283,8 @@ export const LIVE_REGISTRY = deepFreeze([
         ownership: LIVE_OWNERSHIP.MANAGED,
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [],
-        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh', 'python3'],
-        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh', 'python3'],
+        requiredModules: [{ specifier: 'ws', from: 'scripts/package.json' }],
         canonicalPolicy: {
           forbidSkips: false,
           forbidUnchecked: true,
@@ -336,32 +310,6 @@ export const LIVE_REGISTRY = deepFreeze([
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [],
         requiredExecutables: ['node', 'cargo', 'npm', 'mongod', 'mongosh', 'git'],
-        requiredModules: [],
-        canonicalPolicy: {
-          forbidSkips: false,
-          forbidUnchecked: true,
-        },
-      },
-    ],
-  },
-  {
-    key: 'router-rust-rollback-final-live',
-    source: {
-      type: 'script',
-      path: 'scripts/check-router-rollback-final.mjs',
-    },
-    invocations: [
-      {
-        selector: 'router-live:rollback-final',
-        description:
-          'immutable TS rollback unit + clean-host release-candidate rehearsal (fresh temp dir offline TS unit with pinned Node runtime, materialized dependencies, package/lockfile, process spec and full file/source identity; four-phase ts-workspace->ts-unit->rust->ts-unit-relocated swap with stop-admission/SIGTERM/port-exit/Runtime-reconnect/committed-tuple-parity/unary smoke; clean-host bundle starts without pnpm/tsx PATH; local macOS equivalent of plan §11.2/§8, real Linux/PM2 clean-host gate remains tooling/release owned)',
-        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
-        id: 'live:router-rust-rollback-final',
-        args: [],
-        ownership: LIVE_OWNERSHIP.MANAGED,
-        tier: LIVE_TIERS.LIVE_MANUAL,
-        requiredInputs: [],
-        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh', 'git'],
         requiredModules: [],
         canonicalPolicy: {
           forbidSkips: false,
@@ -432,7 +380,7 @@ export const LIVE_REGISTRY = deepFreeze([
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: ['loopRiskConfig'],
         requiredExecutables: ['node', 'ps'],
-        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        requiredModules: [{ specifier: 'ws', from: 'scripts/package.json' }],
         canonicalPolicy: {
           forbidSkips: true,
           forbidUnchecked: true,

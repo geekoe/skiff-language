@@ -1,6 +1,7 @@
 # Skiff Router
 
-This package is the TypeScript Router for the current RuntimeAssembly stack. It owns:
+This crate is the Rust Router (`skiff-router`) for the current
+RuntimeAssembly stack. It owns:
 
 - the public HTTP listener and WebSocket upgrades selected from the active
   RuntimeAssembly by exact deployment and service-scoped ingress;
@@ -20,13 +21,18 @@ timeout is read from the selected `config.<profile>.yml`, where a positive
 
 ## Run Locally
 
-From `skiff/router`:
+Build and run the binary from the repository root:
 
 ```bash
-pnpm install
-cp router.example.yml router.yml
-pnpm exec tsx src/router/server.ts --config router.yml
+cargo build --manifest-path router/Cargo.toml --bin skiff-router
+cp router/router.example.yml router/router.yml
+target/debug/skiff-router --config router/router.yml
 ```
+
+`skiff-router --identity` prints the binary identity; a bare invocation
+without `--config` reports the no-listener skeleton state. Local instances are
+managed by `scripts/skiff-instance.mjs`, which builds and supervises this
+binary under the instance dev-home.
 
 The target configuration shape is:
 

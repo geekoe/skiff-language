@@ -10,10 +10,10 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(testDir, '..', '..');
 const instanceScript = join(skiffRoot, 'scripts', 'skiff-instance.mjs');
 
-test('instance paths accepts explicit ts and rust router implementations', async () => {
+test('instance paths accepts the default rust router implementation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-router-process-spec-'));
   try {
-    for (const implementation of ['ts', 'rust']) {
+    for (const implementation of [undefined, 'rust']) {
       const configPath = join(root, `${implementation}.yml`);
       await writeFile(configPath, instanceConfigText({
         devHome: join(root, `${implementation}-home`),
@@ -27,20 +27,20 @@ test('instance paths accepts explicit ts and rust router implementations', async
   }
 });
 
-test('instance paths rejects invalid router implementations and non-mapping router', async () => {
+test('instance paths rejects the retired TS implementation and non-mapping router', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-router-process-spec-invalid-'));
   try {
     const devHome = join(root, 'dev-home');
     const invalid = join(root, 'invalid.yml');
     await writeFile(invalid, instanceConfigText({
       devHome,
-      implementation: 'go',
+      implementation: 'ts',
     }));
     let outcome = await runInstance('paths', invalid, ['--json']);
     assert.notEqual(outcome.code, 0);
     assert.match(
       outcome.stderr,
-      /router\.implementation must be exactly "ts" or "rust"/,
+      /router\.implementation is no longer selectable/,
     );
 
     const scalar = join(root, 'scalar.yml');
@@ -61,6 +61,9 @@ function instanceConfigText({ devHome, implementation }) {
     'environment: dev',
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(join(devHome, 'cargo-target'))}`,
+    ...(implementation === undefined
+      ? []
+      : ['router:', `  implementation: ${implementation}`]),
     'http:',
     '  maxRequestBytes: 67108864',
     '  maxResponseBytes: 8388608',
@@ -68,9 +71,6 @@ function instanceConfigText({ devHome, implementation }) {
     '  telemetry: disabled',
     '  mongo: disabled',
     '  watch: disabled',
-    ...(implementation === undefined
-      ? []
-      : ['router:', `  implementation: ${implementation}`]),
     '',
   ].join('\n');
 }

@@ -7,10 +7,7 @@ import {
 } from '../lib/runtime-execution-boundary-self-test.mjs';
 import { inspectRuntimeExecutionBoundaryOwners } from '../lib/runtime-execution-boundary-registry.mjs';
 import { checkRuntimeExecutionBoundaryRules } from '../lib/runtime-execution-boundary-rules.mjs';
-import {
-  productionTypeScriptViews,
-  scanRuntimeExecutionBoundarySource,
-} from '../lib/runtime-execution-boundary-source.mjs';
+import { scanRuntimeExecutionBoundarySource } from '../lib/runtime-execution-boundary-source.mjs';
 import {
   RUNTIME_EXECUTION_BOUNDARY_REGISTRY,
   REQUIRED_RUNTIME_EXECUTION_BOUNDARY_OWNER_ROLES,
@@ -20,7 +17,7 @@ import {
 test('runtime execution boundary checker rejects every hermetic mutation', async () => {
   const matrix = await runRuntimeExecutionBoundarySelfTest();
   assert.deepEqual(matrix, RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS);
-  assert.equal(matrix.length, 34);
+  assert.equal(matrix.length, 30);
   assert.deepEqual(
     new Set(matrix.map(({ expectedId }) => expectedId)),
     new Set([
@@ -46,9 +43,6 @@ test('runtime execution boundary checker rejects every hermetic mutation', async
       'host-active-assembly-entry-missing',
       'required-owner-anchor-missing',
       'legacy-runtime-service-execution',
-      'router-service-relay',
-      'router-service-rejection-incomplete',
-      'router-rejection-enters-relay-owner',
     ]),
   );
 });
@@ -161,83 +155,6 @@ test('independent R03 in-memory camouflage mutations fail closed', () => {
     })),
   );
 
-  const routerPath = 'router/src/router/runtimeEndpoint.ts';
-  const routerOwner = {
-    declarationKind: 'method',
-    language: 'typescript',
-    ownedRoots: [routerPath],
-    requiredAnchors: [],
-    requiredFile: routerPath,
-    role: 'router-runtime-service-rejection',
-    subjectId: 'router-runtime-service-rejection',
-    symbol: 'handleBinaryMessage',
-  };
-  const safeCase = [
-    "      case 'request.start':",
-    "        if (header.caller.kind !== 'service') throw new Error('invalid caller');",
-    '        this.sendFrame(ws, {',
-    "          type: 'response.error',",
-    '          requestId: header.requestId,',
-    '          error: {',
-    "            code: 'InProcessServiceCallRequired',",
-    "            message: 'service calls require an in-process binding'",
-    '          }',
-    '        });',
-    '        return;',
-  ].join('\n');
-  const routerSafe = [
-    'class RuntimeEndpoint {',
-    '  private async handleBinaryMessage(ws: WebSocket, data: Uint8Array): Promise<void> {',
-    '    const header = decode(data);',
-    '    switch (header.type) {',
-    safeCase,
-    "      case 'response.end':",
-    '        return;',
-    '    }',
-    '  }',
-    '}',
-  ].join('\n');
-  const routerMutation = replaceProbe(routerSafe, safeCase, [
-    "      case 'request.start': {",
-    '        const camouflage = `',
-    safeCase,
-    '        `;',
-    '        void camouflage;',
-    '        this.options.registry.pickDispatchConnection(header);',
-    '        return;',
-    '      }',
-  ].join('\n'));
-  const routerSources = new Map([
-    [routerPath, typeScriptSource(routerPath, routerMutation)],
-  ]);
-  const routerViolations = [];
-  const routerRegistry = {
-    owners: [routerOwner],
-    subjects: [{
-      discoveryRoots: ['router/src/router'],
-      id: 'router-runtime-service-rejection',
-    }],
-  };
-  const routerMatches = inspectRuntimeExecutionBoundaryOwners(
-    routerRegistry,
-    routerSources,
-    routerViolations,
-  );
-  checkRuntimeExecutionBoundaryRules(
-    routerRegistry,
-    routerSources,
-    routerMatches,
-    routerViolations,
-  );
-  assert.equal(routerMatches.get(routerOwner.role)?.length, 1);
-  assert.equal(
-    routerViolations.some(({ id }) => id === 'router-service-rejection-incomplete'),
-    true,
-  );
-  assert.equal(
-    routerViolations.some(({ id }) => id === 'router-rejection-enters-relay-owner'),
-    true,
-  );
 });
 
 test('diagnostic remote frames and test-effect dispatch are not service routing owners', () => {
@@ -341,11 +258,6 @@ test('production registry names every required subject and owner role exactly on
         'RecoverableBoundaryCodec',
         'runtime/boundary/src/recoverable.rs',
       ),
-      owner(
-        'router-runtime-service-rejection',
-        'handleBinaryMessage',
-        'router/src/router/runtimeEndpoint.ts',
-      ),
     ],
   );
 });
@@ -395,15 +307,6 @@ function rustSource(relPath, source) {
     commentless: lexical.code,
     identifiers: lexical.code,
     language: 'rust',
-    relPath,
-    source,
-  };
-}
-
-function typeScriptSource(relPath, source) {
-  return {
-    ...productionTypeScriptViews(source),
-    language: 'typescript',
     relPath,
     source,
   };

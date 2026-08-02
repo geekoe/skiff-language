@@ -650,6 +650,7 @@ async function spawnManaged(label, command, args, { cwd, tempRoot }) {
   const stderr = await open(stderrPath, 'w');
   logFiles.push({ path: stdoutPath, handle: stdout });
   logFiles.push({ path: stderrPath, handle: stderr });
+  // child-process-owner: router-chat-live-spawn
   const child = spawn(command, args, {
     cwd,
     env: process.env,

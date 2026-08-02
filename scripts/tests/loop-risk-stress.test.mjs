@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const stressPath = join(root, 'scripts', 'check-loop-risk-stress-live.mjs');
-const routerRequire = createRequire(join(root, 'router', 'package.json'));
+const scriptsRequire = createRequire(join(root, 'scripts', 'package.json'));
 
 test('stress help needs no target and never opens the supplied target', async () => {
   const probe = await startProbeServer();
@@ -288,7 +288,7 @@ async function startProbeServer() {
 }
 
 async function startWebSocketServer() {
-  const { WebSocketServer } = routerRequire('ws');
+  const { WebSocketServer } = scriptsRequire('ws');
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   const requests = [];
   server.on('connection', (socket, request) => {

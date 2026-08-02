@@ -11,8 +11,8 @@ import { pollLoopRiskHealth } from './loop-risk-health.mjs';
 
 export async function loadRouterWebSocket(cliUrl) {
   const scriptDir = dirname(fileURLToPath(cliUrl));
-  const routerRequire = createRequire(join(scriptDir, '../router/package.json'));
-  const resolved = routerRequire.resolve('ws');
+  const scriptsRequire = createRequire(join(scriptDir, 'package.json'));
+  const resolved = scriptsRequire.resolve('ws');
   const imported = await import(pathToFileURL(resolved).href);
   return imported.default ?? imported.WebSocket ?? imported;
 }

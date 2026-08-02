@@ -1,18 +1,17 @@
 #!/usr/bin/env node
-// `router-live:http` managed harness (E-http gate, plan §7/§8/§11.2).
+// `router-live:http` managed harness (E-http gate, plan §7/§8, post-cutover
+// Rust-only).
 //
-// Real HTTP → Router → Runtime unary + stream through three real Router
-// process phases (TS → Rust → TS, §11.2 incremental rollback rehearsal):
-// the same devHome/router.yml and the same committed activation tuple, a
-// single real Runtime process kept alive through all phases, and a test-only
-// WS relay that records every frame. The Rust phase additionally runs the
-// full E-http surface: trusted selectors, service-scoped ingress, typed/raw
-// opaque payloads, unary/stream mapping and sequencing, cumulative response
-// ceiling, backpressure, disconnect/cancel/deadline, CORS preflight/
-// service-managed and platform errors. Every race asserts one external
-// terminal, at most one cancel frame per request and a successful follow-up
-// unary; the process-level residue gate asserts Router SIGTERM exit 0 with
-// closed listeners and Runtime SIGINT exit 0.
+// Real HTTP → Router → Runtime unary + stream through the Rust `skiff-router`
+// binary phases: the same devHome/router.yml and the same committed activation
+// tuple, a test-only WS relay that records every frame, and the full E-http
+// surface: trusted selectors, service-scoped ingress, typed/raw opaque
+// payloads, unary/stream mapping and sequencing, cumulative response ceiling,
+// backpressure, disconnect/cancel/deadline, CORS preflight/service-managed
+// and platform errors. Every race asserts one external terminal, at most one
+// cancel frame per request and a successful follow-up unary; the
+// process-level residue gate asserts Router SIGTERM exit 0 with closed
+// listeners and Runtime SIGINT exit 0.
 //
 // The harness never touches the stable instance, stable Mongo, PM2 or the
 // fixed 4004-4007 ports: it uses a temporary Mongo replica set and leased
@@ -43,7 +42,6 @@ import {
   assertRouterPortsClosed,
   closeLogs,
   createHttpLiveRouterSpecs,
-  ensureTsRouterDependencies,
   installHttpLiveRustBinary,
   latestBootstrapTupleAfter,
   renderHttpLiveRouterConfig,
@@ -55,11 +53,11 @@ import {
   writeHttpLiveRuntimeConfig,
 } from './lib/http_live_process.mjs';
 import {
+  runBasicSuite,
   runBackpressureSuite,
   runFullSuite,
-  runRollbackSuite,
 } from './lib/http_live_suite.mjs';
-import { createRuntimeRelay } from './lib/router-differential/relay.mjs';
+import { createRollbackRelay } from './lib/rollback-relay.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FORBIDDEN_PORTS = new Set([
@@ -74,7 +72,6 @@ let tempRoot;
 let currentRelay;
 let currentRuntime;
 const evidence = {
-  manifests: null,
   bootstrapTuples: [],
   phases: [],
   runtimeExits: [],
@@ -120,7 +117,7 @@ try {
   await mongoHarness.start();
 
   const mongoUrl = httpLiveMongoUrl(mongoHarness.port);
-  console.log('router-live:http: seeding committed activation state (TS + Rust namespaces)');
+  console.log('router-live:http: seeding committed activation state (Rust namespace)');
   const committed = await seedHttpLiveCommittedState({
     mongoUrl,
     environment: HTTP_LIVE_ENVIRONMENT,
@@ -128,9 +125,6 @@ try {
     assemblyIdentity: identities.assemblyIdentity,
     configSnapshotId: identities.configSnapshotId,
   });
-
-  console.log('router-live:http: ensuring TS router dependencies');
-  await ensureTsRouterDependencies({ repoRoot });
 
   const targetDir = cargoTargetDir(repoRoot);
   console.log('router-live:http: building explicit Rust router binary');
@@ -168,11 +162,7 @@ try {
     }),
   );
 
-  const specs = createHttpLiveRouterSpecs({ repoRoot, devHome });
-  evidence.manifests = {
-    ts: specs.ts.manifest,
-    rust: specs.rust.manifest,
-  };
+  const rustSpec = createHttpLiveRouterSpecs({ repoRoot, devHome }).rust;
 
   const runtimeConfigPath = join(tempRoot, 'runtime.yml');
   await writeHttpLiveRuntimeConfig(runtimeConfigPath, {
@@ -181,31 +171,16 @@ try {
     environment: HTTP_LIVE_ENVIRONMENT,
   });
 
-  // Phase 1: TS Router. Each Router phase owns a fresh relay + Runtime
-  // process pair: when the Router exits, the relay's downstream socket would
-  // otherwise stay open forever (the relay only detaches, it does not close
-  // the peer), so the Runtime is stopped inside the phase before the relay
-  // closes. The Runtime reuses the same runtime-home/replica id and re-seeds
-  // the exact committed tuple on every phase.
-  await runRouterPhase({
-    phase: 'ts-1',
-    implementation: 'ts',
-    invocation: specs.ts.invocation,
-    httpPort,
-    runtimePort,
-    relayPort,
-    full: false,
-    routerLogsDir: join(tempRoot, 'phase-ts-1'),
-    runtimeBin,
-    runtimeConfigPath,
-  });
-
-  // Phase 2: Rust Router (same config, canonical Rust process command).
+  // Each Router phase owns a fresh relay + Runtime process pair: when the
+  // Router exits, the relay's downstream socket would otherwise stay open
+  // forever (the relay only detaches, it does not close the peer), so the
+  // Runtime is stopped inside the phase before the relay closes. The Runtime
+  // reuses the same runtime-home/replica id and re-seeds the exact committed
+  // tuple on every phase.
   await installHttpLiveRustBinary({ sourceBinary: routerSourceBinary, devHome });
   await runRouterPhase({
     phase: 'rust',
-    implementation: 'rust',
-    invocation: specs.rust.invocation,
+    invocation: rustSpec.invocation,
     httpPort,
     runtimePort,
     relayPort,
@@ -234,9 +209,8 @@ try {
   );
   await runRouterPhase({
     phase: 'rust-bp',
-    implementation: 'rust',
     invocation: {
-      command: evidence.manifests.rust.rust_binary_path,
+      command: rustSpec.spec.rust_binary_path,
       args: [backpressureConfigPath],
     },
     httpPort,
@@ -249,24 +223,8 @@ try {
     runtimeConfigPath,
   });
 
-  // Phase 3: TS Router again (rollback to the immutable TS process command).
-  await runRouterPhase({
-    phase: 'ts-2',
-    implementation: 'ts',
-    invocation: specs.ts.invocation,
-    httpPort,
-    runtimePort,
-    relayPort,
-    full: false,
-    routerLogsDir: join(tempRoot, 'phase-ts-2'),
-    runtimeBin,
-    runtimeConfigPath,
-  });
-
-  assertRollbackRoundtrip(evidence, committed);
-
   console.log('router-live:http: PASS');
-  console.log(JSON.stringify(rollbackEvidence(evidence), null, 2));
+  console.log(JSON.stringify(httpLiveEvidence(evidence), null, 2));
 } catch (error) {
   process.stdout.write(error?.stdout ?? '');
   process.stderr.write(error?.stderr ?? '');
@@ -328,7 +286,6 @@ try {
 
 async function runRouterPhase({
   phase,
-  implementation,
   invocation,
   httpPort,
   runtimePort,
@@ -357,7 +314,7 @@ async function runRouterPhase({
       child: router.child,
       stderrPath,
     });
-    relay = await createRuntimeRelay({
+    relay = await createRollbackRelay({
       port: relayPort,
       routerUrl: `ws://127.0.0.1:${runtimePort}/runtime`,
     });
@@ -384,7 +341,7 @@ async function runRouterPhase({
     if (suite === 'backpressure') {
       suiteResult = await runBackpressureSuite(ctx);
     } else {
-      suiteResult = full ? await runFullSuite(ctx) : await runRollbackSuite(ctx);
+      suiteResult = full ? await runFullSuite(ctx) : await runBasicSuite(ctx);
     }
     evidence.suite.push({ phase, cases: suiteResult });
     console.log(`router-live:http: ${phase} phase passed (${suiteResult.length} cases)`);
@@ -407,7 +364,7 @@ async function runRouterPhase({
       const exit = await stopProcess(router.child, 'SIGTERM', {
         label: `${phase} router`,
       });
-      evidence.phases.push({ phase, implementation, exit });
+      evidence.phases.push({ phase, implementation: 'rust', exit });
       assertRouterExit(`${phase} router`, exit);
     } catch (error) {
       stopErrors.push(error);
@@ -451,83 +408,27 @@ async function runRouterPhase({
   return suiteResult;
 }
 
-function assertRollbackRoundtrip(evidence, committed) {
-  const rollbackTuples = evidence.bootstrapTuples.filter((entry) =>
-    ['ts-1', 'rust', 'ts-2'].includes(entry.phase));
-  if (rollbackTuples.length !== 3) {
-    throw new Error(
-      `rollback roundtrip requires three phases, got ${rollbackTuples.length}`,
-    );
-  }
-  const [ts1, rust, ts2] = rollbackTuples.map((entry) => entry.tuple);
-  assertDeepEqual(ts1, rust, 'TS-1 and Rust bootstrap tuples');
-  assertDeepEqual(rust, ts2, 'Rust and TS-2 bootstrap tuples');
-  assertEqual(ts1.environment, committed.environment, 'bootstrap environment');
-  assertEqual(ts1.generation, committed.generation, 'bootstrap generation');
-  assertEqual(ts1.assemblyIdentity, committed.assemblyIdentity, 'bootstrap assembly identity');
-  assertEqual(ts1.configSnapshotId, committed.configSnapshotId, 'bootstrap config snapshot id');
-
-  const unaryByName = new Map();
-  for (const phase of evidence.suite) {
-    for (const entry of phase.cases) {
-      if (!['unary-happy', 'typed-unary', 'stream-roundtrip'].includes(entry.name)) {
-        continue;
-      }
-      const key = `${entry.name}:${entry.status}`;
-      unaryByName.set(key, (unaryByName.get(key) ?? 0) + 1);
-    }
-  }
-  for (const name of ['unary-happy', 'typed-unary', 'stream-roundtrip']) {
-    const count = [...unaryByName.entries()]
-      .filter(([key]) => key.startsWith(`${name}:`))
-      .reduce((total, [, value]) => total + value, 0);
-    if (count !== 3) {
-      throw new Error(`rollback roundtrip ${name} must pass in all three phases, got ${count}/3`);
-    }
-  }
-}
-
-function rollbackEvidence(evidence) {
+function httpLiveEvidence(evidence) {
   return {
-    roundtrip: {
-      phases: evidence.bootstrapTuples.map(({ phase, tuple }) => ({ phase, tuple })),
-      manifests: evidence.manifests,
-      runtimeExit: evidence.runtimeExit,
-    },
+    bootstrapTuples: evidence.bootstrapTuples.map(({ phase, tuple }) => ({ phase, tuple })),
     suite: evidence.suite,
-    phases: evidence.phases.map(({ phase, implementation, exit }) => ({
+    processExits: evidence.phases.map(({ phase, implementation, exit }) => ({
       phase,
       implementation,
       exit,
     })),
+    runtimeExit: evidence.runtimeExit,
   };
 }
 
 function evidenceSummary(evidence) {
   return {
-    manifests: evidence.manifests,
     bootstrapTuples: evidence.bootstrapTuples,
     phases: evidence.phases,
     suite: evidence.suite,
     runtimeExit: evidence.runtimeExit,
     relayTails: evidence.relayTails,
   };
-}
-
-function assertDeepEqual(left, right, label) {
-  const leftJson = JSON.stringify(left);
-  const rightJson = JSON.stringify(right);
-  if (leftJson !== rightJson) {
-    throw new Error(`${label} differ:\n${leftJson}\n${rightJson}`);
-  }
-}
-
-function assertEqual(actual, expected, label) {
-  if (!Object.is(actual, expected)) {
-    throw new Error(
-      `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-    );
-  }
 }
 
 function assertNotForbidden(port) {

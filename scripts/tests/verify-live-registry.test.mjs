@@ -49,10 +49,8 @@ test('live registry is the single declaration for current selectors, policies, a
     'router-live:activation-full-chain',
     'router-live:ws',
     'router-live:actor',
-    'router-live:differential',
     'router-live:http',
     'router-live:chat',
-    'router-live:rollback-final',
     'loop-risk-health-live',
     'loop-risk-stress-live',
   ]);
@@ -158,18 +156,15 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.equal(actor.value.id, 'live:router-rust-actor');
   assert.equal(actor.value.ownership, LIVE_OWNERSHIP.MANAGED);
   assert.equal(actor.value.tier, LIVE_TIERS.LIVE_MANUAL);
-  assert.match(actor.value.description, /TS\/Rust differential actor full chain/);
+  assert.match(actor.value.description, /Rust-only two-replica actor full chain/);
   assert.deepEqual(actor.value.requiredInputs, []);
   assert.deepEqual(actor.value.requiredExecutables, [
     'node',
-    'pnpm',
     'cargo',
     'mongod',
     'mongosh',
   ]);
-  assert.deepEqual(actor.value.requiredModules, [
-    { specifier: 'ws', from: 'router/package.json' },
-  ]);
+  assert.deepEqual(actor.value.requiredModules, []);
   assert.deepEqual(actor.value.canonicalPolicy, {
     forbidSkips: false,
     forbidUnchecked: true,
@@ -193,7 +188,7 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.equal(stress.value.configProfile, 'stress');
   assert.deepEqual(stress.value.requiredExecutables, ['node', 'ps']);
   assert.deepEqual(stress.value.requiredModules, [
-    { specifier: 'ws', from: 'router/package.json' },
+    { specifier: 'ws', from: 'scripts/package.json' },
   ]);
 });
 
@@ -764,9 +759,8 @@ test('loop-risk registry derives exact executable and module prerequisites', asy
 
     const isolatedRoot = join(fixture.root, 'module-missing-root');
     await mkdir(join(isolatedRoot, 'scripts'), { recursive: true });
-    await mkdir(join(isolatedRoot, 'router'), { recursive: true });
     await writeFile(join(isolatedRoot, 'scripts', 'check-loop-risk-stress-live.mjs'), '');
-    await writeFile(join(isolatedRoot, 'router', 'package.json'), '{}\n');
+    await writeFile(join(isolatedRoot, 'scripts', 'package.json'), '{}\n');
     const bin = await fakeExecutablePath(fixture.root, ['node', 'ps'], 'module-missing');
     const moduleMissing = await buildVerifyPlan({
       root: isolatedRoot,
@@ -775,7 +769,7 @@ test('loop-risk registry derives exact executable and module prerequisites', asy
       loopRiskConfig: fixture.configPath,
       env: { PATH: bin },
     });
-    assert.match(moduleMissing.tasks[0].preconditionError, /ws from router\/package.json/);
+    assert.match(moduleMissing.tasks[0].preconditionError, /ws from scripts\/package.json/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// `router-live:actor` managed harness (E-actor-rust + E-actor-parity gates,
-// plan §7/§8).
+// `router-live:actor` managed harness (E-actor-rust gate, plan §7/§8,
+// post-cutover Rust-only).
 //
-// Phase 1 (Rust-only regression layer): real compiler artifact
+// Real compiler artifact
 // (`skiff-package-service-smoke-fixture` over the actor-full-chain-acceptance
 // fixture), isolated temporary Mongo replica set, explicit `skiff-router`
 // Rust binary and two explicit `runtime` Rust binaries with independent
@@ -18,14 +18,9 @@
 //     mismatch fail closed and asserts invocation/control/lease/timer zero
 //     residue through frame pairing and graceful shutdown.
 //
-// Phase 2 (E-actor-parity differential, the parity evidence): the identical
-// actor artifact (both sides consume the same canonical actor-routing
-// projection record) is copied into independent TS/Rust artifact roots; each
-// side runs an isolated two-replica Router + real Runtime stack and executes
-// the identical real-HTTP actor full chain (get-or-create/invoke/owner
-// control/lease/function spawn/actor-method spawn). The normalized HTTP
-// steps, projected Runtime frame sequences, Mongo state/audit and terminal
-// behavior must match with no unexplained differences.
+// The harness writes the canonical actor-routing projection record (test-side
+// A1 producer) before the probe starts, so the Rust Router consumes the same
+// real projection that the compiler publish path produces.
 //
 // The harness never touches the stable instance, stable Mongo, PM2 or the
 // fixed 4004-4007 ports. Router/relay ports are leased in 45000-45999 and
@@ -46,8 +41,7 @@ import {
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
-import { synthesizeActorRoutingProjection } from './lib/router-differential/actor_parity_projection.mjs';
-import { runActorParityDifferential } from './lib/router-differential/actor_parity_runner.mjs';
+import { synthesizeActorRoutingProjection } from './lib/actor-live-projection.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ENVIRONMENT = 'actor-live';
@@ -177,40 +171,10 @@ try {
       },
     },
   );
-  console.log('router-live:actor: running TS/Rust actor parity differential full-chain');
-  const parityReport = await runActorParityDifferential({
-    repoRoot,
-    sourceArtifactRoot: artifactRoot,
-    assemblyIdentity,
-    configSnapshotId,
-    deploymentRecord,
-    runtimeBin,
-    routerBinary: join(targetDir, 'debug', 'skiff-router'),
-    environment: ENVIRONMENT,
-  });
-  if ((parityReport.unexplainedFailures ?? []).length > 0) {
-    throw new Error(
-      'router-live:actor actor parity differential failed with unexplained differences: '
-      + parityReport.unexplainedFailures.join('; '),
-    );
-  }
-  if ((parityReport.acceptedDifferences ?? []).length > 0) {
-    console.log(
-      `router-live:actor: differential accepted-with-recorded-differences `
-      + `(${parityReport.acceptedDifferences.length} failures on declared known-difference paths)`,
-    );
-  }
-  console.log('router-live:actor: actor parity differential PASS');
   console.log('router-live:actor: PASS');
 } catch (error) {
   process.stdout.write(error?.stdout ?? '');
   process.stderr.write(error?.stderr ?? '');
-  if (error?.actorParityEvidence !== undefined) {
-    process.stderr.write(`\n${error.actorParityEvidence}\n`);
-  }
-  if (error?.actorParityFrames !== undefined) {
-    process.stderr.write(`\nactor parity error frames: ${JSON.stringify(error.actorParityFrames, null, 2)}\n`);
-  }
   if (tempRoot !== undefined) {
     const logPaths = [
       join(tempRoot, 'runtime-one.stderr.log'),

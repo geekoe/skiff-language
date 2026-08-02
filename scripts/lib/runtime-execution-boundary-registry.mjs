@@ -416,9 +416,6 @@ function ownerAnchorViolationId(role) {
   ) {
     return 'host-active-assembly-entry-missing';
   }
-  if (role === 'router-runtime-service-rejection') {
-    return 'router-service-rejection-incomplete';
-  }
   return 'required-owner-anchor-missing';
 }
 

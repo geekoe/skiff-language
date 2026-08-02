@@ -1,13 +1,13 @@
 // E-http assertion suites (`router-live:http`, plan §7/§8).
 //
-// `runRollbackSuite` is executed once per TS→Rust→TS phase and asserts the
-// same observable unary/stream behavior on every Router implementation.
-// `runFullSuite` runs the complete E-http surface on the Rust phase: trusted
-// selectors, service-scoped ingress, typed/raw payloads, unary/stream
-// mapping and sequencing, cumulative ceiling, backpressure, disconnect/
-// cancel/deadline, CORS preflight/service-managed and platform errors, with
-// every race asserting one external terminal, at most one cancel frame and a
-// successful follow-up unary (pending/permit/timer residue proxy).
+// `runBasicSuite` asserts the same observable unary/stream behavior on every
+// Router phase. `runFullSuite` runs the complete E-http surface on the Rust
+// phase: trusted selectors, service-scoped ingress, typed/raw payloads,
+// unary/stream mapping and sequencing, cumulative ceiling, backpressure,
+// disconnect/cancel/deadline, CORS preflight/service-managed and platform
+// errors, with every race asserting one external terminal, at most one cancel
+// frame and a successful follow-up unary (pending/permit/timer residue
+// proxy).
 
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -27,7 +27,7 @@ import { waitForCancelFrame } from './http_live_process.mjs';
 
 const FIXED_ERROR_PATTERN = /^skiff-gateway-entry-v2:sha256:[0-9a-f]{64}$/;
 
-export async function runRollbackSuite(ctx) {
+export async function runBasicSuite(ctx) {
   const evidence = [];
   await caseUnaryHappy(ctx, evidence);
   await caseTypedUnary(ctx, evidence);
@@ -38,7 +38,7 @@ export async function runRollbackSuite(ctx) {
 }
 
 export async function runFullSuite(ctx) {
-  const evidence = await runRollbackSuite(ctx);
+  const evidence = await runBasicSuite(ctx);
   await caseVersionConflict(ctx, evidence);
   await caseUnknownService(ctx, evidence);
   await caseWrongMethod(ctx, evidence);
@@ -461,6 +461,7 @@ async function caseBackpressure(ctx, evidence) {
   // ~800 KiB (macOS): there the burst completes into the socket and the
   // harness asserts the no-leak boundary instead of the drain terminal.
   const helperPath = join(dirname(fileURLToPath(import.meta.url)), 'http_live_slow_client.py');
+  // child-process-owner: http-live-suite-helper
   const helper = spawn(
     'python3',
     [helperPath, String(ctx.port), '/burst', ctx.serviceId, ctx.version, '120'],
