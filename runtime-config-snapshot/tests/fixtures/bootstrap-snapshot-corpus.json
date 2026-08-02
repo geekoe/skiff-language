@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "skiff-router-rust-bootstrap-snapshot-corpus-v1",
+  "snapshotRefs": [
+    {
+      "id": "valid",
+      "json": {
+        "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": true
+    },
+    {
+      "id": "wrong-prefix",
+      "json": {
+        "snapshotId": "skiff-runtime-config-snapshot-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": false,
+      "expectErrorContains": "must use skiff-runtime-config-snapshot-v1:<32 lowercase hex>"
+    },
+    {
+      "id": "short-id",
+      "json": {
+        "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": false,
+      "expectErrorContains": "must use skiff-runtime-config-snapshot-v1:<32 lowercase hex>"
+    },
+    {
+      "id": "uppercase-hex",
+      "json": {
+        "snapshotId": "skiff-runtime-config-snapshot-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "valid": false,
+      "expectErrorContains": "must use skiff-runtime-config-snapshot-v1:<32 lowercase hex>"
+    },
+    {
+      "id": "unknown-field",
+      "json": {
+        "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "extra": true
+      },
+      "valid": false,
+      "expectErrorContains": "unknown field"
+    },
+    {
+      "id": "missing-field",
+      "json": {},
+      "valid": false,
+      "expectErrorContains": "missing field"
+    }
+  ],
+  "recordCases": [
+    {
+      "id": "valid",
+      "kind": "valid",
+      "expect": "ok"
+    },
+    {
+      "id": "missing-record",
+      "kind": "missing",
+      "expect": "reject",
+      "expectErrorContains": "does not exist"
+    },
+    {
+      "id": "id-mismatch",
+      "kind": "idMismatch",
+      "expect": "reject",
+      "expectErrorContains": "snapshot id/path mismatch"
+    },
+    {
+      "id": "malformed-json",
+      "kind": "malformed",
+      "expect": "reject",
+      "expectErrorContains": "snapshot JSON failed"
+    },
+    {
+      "id": "non-canonical-bytes",
+      "kind": "nonCanonical",
+      "expect": "reject",
+      "expectErrorContains": "not canonical JSON"
+    },
+    {
+      "id": "schema-version-mismatch",
+      "kind": "schemaVersionMismatch",
+      "expect": "reject",
+      "expectErrorContains": "schemaVersion mismatch"
+    },
+    {
+      "id": "unknown-field",
+      "kind": "unknownField",
+      "expect": "reject",
+      "expectErrorContains": "unknown field"
+    }
+  ],
+  "limits": {
+    "maxSnapshotBytes": 16777216,
+    "maxDeploymentsPerSnapshot": 1024,
+    "maxPackagesPerDeployment": 4096
+  }
+}
