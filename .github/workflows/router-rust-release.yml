@@ -1,0 +1,177 @@
+name: Router Rust Release
+
+# Scheduled release gates (plan §8): clean-host, loop-risk and the Rust-only
+# rollback rehearsal. The TS rollback unit rehearsal was retired by the
+# cutover-delete node (plan §11.3); the release workflow therefore runs the
+# surviving Rust-only clean-host rehearsal (`router-live:clean-host`) plus
+# both loop-risk live selectors against an isolated instance held by the
+# same clean-host orchestrator.
+#
+# Platform contract: the clean-host job is the real Linux gate. A local
+# macOS invocation of the checker is a platform-equivalent dry run and is
+# never reported as the Linux gate.
+on:
+  schedule:
+    # Weekly: Monday 04:00 UTC.
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: router-rust-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clean-host:
+    name: Router Rust Clean Host (release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Bound cargo target size on shared runners (same knob the rollback-final
+      # rehearsal used locally; the gate does not depend on debug symbols).
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Install MongoDB server and shell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg lsb-release
+          CODENAME="$(lsb_release -cs)"
+          case "$CODENAME" in
+            jammy|noble) ;;
+            *) CODENAME=jammy ;;
+          esac
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-org-server mongodb-mongosh
+
+      - name: Preflight release checker commands
+        run: |
+          test -f scripts/check-router-clean-host-live.mjs
+          test -f scripts/lib/clean-host-bundle.mjs
+          test -f scripts/lib/rollback-clean-host-suite.mjs
+          test -f scripts/lib/http_live_process.mjs
+
+      - name: Preflight clean-host environment
+        run: node scripts/check-router-clean-host-live.mjs --preflight
+
+      - name: Run router-live:clean-host release gate
+        run: node scripts/check-router-clean-host-live.mjs
+
+  loop-risk:
+    name: Router Rust Loop-Risk (release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Install MongoDB server and shell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg lsb-release
+          CODENAME="$(lsb_release -cs)"
+          case "$CODENAME" in
+            jammy|noble) ;;
+            *) CODENAME=jammy ;;
+          esac
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-org-server mongodb-mongosh
+
+      - name: Set up pnpm
+        run: npm install --global pnpm@10.29.2
+
+      - name: Install scripts package dependencies
+        run: pnpm --dir scripts install --frozen-lockfile
+
+      - name: Preflight loop-risk checker commands
+        run: |
+          test -f scripts/check-loop-risk-health.mjs
+          test -f scripts/check-loop-risk-stress-live.mjs
+          test -f scripts/check-router-clean-host-live.mjs
+
+      - name: Preflight loop-risk health self-test
+        run: node scripts/check-loop-risk-health.mjs --self-test
+
+      # The clean-host orchestrator holds an isolated Router+Runtime target
+      # from the same bundle and writes the canonical loop-risk config
+      # (healthUrl/runtimeIds/stress). Both live selectors consume that one
+      # explicit config; the trap guarantees teardown even when a checker
+      # fails.
+      - name: Run loop-risk release gates against isolated clean-host target
+        run: |
+          set -euo pipefail
+          HOLD_DIR="$RUNNER_TEMP/router-rust-loop-risk"
+          mkdir -p "$HOLD_DIR"
+          CONFIG_FILE="$HOLD_DIR/loop-risk.json"
+          STOP_FILE="$HOLD_DIR/stop"
+          HOLD_LOG="$HOLD_DIR/clean-host-hold.log"
+          rm -f "$CONFIG_FILE" "$STOP_FILE" "$HOLD_LOG"
+          node scripts/check-router-clean-host-live.mjs \
+            --loop-risk-config "$CONFIG_FILE" \
+            --loop-risk-stop-file "$STOP_FILE" \
+            >"$HOLD_LOG" 2>&1 &
+          HOLD_PID=$!
+          cleanup() {
+            touch "$STOP_FILE" || true
+            wait "$HOLD_PID" || true
+            tail -n 40 "$HOLD_LOG" || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 600); do
+            if [ -f "$CONFIG_FILE" ]; then
+              break
+            fi
+            if ! kill -0 "$HOLD_PID" 2>/dev/null; then
+              tail -n 80 "$HOLD_LOG"
+              echo "clean-host loop-risk target exited before ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ ! -f "$CONFIG_FILE" ]; then
+            tail -n 80 "$HOLD_LOG"
+            echo "clean-host loop-risk target did not become ready within 600s" >&2
+            exit 1
+          fi
+          node scripts/check-loop-risk-health.mjs --config "$CONFIG_FILE"
+          node scripts/check-loop-risk-stress-live.mjs --config "$CONFIG_FILE"
+          touch "$STOP_FILE"
+          wait "$HOLD_PID"

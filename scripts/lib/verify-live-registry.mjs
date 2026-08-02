@@ -319,6 +319,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-clean-host-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-clean-host-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:clean-host',
+        description:
+          'Rust-only clean-host release rehearsal: bundle with only router+runtime binaries, configs, compiler artifact root and POSIX sh start scripts is built in a fresh temp dir and started with a PATH that cannot resolve pnpm/tsx; real Router+Runtime unary-ready poll proves Runtime reconnect, HTTP unary five-case suite runs, SIGTERM/SIGINT exits are clean and the bundle identity is unchanged (real Linux/PM2 gate belongs to scheduled release CI; local run is a platform-equivalent dry run, not the Linux gate)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-clean-host',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: true,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',

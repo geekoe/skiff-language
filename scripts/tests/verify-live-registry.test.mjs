@@ -51,6 +51,7 @@ test('live registry is the single declaration for current selectors, policies, a
     'router-live:actor',
     'router-live:http',
     'router-live:chat',
+    'router-live:clean-host',
     'loop-risk-health-live',
     'loop-risk-stress-live',
   ]);
@@ -167,6 +168,31 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.deepEqual(actor.value.requiredModules, []);
   assert.deepEqual(actor.value.canonicalPolicy, {
     forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const cleanHost = invocation('router-live:clean-host');
+  assert.equal(cleanHost.entry.key, 'router-rust-clean-host-live');
+  assert.equal(cleanHost.entry.source.type, 'script');
+  assert.equal(
+    cleanHost.entry.source.path,
+    'scripts/check-router-clean-host-live.mjs',
+  );
+  assert.equal(cleanHost.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(cleanHost.value.id, 'live:router-rust-clean-host');
+  assert.equal(cleanHost.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(cleanHost.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.match(cleanHost.value.description, /Rust-only clean-host release rehearsal/);
+  assert.deepEqual(cleanHost.value.requiredInputs, []);
+  assert.deepEqual(cleanHost.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(cleanHost.value.requiredModules, []);
+  assert.deepEqual(cleanHost.value.canonicalPolicy, {
+    forbidSkips: true,
     forbidUnchecked: true,
   });
 
@@ -378,6 +404,7 @@ test('global catalog counts every discovered checker path exactly once across re
   for (const path of [
     'scripts/check-loop-risk-health.mjs',
     'scripts/check-loop-risk-stress-live.mjs',
+    'scripts/check-router-clean-host-live.mjs',
   ]) {
     assert.equal(CHECKER_REGISTRY.some((entry) => entry.path === path), false);
     assert.equal(LIVE_REGISTRY.some((entry) => entry.source.path === path), true);
