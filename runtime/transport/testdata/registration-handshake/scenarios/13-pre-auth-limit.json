@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "scenario": "pre-auth-limit",
+  "mainConnection": "c1",
+  "epoch": {
+    "environment": "prod",
+    "generation": 42,
+    "assembly": { "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "configSnapshot": { "snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    "pending": null
+  },
+  "preAuthLimit": 2,
+  "events": [
+    { "kind": "accept", "connection": "c1", "connectionGeneration": 1 },
+    { "kind": "accept", "connection": "c2", "connectionGeneration": 1 },
+    { "kind": "accept", "connection": "c3", "connectionGeneration": 1 },
+    { "kind": "write", "connection": "c1", "frame": "bootstrap.prod.42" },
+    { "kind": "read", "connection": "c1", "frame": "capabilities.runtime-a" },
+    { "kind": "read", "connection": "c1", "frame": "register.prod.42.a" },
+    { "kind": "write", "connection": "c1", "frame": "registered.runtime-a" },
+    { "kind": "accept", "connection": "c3", "connectionGeneration": 1 }
+  ],
+  "expect": {
+    "outcomes": { "c1": "Registered", "c2": "Accepted", "c3": "Accepted" },
+    "refusedCount": 1,
+    "preAuthCount": 2,
+    "registeredSessions": ["runtime-a"],
+    "observedHealth": 0,
+    "healthBeforeAck": 0,
+    "routableRegistered": true,
+    "publishedPending": false,
+    "revision": 1,
+    "failStop": false
+  }
+}
