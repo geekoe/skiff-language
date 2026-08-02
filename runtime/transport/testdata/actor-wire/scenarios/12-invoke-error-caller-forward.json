@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "invoke-error-caller-forward",
+  "domain": "invocation",
+  "events": [
+    { "op": "invoke", "caller": "c1", "invocationId": "inv:1", "ownerRuntimeId": "runtime-b", "epoch": 7, "correlation": "cancel:1" },
+    { "op": "ownerError", "runtimeId": "runtime-b", "invocationId": "inv:1", "epoch": 7 }
+  ],
+  "expect": {
+    "pending": 0,
+    "settled": 1,
+    "rejected": 0,
+    "terminals": 0,
+    "tombstones": 1
+  }
+}

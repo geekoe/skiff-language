@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "parent-replaced-before-submit-rejected",
+  "parents": {
+    "request": [],
+    "actorInvocation": [ { "id": "inv-parent-1", "runtimeId": "runtime-a", "connection": "conn-a", "assemblyGeneration": 42, "testCaseCapability": null } ]
+  },
+  "events": [
+    { "op": "replace", "callerKind": "actorInvocation", "callerRequestId": "inv-parent-1", "newConnection": "conn-b", "newRuntimeId": "runtime-b" },
+    { "op": "submit", "callerKind": "actorInvocation", "callerRequestId": "inv-parent-1", "targetKind": "actorMethod", "actorMethod": true, "connection": "conn-a" }
+  ],
+  "expect": {
+    "accepted": [],
+    "rejected": [ "actorInvocation:inv-parent-1" ],
+    "errors": { "actorInvocation:inv-parent-1": "ParentReplaced" }
+  }
+}

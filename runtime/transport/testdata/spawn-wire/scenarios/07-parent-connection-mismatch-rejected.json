@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "parent-connection-mismatch-rejected",
+  "parents": {
+    "request": [ { "id": "parent-1", "runtimeId": "runtime-a", "connection": "conn-a", "assemblyGeneration": 42, "testCaseCapability": null } ],
+    "actorInvocation": []
+  },
+  "events": [
+    { "op": "submit", "callerKind": "request", "callerRequestId": "parent-1", "targetKind": "function", "connection": "conn-b" }
+  ],
+  "expect": {
+    "accepted": [],
+    "rejected": [ "request:parent-1" ],
+    "errors": { "request:parent-1": "ParentConnectionMismatch" }
+  }
+}

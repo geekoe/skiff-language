@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "resolve-function-parent-exact",
+  "parents": {
+    "request": [ { "id": "parent-1", "runtimeId": "runtime-a", "connection": "conn-a", "assemblyGeneration": 42, "testCaseCapability": null } ],
+    "actorInvocation": []
+  },
+  "events": [
+    { "op": "submit", "callerKind": "request", "callerRequestId": "parent-1", "targetKind": "function", "connection": "conn-a" }
+  ],
+  "expect": {
+    "accepted": [ "request:parent-1" ],
+    "rejected": [],
+    "errors": {},
+    "acceptedSpawns": 1
+  }
+}

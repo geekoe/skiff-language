@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "scenario": "lease-eviction-retry-bounded",
+  "domain": "lease",
+  "initialOwner": { "runtimeId": "runtime-b", "epoch": 1, "leaseExpiresAt": 40000, "lastIdleAt": 0, "now": 0 },
+  "idleTtlMs": 30000,
+  "events": [
+    { "op": "sweep", "now": 30000 },
+    { "op": "sweep", "now": 31000 },
+    { "op": "sweep", "now": 32000 },
+    { "op": "sweep", "now": 33000 },
+    { "op": "sweep", "now": 34000 }
+  ],
+  "expect": {
+    "expired": 0,
+    "evictionRequests": 1,
+    "evictionAcked": 0,
+    "evictionRetries": 3,
+    "evictionExhausted": 1,
+    "owner": { "runtimeId": "runtime-b", "epoch": 1, "leaseExpiresAt": 40000 }
+  }
+}
