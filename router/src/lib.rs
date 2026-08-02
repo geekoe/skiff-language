@@ -10,6 +10,7 @@ pub mod http;
 pub mod listener;
 pub mod routing;
 pub mod session;
+pub mod ws;
 
 pub use bootstrap::{
     ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
@@ -51,4 +52,18 @@ pub use routing::{
 pub use session::{
     ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,
     SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
+};
+pub use ws::{
+    AllowAnyPendingAdmission, BrokerConnectionGeneration, BrokerGenerationAdapter,
+    BrokerGenerationPort, BrokerHealthSnapshot, BrokerRuntimeResponse, BrokerRuntimeSource,
+    BusinessKey, ClientConnectionIndex, ClientConnectionIndexOptions, ClientTerminal, Clock,
+    DispatchInbound, InboundDispatchAction, InboundDispatchResult, InboundExecutionToken,
+    JsonRpc20TextProfile, LedgerReleaseAdapter, LedgerReleasePort, MethodCatalog,
+    NoopNotificationObserver, NoopRuntimeViolationSink, NotificationObserver, OverflowPolicy,
+    PeerResponseTerminal, PeerTextOutcome, PeerWriter, PendingAdmissionSender,
+    PendingReleaseHandle, PlatformErrorKind, ProfileLimits, ReleaseOutcome, ReleaseResolution,
+    RuntimeGenerationPeer, RuntimeGenerationPinLedger, RuntimeRequest, RuntimeRequestOutcome,
+    RuntimeResponder, RuntimeSessionClose, RuntimeViolationSink, WebSocketLane,
+    WebSocketLaneOptions, WebSocketLifecycleClose, WebSocketRequestBroker,
+    WebSocketRequestBrokerOptions, WriteBudget, WsHealthSnapshot,
 };
